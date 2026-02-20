@@ -76,8 +76,14 @@ func validatePath(path string) error {
 	// Normalize path
 	path = filepath.Clean(path)
 
-	// Check for absolute paths
+	// Check for absolute paths (Unix-style)
 	if filepath.IsAbs(path) {
+		return fmt.Errorf("absolute paths not allowed: %s", path)
+	}
+
+	// Check for Windows-style absolute paths (e.g. C:\...) even on non-Windows hosts.
+	// Archives extracted from Windows machines may contain these paths.
+	if len(path) >= 3 && path[1] == ':' && (path[2] == '\\' || path[2] == '/') {
 		return fmt.Errorf("absolute paths not allowed: %s", path)
 	}
 

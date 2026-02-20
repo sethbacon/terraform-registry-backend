@@ -256,6 +256,7 @@ type MirrorSyncJob struct {
 	activeSyncs        map[uuid.UUID]bool
 	activeSyncsMutex   sync.Mutex
 	stopCh             chan struct{}
+	startedCh          chan struct{} // closed when the Start goroutine is scheduled and running
 	wg                 sync.WaitGroup
 }
 
@@ -274,6 +275,7 @@ func NewMirrorSyncJob(
 		activeSyncs:        make(map[uuid.UUID]bool),
 		activeSyncsMutex:   sync.Mutex{},
 		stopCh:             make(chan struct{}),
+		startedCh:          make(chan struct{}),
 	}
 }
 
@@ -283,6 +285,7 @@ func (j *MirrorSyncJob) Start(ctx context.Context, intervalMinutes int) {
 
 	j.wg.Add(1)
 	go func() {
+		close(j.startedCh) // signal that the goroutine is running (wg.Add already done)
 		defer j.wg.Done()
 
 		ticker := time.NewTicker(time.Duration(intervalMinutes) * time.Minute)
@@ -306,8 +309,11 @@ func (j *MirrorSyncJob) Start(ctx context.Context, intervalMinutes int) {
 	}()
 }
 
-// Stop stops the sync job
+// Stop stops the sync job. It waits for the Start goroutine to be scheduled
+// before signalling it to exit, avoiding a race between wg.Add (in Start) and
+// wg.Wait (in Stop) when Start and Stop are called concurrently.
 func (j *MirrorSyncJob) Stop() {
+	<-j.startedCh // ensure wg.Add(1) has been called before wg.Wait()
 	close(j.stopCh)
 	j.wg.Wait()
 }
