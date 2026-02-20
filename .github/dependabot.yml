@@ -1,0 +1,53 @@
+version: 2
+
+updates:
+  # ---------------------------------------------------------------------------
+  # Go modules (backend/)
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: gomod
+    directory: /backend
+    schedule:
+      interval: biweekly
+      day: monday
+      time: "09:00"
+      timezone: UTC
+    reviewers:
+      - maintainers
+    labels:
+      - dependencies
+      - go
+    commit-message:
+      prefix: "chore(deps)"
+    # Group all Go module updates into a single PR per cycle to reduce noise.
+    groups:
+      go-dependencies:
+        patterns:
+          - "*"
+    # Ignore major-version bumps for infrastructure libs that require manual review.
+    ignore:
+      - dependency-name: "github.com/gin-gonic/gin"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "github.com/golang-migrate/migrate/v4"
+        update-types: ["version-update:semver-major"]
+
+  # ---------------------------------------------------------------------------
+  # GitHub Actions
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: biweekly
+      day: monday
+      time: "09:00"
+      timezone: UTC
+    reviewers:
+      - maintainers
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      github-actions-dependencies:
+        patterns:
+          - "*"

@@ -1,0 +1,86 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "terraform-registry.fullname" . }}-config
+  labels:
+    {{- include "terraform-registry.labels" . | nindent 4 }}
+data:
+  # Server
+  TFR_SERVER_HOST: {{ .Values.server.host | quote }}
+  TFR_SERVER_PORT: {{ .Values.server.port | quote }}
+  TFR_SERVER_BASE_URL: {{ .Values.server.baseUrl | quote }}
+
+  # Database (password in Secret)
+  TFR_DATABASE_HOST: {{ .Values.externalDatabase.host | quote }}
+  TFR_DATABASE_PORT: {{ .Values.externalDatabase.port | quote }}
+  TFR_DATABASE_NAME: {{ .Values.externalDatabase.name | quote }}
+  TFR_DATABASE_USER: {{ .Values.externalDatabase.user | quote }}
+  TFR_DATABASE_SSL_MODE: {{ .Values.externalDatabase.sslMode | quote }}
+  TFR_DATABASE_MAX_CONNECTIONS: {{ .Values.externalDatabase.maxConnections | quote }}
+
+  # Storage
+  TFR_STORAGE_DEFAULT_BACKEND: {{ .Values.storage.backend | quote }}
+  TFR_STORAGE_LOCAL_BASE_PATH: {{ .Values.storage.local.basePath | quote }}
+  TFR_STORAGE_LOCAL_SERVE_DIRECTLY: {{ .Values.storage.local.serveDirectly | quote }}
+  {{- if eq .Values.storage.backend "s3" }}
+  TFR_STORAGE_S3_ENDPOINT: {{ .Values.storage.s3.endpoint | quote }}
+  TFR_STORAGE_S3_REGION: {{ .Values.storage.s3.region | quote }}
+  TFR_STORAGE_S3_BUCKET: {{ .Values.storage.s3.bucket | quote }}
+  TFR_STORAGE_S3_AUTH_METHOD: {{ .Values.storage.s3.authMethod | quote }}
+  {{- if .Values.storage.s3.roleArn }}
+  TFR_STORAGE_S3_ROLE_ARN: {{ .Values.storage.s3.roleArn | quote }}
+  {{- end }}
+  {{- if .Values.storage.s3.webIdentityTokenFile }}
+  TFR_STORAGE_S3_WEB_IDENTITY_TOKEN_FILE: {{ .Values.storage.s3.webIdentityTokenFile | quote }}
+  {{- end }}
+  {{- end }}
+  {{- if eq .Values.storage.backend "azure" }}
+  TFR_STORAGE_AZURE_ACCOUNT_NAME: {{ .Values.storage.azure.accountName | quote }}
+  TFR_STORAGE_AZURE_CONTAINER_NAME: {{ .Values.storage.azure.containerName | quote }}
+  {{- end }}
+  {{- if eq .Values.storage.backend "gcs" }}
+  TFR_STORAGE_GCS_BUCKET: {{ .Values.storage.gcs.bucket | quote }}
+  TFR_STORAGE_GCS_PROJECT_ID: {{ .Values.storage.gcs.projectId | quote }}
+  TFR_STORAGE_GCS_AUTH_METHOD: {{ .Values.storage.gcs.authMethod | quote }}
+  {{- if .Values.storage.gcs.credentialsFile }}
+  TFR_STORAGE_GCS_CREDENTIALS_FILE: {{ .Values.storage.gcs.credentialsFile | quote }}
+  {{- end }}
+  {{- end }}
+
+  # Auth
+  TFR_AUTH_API_KEYS_ENABLED: {{ .Values.auth.apiKeys.enabled | quote }}
+  TFR_AUTH_API_KEYS_PREFIX: {{ .Values.auth.apiKeys.prefix | quote }}
+  TFR_AUTH_OIDC_ENABLED: {{ .Values.auth.oidc.enabled | quote }}
+  {{- if .Values.auth.oidc.enabled }}
+  TFR_AUTH_OIDC_ISSUER_URL: {{ .Values.auth.oidc.issuerUrl | quote }}
+  TFR_AUTH_OIDC_CLIENT_ID: {{ .Values.auth.oidc.clientId | quote }}
+  TFR_AUTH_OIDC_REDIRECT_URL: {{ .Values.auth.oidc.redirectUrl | quote }}
+  {{- end }}
+  TFR_AUTH_AZURE_AD_ENABLED: {{ .Values.auth.azureAd.enabled | quote }}
+  {{- if .Values.auth.azureAd.enabled }}
+  TFR_AUTH_AZURE_AD_TENANT_ID: {{ .Values.auth.azureAd.tenantId | quote }}
+  TFR_AUTH_AZURE_AD_CLIENT_ID: {{ .Values.auth.azureAd.clientId | quote }}
+  TFR_AUTH_AZURE_AD_REDIRECT_URL: {{ .Values.auth.azureAd.redirectUrl | quote }}
+  {{- end }}
+
+  # Multi-tenancy
+  TFR_MULTI_TENANCY_ENABLED: {{ .Values.multiTenancy.enabled | quote }}
+  TFR_MULTI_TENANCY_DEFAULT_ORGANIZATION: {{ .Values.multiTenancy.defaultOrganization | quote }}
+
+  # Security (TLS terminated at Ingress)
+  TFR_SECURITY_TLS_ENABLED: "false"
+  TFR_SECURITY_RATE_LIMITING_ENABLED: {{ .Values.security.rateLimiting.enabled | quote }}
+  TFR_SECURITY_RATE_LIMITING_REQUESTS_PER_MINUTE: {{ .Values.security.rateLimiting.requestsPerMinute | quote }}
+  TFR_SECURITY_RATE_LIMITING_BURST: {{ .Values.security.rateLimiting.burst | quote }}
+
+  # Logging
+  TFR_LOGGING_LEVEL: {{ .Values.logging.level | quote }}
+  TFR_LOGGING_FORMAT: {{ .Values.logging.format | quote }}
+
+  # Telemetry
+  TFR_TELEMETRY_ENABLED: {{ .Values.telemetry.enabled | quote }}
+  TFR_TELEMETRY_METRICS_ENABLED: {{ .Values.telemetry.metrics.enabled | quote }}
+  TFR_TELEMETRY_METRICS_PROMETHEUS_PORT: {{ .Values.telemetry.metrics.prometheusPort | quote }}
+
+  # Dev mode always disabled in Helm deployments
+  DEV_MODE: "false"

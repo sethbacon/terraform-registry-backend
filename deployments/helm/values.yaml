@@ -1,0 +1,224 @@
+# Default values for terraform-registry Helm chart
+
+# -- Global settings
+global:
+  # -- Image pull secrets
+  imagePullSecrets: []
+
+# -- Backend configuration
+backend:
+  # -- Number of backend replicas
+  replicaCount: 2
+  image:
+    # -- Backend image repository
+    repository: terraform-registry-backend
+    # -- Image tag (defaults to Chart.appVersion)
+    tag: ""
+    pullPolicy: IfNotPresent
+  # -- Resource requests and limits
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  # -- Pod security context
+  podSecurityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    runAsNonRoot: true
+  # -- Container security context
+  securityContext:
+    readOnlyRootFilesystem: false
+    allowPrivilegeEscalation: false
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  # -- Additional environment variables
+  extraEnv: []
+  # -- Additional volume mounts
+  extraVolumeMounts: []
+  # -- Additional volumes
+  extraVolumes: []
+
+# -- Frontend configuration
+frontend:
+  # -- Enable frontend deployment
+  enabled: true
+  # -- Number of frontend replicas
+  replicaCount: 2
+  image:
+    repository: terraform-registry-frontend
+    tag: ""
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# -- Server configuration
+server:
+  host: "0.0.0.0"
+  port: 8080
+  baseUrl: "https://registry.example.com"
+
+# -- External database configuration
+# No database is deployed by this chart; provide connection details
+externalDatabase:
+  host: ""
+  port: 5432
+  name: "terraform_registry"
+  user: "registry"
+  # -- Database password (ignored if existingSecret is set)
+  password: ""
+  sslMode: "require"
+  maxConnections: 25
+  # -- Use an existing secret containing TFR_DATABASE_PASSWORD key
+  existingSecret: ""
+
+# -- Storage configuration
+storage:
+  # -- Storage backend: local, s3, azure, gcs
+  backend: "local"
+  local:
+    basePath: "/app/storage"
+    serveDirectly: true
+  s3:
+    endpoint: ""
+    region: ""
+    bucket: ""
+    authMethod: "default"
+    accessKeyId: ""
+    secretAccessKey: ""
+    roleArn: ""
+    webIdentityTokenFile: ""
+  azure:
+    accountName: ""
+    accountKey: ""
+    containerName: ""
+  gcs:
+    bucket: ""
+    projectId: ""
+    authMethod: "default"
+    credentialsFile: ""
+  # -- PVC settings (only used when backend is "local")
+  persistence:
+    enabled: true
+    storageClass: ""
+    accessMode: ReadWriteOnce
+    size: 10Gi
+    # -- Use an existing PVC
+    existingClaim: ""
+
+# -- Authentication configuration
+auth:
+  apiKeys:
+    enabled: true
+    prefix: "tfr_"
+  oidc:
+    enabled: false
+    issuerUrl: ""
+    clientId: ""
+    clientSecret: ""
+    redirectUrl: ""
+    scopes:
+      - openid
+      - email
+      - profile
+  azureAd:
+    enabled: false
+    tenantId: ""
+    clientId: ""
+    clientSecret: ""
+    redirectUrl: ""
+
+# -- Multi-tenancy
+multiTenancy:
+  enabled: false
+  defaultOrganization: "default"
+
+# -- Security
+security:
+  # -- JWT secret (required, min 32 chars). Ignored if existingSecret is set.
+  jwtSecret: ""
+  # -- Encryption key for sensitive data (32 bytes). Ignored if existingSecret is set.
+  encryptionKey: ""
+  # -- Use an existing secret containing TFR_JWT_SECRET and ENCRYPTION_KEY keys
+  existingSecret: ""
+  rateLimiting:
+    enabled: true
+    requestsPerMinute: 60
+    burst: 10
+  cors:
+    allowedOrigins:
+      - "*"
+
+# -- Logging
+logging:
+  level: "info"
+  format: "json"
+
+# -- Telemetry
+telemetry:
+  enabled: true
+  metrics:
+    enabled: true
+    prometheusPort: 9090
+
+# -- Service configuration
+service:
+  backend:
+    type: ClusterIP
+    port: 8080
+    metricsPort: 9090
+  frontend:
+    type: ClusterIP
+    port: 80
+
+# -- Ingress configuration
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations: {}
+  hosts:
+    - host: registry.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: terraform-registry-tls
+      hosts:
+        - registry.example.com
+
+# -- ServiceAccount
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# -- Pod Disruption Budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# -- Horizontal Pod Autoscaler
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# -- Prometheus ServiceMonitor (if using prometheus-operator)
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  labels: {}

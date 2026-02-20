@@ -1,0 +1,94 @@
+# Terraform Registry Environment Configuration
+# Location: /etc/terraform-registry/environment
+# Used by: systemd unit (terraform-registry.service)
+
+# =============================================================================
+# Server
+# =============================================================================
+TFR_SERVER_HOST=0.0.0.0
+TFR_SERVER_PORT=8080
+# Set to the public URL (nginx will reverse proxy to this)
+TFR_SERVER_BASE_URL=https://registry.example.com
+
+# =============================================================================
+# Database (PostgreSQL)
+# =============================================================================
+TFR_DATABASE_HOST=localhost
+TFR_DATABASE_PORT=5432
+TFR_DATABASE_NAME=terraform_registry
+TFR_DATABASE_USER=registry
+TFR_DATABASE_PASSWORD=<REPLACE_WITH_DATABASE_PASSWORD>
+TFR_DATABASE_SSL_MODE=disable
+
+# =============================================================================
+# Security (REQUIRED - generate strong values)
+# =============================================================================
+# Generate with: openssl rand -hex 32
+TFR_JWT_SECRET=<REPLACE_WITH_JWT_SECRET>
+
+# Must be exactly 32 bytes for AES-256
+# Generate with: openssl rand -hex 16
+ENCRYPTION_KEY=<REPLACE_WITH_32_BYTE_ENCRYPTION_KEY>
+
+# MUST be false in production
+DEV_MODE=false
+
+# TLS is terminated at nginx, so disable in the backend
+TFR_SECURITY_TLS_ENABLED=false
+
+# Rate limiting
+TFR_SECURITY_RATE_LIMITING_ENABLED=true
+
+# =============================================================================
+# Storage
+# =============================================================================
+TFR_STORAGE_DEFAULT_BACKEND=local
+TFR_STORAGE_LOCAL_BASE_PATH=/opt/terraform-registry/storage
+TFR_STORAGE_LOCAL_SERVE_DIRECTLY=true
+
+# Uncomment for S3 storage:
+# TFR_STORAGE_DEFAULT_BACKEND=s3
+# TFR_STORAGE_S3_REGION=us-east-1
+# TFR_STORAGE_S3_BUCKET=terraform-registry
+# TFR_STORAGE_S3_ACCESS_KEY_ID=
+# TFR_STORAGE_S3_SECRET_ACCESS_KEY=
+
+# Uncomment for Azure Blob storage:
+# TFR_STORAGE_DEFAULT_BACKEND=azure
+# TFR_STORAGE_AZURE_ACCOUNT_NAME=
+# TFR_STORAGE_AZURE_ACCOUNT_KEY=
+# TFR_STORAGE_AZURE_CONTAINER_NAME=terraform-registry
+
+# Uncomment for GCS storage:
+# TFR_STORAGE_DEFAULT_BACKEND=gcs
+# TFR_STORAGE_GCS_BUCKET=terraform-registry
+# TFR_STORAGE_GCS_PROJECT_ID=
+
+# =============================================================================
+# Authentication
+# =============================================================================
+TFR_AUTH_API_KEYS_ENABLED=true
+TFR_AUTH_OIDC_ENABLED=false
+TFR_AUTH_AZURE_AD_ENABLED=false
+
+# Uncomment for OIDC:
+# TFR_AUTH_OIDC_ENABLED=true
+# TFR_AUTH_OIDC_ISSUER_URL=https://your-provider.com
+# TFR_AUTH_OIDC_CLIENT_ID=
+# TFR_AUTH_OIDC_CLIENT_SECRET=
+# TFR_AUTH_OIDC_REDIRECT_URL=https://registry.example.com/api/auth/callback/oidc
+
+# =============================================================================
+# Multi-tenancy
+# =============================================================================
+TFR_MULTI_TENANCY_ENABLED=false
+TFR_MULTI_TENANCY_DEFAULT_ORGANIZATION=default
+
+# =============================================================================
+# Logging & Telemetry
+# =============================================================================
+TFR_LOGGING_LEVEL=info
+TFR_LOGGING_FORMAT=json
+TFR_TELEMETRY_ENABLED=true
+TFR_TELEMETRY_METRICS_ENABLED=true
+TFR_TELEMETRY_METRICS_PROMETHEUS_PORT=9090

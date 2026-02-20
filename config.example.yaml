@@ -1,0 +1,109 @@
+server:
+  host: 0.0.0.0
+  port: 8080
+  base_url: http://localhost:8080
+  read_timeout: 30s
+  write_timeout: 30s
+
+database:
+  host: localhost
+  port: 5432
+  name: terraform_registry
+  user: registry
+  password: ${DATABASE_PASSWORD}
+  ssl_mode: prefer
+  max_connections: 25
+
+storage:
+  default_backend: local  # Options: azure, s3, local
+
+  azure:
+    account_name: ${AZURE_STORAGE_ACCOUNT}
+    account_key: ${AZURE_STORAGE_KEY}
+    container_name: terraform-registry
+    cdn_url: ""  # Optional CDN URL for faster downloads
+
+  s3:
+    endpoint: https://s3.amazonaws.com
+    region: us-east-1
+    bucket: terraform-registry
+    access_key_id: ${AWS_ACCESS_KEY_ID}
+    secret_access_key: ${AWS_SECRET_ACCESS_KEY}
+
+  local:
+    base_path: ./storage
+    serve_directly: true  # Serve files directly instead of redirecting
+
+auth:
+  # API key authentication (recommended for CLI and automation)
+  api_keys:
+    enabled: true
+    prefix: "tfr_"  # All API keys will start with this prefix
+
+  # Generic OIDC provider (Okta, Auth0, Google, etc.)
+  oidc:
+    enabled: false
+    issuer_url: https://accounts.google.com
+    client_id: ${OIDC_CLIENT_ID}
+    client_secret: ${OIDC_CLIENT_SECRET}
+    redirect_url: http://localhost:8080/auth/callback
+    scopes:
+      - openid
+      - email
+      - profile
+
+  # Azure AD / Entra ID specific configuration
+  azure_ad:
+    enabled: false
+    tenant_id: ${AZURE_TENANT_ID}
+    client_id: ${AZURE_CLIENT_ID}
+    client_secret: ${AZURE_CLIENT_SECRET}
+    redirect_url: http://localhost:8080/auth/azure/callback
+
+multi_tenancy:
+  enabled: false  # Set to true for multi-organization support
+  default_organization: default
+  allow_public_signup: false  # Allow users to create organizations
+
+security:
+  cors:
+    allowed_origins:
+      - http://localhost:5173  # Vite dev server
+      - http://localhost:8080
+    allowed_methods:
+      - GET
+      - POST
+      - PUT
+      - DELETE
+      - OPTIONS
+
+  rate_limiting:
+    enabled: true
+    requests_per_minute: 60
+    burst: 10
+
+  tls:
+    enabled: false
+    cert_file: /etc/certs/tls.crt
+    key_file: /etc/certs/tls.key
+
+logging:
+  level: info  # Options: debug, info, warn, error
+  format: json  # Options: json, text
+  output: stdout  # Options: stdout, or file path like /var/log/registry.log
+
+telemetry:
+  enabled: true
+  service_name: terraform-registry
+
+  metrics:
+    enabled: true
+    prometheus_port: 9090
+
+  tracing:
+    enabled: false
+    jaeger_endpoint: http://jaeger:14268/api/traces
+
+  profiling:
+    enabled: false
+    port: 6060

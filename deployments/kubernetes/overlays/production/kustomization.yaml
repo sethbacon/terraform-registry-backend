@@ -1,0 +1,67 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: terraform-registry
+
+resources:
+  - ../../base
+  - hpa.yaml
+
+patches:
+  # Higher replica counts for production
+  - target:
+      kind: Deployment
+      name: backend
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 3
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: 250m
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: 256Mi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: "1"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: 1Gi
+  - target:
+      kind: Deployment
+      name: frontend
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2
+
+  # Production logging
+  - target:
+      kind: ConfigMap
+      name: terraform-registry-config
+    patch: |-
+      - op: replace
+        path: /data/TFR_LOGGING_LEVEL
+        value: warn
+      - op: replace
+        path: /data/TFR_SERVER_BASE_URL
+        value: "https://registry.example.com"
+
+  # Larger PVC for production
+  - target:
+      kind: PersistentVolumeClaim
+      name: terraform-registry-storage
+    patch: |-
+      - op: replace
+        path: /spec/resources/requests/storage
+        value: 50Gi
+
+# Pin image tags for production
+images:
+  - name: terraform-registry-backend
+    newName: your-registry.example.com/terraform-registry-backend
+    newTag: v0.1.0
+  - name: terraform-registry-frontend
+    newName: your-registry.example.com/terraform-registry-frontend
+    newTag: v0.1.0

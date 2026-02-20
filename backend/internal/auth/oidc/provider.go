@@ -1,0 +1,122 @@
+// Package oidc implements generic OpenID Connect authentication for the registry.
+// It handles OIDC service discovery, token exchange, and claims extraction.
+// Provider-specific behavior (Azure AD, GitHub, etc.) is handled by sub-packages or configuration.
+package oidc
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/terraform-registry/terraform-registry/internal/config"
+	"golang.org/x/oauth2"
+)
+
+// OIDCProvider wraps the generic OIDC provider
+type OIDCProvider struct {
+	verifier *oidc.IDTokenVerifier
+	config   *oauth2.Config
+	provider *oidc.Provider
+}
+
+// NewOIDCProvider initializes a new OIDC provider
+func NewOIDCProvider(cfg *config.OIDCConfig) (*OIDCProvider, error) {
+	if !cfg.Enabled {
+		return nil, fmt.Errorf("OIDC is not enabled")
+	}
+
+	if cfg.IssuerURL == "" {
+		return nil, fmt.Errorf("OIDC issuer URL is required")
+	}
+
+	if cfg.ClientID == "" {
+		return nil, fmt.Errorf("OIDC client ID is required")
+	}
+
+	if cfg.ClientSecret == "" {
+		return nil, fmt.Errorf("OIDC client secret is required")
+	}
+
+	ctx := context.Background()
+
+	// Initialize OIDC provider
+	provider, err := oidc.NewProvider(ctx, cfg.IssuerURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create OIDC provider: %w", err)
+	}
+
+	// Create ID token verifier
+	verifier := provider.Verifier(&oidc.Config{
+		ClientID: cfg.ClientID,
+	})
+
+	// Configure OAuth2
+	oauth2Config := &oauth2.Config{
+		ClientID:     cfg.ClientID,
+		ClientSecret: cfg.ClientSecret,
+		RedirectURL:  cfg.RedirectURL,
+		Endpoint:     provider.Endpoint(),
+		Scopes:       cfg.Scopes,
+	}
+
+	return &OIDCProvider{
+		verifier: verifier,
+		config:   oauth2Config,
+		provider: provider,
+	}, nil
+}
+
+// GetAuthURL returns the OAuth2 authorization URL
+func (p *OIDCProvider) GetAuthURL(state string) string {
+	return p.config.AuthCodeURL(state)
+}
+
+// ExchangeCode exchanges the authorization code for tokens
+func (p *OIDCProvider) ExchangeCode(ctx context.Context, code string) (*oauth2.Token, error) {
+	token, err := p.config.Exchange(ctx, code)
+	if err != nil {
+		return nil, fmt.Errorf("failed to exchange code for token: %w", err)
+	}
+
+	return token, nil
+}
+
+// VerifyIDToken verifies and extracts claims from the ID token
+func (p *OIDCProvider) VerifyIDToken(ctx context.Context, rawIDToken string) (*oidc.IDToken, error) {
+	idToken, err := p.verifier.Verify(ctx, rawIDToken)
+	if err != nil {
+		return nil, fmt.Errorf("failed to verify ID token: %w", err)
+	}
+
+	return idToken, nil
+}
+
+// ExtractUserInfo extracts user information from the ID token
+func (p *OIDCProvider) ExtractUserInfo(idToken *oidc.IDToken) (sub, email, name string, err error) {
+	// Standard claims
+	var claims struct {
+		Sub   string `json:"sub"`
+		Email string `json:"email"`
+		Name  string `json:"name"`
+	}
+
+	if err := idToken.Claims(&claims); err != nil {
+		return "", "", "", fmt.Errorf("failed to parse ID token claims: %w", err)
+	}
+
+	// Validate required fields
+	if claims.Sub == "" {
+		return "", "", "", fmt.Errorf("ID token missing 'sub' claim")
+	}
+
+	if claims.Email == "" {
+		return "", "", "", fmt.Errorf("ID token missing 'email' claim")
+	}
+
+	// Name is optional, use email if not provided
+	if claims.Name == "" {
+		claims.Name = claims.Email
+	}
+
+	return claims.Sub, claims.Email, claims.Name, nil
+}

@@ -1,0 +1,162 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, development ]
+  pull_request:
+    branches: [ main, development ]
+  workflow_dispatch: {}
+
+jobs:
+  backend-test:
+    name: Backend Tests & Quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ${{ github.workspace }}/backend/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Check go mod tidy
+        working-directory: backend
+        run: |
+          go mod tidy
+          if ! git diff --exit-code go.mod go.sum; then
+            echo "go.mod or go.sum is out of date — run 'go mod tidy' and commit the result"
+            exit 1
+          fi
+
+      - name: Build
+        working-directory: backend
+        run: go build ./...
+
+      - name: Vet
+        working-directory: backend
+        run: go vet ./...
+
+      - name: Install swag
+        run: |
+          mkdir -p $GITHUB_WORKSPACE/bin
+          export GOBIN="$GITHUB_WORKSPACE/bin"
+          go install github.com/swaggo/swag/cmd/swag@latest
+          echo "$GITHUB_WORKSPACE/bin" >> $GITHUB_PATH
+
+      - name: Swagger generation (check for diffs)
+        working-directory: backend
+        run: |
+          swag init -g cmd/server/main.go --outputTypes json
+          if ! git diff --exit-code docs/swagger.json; then
+            echo "Swagger JSON out-of-date. Regenerate and commit backend/docs/swagger.json"
+            git --no-pager diff -- docs/swagger.json || true
+            exit 1
+          fi
+
+      - name: Run Go tests (with coverage)
+        working-directory: backend
+        run: go test ./... -race -coverprofile=coverage.out -covermode=atomic
+
+      - name: Check coverage threshold
+        working-directory: backend
+        # Coverage targets follow a risk-based approach (Google / Graphite benchmarks):
+        #   - Security & core business logic (auth, middleware, repositories): target 85-95%
+        #   - APIs & handlers: target 75-85%
+        #   - Utilities & helpers: target 70-80%
+        #   - Overall floor: 65% (Google "acceptable"), goal 70% ("good for production")
+        # The threshold below is the hard CI floor; the build fails if coverage drops below it.
+        run: |
+          THRESHOLD=65
+          COVERAGE=$(go tool cover -func=coverage.out | grep "^total:" | awk '{print $3}' | tr -d '%')
+          echo "Coverage: ${COVERAGE}%  (threshold: ${THRESHOLD}%)"
+          awk -v cov="$COVERAGE" -v thr="$THRESHOLD" 'BEGIN {
+            if (cov + 0 < thr + 0) {
+              print "FAIL: " cov "% is below the " thr "% minimum threshold."
+              print "See docs/development.md for coverage guidelines and improvement targets."
+              exit 1
+            }
+            print "PASS: " cov "% meets the " thr "% threshold."
+          }'
+
+      - name: Upload Go coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-coverage
+          path: backend/coverage.out
+
+  gosec:
+    name: Security Scan (gosec)
+    runs-on: ubuntu-latest
+    # Run in parallel with backend-test — no dependency needed.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Install gosec
+        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+
+      - name: Run gosec
+        working-directory: backend
+        # Exclude findings documented as false positives in gosec-report.md:
+        # G101 generic secret pattern, G114 net/http.Serve, G304 file path construction (local storage),
+        # G110 zip decompression (deliberately configurable), G701 cast to int64, G117 html/template
+        run: |
+          gosec \
+            -exclude=G101,G114,G304,G110,G701,G117 \
+            -fmt=json \
+            -out=gosec-results.json \
+            ./... || true
+        continue-on-error: true
+
+      - name: Upload gosec results
+        uses: actions/upload-artifact@v4
+        with:
+          name: gosec-results
+          path: backend/gosec-results.json
+
+  docker-build:
+    name: Docker Build Smoke Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build backend Docker image
+        run: docker build -t terraform-registry-backend:ci backend/
+
+      - name: Verify image starts (health check smoke test)
+        run: |
+          # Start the container with DEV_MODE so it doesn't require a live database for the health probe.
+          docker run -d \
+            --name registry-smoke \
+            -e DEV_MODE=true \
+            -e TFR_DATABASE_HOST=nonexistent \
+            -p 18080:8080 \
+            terraform-registry-backend:ci || true
+          # Give it 5 seconds and check it didn't immediately crash.
+          sleep 5
+          STATUS=$(docker inspect --format='{{.State.Status}}' registry-smoke 2>/dev/null || echo "missing")
+          echo "Container status: $STATUS"
+          docker rm -f registry-smoke 2>/dev/null || true
+          # Container exits fast (can't connect to DB) — that is expected; we just want build
+          # to succeed, not crash at process startup. Status "exited" is acceptable here.
+          if [ "$STATUS" = "missing" ]; then
+            echo "Container never started — Docker build artifact broken"
+            exit 1
+          fi

@@ -1,0 +1,114 @@
+# Google Cloud Run service definition for Terraform Registry Backend
+# Deploy: gcloud run services replace backend-service.yaml --region=REGION
+#
+# Prerequisites:
+#   - Image pushed to Artifact Registry or GCR
+#   - Cloud SQL instance provisioned
+#   - Secrets created in Secret Manager
+#   - VPC connector created (for Cloud SQL private IP access)
+
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: terraform-registry-backend
+  labels:
+    app: terraform-registry
+    component: backend
+  annotations:
+    run.googleapis.com/ingress: internal-and-cloud-load-balancing
+    run.googleapis.com/launch-stage: GA
+spec:
+  template:
+    metadata:
+      annotations:
+        # Cloud SQL connection
+        run.googleapis.com/cloudsql-instances: PROJECT_ID:REGION:INSTANCE_NAME
+        # VPC connector for private networking
+        run.googleapis.com/vpc-access-connector: projects/PROJECT_ID/locations/REGION/connectors/CONNECTOR_NAME
+        run.googleapis.com/vpc-access-egress: private-ranges-only
+        # Scaling
+        autoscaling.knative.dev/minScale: "1"
+        autoscaling.knative.dev/maxScale: "10"
+        # Startup CPU boost
+        run.googleapis.com/startup-cpu-boost: "true"
+    spec:
+      containerConcurrency: 80
+      timeoutSeconds: 300
+      serviceAccountName: terraform-registry-backend@PROJECT_ID.iam.gserviceaccount.com
+      containers:
+        - image: REGION-docker.pkg.dev/PROJECT_ID/terraform-registry/backend:latest
+          ports:
+            - name: http1
+              containerPort: 8080
+          resources:
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          env:
+            - name: TFR_SERVER_HOST
+              value: "0.0.0.0"
+            - name: TFR_SERVER_PORT
+              value: "8080"
+            - name: TFR_SERVER_BASE_URL
+              value: "https://registry.example.com"
+            - name: TFR_DATABASE_PORT
+              value: "5432"
+            - name: TFR_DATABASE_NAME
+              value: "terraform_registry"
+            - name: TFR_DATABASE_USER
+              value: "registry"
+            - name: TFR_DATABASE_SSL_MODE
+              value: "disable"
+            # Cloud SQL uses Unix socket, so host is the socket path
+            - name: TFR_DATABASE_HOST
+              value: "/cloudsql/PROJECT_ID:REGION:INSTANCE_NAME"
+            - name: TFR_DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: terraform-registry-db-password
+                  key: latest
+            - name: TFR_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: terraform-registry-jwt-secret
+                  key: latest
+            - name: ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: terraform-registry-encryption-key
+                  key: latest
+            - name: TFR_SECURITY_TLS_ENABLED
+              value: "false"
+            - name: TFR_STORAGE_DEFAULT_BACKEND
+              value: "gcs"
+            - name: TFR_STORAGE_GCS_BUCKET
+              value: "terraform-registry-storage"
+            - name: TFR_STORAGE_GCS_PROJECT_ID
+              value: "PROJECT_ID"
+            - name: TFR_AUTH_API_KEYS_ENABLED
+              value: "true"
+            - name: TFR_LOGGING_LEVEL
+              value: "info"
+            - name: TFR_LOGGING_FORMAT
+              value: "json"
+            - name: TFR_TELEMETRY_ENABLED
+              value: "true"
+            - name: TFR_TELEMETRY_METRICS_ENABLED
+              value: "true"
+            - name: TFR_TELEMETRY_METRICS_PROMETHEUS_PORT
+              value: "9090"
+            - name: DEV_MODE
+              value: "false"
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30

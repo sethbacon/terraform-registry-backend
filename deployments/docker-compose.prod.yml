@@ -1,0 +1,61 @@
+# Production overrides for Docker Compose
+# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Prerequisites:
+#   1. Copy .env.production.example to .env.production and fill in secrets
+#   2. Build or pull production images
+#   3. Place a reverse proxy (Traefik, Caddy, nginx) in front for TLS termination
+
+services:
+  postgres:
+    # Remove external port exposure in production
+    ports: []
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1G
+
+  backend:
+    # Use pre-built image in production (override build context)
+    image: ${REGISTRY_IMAGE:-terraform-registry-backend}:${REGISTRY_TAG:-latest}
+    env_file:
+      - .env.production
+    environment:
+      DEV_MODE: "false"
+      TFR_SECURITY_TLS_ENABLED: "false"
+      TFR_SERVER_PORT: "8080"
+      TFR_LOGGING_LEVEL: warn
+      TFR_LOGGING_FORMAT: json
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    volumes:
+      - storage_data:/app/storage
+      # Remove cert mount - TLS terminated at reverse proxy
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1G
+      restart_policy:
+        condition: on-failure
+        max_attempts: 5
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  frontend:
+    image: ${FRONTEND_IMAGE:-terraform-registry-frontend}:${REGISTRY_TAG:-latest}
+    ports:
+      - "80:80"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M

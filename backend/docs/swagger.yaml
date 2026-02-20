@@ -1,0 +1,553 @@
+basePath: /
+definitions:
+  admin.CreateAPIKeyRequest:
+    properties:
+      description:
+        type: string
+      expires_at:
+        description: RFC3339 format
+        type: string
+      name:
+        type: string
+      organization_id:
+        type: string
+      scopes:
+        items:
+          type: string
+        type: array
+    required:
+    - name
+    - organization_id
+    - scopes
+    type: object
+  admin.CreateAPIKeyResponse:
+    properties:
+      created_at:
+        type: string
+      description:
+        type: string
+      expires_at:
+        type: string
+      id:
+        type: string
+      key:
+        description: Only returned once during creation
+        type: string
+      key_prefix:
+        type: string
+      name:
+        type: string
+      scopes:
+        items:
+          type: string
+        type: array
+    type: object
+  admin.DashboardStats:
+    properties:
+      downloads:
+        type: integer
+      modules:
+        $ref: '#/definitions/admin.ModuleStats'
+      organizations:
+        type: integer
+      providers:
+        $ref: '#/definitions/admin.ProviderStats'
+      scm_providers:
+        type: integer
+      users:
+        type: integer
+    type: object
+  admin.ModuleStats:
+    properties:
+      total:
+        type: integer
+    type: object
+  admin.ProviderStats:
+    properties:
+      manual:
+        type: integer
+      manual_versions:
+        type: integer
+      mirrored:
+        type: integer
+      mirrored_versions:
+        type: integer
+      total:
+        type: integer
+      total_versions:
+        type: integer
+    type: object
+  admin.RotateAPIKeyRequest:
+    properties:
+      grace_period_hours:
+        description: GracePeriodHours is how long the old key should remain valid
+          (0 = immediate revocation)
+        type: integer
+    type: object
+  admin.RotateAPIKeyResponse:
+    properties:
+      new_key:
+        $ref: '#/definitions/admin.CreateAPIKeyResponse'
+      old_expires_at:
+        type: string
+      old_key_status:
+        description: '"revoked" or "expires_at"'
+        type: string
+    type: object
+info:
+  contact:
+    email: support@example.com
+    name: Support
+  description: Complete Terraform Module and Provider Registry with SCM integration,
+    mirrors, and storage backends
+  license:
+    name: MPL-2.0
+  termsOfService: https://registry.terraform.io/terms
+  title: Terraform Registry API
+  version: 1.0.0
+paths:
+  /api/v1/admin/stats/dashboard:
+    get:
+      description: Returns aggregated statistics for the admin dashboard
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/admin.DashboardStats'
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get dashboard statistics
+      tags:
+      - admin
+  /api/v1/apikeys:
+    get:
+      consumes:
+      - application/json
+      description: List API keys with optional filtering by organization. Users with
+        api_keys:manage scope can view all keys in an organization, otherwise only
+        their own keys are visible.
+      parameters:
+      - description: Filter by organization ID (optional)
+        in: query
+        name: organization_id
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: List of API keys
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized - user not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: List API keys
+      tags:
+      - API Keys
+    post:
+      consumes:
+      - application/json
+      description: Create a new API key with specified scopes. The full API key is
+        only returned once during creation.
+      parameters:
+      - description: API key creation request
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/admin.CreateAPIKeyRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: API key created successfully (full key returned once)
+          schema:
+            $ref: '#/definitions/admin.CreateAPIKeyResponse'
+        "400":
+          description: Invalid request or scopes
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized - user not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Forbidden - no role or scopes exceed permissions
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Create API key
+      tags:
+      - API Keys
+  /api/v1/apikeys/{id}:
+    delete:
+      consumes:
+      - application/json
+      description: Delete a specific API key by ID. Users can only delete their own
+        keys unless they have admin scope.
+      parameters:
+      - description: API key ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Deletion confirmation
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized - user not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Forbidden - access denied to this key
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: API key not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Delete API key
+      tags:
+      - API Keys
+    get:
+      consumes:
+      - application/json
+      description: Retrieve a specific API key by ID. Users can only access their
+        own keys unless they have admin scope.
+      parameters:
+      - description: API key ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: API key details
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized - user not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Forbidden - access denied to this key
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: API key not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Get API key
+      tags:
+      - API Keys
+    put:
+      consumes:
+      - application/json
+      description: Update an API key's name, scopes, or expiration. Users can only
+        update their own keys unless they have admin scope.
+      parameters:
+      - description: API key ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Update request with optional name, scopes, and expires_at fields
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Updated API key details
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request or scopes
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized - user not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Forbidden - access denied or scopes exceed permissions
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: API key not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Update API key
+      tags:
+      - API Keys
+  /api/v1/apikeys/{id}/rotate:
+    post:
+      consumes:
+      - application/json
+      description: Rotate an API key by creating a new key and optionally scheduling
+        the old key's expiration. Users can only rotate their own keys unless they
+        have admin scope.
+      parameters:
+      - description: API key ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Rotation request with optional grace period (0-72 hours)
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/admin.RotateAPIKeyRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: New API key and old key status
+          schema:
+            $ref: '#/definitions/admin.RotateAPIKeyResponse'
+        "400":
+          description: Invalid grace period (must be 0-72 hours)
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized - user not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Forbidden - access denied to this key
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: API key not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Rotate API key
+      tags:
+      - API Keys
+  /api/v1/auth/callback:
+    get:
+      consumes:
+      - application/json
+      description: Handles the callback from OAuth provider after user authorizes.
+        Internal endpoint - automatically redirected to by OAuth provider.
+      parameters:
+      - description: Authorization code from OAuth provider
+        in: query
+        name: code
+        required: true
+        type: string
+      - description: State parameter for CSRF validation
+        in: query
+        name: state
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "301":
+          description: Redirects to frontend with auth token in URL
+          schema:
+            type: string
+        "400":
+          description: Invalid state or authorization code
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Failed to exchange code for token
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Database or internal error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: OAuth callback handler
+      tags:
+      - Authentication
+  /api/v1/auth/login:
+    get:
+      consumes:
+      - application/json
+      description: Redirect user to OAuth provider (OIDC or Azure AD) to begin authentication
+        flow
+      parameters:
+      - description: 'OAuth provider: oidc or azuread (default: oidc)'
+        in: query
+        name: provider
+        type: string
+      produces:
+      - application/json
+      responses:
+        "302":
+          description: Redirects to OAuth provider authorization URL
+          schema:
+            type: string
+        "400":
+          description: Invalid provider or provider not configured
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Failed to generate state or internal error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Initiate OAuth login
+      tags:
+      - Authentication
+  /api/v1/auth/me:
+    get:
+      consumes:
+      - application/json
+      description: Retrieve information about the currently authenticated user, including
+        organization memberships and role templates
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Current user information with memberships and role templates
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized - user not authenticated
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: User not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Get current user
+      tags:
+      - Authentication
+  /api/v1/auth/refresh:
+    post:
+      consumes:
+      - application/json
+      description: Exchange existing JWT token for a fresh one with extended expiration
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: New JWT token with extended expiration
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized - invalid or missing token
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal error during token generation
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Refresh JWT token
+      tags:
+      - Authentication
+schemes:
+- http
+- https
+securityDefinitions:
+  Bearer:
+    description: '"JWT token or API key. For JWT: ''Bearer {token}''. For API Key:
+      ''Bearer {api_key}''"'
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"

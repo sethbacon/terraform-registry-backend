@@ -1,0 +1,71 @@
+{
+  "family": "terraform-registry-backend",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/terraform-registry-execution-role",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/terraform-registry-task-role",
+  "containerDefinitions": [
+    {
+      "name": "backend",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/terraform-registry-backend:latest",
+      "essential": true,
+      "portMappings": [
+        { "containerPort": 8080, "protocol": "tcp" },
+        { "containerPort": 9090, "protocol": "tcp" }
+      ],
+      "environment": [
+        { "name": "TFR_SERVER_HOST", "value": "0.0.0.0" },
+        { "name": "TFR_SERVER_PORT", "value": "8080" },
+        { "name": "TFR_SERVER_BASE_URL", "value": "https://registry.example.com" },
+        { "name": "TFR_DATABASE_PORT", "value": "5432" },
+        { "name": "TFR_DATABASE_NAME", "value": "terraform_registry" },
+        { "name": "TFR_DATABASE_USER", "value": "registry" },
+        { "name": "TFR_DATABASE_SSL_MODE", "value": "require" },
+        { "name": "TFR_SECURITY_TLS_ENABLED", "value": "false" },
+        { "name": "TFR_STORAGE_DEFAULT_BACKEND", "value": "s3" },
+        { "name": "TFR_AUTH_API_KEYS_ENABLED", "value": "true" },
+        { "name": "TFR_LOGGING_LEVEL", "value": "info" },
+        { "name": "TFR_LOGGING_FORMAT", "value": "json" },
+        { "name": "TFR_TELEMETRY_ENABLED", "value": "true" },
+        { "name": "TFR_TELEMETRY_METRICS_ENABLED", "value": "true" },
+        { "name": "TFR_TELEMETRY_METRICS_PROMETHEUS_PORT", "value": "9090" },
+        { "name": "DEV_MODE", "value": "false" }
+      ],
+      "secrets": [
+        {
+          "name": "TFR_DATABASE_HOST",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:terraform-registry/database-host"
+        },
+        {
+          "name": "TFR_DATABASE_PASSWORD",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:terraform-registry/database-password"
+        },
+        {
+          "name": "TFR_JWT_SECRET",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:terraform-registry/jwt-secret"
+        },
+        {
+          "name": "ENCRYPTION_KEY",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:terraform-registry/encryption-key"
+        }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 10
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/terraform-registry-backend",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "backend"
+        }
+      }
+    }
+  ]
+}

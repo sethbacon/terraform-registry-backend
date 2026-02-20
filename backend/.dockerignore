@@ -1,0 +1,46 @@
+# Git
+.git
+.gitignore
+
+# Documentation
+*.md
+# Exclude generated swagger output; embed.go (the Go source) must be included
+# so the docs package exists locally when go mod tidy runs.
+docs/
+!docs/embed.go
+
+# Development files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build artifacts
+terraform-registry
+*.exe
+*.test
+*.out
+
+# Test files
+*_test.go
+testdata/
+
+# Configuration (will be mounted)
+config.yaml
+config.yml
+*.env
+
+# Storage (will be mounted)
+storage/
+data/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+
+# Logs
+*.log
+logs/
