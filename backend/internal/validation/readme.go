@@ -10,8 +10,10 @@ import (
 	"strings"
 )
 
-// ExtractReadme extracts README content from a tarball
-// Looks for README.md, README.txt, README, or readme.md files in the root
+// ExtractReadme extracts README content from a tarball.
+// Looks for README.md, README.txt, README, or readme.md files in the root.
+// When multiple candidates are present, the one with the highest priority in
+// the readmeNames list is returned (README.md wins over README, etc.).
 func ExtractReadme(archiveReader io.Reader) (string, error) {
 	// Create gzip reader
 	gzReader, err := gzip.NewReader(archiveReader)
@@ -23,8 +25,13 @@ func ExtractReadme(archiveReader io.Reader) (string, error) {
 	// Create tar reader
 	tarReader := tar.NewReader(gzReader)
 
-	// Look for README file in root directory
+	// Priority-ordered list: index 0 = highest priority.
 	readmeNames := []string{"README.md", "readme.md", "README.MD", "README", "readme", "README.txt", "readme.txt"}
+
+	// Collect all README candidates keyed by their priority index so we can
+	// return the highest-priority one after scanning the full archive.
+	const maxReadmeSize = 1024 * 1024
+	candidates := make(map[int]string) // priority → content
 
 	for {
 		header, err := tarReader.Next()
@@ -50,22 +57,28 @@ func ExtractReadme(archiveReader io.Reader) (string, error) {
 			continue
 		}
 
-		// Check if this is a README file
-		for _, readmeName := range readmeNames {
+		// Check if this is a README file and record it with its priority
+		for priority, readmeName := range readmeNames {
 			if strings.EqualFold(fileName, readmeName) {
-				// Found README, read its contents
-				// Limit README size to 1MB
-				const maxReadmeSize = 1024 * 1024
-				limited := io.LimitReader(tarReader, maxReadmeSize)
-				content, err := io.ReadAll(limited)
-				if err != nil {
-					return "", fmt.Errorf("failed to read README content: %w", err)
+				if _, already := candidates[priority]; !already {
+					limited := io.LimitReader(tarReader, maxReadmeSize)
+					content, err := io.ReadAll(limited)
+					if err != nil {
+						return "", fmt.Errorf("failed to read README content: %w", err)
+					}
+					candidates[priority] = string(content)
 				}
-				return string(content), nil
+				break
 			}
 		}
 	}
 
-	// No README found
+	// Return the highest-priority candidate (lowest index in readmeNames).
+	for priority := range readmeNames {
+		if content, ok := candidates[priority]; ok {
+			return content, nil
+		}
+	}
+
 	return "", nil
 }
