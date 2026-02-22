@@ -9,7 +9,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.1.2] - 2026-02-20
+## [1.0.1] - 2026-02-21
+
+### Added
+
+- **Deployment config validation CI job** — `.github/workflows/ci.yml`: new `deployment-validate`
+  job validates all three Docker Compose files, Helm chart (`helm lint`), both Kustomize overlays
+  (`kubectl kustomize`), and Terraform configs for AWS, Azure, and GCP (`terraform validate`).
+
+- **Deployment configs release asset** — `.github/workflows/release.yml`: packages all files under
+  `deployments/` as `deployment-configs-<version>.tar.gz` and attaches it to the GitHub Release.
+
+- **Repo-split deployment infrastructure** — updated all deployment configs to reflect the
+  backend/frontend split:
+  - `docker-compose.test.yml`: healthchecks, `seed-db` service, `ENCRYPTION_KEY`,
+    `TFR_DATABASE_SSL_MODE=disable`; removed `5433` port binding
+  - `docker-compose.prod.yml`: image defaults qualified to `ghcr.io/sethbacon/`
+  - `deployments/create-dev-admin-user.sql`: copied from `backend/scripts/` for compose use
+  - Helm `values.yaml`, Kubernetes base manifests, production kustomization: image refs
+    qualified to `ghcr.io/sethbacon/terraform-registry-backend` and `…-frontend`
+  - GCR `deploy.sh`: pull-from-ghcr pattern rather than building locally
+  - `deployments/aws-ecs/task-definition-frontend.json`: removed (frontend is a separate repo)
+
+### Fixed
+
+- **`docker-compose.prod.yml` validated as overlay** — compose config step now runs
+  `docker compose -f docker-compose.yml -f docker-compose.prod.yml config` since the prod file
+  is an overlay that inherits the `volumes:` block from the base file.
+
+- **Missing `.env.production` during CI compose config** — touch a stub `.env.production` before
+  running `docker compose config` so the `env_file` directive does not fail in CI.
+
+- **Azure Terraform provider version** — `deployments/terraform/azure/main.tf`: bumped constraint
+  from `~> 3.80` to `>= 4.0`; `azurerm_storage_container.storage_account_id` is a v4-only
+  attribute and v3.x only has `storage_account_name`.
+
+- **AWS and GCP Terraform provider versions** — relaxed `~> 5.0` to `>= 5.0` for both
+  `hashicorp/aws` and `hashicorp/google` so the deployment-validate job is not capped at a
+  specific minor series.
+
+### Changed
+
+- **`docs/deployment.md`**: added "Repository Structure & Docker Images" section with
+  `ghcr.io/sethbacon/` pull commands; updated AWS ECS, standalone binary, and migration
+  sections to reference published images instead of local builds.
+
+- **`.github/copilot-instructions.md`**: synced from `CLAUDE.md` (backend-scoped).
+
+- **`README.md`**: added Immutable Publishing, Module README Support, and Enhanced Mirror RBAC
+  feature bullets.
+
+
 
 ### Added
 
