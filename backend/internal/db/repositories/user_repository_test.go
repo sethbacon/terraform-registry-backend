@@ -406,6 +406,10 @@ func TestGetOrCreateUserFromOIDC_NewUser(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM users.*WHERE oidc_sub").
 		WithArgs("sub-new").
 		WillReturnRows(emptyUserRow())
+	// Email lookup also finds no user (no pre-provisioned user)
+	mock.ExpectQuery("SELECT.*FROM users.*WHERE email").
+		WithArgs("new@example.com").
+		WillReturnRows(emptyUserRow())
 	// CreateUser
 	mock.ExpectExec("INSERT INTO users").
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -547,6 +551,10 @@ func TestGetOrCreateUserByOIDC_NewUser(t *testing.T) {
 	repo, mock := newUserRepo(t)
 	// GetUserByOIDCSub returns no rows
 	mock.ExpectQuery("SELECT.*FROM users WHERE oidc_sub").
+		WillReturnRows(sqlmock.NewRows(userCols))
+	// Email lookup also finds no user (no pre-provisioned user)
+	mock.ExpectQuery("SELECT.*FROM users.*WHERE email").
+		WithArgs("new@example.com").
 		WillReturnRows(sqlmock.NewRows(userCols))
 	// CreateUser
 	mock.ExpectExec("INSERT INTO users").

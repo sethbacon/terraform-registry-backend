@@ -226,6 +226,25 @@ func (r *UserRepository) GetOrCreateUserFromOIDC(ctx context.Context, oidcSub, e
 		return user, nil
 	}
 
+	// No user found by OIDC sub — check for a pre-provisioned user by email.
+	// The setup wizard creates a user record with email but no oidc_sub.
+	// On first OIDC login, we link the OIDC identity to that pre-provisioned user
+	// so they inherit the admin role and org membership set up during the wizard.
+	emailUser, err := r.GetUserByEmail(ctx, email)
+	if err != nil {
+		return nil, err
+	}
+
+	if emailUser != nil && emailUser.OIDCSub == nil {
+		// Pre-provisioned user found — link OIDC identity
+		emailUser.OIDCSub = &oidcSub
+		emailUser.Name = name
+		if err := r.UpdateUser(ctx, emailUser); err != nil {
+			return nil, err
+		}
+		return emailUser, nil
+	}
+
 	// User doesn't exist, create new one
 	newUser := &models.User{
 		Email:   email,

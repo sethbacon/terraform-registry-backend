@@ -11,12 +11,16 @@ import (
 
 // SystemSettings holds global system settings (singleton)
 type SystemSettings struct {
-	ID                   int            `db:"id" json:"id"`
-	StorageConfigured    bool           `db:"storage_configured" json:"storage_configured"`
-	StorageConfiguredAt  sql.NullTime   `db:"storage_configured_at" json:"storage_configured_at,omitempty"`
-	StorageConfiguredBy  uuid.NullUUID  `db:"storage_configured_by" json:"storage_configured_by,omitempty"`
-	CreatedAt            time.Time      `db:"created_at" json:"created_at"`
-	UpdatedAt            time.Time      `db:"updated_at" json:"updated_at"`
+	ID                  int            `db:"id" json:"id"`
+	StorageConfigured   bool           `db:"storage_configured" json:"storage_configured"`
+	StorageConfiguredAt sql.NullTime   `db:"storage_configured_at" json:"storage_configured_at,omitempty"`
+	StorageConfiguredBy uuid.NullUUID  `db:"storage_configured_by" json:"storage_configured_by,omitempty"`
+	SetupCompleted      bool           `db:"setup_completed" json:"setup_completed"`
+	SetupTokenHash      sql.NullString `db:"setup_token_hash" json:"-"` // Never expose
+	OIDCConfigured      bool           `db:"oidc_configured" json:"oidc_configured"`
+	PendingAdminEmail   sql.NullString `db:"pending_admin_email" json:"pending_admin_email,omitempty"`
+	CreatedAt           time.Time      `db:"created_at" json:"created_at"`
+	UpdatedAt           time.Time      `db:"updated_at" json:"updated_at"`
 }
 
 // StorageConfig holds storage backend configuration
@@ -26,34 +30,34 @@ type StorageConfig struct {
 	IsActive    bool      `db:"is_active" json:"is_active"`
 
 	// Local storage settings
-	LocalBasePath       sql.NullString `db:"local_base_path" json:"local_base_path,omitempty"`
-	LocalServeDirectly  sql.NullBool   `db:"local_serve_directly" json:"local_serve_directly,omitempty"`
+	LocalBasePath      sql.NullString `db:"local_base_path" json:"local_base_path,omitempty"`
+	LocalServeDirectly sql.NullBool   `db:"local_serve_directly" json:"local_serve_directly,omitempty"`
 
 	// Azure Blob Storage settings
-	AzureAccountName        sql.NullString `db:"azure_account_name" json:"azure_account_name,omitempty"`
+	AzureAccountName         sql.NullString `db:"azure_account_name" json:"azure_account_name,omitempty"`
 	AzureAccountKeyEncrypted sql.NullString `db:"azure_account_key_encrypted" json:"-"` // Never expose in JSON
-	AzureContainerName      sql.NullString `db:"azure_container_name" json:"azure_container_name,omitempty"`
-	AzureCDNURL             sql.NullString `db:"azure_cdn_url" json:"azure_cdn_url,omitempty"`
+	AzureContainerName       sql.NullString `db:"azure_container_name" json:"azure_container_name,omitempty"`
+	AzureCDNURL              sql.NullString `db:"azure_cdn_url" json:"azure_cdn_url,omitempty"`
 
 	// S3 settings
-	S3Endpoint                  sql.NullString `db:"s3_endpoint" json:"s3_endpoint,omitempty"`
-	S3Region                    sql.NullString `db:"s3_region" json:"s3_region,omitempty"`
-	S3Bucket                    sql.NullString `db:"s3_bucket" json:"s3_bucket,omitempty"`
-	S3AuthMethod                sql.NullString `db:"s3_auth_method" json:"s3_auth_method,omitempty"`
-	S3AccessKeyIDEncrypted      sql.NullString `db:"s3_access_key_id_encrypted" json:"-"` // Never expose
-	S3SecretAccessKeyEncrypted  sql.NullString `db:"s3_secret_access_key_encrypted" json:"-"` // Never expose
-	S3RoleARN                   sql.NullString `db:"s3_role_arn" json:"s3_role_arn,omitempty"`
-	S3RoleSessionName           sql.NullString `db:"s3_role_session_name" json:"s3_role_session_name,omitempty"`
-	S3ExternalID                sql.NullString `db:"s3_external_id" json:"s3_external_id,omitempty"`
-	S3WebIdentityTokenFile      sql.NullString `db:"s3_web_identity_token_file" json:"s3_web_identity_token_file,omitempty"`
+	S3Endpoint                 sql.NullString `db:"s3_endpoint" json:"s3_endpoint,omitempty"`
+	S3Region                   sql.NullString `db:"s3_region" json:"s3_region,omitempty"`
+	S3Bucket                   sql.NullString `db:"s3_bucket" json:"s3_bucket,omitempty"`
+	S3AuthMethod               sql.NullString `db:"s3_auth_method" json:"s3_auth_method,omitempty"`
+	S3AccessKeyIDEncrypted     sql.NullString `db:"s3_access_key_id_encrypted" json:"-"`     // Never expose
+	S3SecretAccessKeyEncrypted sql.NullString `db:"s3_secret_access_key_encrypted" json:"-"` // Never expose
+	S3RoleARN                  sql.NullString `db:"s3_role_arn" json:"s3_role_arn,omitempty"`
+	S3RoleSessionName          sql.NullString `db:"s3_role_session_name" json:"s3_role_session_name,omitempty"`
+	S3ExternalID               sql.NullString `db:"s3_external_id" json:"s3_external_id,omitempty"`
+	S3WebIdentityTokenFile     sql.NullString `db:"s3_web_identity_token_file" json:"s3_web_identity_token_file,omitempty"`
 
 	// GCS settings
-	GCSBucket                  sql.NullString `db:"gcs_bucket" json:"gcs_bucket,omitempty"`
-	GCSProjectID               sql.NullString `db:"gcs_project_id" json:"gcs_project_id,omitempty"`
-	GCSAuthMethod              sql.NullString `db:"gcs_auth_method" json:"gcs_auth_method,omitempty"`
-	GCSCredentialsFile         sql.NullString `db:"gcs_credentials_file" json:"gcs_credentials_file,omitempty"`
+	GCSBucket                   sql.NullString `db:"gcs_bucket" json:"gcs_bucket,omitempty"`
+	GCSProjectID                sql.NullString `db:"gcs_project_id" json:"gcs_project_id,omitempty"`
+	GCSAuthMethod               sql.NullString `db:"gcs_auth_method" json:"gcs_auth_method,omitempty"`
+	GCSCredentialsFile          sql.NullString `db:"gcs_credentials_file" json:"gcs_credentials_file,omitempty"`
 	GCSCredentialsJSONEncrypted sql.NullString `db:"gcs_credentials_json_encrypted" json:"-"` // Never expose
-	GCSEndpoint                sql.NullString `db:"gcs_endpoint" json:"gcs_endpoint,omitempty"`
+	GCSEndpoint                 sql.NullString `db:"gcs_endpoint" json:"gcs_endpoint,omitempty"`
 
 	// Metadata
 	CreatedAt time.Time     `db:"created_at" json:"created_at"`
@@ -81,7 +85,7 @@ type StorageConfigInput struct {
 	S3Region               string `json:"s3_region,omitempty"`
 	S3Bucket               string `json:"s3_bucket,omitempty"`
 	S3AuthMethod           string `json:"s3_auth_method,omitempty"`
-	S3AccessKeyID          string `json:"s3_access_key_id,omitempty"` // Plain text input
+	S3AccessKeyID          string `json:"s3_access_key_id,omitempty"`     // Plain text input
 	S3SecretAccessKey      string `json:"s3_secret_access_key,omitempty"` // Plain text input
 	S3RoleARN              string `json:"s3_role_arn,omitempty"`
 	S3RoleSessionName      string `json:"s3_role_session_name,omitempty"`

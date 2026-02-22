@@ -19,8 +19,14 @@ type OIDCProvider struct {
 	provider *oidc.Provider
 }
 
-// NewOIDCProvider initializes a new OIDC provider
+// NewOIDCProvider initializes a new OIDC provider using a background context.
 func NewOIDCProvider(cfg *config.OIDCConfig) (*OIDCProvider, error) {
+	return NewOIDCProviderWithContext(context.Background(), cfg)
+}
+
+// NewOIDCProviderWithContext initializes a new OIDC provider with the given context,
+// allowing callers to set deadlines or cancellation for the OIDC discovery request.
+func NewOIDCProviderWithContext(ctx context.Context, cfg *config.OIDCConfig) (*OIDCProvider, error) {
 	if !cfg.Enabled {
 		return nil, fmt.Errorf("OIDC is not enabled")
 	}
@@ -36,8 +42,6 @@ func NewOIDCProvider(cfg *config.OIDCConfig) (*OIDCProvider, error) {
 	if cfg.ClientSecret == "" {
 		return nil, fmt.Errorf("OIDC client secret is required")
 	}
-
-	ctx := context.Background()
 
 	// Initialize OIDC provider
 	provider, err := oidc.NewProvider(ctx, cfg.IssuerURL)

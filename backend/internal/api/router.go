@@ -35,8 +35,10 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/api/mirror"
 	"github.com/terraform-registry/terraform-registry/internal/api/modules"
 	"github.com/terraform-registry/terraform-registry/internal/api/providers"
+	"github.com/terraform-registry/terraform-registry/internal/api/setup"
 	"github.com/terraform-registry/terraform-registry/internal/api/webhooks"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
+	"github.com/terraform-registry/terraform-registry/internal/auth/oidc"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
@@ -82,6 +84,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) *gin.Engine {
 	scmRepo := repositories.NewSCMRepository(sqlxDB)
 	mirrorRepo := repositories.NewMirrorRepository(sqlxDB)
 	storageConfigRepo := repositories.NewStorageConfigRepository(sqlxDB)
+	oidcConfigRepo := repositories.NewOIDCConfigRepository(sqlxDB)
 
 	// Initialize mirror sync job
 	mirrorSyncJob := jobs.NewMirrorSyncJob(mirrorRepo, providerRepo, storageBackend, cfg.Storage.DefaultBackend)
@@ -302,6 +305,34 @@ func NewRouter(cfg *config.Config, db *sql.DB) *gin.Engine {
 	if err != nil {
 		log.Fatalf("Failed to initialize auth handlers: %v", err)
 	}
+
+	// Load OIDC configuration from database if available (setup wizard stores config in DB).
+	// This takes precedence over static config file settings and allows OIDC to work
+	// without requiring config.yaml to have OIDC settings pre-configured.
+	if activeOIDCCfg, oidcErr := oidcConfigRepo.GetActiveOIDCConfig(context.Background()); oidcErr == nil && activeOIDCCfg != nil {
+		// Decrypt the client secret
+		clientSecret, decErr := tokenCipher.Open(activeOIDCCfg.ClientSecretEncrypted)
+		if decErr != nil {
+			slog.Error("Failed to decrypt OIDC client secret from database", "error", decErr)
+		} else {
+			liveCfg := &config.OIDCConfig{
+				Enabled:      true,
+				IssuerURL:    activeOIDCCfg.IssuerURL,
+				ClientID:     activeOIDCCfg.ClientID,
+				ClientSecret: clientSecret,
+				RedirectURL:  activeOIDCCfg.RedirectURL,
+				Scopes:       activeOIDCCfg.GetScopes(),
+			}
+			provider, provErr := oidc.NewOIDCProvider(liveCfg)
+			if provErr != nil {
+				slog.Error("Failed to initialize OIDC provider from database config", "error", provErr, "issuer", activeOIDCCfg.IssuerURL)
+			} else {
+				authHandlers.SetOIDCProvider(provider)
+				slog.Info("OIDC provider loaded from database configuration", "issuer", activeOIDCCfg.IssuerURL)
+			}
+		}
+	}
+
 	apiKeyHandlers := admin.NewAPIKeyHandlers(cfg, db)
 	userHandlers := admin.NewUserHandlers(cfg, db)
 	orgHandlers := admin.NewOrganizationHandlers(cfg, db)
@@ -326,6 +357,11 @@ func NewRouter(cfg *config.Config, db *sql.DB) *gin.Engine {
 	// Initialize storage configuration handlers
 	storageHandlers := admin.NewStorageHandlers(cfg, storageConfigRepo, tokenCipher)
 
+	// Initialize setup wizard handlers
+	setupHandlers := setup.NewHandlers(
+		cfg, tokenCipher, oidcConfigRepo, storageConfigRepo, userRepo, orgRepo, authHandlers,
+	)
+
 	// Initialize SCM webhook handler
 	scmWebhookHandler := webhooks.NewSCMWebhookHandler(scmRepo, scmPublisher)
 
@@ -337,9 +373,24 @@ func NewRouter(cfg *config.Config, db *sql.DB) *gin.Engine {
 	// Admin API endpoints
 	apiV1 := router.Group("/api/v1")
 	{
-		// Setup status endpoint (public, no auth required)
-		// This allows the frontend to check if initial setup is required
-		apiV1.GET("/setup/status", storageHandlers.GetSetupStatus)
+		// Enhanced setup status endpoint (public, no auth required)
+		// Returns OIDC, storage, and admin configuration status
+		apiV1.GET("/setup/status", setupHandlers.GetSetupStatus)
+
+		// Setup wizard endpoints (setup token auth, rate limited)
+		// These endpoints are available only during initial setup and are permanently
+		// disabled once setup is completed.
+		setupGroup := apiV1.Group("/setup")
+		setupGroup.Use(middleware.SetupTokenMiddleware(oidcConfigRepo))
+		{
+			setupGroup.POST("/validate-token", setupHandlers.ValidateToken)
+			setupGroup.POST("/oidc/test", setupHandlers.TestOIDCConfig)
+			setupGroup.POST("/oidc", setupHandlers.SaveOIDCConfig)
+			setupGroup.POST("/storage/test", setupHandlers.TestStorageConfig)
+			setupGroup.POST("/storage", setupHandlers.SaveStorageConfig)
+			setupGroup.POST("/admin", setupHandlers.ConfigureAdmin)
+			setupGroup.POST("/complete", setupHandlers.CompleteSetup)
+		}
 
 		// Public authentication endpoints (no auth required, but rate limited)
 		authGroup := apiV1.Group("/auth")

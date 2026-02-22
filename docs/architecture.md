@@ -14,6 +14,19 @@ Design goals: protocol correctness first, then security, then operational simpli
 
 ---
 
+## Repository Structure
+
+The project is split across two repositories:
+
+| Repository | Contents | Docker image |
+| --- | --- | --- |
+| [`terraform-registry-backend`](https://github.com/sethbacon/terraform-registry-backend) | Go backend, all deployment configs (Helm, K8s, Terraform IaC, cloud scripts) | `ghcr.io/sethbacon/terraform-registry-backend` |
+| [`terraform-registry-frontend`](https://github.com/sethbacon/terraform-registry-frontend) | React SPA, nginx, E2E tests | `ghcr.io/sethbacon/terraform-registry-frontend` |
+
+All deployment infrastructure lives in this (backend) repository. Frontend-only issues and the React source are tracked in `terraform-registry-frontend`.
+
+---
+
 ## Component Diagram
 
 ```txt

@@ -9,6 +9,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-02-22
+
+### Added
+
+- **Setup wizard API** (`backend/internal/api/setup/`) — new HTTP handler group that drives the
+  first-run configuration wizard, with endpoints for:
+  - `GET /api/v1/setup/status` — enhanced setup status including OIDC, storage, and admin state
+  - `POST /api/v1/setup/validate-token` — validates the one-time setup token
+  - `POST /api/v1/setup/oidc/test` — verifies OIDC provider reachability before saving
+  - `POST /api/v1/setup/oidc` — saves OIDC provider configuration to the database
+  - `POST /api/v1/setup/storage/test` — verifies storage backend connectivity before saving
+  - `POST /api/v1/setup/storage` — saves storage backend configuration to the database
+  - `POST /api/v1/setup/admin` — creates the initial admin user and records their pending email
+  - `POST /api/v1/setup/complete` — marks setup as complete
+
+- **Setup token middleware** (`backend/internal/middleware/setup.go`) — `SetupTokenMiddleware`
+  guards all setup endpoints with a `SetupToken <token>` Authorization scheme; verifies the
+  token against a bcrypt hash stored in the database; includes a per-IP rate limiter
+  (10 attempts per 15-minute window) to prevent brute-force attacks.
+
+- **Database migration: setup wizard** (`backend/internal/db/migrations/000003_setup_wizard`) —
+  extends `system_settings` with `setup_completed`, `setup_token_hash`, `oidc_configured`, and
+  `pending_admin_email` columns; adds an `oidc_config` table for OIDC provider configuration
+  with AES-256-GCM encrypted client secrets.
+
+- **`OIDCConfig` model** (`backend/internal/db/models/oidc_config.go`) — database model for
+  OIDC provider configuration with `ToResponse()` (omits encrypted secrets) and `GetScopes()`
+  helpers.
+
+- **`OIDCConfigRepository`** (`backend/internal/db/repositories/oidc_config_repository.go`) —
+  full CRUD for `oidc_config` rows plus system-settings helpers: `IsSetupCompleted`,
+  `SetSetupCompleted`, `GetSetupTokenHash`, `SetSetupTokenHash`, `IsOIDCConfigured`,
+  `SetOIDCConfigured`, `Set/Get/ClearPendingAdminEmail`, `GetEnhancedSetupStatus`, and
+  `ActivateOIDCConfig` (transactional deactivate-all + activate-one).
+
+- **Dynamic OIDC hot-swap** (`backend/internal/api/admin/auth.go`) — `AuthHandlers.SetOIDCProvider()`
+  atomically replaces the active OIDC provider at runtime via `sync/atomic.Pointer`, allowing
+  the setup wizard to activate a newly configured provider without a server restart.
+
+- **On-startup OIDC provider loading** (`backend/internal/api/router.go`) — the router reads any
+  active `oidc_config` row on startup and initialises the OIDC provider from it, so a
+  database-configured provider survives container restarts without changes to `config.yaml`.
+
+- **OIDC pre-provisioned user linking** (`backend/internal/db/repositories/user_repository.go`) —
+  `GetOrCreateUserFromOIDC` falls back to email-based lookup when no user matches the OIDC
+  subject; a pre-provisioned account created by the setup wizard is linked to the incoming OIDC
+  identity on first login, preserving the admin role and organisation membership.
+
+- **Initial Setup Guide** (`docs/initial-setup.md`) — end-to-end walk-through of the setup
+  wizard flow including token retrieval, wizard steps, and a curl-based headless procedure.
+
+- **Test coverage for new packages** — new test files bring all setup-wizard packages to ≥ 65%
+  statement coverage (CI threshold):
+  - `backend/internal/api/setup/handlers_test.go` — 35+ handler tests
+  - `backend/internal/middleware/setup_test.go` — 12 middleware tests
+  - `backend/internal/db/models/oidc_config_test.go` — 12 model tests
+  - `backend/internal/db/repositories/oidc_config_repository_test.go` — 30+ repository tests
+
+### Changed
+
+- **`SystemSettings` model** — extended with `setup_completed`, `setup_token_hash` (never
+  serialised to JSON), `oidc_configured`, and `pending_admin_email` fields to track wizard
+  progress.
+
+- **`GET /api/v1/setup/status`** — previously served by `StorageHandlers.GetSetupStatus`; now
+  served by `SetupHandlers.GetSetupStatus`, returning the full enhanced status object.
+
+- **`docs/architecture.md`** — added "Repository Structure" section with a table linking both
+  repos to their Docker image names on GHCR.
+
+- **`README.md`** — added "First-Run Setup" section describing the setup token flow and wizard
+  steps; links to the new `docs/initial-setup.md`.
+
 ## [1.0.1] - 2026-02-21
 
 ### Added

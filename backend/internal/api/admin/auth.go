@@ -6,7 +6,9 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
+	"log/slog"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -23,7 +25,7 @@ type AuthHandlers struct {
 	db              *sql.DB
 	userRepo        *repositories.UserRepository
 	orgRepo         *repositories.OrganizationRepository
-	oidcProvider    *oidc.OIDCProvider
+	oidcProvider    atomic.Pointer[oidc.OIDCProvider]
 	azureADProvider *azuread.AzureADProvider
 	sessionStore    map[string]*SessionState // In-memory for MVP; use Redis in production
 }
@@ -52,7 +54,7 @@ func NewAuthHandlers(cfg *config.Config, db *sql.DB) (*AuthHandlers, error) {
 		if err != nil {
 			return nil, err
 		}
-		h.oidcProvider = oidcProv
+		h.oidcProvider.Store(oidcProv)
 	}
 
 	// Initialize Azure AD provider if enabled
@@ -65,6 +67,14 @@ func NewAuthHandlers(cfg *config.Config, db *sql.DB) (*AuthHandlers, error) {
 	}
 
 	return h, nil
+}
+
+// SetOIDCProvider atomically swaps the active OIDC provider. This is used by
+// the setup wizard to activate a newly configured OIDC provider at runtime
+// without requiring a server restart.
+func (h *AuthHandlers) SetOIDCProvider(provider *oidc.OIDCProvider) {
+	h.oidcProvider.Store(provider)
+	slog.Info("OIDC provider swapped at runtime")
 }
 
 // generateState generates a random state string for OAuth
@@ -115,13 +125,14 @@ func (h *AuthHandlers) LoginHandler() gin.HandlerFunc {
 		var authURL string
 		switch provider {
 		case "oidc":
-			if h.oidcProvider == nil {
+			oidcProv := h.oidcProvider.Load()
+			if oidcProv == nil {
 				c.JSON(http.StatusBadRequest, gin.H{
 					"error": "OIDC provider not configured",
 				})
 				return
 			}
-			authURL = h.oidcProvider.GetAuthURL(state)
+			authURL = oidcProv.GetAuthURL(state)
 		case "azuread":
 			if h.azureADProvider == nil {
 				c.JSON(http.StatusBadRequest, gin.H{
@@ -190,7 +201,8 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 		// Exchange code for tokens based on provider
 		switch sessionState.ProviderType {
 		case "oidc":
-			if h.oidcProvider == nil {
+			oidcProv := h.oidcProvider.Load()
+			if oidcProv == nil {
 				c.JSON(http.StatusInternalServerError, gin.H{
 					"error": "OIDC provider not configured",
 				})
@@ -198,7 +210,7 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 			}
 
 			// Exchange code for token
-			token, err := h.oidcProvider.ExchangeCode(ctx, code)
+			token, err := oidcProv.ExchangeCode(ctx, code)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{
 					"error": "Failed to exchange code for token",
@@ -216,7 +228,7 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 			}
 
 			// Verify ID token
-			idToken, err := h.oidcProvider.VerifyIDToken(ctx, rawIDToken)
+			idToken, err := oidcProv.VerifyIDToken(ctx, rawIDToken)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{
 					"error": "Failed to verify ID token",
@@ -225,7 +237,7 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 			}
 
 			// Extract user info
-			sub, email, name, err = h.oidcProvider.ExtractUserInfo(idToken)
+			sub, email, name, err = oidcProv.ExtractUserInfo(idToken)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{
 					"error": "Failed to extract user info",

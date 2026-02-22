@@ -50,6 +50,17 @@ Additional claims can be used for role mapping and organization assignment throu
 
 ## Configuration Basics
 
+> **First-time setup?** If you're setting up a new registry, the easiest way to configure OIDC is through the [Setup Wizard](initial-setup.md). It handles OIDC provider configuration, storage backend, and admin user creation in a single guided flow. The setup wizard stores OIDC configuration securely in the database with encrypted client secrets.
+
+### Configuration Methods
+
+OIDC can be configured in two ways:
+
+1. **Setup Wizard (recommended for new deployments)** — Use the web UI at `/setup` or the setup API endpoints. Configuration is stored encrypted in the database.
+2. **Config file / environment variables** — Set values in `config.yaml` or via environment variables. This is the traditional approach and is still fully supported.
+
+If both database and file-based configurations exist, the **database configuration takes precedence**.
+
 ### Important Note: Redirect URL Endpoint
 
 The OIDC redirect URL must be configured correctly. The standard endpoint is:

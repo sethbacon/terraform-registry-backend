@@ -111,6 +111,16 @@ docker-compose up -d
 
 > For the web UI, see [terraform-registry-frontend](https://github.com/sethbacon/terraform-registry-frontend).
 
+### First-Run Setup
+
+On first startup, the server prints a one-time **setup token** to the logs. Use this token to configure the registry through the web wizard at `/setup` or via the setup API. The wizard guides you through:
+
+1. OIDC provider configuration (authentication)
+2. Storage backend configuration (where modules/providers are stored)
+3. Initial admin user setup
+
+See [Initial Setup Guide](docs/initial-setup.md) for full details, including headless/curl-based setup.
+
 ### Manual Setup
 
 ```bash

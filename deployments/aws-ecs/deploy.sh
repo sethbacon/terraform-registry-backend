@@ -4,8 +4,10 @@
 #
 # Prerequisites:
 #   - AWS CLI v2 installed and configured
-#   - Container images built locally
 #   - ECR repositories created (or use the CloudFormation stack)
+#   - Container images available in ECR (pull from GHCR and re-tag, or set
+#     BACKEND_IMAGE / FRONTEND_IMAGE to point directly to ghcr.io if your
+#     ECS tasks have outbound internet access)
 #
 # Environment variables (set before running):
 #   AWS_REGION            - AWS region (default: us-east-1)

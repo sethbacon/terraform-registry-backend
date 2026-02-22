@@ -27,6 +27,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"log/slog"
@@ -34,16 +36,20 @@ import (
 	_ "net/http/pprof" // register pprof handlers on DefaultServeMux
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jmoiron/sqlx"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/terraform-registry/terraform-registry/internal/api"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db"
+	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/telemetry"
+	"golang.org/x/crypto/bcrypt"
 )
 
 const (
@@ -142,6 +148,15 @@ func serve(cfg *config.Config) error {
 		log.Printf("Database schema version: %d (dirty: %v)", version, dirty)
 	}
 
+	// Setup token generation for first-run setup wizard.
+	// If setup has not been completed and no token hash exists, generate a
+	// cryptographic setup token, print it to logs, and store its bcrypt hash.
+	sqlxDB := sqlx.NewDb(database, "postgres")
+	oidcConfigRepo := repositories.NewOIDCConfigRepository(sqlxDB)
+	if err := handleSetupToken(oidcConfigRepo); err != nil {
+		log.Printf("Warning: setup token handling failed: %v", err)
+	}
+
 	// Start Prometheus metrics endpoint on a dedicated port so it is not reachable
 	// through the public API ingress path.
 	if cfg.Telemetry.Metrics.Enabled {
@@ -216,6 +231,90 @@ func serve(cfg *config.Config) error {
 	}
 
 	log.Println("Server stopped gracefully")
+	return nil
+}
+
+// handleSetupToken checks if the initial setup wizard needs a setup token and
+// generates one if required. The raw token is printed to stdout (and optionally
+// written to SETUP_TOKEN_FILE); only the bcrypt hash is stored in the database.
+func handleSetupToken(repo *repositories.OIDCConfigRepository) error {
+	ctx := context.Background()
+
+	completed, err := repo.IsSetupCompleted(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to check setup status: %w", err)
+	}
+	if completed {
+		return nil // Setup already done, nothing to do
+	}
+
+	// Check if a token hash already exists (server restarted before setup completed)
+	existingHash, err := repo.GetSetupTokenHash(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to check existing setup token: %w", err)
+	}
+	if existingHash != "" {
+		log.Println("")
+		log.Println("══════════════════════════════════════════════════════════════════")
+		log.Println("  SETUP REQUIRED: A setup token was previously generated.")
+		log.Println("  If you lost it, delete the setup_token_hash from system_settings")
+		log.Println("  and restart the server to generate a new one.")
+		log.Println("══════════════════════════════════════════════════════════════════")
+		log.Println("")
+		return nil
+	}
+
+	// Generate a cryptographic setup token: 32 random bytes, base64url-encoded
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return fmt.Errorf("failed to generate setup token: %w", err)
+	}
+	rawToken := "tfr_setup_" + base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(tokenBytes)
+
+	// Bcrypt-hash the token (cost 12) before storing
+	hash, err := bcrypt.GenerateFromPassword([]byte(rawToken), 12)
+	if err != nil {
+		return fmt.Errorf("failed to hash setup token: %w", err)
+	}
+
+	// Store hash in system_settings
+	if err := repo.SetSetupTokenHash(ctx, string(hash)); err != nil {
+		return fmt.Errorf("failed to store setup token hash: %w", err)
+	}
+
+	// Print token to stdout with prominent framing
+	separator := strings.Repeat("═", 66)
+	log.Println("")
+	log.Println(separator)
+	log.Println("  INITIAL SETUP REQUIRED")
+	log.Println("")
+	log.Printf("  Setup Token: %s", rawToken)
+	log.Println("")
+	log.Println("  Use this token to complete initial setup via:")
+	log.Println("    • Browser:  Navigate to https://<your-host>/setup")
+	log.Println("    • API:      POST /api/v1/setup/validate-token")
+	log.Println("               Authorization: SetupToken <token>")
+	log.Println("")
+	log.Println("  This token is single-use and will be invalidated after setup.")
+	log.Println("  Treat it like a root password — do not share or log externally.")
+	log.Println(separator)
+	log.Println("")
+
+	// Optionally write token to a file (for container secret mounting)
+	if tokenFile := os.Getenv("SETUP_TOKEN_FILE"); tokenFile != "" {
+		if err := os.WriteFile(tokenFile, []byte(rawToken), 0600); err != nil {
+			log.Printf("Warning: failed to write setup token to %s: %v", tokenFile, err)
+		} else {
+			log.Printf("Setup token written to %s", tokenFile)
+		}
+	}
+
+	// Warn if TLS is disabled during setup (token will be in Authorization header)
+	if os.Getenv("TFR_SECURITY_TLS_ENABLED") != "true" {
+		log.Println("Warning: TLS is not enabled. The setup token will be transmitted in plaintext.")
+		log.Println("         Consider enabling TLS before completing setup.")
+	}
+
 	return nil
 }
 

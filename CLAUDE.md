@@ -210,9 +210,20 @@ HTTP Handler (api/)
 - **JWT** — issued at login, stateless, short-lived.
 - **API Keys** — scoped bearer tokens for CI/CD; hashed in the database.
 - **RBAC** — roles assigned per organization; scopes include `modules:read`, `modules:write`, `providers:read`, `providers:write`, `mirrors:manage`, `admin:*`, etc.
-- **OIDC** — generic OpenID Connect provider support.
+- **OIDC** — generic OpenID Connect provider support. Can be configured via setup wizard (DB-stored, encrypted) or config file.
 - **Azure AD / Entra ID** — dedicated integration with group-to-role mapping.
+- **Setup Token** — one-time `Authorization: SetupToken <token>` scheme for first-run configuration. Separate from JWT/API key auth.
 - Audit logs record every mutating action with user ID, IP, and timestamp.
+
+### Setup Wizard (First-Run)
+
+- On first startup, a one-time setup token is generated and printed to logs.
+- Setup endpoints (`/api/v1/setup/*`) are authenticated via `SetupTokenMiddleware`.
+- Configured OIDC is stored encrypted in `oidc_config` table (DB takes precedence over config file).
+- OIDC provider is swapped at runtime via `atomic.Pointer` — no restart required.
+- After `POST /api/v1/setup/complete`, setup token is invalidated and endpoints return 403 permanently.
+- Pre-provisioned admin user is linked to OIDC identity on first login via email matching in `GetOrCreateUserFromOIDC`.
+- See `docs/initial-setup.md` for full documentation.
 
 ---
 

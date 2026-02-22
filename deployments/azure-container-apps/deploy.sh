@@ -4,8 +4,10 @@
 #
 # Prerequisites:
 #   - Azure CLI installed and logged in (az login)
-#   - Container images pushed to ACR
 #   - PostgreSQL Flexible Server provisioned
+#   - Container images available in ACR (pull from GHCR and re-tag into ACR,
+#     or set BACKEND_IMAGE / FRONTEND_IMAGE to reference ghcr.io directly
+#     if your Container Apps environment has outbound internet access)
 #
 # Environment variables (set before running):
 #   RESOURCE_GROUP        - Azure resource group name
