@@ -44,8 +44,8 @@ For example, `database.host` in YAML becomes `TFR_DATABASE_HOST` as an env var.
 | `TFR_AUTH_OIDC_ENABLED` | bool | `false` | No | Enable generic OIDC |
 | `TFR_AUTH_AZURE_AD_ENABLED` | bool | `false` | No | Enable Azure AD / Entra ID |
 | `TFR_MULTI_TENANCY_ENABLED` | bool | `false` | No | Enable multi-organization mode |
-| `TFR_LOG_LEVEL` | string | `info` | No | `debug`, `info`, `warn`, `error` |
-| `TFR_LOG_FORMAT` | string | `json` | No | `json`, `text` |
+| `TFR_LOGGING_LEVEL` | string | `info` | No | `debug`, `info`, `warn`, `error` |
+| `TFR_LOGGING_FORMAT` | string | `json` | No | `json`, `text` |
 | `TFR_TELEMETRY_ENABLED` | bool | `true` | No | Enable telemetry subsystem |
 | `TFR_TELEMETRY_METRICS_PROMETHEUS_PORT` | int | `9090` | No | Prometheus metrics port |
 
@@ -340,7 +340,7 @@ logging:
 Use `json` format in production so log aggregators (Splunk, Datadog, ELK) can parse
 structured fields. Use `text` format locally for readability.
 
-Set `TFR_LOG_LEVEL=debug` to see detailed request tracing, including authentication
+Set `TFR_LOGGING_LEVEL=debug` to see detailed request tracing, including authentication
 decisions and storage backend calls. Avoid debug level in production — it logs
 sensitive headers.
 

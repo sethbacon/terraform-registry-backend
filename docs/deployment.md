@@ -577,7 +577,7 @@ Storage-backend-specific:
   ```bash
   docker run --rm \
     -e DATABASE_URL="$DATABASE_URL" \
-    ghcr.io/<org>/terraform-registry:<version> \
+    ghcr.io/sethbacon/terraform-registry-backend:<version> \
     migrate up
   ```
 
@@ -654,8 +654,8 @@ kubectl get pods -n registry
 
 ```bash
 # 1. Download binary + verify checksum
-curl -LO https://github.com/<org>/terraform-registry/releases/download/v<version>/terraform-registry-linux-amd64
-curl -LO https://github.com/<org>/terraform-registry/releases/download/v<version>/checksums.txt
+curl -LO https://github.com/sethbacon/terraform-registry-backend/releases/download/v<version>/terraform-registry-linux-amd64
+curl -LO https://github.com/sethbacon/terraform-registry-backend/releases/download/v<version>/checksums.txt
 sha256sum --check --ignore-missing checksums.txt
 
 # 2. Replace binary

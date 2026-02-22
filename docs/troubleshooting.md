@@ -26,7 +26,7 @@ go run cmd/hash/main.go <api-key-value>
 Increase log verbosity to see detailed request tracing:
 
 ```bash
-export TFR_LOG_LEVEL=debug
+export TFR_LOGGING_LEVEL=debug
 go run cmd/server/main.go serve
 ```
 
@@ -164,7 +164,7 @@ Common issues:
 - **Wrong issuer URL**: `issuer_url` must match the `iss` claim in the token exactly (including or excluding trailing slash)
 - **Client credentials**: verify `client_id` and `client_secret` are copied correctly from your provider
 
-Enable debug logging (`TFR_LOG_LEVEL=debug`) to see the raw OIDC discovery document and token claims.
+Enable debug logging (`TFR_LOGGING_LEVEL=debug`) to see the raw OIDC discovery document and token claims.
 
 ### JWT Token Expired
 
@@ -472,7 +472,7 @@ sum(rate(http_requests_total{status=~"5.."}[5m])) by (path, status)
 sum(increase(http_requests_total{status=~"5.."}[10m])) by (path)
 ```
 
-Cross-reference with `TFR_LOG_LEVEL=debug` output: each error response includes a
+Cross-reference with `TFR_LOGGING_LEVEL=debug` output: each error response includes a
 `request_id` that links the metric label to the full log line.
 
 ### High Latency
@@ -545,7 +545,7 @@ If `curl http://localhost:9090/metrics` times out or returns connection refused:
 
 If the above guidance doesn't resolve your issue:
 
-1. Check the backend logs with `TFR_LOG_LEVEL=debug` for detailed error context
+1. Check the backend logs with `TFR_LOGGING_LEVEL=debug` for detailed error context
 2. Check the [GitHub Issues](https://github.com/sethbacon/terraform-registry/issues) for similar reports
 3. Open a new issue with:
    - The exact error message
