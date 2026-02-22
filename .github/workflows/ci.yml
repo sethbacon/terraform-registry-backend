@@ -6,6 +6,7 @@ on:
   pull_request:
     branches: [ main, development ]
   workflow_dispatch: {}
+  workflow_call: {}   # allows release.yml to call this as a prerequisite
 
 jobs:
   backend-test:
