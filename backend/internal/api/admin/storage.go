@@ -32,14 +32,7 @@ func NewStorageHandlers(cfg *config.Config, storageConfigRepo *repositories.Stor
 	}
 }
 
-// @Summary      Get setup status
-// @Description  Returns whether storage has been configured and initial setup is required. No authentication required.
-// @Tags         Storage
-// @Produce      json
-// @Success      200  {object}  map[string]interface{}  "storage_configured: bool, setup_required: bool"
-// @Failure      500  {object}  map[string]interface{}  "Internal server error"
-// @Router       /api/v1/setup/status [get]
-// GetSetupStatus returns the current setup status
+// GetSetupStatus returns the current setup status (legacy; route now owned by setup.Handlers)
 // GET /api/v1/setup/status
 func (h *StorageHandlers) GetSetupStatus(c *gin.Context) {
 	ctx := c.Request.Context()

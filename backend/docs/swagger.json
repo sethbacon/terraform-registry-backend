@@ -5139,19 +5139,59 @@
                 }
             }
         },
-        "/api/v1/setup/status": {
-            "get": {
-                "description": "Returns whether storage has been configured and initial setup is required. No authentication required.",
+        "/api/v1/setup/admin": {
+            "post": {
+                "security": [
+                    {
+                        "SetupToken": []
+                    }
+                ],
+                "description": "Creates the initial admin user record and adds them to the default organization with admin role. The email must match the OIDC identity that will be used for the first login.",
+                "consumes": [
+                    "application/json"
+                ],
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "Storage"
+                    "Setup"
                 ],
-                "summary": "Get setup status",
+                "summary": "Configure initial admin user",
+                "parameters": [
+                    {
+                        "description": "Admin user email",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/setup.ConfigureAdminInput"
+                        }
+                    }
+                ],
                 "responses": {
                     "200": {
-                        "description": "storage_configured: bool, setup_required: bool",
+                        "description": "message: string, email: string, organization: string, role: string",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid email",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid setup token",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Setup already completed",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -5159,6 +5199,384 @@
                     },
                     "500": {
                         "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/setup/complete": {
+            "post": {
+                "security": [
+                    {
+                        "SetupToken": []
+                    }
+                ],
+                "description": "Finalizes the initial setup. Verifies that OIDC, storage, and admin user are configured, then permanently disables setup endpoints by clearing the setup token.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Setup"
+                ],
+                "summary": "Complete setup",
+                "responses": {
+                    "200": {
+                        "description": "message: string, setup_completed: bool",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Setup is incomplete — missing required configuration",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid setup token",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Setup already completed",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/setup/oidc": {
+            "post": {
+                "security": [
+                    {
+                        "SetupToken": []
+                    }
+                ],
+                "description": "Saves OIDC provider configuration to the database (encrypted) and activates it for runtime use.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Setup"
+                ],
+                "summary": "Save OIDC configuration",
+                "parameters": [
+                    {
+                        "description": "OIDC configuration to save",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.OIDCConfigInput"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.OIDCConfigResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid configuration",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid setup token",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Setup already completed",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/setup/oidc/test": {
+            "post": {
+                "security": [
+                    {
+                        "SetupToken": []
+                    }
+                ],
+                "description": "Tests an OIDC provider configuration by performing discovery and verifying the issuer endpoint responds. Does NOT save anything.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Setup"
+                ],
+                "summary": "Test OIDC configuration",
+                "parameters": [
+                    {
+                        "description": "OIDC configuration to test",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.OIDCConfigInput"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "success: bool, message: string, issuer: string",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid configuration",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid setup token",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Setup already completed",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/setup/status": {
+            "get": {
+                "description": "Returns the full setup status including OIDC, storage, and admin configuration state. No authentication required.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Setup"
+                ],
+                "summary": "Get enhanced setup status",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.SetupStatus"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/setup/storage": {
+            "post": {
+                "security": [
+                    {
+                        "SetupToken": []
+                    }
+                ],
+                "description": "Saves storage backend configuration to the database and marks storage as configured.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Setup"
+                ],
+                "summary": "Save storage configuration",
+                "parameters": [
+                    {
+                        "description": "Storage configuration to save",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.StorageConfigInput"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "message: string, config: StorageConfigResponse",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid configuration",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid setup token",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Setup already completed",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/setup/storage/test": {
+            "post": {
+                "security": [
+                    {
+                        "SetupToken": []
+                    }
+                ],
+                "description": "Tests a storage backend configuration without saving. Performs a live connectivity probe.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Setup"
+                ],
+                "summary": "Test storage configuration",
+                "parameters": [
+                    {
+                        "description": "Storage configuration to test",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.StorageConfigInput"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "success: bool, message: string",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid configuration",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid setup token",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Setup already completed",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/setup/validate-token": {
+            "post": {
+                "security": [
+                    {
+                        "SetupToken": []
+                    }
+                ],
+                "description": "Validates the provided setup token. Returns 200 if valid. Used by the frontend wizard to verify the token before proceeding.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Setup"
+                ],
+                "summary": "Validate setup token",
+                "responses": {
+                    "200": {
+                        "description": "valid: true, message: string",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid setup token",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Setup already completed",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -7409,6 +7827,99 @@
                 }
             }
         },
+        "models.OIDCConfigInput": {
+            "type": "object",
+            "required": [
+                "client_id",
+                "client_secret",
+                "issuer_url",
+                "provider_type",
+                "redirect_url"
+            ],
+            "properties": {
+                "client_id": {
+                    "type": "string"
+                },
+                "client_secret": {
+                    "description": "Plain text input, encrypted before storage",
+                    "type": "string"
+                },
+                "extra_config": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "issuer_url": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "provider_type": {
+                    "type": "string",
+                    "enum": [
+                        "generic_oidc",
+                        "azuread"
+                    ]
+                },
+                "redirect_url": {
+                    "type": "string"
+                },
+                "scopes": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "models.OIDCConfigResponse": {
+            "type": "object",
+            "properties": {
+                "client_id": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "extra_config": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "id": {
+                    "type": "string"
+                },
+                "is_active": {
+                    "type": "boolean"
+                },
+                "issuer_url": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "provider_type": {
+                    "type": "string"
+                },
+                "redirect_url": {
+                    "type": "string"
+                },
+                "scopes": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
         "models.PolicyType": {
             "type": "string",
             "enum": [
@@ -7448,6 +7959,29 @@
                     }
                 },
                 "updated_at": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.SetupStatus": {
+            "type": "object",
+            "properties": {
+                "admin_configured": {
+                    "type": "boolean"
+                },
+                "oidc_configured": {
+                    "type": "boolean"
+                },
+                "setup_completed": {
+                    "type": "boolean"
+                },
+                "setup_required": {
+                    "type": "boolean"
+                },
+                "storage_configured": {
+                    "type": "boolean"
+                },
+                "storage_configured_at": {
                     "type": "string"
                 }
             }
@@ -7839,6 +8373,17 @@
                     "type": "string"
                 },
                 "updated_at": {
+                    "type": "string"
+                }
+            }
+        },
+        "setup.ConfigureAdminInput": {
+            "type": "object",
+            "required": [
+                "email"
+            ],
+            "properties": {
+                "email": {
                     "type": "string"
                 }
             }
