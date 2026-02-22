@@ -152,3 +152,56 @@ jobs:
             echo "Container never started — Docker build artifact broken"
             exit 1
           fi
+
+  deployment-validate:
+    name: Deployment Config Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate Docker Compose configs
+        working-directory: deployments
+        run: |
+          # docker-compose.prod.yml requires .env.production to exist (env_file directive).
+          # Touch a stub so compose config doesn't fail on a missing file.
+          touch .env.production
+          docker compose -f docker-compose.yml config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml config --quiet
+          docker compose -f docker-compose.test.yml config --quiet
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: 'latest'
+
+      - name: Helm lint
+        run: |
+          helm lint deployments/helm/ \
+            --set config.baseUrl=https://registry.example.com \
+            --set config.jwtSecret=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            --set config.databasePassword=password \
+            --set config.encryptionKey=00000000000000000000000000000000
+
+      - name: Kustomize validate (dev overlay)
+        run: kubectl kustomize deployments/kubernetes/overlays/dev > /dev/null
+
+      - name: Kustomize validate (production overlay)
+        run: kubectl kustomize deployments/kubernetes/overlays/production > /dev/null
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: latest
+
+      - name: Terraform validate (AWS)
+        working-directory: deployments/terraform/aws
+        run: terraform init -backend=false && terraform validate
+
+      - name: Terraform validate (Azure)
+        working-directory: deployments/terraform/azure
+        run: terraform init -backend=false && terraform validate
+
+      - name: Terraform validate (GCP)
+        working-directory: deployments/terraform/gcp
+        run: terraform init -backend=false && terraform validate
