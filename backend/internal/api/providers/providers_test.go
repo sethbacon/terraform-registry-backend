@@ -81,10 +81,12 @@ var platformCols = []string{
 	"storage_path", "storage_backend", "size_bytes", "shasum", "download_count",
 }
 
-// SearchProviders: id, org_id, namespace, type, description, source, created_by, created_by_name, created_at, updated_at
+// SearchProvidersWithStats result: id, org_id, namespace, type, description, source,
+// created_by, created_by_name, created_at, updated_at, latest_version, total_downloads
 var providerSearchCols = []string{
 	"id", "organization_id", "namespace", "type", "description", "source",
 	"created_by", "created_by_name", "created_at", "updated_at",
+	"latest_version", "total_downloads",
 }
 
 var sampleProtocolsJSON = []byte(`["6.0"]`)
@@ -130,7 +132,8 @@ func sampleProviderSearchRow() *sqlmock.Rows {
 	return sqlmock.NewRows(providerSearchCols).
 		AddRow("prov-1", nil, "hashicorp", "aws",
 			nil, "hashicorp/provider-aws",
-			nil, nil, time.Now(), time.Now())
+			nil, nil, time.Now(), time.Now(),
+			nil, int64(0))
 }
 
 // ---------------------------------------------------------------------------

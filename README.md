@@ -56,9 +56,18 @@ A fully-featured, enterprise-grade Terraform registry implementing all three Has
 - **Standalone Binary** - Systemd service with Nginx reverse proxy
 - **Terraform IaC** - Infrastructure-as-Code for AWS, Azure, and GCP
 
+### Terraform Binary Mirror
+
+- **Multi-Config Mirror** — Multiple named mirror configs coexist; independently mirror HashiCorp Terraform, OpenTofu, or custom upstream sources side-by-side
+- **Tool Support** — `terraform`, `opentofu`, and `custom` tool types with per-config upstream URL
+- **Supply-Chain Security** — GPG signature verification against the embedded HashiCorp release key (OpenTofu support configurable)
+- **Platform Filtering** — Optionally restrict which `os/arch` combinations are downloaded and served
+- **Public Download API** — Unauthenticated endpoints at `/terraform/binaries/:name/versions/…` compatible with Terraform's [network mirror protocol](https://developer.hashicorp.com/terraform/internals/provider-network-mirror-protocol)
+- **Prometheus Metric** — `terraform_binary_downloads_total` counter with `{version, os, arch}` labels
+
 ### Observability & CI/CD
 
-- **Prometheus Metrics** - Eight named application metrics on a dedicated scrape port (default 9090)
+- **Prometheus Metrics** - Nine named application metrics on a dedicated scrape port (default 9090)
 - **Structured Logging** - stdlib `slog` with JSON (production) and text (development) formats
 - **pprof Profiling** - Opt-in profiling server on a configurable port
 - **GitHub Actions CI/CD** - Build, vet, race-detector tests, gosec security scan, Docker build, multi-platform releases
@@ -75,6 +84,7 @@ A fully-featured, enterprise-grade Terraform registry implementing all three Has
 ┌──────────────────▼─────────────────────────────────┐
 │              Go 1.24 Backend (Gin)                 │
 │  Modules API │ Providers API │ Mirror │ Admin       │
+│  Terraform Binary Mirror                           │
 │  Auth: JWT │ API Keys │ OIDC │ Azure AD │ RBAC      │
 │  SCM: GitHub │ Azure DevOps │ GitLab │ Bitbucket   │
 │  Storage: Local │ Azure Blob │ S3 │ GCS            │

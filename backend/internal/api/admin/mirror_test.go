@@ -119,7 +119,7 @@ func TestMirrorCreate_NameConflict(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/mirrors",
 		jsonBody(map[string]interface{}{
-			"name":                 "test-mirror",
+			"name":                  "test-mirror",
 			"upstream_registry_url": "https://registry.terraform.io",
 		})))
 
@@ -136,7 +136,7 @@ func TestMirrorCreate_GetByNameDBError(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/mirrors",
 		jsonBody(map[string]interface{}{
-			"name":                 "new-mirror",
+			"name":                  "new-mirror",
 			"upstream_registry_url": "https://registry.terraform.io",
 		})))
 
@@ -157,7 +157,7 @@ func TestMirrorCreate_Success(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/mirrors",
 		jsonBody(map[string]interface{}{
-			"name":                 "new-mirror",
+			"name":                  "new-mirror",
 			"upstream_registry_url": "https://registry.terraform.io",
 		})))
 
@@ -176,7 +176,7 @@ func TestMirrorCreate_InsertDBError(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/mirrors",
 		jsonBody(map[string]interface{}{
-			"name":                 "new-mirror",
+			"name":                  "new-mirror",
 			"upstream_registry_url": "https://registry.terraform.io",
 		})))
 
@@ -579,5 +579,227 @@ func TestMirrorUpdate_InvalidRegistryURL(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CreateMirrorConfig — additional paths
+// ---------------------------------------------------------------------------
+
+func TestMirrorCreate_WithFiltersAndCustomInterval(t *testing.T) {
+	mock, r := newMirrorRouter(t)
+	mock.ExpectQuery("SELECT.*FROM mirror_configurations WHERE name").
+		WillReturnRows(sqlmock.NewRows(mirrorCfgCols))
+	mock.ExpectExec("INSERT INTO mirror_configurations").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	interval := 6
+	enabled := false
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/mirrors",
+		jsonBody(map[string]interface{}{
+			"name":                  "filtered-mirror",
+			"upstream_registry_url": "https://registry.terraform.io",
+			"namespace_filter":      []string{"hashicorp", "aws"},
+			"provider_filter":       []string{"aws", "azurerm"},
+			"platform_filter":       []string{"linux_amd64"},
+			"sync_interval_hours":   interval,
+			"enabled":               enabled,
+		})))
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestMirrorCreate_WithValidOrgID(t *testing.T) {
+	mock, r := newMirrorRouter(t)
+	mock.ExpectQuery("SELECT.*FROM mirror_configurations WHERE name").
+		WillReturnRows(sqlmock.NewRows(mirrorCfgCols))
+	mock.ExpectExec("INSERT INTO mirror_configurations").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	orgID := knownUUID
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/mirrors",
+		jsonBody(map[string]interface{}{
+			"name":                  "org-mirror",
+			"upstream_registry_url": "https://registry.terraform.io",
+			"organization_id":       orgID,
+		})))
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestMirrorCreate_InvalidOrgID(t *testing.T) {
+	mock, r := newMirrorRouter(t)
+	mock.ExpectQuery("SELECT.*FROM mirror_configurations WHERE name").
+		WillReturnRows(sqlmock.NewRows(mirrorCfgCols))
+
+	badOrgID := "not-a-uuid"
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/mirrors",
+		jsonBody(map[string]interface{}{
+			"name":                  "bad-org-mirror",
+			"upstream_registry_url": "https://registry.terraform.io",
+			"organization_id":       badOrgID,
+		})))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestMirrorCreate_WithUserIDContext(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	sqlxDB := sqlx.NewDb(db, "sqlmock")
+	mirrorRepo := repositories.NewMirrorRepository(sqlxDB)
+	h := NewMirrorHandler(mirrorRepo)
+
+	r := gin.New()
+	// Inject user_id as uuid.UUID into context before the handler
+	userUUID := uuid.MustParse(knownUUID)
+	r.POST("/mirrors", func(c *gin.Context) {
+		c.Set("user_id", userUUID)
+		h.CreateMirrorConfig(c)
+	})
+
+	mock.ExpectQuery("SELECT.*FROM mirror_configurations WHERE name").
+		WillReturnRows(sqlmock.NewRows(mirrorCfgCols))
+	mock.ExpectExec("INSERT INTO mirror_configurations").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/mirrors",
+		jsonBody(map[string]interface{}{
+			"name":                  "user-mirror",
+			"upstream_registry_url": "https://registry.terraform.io",
+		})))
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// UpdateMirrorConfig — additional filter/field paths
+// ---------------------------------------------------------------------------
+
+func TestMirrorUpdate_WithFiltersAndInterval(t *testing.T) {
+	mock, r := newMirrorRouter(t)
+	mock.ExpectQuery("SELECT.*FROM mirror_configurations WHERE id").
+		WillReturnRows(sampleMirrorCfgRow())
+	mock.ExpectExec("UPDATE mirror_configurations SET name").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	versionFilter := ">=1.0.0"
+	interval := 12
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/mirrors/"+knownUUID,
+		jsonBody(map[string]interface{}{
+			"namespace_filter":    []string{"hashicorp"},
+			"provider_filter":     []string{"aws"},
+			"platform_filter":     []string{"linux_amd64", "darwin_amd64"},
+			"version_filter":      versionFilter,
+			"sync_interval_hours": interval,
+		})))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestMirrorUpdate_ClearFilters(t *testing.T) {
+	mock, r := newMirrorRouter(t)
+	mock.ExpectQuery("SELECT.*FROM mirror_configurations WHERE id").
+		WillReturnRows(sampleMirrorCfgRow())
+	mock.ExpectExec("UPDATE mirror_configurations SET name").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	emptyVersionFilter := ""
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/mirrors/"+knownUUID,
+		jsonBody(map[string]interface{}{
+			"namespace_filter": []string{},
+			"provider_filter":  []string{},
+			"platform_filter":  []string{},
+			"version_filter":   emptyVersionFilter,
+		})))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestMirrorUpdate_SetOrganizationID(t *testing.T) {
+	mock, r := newMirrorRouter(t)
+	mock.ExpectQuery("SELECT.*FROM mirror_configurations WHERE id").
+		WillReturnRows(sampleMirrorCfgRow())
+	mock.ExpectExec("UPDATE mirror_configurations SET name").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	orgID := knownUUID
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/mirrors/"+knownUUID,
+		jsonBody(map[string]interface{}{"organization_id": orgID})))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestMirrorUpdate_ClearOrganizationID(t *testing.T) {
+	mock, r := newMirrorRouter(t)
+	mock.ExpectQuery("SELECT.*FROM mirror_configurations WHERE id").
+		WillReturnRows(sampleMirrorCfgRow())
+	mock.ExpectExec("UPDATE mirror_configurations SET name").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	emptyOrgID := ""
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/mirrors/"+knownUUID,
+		jsonBody(map[string]interface{}{"organization_id": emptyOrgID})))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestMirrorUpdate_InvalidOrganizationID(t *testing.T) {
+	mock, r := newMirrorRouter(t)
+	mock.ExpectQuery("SELECT.*FROM mirror_configurations WHERE id").
+		WillReturnRows(sampleMirrorCfgRow())
+
+	badOrgID := "not-a-uuid"
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/mirrors/"+knownUUID,
+		jsonBody(map[string]interface{}{"organization_id": badOrgID})))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestMirrorUpdate_Description(t *testing.T) {
+	mock, r := newMirrorRouter(t)
+	mock.ExpectQuery("SELECT.*FROM mirror_configurations WHERE id").
+		WillReturnRows(sampleMirrorCfgRow())
+	mock.ExpectExec("UPDATE mirror_configurations SET name").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	desc := "updated description"
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/mirrors/"+knownUUID,
+		jsonBody(map[string]interface{}{"description": desc})))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
 	}
 }

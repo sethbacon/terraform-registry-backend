@@ -48,6 +48,36 @@ func (r *ModuleRepository) CreateModule(ctx context.Context, module *models.Modu
 	return nil
 }
 
+// UpsertModule atomically creates a module or returns the existing one.
+// This prevents race conditions when two concurrent uploads target the same
+// namespace/name/system combination. Description and source are only set on
+// initial insert (not overwritten on conflict) — use UpdateModule for that.
+func (r *ModuleRepository) UpsertModule(ctx context.Context, module *models.Module) error {
+	query := `
+		INSERT INTO modules (organization_id, namespace, name, system, description, source, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (organization_id, namespace, name, system) DO UPDATE
+		SET updated_at = NOW()
+		RETURNING id, created_at, updated_at
+	`
+
+	err := r.db.QueryRowContext(ctx, query,
+		module.OrganizationID,
+		module.Namespace,
+		module.Name,
+		module.System,
+		module.Description,
+		module.Source,
+		module.CreatedBy,
+	).Scan(&module.ID, &module.CreatedAt, &module.UpdatedAt)
+
+	if err != nil {
+		return fmt.Errorf("failed to upsert module: %w", err)
+	}
+
+	return nil
+}
+
 // GetModule retrieves a module by organization, namespace, name, and system
 func (r *ModuleRepository) GetModule(ctx context.Context, orgID, namespace, name, system string) (*models.Module, error) {
 	query := `
@@ -455,6 +485,98 @@ func (r *ModuleRepository) SearchModules(ctx context.Context, orgID, query, name
 	}
 
 	return modules, total, nil
+}
+
+// SearchModulesWithStats returns modules matching the search criteria along with
+// their latest version and total download count in a single query, eliminating
+// the N+1 query pattern from the original SearchModules + per-module ListVersions.
+func (r *ModuleRepository) SearchModulesWithStats(ctx context.Context, orgID, searchQuery, namespace, system string, limit, offset int) ([]*models.ModuleSearchResult, int, error) {
+	var whereClauses []string
+	var args []interface{}
+	argCount := 0
+
+	if orgID != "" {
+		argCount++
+		whereClauses = append(whereClauses, fmt.Sprintf("m.organization_id = $%d", argCount))
+		args = append(args, orgID)
+	}
+	if searchQuery != "" {
+		argCount++
+		whereClauses = append(whereClauses, fmt.Sprintf("(m.namespace ILIKE $%d OR m.name ILIKE $%d OR m.description ILIKE $%d)", argCount, argCount, argCount))
+		args = append(args, "%"+searchQuery+"%")
+	}
+	if namespace != "" {
+		argCount++
+		whereClauses = append(whereClauses, fmt.Sprintf("m.namespace = $%d", argCount))
+		args = append(args, namespace)
+	}
+	if system != "" {
+		argCount++
+		whereClauses = append(whereClauses, fmt.Sprintf("m.system = $%d", argCount))
+		args = append(args, system)
+	}
+
+	whereClause := ""
+	if len(whereClauses) > 0 {
+		whereClause = "WHERE " + strings.Join(whereClauses, " AND ")
+	}
+
+	// Count total results
+	countSQL := fmt.Sprintf("SELECT COUNT(*) FROM modules m %s", whereClause)
+	var total int
+	if err := r.db.QueryRowContext(ctx, countSQL, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("failed to count modules: %w", err)
+	}
+
+	// Single query: modules + latest version + total downloads via lateral join.
+	// The lateral subquery fetches the latest version (by created_at) and sums
+	// download counts across ALL versions — replacing the per-module ListVersions loop.
+	searchSQL := fmt.Sprintf(`
+		SELECT m.id, m.organization_id, m.namespace, m.name, m.system, m.description, m.source,
+		       m.created_by, u.name AS created_by_name, m.created_at, m.updated_at,
+		       agg.latest_version, COALESCE(agg.total_downloads, 0) AS total_downloads
+		FROM modules m
+		LEFT JOIN users u ON m.created_by = u.id
+		LEFT JOIN LATERAL (
+			SELECT
+				(SELECT mv2.version FROM module_versions mv2 WHERE mv2.module_id = m.id ORDER BY mv2.created_at DESC LIMIT 1) AS latest_version,
+				SUM(mv.download_count) AS total_downloads
+			FROM module_versions mv
+			WHERE mv.module_id = m.id
+		) agg ON true
+		%s
+		ORDER BY m.created_at DESC
+		LIMIT $%d OFFSET $%d
+	`, whereClause, argCount+1, argCount+2)
+
+	args = append(args, limit, offset)
+
+	rows, err := r.db.QueryContext(ctx, searchSQL, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to search modules: %w", err)
+	}
+	defer rows.Close()
+
+	var results []*models.ModuleSearchResult
+	for rows.Next() {
+		res := &models.ModuleSearchResult{}
+		err := rows.Scan(
+			&res.ID, &res.OrganizationID, &res.Namespace, &res.Name, &res.System,
+			&res.Description, &res.Source, &res.CreatedBy, &res.CreatedByName,
+			&res.CreatedAt, &res.UpdatedAt,
+			&res.LatestVersion, &res.TotalDownloads,
+		)
+		if err != nil {
+			return nil, 0, fmt.Errorf("failed to scan module search result: %w", err)
+		}
+		results = append(results, res)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("error iterating module search results: %w", err)
+	}
+
+	return results, total, nil
 }
 
 // DeleteModule deletes a module and all its versions (cascade)

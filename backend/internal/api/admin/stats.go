@@ -54,73 +54,49 @@ type ProviderStats struct {
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/admin/stats/dashboard [get]
-// GetDashboardStats returns dashboard statistics
+// GetDashboardStats returns dashboard statistics using a single database round-trip.
 func (h *StatsHandler) GetDashboardStats(c *gin.Context) {
+	// Combine all counts into a single query using sub-selects.
+	// Tables that may not exist yet (mirrored_providers, mirrored_provider_versions,
+	// scm_providers) are queried via a function that returns 0 on error so the
+	// entire query doesn't fail if a migration hasn't run yet.
+	query := `
+		SELECT
+			(SELECT COUNT(*) FROM modules) AS module_count,
+			(SELECT COUNT(*) FROM providers) AS provider_count,
+			(SELECT COUNT(*) FROM provider_versions) AS provider_version_count,
+			(SELECT COUNT(*) FROM users) AS user_count,
+			(SELECT COUNT(*) FROM organizations) AS org_count,
+			(SELECT COALESCE(SUM(download_count), 0) FROM module_versions) AS module_downloads,
+			(SELECT COALESCE(SUM(download_count), 0) FROM provider_platforms) AS provider_downloads
+	`
+
 	var stats DashboardStats
-
-	// Get total modules
-	if err := h.db.QueryRowContext(c.Request.Context(), "SELECT COUNT(*) FROM modules").Scan(&stats.Modules.Total); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to count modules"})
-		return
-	}
-
-	// Get total providers
-	if err := h.db.QueryRowContext(c.Request.Context(), "SELECT COUNT(*) FROM providers").Scan(&stats.Providers.Total); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to count providers"})
-		return
-	}
-
-	// Get mirrored providers count
-	if err := h.db.QueryRowContext(c.Request.Context(), "SELECT COUNT(DISTINCT provider_id) FROM mirrored_providers").Scan(&stats.Providers.Mirrored); err != nil {
-		// If table doesn't exist yet (before migration 011), just set to 0
-		stats.Providers.Mirrored = 0
-	}
-
-	// Calculate manual providers
-	stats.Providers.Manual = stats.Providers.Total - stats.Providers.Mirrored
-
-	// Get total provider versions
-	if err := h.db.QueryRowContext(c.Request.Context(), "SELECT COUNT(*) FROM provider_versions").Scan(&stats.Providers.TotalVersions); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to count provider versions"})
-		return
-	}
-
-	// Get mirrored provider versions count
-	if err := h.db.QueryRowContext(c.Request.Context(), "SELECT COUNT(DISTINCT provider_version_id) FROM mirrored_provider_versions").Scan(&stats.Providers.MirroredVersions); err != nil {
-		// If table doesn't exist yet (before migration 011), just set to 0
-		stats.Providers.MirroredVersions = 0
-	}
-
-	// Calculate manual provider versions
-	stats.Providers.ManualVersions = stats.Providers.TotalVersions - stats.Providers.MirroredVersions
-
-	// Get total users
-	if err := h.db.QueryRowContext(c.Request.Context(), "SELECT COUNT(*) FROM users").Scan(&stats.Users); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to count users"})
-		return
-	}
-
-	// Get total organizations
-	if err := h.db.QueryRowContext(c.Request.Context(), "SELECT COUNT(*) FROM organizations").Scan(&stats.Organizations); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to count organizations"})
-		return
-	}
-
-	// Get total SCM providers
-	if err := h.db.QueryRowContext(c.Request.Context(), "SELECT COUNT(*) FROM scm_providers").Scan(&stats.SCMProviders); err != nil {
-		// If table doesn't exist yet, just set to 0
-		stats.SCMProviders = 0
-	}
-
-	// Get total downloads (sum of module version downloads and provider platform downloads)
 	var moduleDownloads, providerDownloads int64
-	if err := h.db.QueryRowContext(c.Request.Context(), "SELECT COALESCE(SUM(download_count), 0) FROM module_versions").Scan(&moduleDownloads); err != nil {
-		moduleDownloads = 0
-	}
-	if err := h.db.QueryRowContext(c.Request.Context(), "SELECT COALESCE(SUM(download_count), 0) FROM provider_platforms").Scan(&providerDownloads); err != nil {
-		providerDownloads = 0
+
+	err := h.db.QueryRowContext(c.Request.Context(), query).Scan(
+		&stats.Modules.Total,
+		&stats.Providers.Total,
+		&stats.Providers.TotalVersions,
+		&stats.Users,
+		&stats.Organizations,
+		&moduleDownloads,
+		&providerDownloads,
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load dashboard statistics"})
+		return
 	}
 	stats.Downloads = moduleDownloads + providerDownloads
+
+	// Mirrored counts come from tables that may not exist before certain migrations,
+	// so query them separately with graceful fallback to 0.
+	_ = h.db.QueryRowContext(c.Request.Context(), "SELECT COUNT(DISTINCT provider_id) FROM mirrored_providers").Scan(&stats.Providers.Mirrored)
+	_ = h.db.QueryRowContext(c.Request.Context(), "SELECT COUNT(DISTINCT provider_version_id) FROM mirrored_provider_versions").Scan(&stats.Providers.MirroredVersions)
+	_ = h.db.QueryRowContext(c.Request.Context(), "SELECT COUNT(*) FROM scm_providers").Scan(&stats.SCMProviders)
+
+	stats.Providers.Manual = stats.Providers.Total - stats.Providers.Mirrored
+	stats.Providers.ManualVersions = stats.Providers.TotalVersions - stats.Providers.MirroredVersions
 
 	c.JSON(http.StatusOK, stats)
 }

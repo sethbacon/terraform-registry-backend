@@ -80,12 +80,12 @@ func (c *GitHubConnector) CompleteAuthorization(ctx context.Context, authCode st
 
 	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/login/oauth/access_token", strings.NewReader(data.Encode()))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("github: create token request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to exchange code", err)
 	}
@@ -103,7 +103,7 @@ func (c *GitHubConnector) CompleteAuthorization(ctx context.Context, authCode st
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("github: decode token response: %w", err)
 	}
 
 	scopes := []string{}
@@ -137,7 +137,7 @@ func (c *GitHubConnector) FetchRepositories(ctx context.Context, creds *scm.Acce
 	endpoint := fmt.Sprintf("%s/user/repos?page=%d&per_page=%d&sort=updated&affiliation=owner,collaborator", c.apiURL, page, perPage)
 	repos, err := c.fetchRepoList(ctx, creds, endpoint)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("github: list repositories: %w", err)
 	}
 
 	return &scm.RepoListResult{
@@ -153,11 +153,11 @@ func (c *GitHubConnector) FetchRepository(ctx context.Context, creds *scm.Access
 
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("github: create fetch-repo request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch repository", err)
 	}
@@ -172,7 +172,7 @@ func (c *GitHubConnector) FetchRepository(ctx context.Context, creds *scm.Access
 
 	var ghRepo githubRepo
 	if err := json.NewDecoder(resp.Body).Decode(&ghRepo); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("github: decode repository: %w", err)
 	}
 
 	return c.convertRepo(&ghRepo), nil
@@ -194,11 +194,11 @@ func (c *GitHubConnector) SearchRepositories(ctx context.Context, creds *scm.Acc
 
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("github: create search request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "search failed", err)
 	}
@@ -214,7 +214,7 @@ func (c *GitHubConnector) SearchRepositories(ctx context.Context, creds *scm.Acc
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("github: decode search results: %w", err)
 	}
 
 	repos := make([]*scm.SourceRepo, len(result.Items))
@@ -245,11 +245,11 @@ func (c *GitHubConnector) FetchBranches(ctx context.Context, creds *scm.AccessTo
 
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("github: create branches request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch branches", err)
 	}
@@ -268,7 +268,7 @@ func (c *GitHubConnector) FetchBranches(ctx context.Context, creds *scm.AccessTo
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&ghBranches); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("github: decode branches: %w", err)
 	}
 
 	branches := make([]*scm.GitBranch, len(ghBranches))
@@ -298,11 +298,11 @@ func (c *GitHubConnector) FetchTags(ctx context.Context, creds *scm.AccessToken,
 
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("github: create tags request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch tags", err)
 	}
@@ -321,7 +321,7 @@ func (c *GitHubConnector) FetchTags(ctx context.Context, creds *scm.AccessToken,
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&ghTags); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("github: decode tags: %w", err)
 	}
 
 	tags := make([]*scm.GitTag, len(ghTags))
@@ -341,11 +341,11 @@ func (c *GitHubConnector) FetchTagByName(ctx context.Context, creds *scm.AccessT
 
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("github: create tag-ref request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch tag", err)
 	}
@@ -368,7 +368,7 @@ func (c *GitHubConnector) FetchTagByName(ctx context.Context, creds *scm.AccessT
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&ref); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("github: decode tag ref: %w", err)
 	}
 
 	return &scm.GitTag{
@@ -383,11 +383,11 @@ func (c *GitHubConnector) FetchCommit(ctx context.Context, creds *scm.AccessToke
 
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("github: create commit request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch commit", err)
 	}
@@ -414,7 +414,7 @@ func (c *GitHubConnector) FetchCommit(ctx context.Context, creds *scm.AccessToke
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&ghCommit); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("github: decode commit: %w", err)
 	}
 
 	return &scm.GitCommit{
@@ -438,11 +438,11 @@ func (c *GitHubConnector) DownloadSourceArchive(ctx context.Context, creds *scm.
 
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("github: create archive request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to download archive", err)
 	}
@@ -486,11 +486,11 @@ func (c *GitHubConnector) setAuthHeaders(req *http.Request, creds *scm.AccessTok
 func (c *GitHubConnector) fetchRepoList(ctx context.Context, creds *scm.AccessToken, endpoint string) ([]*scm.SourceRepo, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("github: create repo-list request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch repositories", err)
 	}
@@ -502,7 +502,7 @@ func (c *GitHubConnector) fetchRepoList(ctx context.Context, creds *scm.AccessTo
 
 	var ghRepos []githubRepo
 	if err := json.NewDecoder(resp.Body).Decode(&ghRepos); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("github: decode repo list: %w", err)
 	}
 
 	repos := make([]*scm.SourceRepo, len(ghRepos))

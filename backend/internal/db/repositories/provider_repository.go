@@ -640,6 +640,95 @@ func (r *ProviderRepository) SearchProviders(ctx context.Context, orgID, query, 
 	return providers, total, nil
 }
 
+// SearchProvidersWithStats returns providers matching the search criteria along with
+// their latest version and total download count in a single query, eliminating the
+// N+1 query pattern from SearchProviders + per-provider ListVersions/GetTotalDownloadCount.
+func (r *ProviderRepository) SearchProvidersWithStats(ctx context.Context, orgID, searchQuery, namespace string, limit, offset int) ([]*models.ProviderSearchResult, int, error) {
+	var whereClauses []string
+	var args []interface{}
+	argCount := 0
+
+	if orgID != "" {
+		argCount++
+		whereClauses = append(whereClauses, fmt.Sprintf("p.organization_id = $%d", argCount))
+		args = append(args, orgID)
+	}
+	if searchQuery != "" {
+		argCount++
+		whereClauses = append(whereClauses, fmt.Sprintf("(p.namespace ILIKE $%d OR p.type ILIKE $%d OR p.description ILIKE $%d)", argCount, argCount, argCount))
+		args = append(args, "%"+searchQuery+"%")
+	}
+	if namespace != "" {
+		argCount++
+		whereClauses = append(whereClauses, fmt.Sprintf("p.namespace = $%d", argCount))
+		args = append(args, namespace)
+	}
+
+	whereClause := ""
+	if len(whereClauses) > 0 {
+		whereClause = "WHERE " + strings.Join(whereClauses, " AND ")
+	}
+
+	// Count total results
+	countSQL := fmt.Sprintf("SELECT COUNT(*) FROM providers p %s", whereClause)
+	var total int
+	if err := r.db.QueryRowContext(ctx, countSQL, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("failed to count providers: %w", err)
+	}
+
+	// Single query: providers + latest version + total platform downloads via lateral join
+	searchSQL := fmt.Sprintf(`
+		SELECT p.id, p.organization_id, p.namespace, p.type, p.description, p.source,
+		       p.created_by, u.name AS created_by_name, p.created_at, p.updated_at,
+		       agg.latest_version, COALESCE(agg.total_downloads, 0) AS total_downloads
+		FROM providers p
+		LEFT JOIN users u ON p.created_by = u.id
+		LEFT JOIN LATERAL (
+			SELECT
+				(SELECT pv2.version FROM provider_versions pv2 WHERE pv2.provider_id = p.id ORDER BY pv2.created_at DESC LIMIT 1) AS latest_version,
+				(SELECT COALESCE(SUM(pp.download_count), 0) FROM provider_platforms pp
+				 JOIN provider_versions pv3 ON pp.provider_version_id = pv3.id
+				 WHERE pv3.provider_id = p.id) AS total_downloads
+		) agg ON true
+		%s
+		ORDER BY p.created_at DESC
+		LIMIT $%d OFFSET $%d
+	`, whereClause, argCount+1, argCount+2)
+
+	args = append(args, limit, offset)
+
+	rows, err := r.db.QueryContext(ctx, searchSQL, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to search providers: %w", err)
+	}
+	defer rows.Close()
+
+	var results []*models.ProviderSearchResult
+	for rows.Next() {
+		res := &models.ProviderSearchResult{}
+		var scannedOrgID sql.NullString
+		err := rows.Scan(
+			&res.ID, &scannedOrgID, &res.Namespace, &res.Type,
+			&res.Description, &res.Source, &res.CreatedBy, &res.CreatedByName,
+			&res.CreatedAt, &res.UpdatedAt,
+			&res.LatestVersion, &res.TotalDownloads,
+		)
+		if err != nil {
+			return nil, 0, fmt.Errorf("failed to scan provider search result: %w", err)
+		}
+		if scannedOrgID.Valid {
+			res.OrganizationID = scannedOrgID.String
+		}
+		results = append(results, res)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("error iterating provider search results: %w", err)
+	}
+
+	return results, total, nil
+}
+
 // compareSemver compares two semver strings
 // Returns: -1 if a < b, 0 if a == b, 1 if a > b
 func compareSemver(a, b string) int {

@@ -1,19 +1,46 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/storage"
 )
 
 func init() {
 	gin.SetMode(gin.TestMode)
+}
+
+// ---------------------------------------------------------------------------
+// minimal storage.Storage mock for readiness tests
+// ---------------------------------------------------------------------------
+
+type readinessMockStorage struct{ existsErr error }
+
+func (m *readinessMockStorage) Upload(_ context.Context, _ string, _ io.Reader, _ int64) (*storage.UploadResult, error) {
+	return nil, nil
+}
+func (m *readinessMockStorage) Download(_ context.Context, _ string) (io.ReadCloser, error) {
+	return nil, nil
+}
+func (m *readinessMockStorage) Delete(_ context.Context, _ string) error { return nil }
+func (m *readinessMockStorage) GetURL(_ context.Context, _ string, _ time.Duration) (string, error) {
+	return "", nil
+}
+func (m *readinessMockStorage) Exists(_ context.Context, _ string) (bool, error) {
+	return m.existsErr == nil, m.existsErr
+}
+func (m *readinessMockStorage) GetMetadata(_ context.Context, _ string) (*storage.FileMetadata, error) {
+	return nil, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -69,7 +96,9 @@ func TestHealthCheckHandler_Unhealthy(t *testing.T) {
 		t.Errorf("status = %d, want 503", w.Code)
 	}
 	var body map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &body)
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 	if body["status"] != "unhealthy" {
 		t.Errorf("status = %v, want unhealthy", body["status"])
 	}
@@ -83,7 +112,7 @@ func TestReadinessHandler_Ready(t *testing.T) {
 	db := newHealthDB(t, true)
 
 	r := gin.New()
-	r.GET("/ready", readinessHandler(db))
+	r.GET("/ready", readinessHandler(db, &readinessMockStorage{}))
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/ready", nil))
@@ -92,7 +121,9 @@ func TestReadinessHandler_Ready(t *testing.T) {
 		t.Errorf("status = %d, want 200", w.Code)
 	}
 	var body map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &body)
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 	if body["ready"] != true {
 		t.Errorf("ready = %v, want true", body["ready"])
 	}
@@ -102,7 +133,7 @@ func TestReadinessHandler_NotReady(t *testing.T) {
 	db := newHealthDB(t, false)
 
 	r := gin.New()
-	r.GET("/ready", readinessHandler(db))
+	r.GET("/ready", readinessHandler(db, &readinessMockStorage{}))
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/ready", nil))
@@ -111,7 +142,9 @@ func TestReadinessHandler_NotReady(t *testing.T) {
 		t.Errorf("status = %d, want 503", w.Code)
 	}
 	var body map[string]interface{}
-	json.Unmarshal(w.Body.Bytes(), &body)
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 	if body["ready"] != false {
 		t.Errorf("ready = %v, want false", body["ready"])
 	}
@@ -274,7 +307,7 @@ func TestCORSMiddleware_DisallowedOrigin(t *testing.T) {
 	}
 }
 
-func TestCORSMiddleware_PrefligthOptions(t *testing.T) {
+func TestCORSMiddleware_PreflightOptions(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Security.CORS.AllowedOrigins = []string{"*"}
 

@@ -67,10 +67,9 @@ func SearchHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 			}
 			orgID = org.ID
 		}
-		// In single-tenant mode, orgID will be empty string which the repository will handle
 
-		// Search modules
-		modules, total, err := moduleRepo.SearchModules(
+		// Search modules with aggregated version stats in a single query
+		modules, total, err := moduleRepo.SearchModulesWithStats(
 			c.Request.Context(),
 			orgID,
 			query,
@@ -89,16 +88,9 @@ func SearchHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 		// Format results
 		results := make([]gin.H, len(modules))
 		for i, m := range modules {
-			// Get latest version for each module
-			versions, _ := moduleRepo.ListVersions(c.Request.Context(), m.ID)
 			var latestVersion string
-			var totalDownloads int64
-			if len(versions) > 0 {
-				latestVersion = versions[0].Version
-				// Sum up downloads across all versions
-				for _, v := range versions {
-					totalDownloads += v.DownloadCount
-				}
+			if m.LatestVersion != nil {
+				latestVersion = *m.LatestVersion
 			}
 
 			results[i] = gin.H{
@@ -109,7 +101,7 @@ func SearchHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 				"description":     m.Description,
 				"source":          m.Source,
 				"latest_version":  latestVersion,
-				"download_count":  totalDownloads,
+				"download_count":  m.TotalDownloads,
 				"created_by":      m.CreatedBy,
 				"created_by_name": m.CreatedByName,
 				"created_at":      m.CreatedAt,

@@ -15,6 +15,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
+	"github.com/terraform-registry/terraform-registry/internal/telemetry"
 	"github.com/terraform-registry/terraform-registry/internal/validation"
 )
 
@@ -151,6 +152,9 @@ func DownloadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Con
 				// TODO: Add proper logging in Phase 9
 			}
 		}()
+
+		// Increment Prometheus download counter
+		telemetry.ProviderDownloadsTotal.WithLabelValues(namespace, providerType, os, arch).Inc()
 
 		// Format response per Terraform Provider Registry Protocol spec
 		// https://www.terraform.io/docs/internals/provider-registry-protocol.html

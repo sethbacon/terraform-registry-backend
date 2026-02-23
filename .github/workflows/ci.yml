@@ -91,6 +91,10 @@ jobs:
     name: Security Scan (gosec)
     runs-on: ubuntu-latest
     # Run in parallel with backend-test — no dependency needed.
+    # Needs issues:write to open a GitHub issue when new findings are detected.
+    permissions:
+      contents: read
+      issues: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -106,18 +110,61 @@ jobs:
 
       - name: Run gosec
         working-directory: backend
-        # Exclude findings documented as false positives in gosec-report.md:
-        # G101 generic secret pattern, G114 net/http.Serve, G304 file path construction (local storage),
-        # G110 zip decompression (deliberately configurable), G701 cast to int64, G117 html/template
+        # No -exclude flags: false positives and accepted risks are suppressed inline
+        # with // #nosec <rule> -- <justification> annotations (see gosec-report.md).
+        # gosec exits non-zero when findings exist; we capture that via the compare step.
+        run: gosec -fmt json -out gosec-results.json ./... || true
+
+      - name: Compare against baseline
+        id: compare
+        working-directory: backend
+        # Exits 0 → no new findings. Exits 1 → new findings; issue body written to /tmp/issue-body.md.
         run: |
-          gosec \
-            -exclude=G101,G114,G304,G110,G701,G117 \
-            -fmt=json \
-            -out=gosec-results.json \
-            ./... || true
+          python3 scripts/gosec-compare.py \
+            --results  gosec-results.json \
+            --baseline gosec-baseline.json \
+            --base-dir . \
+            --output   /tmp/issue-body.md
         continue-on-error: true
 
+      - name: Open GitHub issue for new findings
+        if: steps.compare.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Ensure labels exist (idempotent — --force updates if already present).
+          gh label create "security"  --color "d73a4a" --description "Security finding"          --repo "$GITHUB_REPOSITORY" --force || true
+          gh label create "automated" --color "0075ca" --description "Created automatically by CI" --repo "$GITHUB_REPOSITORY" --force || true
+
+          TITLE="security: new gosec findings on ${GITHUB_REF_NAME} ($(date -u +%Y-%m-%d))"
+          # Avoid duplicate open issues for the same branch/day.
+          EXISTING=$(gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --label "security,automated" \
+            --search "gosec ${GITHUB_REF_NAME}" \
+            --json number \
+            --jq length)
+          if [ "$EXISTING" -gt 0 ]; then
+            echo "An open gosec issue already exists for this branch — skipping duplicate creation."
+            exit 0
+          fi
+          gh issue create \
+            --repo  "$GITHUB_REPOSITORY" \
+            --title "$TITLE" \
+            --body-file /tmp/issue-body.md \
+            --label "security,automated"
+
+      - name: Fail job if new findings detected
+        if: steps.compare.outcome == 'failure'
+        run: |
+          echo "New gosec findings detected — see the GitHub issue created above."
+          echo "Fix or suppress findings with // #nosec <rule> -- <reason>, then update gosec-baseline.json:"
+          echo "  bash backend/scripts/update-gosec-baseline.sh"
+          exit 1
+
       - name: Upload gosec results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gosec-results

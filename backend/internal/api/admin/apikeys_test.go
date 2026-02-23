@@ -272,6 +272,143 @@ func TestCreateAPIKey_InvalidExpiry(t *testing.T) {
 	}
 }
 
+func TestCreateAPIKey_InvalidScopes(t *testing.T) {
+	_, r := newAPIKeyRouter(t, "user-1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/apikeys",
+		jsonBody(map[string]interface{}{
+			"name":            "My Key",
+			"organization_id": "org-1",
+			"scopes":          []string{"totally:invalid"},
+		})))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateAPIKey_DefaultOrgDBError(t *testing.T) {
+	mock, r := newAPIKeyRouter(t, "user-1", nil)
+	mock.ExpectQuery("SELECT.*FROM organizations").
+		WithArgs("default").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/apikeys",
+		jsonBody(map[string]interface{}{
+			"name":            "My Key",
+			"organization_id": "default",
+			"scopes":          []string{"modules:read"},
+		})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateAPIKey_DefaultOrgNotFound(t *testing.T) {
+	mock, r := newAPIKeyRouter(t, "user-1", nil)
+	mock.ExpectQuery("SELECT.*FROM organizations").
+		WithArgs("default").
+		WillReturnRows(sqlmock.NewRows(orgCols))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/apikeys",
+		jsonBody(map[string]interface{}{
+			"name":            "My Key",
+			"organization_id": "default",
+			"scopes":          []string{"modules:read"},
+		})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateAPIKey_MemberRoleDBError(t *testing.T) {
+	mock, r := newAPIKeyRouter(t, "user-1", nil)
+	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/apikeys",
+		jsonBody(map[string]interface{}{
+			"name":            "My Key",
+			"organization_id": "org-1",
+			"scopes":          []string{"modules:read"},
+		})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateAPIKey_NoRoleTemplate(t *testing.T) {
+	mock, r := newAPIKeyRouter(t, "user-1", nil)
+	// Member exists but has no role template (role_template_id is nil)
+	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE").
+		WillReturnRows(sqlmock.NewRows(memberRoleCols).
+			AddRow("org-1", "user-1", nil, time.Now(), "Alice", "alice@example.com", nil, nil, testKeyScopes))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/apikeys",
+		jsonBody(map[string]interface{}{
+			"name":            "My Key",
+			"organization_id": "org-1",
+			"scopes":          []string{"modules:read"},
+		})))
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateAPIKey_ScopeExceedsRole(t *testing.T) {
+	mock, r := newAPIKeyRouter(t, "user-1", nil)
+	// Member has only modules:read scope
+	limitedScopes := []byte(`["modules:read"]`)
+	roleTemplateID := "role-viewer"
+	roleName := "viewer"
+	roleDisplay := "Viewer"
+	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE").
+		WillReturnRows(sqlmock.NewRows(memberRoleCols).
+			AddRow("org-1", "user-1", &roleTemplateID, time.Now(), "Alice", "alice@example.com",
+				&roleName, &roleDisplay, limitedScopes))
+
+	w := httptest.NewRecorder()
+	// Request providers:write which user doesn't have
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/apikeys",
+		jsonBody(map[string]interface{}{
+			"name":            "My Key",
+			"organization_id": "org-1",
+			"scopes":          []string{"providers:write"},
+		})))
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateAPIKey_CreateDBError(t *testing.T) {
+	mock, r := newAPIKeyRouter(t, "user-1", nil)
+	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE").
+		WillReturnRows(sampleMemberRoleRow())
+	mock.ExpectExec("INSERT INTO api_keys").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/apikeys",
+		jsonBody(map[string]interface{}{
+			"name":            "My Key",
+			"organization_id": "org-1",
+			"scopes":          []string{"modules:read"},
+		})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
 // ---------------------------------------------------------------------------
 // GetAPIKeyHandler
 // ---------------------------------------------------------------------------

@@ -26,9 +26,9 @@ const (
 	defaultAzureDevOpsURL = "https://dev.azure.com"
 	// Azure DevOps resource ID for Entra ID OAuth scopes
 	azureDevOpsResourceID = "499b84ac-1321-427f-aa17-267ca6975798"
-	// Entra ID OAuth 2.0 endpoints (tenant-specific URLs built at runtime)
-	entraAuthURLTemplate  = "https://login.microsoftonline.com/%s/oauth2/v2.0/authorize"
-	entraTokenURLTemplate = "https://login.microsoftonline.com/%s/oauth2/v2.0/token"
+	// Entra ID OAuth 2.0 endpoints (tenant-specific URLs built at runtime); %s is the tenant ID placeholder.
+	entraAuthURLTemplate  = "https://login.microsoftonline.com/%s/oauth2/v2.0/authorize" // #nosec G101 -- URL template, not a credential
+	entraTokenURLTemplate = "https://login.microsoftonline.com/%s/oauth2/v2.0/token"     // #nosec G101 -- URL template, not a credential
 	// maxExtractBytes caps the total uncompressed size of any single archive entry
 	// during zip→tar.gz conversion to prevent decompression bomb attacks.
 	maxExtractBytes = 500 << 20 // 500 MB
@@ -116,10 +116,10 @@ func (c *AzureDevOpsConnector) CompleteAuthorization(ctx context.Context, authCo
 	tokenURL := fmt.Sprintf(entraTokenURLTemplate, c.tenantID)
 	req, err := http.NewRequestWithContext(ctx, "POST", tokenURL, strings.NewReader(data.Encode()))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("azuredevops: create token request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
+	// #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to exchange code", err)
@@ -140,7 +140,7 @@ func (c *AzureDevOpsConnector) CompleteAuthorization(ctx context.Context, authCo
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("azuredevops: decode token response: %w", err)
 	}
 
 	expiresAt := time.Now().Add(time.Duration(result.ExpiresIn) * time.Second)
@@ -168,10 +168,10 @@ func (c *AzureDevOpsConnector) RenewToken(ctx context.Context, refreshToken stri
 	tokenURL := fmt.Sprintf(entraTokenURLTemplate, c.tenantID)
 	req, err := http.NewRequestWithContext(ctx, "POST", tokenURL, strings.NewReader(data.Encode()))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("azuredevops: create refresh request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
+	// #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to refresh token", err)
@@ -190,7 +190,7 @@ func (c *AzureDevOpsConnector) RenewToken(ctx context.Context, refreshToken stri
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("azuredevops: decode refresh response: %w", err)
 	}
 
 	expiresAt := time.Now().Add(time.Duration(result.ExpiresIn) * time.Second)
@@ -207,7 +207,7 @@ func (c *AzureDevOpsConnector) FetchRepositories(ctx context.Context, creds *scm
 	// First, get projects
 	projects, err := c.fetchProjects(ctx, creds)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("azuredevops: list projects: %w", err)
 	}
 
 	allRepos := []*scm.SourceRepo{}
@@ -221,7 +221,7 @@ func (c *AzureDevOpsConnector) FetchRepositories(ctx context.Context, creds *scm
 			continue
 		}
 		c.setAuthHeaders(req, creds)
-
+		// #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			continue
@@ -253,10 +253,10 @@ func (c *AzureDevOpsConnector) FetchRepository(ctx context.Context, creds *scm.A
 
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("azuredevops: create repo request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
-
+	// #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch repository", err)
@@ -272,7 +272,7 @@ func (c *AzureDevOpsConnector) FetchRepository(ctx context.Context, creds *scm.A
 
 	var adoRepo adoRepo
 	if err := json.NewDecoder(resp.Body).Decode(&adoRepo); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("azuredevops: decode repository: %w", err)
 	}
 
 	return c.convertRepo(&adoRepo, ownerName), nil
@@ -305,10 +305,10 @@ func (c *AzureDevOpsConnector) FetchBranches(ctx context.Context, creds *scm.Acc
 
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("azuredevops: create branches request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
-
+	// #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch branches", err)
@@ -327,7 +327,7 @@ func (c *AzureDevOpsConnector) FetchBranches(ctx context.Context, creds *scm.Acc
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("azuredevops: decode branches: %w", err)
 	}
 
 	branches := make([]*scm.GitBranch, len(result.Value))
@@ -348,10 +348,10 @@ func (c *AzureDevOpsConnector) FetchTags(ctx context.Context, creds *scm.AccessT
 
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("azuredevops: create tags request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
-
+	// #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch tags", err)
@@ -377,7 +377,7 @@ func (c *AzureDevOpsConnector) FetchTags(ctx context.Context, creds *scm.AccessT
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("azuredevops: decode tags: %w", err)
 	}
 
 	tags := make([]*scm.GitTag, len(result.Value))
@@ -395,7 +395,7 @@ func (c *AzureDevOpsConnector) FetchTags(ctx context.Context, creds *scm.AccessT
 func (c *AzureDevOpsConnector) FetchTagByName(ctx context.Context, creds *scm.AccessToken, ownerName, repoName, tagName string) (*scm.GitTag, error) {
 	tags, err := c.FetchTags(ctx, creds, ownerName, repoName, scm.DefaultPagination())
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("azuredevops: fetch tags for lookup: %w", err)
 	}
 
 	for _, tag := range tags {
@@ -412,10 +412,10 @@ func (c *AzureDevOpsConnector) FetchCommit(ctx context.Context, creds *scm.Acces
 
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("azuredevops: create commit request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
-
+	// #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch commit", err)
@@ -441,7 +441,7 @@ func (c *AzureDevOpsConnector) FetchCommit(ctx context.Context, creds *scm.Acces
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&adoCommit); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("azuredevops: decode commit: %w", err)
 	}
 
 	return &scm.GitCommit{
@@ -476,10 +476,10 @@ func (c *AzureDevOpsConnector) DownloadSourceArchive(ctx context.Context, creds 
 
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("azuredevops: create archive request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
-
+	// #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to download archive", err)
@@ -601,10 +601,10 @@ func (c *AzureDevOpsConnector) fetchProjects(ctx context.Context, creds *scm.Acc
 
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("azuredevops: create projects request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
-
+	// #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch projects", err)

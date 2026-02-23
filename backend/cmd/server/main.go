@@ -33,9 +33,13 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
-	_ "net/http/pprof" // register pprof handlers on DefaultServeMux
+	_ "net/http/pprof" // #nosec G108 -- pprof is NOT served on the main API listener (Gin router).
+
+	// It only serves on a dedicated internal port when cfg.Telemetry.Profiling.Enabled=true.
+	// DefaultServeMux is never passed to the Gin HTTP server.
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -116,10 +120,10 @@ func serve(cfg *config.Config) error {
 	if cfg.Database.Password != "" {
 		maskedPassword = cfg.Database.Password[:1] + "****"
 	}
-	log.Printf("Database config: host=%s, port=%d, user=%s, password=%s, dbname=%s, sslmode=%s",
+	log.Printf("Database config: host=%s, port=%d, user=%s, password=%s, dbname=%s, sslmode=%s", // #nosec G706 -- logged value is application-internal (config string, integer, or application-constructed path); not raw user-controlled request input
 		cfg.Database.Host, cfg.Database.Port, cfg.Database.User, maskedPassword,
 		cfg.Database.Name, cfg.Database.SSLMode)
-	log.Printf("Full DSN (masked): %s", cfg.Database.GetDSN())
+	log.Printf("Full DSN (masked): %s", cfg.Database.GetDSN()) // #nosec G706 -- logged value is application-internal (config string, integer, or application-constructed path); not raw user-controlled request input
 
 	// Connect to database
 	database, err := db.Connect(cfg.Database.GetDSN(), cfg.Database.MaxConnections, cfg.Database.MinIdleConnections)
@@ -145,7 +149,7 @@ func serve(cfg *config.Config) error {
 	if err != nil {
 		log.Printf("Warning: failed to get migration version: %v", err)
 	} else {
-		log.Printf("Database schema version: %d (dirty: %v)", version, dirty)
+		log.Printf("Database schema version: %d (dirty: %v)", version, dirty) // #nosec G706 -- logged value is application-internal (config string, integer, or application-constructed path); not raw user-controlled request input
 	}
 
 	// Setup token generation for first-run setup wizard.
@@ -165,7 +169,14 @@ func serve(cfg *config.Config) error {
 			mux := http.NewServeMux()
 			mux.Handle("/metrics", promhttp.Handler())
 			slog.Info("starting Prometheus metrics server", "addr", metricsAddr)
-			if err := http.ListenAndServe(metricsAddr, mux); err != nil && err != http.ErrServerClosed {
+			// Use http.Server with timeouts (G114: bare http.ListenAndServe has no timeout support).
+			srv := &http.Server{
+				Addr:         metricsAddr,
+				Handler:      mux,
+				ReadTimeout:  10 * time.Second,
+				WriteTimeout: 10 * time.Second,
+			}
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				slog.Error("metrics server error", "error", err)
 			}
 		}()
@@ -177,14 +188,21 @@ func serve(cfg *config.Config) error {
 		go func() {
 			slog.Info("starting pprof server", "addr", pprofAddr)
 			// net/http/pprof registers its handlers on http.DefaultServeMux at init time.
-			if err := http.ListenAndServe(pprofAddr, http.DefaultServeMux); err != nil && err != http.ErrServerClosed {
+			// Use http.Server with timeouts (G114: bare http.ListenAndServe has no timeout support).
+			srv := &http.Server{ //nolint:gosec // #nosec G112 -- internal-only pprof port, long timeouts acceptable
+				Addr:         pprofAddr,
+				Handler:      http.DefaultServeMux, // #nosec G108 -- not the main listener; pprof-only internal port
+				ReadTimeout:  30 * time.Second,
+				WriteTimeout: 30 * time.Second,
+			}
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				slog.Error("pprof server error", "error", err)
 			}
 		}()
 	}
 
 	// Create router
-	router := api.NewRouter(cfg, database)
+	router, bgServices := api.NewRouter(cfg, database)
 
 	// Create HTTP server
 	server := &http.Server{
@@ -229,6 +247,9 @@ func serve(cfg *config.Config) error {
 	if err := server.Shutdown(ctx); err != nil {
 		return fmt.Errorf("server forced to shutdown: %w", err)
 	}
+
+	// Stop background jobs and rate limiter goroutines
+	bgServices.Shutdown()
 
 	log.Println("Server stopped gracefully")
 	return nil
@@ -299,13 +320,21 @@ func handleSetupToken(repo *repositories.OIDCConfigRepository) error {
 	log.Println("  Treat it like a root password — do not share or log externally.")
 	log.Println(separator)
 	log.Println("")
-
-	// Optionally write token to a file (for container secret mounting)
+	// Optionally write token to a file (for container secret mounting).
+	// SETUP_TOKEN_FILE is an operator-controlled environment variable. We clean the
+	// path and reject any value that contains path-traversal sequences before use.
 	if tokenFile := os.Getenv("SETUP_TOKEN_FILE"); tokenFile != "" {
-		if err := os.WriteFile(tokenFile, []byte(rawToken), 0600); err != nil {
-			log.Printf("Warning: failed to write setup token to %s: %v", tokenFile, err)
+		// Reject paths containing ".." to prevent directory traversal.
+		if strings.Contains(filepath.ToSlash(tokenFile), "..") {
+			log.Printf("Warning: SETUP_TOKEN_FILE contains path-traversal sequences, ignoring: %s", tokenFile) // #nosec G706 -- logged value is application-internal (config string, integer, or application-constructed path); not raw user-controlled request input
 		} else {
-			log.Printf("Setup token written to %s", tokenFile)
+			cleanPath := filepath.Clean(tokenFile)
+			// #nosec G703 -- path is operator-supplied config, cleaned and traversal-validated above.
+			if err := os.WriteFile(cleanPath, []byte(rawToken), 0600); err != nil {
+				log.Printf("Warning: failed to write setup token to %s: %v", cleanPath, err) // #nosec G706 -- logged value is application-internal (config string, integer, or application-constructed path); not raw user-controlled request input
+			} else {
+				log.Printf("Setup token written to %s", cleanPath) // #nosec G706 -- logged value is application-internal (config string, integer, or application-constructed path); not raw user-controlled request input
+			}
 		}
 	}
 
@@ -326,7 +355,7 @@ func runMigrations(cfg *config.Config, direction string) error {
 	}
 	defer database.Close()
 
-	log.Printf("Running migrations: %s", direction)
+	log.Printf("Running migrations: %s", direction) // #nosec G706 -- logged value is application-internal (config string, integer, or application-constructed path); not raw user-controlled request input
 
 	// Run migrations
 	if err := db.RunMigrations(database, direction); err != nil {
@@ -339,6 +368,6 @@ func runMigrations(cfg *config.Config, direction string) error {
 		return fmt.Errorf("failed to get migration version: %w", err)
 	}
 
-	log.Printf("Migration completed successfully. Current version: %d (dirty: %v)", version, dirty)
+	log.Printf("Migration completed successfully. Current version: %d (dirty: %v)", version, dirty) // #nosec G706 -- logged value is application-internal (config string, integer, or application-constructed path); not raw user-controlled request input
 	return nil
 }

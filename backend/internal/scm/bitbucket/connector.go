@@ -4,6 +4,7 @@
 package bitbucket
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -275,11 +276,11 @@ func (c *BitbucketDCConnector) DownloadSourceArchive(ctx context.Context, creds 
 
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("bitbucket: create archive request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to download archive", err)
 	}
@@ -311,7 +312,7 @@ func (c *BitbucketDCConnector) RegisterWebhook(ctx context.Context, creds *scm.A
 
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("bitbucket: marshal webhook body: %w", err)
 	}
 
 	var result struct {
@@ -321,14 +322,14 @@ func (c *BitbucketDCConnector) RegisterWebhook(ctx context.Context, creds *scm.A
 		Active bool     `json:"active"`
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, strings.NewReader(string(bodyBytes)))
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("bitbucket: create webhook request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to create webhook", err)
 	}
@@ -339,7 +340,7 @@ func (c *BitbucketDCConnector) RegisterWebhook(ctx context.Context, creds *scm.A
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("bitbucket: decode webhook response: %w", err)
 	}
 
 	return &scm.WebhookInfo{
@@ -356,11 +357,11 @@ func (c *BitbucketDCConnector) RemoveWebhook(ctx context.Context, creds *scm.Acc
 
 	req, err := http.NewRequestWithContext(ctx, "DELETE", endpoint, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("bitbucket: create delete-webhook request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return scm.WrapRemoteError(0, "failed to delete webhook", err)
 	}
@@ -388,18 +389,19 @@ func (c *BitbucketDCConnector) ParseDelivery(payloadBytes []byte, httpHeaders ma
 
 	switch payload.EventKey {
 	case "repo:refs_changed":
-		for _, change := range payload.Changes {
+		if len(payload.Changes) > 0 {
+			change := payload.Changes[0]
 			ref = change.Ref.ID
 			commitSHA = change.ToHash
 
-			if change.Ref.Type == "TAG" {
+			switch change.Ref.Type {
+			case "TAG":
 				eventType = scm.WebhookEventTag
 				tagName = change.Ref.DisplayID
-			} else if change.Ref.Type == "BRANCH" {
+			case "BRANCH":
 				eventType = scm.WebhookEventPush
 				branch = change.Ref.DisplayID
 			}
-			break // process first change
 		}
 	case "diagnostics:ping":
 		eventType = scm.WebhookEventPing
@@ -433,10 +435,7 @@ func (c *BitbucketDCConnector) VerifyDeliverySignature(payloadBytes []byte, sign
 	}
 
 	// BB DC uses "sha256=<hex>" format
-	sig := signatureHeader
-	if strings.HasPrefix(sig, "sha256=") {
-		sig = strings.TrimPrefix(sig, "sha256=")
-	}
+	sig, _ := strings.CutPrefix(signatureHeader, "sha256=")
 
 	expectedSig, err := hex.DecodeString(sig)
 	if err != nil {
@@ -460,14 +459,14 @@ func (c *BitbucketDCConnector) setAuthHeaders(req *http.Request, creds *scm.Acce
 func (c *BitbucketDCConnector) doJSON(ctx context.Context, creds *scm.AccessToken, method, endpoint string, body io.Reader, result interface{}) error {
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
 	if err != nil {
-		return err
+		return fmt.Errorf("bitbucket: create request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return scm.WrapRemoteError(0, "request failed", err)
 	}

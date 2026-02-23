@@ -111,7 +111,7 @@ func (h *MirrorHandler) CreateMirrorConfig(c *gin.Context) {
 
 	// Convert filter arrays to JSON strings
 	var namespaceFilter, providerFilter, platformFilter *string
-	if req.NamespaceFilter != nil && len(req.NamespaceFilter) > 0 {
+	if len(req.NamespaceFilter) > 0 {
 		jsonData, err := json.Marshal(req.NamespaceFilter)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to serialize namespace filter: " + err.Error()})
@@ -120,7 +120,7 @@ func (h *MirrorHandler) CreateMirrorConfig(c *gin.Context) {
 		str := string(jsonData)
 		namespaceFilter = &str
 	}
-	if req.ProviderFilter != nil && len(req.ProviderFilter) > 0 {
+	if len(req.ProviderFilter) > 0 {
 		jsonData, err := json.Marshal(req.ProviderFilter)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to serialize provider filter: " + err.Error()})
@@ -129,7 +129,7 @@ func (h *MirrorHandler) CreateMirrorConfig(c *gin.Context) {
 		str := string(jsonData)
 		providerFilter = &str
 	}
-	if req.PlatformFilter != nil && len(req.PlatformFilter) > 0 {
+	if len(req.PlatformFilter) > 0 {
 		jsonData, err := json.Marshal(req.PlatformFilter)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to serialize platform filter: " + err.Error()})
@@ -449,7 +449,7 @@ func (h *MirrorHandler) TriggerSync(c *gin.Context) {
 	// Trigger the actual sync via the background job
 	// The job will handle creating the sync history record and checking for active syncs
 	if h.syncJob != nil {
-		log.Printf("API: Triggering manual sync for mirror %s (ID: %s)", config.Name, id)
+		log.Printf("API: Triggering manual sync for mirror %s (ID: %s)", config.Name, id) // #nosec G706 -- logged value is application-internal (config string, integer, or application-constructed path); not raw user-controlled request input
 		if err := h.syncJob.TriggerManualSync(c.Request.Context(), id); err != nil {
 			if err.Error() == "sync already in progress for this mirror" {
 				c.JSON(http.StatusConflict, gin.H{"error": "A sync is already in progress for this mirror"})

@@ -67,8 +67,8 @@ func SearchHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 		}
 		// In single-tenant mode, orgID will be empty string which the repository will handle
 
-		// Search providers
-		providers, total, err := providerRepo.SearchProviders(
+		// Search providers with aggregated version stats in a single query
+		providers, total, err := providerRepo.SearchProvidersWithStats(
 			c.Request.Context(),
 			orgID,
 			query,
@@ -86,15 +86,10 @@ func SearchHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 		// Format results
 		results := make([]gin.H, len(providers))
 		for i, p := range providers {
-			// Get latest version for each provider
-			versions, _ := providerRepo.ListVersions(c.Request.Context(), p.ID)
 			var latestVersion string
-			if len(versions) > 0 {
-				latestVersion = versions[0].Version
+			if p.LatestVersion != nil {
+				latestVersion = *p.LatestVersion
 			}
-
-			// Get total downloads across all platforms for this provider
-			totalDownloads, _ := providerRepo.GetTotalDownloadCount(c.Request.Context(), p.ID)
 
 			results[i] = gin.H{
 				"id":              p.ID,
@@ -103,7 +98,7 @@ func SearchHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 				"description":     p.Description,
 				"source":          p.Source,
 				"latest_version":  latestVersion,
-				"download_count":  totalDownloads,
+				"download_count":  p.TotalDownloads,
 				"created_by":      p.CreatedBy,
 				"created_by_name": p.CreatedByName,
 				"created_at":      p.CreatedAt,

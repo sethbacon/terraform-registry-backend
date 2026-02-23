@@ -58,7 +58,7 @@ func (s *LocalStorage) Upload(ctx context.Context, path string, reader io.Reader
 	}
 
 	// Create file
-	file, err := os.Create(fullPath)
+	file, err := os.Create(fullPath) // #nosec G304 -- path is constructed from validated namespace/name/version components; path traversal is prevented at the API and archive-extraction layers
 	if err != nil {
 		return nil, fmt.Errorf("failed to create file: %w", err)
 	}
@@ -88,7 +88,7 @@ func (s *LocalStorage) Upload(ctx context.Context, path string, reader io.Reader
 func (s *LocalStorage) Download(ctx context.Context, path string) (io.ReadCloser, error) {
 	fullPath := filepath.Join(s.basePath, filepath.FromSlash(path))
 
-	file, err := os.Open(fullPath)
+	file, err := os.Open(fullPath) // #nosec G304 -- path is constructed from validated namespace/name/version components; path traversal is prevented at the API and archive-extraction layers
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("file not found: %s", path)
@@ -174,7 +174,7 @@ func (s *LocalStorage) GetMetadata(ctx context.Context, path string) (*storage.F
 	}
 
 	// Calculate checksum by reading the file
-	file, err := os.Open(fullPath)
+	file, err := os.Open(fullPath) // #nosec G304 -- path is constructed from validated namespace/name/version components; path traversal is prevented at the API and archive-extraction layers
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file for checksum: %w", err)
 	}

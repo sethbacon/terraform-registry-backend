@@ -305,8 +305,14 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 			return
 		}
 
+		// Fetch user scopes to embed in JWT (avoids per-request DB lookup)
+		scopes, err := h.orgRepo.GetUserCombinedScopes(ctx, user.ID)
+		if err != nil {
+			scopes = []string{}
+		}
+
 		// Generate JWT token for user
-		jwtToken, err := auth.GenerateJWT(user.ID, user.Email, 24*time.Hour)
+		jwtToken, err := auth.GenerateJWT(user.ID, user.Email, scopes, 24*time.Hour)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to generate JWT",
@@ -364,8 +370,14 @@ func (h *AuthHandlers) RefreshHandler() gin.HandlerFunc {
 			return
 		}
 
+		// Fetch fresh scopes to embed in the new JWT
+		scopes, err := h.orgRepo.GetUserCombinedScopes(c.Request.Context(), user.ID)
+		if err != nil {
+			scopes = []string{}
+		}
+
 		// Generate new JWT token
-		newToken, err := auth.GenerateJWT(user.ID, user.Email, 24*time.Hour)
+		newToken, err := auth.GenerateJWT(user.ID, user.Email, scopes, 24*time.Hour)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to generate new token",

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -35,6 +36,16 @@ import (
 func PlatformIndexHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 	providerRepo := repositories.NewProviderRepository(db)
 	orgRepo := repositories.NewOrganizationRepository(db)
+
+	// storageBackend is initialized exactly once on the first request that reaches
+	// the download-URL generation step.  Using sync.Once avoids both re-initialising
+	// the backend on every request and failing handler setup when the storage config
+	// has not been applied yet (e.g. during the setup wizard).
+	var (
+		storageOnce    sync.Once
+		storageBackend storage.Storage
+		storageErr     error
+	)
 
 	return func(c *gin.Context) {
 		// Note: hostname is in the path for compatibility with Network Mirror Protocol
@@ -118,9 +129,11 @@ func PlatformIndexHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 			return
 		}
 
-		// Get storage backend
-		storageBackend, err := storage.NewStorage(cfg)
-		if err != nil {
+		// storageBackend is initialized once at handler setup time (not per-request)
+		storageOnce.Do(func() {
+			storageBackend, storageErr = storage.NewStorage(cfg)
+		})
+		if storageErr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to initialize storage backend",
 			})

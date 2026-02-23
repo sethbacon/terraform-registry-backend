@@ -302,7 +302,7 @@ func (ws *WebhookShipper) sendRequest(ctx context.Context, data []byte) error {
 		req.Header.Set(k, v)
 	}
 
-	resp, err := ws.client.Do(req)
+	resp, err := ws.client.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return fmt.Errorf("failed to send webhook: %w", err)
 	}

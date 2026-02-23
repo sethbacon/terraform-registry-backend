@@ -7,6 +7,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 )
@@ -14,16 +16,50 @@ import (
 // OrganizationRepository handles database operations for organizations
 type OrganizationRepository struct {
 	db *sql.DB
+
+	// Cache for GetDefaultOrganization (called on nearly every request)
+	defaultOrgMu    sync.RWMutex
+	defaultOrgCache *models.Organization
+	defaultOrgAt    time.Time
 }
+
+const defaultOrgCacheTTL = 60 * time.Second
 
 // NewOrganizationRepository creates a new organization repository
 func NewOrganizationRepository(db *sql.DB) *OrganizationRepository {
 	return &OrganizationRepository{db: db}
 }
 
-// GetDefaultOrganization retrieves the default organization for single-tenant mode
+// GetDefaultOrganization retrieves the default organization for single-tenant mode.
+// Results are cached in memory with a 60-second TTL since the default org rarely changes.
 func (r *OrganizationRepository) GetDefaultOrganization(ctx context.Context) (*models.Organization, error) {
-	return r.GetByName(ctx, "default")
+	r.defaultOrgMu.RLock()
+	if r.defaultOrgCache != nil && time.Since(r.defaultOrgAt) < defaultOrgCacheTTL {
+		org := *r.defaultOrgCache // return a copy
+		r.defaultOrgMu.RUnlock()
+		return &org, nil
+	}
+	r.defaultOrgMu.RUnlock()
+
+	org, err := r.GetByName(ctx, "default")
+	if err != nil {
+		return nil, err
+	}
+	if org != nil {
+		r.defaultOrgMu.Lock()
+		r.defaultOrgCache = org
+		r.defaultOrgAt = time.Now()
+		r.defaultOrgMu.Unlock()
+	}
+	return org, nil
+}
+
+// InvalidateDefaultOrgCache clears the cached default organization,
+// forcing the next call to GetDefaultOrganization to query the database.
+func (r *OrganizationRepository) InvalidateDefaultOrgCache() {
+	r.defaultOrgMu.Lock()
+	r.defaultOrgCache = nil
+	r.defaultOrgMu.Unlock()
 }
 
 // GetByName retrieves an organization by its name
@@ -98,6 +134,7 @@ func (r *OrganizationRepository) CreateOrganization(ctx context.Context, org *mo
 		return fmt.Errorf("failed to create organization: %w", err)
 	}
 
+	r.InvalidateDefaultOrgCache()
 	return nil
 }
 
@@ -351,6 +388,7 @@ func (r *OrganizationRepository) Update(ctx context.Context, org *models.Organiz
 		return fmt.Errorf("failed to update organization: %w", err)
 	}
 
+	r.InvalidateDefaultOrgCache()
 	return nil
 }
 
@@ -362,6 +400,7 @@ func (r *OrganizationRepository) Delete(ctx context.Context, orgID string) error
 		return fmt.Errorf("failed to delete organization: %w", err)
 	}
 
+	r.InvalidateDefaultOrgCache()
 	return nil
 }
 

@@ -87,10 +87,12 @@ var moduleVersionGetCols2 = []string{
 	"commit_sha", "tag_name", "scm_repo_id",
 }
 
-// SearchModules result: id, org_id, namespace, name, system, description, source, created_by, created_by_name, created_at, updated_at
+// SearchModulesWithStats result: id, org_id, namespace, name, system, description, source,
+// created_by, created_by_name, created_at, updated_at, latest_version, total_downloads
 var moduleSearchCols = []string{
 	"id", "organization_id", "namespace", "name", "system", "description", "source",
 	"created_by", "created_by_name", "created_at", "updated_at",
+	"latest_version", "total_downloads",
 }
 
 // ---------------------------------------------------------------------------
@@ -125,7 +127,8 @@ func sampleModuleVersionGetRow() *sqlmock.Rows {
 func sampleModuleSearchRow() *sqlmock.Rows {
 	return sqlmock.NewRows(moduleSearchCols).
 		AddRow("mod-1", "org-1", "hashicorp", "consul", "aws",
-			nil, "hashicorp/consul/aws", nil, nil, time.Now(), time.Now())
+			nil, "hashicorp/consul/aws", nil, nil, time.Now(), time.Now(),
+			nil, int64(0))
 }
 
 // ---------------------------------------------------------------------------
@@ -256,10 +259,10 @@ func TestListVersionsHandler_VersionsError(t *testing.T) {
 func TestSearchHandler_Success_SingleTenant(t *testing.T) {
 	mock, r := newSearchRouter(t, &config.Config{})
 
-	// No org query in single-tenant mode
+	// No org query in single-tenant mode; SearchModulesWithStats emits 2 queries:
+	// 1. COUNT, 2. LATERAL join search (no separate module_versions query)
 	mock.ExpectQuery("SELECT COUNT.*FROM modules").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectQuery("SELECT.*FROM modules.*ORDER BY").WillReturnRows(sampleModuleSearchRow())
-	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").WillReturnRows(sqlmock.NewRows(moduleVersionListCols2))
 
 	w := doGET(r, "/v1/modules/search?q=consul")
 	if w.Code != http.StatusOK {
@@ -603,7 +606,8 @@ func TestUploadHandler_ModuleQueryError(t *testing.T) {
 	mock, r := newModuleUploadRouter(t, &mockStore{})
 
 	mock.ExpectQuery("SELECT.*FROM organizations").WillReturnRows(sampleOrgRow2())
-	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnError(errDB2)
+	// UpsertModule (INSERT … ON CONFLICT) fails
+	mock.ExpectQuery("INSERT INTO modules").WillReturnError(errDB2)
 
 	req := buildModuleUploadRequest(t, "/api/v1/modules", map[string]string{
 		"namespace": "hashicorp",
@@ -621,10 +625,9 @@ func TestUploadHandler_VersionConflict(t *testing.T) {
 	mock, r := newModuleUploadRouter(t, &mockStore{})
 
 	mock.ExpectQuery("SELECT.*FROM organizations").WillReturnRows(sampleOrgRow2())
-	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(sampleModuleRow2())
-	// UpdateModule: UPDATE modules … RETURNING updated_at
-	mock.ExpectQuery("UPDATE modules").WillReturnRows(
-		sqlmock.NewRows(moduleUpdateCols2).AddRow(time.Now()),
+	// UpsertModule: INSERT … ON CONFLICT … RETURNING — module already exists, returns its ID
+	mock.ExpectQuery("INSERT INTO modules").WillReturnRows(
+		sqlmock.NewRows(moduleInsertCols2).AddRow("mod-1", time.Now(), time.Now()),
 	)
 	// GetVersion: existing version found → conflict
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id.*AND version").
@@ -646,11 +649,13 @@ func TestUploadHandler_Success_NewModule(t *testing.T) {
 	mock, r := newModuleUploadRouter(t, &mockStore{})
 
 	mock.ExpectQuery("SELECT.*FROM organizations").WillReturnRows(sampleOrgRow2())
-	// GetModule → not found → create new module
-	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(sqlmock.NewRows(moduleCols2))
-	// CreateModule INSERT RETURNING id, created_at, updated_at
+	// UpsertModule INSERT … ON CONFLICT … RETURNING id, created_at, updated_at
 	mock.ExpectQuery("INSERT INTO modules").WillReturnRows(
 		sqlmock.NewRows(moduleInsertCols2).AddRow("mod-new", time.Now(), time.Now()),
+	)
+	// UpdateModule: description and source are provided in this test
+	mock.ExpectQuery("UPDATE modules").WillReturnRows(
+		sqlmock.NewRows(moduleUpdateCols2).AddRow(time.Now()),
 	)
 	// GetVersion → not found (no conflict)
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id.*AND version").
@@ -678,10 +683,10 @@ func TestUploadHandler_Success_ExistingModule(t *testing.T) {
 	mock, r := newModuleUploadRouter(t, &mockStore{})
 
 	mock.ExpectQuery("SELECT.*FROM organizations").WillReturnRows(sampleOrgRow2())
-	// GetModule → found → update
-	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(sampleModuleRow2())
-	mock.ExpectQuery("UPDATE modules").WillReturnRows(
-		sqlmock.NewRows(moduleUpdateCols2).AddRow(time.Now()),
+	// UpsertModule INSERT … ON CONFLICT … returns existing module ID; no description/source
+	// in this request so UpdateModule is NOT called
+	mock.ExpectQuery("INSERT INTO modules").WillReturnRows(
+		sqlmock.NewRows(moduleInsertCols2).AddRow("mod-1", time.Now(), time.Now()),
 	)
 	// GetVersion → not found
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id.*AND version").

@@ -36,6 +36,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/api/modules"
 	"github.com/terraform-registry/terraform-registry/internal/api/providers"
 	"github.com/terraform-registry/terraform-registry/internal/api/setup"
+	terraform_binaries "github.com/terraform-registry/terraform-registry/internal/api/terraform_binaries"
 	"github.com/terraform-registry/terraform-registry/internal/api/webhooks"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/auth/oidc"
@@ -60,8 +61,37 @@ import (
 	_ "github.com/terraform-registry/terraform-registry/internal/scm/gitlab"
 )
 
+// BackgroundServices holds references to background jobs and resources that must
+// be stopped during graceful shutdown. The caller (cmd/server) is responsible for
+// calling Shutdown() when the process receives a termination signal.
+type BackgroundServices struct {
+	mirrorSyncJob   *jobs.MirrorSyncJob
+	tfMirrorSyncJob *jobs.TerraformMirrorSyncJob
+	expiryNotifier  *jobs.APIKeyExpiryNotifier
+	rateLimiters    []*middleware.RateLimiter
+}
+
+// Shutdown stops all background goroutines. It should be called after the HTTP
+// server has been shut down so that in-flight requests are drained first.
+func (bg *BackgroundServices) Shutdown() {
+	slog.Info("stopping background services")
+	if bg.mirrorSyncJob != nil {
+		bg.mirrorSyncJob.Stop()
+	}
+	if bg.tfMirrorSyncJob != nil {
+		bg.tfMirrorSyncJob.Stop()
+	}
+	if bg.expiryNotifier != nil {
+		bg.expiryNotifier.Stop()
+	}
+	for _, rl := range bg.rateLimiters {
+		rl.Stop()
+	}
+	slog.Info("all background services stopped")
+}
+
 // NewRouter creates and configures the Gin router
-func NewRouter(cfg *config.Config, db *sql.DB) *gin.Engine {
+func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices) {
 	router := gin.New()
 
 	// Initialize storage backend
@@ -92,6 +122,15 @@ func NewRouter(cfg *config.Config, db *sql.DB) *gin.Engine {
 	mirrorSyncJob.Start(context.Background(), 10)
 	log.Println("Mirror sync job started (checking every 10 minutes)")
 
+	// Initialize Terraform binary mirror repository and sync job
+	tfMirrorRepo := repositories.NewTerraformMirrorRepository(sqlxDB)
+	tfMirrorSyncJob := jobs.NewTerraformMirrorSyncJob(tfMirrorRepo, storageBackend, cfg.Storage.DefaultBackend)
+	tfMirrorSyncJob.Start(context.Background(), 10)
+	log.Println("Terraform binary mirror sync job started (checking every 10 minutes)")
+
+	// Public handler is created here (before route registration)
+	tfBinariesHandler := terraform_binaries.NewHandler(tfMirrorRepo, storageBackend)
+
 	// Initialize and start the API key expiry notifier
 	expiryNotifier := jobs.NewAPIKeyExpiryNotifier(apiKeyRepo, userRepo, &cfg.Notifications)
 	go expiryNotifier.Start(context.Background())
@@ -120,8 +159,8 @@ func NewRouter(cfg *config.Config, db *sql.DB) *gin.Engine {
 	// Health check endpoint
 	router.GET("/health", healthCheckHandler(db))
 
-	// Readiness check endpoint
-	router.GET("/ready", readinessHandler(db))
+	// Readiness check endpoint (includes storage backend probe)
+	router.GET("/ready", readinessHandler(db, storageBackend))
 
 	// Service discovery endpoint (Terraform protocol)
 	router.GET("/.well-known/terraform.json", serviceDiscoveryHandler(cfg))
@@ -299,6 +338,17 @@ func NewRouter(cfg *config.Config, db *sql.DB) *gin.Engine {
 		v1Mirror.GET("/:hostname/:namespace/:type/:versionfile", mirror.PlatformIndexHandler(db, cfg))
 	}
 
+	// Terraform Binary Mirror endpoints (public, no auth required)
+	// Allows clients to discover and download official Terraform/OpenTofu binaries synced by
+	// any named mirror config.  The :name segment identifies the mirror configuration.
+	tfBinaries := router.Group("/terraform/binaries")
+	{
+		tfBinaries.GET("/:name/versions", tfBinariesHandler.ListVersions)
+		tfBinaries.GET("/:name/versions/latest", tfBinariesHandler.GetLatestVersion)
+		tfBinaries.GET("/:name/versions/:version", tfBinariesHandler.GetVersion)
+		tfBinaries.GET("/:name/versions/:version/:os/:arch", tfBinariesHandler.DownloadBinary)
+	}
+
 	// Initialize admin handlers
 	var authHandlers *admin.AuthHandlers
 	authHandlers, err = admin.NewAuthHandlers(cfg, db)
@@ -339,6 +389,10 @@ func NewRouter(cfg *config.Config, db *sql.DB) *gin.Engine {
 	statsHandlers := admin.NewStatsHandler(sqlxDB)
 	mirrorHandlers := admin.NewMirrorHandler(mirrorRepo)
 	mirrorHandlers.SetSyncJob(mirrorSyncJob) // Connect sync job for manual triggers
+
+	// Initialize Terraform binary mirror admin handler
+	tfMirrorAdminHandler := admin.NewTerraformMirrorHandler(tfMirrorRepo)
+	tfMirrorAdminHandler.SetSyncJob(tfMirrorSyncJob)
 	providerAdminHandlers := admin.NewProviderAdminHandlers(db, storageBackend, cfg)
 	moduleAdminHandlers := admin.NewModuleAdminHandlers(db, storageBackend, cfg)
 
@@ -583,6 +637,28 @@ func NewRouter(cfg *config.Config, db *sql.DB) *gin.Engine {
 				mirrorsGroup.POST("/:id/sync", middleware.RequireScope(auth.ScopeMirrorsManage), mirrorHandlers.TriggerSync)
 			}
 
+			// Terraform Binary Mirror admin endpoints (multi-config)
+			// Read operations require mirrors:read scope; management requires mirrors:manage
+			tfMirrorGroup := authenticatedGroup.Group("/admin/terraform-mirrors")
+			{
+				// Config CRUD
+				tfMirrorGroup.GET("", middleware.RequireScope(auth.ScopeMirrorsRead), tfMirrorAdminHandler.ListConfigs)
+				tfMirrorGroup.POST("", middleware.RequireScope(auth.ScopeMirrorsManage), tfMirrorAdminHandler.CreateConfig)
+				tfMirrorGroup.GET("/:id", middleware.RequireScope(auth.ScopeMirrorsRead), tfMirrorAdminHandler.GetConfig)
+				tfMirrorGroup.GET("/:id/status", middleware.RequireScope(auth.ScopeMirrorsRead), tfMirrorAdminHandler.GetStatus)
+				tfMirrorGroup.PUT("/:id", middleware.RequireScope(auth.ScopeMirrorsManage), tfMirrorAdminHandler.UpdateConfig)
+				tfMirrorGroup.DELETE("/:id", middleware.RequireScope(auth.ScopeMirrorsManage), tfMirrorAdminHandler.DeleteConfig)
+				// Sync trigger
+				tfMirrorGroup.POST("/:id/sync", middleware.RequireScope(auth.ScopeMirrorsManage), tfMirrorAdminHandler.TriggerSync)
+				// Versions
+				tfMirrorGroup.GET("/:id/versions", middleware.RequireScope(auth.ScopeMirrorsRead), tfMirrorAdminHandler.ListVersions)
+				tfMirrorGroup.GET("/:id/versions/:version", middleware.RequireScope(auth.ScopeMirrorsRead), tfMirrorAdminHandler.GetVersion)
+				tfMirrorGroup.DELETE("/:id/versions/:version", middleware.RequireScope(auth.ScopeMirrorsManage), tfMirrorAdminHandler.DeleteVersion)
+				tfMirrorGroup.GET("/:id/versions/:version/platforms", middleware.RequireScope(auth.ScopeMirrorsRead), tfMirrorAdminHandler.ListPlatforms)
+				// Sync history
+				tfMirrorGroup.GET("/:id/history", middleware.RequireScope(auth.ScopeMirrorsRead), tfMirrorAdminHandler.GetSyncHistory)
+			}
+
 			// Role Templates management
 			roleTemplatesGroup := authenticatedGroup.Group("/admin/role-templates")
 			{
@@ -647,7 +723,14 @@ func NewRouter(cfg *config.Config, db *sql.DB) *gin.Engine {
 	// Webhook endpoints (public, authentication via signature validation)
 	router.POST("/webhooks/scm/:module_source_repo_id/:secret", scmWebhookHandler.HandleWebhook)
 
-	return router
+	bg := &BackgroundServices{
+		mirrorSyncJob:   mirrorSyncJob,
+		tfMirrorSyncJob: tfMirrorSyncJob,
+		expiryNotifier:  expiryNotifier,
+		rateLimiters:    []*middleware.RateLimiter{authRateLimiter, generalRateLimiter, uploadRateLimiter},
+	}
+
+	return router, bg
 }
 
 // @Summary      Health check
@@ -683,21 +766,43 @@ func healthCheckHandler(db *sql.DB) gin.HandlerFunc {
 // @Success      200  {object}  map[string]interface{}  "ready: true, time: RFC3339 timestamp"
 // @Failure      503  {object}  map[string]interface{}  "ready: false, error: database not ready"
 // @Router       /ready [get]
-// readinessHandler returns the readiness status of the service
-func readinessHandler(db *sql.DB) gin.HandlerFunc {
+// readinessHandler returns the readiness status of the service.
+// Unlike the liveness probe (/health), this also checks the storage backend so
+// that a Kubernetes readiness gate fails when uploads/downloads would error.
+func readinessHandler(db *sql.DB, storageBackend storage.Storage) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		checks := gin.H{}
+
 		// Check database connection
 		if err := db.Ping(); err != nil {
+			checks["database"] = "unhealthy"
 			c.JSON(http.StatusServiceUnavailable, gin.H{
-				"ready": false,
-				"error": "database not ready",
+				"ready":  false,
+				"checks": checks,
+				"error":  "database not ready",
 			})
 			return
 		}
+		checks["database"] = "healthy"
+
+		// Check storage backend — probe with a known-absent sentinel path.
+		// Exists() exercises authentication and network connectivity without
+		// creating any state.
+		if _, err := storageBackend.Exists(c.Request.Context(), ".readiness-probe"); err != nil {
+			checks["storage"] = "unhealthy"
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"ready":  false,
+				"checks": checks,
+				"error":  "storage backend not ready",
+			})
+			return
+		}
+		checks["storage"] = "healthy"
 
 		c.JSON(http.StatusOK, gin.H{
-			"ready": true,
-			"time":  time.Now().UTC().Format(time.RFC3339),
+			"ready":  true,
+			"checks": checks,
+			"time":   time.Now().UTC().Format(time.RFC3339),
 		})
 	}
 }

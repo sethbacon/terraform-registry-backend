@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 
 	// Register storage backends so storage.NewStorage works in tests
@@ -70,6 +71,14 @@ func sampleStorageCfgRow() *sqlmock.Rows {
 
 func newStorageRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	t.Helper()
+	return newStorageRouterWithCipher(t, nil)
+}
+
+// newStorageRouterWithCipher creates a test gin router with an optional tokenCipher.
+// Use nil cipher for tests that do not exercise credential encryption.
+// Use a real cipher (created via crypto.NewTokenCipher) for Azure/S3/GCS credential tests.
+func newStorageRouterWithCipher(t *testing.T, cipher *crypto.TokenCipher) (sqlmock.Sqlmock, *gin.Engine) {
+	t.Helper()
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
@@ -78,7 +87,7 @@ func newStorageRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 
 	sqlxDB := sqlx.NewDb(db, "sqlmock")
 	storageRepo := repositories.NewStorageConfigRepository(sqlxDB)
-	h := NewStorageHandlers(&config.Config{}, storageRepo, nil) // nil tokenCipher ok for non-credential tests
+	h := NewStorageHandlers(&config.Config{}, storageRepo, cipher)
 
 	r := gin.New()
 	r.GET("/setup/status", h.GetSetupStatus)
@@ -653,6 +662,32 @@ func TestStorageCreateConfig_GCSWorkloadIdentitySuccess(t *testing.T) {
 	}
 }
 
+func TestStorageCreateConfig_AzureSuccess(t *testing.T) {
+	cipher, err := crypto.NewTokenCipher(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("NewTokenCipher: %v", err)
+	}
+	mock, r := newStorageRouterWithCipher(t, cipher)
+	mock.ExpectQuery("SELECT storage_configured FROM system_settings").
+		WillReturnRows(sqlmock.NewRows([]string{"storage_configured"}))
+	mock.ExpectExec("INSERT INTO storage_config").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	// azure_account_key is required by validation; base64("test") = "dGVzdA=="
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/storage/configs",
+		jsonBody(map[string]interface{}{
+			"backend_type":         "azure",
+			"azure_account_name":   "myaccount",
+			"azure_container_name": "mycontainer",
+			"azure_account_key":    "dGVzdA==",
+		})))
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestStorageCreateConfig_AlreadyConfiguredDeactivates(t *testing.T) {
 	mock, r := newStorageRouter(t)
 	// IsStorageConfigured returns true
@@ -806,6 +841,30 @@ func TestStorageUpdateConfig_GCSSuccess(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	body := `{"backend_type":"gcs","gcs_bucket":"my-gcs-bucket","gcs_auth_method":"workload_identity"}`
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/storage/configs/"+knownUUID,
+		bytes.NewBufferString(body)))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestStorageUpdateConfig_AzureSuccess(t *testing.T) {
+	cipher, err := crypto.NewTokenCipher(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("NewTokenCipher: %v", err)
+	}
+	mock, r := newStorageRouterWithCipher(t, cipher)
+	mock.ExpectQuery("SELECT.*FROM storage_config WHERE id").
+		WillReturnRows(sampleStorageCfgRow())
+	mock.ExpectQuery("SELECT storage_configured FROM system_settings").
+		WillReturnRows(sqlmock.NewRows([]string{"storage_configured"}).AddRow(false))
+	mock.ExpectExec("UPDATE storage_config").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	// azure_account_key required by validation; base64("test") = "dGVzdA=="
+	body := `{"backend_type":"azure","azure_account_name":"acct","azure_container_name":"ctr","azure_account_key":"dGVzdA==","azure_cdn_url":"https://cdn.example.com"}`
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("PUT", "/storage/configs/"+knownUUID,
 		bytes.NewBufferString(body)))

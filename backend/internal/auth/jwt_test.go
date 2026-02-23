@@ -64,7 +64,7 @@ func TestGenerateAndValidateJWT(t *testing.T) {
 		userID := "user-123"
 		email := "test@example.com"
 
-		token, err := GenerateJWT(userID, email, time.Hour)
+		token, err := GenerateJWT(userID, email, nil, time.Hour)
 		if err != nil {
 			t.Fatalf("GenerateJWT() error: %v", err)
 		}
@@ -88,7 +88,7 @@ func TestGenerateAndValidateJWT(t *testing.T) {
 	})
 
 	t.Run("default expiry when zero duration", func(t *testing.T) {
-		token, err := GenerateJWT("uid", "u@example.com", 0)
+		token, err := GenerateJWT("uid", "u@example.com", nil, 0)
 		if err != nil {
 			t.Fatalf("GenerateJWT() error: %v", err)
 		}
@@ -104,7 +104,7 @@ func TestGenerateAndValidateJWT(t *testing.T) {
 	})
 
 	t.Run("expired token is rejected", func(t *testing.T) {
-		token, err := GenerateJWT("uid", "u@example.com", -time.Second)
+		token, err := GenerateJWT("uid", "u@example.com", nil, -time.Second)
 		if err != nil {
 			t.Fatalf("GenerateJWT() error: %v", err)
 		}
@@ -130,7 +130,7 @@ func TestGenerateAndValidateJWT(t *testing.T) {
 
 	t.Run("token signed with different secret is rejected", func(t *testing.T) {
 		// Generate with current secret
-		token, err := GenerateJWT("uid", "u@example.com", time.Hour)
+		token, err := GenerateJWT("uid", "u@example.com", nil, time.Hour)
 		if err != nil {
 			t.Fatalf("GenerateJWT() error: %v", err)
 		}

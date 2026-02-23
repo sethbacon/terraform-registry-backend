@@ -4,11 +4,12 @@ This document describes the design of the Enterprise Terraform Registry — what
 
 ## Overview
 
-The registry implements three HashiCorp Terraform protocols:
+The registry implements three HashiCorp Terraform protocols, plus a binary mirror facility:
 
 - **Module Registry Protocol** — hosting, versioning, and downloading Terraform modules
 - **Provider Registry Protocol** — hosting platform-specific provider binaries
 - **Provider Network Mirror Protocol** — caching provider binaries from upstream registries
+- **Terraform Binary Mirror** — multi-config mirror for Terraform and OpenTofu release binaries, served at `/terraform/binaries/:name/`
 
 Design goals: protocol correctness first, then security, then operational simplicity. The system is stateless at the application layer (all state lives in PostgreSQL and the configured storage backend), which makes horizontal scaling straightforward.
 
@@ -50,7 +51,8 @@ All deployment infrastructure lives in this (backend) repository. Frontend-only 
 │  GET /v1/modules/*   │◄──────────│  /modules, /providers     │
 │  GET /v1/providers/* │  REST API │  /admin/*, /login         │
 │  GET /v1/mirror/*    │           │  /api-docs (ReDoc)        │
-│                      │           └───────────────────────────┘
+│  GET /terraform/     │           └───────────────────────────┘
+│    binaries/:name/* │ ← Binary mirror downloads
 │  Admin API:          │
 │  /api/v1/admin/*     │
 │  /api/v1/modules/*   │
