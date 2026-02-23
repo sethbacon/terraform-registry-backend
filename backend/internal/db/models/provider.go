@@ -19,6 +19,14 @@ type Provider struct {
 	CreatedByName *string // User name who created this provider (joined from users table)
 }
 
+// ProviderSearchResult is returned by the search endpoint and includes aggregated
+// version information (latest version, total downloads) fetched in a single query.
+type ProviderSearchResult struct {
+	Provider
+	LatestVersion  *string `json:"latest_version,omitempty"`
+	TotalDownloads int64   `json:"total_downloads"`
+}
+
 // ProviderVersion represents a specific version of a provider
 type ProviderVersion struct {
 	ID                  string

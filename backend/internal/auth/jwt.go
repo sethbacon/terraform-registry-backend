@@ -24,8 +24,9 @@ var (
 
 // Claims represents the JWT claims structure
 type Claims struct {
-	UserID string `json:"user_id"`
-	Email  string `json:"email"`
+	UserID string   `json:"user_id"`
+	Email  string   `json:"email"`
+	Scopes []string `json:"scopes,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -95,8 +96,10 @@ func GetJWTSecret() string {
 	return jwtSecret
 }
 
-// GenerateJWT creates a JWT token for an authenticated user
-func GenerateJWT(userID, email string, expiresIn time.Duration) (string, error) {
+// GenerateJWT creates a JWT token for an authenticated user.
+// Scopes are embedded in the token so the auth middleware can authorize
+// requests without a database round-trip on every request.
+func GenerateJWT(userID, email string, scopes []string, expiresIn time.Duration) (string, error) {
 	if expiresIn == 0 {
 		expiresIn = 1 * time.Hour // Default to 1 hour
 	}
@@ -104,6 +107,7 @@ func GenerateJWT(userID, email string, expiresIn time.Duration) (string, error) 
 	claims := &Claims{
 		UserID: userID,
 		Email:  email,
+		Scopes: scopes,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(expiresIn)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),

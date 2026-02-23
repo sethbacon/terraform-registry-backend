@@ -131,13 +131,15 @@ func (u *UpstreamRegistry) ListProviderVersions(ctx context.Context, namespace, 
 		return nil, fmt.Errorf("service discovery failed: %w", err)
 	}
 
-	// Build the provider versions URL
-	// Format: {providers.v1}/{namespace}/{type}/versions
-	// Note: discovery.ProvidersV1 typically ends with "/" so we need to handle that
-	providersPath := strings.TrimSuffix(discovery.ProvidersV1, "/")
-	versionsURL := fmt.Sprintf("%s%s/%s/%s/versions",
-		u.BaseURL,
-		providersPath,
+	// Build the provider versions URL.
+	// discovery.ProvidersV1 may be either a relative path ("/v1/providers/") or an
+	// absolute URL ("https://registry.terraform.io/v1/providers/"); use
+	// url.ResolveReference so both cases produce a correct absolute URL.
+	base, _ := url.Parse(u.BaseURL)
+	provRef, _ := url.Parse(discovery.ProvidersV1)
+	providersBase := base.ResolveReference(provRef)
+	versionsURL := fmt.Sprintf("%s/%s/%s/versions",
+		strings.TrimSuffix(providersBase.String(), "/"),
 		namespace,
 		providerName)
 
@@ -161,7 +163,6 @@ func (u *UpstreamRegistry) ListProviderVersions(ctx context.Context, namespace, 
 		return nil, fmt.Errorf("versions request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Read the body for debugging
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
@@ -183,13 +184,14 @@ func (u *UpstreamRegistry) GetProviderPackage(ctx context.Context, namespace, pr
 		return nil, fmt.Errorf("service discovery failed: %w", err)
 	}
 
-	// Build the provider package URL
-	// Format: {providers.v1}/{namespace}/{type}/{version}/download/{os}/{arch}
-	// Note: discovery.ProvidersV1 typically ends with "/" so we need to handle that
-	providersPath := strings.TrimSuffix(discovery.ProvidersV1, "/")
-	packageURL := fmt.Sprintf("%s%s/%s/%s/%s/download/%s/%s",
-		u.BaseURL,
-		providersPath,
+	// Build the provider package URL.
+	// discovery.ProvidersV1 may be relative or absolute; use url.ResolveReference
+	// to handle both cases.
+	base, _ := url.Parse(u.BaseURL)
+	provRef, _ := url.Parse(discovery.ProvidersV1)
+	providersBase := base.ResolveReference(provRef)
+	packageURL := fmt.Sprintf("%s/%s/%s/%s/download/%s/%s",
+		strings.TrimSuffix(providersBase.String(), "/"),
 		namespace,
 		providerName,
 		version,

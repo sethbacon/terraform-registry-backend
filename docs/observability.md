@@ -15,6 +15,7 @@ up the bundled Prometheus + Grafana stack.
    - [HTTP Metrics](#http-metrics)
    - [Terraform Protocol Metrics](#terraform-protocol-metrics)
    - [Mirror Sync Metrics](#mirror-sync-metrics)
+   - [Terraform Binary Mirror Metrics](#terraform-binary-mirror-metrics)
    - [API Key Notification Metrics](#api-key-notification-metrics)
    - [Database Metrics](#database-metrics)
 4. [PromQL Examples](#promql-examples)
@@ -205,6 +206,36 @@ understanding which platforms are actively used and for planning build matrix co
 
 The `mirror_id` label lets you build per-mirror error rate dashboards and route alerts
 to the team responsible for a specific upstream.
+
+---
+
+### Terraform Binary Mirror Metrics
+
+#### `terraform_binary_downloads_total`
+
+| Property | Value |
+| --- | --- |
+| Type | Counter (CounterVec) |
+| Labels | `version` (semver string), `os` (e.g. `linux`, `darwin`, `windows`), `arch` (e.g. `amd64`, `arm64`) |
+| Source | `internal/api/terraform_binaries/` — `DownloadBinary` handler |
+| Updated | On each successful binary download (or redirect) |
+
+Counts how many times a Terraform or OpenTofu binary was served through the binary mirror
+download endpoint.  Use the `version`, `os`, and `arch` labels to understand which
+combinations are actively consumed and which platform builds are never requested.
+
+Example queries:
+
+```promql
+# Total binary downloads in the last 5 minutes
+sum(rate(terraform_binary_downloads_total[5m]))
+
+# Downloads broken down by OS
+sum by (os) (rate(terraform_binary_downloads_total[5m]))
+
+# Most popular versions
+sum by (version) (increase(terraform_binary_downloads_total[24h]))
+```
 
 ---
 

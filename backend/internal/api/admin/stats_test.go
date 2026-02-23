@@ -30,12 +30,6 @@ func newStatsRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	return mock, r
 }
 
-// expectCount registers a COUNT query expectation returning the given value.
-func expectCount(mock sqlmock.Sqlmock, pattern string, val int64) {
-	mock.ExpectQuery(pattern).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(val))
-}
-
 // ---------------------------------------------------------------------------
 // GetDashboardStats tests
 // ---------------------------------------------------------------------------
@@ -43,18 +37,21 @@ func expectCount(mock sqlmock.Sqlmock, pattern string, val int64) {
 func TestGetDashboardStats_Success(t *testing.T) {
 	mock, r := newStatsRouter(t)
 
-	// Required queries (must succeed) and optional ones (failures are ignored by handler)
-	// All set in the exact order they are called by the handler.
-	expectCount(mock, "SELECT COUNT.*FROM modules", 10)
-	expectCount(mock, "SELECT COUNT.*FROM providers", 5)
-	expectCount(mock, "SELECT COUNT.*FROM mirrored_providers", 2)
-	expectCount(mock, "SELECT COUNT.*FROM provider_versions", 20)
-	expectCount(mock, "SELECT COUNT.*FROM mirrored_provider_versions", 8)
-	expectCount(mock, "SELECT COUNT.*FROM users", 15)
-	expectCount(mock, "SELECT COUNT.*FROM organizations", 1)
-	expectCount(mock, "SELECT COUNT.*FROM scm_providers", 3)
-	expectCount(mock, "SELECT.*FROM module_versions", 100)
-	expectCount(mock, "SELECT.*FROM provider_platforms", 200)
+	// Combined single-query returns 7 values
+	combinedCols := []string{
+		"module_count", "provider_count", "provider_version_count",
+		"user_count", "org_count", "module_downloads", "provider_downloads",
+	}
+	mock.ExpectQuery("module_count").
+		WillReturnRows(sqlmock.NewRows(combinedCols).
+			AddRow(int64(10), int64(5), int64(20), int64(15), int64(1), int64(100), int64(200)))
+	// Optional mirrored-table queries (errors are silently ignored by handler)
+	mock.ExpectQuery("mirrored_providers").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(int64(2)))
+	mock.ExpectQuery("mirrored_provider_versions").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(int64(8)))
+	mock.ExpectQuery("scm_providers").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(int64(3)))
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("GET", "/stats/dashboard", nil))
@@ -74,8 +71,8 @@ func TestGetDashboardStats_Success(t *testing.T) {
 func TestGetDashboardStats_ModulesCountFails(t *testing.T) {
 	mock, r := newStatsRouter(t)
 
-	mock.ExpectQuery("SELECT COUNT.*FROM modules").
-		WillReturnError(errDB)
+	// Combined query failure → 500
+	mock.ExpectQuery("module_count").WillReturnError(errDB)
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("GET", "/stats/dashboard", nil))
@@ -88,9 +85,8 @@ func TestGetDashboardStats_ModulesCountFails(t *testing.T) {
 func TestGetDashboardStats_ProvidersCountFails(t *testing.T) {
 	mock, r := newStatsRouter(t)
 
-	expectCount(mock, "SELECT COUNT.*FROM modules", 10)
-	mock.ExpectQuery("SELECT COUNT.*FROM providers").
-		WillReturnError(errDB)
+	// Combined query failure → 500 (providers count is part of the same combined query)
+	mock.ExpectQuery("module_count").WillReturnError(errDB)
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("GET", "/stats/dashboard", nil))

@@ -274,6 +274,7 @@ Add new SCM providers by implementing the SCM interface and registering in `inte
 The backend generates OpenAPI 2.0 (Swagger) documentation using [swaggo/swag](https://github.com/swaggo/swag) annotations in handler source code.
 
 **Architecture:**
+
 - Swagger annotations live in Go handler files as `// @` comments
 - `swag init -g cmd/server/main.go --outputTypes json` generates `backend/docs/swagger.json`
 - The JSON spec is embedded into the binary at compile time via `go:embed`
@@ -281,6 +282,7 @@ The backend generates OpenAPI 2.0 (Swagger) documentation using [swaggo/swag](ht
 - A standalone Swagger UI is served at `/api-docs/` via CDN
 
 **Annotation rules (mandatory):**
+
 - **Every new handler** must have a complete annotation block before it is committed.
 - **Every modified handler** must have its annotation block updated to match.
 - Use `// @Security     Bearer` for authenticated endpoints.
@@ -292,6 +294,7 @@ The backend generates OpenAPI 2.0 (Swagger) documentation using [swaggo/swag](ht
 - After adding or changing any annotation, run `swag init` and update `docs/SWAGGER_ANNOTATION_CHECKLIST.md`.
 
 **Annotation template:**
+
 ```go
 // @Summary      Short one-line summary
 // @Description  Longer description of what this endpoint does.

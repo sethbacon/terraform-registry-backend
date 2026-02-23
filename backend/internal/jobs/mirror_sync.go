@@ -20,6 +20,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/mirror"
+	"github.com/terraform-registry/terraform-registry/internal/safego"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 	"github.com/terraform-registry/terraform-registry/internal/validation"
 
@@ -344,8 +345,9 @@ func (j *MirrorSyncJob) runScheduledSyncs(ctx context.Context) {
 		j.activeSyncs[mirror.ID] = true
 		j.activeSyncsMutex.Unlock()
 
-		// Run sync in a goroutine
-		go j.syncMirror(ctx, mirror)
+		// Run sync in a goroutine with panic recovery
+		mirrorCopy := mirror
+		safego.Go(func() { j.syncMirror(ctx, mirrorCopy) })
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"embed"
 	"fmt"
+	"time"
 
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
@@ -27,6 +28,8 @@ func Connect(dsn string, maxConnections, minIdleConnections int) (*sql.DB, error
 	// Configure connection pool
 	db.SetMaxOpenConns(maxConnections)
 	db.SetMaxIdleConns(minIdleConnections)
+	db.SetConnMaxLifetime(5 * time.Minute)
+	db.SetConnMaxIdleTime(30 * time.Second)
 
 	// Test the connection
 	if err := db.Ping(); err != nil {

@@ -20,6 +20,15 @@ type Module struct {
 	CreatedByName *string `json:"created_by_name,omitempty"` // User name who created this module (joined from users table)
 }
 
+// ModuleSearchResult is returned by the search endpoint and includes aggregated
+// version information (latest version, total downloads) fetched in a single query
+// to avoid N+1 lookups.
+type ModuleSearchResult struct {
+	Module
+	LatestVersion  *string `json:"latest_version,omitempty"`
+	TotalDownloads int64   `json:"total_downloads"`
+}
+
 // ModuleVersion represents a specific version of a module
 type ModuleVersion struct {
 	ID                 string     `json:"id"`

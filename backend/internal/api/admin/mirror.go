@@ -111,7 +111,7 @@ func (h *MirrorHandler) CreateMirrorConfig(c *gin.Context) {
 
 	// Convert filter arrays to JSON strings
 	var namespaceFilter, providerFilter, platformFilter *string
-	if req.NamespaceFilter != nil && len(req.NamespaceFilter) > 0 {
+	if len(req.NamespaceFilter) > 0 {
 		jsonData, err := json.Marshal(req.NamespaceFilter)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to serialize namespace filter: " + err.Error()})
@@ -120,7 +120,7 @@ func (h *MirrorHandler) CreateMirrorConfig(c *gin.Context) {
 		str := string(jsonData)
 		namespaceFilter = &str
 	}
-	if req.ProviderFilter != nil && len(req.ProviderFilter) > 0 {
+	if len(req.ProviderFilter) > 0 {
 		jsonData, err := json.Marshal(req.ProviderFilter)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to serialize provider filter: " + err.Error()})
@@ -129,7 +129,7 @@ func (h *MirrorHandler) CreateMirrorConfig(c *gin.Context) {
 		str := string(jsonData)
 		providerFilter = &str
 	}
-	if req.PlatformFilter != nil && len(req.PlatformFilter) > 0 {
+	if len(req.PlatformFilter) > 0 {
 		jsonData, err := json.Marshal(req.PlatformFilter)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to serialize platform filter: " + err.Error()})

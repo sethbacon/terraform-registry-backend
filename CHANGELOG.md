@@ -9,6 +9,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-02-22
+
+### Added
+
+- **Multi-config Terraform binary mirror** — operators can now create multiple named mirror
+  configurations (`terraform_mirror_configs`) and run independent mirrors for HashiCorp
+  Terraform, OpenTofu, or any custom upstream URL side-by-side.  Each config carries a `name`,
+  `description`, and `tool` type (`terraform` | `opentofu` | `custom`).
+
+- **Database migration `000004_terraform_binary_mirror`** — introduces the
+  `terraform_mirror_configs` table (name, description, tool, GPG verify flag, platform filter,
+  custom URL); `terraform_versions` and `terraform_sync_history` tables both gain a `config_id`
+  foreign key so all records are scoped to their parent config.
+
+- **`TerraformMirrorConfig` model and repository** — full CRUD in
+  `internal/db/repositories/terraform_mirror_repository.go`; all version/history queries
+  accept a `configID uuid.UUID` parameter.  New request models:
+  `CreateTerraformMirrorConfigRequest` and `UpdateTerraformMirrorConfigRequest`.
+
+- **Admin API — `terraform-mirrors` resource group** (`internal/api/admin/terraform_mirror.go`):
+  
+  | Method | Path | Scope |
+  | ----- | --- | --- |
+  | `POST` | `/api/v1/admin/terraform-mirrors` | `mirrors:manage` |
+  | `GET` | `/api/v1/admin/terraform-mirrors` | `mirrors:read` |
+  | `GET` | `/api/v1/admin/terraform-mirrors/:id` | `mirrors:read` |
+  | `GET` | `/api/v1/admin/terraform-mirrors/:id/status` | `mirrors:read` |
+  | `PUT` | `/api/v1/admin/terraform-mirrors/:id` | `mirrors:manage` |
+  | `DELETE` | `/api/v1/admin/terraform-mirrors/:id` | `mirrors:manage` |
+  | `POST` | `/api/v1/admin/terraform-mirrors/:id/sync` | `mirrors:manage` |
+  | `GET` | `/api/v1/admin/terraform-mirrors/:id/versions` | `mirrors:read` |
+  | `GET` | `/api/v1/admin/terraform-mirrors/:id/versions/:version` | `mirrors:read` |
+  | `DELETE` | `/api/v1/admin/terraform-mirrors/:id/versions/:version` | `mirrors:manage` |
+  | `GET` | `/api/v1/admin/terraform-mirrors/:id/versions/:version/platforms` | `mirrors:read` |
+  | `GET` | `/api/v1/admin/terraform-mirrors/:id/history` | `mirrors:read` |
+
+- **Public download API** (`internal/api/terraform_binaries/binaries.go`) — mirrors are reached
+  by name through unauthenticated endpoints:
+
+  | Path | Description |
+  | ------ | ------------- |
+  | `GET /terraform/binaries/:name/versions` | List all synced versions |
+  | `GET /terraform/binaries/:name/versions/latest` | Resolve the latest version |
+  | `GET /terraform/binaries/:name/versions/:version` | List platforms for a version |
+  | `GET /terraform/binaries/:name/versions/:version/:os/:arch` | Download binary |
+
+- **`TerraformMirrorSyncJob` multi-config loop** (`internal/jobs/terraform_mirror_sync.go`) —
+  the background sync job now iterates all active configs rather than assuming a single config;
+  `TriggerSync(ctx, configID uuid.UUID)` triggers an immediate sync for one config.
+
+- **`terraform_binary_downloads_total` Prometheus metric** — a
+  `CounterVec{version, os, arch}` incremented on every successful binary download; documented in
+  `docs/observability.md`.
+
+### Changed
+
+- **Router** — old `/terraform/binaries/versions[/...]` routes replaced by
+  `/terraform/binaries/:name/versions[/...]`; old `/api/v1/admin/terraform-mirror` (singular)
+  replaced by `/api/v1/admin/terraform-mirrors` (plural, full CRUD).
+
 ## [1.1.0] - 2026-02-22
 
 ### Added
@@ -131,8 +191,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`README.md`**: added Immutable Publishing, Module README Support, and Enhanced Mirror RBAC
   feature bullets.
-
-
 
 ### Added
 

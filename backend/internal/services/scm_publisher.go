@@ -109,74 +109,10 @@ func (p *SCMPublisher) ProcessTagPush(ctx context.Context, logID uuid.UUID, modu
 		}
 	}
 
-	// Download source archive at the specific commit
-	archivePath, checksum, err := p.downloadAndPackage(ctx, connector, oauthToken, moduleSourceRepo.RepositoryOwner,
-		moduleSourceRepo.RepositoryName, hook.CommitSHA, moduleSourceRepo.ModulePath)
+	// Publish the module version (download, upload, create DB record)
+	versionID, err := p.publishModuleVersion(ctx, connector, oauthToken, moduleSourceRepo, hook, version)
 	if err != nil {
-		errMsg := fmt.Sprintf("failed to download source: %v", err)
-		_ = p.scmRepo.UpdateWebhookLogState(ctx, logID, "failed", &errMsg, nil)
-		return
-	}
-	defer os.Remove(archivePath)
-
-	// Upload to storage
-	file, err := os.Open(archivePath)
-	if err != nil {
-		errMsg := fmt.Sprintf("failed to open archive: %v", err)
-		_ = p.scmRepo.UpdateWebhookLogState(ctx, logID, "failed", &errMsg, nil)
-		return
-	}
-	defer file.Close()
-
-	storagePath := fmt.Sprintf("modules/%s/%s/%s/%s-%s.tar.gz",
-		module.Namespace, module.Name, module.System, module.Name, version)
-
-	// Get file size for upload
-	fileInfo, err := os.Stat(archivePath)
-	if err != nil {
-		errMsg := fmt.Sprintf("failed to stat temp file: %v", err)
-		_ = p.scmRepo.UpdateWebhookLogState(ctx, logID, "failed", &errMsg, nil)
-		return
-	}
-
-	if _, err := p.storageBackend.Upload(ctx, storagePath, file, fileInfo.Size()); err != nil {
-		errMsg := fmt.Sprintf("failed to upload to storage: %v", err)
-		_ = p.scmRepo.UpdateWebhookLogState(ctx, logID, "failed", &errMsg, nil)
-		return
-	}
-
-	// Extract README from the archive
-	var readmeContent *string
-	if readmeFile, err := os.Open(archivePath); err == nil {
-		if readme, err := validation.ExtractReadme(readmeFile); err == nil && readme != "" {
-			readmeContent = &readme
-		}
-		_ = readmeFile.Close()
-	}
-
-	// Create module version record
-	versionID := uuid.New().String()
-	scmRepoIDStr := moduleSourceRepo.ID.String()
-	tagName := hook.TagName
-	commitSHA := hook.CommitSHA
-
-	moduleVersion := &models.ModuleVersion{
-		ID:             versionID,
-		ModuleID:       moduleSourceRepo.ModuleID.String(),
-		Version:        version,
-		StoragePath:    storagePath,
-		StorageBackend: "default",
-		SizeBytes:      fileInfo.Size(),
-		Checksum:       checksum,
-		CreatedAt:      time.Now(),
-		Readme:         readmeContent,
-		CommitSHA:      &commitSHA,
-		TagName:        &tagName,
-		SCMRepoID:      &scmRepoIDStr,
-	}
-
-	if err := p.moduleRepo.CreateVersion(ctx, moduleVersion); err != nil {
-		errMsg := fmt.Sprintf("failed to create version: %v", err)
+		errMsg := fmt.Sprintf("failed to publish version: %v", err)
 		_ = p.scmRepo.UpdateWebhookLogState(ctx, logID, "failed", &errMsg, nil)
 		return
 	}
@@ -500,69 +436,78 @@ func (p *SCMPublisher) processTagForManualSync(ctx context.Context, moduleSource
 		return
 	}
 
+	versionID, err := p.publishModuleVersion(ctx, connector, token, moduleSourceRepo, hook, version)
+	if err != nil {
+		fmt.Printf("[processTagForManualSync] Failed to publish version %s: %v\n", version, err)
+		return
+	}
+
+	fmt.Printf("[processTagForManualSync] Successfully created version %s (ID %s) for module %s\n", version, versionID, moduleSourceRepo.ModuleID)
+}
+
+// publishModuleVersion contains the shared logic for publishing a module version
+// from an SCM tag. It downloads the source archive, uploads it to storage,
+// extracts a README, and creates the database record. Both webhook-driven
+// (ProcessTagPush) and manual sync (processTagForManualSync) paths call this.
+func (p *SCMPublisher) publishModuleVersion(
+	ctx context.Context,
+	connector scm.Connector,
+	token *scm.OAuthToken,
+	moduleSourceRepo *scm.ModuleSourceRepoRecord,
+	hook *scm.IncomingHook,
+	version string,
+) (string, error) {
+	// Look up the module to get namespace/name/system
+	module, err := p.moduleRepo.GetModuleByID(ctx, moduleSourceRepo.ModuleID.String())
+	if err != nil {
+		return "", fmt.Errorf("look up module: %w", err)
+	}
+	if module == nil {
+		return "", fmt.Errorf("module %s not found", moduleSourceRepo.ModuleID)
+	}
+
 	// Download source archive at the specific commit
-	fmt.Printf("[processTagForManualSync] Downloading and packaging source from commit %s\n", hook.CommitSHA)
 	archivePath, checksum, err := p.downloadAndPackage(ctx, connector, token, moduleSourceRepo.RepositoryOwner,
 		moduleSourceRepo.RepositoryName, hook.CommitSHA, moduleSourceRepo.ModulePath)
 	if err != nil {
-		fmt.Printf("[processTagForManualSync] Failed to download and package: %v\n", err)
-		return
+		return "", fmt.Errorf("download source: %w", err)
 	}
 	defer os.Remove(archivePath)
-	fmt.Printf("[processTagForManualSync] Archive created at %s with checksum %s\n", archivePath, checksum)
 
-	// Upload to storage
+	// Open archive for upload
 	file, err := os.Open(archivePath)
 	if err != nil {
-		fmt.Printf("[processTagForManualSync] Failed to open archive: %v\n", err)
-		return
+		return "", fmt.Errorf("open archive: %w", err)
 	}
 	defer file.Close()
-
-	module, err := p.moduleRepo.GetModuleByID(ctx, moduleSourceRepo.ModuleID.String())
-	if err != nil {
-		fmt.Printf("[processTagForManualSync] Failed to look up module: %v\n", err)
-		return
-	}
-	if module == nil {
-		fmt.Printf("[processTagForManualSync] Module not found for ID %s\n", moduleSourceRepo.ModuleID)
-		return
-	}
 
 	storagePath := fmt.Sprintf("modules/%s/%s/%s/%s-%s.tar.gz",
 		module.Namespace, module.Name, module.System, module.Name, version)
 
-	fmt.Printf("[processTagForManualSync] Uploading to storage path: %s\n", storagePath)
-
 	// Get file size for upload
 	fileInfo, err := os.Stat(archivePath)
 	if err != nil {
-		fmt.Printf("[processTagForManualSync] Failed to stat temp file: %v\n", err)
-		return
+		return "", fmt.Errorf("stat temp file: %w", err)
 	}
 
 	if _, err := p.storageBackend.Upload(ctx, storagePath, file, fileInfo.Size()); err != nil {
-		fmt.Printf("[processTagForManualSync] Failed to upload to storage: %v\n", err)
-		return
+		return "", fmt.Errorf("upload to storage: %w", err)
 	}
-	fmt.Printf("[processTagForManualSync] Successfully uploaded to storage\n")
 
 	// Extract README from the archive
 	var readmeContent *string
 	if readmeFile, err := os.Open(archivePath); err == nil {
 		if readme, err := validation.ExtractReadme(readmeFile); err == nil && readme != "" {
 			readmeContent = &readme
-		} else if err != nil {
-			fmt.Printf("[processTagForManualSync] Warning: failed to extract README: %v\n", err)
 		}
 		_ = readmeFile.Close()
 	}
 
 	// Create module version record
 	versionID := uuid.New().String()
-	scmRepoIDStr2 := moduleSourceRepo.ID.String()
-	tagName2 := hook.TagName
-	commitSHA2 := hook.CommitSHA
+	scmRepoIDStr := moduleSourceRepo.ID.String()
+	tagName := hook.TagName
+	commitSHA := hook.CommitSHA
 
 	moduleVersion := &models.ModuleVersion{
 		ID:             versionID,
@@ -574,16 +519,14 @@ func (p *SCMPublisher) processTagForManualSync(ctx context.Context, moduleSource
 		Checksum:       checksum,
 		CreatedAt:      time.Now(),
 		Readme:         readmeContent,
-		CommitSHA:      &commitSHA2,
-		TagName:        &tagName2,
-		SCMRepoID:      &scmRepoIDStr2,
+		CommitSHA:      &commitSHA,
+		TagName:        &tagName,
+		SCMRepoID:      &scmRepoIDStr,
 	}
 
-	fmt.Printf("[processTagForManualSync] Creating version record: %s\n", version)
 	if err := p.moduleRepo.CreateVersion(ctx, moduleVersion); err != nil {
-		fmt.Printf("[processTagForManualSync] Failed to create version: %v\n", err)
-		return
+		return "", fmt.Errorf("create version: %w", err)
 	}
 
-	fmt.Printf("[processTagForManualSync] Successfully created version %s for module %s\n", version, moduleSourceRepo.ModuleID)
+	return versionID, nil
 }

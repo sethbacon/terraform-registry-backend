@@ -83,33 +83,12 @@ func sampleApprovalRow() *sqlmock.Rows {
 		)
 }
 
-func sampleApprovalListRow() *sqlmock.Rows {
-	return sqlmock.NewRows(approvalListCols).
-		AddRow(
-			knownUUID, knownUUID, nil, nil,
-			"hashicorp", nil, "need it", "pending",
-			nil, nil, nil, false,
-			time.Now(), time.Now(), nil,
-			"Alice", "", "my-mirror",
-		)
-}
-
 func emptyApprovalRows() *sqlmock.Rows {
 	return sqlmock.NewRows(approvalCols)
 }
 
 func emptyApprovalListRows() *sqlmock.Rows {
 	return sqlmock.NewRows(approvalListCols)
-}
-
-func sampleMPListRow() *sqlmock.Rows {
-	return sqlmock.NewRows(mpListCols).
-		AddRow(
-			knownUUID, nil, "allow-all", nil, "allow",
-			nil, nil, nil,
-			10, true, false, time.Now(), time.Now(), nil,
-			"Global", "",
-		)
 }
 
 func emptyMPListRows() *sqlmock.Rows {
@@ -464,9 +443,9 @@ func TestRBACCreateApproval_Success(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/approvals",
 		jsonBody(map[string]interface{}{
-			"mirror_config_id":    knownUUID,
-			"provider_namespace":  "hashicorp",
-			"reason":              "need it",
+			"mirror_config_id":   knownUUID,
+			"provider_namespace": "hashicorp",
+			"reason":             "need it",
 		})))
 
 	if w.Code != http.StatusCreated {
@@ -749,5 +728,236 @@ func TestRBACUpdateMirrorPolicy_Success(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// EvaluatePolicy — additional branches
+// ---------------------------------------------------------------------------
+
+func TestRBACEvaluatePolicy_InvalidOrgID(t *testing.T) {
+	_, r := newRBACRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/policies/evaluate?organization_id=not-a-uuid",
+		jsonBody(map[string]interface{}{"registry": "registry.terraform.io", "namespace": "hashicorp", "provider": "aws"})))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestRBACEvaluatePolicy_DBError(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectQuery("SELECT.*FROM mirror_policies").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/policies/evaluate",
+		jsonBody(map[string]interface{}{"registry": "registry.terraform.io", "namespace": "hashicorp", "provider": "aws"})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetMirrorPolicy — additional branches
+// ---------------------------------------------------------------------------
+
+func TestRBACGetMirrorPolicy_DBError(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectQuery("SELECT.*FROM mirror_policies WHERE id").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/policies/"+knownUUID, nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CreateMirrorPolicy — additional branches
+// ---------------------------------------------------------------------------
+
+func TestRBACCreateMirrorPolicy_InvalidPolicyType(t *testing.T) {
+	_, r := newRBACRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/policies",
+		jsonBody(map[string]interface{}{
+			"name":        "bad-type",
+			"policy_type": "invalid",
+		})))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestRBACCreateMirrorPolicy_InvalidOrgID(t *testing.T) {
+	_, r := newRBACRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/policies",
+		jsonBody(map[string]interface{}{
+			"name":            "test",
+			"policy_type":     "allow",
+			"organization_id": "not-a-uuid",
+		})))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestRBACCreateMirrorPolicy_DBError(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectExec("INSERT INTO mirror_policies").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/policies",
+		jsonBody(map[string]interface{}{
+			"name":        "test",
+			"policy_type": "allow",
+		})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ListMirrorPolicies — additional branches
+// ---------------------------------------------------------------------------
+
+func TestRBACListMirrorPolicies_DBError(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectQuery("SELECT.*FROM mirror_policies").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/policies", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DeleteRoleTemplate — additional branches
+// ---------------------------------------------------------------------------
+
+func TestRBACDeleteRoleTemplate_GetDBError(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/role-templates/"+knownUUID, nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestRBACDeleteRoleTemplate_DeleteDBError(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+		WillReturnRows(sampleRTRow())
+	mock.ExpectExec("DELETE FROM role_templates WHERE id").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/role-templates/"+knownUUID, nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ListApprovalRequests — additional branches
+// ---------------------------------------------------------------------------
+
+func TestRBACListApprovals_DBError(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectQuery("SELECT.*FROM mirror_approval_requests").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/approvals", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CreateApprovalRequest — additional branches
+// ---------------------------------------------------------------------------
+
+func TestRBACCreateApproval_InvalidMirrorConfigID(t *testing.T) {
+	_, r := newRBACRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/approvals",
+		jsonBody(map[string]interface{}{
+			"mirror_config_id":   "not-a-uuid",
+			"provider_namespace": "hashicorp",
+		})))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestRBACCreateApproval_DBError(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectExec("INSERT INTO mirror_approval_requests").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/approvals",
+		jsonBody(map[string]interface{}{
+			"mirror_config_id":   knownUUID,
+			"provider_namespace": "hashicorp",
+		})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ReviewApproval — additional branches
+// ---------------------------------------------------------------------------
+
+func TestRBACReviewApproval_UpdateDBError(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectExec("UPDATE mirror_approval_requests.*SET status").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/approvals/"+knownUUID+"/review",
+		jsonBody(map[string]interface{}{"status": "approved", "notes": "ok"})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestRBACReviewApproval_GetDBError(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectExec("UPDATE mirror_approval_requests.*SET status").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery("SELECT.*FROM mirror_approval_requests WHERE id").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/approvals/"+knownUUID+"/review",
+		jsonBody(map[string]interface{}{"status": "rejected", "notes": "no"})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
 	}
 }

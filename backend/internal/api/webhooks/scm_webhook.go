@@ -5,6 +5,7 @@
 package webhooks
 
 import (
+	"context"
 	"crypto/subtle"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/safego"
 	"github.com/terraform-registry/terraform-registry/internal/scm"
 	"github.com/terraform-registry/terraform-registry/internal/services"
 )
@@ -168,9 +170,19 @@ func (h *SCMWebhookHandler) HandleWebhook(c *gin.Context) {
 		return
 	}
 
-	// Process the webhook asynchronously if it's a tag push
+	// Process the webhook asynchronously if it's a tag push.
+	// Use a detached context because the request context is cancelled as soon as
+	// the HTTP response is sent, but the publishing work (SCM download, storage
+	// upload, DB writes) can take minutes.
 	if hook.IsTagEvent() && moduleSourceRepo.AutoPublish {
-		go h.publisher.ProcessTagPush(c.Request.Context(), logID, moduleSourceRepo, hook, connector)
+		asyncCtx, asyncCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		msr := moduleSourceRepo
+		h2 := hook
+		conn := connector
+		safego.Go(func() {
+			defer asyncCancel()
+			h.publisher.ProcessTagPush(asyncCtx, logID, msr, h2, conn)
+		})
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "webhook received", "log_id": logID})

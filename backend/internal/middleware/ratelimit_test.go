@@ -235,7 +235,7 @@ func TestGetRateLimitKey_EmptyUserID(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "10.0.0.1:9999"
 	c.Request = req
-	c.Set("user_id", "") // empty, should skip to IP
+	c.Set("user_id", "")    // empty, should skip to IP
 	c.Set("api_key_id", "") // empty, should skip to IP
 
 	key := getRateLimitKey(c)
@@ -350,5 +350,42 @@ func TestRateLimitMiddleware_LimitHeaderMatchesConfig(t *testing.T) {
 	limit := w.Header().Get("X-RateLimit-Limit")
 	if limit != strconv.Itoa(rpm) {
 		t.Errorf("X-RateLimit-Limit = %q, want %d", limit, rpm)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RateLimiter.cleanup — ticker branch
+// ---------------------------------------------------------------------------
+
+func TestRateLimiter_CleanupRemovesStaleEntries(t *testing.T) {
+	cfg := RateLimitConfig{
+		RequestsPerMinute: 600,
+		BurstSize:         10,
+		CleanupInterval:   10 * time.Millisecond,
+	}
+	rl := NewRateLimiter(cfg)
+	defer rl.Stop()
+
+	// Create an entry via Allow so it exists in the map.
+	rl.Allow("stale-client")
+
+	// Back-date the entry's lastUpdate so the cleanup goroutine will evict it.
+	rl.mu.Lock()
+	if entry, ok := rl.entries["stale-client"]; ok {
+		entry.lastUpdate = time.Now().Add(-11 * time.Minute)
+	}
+	rl.mu.Unlock()
+
+	// Allow a few cleanup ticks to fire.
+	time.Sleep(60 * time.Millisecond)
+
+	// After cleanup the entry should have been removed; RemainingTokens returns
+	// the full burst again (as if the key was never seen).
+	rl.mu.RLock()
+	_, stillPresent := rl.entries["stale-client"]
+	rl.mu.RUnlock()
+
+	if stillPresent {
+		t.Error("expected stale-client entry to be evicted by cleanup goroutine, but it is still present")
 	}
 }

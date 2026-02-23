@@ -1941,6 +1941,423 @@
                 }
             }
         },
+        "/api/v1/admin/terraform-mirror/config": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Returns the current Terraform binary mirror configuration and summary stats. Requires mirrors:read scope.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "TerraformMirror"
+                ],
+                "summary": "Get Terraform mirror configuration",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.TerraformMirrorStatusResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Updates the Terraform binary mirror settings (enable/disable, platform filter, sync interval, etc.). Requires mirrors:manage scope.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "TerraformMirror"
+                ],
+                "summary": "Update Terraform mirror configuration",
+                "parameters": [
+                    {
+                        "description": "Mirror configuration update",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.UpdateTerraformMirrorConfigRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.TerraformMirrorConfig"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/admin/terraform-mirror/history": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Returns the most recent sync run records. Requires mirrors:read scope.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "TerraformMirror"
+                ],
+                "summary": "Get Terraform mirror sync history",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Maximum number of history rows to return (default: 50)",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.TerraformSyncHistoryListResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/admin/terraform-mirror/sync": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Enqueues a manual sync of the Terraform binary mirror. An optional version string limits the sync to that version only. Requires mirrors:manage scope.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "TerraformMirror"
+                ],
+                "summary": "Trigger Terraform mirror sync",
+                "parameters": [
+                    {
+                        "description": "Optional sync scope",
+                        "name": "body",
+                        "in": "body",
+                        "schema": {
+                            "$ref": "#/definitions/models.TriggerTerraformSyncRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "Sync enqueued",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "503": {
+                        "description": "Sync queue full",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/admin/terraform-mirror/versions": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Returns all Terraform versions known to the mirror (with optional platform details). Requires mirrors:read scope.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "TerraformMirror"
+                ],
+                "summary": "List mirrored Terraform versions",
+                "parameters": [
+                    {
+                        "type": "boolean",
+                        "description": "Include per-version platform details",
+                        "name": "platforms",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "Only return fully synced versions",
+                        "name": "synced",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.TerraformVersionListResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/admin/terraform-mirror/versions/{version}": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Returns metadata and per-platform sync status for a single Terraform version. Requires mirrors:read scope.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "TerraformMirror"
+                ],
+                "summary": "Get a specific mirrored Terraform version",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Terraform version (e.g. 1.7.0)",
+                        "name": "version",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.TerraformVersion"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Version not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Removes a version and its associated platform records from the mirror. Stored binaries are not deleted from storage. Requires mirrors:manage scope.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "TerraformMirror"
+                ],
+                "summary": "Delete a mirrored Terraform version",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Terraform version (e.g. 1.7.0)",
+                        "name": "version",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Deleted",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Version not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/admin/terraform-mirror/versions/{version}/platforms": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Returns per-platform sync details for a specific version. Requires mirrors:read scope.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "TerraformMirror"
+                ],
+                "summary": "List platforms for a Terraform version",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Terraform version",
+                        "name": "version",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.TerraformVersionPlatform"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Version not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/apikeys": {
             "get": {
                 "security": [
@@ -6583,6 +7000,188 @@
                 }
             }
         },
+        "/terraform/binaries/versions": {
+            "get": {
+                "description": "Returns all Terraform versions that have been fully or partially synced by the binary mirror. Sorted with the most recently released version first.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "TerraformBinaries"
+                ],
+                "summary": "List mirrored Terraform versions",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.TerraformVersionListResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/terraform/binaries/versions/latest": {
+            "get": {
+                "description": "Returns the latest stable Terraform version available in the binary mirror, including its synced platforms.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "TerraformBinaries"
+                ],
+                "summary": "Get latest mirrored Terraform version",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.TerraformVersion"
+                        }
+                    },
+                    "404": {
+                        "description": "No latest version available",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/terraform/binaries/versions/{version}": {
+            "get": {
+                "description": "Returns metadata and platform list for a specific Terraform version in the binary mirror.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "TerraformBinaries"
+                ],
+                "summary": "Get specific mirrored Terraform version",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Terraform version (e.g. 1.9.0)",
+                        "name": "version",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.TerraformVersion"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid version format",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Version not found or not yet synced",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/terraform/binaries/versions/{version}/{os}/{arch}": {
+            "get": {
+                "description": "Returns a signed download URL for the requested Terraform binary. The URL is valid for 15 minutes. Increments the terraform_binary_downloads_total Prometheus counter.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "TerraformBinaries"
+                ],
+                "summary": "Download Terraform binary",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Terraform version (e.g. 1.9.0)",
+                        "name": "version",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Operating system (e.g. linux, darwin, windows)",
+                        "name": "os",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "CPU architecture (e.g. amd64, arm64)",
+                        "name": "arch",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.TerraformBinaryDownloadResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid version or platform",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Version or platform not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "503": {
+                        "description": "Binary not yet available (sync pending)",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/terraform/providers/{hostname}/{namespace}/{type}/index.json": {
             "get": {
                 "description": "Returns all available versions for a provider in the Terraform Network Mirror Protocol format.",
@@ -8169,6 +8768,251 @@
                 }
             }
         },
+        "models.TerraformBinaryDownloadResponse": {
+            "type": "object",
+            "properties": {
+                "arch": {
+                    "type": "string"
+                },
+                "download_url": {
+                    "type": "string"
+                },
+                "filename": {
+                    "type": "string"
+                },
+                "os": {
+                    "type": "string"
+                },
+                "sha256": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.TerraformMirrorConfig": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "gpg_verify": {
+                    "type": "boolean"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "last_sync_at": {
+                    "type": "string"
+                },
+                "last_sync_error": {
+                    "type": "string"
+                },
+                "last_sync_status": {
+                    "type": "string"
+                },
+                "platform_filter": {
+                    "description": "JSONB: []string \"os/arch\"",
+                    "type": "string"
+                },
+                "sync_interval_hours": {
+                    "type": "integer"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "upstream_url": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.TerraformMirrorStatusResponse": {
+            "type": "object",
+            "properties": {
+                "config": {
+                    "$ref": "#/definitions/models.TerraformMirrorConfig"
+                },
+                "latest_version": {
+                    "type": "string"
+                },
+                "pending_count": {
+                    "type": "integer"
+                },
+                "platform_count": {
+                    "type": "integer"
+                },
+                "version_count": {
+                    "type": "integer"
+                }
+            }
+        },
+        "models.TerraformSyncHistory": {
+            "type": "object",
+            "properties": {
+                "completed_at": {
+                    "type": "string"
+                },
+                "error_message": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "platforms_synced": {
+                    "type": "integer"
+                },
+                "started_at": {
+                    "type": "string"
+                },
+                "status": {
+                    "description": "running|success|failed|cancelled",
+                    "type": "string"
+                },
+                "sync_details": {
+                    "description": "JSONB",
+                    "type": "string"
+                },
+                "triggered_by": {
+                    "description": "scheduler|manual",
+                    "type": "string"
+                },
+                "versions_failed": {
+                    "type": "integer"
+                },
+                "versions_synced": {
+                    "type": "integer"
+                }
+            }
+        },
+        "models.TerraformSyncHistoryListResponse": {
+            "type": "object",
+            "properties": {
+                "history": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.TerraformSyncHistory"
+                    }
+                },
+                "total_count": {
+                    "type": "integer"
+                }
+            }
+        },
+        "models.TerraformVersion": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "is_deprecated": {
+                    "type": "boolean"
+                },
+                "is_latest": {
+                    "type": "boolean"
+                },
+                "platforms": {
+                    "description": "Populated by joins — not stored in columns",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.TerraformVersionPlatform"
+                    }
+                },
+                "release_date": {
+                    "type": "string"
+                },
+                "sync_error": {
+                    "type": "string"
+                },
+                "sync_status": {
+                    "description": "pending|syncing|synced|failed|partial",
+                    "type": "string"
+                },
+                "synced_at": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.TerraformVersionListResponse": {
+            "type": "object",
+            "properties": {
+                "total_count": {
+                    "type": "integer"
+                },
+                "versions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.TerraformVersion"
+                    }
+                }
+            }
+        },
+        "models.TerraformVersionPlatform": {
+            "type": "object",
+            "properties": {
+                "arch": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "filename": {
+                    "type": "string"
+                },
+                "gpg_verified": {
+                    "type": "boolean"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "os": {
+                    "type": "string"
+                },
+                "sha256": {
+                    "type": "string"
+                },
+                "sha256_verified": {
+                    "type": "boolean"
+                },
+                "storage_backend": {
+                    "type": "string"
+                },
+                "storage_key": {
+                    "type": "string"
+                },
+                "sync_error": {
+                    "type": "string"
+                },
+                "sync_status": {
+                    "description": "pending|syncing|synced|failed",
+                    "type": "string"
+                },
+                "synced_at": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "upstream_url": {
+                    "type": "string"
+                },
+                "version_id": {
+                    "type": "string"
+                }
+            }
+        },
         "models.TriggerSyncRequest": {
             "type": "object",
             "properties": {
@@ -8178,6 +9022,15 @@
                 },
                 "provider_name": {
                     "description": "Optional: sync specific provider",
+                    "type": "string"
+                }
+            }
+        },
+        "models.TriggerTerraformSyncRequest": {
+            "type": "object",
+            "properties": {
+                "version": {
+                    "description": "Version limits the sync to a single version; omit to sync all pending.",
                     "type": "string"
                 }
             }
@@ -8228,6 +9081,31 @@
                 },
                 "version_filter": {
                     "description": "Version filter: \"3.\", \"latest:5\", \"\u003e=3.0.0\", or comma-separated",
+                    "type": "string"
+                }
+            }
+        },
+        "models.UpdateTerraformMirrorConfigRequest": {
+            "type": "object",
+            "properties": {
+                "enabled": {
+                    "type": "boolean"
+                },
+                "gpg_verify": {
+                    "type": "boolean"
+                },
+                "platform_filter": {
+                    "description": "[] means \"all platforms\"",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "sync_interval_hours": {
+                    "type": "integer",
+                    "minimum": 1
+                },
+                "upstream_url": {
                     "type": "string"
                 }
             }

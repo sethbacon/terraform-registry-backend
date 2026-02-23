@@ -14,7 +14,6 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 )
 
-
 // ---------------------------------------------------------------------------
 // Mock storage backend
 // ---------------------------------------------------------------------------
@@ -33,7 +32,7 @@ func (m *mockStorage) Delete(_ context.Context, _ string) error { return m.delet
 func (m *mockStorage) GetURL(_ context.Context, _ string, _ time.Duration) (string, error) {
 	return "", nil
 }
-func (m *mockStorage) Exists(_ context.Context, _ string) (bool, error)         { return false, nil }
+func (m *mockStorage) Exists(_ context.Context, _ string) (bool, error) { return false, nil }
 func (m *mockStorage) GetMetadata(_ context.Context, _ string) (*storage.FileMetadata, error) {
 	return nil, nil
 }
@@ -210,6 +209,23 @@ func TestGetProvider_ProviderDBError(t *testing.T) {
 	}
 }
 
+func TestGetProvider_ListVersionsDBError(t *testing.T) {
+	mock, r := newProviderRouter(t)
+
+	expectNoDefaultOrg(mock)
+	mock.ExpectQuery("SELECT.*FROM providers").
+		WillReturnRows(sampleProviderRow())
+	mock.ExpectQuery("SELECT.*FROM provider_versions").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/providers/hashicorp/aws", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
 // ---------------------------------------------------------------------------
 // DeleteProvider tests
 // ---------------------------------------------------------------------------
@@ -238,6 +254,102 @@ func TestDeleteProvider_Success_NoVersions(t *testing.T) {
 	// ListVersions returns empty (no files to delete)
 	mock.ExpectQuery("SELECT.*FROM provider_versions").
 		WillReturnRows(emptyVersionRows())
+	// DeleteProvider
+	mock.ExpectExec("DELETE FROM providers").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/providers/hashicorp/aws", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestDeleteProvider_OrgDBError(t *testing.T) {
+	mock, r := newProviderRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM organizations").
+		WithArgs("default").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/providers/hashicorp/aws", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestDeleteProvider_ProviderDBError(t *testing.T) {
+	mock, r := newProviderRouter(t)
+
+	expectNoDefaultOrg(mock)
+	mock.ExpectQuery("SELECT.*FROM providers").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/providers/hashicorp/aws", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestDeleteProvider_ListVersionsDBError(t *testing.T) {
+	mock, r := newProviderRouter(t)
+
+	expectNoDefaultOrg(mock)
+	mock.ExpectQuery("SELECT.*FROM providers").
+		WillReturnRows(sampleProviderRow())
+	mock.ExpectQuery("SELECT.*FROM provider_versions").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/providers/hashicorp/aws", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestDeleteProvider_DeleteDBError(t *testing.T) {
+	mock, r := newProviderRouter(t)
+
+	expectNoDefaultOrg(mock)
+	mock.ExpectQuery("SELECT.*FROM providers").
+		WillReturnRows(sampleProviderRow())
+	mock.ExpectQuery("SELECT.*FROM provider_versions").
+		WillReturnRows(emptyVersionRows())
+	mock.ExpectExec("DELETE FROM providers").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/providers/hashicorp/aws", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestDeleteProvider_Success_WithVersionsAndPlatforms(t *testing.T) {
+	mock, r := newProviderRouter(t)
+
+	expectNoDefaultOrg(mock)
+	mock.ExpectQuery("SELECT.*FROM providers").
+		WillReturnRows(sampleProviderRow())
+	// ListVersions returns one version
+	protocols := []byte(`["6.0"]`)
+	mock.ExpectQuery("SELECT.*FROM provider_versions").
+		WillReturnRows(sqlmock.NewRows(versionCols).
+			AddRow("ver-1", "prov-1", "5.0.0", protocols, "", "", "", nil, nil, false, nil, nil, time.Now()))
+	// ListPlatforms returns one platform with a non-empty StoragePath
+	mock.ExpectQuery("SELECT.*FROM provider_platforms").
+		WillReturnRows(sqlmock.NewRows(platformCols).
+			AddRow("plat-1", "ver-1", "linux", "amd64",
+				"terraform-provider-aws_5.0.0_linux_amd64.zip",
+				"providers/hashicorp/aws/5.0.0/linux_amd64.zip",
+				"local", 1024, "abc123", 0))
 	// DeleteProvider
 	mock.ExpectExec("DELETE FROM providers").
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -404,5 +516,147 @@ func TestUndeprecateVersion_Success(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DeleteVersion — additional DB error branches
+// ---------------------------------------------------------------------------
+
+func TestDeleteVersion_OrgDBError(t *testing.T) {
+	mock, r := newProviderRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM organizations").
+		WithArgs("default").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/providers/hashicorp/aws/versions/5.0.0", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestDeleteVersion_ProviderDBError(t *testing.T) {
+	mock, r := newProviderRouter(t)
+
+	expectNoDefaultOrg(mock)
+	mock.ExpectQuery("SELECT.*FROM providers").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/providers/hashicorp/aws/versions/5.0.0", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestDeleteVersion_GetVersionDBError(t *testing.T) {
+	mock, r := newProviderRouter(t)
+
+	expectNoDefaultOrg(mock)
+	mock.ExpectQuery("SELECT.*FROM providers").
+		WillReturnRows(sampleProviderRow())
+	mock.ExpectQuery("SELECT.*FROM provider_versions.*WHERE provider_id").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/providers/hashicorp/aws/versions/5.0.0", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestDeleteVersion_DeleteDBError(t *testing.T) {
+	mock, r := newProviderRouter(t)
+
+	expectNoDefaultOrg(mock)
+	mock.ExpectQuery("SELECT.*FROM providers").
+		WillReturnRows(sampleProviderRow())
+	mock.ExpectQuery("SELECT.*FROM provider_versions.*WHERE provider_id").
+		WillReturnRows(sampleVersionRow())
+	mock.ExpectQuery("SELECT.*FROM provider_platforms").
+		WillReturnRows(emptyPlatformRows())
+	mock.ExpectExec("DELETE FROM provider_versions").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/providers/hashicorp/aws/versions/5.0.0", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// UndeprecateVersion — additional DB error branches
+// ---------------------------------------------------------------------------
+
+func TestUndeprecateVersion_OrgDBError(t *testing.T) {
+	mock, r := newProviderRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM organizations").
+		WithArgs("default").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/providers/hashicorp/aws/versions/5.0.0/deprecate", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestUndeprecateVersion_ProviderDBError(t *testing.T) {
+	mock, r := newProviderRouter(t)
+
+	expectNoDefaultOrg(mock)
+	mock.ExpectQuery("SELECT.*FROM providers").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/providers/hashicorp/aws/versions/5.0.0/deprecate", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestUndeprecateVersion_GetVersionDBError(t *testing.T) {
+	mock, r := newProviderRouter(t)
+
+	expectNoDefaultOrg(mock)
+	mock.ExpectQuery("SELECT.*FROM providers").
+		WillReturnRows(sampleProviderRow())
+	mock.ExpectQuery("SELECT.*FROM provider_versions.*WHERE provider_id").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/providers/hashicorp/aws/versions/5.0.0/deprecate", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestUndeprecateVersion_UndeprecateDBError(t *testing.T) {
+	mock, r := newProviderRouter(t)
+
+	expectNoDefaultOrg(mock)
+	mock.ExpectQuery("SELECT.*FROM providers").
+		WillReturnRows(sampleProviderRow())
+	mock.ExpectQuery("SELECT.*FROM provider_versions.*WHERE provider_id").
+		WillReturnRows(sampleVersionRow())
+	mock.ExpectExec("UPDATE provider_versions").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/providers/hashicorp/aws/versions/5.0.0/deprecate", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
 	}
 }

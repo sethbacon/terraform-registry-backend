@@ -62,6 +62,7 @@ func TestMetrics_AllRegistered(t *testing.T) {
 		{"http_request_duration_seconds", HTTPRequestDuration},
 		{"module_downloads_total", ModuleDownloadsTotal},
 		{"provider_downloads_total", ProviderDownloadsTotal},
+		{"terraform_binary_downloads_total", TerraformBinaryDownloadsTotal},
 		{"mirror_sync_duration_seconds", MirrorSyncDuration},
 		{"mirror_sync_errors_total", MirrorSyncErrorsTotal},
 		{"apikey_expiry_notifications_sent_total", APIKeyExpiryNotificationsSentTotal},
@@ -122,6 +123,19 @@ func TestMetrics_ProviderDownloadsTotal_CanBeIncremented(t *testing.T) {
 	})
 	if after-before < 1 {
 		t.Errorf("ProviderDownloadsTotal.Inc() did not increase counter")
+	}
+}
+
+func TestMetrics_TerraformBinaryDownloadsTotal_CanBeIncremented(t *testing.T) {
+	before := counterValue(t, TerraformBinaryDownloadsTotal, prometheus.Labels{
+		"version": "1.9.0", "os": "linux", "arch": "amd64",
+	})
+	TerraformBinaryDownloadsTotal.WithLabelValues("1.9.0", "linux", "amd64").Inc()
+	after := counterValue(t, TerraformBinaryDownloadsTotal, prometheus.Labels{
+		"version": "1.9.0", "os": "linux", "arch": "amd64",
+	})
+	if after-before < 1 {
+		t.Errorf("TerraformBinaryDownloadsTotal.Inc() did not increase counter")
 	}
 }
 

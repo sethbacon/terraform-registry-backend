@@ -184,7 +184,7 @@ func serve(cfg *config.Config) error {
 	}
 
 	// Create router
-	router := api.NewRouter(cfg, database)
+	router, bgServices := api.NewRouter(cfg, database)
 
 	// Create HTTP server
 	server := &http.Server{
@@ -229,6 +229,9 @@ func serve(cfg *config.Config) error {
 	if err := server.Shutdown(ctx); err != nil {
 		return fmt.Errorf("server forced to shutdown: %w", err)
 	}
+
+	// Stop background jobs and rate limiter goroutines
+	bgServices.Shutdown()
 
 	log.Println("Server stopped gracefully")
 	return nil

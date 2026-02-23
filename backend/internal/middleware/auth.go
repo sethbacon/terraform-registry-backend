@@ -79,10 +79,9 @@ func AuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, a
 			c.Set("user_id", user.ID)
 			c.Set("auth_method", "jwt")
 
-			// Get user's combined scopes from all organization memberships
-			scopes, err := orgRepo.GetUserCombinedScopes(c.Request.Context(), user.ID)
-			if err != nil {
-				// Log error but don't fail - user just gets empty scopes
+			// Use scopes embedded in JWT claims (avoids DB query per request)
+			scopes := claims.Scopes
+			if scopes == nil {
 				scopes = []string{}
 			}
 			c.Set("scopes", scopes)
@@ -198,8 +197,11 @@ func OptionalAuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepos
 				c.Set("user", user)
 				c.Set("user_id", user.ID)
 				c.Set("auth_method", "jwt")
-				// Get user's combined scopes from all organization memberships
-				scopes, _ := orgRepo.GetUserCombinedScopes(c.Request.Context(), user.ID)
+				// Use scopes embedded in JWT claims (avoids DB query per request)
+				scopes := claims.Scopes
+				if scopes == nil {
+					scopes = []string{}
+				}
 				c.Set("scopes", scopes)
 			}
 			c.Next()

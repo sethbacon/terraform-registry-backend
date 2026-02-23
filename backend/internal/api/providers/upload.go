@@ -2,12 +2,13 @@
 package providers
 
 import (
-	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"os"
 
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/config"
@@ -65,7 +66,7 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 		namespace := c.PostForm("namespace")
 		providerType := c.PostForm("type")
 		version := c.PostForm("version")
-		os := c.PostForm("os")
+		targetOS := c.PostForm("os")
 		arch := c.PostForm("arch")
 		protocolsStr := c.PostForm("protocols")
 		gpgPublicKey := c.PostForm("gpg_public_key")
@@ -73,7 +74,7 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 		source := c.PostForm("source")
 
 		// Validate required fields
-		if namespace == "" || providerType == "" || version == "" || os == "" || arch == "" {
+		if namespace == "" || providerType == "" || version == "" || targetOS == "" || arch == "" {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error": "Missing required fields: namespace, type, version, os, arch",
 			})
@@ -89,7 +90,7 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 		}
 
 		// Validate platform (OS/arch combination)
-		if err := validation.ValidatePlatform(os, arch); err != nil {
+		if err := validation.ValidatePlatform(targetOS, arch); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error": fmt.Sprintf("Invalid platform: %v", err),
 			})
@@ -132,9 +133,18 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 		}
 		defer file.Close()
 
-		// Read file into buffer for validation and upload
-		fileBuffer := &bytes.Buffer{}
-		size, err := io.Copy(fileBuffer, file)
+		// Write uploaded file to a temp file to avoid holding up to 500MB in memory
+		tmpFile, err := os.CreateTemp("", "provider-upload-*.zip")
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to create temporary file",
+			})
+			return
+		}
+		defer os.Remove(tmpFile.Name())
+		defer tmpFile.Close()
+
+		size, err := io.Copy(tmpFile, file)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to read uploaded file",
@@ -142,16 +152,49 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 			return
 		}
 
-		// Validate provider binary (ZIP format and size)
-		if err := validation.ValidateProviderBinary(fileBuffer.Bytes(), MaxProviderBinarySize); err != nil {
+		// Validate provider binary: check size and read ZIP magic bytes from temp file
+		if size == 0 {
 			c.JSON(http.StatusBadRequest, gin.H{
-				"error": fmt.Sprintf("Invalid provider binary: %v", err),
+				"error": "Invalid provider binary: provider binary cannot be empty",
+			})
+			return
+		}
+		if size > MaxProviderBinarySize {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": fmt.Sprintf("Invalid provider binary: provider binary too large: %d bytes (max %d bytes)", size, MaxProviderBinarySize),
+			})
+			return
+		}
+		// Check ZIP magic bytes from the beginning of the file
+		if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to process uploaded file",
+			})
+			return
+		}
+		magic := make([]byte, 4)
+		if _, err := io.ReadFull(tmpFile, magic); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "Invalid provider binary: provider binary too small to be a valid ZIP file",
+			})
+			return
+		}
+		if !((magic[0] == 0x50 && magic[1] == 0x4B && magic[2] == 0x03 && magic[3] == 0x04) ||
+			(magic[0] == 0x50 && magic[1] == 0x4B && magic[2] == 0x05 && magic[3] == 0x06)) {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "Invalid provider binary: provider binary is not a valid ZIP file",
 			})
 			return
 		}
 
-		// Calculate SHA256 checksum
-		sha256sum, err := checksum.CalculateSHA256(bytes.NewReader(fileBuffer.Bytes()))
+		// Calculate SHA256 checksum (seek back to start)
+		if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to process uploaded file",
+			})
+			return
+		}
+		sha256sum, err := checksum.CalculateSHA256(tmpFile)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to calculate checksum",
@@ -262,7 +305,7 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 		}
 
 		// Check for duplicate platform
-		existingPlatform, err := providerRepo.GetPlatform(c.Request.Context(), providerVersion.ID, os, arch)
+		existingPlatform, err := providerRepo.GetPlatform(c.Request.Context(), providerVersion.ID, targetOS, arch)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to check for existing platform",
@@ -271,19 +314,27 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 		}
 		if existingPlatform != nil {
 			c.JSON(http.StatusConflict, gin.H{
-				"error": fmt.Sprintf("Platform %s/%s already exists for version %s", os, arch, version),
+				"error": fmt.Sprintf("Platform %s/%s already exists for version %s", targetOS, arch, version),
 			})
 			return
 		}
 
 		// Generate storage path: providers/{namespace}/{type}/{version}/{os}_{arch}.zip
-		storagePath := fmt.Sprintf("providers/%s/%s/%s/%s_%s.zip", namespace, providerType, version, os, arch)
+		storagePath := fmt.Sprintf("providers/%s/%s/%s/%s_%s.zip", namespace, providerType, version, targetOS, arch)
+
+		// Seek back to start for storage upload
+		if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to process uploaded file",
+			})
+			return
+		}
 
 		// Upload to storage backend
 		uploadResult, err := storageBackend.Upload(
 			c.Request.Context(),
 			storagePath,
-			bytes.NewReader(fileBuffer.Bytes()),
+			tmpFile,
 			size,
 		)
 		if err != nil {
@@ -296,7 +347,7 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 		// Create platform record
 		platform := &models.ProviderPlatform{
 			ProviderVersionID: providerVersion.ID,
-			OS:                os,
+			OS:                targetOS,
 			Arch:              arch,
 			Filename:          header.Filename,
 			StoragePath:       uploadResult.Path,
@@ -307,7 +358,10 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 
 		if err := providerRepo.CreatePlatform(c.Request.Context(), platform); err != nil {
 			// Try to clean up uploaded file
-			_ = storageBackend.Delete(c.Request.Context(), uploadResult.Path)
+			if delErr := storageBackend.Delete(c.Request.Context(), uploadResult.Path); delErr != nil {
+				slog.Error("failed to clean up orphaned storage artifact",
+					"path", uploadResult.Path, "error", delErr)
+			}
 
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to create platform record",

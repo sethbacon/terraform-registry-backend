@@ -2,11 +2,12 @@
 package modules
 
 import (
-	"bytes"
 	"database/sql"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"os"
 
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/config"
@@ -85,9 +86,18 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 		}
 		defer file.Close()
 
-		// Read file into buffer for validation and upload
-		fileBuffer := &bytes.Buffer{}
-		size, err := io.Copy(fileBuffer, file)
+		// Write uploaded file to a temp file to avoid holding up to 100MB in memory
+		tmpFile, err := os.CreateTemp("", "module-upload-*.tar.gz")
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to create temporary file",
+			})
+			return
+		}
+		defer os.Remove(tmpFile.Name())
+		defer tmpFile.Close()
+
+		size, err := io.Copy(tmpFile, file)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to read uploaded file",
@@ -95,8 +105,14 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 			return
 		}
 
-		// Validate archive format
-		if err := validation.ValidateArchive(bytes.NewReader(fileBuffer.Bytes()), validation.MaxArchiveSize); err != nil {
+		// Validate archive format (seek back to start for reading)
+		if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to process uploaded file",
+			})
+			return
+		}
+		if err := validation.ValidateArchive(tmpFile, validation.MaxArchiveSize); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error": fmt.Sprintf("Invalid archive: %v", err),
 			})
@@ -118,50 +134,35 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 			return
 		}
 
-		// Check if module already exists, create if not
-		module, err := moduleRepo.GetModule(c.Request.Context(), org.ID, namespace, name, system)
-		if err != nil {
+		// Atomically create-or-get the module to avoid race conditions when two
+		// concurrent uploads target the same namespace/name/system.
+		module := &models.Module{
+			OrganizationID: org.ID,
+			Namespace:      namespace,
+			Name:           name,
+			System:         system,
+		}
+		if description != "" {
+			module.Description = &description
+		}
+		if source != "" {
+			module.Source = &source
+		}
+		if userID, exists := c.Get("user_id"); exists {
+			if uid, ok := userID.(string); ok {
+				module.CreatedBy = &uid
+			}
+		}
+
+		if err := moduleRepo.UpsertModule(c.Request.Context(), module); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to query module",
+				"error": fmt.Sprintf("Failed to create/get module: %v", err),
 			})
 			return
 		}
 
-		if module == nil {
-			// Create new module
-			module = &models.Module{
-				OrganizationID: org.ID,
-				Namespace:      namespace,
-				Name:           name,
-				System:         system,
-			}
-			if description != "" {
-				module.Description = &description
-			}
-			if source != "" {
-				module.Source = &source
-			}
-			// Set created_by for audit tracking
-			if userID, exists := c.Get("user_id"); exists {
-				if uid, ok := userID.(string); ok {
-					module.CreatedBy = &uid
-				}
-			}
-
-			if err := moduleRepo.CreateModule(c.Request.Context(), module); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"error": fmt.Sprintf("Failed to create module: %v", err),
-				})
-				return
-			}
-		} else {
-			// Update existing module metadata if provided
-			if description != "" {
-				module.Description = &description
-			}
-			if source != "" {
-				module.Source = &source
-			}
+		// Update description/source on existing module if provided
+		if description != "" || source != "" {
 			if err := moduleRepo.UpdateModule(c.Request.Context(), module); err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{
 					"error": "Failed to update module",
@@ -188,11 +189,19 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 		// Generate storage path: modules/{namespace}/{name}/{system}/{version}.tar.gz
 		storagePath := fmt.Sprintf("modules/%s/%s/%s/%s.tar.gz", namespace, name, system, version)
 
+		// Seek back to start for storage upload
+		if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to process uploaded file",
+			})
+			return
+		}
+
 		// Upload to storage backend
 		uploadResult, err := storageBackend.Upload(
 			c.Request.Context(),
 			storagePath,
-			bytes.NewReader(fileBuffer.Bytes()),
+			tmpFile,
 			size,
 		)
 		if err != nil {
@@ -202,11 +211,15 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 			return
 		}
 
+		// Seek back to start for README extraction
+		if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
+			slog.Warn("failed to seek temp file for README extraction", "error", err)
+		}
+
 		// Extract README from tarball
-		readme, err := validation.ExtractReadme(bytes.NewReader(fileBuffer.Bytes()))
+		readme, err := validation.ExtractReadme(tmpFile)
 		if err != nil {
-			// Log warning but don't fail the upload
-			fmt.Printf("Warning: Failed to extract README: %v\n", err)
+			slog.Warn("failed to extract README from archive", "error", err)
 		}
 
 		// Create version record
@@ -231,8 +244,11 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 		}
 
 		if err := moduleRepo.CreateVersion(c.Request.Context(), moduleVersion); err != nil {
-			// Try to clean up uploaded file
-			_ = storageBackend.Delete(c.Request.Context(), uploadResult.Path)
+			// Try to clean up the orphaned storage artifact
+			if delErr := storageBackend.Delete(c.Request.Context(), uploadResult.Path); delErr != nil {
+				slog.Error("failed to clean up orphaned storage artifact",
+					"path", uploadResult.Path, "error", delErr)
+			}
 
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to create version record",

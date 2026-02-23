@@ -18,6 +18,7 @@ type DevHandlers struct {
 	cfg      *config.Config
 	db       *sql.DB
 	userRepo *repositories.UserRepository
+	orgRepo  *repositories.OrganizationRepository
 }
 
 // NewDevHandlers creates a new DevHandlers instance
@@ -26,6 +27,7 @@ func NewDevHandlers(cfg *config.Config, db *sql.DB) *DevHandlers {
 		cfg:      cfg,
 		db:       db,
 		userRepo: repositories.NewUserRepository(db),
+		orgRepo:  repositories.NewOrganizationRepository(db),
 	}
 }
 
@@ -97,8 +99,11 @@ func (h *DevHandlers) ImpersonateUserHandler() gin.HandlerFunc {
 			return
 		}
 
+		// Fetch target user's scopes to embed in JWT
+		targetScopes, _ := h.orgRepo.GetUserCombinedScopes(c.Request.Context(), targetUser.ID)
+
 		// Generate a new JWT for the target user
-		token, err := auth.GenerateJWT(targetUser.ID, targetUser.Email, 24*time.Hour)
+		token, err := auth.GenerateJWT(targetUser.ID, targetUser.Email, targetScopes, 24*time.Hour)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to generate token",
@@ -204,7 +209,8 @@ func (h *DevHandlers) DevLoginHandler() gin.HandlerFunc {
 			return
 		}
 
-		token, err := auth.GenerateJWT(user.ID, user.Email, 24*time.Hour)
+		scopes, _ := h.orgRepo.GetUserCombinedScopes(c.Request.Context(), user.ID)
+		token, err := auth.GenerateJWT(user.ID, user.Email, scopes, 24*time.Hour)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to generate token",

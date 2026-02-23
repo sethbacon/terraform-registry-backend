@@ -83,7 +83,7 @@ var (
 	)
 )
 
-// Terraform protocol download metrics — used by module and provider download handlers.
+// Terraform protocol download metrics — used by module, provider, and binary mirror download handlers.
 //
 // ModuleDownloadsTotal is a CounterVec with labels {namespace, system} incremented
 // whenever a client fetches a module download URL.  "system" is the Terraform system
@@ -100,6 +100,15 @@ var (
 // Example PromQL queries:
 //   - Downloads by platform:  sum by (os, arch) (rate(provider_downloads_total[1h]))
 //   - Downloads by namespace: sum by (namespace) (rate(provider_downloads_total[1h]))
+//
+// TerraformBinaryDownloadsTotal is a CounterVec with labels {version, os, arch}
+// incremented whenever a client fetches a Terraform official binary download URL via
+// the binary mirror.  Useful for understanding which Terraform versions and platforms
+// are most actively used.
+//
+// Example PromQL queries:
+//   - Downloads by version:   sum by (version) (rate(terraform_binary_downloads_total[1h]))
+//   - Downloads by platform:  sum by (os, arch) (rate(terraform_binary_downloads_total[1h]))
 var (
 	ModuleDownloadsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
@@ -115,6 +124,14 @@ var (
 			Help: "Total number of provider binary downloads, by namespace, type, OS, and arch.",
 		},
 		[]string{"namespace", "type", "os", "arch"},
+	)
+
+	TerraformBinaryDownloadsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "terraform_binary_downloads_total",
+			Help: "Total number of Terraform official binary downloads from the mirror, by version, OS, and arch.",
+		},
+		[]string{"version", "os", "arch"},
 	)
 )
 

@@ -58,7 +58,7 @@ func newAuthRouterWithJWT(t *testing.T, userMock, orgMock sqlmock.Sqlmock,
 
 func generateTestJWT(t *testing.T, userID string) string {
 	t.Helper()
-	token, err := auth.GenerateJWT(userID, "test@example.com", time.Hour)
+	token, err := auth.GenerateJWT(userID, "test@example.com", nil, time.Hour)
 	if err != nil {
 		t.Fatalf("GenerateJWT: %v", err)
 	}

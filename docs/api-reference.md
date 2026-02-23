@@ -93,6 +93,7 @@ These endpoints implement the HashiCorp protocols that `terraform init` and `ter
 | Module Registry | `/v1/modules/` | List versions, download redirects |
 | Provider Registry | `/v1/providers/` | List versions, platform download info |
 | Network Mirror | `/v1/mirror/` | Provider index and version JSON for `terraform providers mirror` |
+| Binary Mirror Downloads | `/terraform/binaries/:name/` | List and download mirrored Terraform/OpenTofu binaries by config name |
 
 ### Admin API (authentication required)
 
@@ -107,6 +108,7 @@ These endpoints implement the HashiCorp protocols that `terraform init` and `ter
 | API Keys | `/api/v1/apikeys` | `admin:apikeys` |
 | RBAC / Role Templates | `/api/v1/admin/roles` | `admin:roles` |
 | Mirror Configuration | `/api/v1/admin/mirrors` | `mirrors:manage` |
+| Terraform Binary Mirror Configs | `/api/v1/admin/terraform-mirrors` | `mirrors:read` / `mirrors:manage` |
 | SCM Providers | `/api/v1/admin/scm-providers` | `admin:scm` |
 | SCM OAuth Flows | `/api/v1/admin/scm-oauth` | `admin:scm` |
 | Storage Configuration | `/api/v1/storage` | `admin:storage` |
@@ -117,6 +119,22 @@ These endpoints implement the HashiCorp protocols that `terraform init` and `ter
 | Path                                    | Purpose                                         |
 |-----------------------------------------|-------------------------------------------------|
 | `POST /webhooks/scm/:module_id/:secret` | Receives push and tag events from SCM providers |
+
+### Terraform Binary Mirror (public, unauthenticated)
+
+Mirror configurations are identified by their `name` slug.  The download endpoints are free of
+authentication so CI pipelines and Terraform clients can fetch binaries without API keys.
+
+| Method | Path | Description |
+| -------- | ------ | ------------- |
+| `GET` | `/terraform/binaries/:name/versions` | List all synced versions for this mirror |
+| `GET` | `/terraform/binaries/:name/versions/latest` | Return the latest synced version |
+| `GET` | `/terraform/binaries/:name/versions/:version` | List available platforms for a version |
+| `GET` | `/terraform/binaries/:name/versions/:version/:os/:arch` | Download binary (redirect or stream) |
+
+The `:name` parameter matches the `name` field set when the mirror config was created in the
+admin UI.  A 404 is returned if no config with that name exists or if no binary has been synced
+for the requested version/platform combination.
 
 ---
 
