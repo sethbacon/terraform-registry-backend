@@ -1941,14 +1941,118 @@
                 }
             }
         },
-        "/api/v1/admin/terraform-mirror/config": {
+        "/api/v1/admin/terraform-mirrors": {
             "get": {
                 "security": [
                     {
                         "Bearer": []
                     }
                 ],
-                "description": "Returns the current Terraform binary mirror configuration and summary stats. Requires mirrors:read scope.",
+                "description": "Returns all Terraform binary mirror configurations. Requires mirrors:read scope.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "TerraformMirror"
+                ],
+                "summary": "List Terraform mirror configurations",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.TerraformMirrorConfigListResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Creates a new named Terraform binary mirror configuration. Requires mirrors:manage scope.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "TerraformMirror"
+                ],
+                "summary": "Create Terraform mirror configuration",
+                "parameters": [
+                    {
+                        "description": "Mirror configuration",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.CreateTerraformMirrorConfigRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/models.TerraformMirrorConfig"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "Config with this name already exists",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/admin/terraform-mirrors/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Returns a specific Terraform binary mirror configuration. Requires mirrors:read scope.",
                 "produces": [
                     "application/json"
                 ],
@@ -1956,15 +2060,31 @@
                     "TerraformMirror"
                 ],
                 "summary": "Get Terraform mirror configuration",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Mirror config UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.TerraformMirrorStatusResponse"
+                            "$ref": "#/definitions/models.TerraformMirrorConfig"
                         }
                     },
                     "401": {
                         "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not found",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -1985,7 +2105,7 @@
                         "Bearer": []
                     }
                 ],
-                "description": "Updates the Terraform binary mirror settings (enable/disable, platform filter, sync interval, etc.). Requires mirrors:manage scope.",
+                "description": "Updates a Terraform binary mirror configuration. Requires mirrors:manage scope.",
                 "consumes": [
                     "application/json"
                 ],
@@ -1997,6 +2117,13 @@
                 ],
                 "summary": "Update Terraform mirror configuration",
                 "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Mirror config UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
                     {
                         "description": "Mirror configuration update",
                         "name": "body",
@@ -2028,6 +2155,74 @@
                             "additionalProperties": true
                         }
                     },
+                    "404": {
+                        "description": "Not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "Name already taken",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Deletes a Terraform binary mirror config and all its associated versions/history. Requires mirrors:manage scope.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "TerraformMirror"
+                ],
+                "summary": "Delete Terraform mirror configuration",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Mirror config UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Deleted",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
                     "500": {
                         "description": "Internal server error",
                         "schema": {
@@ -2038,14 +2233,14 @@
                 }
             }
         },
-        "/api/v1/admin/terraform-mirror/history": {
+        "/api/v1/admin/terraform-mirrors/{id}/history": {
             "get": {
                 "security": [
                     {
                         "Bearer": []
                     }
                 ],
-                "description": "Returns the most recent sync run records. Requires mirrors:read scope.",
+                "description": "Returns the most recent sync run records for the specified config. Requires mirrors:read scope.",
                 "produces": [
                     "application/json"
                 ],
@@ -2054,6 +2249,13 @@
                 ],
                 "summary": "Get Terraform mirror sync history",
                 "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Mirror config UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
                     {
                         "type": "integer",
                         "description": "Maximum number of history rows to return (default: 50)",
@@ -2075,6 +2277,13 @@
                             "additionalProperties": true
                         }
                     },
+                    "404": {
+                        "description": "Not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
                     "500": {
                         "description": "Internal server error",
                         "schema": {
@@ -2085,17 +2294,69 @@
                 }
             }
         },
-        "/api/v1/admin/terraform-mirror/sync": {
+        "/api/v1/admin/terraform-mirrors/{id}/status": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Returns the status and summary stats for a specific mirror config. Requires mirrors:read scope.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "TerraformMirror"
+                ],
+                "summary": "Get Terraform mirror status",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Mirror config UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.TerraformMirrorStatusResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/admin/terraform-mirrors/{id}/sync": {
             "post": {
                 "security": [
                     {
                         "Bearer": []
                     }
                 ],
-                "description": "Enqueues a manual sync of the Terraform binary mirror. An optional version string limits the sync to that version only. Requires mirrors:manage scope.",
-                "consumes": [
-                    "application/json"
-                ],
+                "description": "Enqueues a manual sync for the specified mirror config. Requires mirrors:manage scope.",
                 "produces": [
                     "application/json"
                 ],
@@ -2105,12 +2366,11 @@
                 "summary": "Trigger Terraform mirror sync",
                 "parameters": [
                     {
-                        "description": "Optional sync scope",
-                        "name": "body",
-                        "in": "body",
-                        "schema": {
-                            "$ref": "#/definitions/models.TriggerTerraformSyncRequest"
-                        }
+                        "type": "string",
+                        "description": "Mirror config UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
                     }
                 ],
                 "responses": {
@@ -2128,6 +2388,13 @@
                             "additionalProperties": true
                         }
                     },
+                    "404": {
+                        "description": "Not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
                     "503": {
                         "description": "Sync queue full",
                         "schema": {
@@ -2138,14 +2405,14 @@
                 }
             }
         },
-        "/api/v1/admin/terraform-mirror/versions": {
+        "/api/v1/admin/terraform-mirrors/{id}/versions": {
             "get": {
                 "security": [
                     {
                         "Bearer": []
                     }
                 ],
-                "description": "Returns all Terraform versions known to the mirror (with optional platform details). Requires mirrors:read scope.",
+                "description": "Returns all Terraform versions known to the specified mirror config. Requires mirrors:read scope.",
                 "produces": [
                     "application/json"
                 ],
@@ -2154,6 +2421,13 @@
                 ],
                 "summary": "List mirrored Terraform versions",
                 "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Mirror config UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
                     {
                         "type": "boolean",
                         "description": "Include per-version platform details",
@@ -2181,6 +2455,13 @@
                             "additionalProperties": true
                         }
                     },
+                    "404": {
+                        "description": "Not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
                     "500": {
                         "description": "Internal server error",
                         "schema": {
@@ -2191,14 +2472,14 @@
                 }
             }
         },
-        "/api/v1/admin/terraform-mirror/versions/{version}": {
+        "/api/v1/admin/terraform-mirrors/{id}/versions/{version}": {
             "get": {
                 "security": [
                     {
                         "Bearer": []
                     }
                 ],
-                "description": "Returns metadata and per-platform sync status for a single Terraform version. Requires mirrors:read scope.",
+                "description": "Returns metadata and per-platform sync status for a single version. Requires mirrors:read scope.",
                 "produces": [
                     "application/json"
                 ],
@@ -2207,6 +2488,13 @@
                 ],
                 "summary": "Get a specific mirrored Terraform version",
                 "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Mirror config UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
                     {
                         "type": "string",
                         "description": "Terraform version (e.g. 1.7.0)",
@@ -2230,7 +2518,7 @@
                         }
                     },
                     "404": {
-                        "description": "Version not found",
+                        "description": "Not found",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -2251,7 +2539,7 @@
                         "Bearer": []
                     }
                 ],
-                "description": "Removes a version and its associated platform records from the mirror. Stored binaries are not deleted from storage. Requires mirrors:manage scope.",
+                "description": "Removes a version and its platform records. Stored binaries are not deleted from storage. Requires mirrors:manage scope.",
                 "produces": [
                     "application/json"
                 ],
@@ -2260,6 +2548,13 @@
                 ],
                 "summary": "Delete a mirrored Terraform version",
                 "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Mirror config UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
                     {
                         "type": "string",
                         "description": "Terraform version (e.g. 1.7.0)",
@@ -2284,7 +2579,7 @@
                         }
                     },
                     "404": {
-                        "description": "Version not found",
+                        "description": "Not found",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -2300,7 +2595,7 @@
                 }
             }
         },
-        "/api/v1/admin/terraform-mirror/versions/{version}/platforms": {
+        "/api/v1/admin/terraform-mirrors/{id}/versions/{version}/platforms": {
             "get": {
                 "security": [
                     {
@@ -2316,6 +2611,13 @@
                 ],
                 "summary": "List platforms for a Terraform version",
                 "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Mirror config UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
                     {
                         "type": "string",
                         "description": "Terraform version",
@@ -2342,7 +2644,7 @@
                         }
                     },
                     "404": {
-                        "description": "Version not found",
+                        "description": "Not found",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -7000,9 +7302,9 @@
                 }
             }
         },
-        "/terraform/binaries/versions": {
+        "/terraform/binaries/{name}/versions": {
             "get": {
-                "description": "Returns all Terraform versions that have been fully or partially synced by the binary mirror. Sorted with the most recently released version first.",
+                "description": "Returns all Terraform/OpenTofu versions that have been fully or partially synced by the named binary mirror.",
                 "produces": [
                     "application/json"
                 ],
@@ -7010,11 +7312,27 @@
                     "TerraformBinaries"
                 ],
                 "summary": "List mirrored Terraform versions",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Mirror configuration name",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/models.TerraformVersionListResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Mirror not found or not enabled",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
                         }
                     },
                     "500": {
@@ -7027,9 +7345,9 @@
                 }
             }
         },
-        "/terraform/binaries/versions/latest": {
+        "/terraform/binaries/{name}/versions/latest": {
             "get": {
-                "description": "Returns the latest stable Terraform version available in the binary mirror, including its synced platforms.",
+                "description": "Returns the latest stable Terraform/OpenTofu version available in the named binary mirror.",
                 "produces": [
                     "application/json"
                 ],
@@ -7037,6 +7355,15 @@
                     "TerraformBinaries"
                 ],
                 "summary": "Get latest mirrored Terraform version",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Mirror configuration name",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "OK",
@@ -7045,7 +7372,7 @@
                         }
                     },
                     "404": {
-                        "description": "No latest version available",
+                        "description": "Mirror not found or no latest version",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -7061,9 +7388,9 @@
                 }
             }
         },
-        "/terraform/binaries/versions/{version}": {
+        "/terraform/binaries/{name}/versions/{version}": {
             "get": {
-                "description": "Returns metadata and platform list for a specific Terraform version in the binary mirror.",
+                "description": "Returns metadata and platform list for a specific version in the named binary mirror.",
                 "produces": [
                     "application/json"
                 ],
@@ -7072,6 +7399,13 @@
                 ],
                 "summary": "Get specific mirrored Terraform version",
                 "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Mirror configuration name",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    },
                     {
                         "type": "string",
                         "description": "Terraform version (e.g. 1.9.0)",
@@ -7095,7 +7429,7 @@
                         }
                     },
                     "404": {
-                        "description": "Version not found or not yet synced",
+                        "description": "Mirror or version not found",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -7111,7 +7445,7 @@
                 }
             }
         },
-        "/terraform/binaries/versions/{version}/{os}/{arch}": {
+        "/terraform/binaries/{name}/versions/{version}/{os}/{arch}": {
             "get": {
                 "description": "Returns a signed download URL for the requested Terraform binary. The URL is valid for 15 minutes. Increments the terraform_binary_downloads_total Prometheus counter.",
                 "produces": [
@@ -7122,6 +7456,13 @@
                 ],
                 "summary": "Download Terraform binary",
                 "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Mirror configuration name",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    },
                     {
                         "type": "string",
                         "description": "Terraform version (e.g. 1.9.0)",
@@ -7159,7 +7500,7 @@
                         }
                     },
                     "404": {
-                        "description": "Version or platform not found",
+                        "description": "Mirror, version, or platform not found",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -8141,6 +8482,51 @@
                 }
             }
         },
+        "models.CreateTerraformMirrorConfigRequest": {
+            "type": "object",
+            "required": [
+                "name",
+                "tool",
+                "upstream_url"
+            ],
+            "properties": {
+                "description": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "gpg_verify": {
+                    "type": "boolean"
+                },
+                "name": {
+                    "type": "string",
+                    "maxLength": 255,
+                    "minLength": 1
+                },
+                "platform_filter": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "sync_interval_hours": {
+                    "type": "integer",
+                    "minimum": 1
+                },
+                "tool": {
+                    "type": "string",
+                    "enum": [
+                        "terraform",
+                        "opentofu",
+                        "custom"
+                    ]
+                },
+                "upstream_url": {
+                    "type": "string"
+                }
+            }
+        },
         "models.MirrorApprovalRequest": {
             "type": "object",
             "properties": {
@@ -8797,6 +9183,9 @@
                 "created_at": {
                     "type": "string"
                 },
+                "description": {
+                    "type": "string"
+                },
                 "enabled": {
                     "type": "boolean"
                 },
@@ -8815,6 +9204,9 @@
                 "last_sync_status": {
                     "type": "string"
                 },
+                "name": {
+                    "type": "string"
+                },
                 "platform_filter": {
                     "description": "JSONB: []string \"os/arch\"",
                     "type": "string"
@@ -8822,11 +9214,29 @@
                 "sync_interval_hours": {
                     "type": "integer"
                 },
+                "tool": {
+                    "description": "terraform | opentofu | custom",
+                    "type": "string"
+                },
                 "updated_at": {
                     "type": "string"
                 },
                 "upstream_url": {
                     "type": "string"
+                }
+            }
+        },
+        "models.TerraformMirrorConfigListResponse": {
+            "type": "object",
+            "properties": {
+                "configs": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.TerraformMirrorConfig"
+                    }
+                },
+                "total_count": {
+                    "type": "integer"
                 }
             }
         },
@@ -8854,6 +9264,9 @@
             "type": "object",
             "properties": {
                 "completed_at": {
+                    "type": "string"
+                },
+                "config_id": {
                     "type": "string"
                 },
                 "error_message": {
@@ -8905,6 +9318,9 @@
         "models.TerraformVersion": {
             "type": "object",
             "properties": {
+                "config_id": {
+                    "type": "string"
+                },
                 "created_at": {
                     "type": "string"
                 },
@@ -9026,15 +9442,6 @@
                 }
             }
         },
-        "models.TriggerTerraformSyncRequest": {
-            "type": "object",
-            "properties": {
-                "version": {
-                    "description": "Version limits the sync to a single version; omit to sync all pending.",
-                    "type": "string"
-                }
-            }
-        },
         "models.UpdateMirrorConfigRequest": {
             "type": "object",
             "properties": {
@@ -9088,14 +9495,21 @@
         "models.UpdateTerraformMirrorConfigRequest": {
             "type": "object",
             "properties": {
+                "description": {
+                    "type": "string"
+                },
                 "enabled": {
                     "type": "boolean"
                 },
                 "gpg_verify": {
                     "type": "boolean"
                 },
+                "name": {
+                    "type": "string",
+                    "maxLength": 255,
+                    "minLength": 1
+                },
                 "platform_filter": {
-                    "description": "[] means \"all platforms\"",
                     "type": "array",
                     "items": {
                         "type": "string"
@@ -9104,6 +9518,14 @@
                 "sync_interval_hours": {
                     "type": "integer",
                     "minimum": 1
+                },
+                "tool": {
+                    "type": "string",
+                    "enum": [
+                        "terraform",
+                        "opentofu",
+                        "custom"
+                    ]
                 },
                 "upstream_url": {
                     "type": "string"
