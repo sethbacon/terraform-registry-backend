@@ -132,6 +132,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Ensure labels exist (idempotent — --force updates if already present).
+          gh label create "security"  --color "d73a4a" --description "Security finding"          --repo "$GITHUB_REPOSITORY" --force || true
+          gh label create "automated" --color "0075ca" --description "Created automatically by CI" --repo "$GITHUB_REPOSITORY" --force || true
+
           TITLE="security: new gosec findings on ${GITHUB_REF_NAME} ($(date -u +%Y-%m-%d))"
           # Avoid duplicate open issues for the same branch/day.
           EXISTING=$(gh issue list \

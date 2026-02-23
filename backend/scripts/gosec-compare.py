@@ -37,18 +37,49 @@ def _anchor(code: str) -> str:
     return " | ".join(stripped)
 
 
+# Top-level directories that immediately follow the module root in any path layout.
+# Used to strip OS-specific absolute prefixes for cross-platform fingerprinting.
+_MODULE_ROOT_MARKERS = (
+    "/internal/", "/cmd/", "/pkg/", "/scripts/",
+    "/api/", "/docs/", "/test/", "/vendor/",
+)
+
+
+def _normalize_path(raw_file: str, base_dir: Path) -> str:
+    """
+    Return a portable, platform-independent relative path.
+
+    Handles three situations:
+    - Path is already relative (CI, Linux)
+    - Path is absolute on the same OS (local dev, same platform)
+    - Path is absolute on a *different* OS (Windows baseline loaded in Linux CI)
+    """
+    # Normalise to forward slashes first.
+    norm = raw_file.replace("\\", "/")
+    base_fwd = str(base_dir).replace("\\", "/").rstrip("/") + "/"
+
+    # Happy-path: base_dir prefix matches.
+    if norm.startswith(base_fwd):
+        return norm[len(base_fwd):]
+
+    # Cross-platform fallback: find the first known module-root marker.
+    # e.g. "C:/dev/…/backend/internal/foo/bar.go" → "internal/foo/bar.go"
+    for marker in _MODULE_ROOT_MARKERS:
+        idx = norm.find(marker)
+        if idx >= 0:
+            return norm[idx + 1:]  # drop the leading "/"
+
+    # Last resort: return as-is (normalised slashes).
+    return norm
+
+
 def fingerprint(issue: dict, base_dir: Path) -> str:
     """
-    Stable fingerprint that survives line-number drift.
+    Stable fingerprint that survives line-number drift *and* OS path differences.
     Key: rule_id + relative_file + details_string + first-two-code-lines-content
     """
     rule = issue.get("rule_id", "")
-    raw_file = issue.get("file", "")
-    try:
-        rel = str(Path(raw_file).relative_to(base_dir))
-    except ValueError:
-        rel = raw_file
-    rel = rel.replace("\\", "/")
+    rel = _normalize_path(issue.get("file", ""), base_dir)
     details = issue.get("details", "")
     anchor = _anchor(issue.get("code", ""))
     return f"{rule}:{rel}:{details}:{anchor}"
@@ -68,11 +99,7 @@ def load_findings(path: str, base_dir: Path) -> tuple[dict, dict]:
 
 
 def _rel(issue: dict, base_dir: Path) -> str:
-    raw = issue.get("file", "?")
-    try:
-        return str(Path(raw).relative_to(base_dir)).replace("\\", "/")
-    except ValueError:
-        return raw
+    return _normalize_path(issue.get("file", "?"), base_dir)
 
 
 def build_issue_body(new_issues: list[dict], resolved_count: int, base_dir: Path) -> str:
