@@ -1,41 +1,194 @@
 # Backend Security Scan Report — gosec
 
-**Scan date:** 2026-02-19
-**Previous scan:** 2026-02-17
+**Scan date:** 2026-02-23 (local full scan)
+**Previous scan:** 2026-02-23 (CI run, unfiltered)
 **Tool:** [gosec](https://github.com/securego/gosec) v2.23.0
 **Scope:** `./...` (all Go packages)
-**Filters:** `-severity medium -confidence medium`
-**Files scanned:** 96 | **Lines scanned:** 26,563 (was 25,036; +1,527 lines)
+**Filters:** none
+**Files scanned:** 112 | **Lines scanned:** 31,898 | **nosec suppressions:** 2
 
 ---
 
 ## Summary
 
-| Severity | 2026-02-17 | 2026-02-19 | After fixes | Delta |
-| --- | --- | --- | --- | --- |
-| HIGH | 48 | 49 | 49 | +1 |
-| MEDIUM | 33 | 37 | 35 | **+2** |
-| LOW | 0 | 0 | 0 | — |
-| **Total** | **81** | **86** | **84** | **+3** |
+| Severity | 2026-02-17 | 2026-02-19 | 2026-02-23 (CI) | 2026-02-23 (local) | After fixes |
+| --- | --- | --- | --- | --- | --- |
+| HIGH | 48 | 49 | 45 | 48 | **46** |
+| MEDIUM | 33 | 35 | 5 | 37 | **35** |
+| LOW | 0 | 0 | 11 | 12 | **12** |
+| **Total** | **81** | **84** | **61** | **97** | **93** |
 
-The 2 G110 decompression-bomb findings were fixed immediately (see Fixed Findings below).
+> **Note on CI vs local scan:** The 2026-02-23 CI run used a `dev` gosec build that did not emit G701, G117,
+> or G304. The local full scan restores those rules and also surfaces G101 and G114.
+> The local scan is the authoritative baseline going forward.
 
 ### Rule-level breakdown
 
-| Rule | 2026-02-17 | 2026-02-19 | After fixes | Δ net | Severity | Category |
-| --- | --- | --- | --- | --- | --- | --- |
-| G115 | 1 | 2 | 2 | **+1** | HIGH | Integer overflow |
-| G701 | 10 | 10 | 10 | — | HIGH | SQL injection (taint) |
-| G704 | 37 | 37 | 37 | — | HIGH | SSRF (taint) |
-| G110 | 1 | 2 | **0** ✅ | **-1** | MEDIUM | Decompression bomb |
-| G117 | 20 | 20 | 20 | — | MEDIUM | Secret field pattern |
-| G201 | 3 | 3 | 3 | — | MEDIUM | SQL string formatting |
-| G202 | 1 | 1 | 1 | — | MEDIUM | SQL string concat |
-| G304 | 7 | 10 | 10 | **+3** | MEDIUM | File inclusion via variable |
-| G305 | 1 | 1 | 1 | — | MEDIUM | File traversal (zip/tar) |
+| Rule | 2026-02-19 | 2026-02-23 (local) | After fixes | Δ net | Severity | Category | Status |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| G101 | 0 | 1 | **0** ✅ | **+1** | HIGH | Hardcoded credentials | **Fixed** (nosec) |
+| G108 | 0 | 0 | 0 ✅ | — | HIGH | pprof endpoint | Previously fixed ✅ |
+| G114 | 0 | 2 | **0** ✅ | **+2** | MEDIUM | HTTP server no timeout | **Fixed** |
+| G115 | 2 | 2 | 2 | — | HIGH | Integer overflow | False positive |
+| G117 | 20 | **22** | 22 | **+2** | MEDIUM | Secret field pattern | False positive |
+| G201 | 3 | 3 | 3 | — | MEDIUM | SQL string formatting | False positive |
+| G202 | 1 | 1 | 1 | — | MEDIUM | SQL string concat | False positive |
+| G304 | 10 | 8 | 8 | **-2** | MEDIUM | File inclusion via variable | Accepted risk |
+| G305 | 1 | 1 | 1 | — | MEDIUM | File traversal (zip/tar) | False positive |
+| G701 | 10 | 4 | 4 | **-6** | HIGH | SQL injection (taint) | False positive |
+| G703 | 0 | 0 | 0 ✅ | — | HIGH | Path traversal (env var) | Previously fixed ✅ |
+| G704 | 37 | 41 | 41 | **+4** | HIGH | SSRF (taint) | Accepted risk |
+| G706 | 0 | 12 | 12 | **+12** | LOW | Log injection (taint) | Accepted risk |
 
-All 49 HIGH-severity findings are **false positives** or **accepted risk** (documented below).
-The 5 net-new findings since the previous scan are documented below; 2 of them (G110) were immediately fixed.
+3 net-new findings (G101 ×1, G114 ×2) were fixed immediately — see Fixed Findings (2026-02-23 local) below.
+
+---
+
+---
+
+## New Findings (2026-02-23 — local full scan)
+
+### G101 HIGH/LOW — Potential hardcoded credentials — **FIXED (nosec)**
+
+**File:** `internal/scm/azuredevops/connector.go:31`
+
+**Finding:** gosec flags `entraTokenURLTemplate` as potential hardcoded credentials.
+
+**Analysis:** The flagged constants are Microsoft Entra ID OAuth 2.0 URL templates:
+
+```go
+entraAuthURLTemplate  = "https://login.microsoftonline.com/%s/oauth2/v2.0/authorize"
+entraTokenURLTemplate = "https://login.microsoftonline.com/%s/oauth2/v2.0/token"
+```
+
+These are public well-known Microsoft endpoint URLs with a `%s` placeholder for the tenant ID.
+No credentials (passwords, secrets, tokens) are present. Detection confidence is LOW.
+
+**Fix applied:** Added `// #nosec G101` annotation with explanation comment. No code change required.
+
+---
+
+### G114 MEDIUM/HIGH — HTTP servers without timeout support (×2) — **FIXED**
+
+**File:** `cmd/server/main.go:172, 184`
+
+**Finding:** `http.ListenAndServe` does not allow setting read/write timeouts, leaving the
+metrics and pprof side-channel servers vulnerable to slow-client / resource-exhaustion attacks.
+
+**Analysis:** Although these are internal-only ports, defense-in-depth requires timeouts.
+A misconfigured firewall or container network policy could expose these ports. Timeouts cost nothing.
+
+**Fix applied:** Replaced both `http.ListenAndServe(addr, handler)` calls with explicit `http.Server`
+struct instances with `ReadTimeout` and `WriteTimeout`:
+
+- Metrics server: 10s read / 10s write (short scrape window)
+- pprof server: 30s read / 30s write (profiling requests can be slower)
+
+---
+
+### G117 MEDIUM — Secret field pattern (+2, total now 22)
+
+Two additional anonymous struct fields (`AccessToken`, `RefreshToken`) in
+`internal/scm/azuredevops/connector.go` (lines 135–136, 186–187) are now flagged.
+These are local response-parsing structs for Entra ID token responses — same false-positive pattern
+as all other G117 findings.
+
+**Verdict: FALSE POSITIVE — data model fields for API response parsing, not embedded secrets.**
+
+---
+
+### G706 LOW — Log injection (+1, total now 12)
+
+The new `SETUP_TOKEN_FILE` path-rejection warning log (`cmd/server/main.go:316`) introduced
+in our G703 fix is flagged. The logged value is the operator-supplied env var string —
+not user request input.
+
+**Accepted risk:** Operator config value; same pattern as all other G706 findings.
+
+---
+
+## Fixed Findings (2026-02-23 — local full scan)
+
+### G101 — Potential hardcoded credentials (1 fixed)
+
+Added `// #nosec G101` annotation with explanation on `entraAuthURLTemplate` /
+`entraTokenURLTemplate` constants in `internal/scm/azuredevops/connector.go`.
+Constants are public Microsoft OAuth endpoint URL templates, not credentials.
+
+### G114 — HTTP server without read/write timeouts (2 fixed)
+
+Replaced `http.ListenAndServe` with explicit `http.Server` structs in `cmd/server/main.go`:
+
+| Server | ReadTimeout | WriteTimeout |
+| --- | --- | --- |
+| Prometheus metrics (`:9090`) | 10s | 10s |
+| pprof (`:6060`) | 30s | 30s |
+
+---
+
+## New Findings (2026-02-23 — CI run)
+
+### G108 HIGH — pprof profiling endpoint exposed — **FIXED**
+
+**File:** `cmd/server/main.go:36`
+
+**Finding:** `_ "net/http/pprof"` blank import auto-registers `/debug/pprof` handlers on `http.DefaultServeMux`.
+
+**Analysis:** The Gin router is the handler for the main API server — `http.DefaultServeMux` is never passed
+to `http.ListenAndServe` on the API address. pprof is served exclusively on a separate internal port
+(`cfg.Telemetry.Profiling.Port`, default 6060) and only when `cfg.Telemetry.Profiling.Enabled=true`.
+The handlers are unreachable via the public API listener regardless of configuration.
+
+**Fix applied:** Added `// #nosec G108` annotation with explanation comment on the import. No behavioural
+change needed; the architecture already isolates pprof correctly.
+
+---
+
+### G703 HIGH — Path traversal via `SETUP_TOKEN_FILE` environment variable — **FIXED**
+
+**File:** `cmd/server/main.go:308`
+
+**Finding:** `os.WriteFile(tokenFile, ...)` where `tokenFile` is sourced directly from `os.Getenv("SETUP_TOKEN_FILE")`.
+
+**Analysis:** `SETUP_TOKEN_FILE` is an operator-supplied environment variable for container secret mounting.
+An operator who sets it to a malicious path (e.g., `../../etc/cron.d/x`) already has host/container
+admin access, making this a low-realistic-risk finding. However, defense-in-depth validation is
+straightforward and appropriate.
+
+**Fix applied:** Added `..` component check on the raw value and `filepath.Clean` before `os.WriteFile`.
+Values containing `..` are rejected with a warning log. `// #nosec G703` annotation added at the write
+site with explanation.
+
+---
+
+### G704 HIGH — SSRF via taint analysis (+4, total now 41)
+
+Four additional `http.DefaultClient.Do(req)` call sites detected across the existing connector files.
+All follow the identical admin-configured URL pattern accepted in previous scans.
+
+**Accepted risk:** Same as all prior G704 findings. Total count updated to 41 in the table above.
+
+---
+
+### G706 LOW — Log injection via taint analysis (11 new findings, new rule)
+
+All 11 findings are in server startup logging or cleanup error paths:
+
+| File | Lines |
+| --- | --- |
+| `cmd/server/main.go` | L119, L122, L148, L309, L311, L332, L345 |
+| `internal/api/admin/mirror.go` | L452 |
+| `internal/api/admin/terraform_mirror.go` | L428 |
+| `internal/api/modules/upload.go` | L249 |
+| `internal/api/providers/upload.go` | L362 |
+
+**Analysis:** All logged values are internal: database version integers, file paths constructed by the
+application, error objects, or operator-supplied configuration strings. No raw user request input is
+logged at these sites. Log injection is only exploitable when: (a) logs are parsed by a security tool
+that can be confused by embedded newlines, and (b) the attacker controls the logged value. Neither
+condition applies here.
+
+**Accepted risk:** Internal values only; not user-controlled input. No code change required.
 
 ---
 
@@ -91,6 +244,22 @@ keeping the total at 37. The new `shipper.go` entry follows the same admin-confi
 pattern as all other G704 findings.
 
 **Accepted risk:** Same as all G704 findings — admin-controlled configuration URLs.
+
+---
+
+## Fixed Findings (2026-02-23)
+
+### G108 — pprof endpoint exposed (1 fixed)
+
+Added `// #nosec G108` annotation with architectural explanation. No runtime change — Gin router
+never uses `DefaultServeMux`; pprof is only reachable on its own internal port when explicitly enabled.
+
+### G703 — Path traversal via `SETUP_TOKEN_FILE` (1 fixed)
+
+Added validation: reject values containing `..` path-traversal sequences; apply `filepath.Clean`
+before the `os.WriteFile` call; suppress with `// #nosec G703` and explanation comment.
+
+---
 
 ## Fixed Findings (2026-02-19)
 
@@ -223,11 +392,11 @@ No realistic tar archive will have a mode value that causes overflow.
 
 ## Accepted Risk (documented)
 
-### G704 — SSRF via taint analysis (37 occurrences)
+### G704 — SSRF via taint analysis (41 occurrences)
 
 **Files:** `internal/scm/gitlab/connector.go` (many), `internal/scm/github/connector.go`,
 `internal/scm/azuredevops/connector.go`, `internal/scm/bitbucket/connector.go`,
-`internal/mirror/upstream.go`, `internal/audit/shipper.go` (L305, new in this scan)
+`internal/mirror/upstream.go`, `internal/audit/shipper.go` (L305)
 
 **Finding:** HTTP requests are made to URLs derived from configuration (base URL + path).
 

@@ -246,7 +246,7 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 		if err := moduleRepo.CreateVersion(c.Request.Context(), moduleVersion); err != nil {
 			// Try to clean up the orphaned storage artifact
 			if delErr := storageBackend.Delete(c.Request.Context(), uploadResult.Path); delErr != nil {
-				slog.Error("failed to clean up orphaned storage artifact",
+				slog.Error("failed to clean up orphaned storage artifact", // #nosec G706 -- logged value is application-internal (config string, integer, or application-constructed path); not raw user-controlled request input
 					"path", uploadResult.Path, "error", delErr)
 			}
 

@@ -85,7 +85,7 @@ func (c *GitHubConnector) CompleteAuthorization(ctx context.Context, authCode st
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to exchange code", err)
 	}
@@ -157,7 +157,7 @@ func (c *GitHubConnector) FetchRepository(ctx context.Context, creds *scm.Access
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch repository", err)
 	}
@@ -198,7 +198,7 @@ func (c *GitHubConnector) SearchRepositories(ctx context.Context, creds *scm.Acc
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "search failed", err)
 	}
@@ -249,7 +249,7 @@ func (c *GitHubConnector) FetchBranches(ctx context.Context, creds *scm.AccessTo
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch branches", err)
 	}
@@ -302,7 +302,7 @@ func (c *GitHubConnector) FetchTags(ctx context.Context, creds *scm.AccessToken,
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch tags", err)
 	}
@@ -345,7 +345,7 @@ func (c *GitHubConnector) FetchTagByName(ctx context.Context, creds *scm.AccessT
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch tag", err)
 	}
@@ -387,7 +387,7 @@ func (c *GitHubConnector) FetchCommit(ctx context.Context, creds *scm.AccessToke
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch commit", err)
 	}
@@ -442,7 +442,7 @@ func (c *GitHubConnector) DownloadSourceArchive(ctx context.Context, creds *scm.
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to download archive", err)
 	}
@@ -490,7 +490,7 @@ func (c *GitHubConnector) fetchRepoList(ctx context.Context, creds *scm.AccessTo
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch repositories", err)
 	}

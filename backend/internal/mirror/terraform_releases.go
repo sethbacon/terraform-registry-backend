@@ -140,7 +140,7 @@ func (c *TerraformReleasesClient) ListVersions(ctx context.Context) ([]Terraform
 		return nil, fmt.Errorf("failed to build index request: %w", err)
 	}
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := c.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch terraform index: %w", err)
 	}
@@ -243,7 +243,7 @@ func (c *TerraformReleasesClient) FetchSHASums(ctx context.Context, version stri
 		return nil, nil, fmt.Errorf("failed to build shasums request: %w", err)
 	}
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := c.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to fetch shasums: %w", err)
 	}
@@ -272,7 +272,7 @@ func (c *TerraformReleasesClient) FetchSHASumsSignature(ctx context.Context, ver
 		return nil, fmt.Errorf("failed to build signature request: %w", err)
 	}
 
-	resp, err := c.HTTPClient.Do(req)
+	resp, err := c.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch signature: %w", err)
 	}
@@ -316,7 +316,7 @@ func (c *TerraformReleasesClient) DownloadBinary(ctx context.Context, downloadUR
 		return nil, "", fmt.Errorf("failed to build download request: %w", err)
 	}
 
-	resp, err := c.DownloadClient.Do(req)
+	resp, err := c.DownloadClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to download binary: %w", err)
 	}

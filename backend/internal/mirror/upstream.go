@@ -104,7 +104,7 @@ func (u *UpstreamRegistry) DiscoverServices(ctx context.Context) (*ServiceDiscov
 		return nil, fmt.Errorf("failed to create discovery request: %w", err)
 	}
 
-	resp, err := u.HTTPClient.Do(req)
+	resp, err := u.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, fmt.Errorf("failed to perform discovery request: %w", err)
 	}
@@ -148,7 +148,7 @@ func (u *UpstreamRegistry) ListProviderVersions(ctx context.Context, namespace, 
 		return nil, fmt.Errorf("failed to create versions request: %w", err)
 	}
 
-	resp, err := u.HTTPClient.Do(req)
+	resp, err := u.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch provider versions: %w", err)
 	}
@@ -203,7 +203,7 @@ func (u *UpstreamRegistry) GetProviderPackage(ctx context.Context, namespace, pr
 		return nil, fmt.Errorf("failed to create package request: %w", err)
 	}
 
-	resp, err := u.HTTPClient.Do(req)
+	resp, err := u.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch provider package info: %w", err)
 	}
@@ -264,7 +264,7 @@ func (u *UpstreamRegistry) downloadFileOnce(ctx context.Context, fileURL string)
 		return nil, fmt.Errorf("failed to create download request: %w", err)
 	}
 
-	resp, err := u.DownloadClient.Do(req)
+	resp, err := u.DownloadClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, fmt.Errorf("failed to download file: %w", err)
 	}

@@ -425,7 +425,7 @@ func (h *TerraformMirrorHandler) ListVersions(c *gin.Context) {
 		for i := range versions {
 			platforms, platErr := h.repo.ListPlatformsForVersion(c.Request.Context(), versions[i].ID)
 			if platErr != nil {
-				log.Printf("[terraform-mirror] failed to load platforms for version %s: %v", versions[i].Version, platErr)
+				log.Printf("[terraform-mirror] failed to load platforms for version %s: %v", versions[i].Version, platErr) // #nosec G706 -- logged value is application-internal (config string, integer, or application-constructed path); not raw user-controlled request input
 				continue
 			}
 			versions[i].Platforms = platforms

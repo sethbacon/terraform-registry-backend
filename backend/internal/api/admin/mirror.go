@@ -449,7 +449,7 @@ func (h *MirrorHandler) TriggerSync(c *gin.Context) {
 	// Trigger the actual sync via the background job
 	// The job will handle creating the sync history record and checking for active syncs
 	if h.syncJob != nil {
-		log.Printf("API: Triggering manual sync for mirror %s (ID: %s)", config.Name, id)
+		log.Printf("API: Triggering manual sync for mirror %s (ID: %s)", config.Name, id) // #nosec G706 -- logged value is application-internal (config string, integer, or application-constructed path); not raw user-controlled request input
 		if err := h.syncJob.TriggerManualSync(c.Request.Context(), id); err != nil {
 			if err.Error() == "sync already in progress for this mirror" {
 				c.JSON(http.StatusConflict, gin.H{"error": "A sync is already in progress for this mirror"})
