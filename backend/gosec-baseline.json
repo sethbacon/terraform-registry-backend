@@ -1,0 +1,528 @@
+{
+	"Golang errors": {},
+	"Issues": [
+		{
+			"severity": "HIGH",
+			"confidence": "MEDIUM",
+			"cwe": {
+				"id": "190",
+				"url": "https://cwe.mitre.org/data/definitions/190.html"
+			},
+			"rule_id": "G115",
+			"details": "integer overflow conversion uint64 -\u003e int64",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\scm\\azuredevops\\connector.go",
+			"code": "522: \t\t\tName:     f.Name,\n523: \t\t\tSize:     int64(f.UncompressedSize64),\n524: \t\t\tMode:     int64(f.Mode()),\n",
+			"line": "523",
+			"column": "19",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "HIGH",
+			"confidence": "MEDIUM",
+			"cwe": {
+				"id": "190",
+				"url": "https://cwe.mitre.org/data/definitions/190.html"
+			},
+			"rule_id": "G115",
+			"details": "integer overflow conversion int64 -\u003e uint32",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\services\\scm_publisher.go",
+			"code": "205: \t\t\t}\n206: \t\t\tf, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR, os.FileMode(header.Mode)) // #nosec G304 -- path is constructed from validated namespace/name/version components; path traversal is prevented at the API and archive-extraction layers\n207: \t\t\tif err != nil {\n",
+			"line": "206",
+			"column": "68",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "HIGH",
+			"confidence": "HIGH",
+			"cwe": null,
+			"rule_id": "G701",
+			"details": "SQL injection via taint analysis",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\api\\admin\\stats.go",
+			"code": "95: \t_ = h.db.QueryRowContext(c.Request.Context(), \"SELECT COUNT(DISTINCT provider_version_id) FROM mirrored_provider_versions\").Scan(\u0026stats.Providers.MirroredVersions)\n96: \t_ = h.db.QueryRowContext(c.Request.Context(), \"SELECT COUNT(*) FROM scm_providers\").Scan(\u0026stats.SCMProviders)\n97: \n",
+			"line": "96",
+			"column": "26",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "HIGH",
+			"confidence": "HIGH",
+			"cwe": null,
+			"rule_id": "G701",
+			"details": "SQL injection via taint analysis",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\api\\admin\\stats.go",
+			"code": "94: \t_ = h.db.QueryRowContext(c.Request.Context(), \"SELECT COUNT(DISTINCT provider_id) FROM mirrored_providers\").Scan(\u0026stats.Providers.Mirrored)\n95: \t_ = h.db.QueryRowContext(c.Request.Context(), \"SELECT COUNT(DISTINCT provider_version_id) FROM mirrored_provider_versions\").Scan(\u0026stats.Providers.MirroredVersions)\n96: \t_ = h.db.QueryRowContext(c.Request.Context(), \"SELECT COUNT(*) FROM scm_providers\").Scan(\u0026stats.SCMProviders)\n",
+			"line": "95",
+			"column": "26",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "HIGH",
+			"confidence": "HIGH",
+			"cwe": null,
+			"rule_id": "G701",
+			"details": "SQL injection via taint analysis",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\api\\admin\\stats.go",
+			"code": "93: \t// so query them separately with graceful fallback to 0.\n94: \t_ = h.db.QueryRowContext(c.Request.Context(), \"SELECT COUNT(DISTINCT provider_id) FROM mirrored_providers\").Scan(\u0026stats.Providers.Mirrored)\n95: \t_ = h.db.QueryRowContext(c.Request.Context(), \"SELECT COUNT(DISTINCT provider_version_id) FROM mirrored_provider_versions\").Scan(\u0026stats.Providers.MirroredVersions)\n",
+			"line": "94",
+			"column": "26",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "HIGH",
+			"confidence": "HIGH",
+			"cwe": null,
+			"rule_id": "G701",
+			"details": "SQL injection via taint analysis",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\api\\admin\\stats.go",
+			"code": "76: \n77: \terr := h.db.QueryRowContext(c.Request.Context(), query).Scan(\n78: \t\t\u0026stats.Modules.Total,\n",
+			"line": "77",
+			"column": "29",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "MEDIUM",
+			"confidence": "HIGH",
+			"cwe": {
+				"id": "89",
+				"url": "https://cwe.mitre.org/data/definitions/89.html"
+			},
+			"rule_id": "G201",
+			"details": "SQL string formatting",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\db\\repositories\\provider_repository.go",
+			"code": "592: \t// Query with pagination and JOIN for created_by_name\n593: \tsearchQuery := fmt.Sprintf(`\n594: \t\tSELECT p.id, p.organization_id, p.namespace, p.type, p.description, p.source,\n595: \t\t       p.created_by, u.name as created_by_name, p.created_at, p.updated_at\n596: \t\tFROM providers p\n597: \t\tLEFT JOIN users u ON p.created_by = u.id\n598: \t\t%s\n599: \t\tORDER BY p.created_at DESC\n600: \t\tLIMIT $%d OFFSET $%d\n601: \t`, whereClause, argCount+1, argCount+2)\n602: \n",
+			"line": "593-601",
+			"column": "17",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "MEDIUM",
+			"confidence": "HIGH",
+			"cwe": {
+				"id": "89",
+				"url": "https://cwe.mitre.org/data/definitions/89.html"
+			},
+			"rule_id": "G201",
+			"details": "SQL string formatting",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\db\\repositories\\provider_repository.go",
+			"code": "584: \t// Count total results\n585: \tcountQuery := fmt.Sprintf(\"SELECT COUNT(*) FROM providers p %s\", whereClause)\n586: \tvar total int\n",
+			"line": "585",
+			"column": "16",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "MEDIUM",
+			"confidence": "HIGH",
+			"cwe": {
+				"id": "89",
+				"url": "https://cwe.mitre.org/data/definitions/89.html"
+			},
+			"rule_id": "G201",
+			"details": "SQL string formatting",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\db\\repositories\\module_repository.go",
+			"code": "434: \t// Count total results\n435: \tcountQuery := fmt.Sprintf(\"SELECT COUNT(*) FROM modules %s\", whereClause)\n436: \tvar total int\n",
+			"line": "435",
+			"column": "16",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "MEDIUM",
+			"confidence": "HIGH",
+			"cwe": {
+				"id": "89",
+				"url": "https://cwe.mitre.org/data/definitions/89.html"
+			},
+			"rule_id": "G202",
+			"details": "SQL string concatenation",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\db\\repositories\\audit_repository.go",
+			"code": "134: \t// Add ordering and pagination\n135: \tquery += fmt.Sprintf(` ORDER BY created_at DESC LIMIT $%d OFFSET $%d`, paramIndex, paramIndex+1)\n136: \targs = append(args, limit, offset)\n",
+			"line": "135",
+			"column": "2",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "MEDIUM",
+			"confidence": "HIGH",
+			"cwe": {
+				"id": "22",
+				"url": "https://cwe.mitre.org/data/definitions/22.html"
+			},
+			"rule_id": "G305",
+			"details": "File traversal when extracting zip/tar archive",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\services\\scm_publisher.go",
+			"code": "191: \t\t// Prevent path traversal\n192: \t\ttarget := filepath.Join(dest, header.Name)\n193: \t\tif !strings.HasPrefix(target, filepath.Clean(dest)+string(os.PathSeparator)) {\n",
+			"line": "192",
+			"column": "13",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "MEDIUM",
+			"confidence": "MEDIUM",
+			"cwe": {
+				"id": "499",
+				"url": "https://cwe.mitre.org/data/definitions/499.html"
+			},
+			"rule_id": "G117",
+			"details": "Exported struct field \"Secret\" (JSON key \"Secret\") matches secret pattern",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\scm\\provider.go",
+			"code": "72: \tURL         string\n73: \tSecret      string\n74: \tEvents      []string\n",
+			"line": "73",
+			"column": "2",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "MEDIUM",
+			"confidence": "MEDIUM",
+			"cwe": {
+				"id": "499",
+				"url": "https://cwe.mitre.org/data/definitions/499.html"
+			},
+			"rule_id": "G117",
+			"details": "Exported struct field \"RefreshToken\" (JSON key \"refresh_token\") matches secret pattern",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\scm\\types.go",
+			"code": "100: \tToken        string     `json:\"token\"` // Alias for AccessToken\n101: \tRefreshToken string     `json:\"refresh_token,omitempty\"`\n102: \tTokenType    string     `json:\"token_type\"`\n",
+			"line": "101",
+			"column": "2",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "MEDIUM",
+			"confidence": "MEDIUM",
+			"cwe": {
+				"id": "499",
+				"url": "https://cwe.mitre.org/data/definitions/499.html"
+			},
+			"rule_id": "G117",
+			"details": "Exported struct field \"RefreshToken\" (JSON key \"refresh_token\") matches secret pattern",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\scm\\gitlab\\connector.go",
+			"code": "153: \t\tExpiresIn    int    `json:\"expires_in\"`\n154: \t\tRefreshToken string `json:\"refresh_token\"`\n155: \t}\n",
+			"line": "154",
+			"column": "3",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "MEDIUM",
+			"confidence": "MEDIUM",
+			"cwe": {
+				"id": "499",
+				"url": "https://cwe.mitre.org/data/definitions/499.html"
+			},
+			"rule_id": "G117",
+			"details": "Exported struct field \"RefreshToken\" (JSON key \"refresh_token\") matches secret pattern",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\scm\\gitlab\\connector.go",
+			"code": "102: \t\tExpiresIn    int    `json:\"expires_in\"`\n103: \t\tRefreshToken string `json:\"refresh_token\"`\n104: \t\tScope        string `json:\"scope\"`\n",
+			"line": "103",
+			"column": "3",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "MEDIUM",
+			"confidence": "MEDIUM",
+			"cwe": {
+				"id": "499",
+				"url": "https://cwe.mitre.org/data/definitions/499.html"
+			},
+			"rule_id": "G117",
+			"details": "Exported struct field \"RefreshToken\" (JSON key \"refresh_token\") matches secret pattern",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\scm\\azuredevops\\connector.go",
+			"code": "188: \t\tExpiresIn    int    `json:\"expires_in\"`\n189: \t\tRefreshToken string `json:\"refresh_token\"`\n190: \t}\n",
+			"line": "189",
+			"column": "3",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "MEDIUM",
+			"confidence": "MEDIUM",
+			"cwe": {
+				"id": "499",
+				"url": "https://cwe.mitre.org/data/definitions/499.html"
+			},
+			"rule_id": "G117",
+			"details": "Exported struct field \"RefreshToken\" (JSON key \"refresh_token\") matches secret pattern",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\scm\\azuredevops\\connector.go",
+			"code": "137: \t\tExpiresIn    int    `json:\"expires_in\"`\n138: \t\tRefreshToken string `json:\"refresh_token\"`\n139: \t\tScope        string `json:\"scope\"`\n",
+			"line": "138",
+			"column": "3",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "MEDIUM",
+			"confidence": "MEDIUM",
+			"cwe": {
+				"id": "499",
+				"url": "https://cwe.mitre.org/data/definitions/499.html"
+			},
+			"rule_id": "G117",
+			"details": "Exported struct field \"Password\" (JSON key \"Password\") matches secret pattern",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\config\\config.go",
+			"code": "317: \t// Password for SMTP authentication\n318: \tPassword string `mapstructure:\"password\"`\n319: \t// From is the sender address shown in notification emails\n",
+			"line": "318",
+			"column": "2",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "MEDIUM",
+			"confidence": "MEDIUM",
+			"cwe": {
+				"id": "499",
+				"url": "https://cwe.mitre.org/data/definitions/499.html"
+			},
+			"rule_id": "G117",
+			"details": "Exported struct field \"Password\" (JSON key \"Password\") matches secret pattern",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\config\\config.go",
+			"code": "53: \tUser               string `mapstructure:\"user\"`\n54: \tPassword           string `mapstructure:\"password\"`\n55: \tSSLMode            string `mapstructure:\"ssl_mode\"`\n",
+			"line": "54",
+			"column": "2",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "MEDIUM",
+			"confidence": "MEDIUM",
+			"cwe": {
+				"id": "499",
+				"url": "https://cwe.mitre.org/data/definitions/499.html"
+			},
+			"rule_id": "G117",
+			"details": "Exported struct field \"ClientSecret\" (JSON key \"client_secret\") matches secret pattern",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\db\\models\\oidc_config.go",
+			"code": "37: \tClientID     string                 `json:\"client_id\" binding:\"required\"`\n38: \tClientSecret string                 `json:\"client_secret\" binding:\"required\"` // Plain text input, encrypted before storage\n39: \tRedirectURL  string                 `json:\"redirect_url\" binding:\"required\"`\n",
+			"line": "38",
+			"column": "2",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "MEDIUM",
+			"confidence": "MEDIUM",
+			"cwe": {
+				"id": "499",
+				"url": "https://cwe.mitre.org/data/definitions/499.html"
+			},
+			"rule_id": "G117",
+			"details": "Exported struct field \"ClientSecret\" (JSON key \"client_secret\") matches secret pattern",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\api\\admin\\scm_providers.go",
+			"code": "52: \tClientID      *string `json:\"client_id,omitempty\"`\n53: \tClientSecret  *string `json:\"client_secret,omitempty\"`\n54: \tWebhookSecret *string `json:\"webhook_secret,omitempty\"`\n",
+			"line": "53",
+			"column": "2",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "MEDIUM",
+			"confidence": "MEDIUM",
+			"cwe": {
+				"id": "499",
+				"url": "https://cwe.mitre.org/data/definitions/499.html"
+			},
+			"rule_id": "G117",
+			"details": "Exported struct field \"ClientSecret\" (JSON key \"client_secret\") matches secret pattern",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\api\\admin\\scm_providers.go",
+			"code": "41: \tClientID       string           `json:\"client_id\"`\n42: \tClientSecret   string           `json:\"client_secret\"`\n43: \tWebhookSecret  string           `json:\"webhook_secret,omitempty\"`\n",
+			"line": "42",
+			"column": "2",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "MEDIUM",
+			"confidence": "MEDIUM",
+			"cwe": {
+				"id": "499",
+				"url": "https://cwe.mitre.org/data/definitions/499.html"
+			},
+			"rule_id": "G117",
+			"details": "Exported struct field \"ClientSecret\" (JSON key \"ClientSecret\") matches secret pattern",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\scm\\provider.go",
+			"code": "93: \tClientID     string\n94: \tClientSecret string\n95: \tRedirectURL  string\n",
+			"line": "94",
+			"column": "2",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "MEDIUM",
+			"confidence": "MEDIUM",
+			"cwe": {
+				"id": "499",
+				"url": "https://cwe.mitre.org/data/definitions/499.html"
+			},
+			"rule_id": "G117",
+			"details": "Exported struct field \"ClientSecret\" (JSON key \"ClientSecret\") matches secret pattern",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\scm\\connector.go",
+			"code": "111: \tClientID        string\n112: \tClientSecret    string\n113: \tCallbackURL     string\n",
+			"line": "112",
+			"column": "2",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "MEDIUM",
+			"confidence": "MEDIUM",
+			"cwe": {
+				"id": "499",
+				"url": "https://cwe.mitre.org/data/definitions/499.html"
+			},
+			"rule_id": "G117",
+			"details": "Exported struct field \"ClientSecret\" (JSON key \"ClientSecret\") matches secret pattern",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\config\\config.go",
+			"code": "166: \tClientID     string `mapstructure:\"client_id\"`\n167: \tClientSecret string `mapstructure:\"client_secret\"`\n168: \tRedirectURL  string `mapstructure:\"redirect_url\"`\n",
+			"line": "167",
+			"column": "2",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "MEDIUM",
+			"confidence": "MEDIUM",
+			"cwe": {
+				"id": "499",
+				"url": "https://cwe.mitre.org/data/definitions/499.html"
+			},
+			"rule_id": "G117",
+			"details": "Exported struct field \"ClientSecret\" (JSON key \"ClientSecret\") matches secret pattern",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\config\\config.go",
+			"code": "156: \tClientID     string   `mapstructure:\"client_id\"`\n157: \tClientSecret string   `mapstructure:\"client_secret\"`\n158: \tRedirectURL  string   `mapstructure:\"redirect_url\"`\n",
+			"line": "157",
+			"column": "2",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "MEDIUM",
+			"confidence": "MEDIUM",
+			"cwe": {
+				"id": "499",
+				"url": "https://cwe.mitre.org/data/definitions/499.html"
+			},
+			"rule_id": "G117",
+			"details": "Exported struct field \"AccessToken\" (JSON key \"access_token\") matches secret pattern",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\scm\\types.go",
+			"code": "98: type OAuthToken struct {\n99: \tAccessToken  string     `json:\"access_token\"`\n100: \tToken        string     `json:\"token\"` // Alias for AccessToken\n",
+			"line": "99",
+			"column": "2",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "MEDIUM",
+			"confidence": "MEDIUM",
+			"cwe": {
+				"id": "499",
+				"url": "https://cwe.mitre.org/data/definitions/499.html"
+			},
+			"rule_id": "G117",
+			"details": "Exported struct field \"AccessToken\" (JSON key \"access_token\") matches secret pattern",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\scm\\gitlab\\connector.go",
+			"code": "150: \tvar result struct {\n151: \t\tAccessToken  string `json:\"access_token\"`\n152: \t\tTokenType    string `json:\"token_type\"`\n",
+			"line": "151",
+			"column": "3",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "MEDIUM",
+			"confidence": "MEDIUM",
+			"cwe": {
+				"id": "499",
+				"url": "https://cwe.mitre.org/data/definitions/499.html"
+			},
+			"rule_id": "G117",
+			"details": "Exported struct field \"AccessToken\" (JSON key \"access_token\") matches secret pattern",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\scm\\gitlab\\connector.go",
+			"code": "99: \tvar result struct {\n100: \t\tAccessToken  string `json:\"access_token\"`\n101: \t\tTokenType    string `json:\"token_type\"`\n",
+			"line": "100",
+			"column": "3",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "MEDIUM",
+			"confidence": "MEDIUM",
+			"cwe": {
+				"id": "499",
+				"url": "https://cwe.mitre.org/data/definitions/499.html"
+			},
+			"rule_id": "G117",
+			"details": "Exported struct field \"AccessToken\" (JSON key \"access_token\") matches secret pattern",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\scm\\github\\connector.go",
+			"code": "99: \tvar result struct {\n100: \t\tAccessToken string `json:\"access_token\"`\n101: \t\tTokenType   string `json:\"token_type\"`\n",
+			"line": "100",
+			"column": "3",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "MEDIUM",
+			"confidence": "MEDIUM",
+			"cwe": {
+				"id": "499",
+				"url": "https://cwe.mitre.org/data/definitions/499.html"
+			},
+			"rule_id": "G117",
+			"details": "Exported struct field \"AccessToken\" (JSON key \"access_token\") matches secret pattern",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\scm\\azuredevops\\connector.go",
+			"code": "185: \tvar result struct {\n186: \t\tAccessToken  string `json:\"access_token\"`\n187: \t\tTokenType    string `json:\"token_type\"`\n",
+			"line": "186",
+			"column": "3",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "MEDIUM",
+			"confidence": "MEDIUM",
+			"cwe": {
+				"id": "499",
+				"url": "https://cwe.mitre.org/data/definitions/499.html"
+			},
+			"rule_id": "G117",
+			"details": "Exported struct field \"AccessToken\" (JSON key \"access_token\") matches secret pattern",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\scm\\azuredevops\\connector.go",
+			"code": "134: \tvar result struct {\n135: \t\tAccessToken  string `json:\"access_token\"`\n136: \t\tTokenType    string `json:\"token_type\"`\n",
+			"line": "135",
+			"column": "3",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "MEDIUM",
+			"confidence": "MEDIUM",
+			"cwe": {
+				"id": "499",
+				"url": "https://cwe.mitre.org/data/definitions/499.html"
+			},
+			"rule_id": "G117",
+			"details": "Exported struct field \"AccessToken\" (JSON key \"access_token\") matches secret pattern",
+			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\api\\admin\\scm_oauth.go",
+			"code": "472: \tvar req struct {\n473: \t\tAccessToken string `json:\"access_token\" binding:\"required\"`\n474: \t}\n",
+			"line": "473",
+			"column": "3",
+			"nosec": false,
+			"suppressions": null
+		}
+	],
+	"Stats": {
+		"files": 112,
+		"lines": 31911,
+		"nosec": 66,
+		"found": 33
+	},
+	"GosecVersion": "dev"
+}
