@@ -117,7 +117,7 @@ jobs:
           auth: ${{ secrets.GIST_TOKEN }}
           gistID: ${{ vars.COVERAGE_GIST_ID }}
           filename: coverage.json
-          label: coverage
+          label: Coverage
           message: ${{ steps.badge.outputs.percent }}%
           color: ${{ steps.badge.outputs.color }}
 
