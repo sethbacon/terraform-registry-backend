@@ -657,15 +657,11 @@ func (j *MirrorSyncJob) syncProvider(ctx context.Context, upstreamClient *mirror
 
 		// Check if version already exists
 		if existingVersion, exists := existingVersionMap[version.Version]; exists {
-			log.Printf("Version %s of %s/%s already exists, skipping download", version.Version, namespace, providerName)
-
-			// But ensure the mirrored_provider_version tracking record exists
+			// Ensure the mirrored_provider_version tracking record exists
 			if mirroredProvider != nil {
 				versionUUID, _ := uuid.Parse(existingVersion.ID)
 				existingTracking, err := j.mirrorRepo.GetMirroredProviderVersionByVersionID(ctx, versionUUID)
-
 				if err != nil || existingTracking == nil {
-					// Create tracking record for this existing version
 					log.Printf("Creating tracking record for existing version %s (ID: %s)", version.Version, versionUUID)
 					mpv := &models.MirroredProviderVersion{
 						ID:                 uuid.New(),
@@ -673,19 +669,66 @@ func (j *MirrorSyncJob) syncProvider(ctx context.Context, upstreamClient *mirror
 						ProviderVersionID:  versionUUID,
 						UpstreamVersion:    version.Version,
 						SyncedAt:           time.Now(),
-						ShasumVerified:     false, // Unknown for existing versions
-						GPGVerified:        false, // Unknown for existing versions
+						ShasumVerified:     false,
+						GPGVerified:        false,
 					}
 					if err := j.mirrorRepo.CreateMirroredProviderVersion(ctx, mpv); err != nil {
 						log.Printf("Warning: failed to create tracking for existing version: %v", err)
-					} else {
-						log.Printf("Successfully created tracking for version %s", version.Version)
 					}
-				} else {
-					log.Printf("Version %s already has tracking record (ID: %s)", version.Version, existingTracking.ID)
 				}
+			}
+
+			// Check for missing platforms — the user may have deleted individual
+			// platform records. Build a set of platforms already in the DB for this version.
+			existingPlatforms, err := j.providerRepo.ListPlatforms(ctx, existingVersion.ID)
+			if err != nil {
+				log.Printf("Warning: failed to list platforms for existing version %s: %v", version.Version, err)
+				continue
+			}
+			existingPlatformSet := make(map[string]bool, len(existingPlatforms))
+			for _, ep := range existingPlatforms {
+				existingPlatformSet[ep.OS+"/"+ep.Arch] = true
+			}
+
+			filteredPlatforms := filterPlatforms(version.Platforms, config.PlatformFilter)
+			missingPlatforms := make([]mirror.ProviderPlatform, 0)
+			for _, p := range filteredPlatforms {
+				if !existingPlatformSet[p.OS+"/"+p.Arch] {
+					missingPlatforms = append(missingPlatforms, p)
+				}
+			}
+
+			if len(missingPlatforms) == 0 {
+				log.Printf("Version %s of %s/%s already exists with all platforms, skipping", version.Version, namespace, providerName)
+				continue
+			}
+
+			log.Printf("Version %s of %s/%s exists but is missing %d platform(s), re-syncing those",
+				version.Version, namespace, providerName, len(missingPlatforms))
+
+			// Fetch SHASUM info once for this version then download missing platforms.
+			firstPlatform := version.Platforms[0]
+			packageInfo, pkgErr := upstreamClient.GetProviderPackage(ctx, namespace, providerName, version.Version, firstPlatform.OS, firstPlatform.Arch)
+			var shasumMap map[string]string
+			if pkgErr == nil {
+				shasumContent, _ := upstreamClient.DownloadFile(ctx, packageInfo.SHASumsURL)
+				shasumMap = parseSHASUMFile(string(shasumContent))
 			} else {
-				log.Printf("WARNING: mirroredProvider is nil, cannot create version tracking for %s", version.Version)
+				log.Printf("Warning: failed to get package info for SHASUM for %s/%s@%s: %v", namespace, providerName, version.Version, pkgErr)
+			}
+
+			existingVersionRecord := &models.ProviderVersion{
+				ID: existingVersion.ID,
+			}
+			for _, mp := range missingPlatforms {
+				if err := j.syncPlatformBinary(ctx, upstreamClient, existingVersionRecord, namespace, providerName, version.Version, mp, shasumMap); err != nil {
+					log.Printf("Error re-syncing missing platform %s/%s for %s/%s@%s: %v",
+						mp.OS, mp.Arch, namespace, providerName, version.Version, err)
+				} else {
+					syncedProvider.VersionsNew++
+					log.Printf("Re-synced missing platform %s/%s for %s/%s@%s",
+						mp.OS, mp.Arch, namespace, providerName, version.Version)
+				}
 			}
 			continue
 		}

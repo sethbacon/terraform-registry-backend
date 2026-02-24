@@ -31,7 +31,7 @@ const (
 
 var configCols = []string{
 	"id", "name", "description", "tool", "enabled", "upstream_url",
-	"platform_filter", "gpg_verify", "sync_interval_hours",
+	"platform_filter", "version_filter", "gpg_verify", "stable_only", "sync_interval_hours",
 	"last_sync_at", "last_sync_status", "last_sync_error",
 	"created_at", "updated_at",
 }
@@ -51,7 +51,7 @@ func sampleConfigRow() *sqlmock.Rows {
 	upstream := "https://releases.hashicorp.com"
 	return sqlmock.NewRows(configCols).AddRow(
 		sampleConfigID, sampleConfigName, nil, "terraform", true,
-		upstream, nil, true, 24,
+		upstream, nil, nil, true, false, 24,
 		nil, nil, nil,
 		time.Now(), time.Now(),
 	)
@@ -87,9 +87,9 @@ type mockStorage struct {
 func (m *mockStorage) Upload(_ context.Context, _ string, _ io.Reader, _ int64) (*storage.UploadResult, error) {
 	return &storage.UploadResult{}, nil
 }
-func (m *mockStorage) Download(_ context.Context, _ string) (io.ReadCloser, error)         { return nil, nil }
-func (m *mockStorage) Delete(_ context.Context, _ string) error                             { return nil }
-func (m *mockStorage) Exists(_ context.Context, _ string) (bool, error)                    { return true, nil }
+func (m *mockStorage) Download(_ context.Context, _ string) (io.ReadCloser, error) { return nil, nil }
+func (m *mockStorage) Delete(_ context.Context, _ string) error                    { return nil }
+func (m *mockStorage) Exists(_ context.Context, _ string) (bool, error)            { return true, nil }
 func (m *mockStorage) GetMetadata(_ context.Context, _ string) (*storage.FileMetadata, error) {
 	return &storage.FileMetadata{}, nil
 }
@@ -167,8 +167,8 @@ func TestListVersions_MirrorDisabled(t *testing.T) {
 
 	upstream := "https://releases.hashicorp.com"
 	disabledRow := sqlmock.NewRows(configCols).AddRow(
-		sampleConfigID, sampleConfigName, nil, "terraform", false /* enabled=false */,
-		upstream, nil, true, 24, nil, nil, nil, time.Now(), time.Now(),
+		sampleConfigID, sampleConfigName, nil, "terraform", false, /* enabled=false */
+		upstream, nil, nil, true, false, 24, nil, nil, nil, time.Now(), time.Now(),
 	)
 
 	mock.ExpectQuery(`SELECT.*FROM terraform_mirror_configs.*WHERE name`).
@@ -446,4 +446,203 @@ func TestDownloadBinary_PlatformPending(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+}
+
+// ---- ListConfigs ------------------------------------------------------------
+
+// newListConfigsRouter registers the ListConfigs handler at GET / for isolated testing.
+func newListConfigsRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { db.Close() })
+
+	sqlxDB := sqlx.NewDb(db, "postgres")
+	repo := repositories.NewTerraformMirrorRepository(sqlxDB)
+
+	h := NewHandler(repo, &mockStorage{url: "https://example.com/download"})
+	r := gin.New()
+	r.GET("/", h.ListConfigs)
+	return mock, r
+}
+
+func TestListConfigs_Success_Empty(t *testing.T) {
+	mock, r := newListConfigsRouter(t)
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_mirror_configs.*WHERE enabled`).
+		WillReturnRows(sqlmock.NewRows(configCols))
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp []interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Len(t, resp, 0)
+}
+
+func TestListConfigs_Success_WithItems(t *testing.T) {
+	mock, r := newListConfigsRouter(t)
+
+	desc := "My mirror"
+	rows := sqlmock.NewRows(configCols).AddRow(
+		sampleConfigID, sampleConfigName, &desc, "terraform", true,
+		"https://releases.hashicorp.com", nil, nil, true, false, 24,
+		nil, nil, nil,
+		time.Now(), time.Now(),
+	)
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_mirror_configs.*WHERE enabled`).
+		WillReturnRows(rows)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp []map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Len(t, resp, 1)
+	assert.Equal(t, sampleConfigName, resp[0]["name"])
+	assert.Equal(t, "terraform", resp[0]["tool"])
+	assert.Equal(t, "My mirror", resp[0]["description"])
+}
+
+func TestListConfigs_DBError(t *testing.T) {
+	mock, r := newListConfigsRouter(t)
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_mirror_configs.*WHERE enabled`).
+		WillReturnError(sql.ErrConnDone)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+// ---- ResolveConfig error paths ----------------------------------------------
+
+func TestResolveConfig_GetByNameDBError(t *testing.T) {
+	mock, r := newRouter(t, nil)
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_mirror_configs.*WHERE name`).
+		WithArgs(sampleConfigName).
+		WillReturnError(sql.ErrConnDone)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/"+sampleConfigName+"/versions", nil)
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+// ---- GetLatestVersion additional error paths --------------------------------
+
+func TestGetLatestVersion_DBError(t *testing.T) {
+	mock, r := newRouter(t, nil)
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_mirror_configs.*WHERE name`).
+		WithArgs(sampleConfigName).
+		WillReturnRows(sampleConfigRow())
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_versions.*WHERE config_id.*is_latest`).
+		WithArgs(sampleConfigID).
+		WillReturnError(sql.ErrConnDone)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/"+sampleConfigName+"/versions/latest", nil)
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+// ---- GetVersion additional error paths -------------------------------------
+
+func TestGetVersion_DBError(t *testing.T) {
+	mock, r := newRouter(t, nil)
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_mirror_configs.*WHERE name`).
+		WithArgs(sampleConfigName).
+		WillReturnRows(sampleConfigRow())
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_versions.*WHERE config_id.*version`).
+		WithArgs(sampleConfigID, "1.9.0").
+		WillReturnError(sql.ErrConnDone)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/"+sampleConfigName+"/versions/1.9.0", nil)
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+// ---- DownloadBinary additional error paths ----------------------------------
+
+func TestDownloadBinary_VersionDBError(t *testing.T) {
+	mock, r := newRouter(t, nil)
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_mirror_configs.*WHERE name`).
+		WithArgs(sampleConfigName).
+		WillReturnRows(sampleConfigRow())
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_versions.*WHERE config_id.*version`).
+		WithArgs(sampleConfigID, "1.9.0").
+		WillReturnError(sql.ErrConnDone)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/"+sampleConfigName+"/versions/1.9.0/linux/amd64", nil)
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestDownloadBinary_PlatformDBError(t *testing.T) {
+	mock, r := newRouter(t, nil)
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_mirror_configs.*WHERE name`).
+		WithArgs(sampleConfigName).
+		WillReturnRows(sampleConfigRow())
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_versions.*WHERE config_id.*version`).
+		WithArgs(sampleConfigID, "1.9.0").
+		WillReturnRows(sampleVersionRow("1.9.0", true))
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_version_platforms.*WHERE version_id.*os.*arch`).
+		WithArgs(sampleVersionID, "linux", "amd64").
+		WillReturnError(sql.ErrConnDone)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/"+sampleConfigName+"/versions/1.9.0/linux/amd64", nil)
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestDownloadBinary_StorageURLError(t *testing.T) {
+	store := &mockStorage{url: "", err: sql.ErrConnDone}
+	mock, r := newRouter(t, store)
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_mirror_configs.*WHERE name`).
+		WithArgs(sampleConfigName).
+		WillReturnRows(sampleConfigRow())
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_versions.*WHERE config_id.*version`).
+		WithArgs(sampleConfigID, "1.9.0").
+		WillReturnRows(sampleVersionRow("1.9.0", true))
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_version_platforms.*WHERE version_id.*os.*arch`).
+		WithArgs(sampleVersionID, "linux", "amd64").
+		WillReturnRows(samplePlatformRow("tf/1.9.0/linux_amd64.zip"))
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/"+sampleConfigName+"/versions/1.9.0/linux/amd64", nil)
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }

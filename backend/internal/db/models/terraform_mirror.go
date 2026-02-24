@@ -22,7 +22,9 @@ type TerraformMirrorConfig struct {
 	Enabled           bool       `json:"enabled" db:"enabled"`
 	UpstreamURL       string     `json:"upstream_url" db:"upstream_url"`
 	PlatformFilter    *string    `json:"platform_filter,omitempty" db:"platform_filter"` // JSONB: []string "os/arch"
+	VersionFilter     *string    `json:"version_filter,omitempty" db:"version_filter"`   // version filter expression
 	GPGVerify         bool       `json:"gpg_verify" db:"gpg_verify"`
+	StableOnly        bool       `json:"stable_only" db:"stable_only"` // exclude pre-release versions when true
 	SyncIntervalHours int        `json:"sync_interval_hours" db:"sync_interval_hours"`
 	LastSyncAt        *time.Time `json:"last_sync_at,omitempty" db:"last_sync_at"`
 	LastSyncStatus    *string    `json:"last_sync_status,omitempty" db:"last_sync_status"`
@@ -65,6 +67,7 @@ type TerraformVersionPlatform struct {
 	SyncStatus     string     `json:"sync_status" db:"sync_status"` // pending|syncing|synced|failed
 	SyncError      *string    `json:"sync_error,omitempty" db:"sync_error"`
 	SyncedAt       *time.Time `json:"synced_at,omitempty" db:"synced_at"`
+	DownloadCount  int64      `json:"download_count" db:"download_count"`
 	CreatedAt      time.Time  `json:"created_at" db:"created_at"`
 	UpdatedAt      time.Time  `json:"updated_at" db:"updated_at"`
 }
@@ -93,7 +96,9 @@ type CreateTerraformMirrorConfigRequest struct {
 	Tool              string   `json:"tool" binding:"required,oneof=terraform opentofu custom"`
 	UpstreamURL       string   `json:"upstream_url" binding:"required,url"`
 	PlatformFilter    []string `json:"platform_filter,omitempty"`
+	VersionFilter     *string  `json:"version_filter,omitempty"`
 	GPGVerify         *bool    `json:"gpg_verify,omitempty"`
+	StableOnly        *bool    `json:"stable_only,omitempty"`
 	Enabled           *bool    `json:"enabled,omitempty"`
 	SyncIntervalHours *int     `json:"sync_interval_hours,omitempty" binding:"omitempty,min=1"`
 }
@@ -105,7 +110,9 @@ type UpdateTerraformMirrorConfigRequest struct {
 	Tool              *string  `json:"tool,omitempty" binding:"omitempty,oneof=terraform opentofu custom"`
 	UpstreamURL       *string  `json:"upstream_url,omitempty" binding:"omitempty,url"`
 	PlatformFilter    []string `json:"platform_filter,omitempty"`
+	VersionFilter     *string  `json:"version_filter,omitempty"`
 	GPGVerify         *bool    `json:"gpg_verify,omitempty"`
+	StableOnly        *bool    `json:"stable_only,omitempty"`
 	Enabled           *bool    `json:"enabled,omitempty"`
 	SyncIntervalHours *int     `json:"sync_interval_hours,omitempty" binding:"omitempty,min=1"`
 }

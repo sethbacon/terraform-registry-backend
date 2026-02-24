@@ -12,6 +12,8 @@
 package terraform_binaries
 
 import (
+	"context"
+	"log"
 	"net/http"
 	"time"
 
@@ -58,6 +60,41 @@ func (h *Handler) resolveConfig(c *gin.Context) (*models.TerraformMirrorConfig, 
 	}
 
 	return cfg, true
+}
+
+// ---- GET /terraform/binaries -------------------------------------------------------
+
+// PublicMirrorSummary is the public-facing subset of a mirror config (no internal fields).
+type PublicMirrorSummary struct {
+	Name        string  `json:"name"`
+	Description *string `json:"description,omitempty"`
+	Tool        string  `json:"tool"`
+}
+
+// @Summary      List enabled Terraform binary mirror configs
+// @Description  Returns the name, tool type, and description for all enabled mirror configurations. Requires no authentication.
+// @Tags         TerraformBinaries
+// @Produce      json
+// @Success      200  {array}   terraform_binaries.PublicMirrorSummary
+// @Failure      500  {object}  map[string]interface{}  "Internal server error"
+// @Router       /terraform/binaries [get]
+func (h *Handler) ListConfigs(c *gin.Context) {
+	configs, err := h.repo.ListEnabled(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list mirror configs"})
+		return
+	}
+
+	summaries := make([]PublicMirrorSummary, 0, len(configs))
+	for _, cfg := range configs {
+		summaries = append(summaries, PublicMirrorSummary{
+			Name:        cfg.Name,
+			Description: cfg.Description,
+			Tool:        cfg.Tool,
+		})
+	}
+
+	c.JSON(http.StatusOK, summaries)
 }
 
 // ---- GET /terraform/binaries/:name/versions ----------------------------------------
@@ -252,8 +289,13 @@ func (h *Handler) DownloadBinary(c *gin.Context) {
 		return
 	}
 
-	// Increment Prometheus download counter
+	// Increment Prometheus download counter and persist to DB (non-blocking).
 	telemetry.TerraformBinaryDownloadsTotal.WithLabelValues(versionStr, osStr, archStr).Inc()
+	go func() {
+		if err := h.repo.IncrementDownloadCount(context.Background(), platform.ID); err != nil {
+			log.Printf("[terraform-binaries] download count increment failed for platform %s: %v", platform.ID, err)
+		}
+	}()
 
 	c.JSON(http.StatusOK, models.TerraformBinaryDownloadResponse{
 		OS:          platform.OS,
