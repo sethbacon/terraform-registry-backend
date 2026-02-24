@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [1.3.1] - 2026-02-24
+
 ### Added
 
 - **`server.public_url` config field** (`TFR_SERVER_PUBLIC_URL` env var) — sets the
