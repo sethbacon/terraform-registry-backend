@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-02-24
+
+### Added
+
+- **Expanded stats API** (`GET /admin/stats`) — dashboard response now includes binary mirror
+  health stats (active mirror configs, total platforms synced, total downloads, per-tool
+  breakdown), provider mirror health stats (mirrored providers and versions), module breakdown
+  by system/provider, and recent sync activity aggregates (last 8 events, unified across
+  mirror types and provider mirrors).
+
+- **SCM provider count** in dashboard stats response.
+
+- **Binary download tracking** — `download_count` on version platforms (added in migration
+  `000007`) is now surfaced in the stats response, giving operators visibility into which
+  binary versions are most actively used.
+
 ## [1.2.1] - 2026-02-24
 
 ### Added
