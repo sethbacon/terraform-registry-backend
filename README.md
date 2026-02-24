@@ -297,11 +297,23 @@ Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) before
 
 This project is licensed under the Apache License, Version 2.0 — see the [LICENSE](LICENSE) file for details.
 
+## Disclaimer
+
+This software is provided **"AS IS"**, without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose, and non-infringement. In no event shall the authors or copyright holders be liable for any claim, damages, or other liability arising from the use of this software. See the [Apache 2.0 License](LICENSE) (Sections 7–8) for the full warranty disclaimer and limitation of liability.
+
+**Operational security is the responsibility of the deploying organization.** This includes, but is not limited to: securing the deployment environment, managing secrets and credentials, configuring TLS, enforcing network boundaries, rotating API keys, auditing access, keeping dependencies up to date, and validating the fitness of this software for your specific compliance and security requirements. The maintainers make no guarantees regarding the security posture of any deployment.
+
 ## Acknowledgments
 
 - [HashiCorp Terraform](https://www.terraform.io/) - Module and Provider protocols
 - [Gin Web Framework](https://gin-gonic.com/) - Go HTTP framework
 
+### Trademark Notice
+
+HashiCorp, Terraform, and Vault are trademarks of HashiCorp, Inc. AWS and Amazon Web Services are trademarks of Amazon.com, Inc. or its affiliates. Microsoft Azure is a trademark of Microsoft Corporation. Google Cloud is a trademark of Google LLC. VMware and vSphere are trademarks of Broadcom Inc. Oracle and OCI are trademarks of Oracle Corporation. All other trademarks are the property of their respective owners.
+
+This project is not affiliated with, endorsed by, or sponsored by any of the above-named organizations.
+
 ---
 
-Built for the Terraform community
+Built with ❤️ for the Terraform community
