@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Network mirror Content-Type** — Mirror index and platform index handlers now return
+  `Content-Type: application/json` (without `; charset=utf-8`) to comply with the
+  [Terraform Network Mirror Protocol spec](https://developer.hashicorp.com/terraform/internals/provider-network-mirror-protocol).
+  Gin's default `c.JSON()` was appending the charset parameter, causing Terraform to log a
+  warning during `terraform init`.
+
+### Added
+
+- **Terraform CLI configuration guide** (`docs/terraform-cli-configuration.md`) — new doc page
+  covering `credentials` block setup, `provider_installation` network mirror configuration with
+  include/exclude filters, provider source address behaviour, TLS trust setup for self-signed
+  certificates, and verification steps.
+
 ## [1.3.0] - 2026-02-24
 
 ### Added

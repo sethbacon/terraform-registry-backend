@@ -7,6 +7,7 @@ package mirror
 
 import (
 	"database/sql"
+	"encoding/json"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -104,6 +105,15 @@ func IndexHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 			"versions": versionsMap,
 		}
 
-		c.JSON(http.StatusOK, response)
+		// Use c.Data with plain "application/json" (no charset) to satisfy the
+		// Terraform Network Mirror Protocol spec, which rejects unknown content-type
+		// parameters. Gin's c.JSON would append "; charset=utf-8" and trigger a
+		// [WARN] from terraform init.
+		data, err := json.Marshal(response)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to serialize response"})
+			return
+		}
+		c.Data(http.StatusOK, "application/json", data)
 	}
 }
