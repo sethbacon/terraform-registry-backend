@@ -74,20 +74,6 @@ func newUserRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	return mock, r
 }
 
-// withUserID wraps a router to inject user_id into gin context.
-func withUserID(r *gin.Engine, userID string) *gin.Engine {
-	wrapped := gin.New()
-	wrapped.Use(func(c *gin.Context) {
-		c.Set("user_id", userID)
-		c.Next()
-	})
-	// Copy routes by embedding the original engine as a handler group
-	wrapped.Any("/*path", func(c *gin.Context) {
-		r.ServeHTTP(c.Writer, c.Request)
-	})
-	return wrapped
-}
-
 func jsonBody(v interface{}) *bytes.Buffer {
 	b, _ := json.Marshal(v)
 	return bytes.NewBuffer(b)
