@@ -104,7 +104,7 @@ func (h *SCMOAuthHandlers) InitiateOAuth(c *gin.Context) {
 		InstanceBaseURL: baseURL,
 		ClientID:        provider.ClientID,
 		ClientSecret:    clientSecret,
-		CallbackURL:     fmt.Sprintf("%s/api/v1/scm-providers/%s/oauth/callback", h.cfg.Server.BaseURL, providerID),
+		CallbackURL:     fmt.Sprintf("%s/api/v1/scm-providers/%s/oauth/callback", h.cfg.Server.GetPublicURL(), providerID),
 		TenantID:        tenantID,
 	})
 	if err != nil {
@@ -188,7 +188,7 @@ func (h *SCMOAuthHandlers) HandleOAuthCallback(c *gin.Context) {
 		Kind:         provider.ProviderType,
 		ClientID:     provider.ClientID,
 		ClientSecret: clientSecret,
-		CallbackURL:  fmt.Sprintf("%s/api/v1/scm-providers/%s/oauth/callback", h.cfg.Server.BaseURL, providerID),
+		CallbackURL:  fmt.Sprintf("%s/api/v1/scm-providers/%s/oauth/callback", h.cfg.Server.GetPublicURL(), providerID),
 		TenantID:     callbackTenantID,
 	})
 	if err != nil {
@@ -270,7 +270,7 @@ func (h *SCMOAuthHandlers) HandleOAuthCallback(c *gin.Context) {
 	}
 
 	// Redirect to frontend success page
-	redirectURL := fmt.Sprintf("%s/admin/scm-providers/%s/connected", h.cfg.Server.BaseURL, providerID)
+	redirectURL := fmt.Sprintf("%s/admin/scm-providers/%s/connected", h.cfg.Server.GetPublicURL(), providerID)
 	c.Redirect(http.StatusFound, redirectURL)
 }
 
@@ -380,7 +380,7 @@ func (h *SCMOAuthHandlers) RefreshToken(c *gin.Context) {
 		Kind:         provider.ProviderType,
 		ClientID:     provider.ClientID,
 		ClientSecret: clientSecret,
-		CallbackURL:  fmt.Sprintf("%s/api/v1/scm-providers/%s/oauth/callback", h.cfg.Server.BaseURL, providerID),
+		CallbackURL:  fmt.Sprintf("%s/api/v1/scm-providers/%s/oauth/callback", h.cfg.Server.GetPublicURL(), providerID),
 		TenantID:     refreshTenantID,
 	})
 	if err != nil {
@@ -652,7 +652,7 @@ func (h *SCMOAuthHandlers) ListRepositories(c *gin.Context) {
 		InstanceBaseURL: baseURL,
 		ClientID:        provider.ClientID,
 		ClientSecret:    clientSecret,
-		CallbackURL:     fmt.Sprintf("%s/api/v1/scm-providers/%s/oauth/callback", h.cfg.Server.BaseURL, providerID),
+		CallbackURL:     fmt.Sprintf("%s/api/v1/scm-providers/%s/oauth/callback", h.cfg.Server.GetPublicURL(), providerID),
 		TenantID:        tenantID,
 	})
 	if err != nil {
@@ -1008,7 +1008,7 @@ func (h *SCMOAuthHandlers) buildConnectorWithToken(ctx context.Context, provider
 		InstanceBaseURL: baseURL,
 		ClientID:        provider.ClientID,
 		ClientSecret:    clientSecret,
-		CallbackURL:     fmt.Sprintf("%s/api/v1/scm-providers/%s/oauth/callback", h.cfg.Server.BaseURL, providerID),
+		CallbackURL:     fmt.Sprintf("%s/api/v1/scm-providers/%s/oauth/callback", h.cfg.Server.GetPublicURL(), providerID),
 		TenantID:        tenantID,
 	})
 	if err != nil {

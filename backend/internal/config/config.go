@@ -41,8 +41,20 @@ type ServerConfig struct {
 	Host         string        `mapstructure:"host"`
 	Port         int           `mapstructure:"port"`
 	BaseURL      string        `mapstructure:"base_url"`
+	PublicURL    string        `mapstructure:"public_url"`
 	ReadTimeout  time.Duration `mapstructure:"read_timeout"`
 	WriteTimeout time.Duration `mapstructure:"write_timeout"`
+}
+
+// GetPublicURL returns the public-facing URL used for OAuth callbacks and external redirects.
+// When server.public_url is set it is returned as-is; otherwise it falls back to server.base_url.
+// This distinction matters in reverse-proxied deployments where the internal listen address
+// (base_url) differs from the URL registered with the OAuth provider (public_url).
+func (s *ServerConfig) GetPublicURL() string {
+	if s.PublicURL != "" {
+		return s.PublicURL
+	}
+	return s.BaseURL
 }
 
 // DatabaseConfig holds database connection configuration
@@ -342,6 +354,7 @@ func bindEnvVars(v *viper.Viper) error {
 		"server.host",
 		"server.port",
 		"server.base_url",
+		"server.public_url",
 		"server.read_timeout",
 		"server.write_timeout",
 
@@ -507,6 +520,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.host", "0.0.0.0")
 	v.SetDefault("server.port", 8080)
 	v.SetDefault("server.base_url", "http://localhost:8080")
+	v.SetDefault("server.public_url", "")
 	v.SetDefault("server.read_timeout", "30s")
 	v.SetDefault("server.write_timeout", "30s")
 
