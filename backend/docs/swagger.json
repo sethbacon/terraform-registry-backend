@@ -7302,6 +7302,36 @@
                 }
             }
         },
+        "/terraform/binaries": {
+            "get": {
+                "description": "Returns the name, tool type, and description for all enabled mirror configurations. Requires no authentication.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "TerraformBinaries"
+                ],
+                "summary": "List enabled Terraform binary mirror configs",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/terraform_binaries.PublicMirrorSummary"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/terraform/binaries/{name}/versions": {
             "get": {
                 "description": "Returns all Terraform/OpenTofu versions that have been fully or partially synced by the named binary mirror.",
@@ -8510,6 +8540,9 @@
                         "type": "string"
                     }
                 },
+                "stable_only": {
+                    "type": "boolean"
+                },
                 "sync_interval_hours": {
                     "type": "integer",
                     "minimum": 1
@@ -8523,6 +8556,9 @@
                     ]
                 },
                 "upstream_url": {
+                    "type": "string"
+                },
+                "version_filter": {
                     "type": "string"
                 }
             }
@@ -9211,6 +9247,10 @@
                     "description": "JSONB: []string \"os/arch\"",
                     "type": "string"
                 },
+                "stable_only": {
+                    "description": "exclude pre-release versions when true",
+                    "type": "boolean"
+                },
                 "sync_interval_hours": {
                     "type": "integer"
                 },
@@ -9222,6 +9262,10 @@
                     "type": "string"
                 },
                 "upstream_url": {
+                    "type": "string"
+                },
+                "version_filter": {
+                    "description": "version filter expression",
                     "type": "string"
                 }
             }
@@ -9384,6 +9428,9 @@
                 "created_at": {
                     "type": "string"
                 },
+                "download_count": {
+                    "type": "integer"
+                },
                 "filename": {
                     "type": "string"
                 },
@@ -9515,6 +9562,9 @@
                         "type": "string"
                     }
                 },
+                "stable_only": {
+                    "type": "boolean"
+                },
                 "sync_interval_hours": {
                     "type": "integer",
                     "minimum": 1
@@ -9528,6 +9578,9 @@
                     ]
                 },
                 "upstream_url": {
+                    "type": "string"
+                },
+                "version_filter": {
                     "type": "string"
                 }
             }
@@ -9684,6 +9737,20 @@
             ],
             "properties": {
                 "email": {
+                    "type": "string"
+                }
+            }
+        },
+        "terraform_binaries.PublicMirrorSummary": {
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "tool": {
                     "type": "string"
                 }
             }

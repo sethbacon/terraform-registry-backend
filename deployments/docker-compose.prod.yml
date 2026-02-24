@@ -50,12 +50,4 @@ services:
       retries: 3
       start_period: 10s
 
-  frontend:
-    image: ${FRONTEND_IMAGE:-terraform-registry-frontend}:${REGISTRY_TAG:-latest}
-    ports:
-      - "80:80"
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 256M
+# Frontend production overrides live in terraform-registry-frontend/deployments/docker-compose.prod.yml.

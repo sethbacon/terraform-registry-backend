@@ -76,6 +76,10 @@ func (h *TerraformMirrorHandler) CreateConfig(c *gin.Context) {
 	if req.GPGVerify != nil {
 		gpgVerify = *req.GPGVerify
 	}
+	stableOnly := false
+	if req.StableOnly != nil {
+		stableOnly = *req.StableOnly
+	}
 	enabled := false
 	if req.Enabled != nil {
 		enabled = *req.Enabled
@@ -98,7 +102,9 @@ func (h *TerraformMirrorHandler) CreateConfig(c *gin.Context) {
 		Enabled:           enabled,
 		UpstreamURL:       req.UpstreamURL,
 		PlatformFilter:    encoded,
+		VersionFilter:     req.VersionFilter,
 		GPGVerify:         gpgVerify,
+		StableOnly:        stableOnly,
 		SyncIntervalHours: syncIntervalHours,
 	}
 
@@ -280,6 +286,9 @@ func (h *TerraformMirrorHandler) UpdateConfig(c *gin.Context) {
 	if req.GPGVerify != nil {
 		cfg.GPGVerify = *req.GPGVerify
 	}
+	if req.StableOnly != nil {
+		cfg.StableOnly = *req.StableOnly
+	}
 	if req.Enabled != nil {
 		cfg.Enabled = *req.Enabled
 	}
@@ -293,6 +302,9 @@ func (h *TerraformMirrorHandler) UpdateConfig(c *gin.Context) {
 			return
 		}
 		cfg.PlatformFilter = encoded
+	}
+	if req.VersionFilter != nil {
+		cfg.VersionFilter = req.VersionFilter
 	}
 
 	if updateErr := h.repo.Update(c.Request.Context(), cfg); updateErr != nil {
