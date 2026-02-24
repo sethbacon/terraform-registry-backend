@@ -9,6 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-02-24
+
+### Added
+
+- **`version_filter` field on `terraform_mirror_configs`** (migration `000005`) — operators can
+  supply a regex to restrict which upstream versions are synced (e.g. `^1\.` to pin to the 1.x
+  line).  Empty string means "sync all versions" (existing behaviour preserved).
+
+- **`stable_only` field on `terraform_mirror_configs`** (migration `000006`) — boolean flag that,
+  when true, skips pre-release versions (those with a pre-release segment such as `-alpha`,
+  `-beta`, `-rc`) during sync.  Defaults to `false`.
+
+- **Per-platform download count tracking** (migration `000007`) — adds `download_count` to
+  `terraform_version_platforms`; incremented on every binary download, surfaced in the dashboard
+  stats response.
+
+- **GitHub Releases mirror client** (`internal/mirror/github_releases.go`) — new mirror backend
+  that fetches release assets directly from the GitHub Releases API.  Accepts an optional
+  `GITHUB_TOKEN` environment variable for authenticated requests (higher rate limits).
+
+- **`GET /terraform/binaries`** — new public endpoint that lists all active mirror
+  configurations (name, tool, description, latest synced version).
+
+### Fixed
+
+- Mirror sync job now correctly applies the `version_filter` regex and `stable_only` flag when
+  selecting which versions to sync.
+- `terraform_releases` mirror client updated to read `version_filter` and `stable_only` from
+  the config record.
+- `terraform_mirror_repository` read/write paths updated for the two new config fields.
+
+### Changed
+
+- Docker-compose files cleaned up: aligned environment variable names with current config keys
+  (`TFR_SERVER_BASE_URL`, `TFR_SECURITY_TLS_ENABLED`), switched backend service to build from
+  local context, added comment directing users to the separate frontend repository.
+
 ## [1.2.0] - 2026-02-22
 
 ### Added

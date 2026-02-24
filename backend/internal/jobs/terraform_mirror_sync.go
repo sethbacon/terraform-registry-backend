@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -219,6 +220,45 @@ func (j *TerraformMirrorSyncJob) doSync(ctx context.Context, configID uuid.UUID,
 	_ = j.repo.UpdateSyncStatus(cleanupCtx, configID, status, errMsg)
 }
 
+// ----- Client interface -----------------------------------------------------
+
+// terraformReleasesClient is satisfied by both TerraformReleasesClient (for
+// releases.hashicorp.com / releases.opentofu.org) and GitHubReleasesClient
+// (for any github.com upstream URL). Using an interface lets performSync and
+// syncVersionBinaries work with either implementation without branching.
+type terraformReleasesClient interface {
+	ListVersions(ctx context.Context) ([]mirror.TerraformVersionInfo, error)
+	FetchSHASums(ctx context.Context, version string) (map[string]string, []byte, error)
+	FetchSHASumsSignature(ctx context.Context, version string) ([]byte, error)
+	DownloadBinary(ctx context.Context, downloadURL string) ([]byte, string, error)
+}
+
+// newReleasesClient constructs the appropriate client for the configured upstream URL.
+// GitHub URLs (containing "github.com") use the GitHub Releases API; all other
+// URLs use the standard HashiCorp/OpenTofu releases index format.
+func newReleasesClient(upstreamURL, productName string) (terraformReleasesClient, error) {
+	if mirror.IsGitHubReleasesURL(upstreamURL) {
+		// GitHub asset filenames use the binary's published prefix, which may differ
+		// from the logical product name. For example, OpenTofu publishes assets as
+		// "tofu_*" even though the product is called "opentofu".
+		binaryPrefix := githubBinaryPrefix(productName)
+		return mirror.NewGitHubReleasesClient(upstreamURL, binaryPrefix)
+	}
+	return mirror.NewTerraformReleasesClient(upstreamURL, productName), nil
+}
+
+// githubBinaryPrefix returns the filename prefix used in GitHub release assets
+// for a given logical product name. For most tools the prefix equals the product
+// name, but OpenTofu is a known exception (binary is "tofu", not "opentofu").
+func githubBinaryPrefix(productName string) string {
+	switch strings.ToLower(productName) {
+	case "opentofu":
+		return "tofu"
+	default:
+		return productName
+	}
+}
+
 // ----- Sync implementation --------------------------------------------------
 
 // terraformSyncDetails is the JSONB payload stored in terraform_sync_history.
@@ -235,7 +275,10 @@ func (j *TerraformMirrorSyncJob) performSync(
 
 	// Derive product name from the tool field for URL path construction.
 	productName := productNameForTool(cfg.Tool)
-	client := mirror.NewTerraformReleasesClient(cfg.UpstreamURL, productName)
+	client, clientErr := newReleasesClient(cfg.UpstreamURL, productName)
+	if clientErr != nil {
+		return 0, 0, 0, details, fmt.Errorf("failed to create releases client: %w", clientErr)
+	}
 
 	// 1. Fetch version index from upstream.
 	allVersions, fetchErr := client.ListVersions(ctx)
@@ -245,7 +288,24 @@ func (j *TerraformMirrorSyncJob) performSync(
 
 	details.VersionsFound = len(allVersions)
 
-	// 2. Parse platform filter from config.
+	// 2. Drop pre-release versions when stable_only is enabled.
+	// This runs BEFORE the version filter so that filters like "latest:N" select
+	// from stable versions only (otherwise "latest:5" might pick 5 alpha releases
+	// and stable_only would then discard them all, resulting in 0 synced versions).
+	if cfg.StableOnly {
+		stable := allVersions[:0]
+		for _, v := range allVersions {
+			if !hasPreReleaseSuffix(v.Version) {
+				stable = append(stable, v)
+			}
+		}
+		allVersions = stable
+	}
+
+	// 3. Apply version filter if configured.
+	allVersions = filterTerraformVersions(allVersions, cfg.VersionFilter)
+
+	// 4. Parse platform filter from config.
 	var allowedPlatforms map[string]bool
 	if cfg.PlatformFilter != nil && *cfg.PlatformFilter != "" {
 		var platforms []string
@@ -257,7 +317,7 @@ func (j *TerraformMirrorSyncJob) performSync(
 		}
 	}
 
-	// 3. Upsert version + platform rows (metadata only, no downloads yet).
+	// 4. Upsert version + platform rows (metadata only, no downloads yet).
 	for _, vi := range allVersions {
 		v := &models.TerraformVersion{
 			ConfigID:   cfg.ID,
@@ -292,7 +352,7 @@ func (j *TerraformMirrorSyncJob) performSync(
 		}
 	}
 
-	// 4. Download pending platform binaries, grouped by version.
+	// 5. Download pending platform binaries, grouped by version.
 	pendingPlatforms, listErr := j.repo.ListPendingPlatforms(ctx, cfg.ID)
 	if listErr != nil {
 		return 0, 0, 0, details, fmt.Errorf("failed to list pending platforms: %w", listErr)
@@ -330,7 +390,16 @@ func (j *TerraformMirrorSyncJob) performSync(
 		versionsFailed += vf
 	}
 
-	// 5. Mark the highest fully-synced stable version as is_latest.
+	// 6. GPG back-fill: for synced versions whose platforms have gpg_verified=false,
+	// re-verify the SUMS signature and update the flag in-place (no re-download).
+	// This covers the case where versions were synced before a real GPG key was embedded.
+	if cfg.GPGVerify && gpgKeyForTool(cfg.Tool) != "" {
+		if backfillErr := j.backfillGPGVerification(ctx, client, cfg, allVersions); backfillErr != nil {
+			log.Printf("[terraform-mirror] GPG back-fill error for %s: %v", cfg.Name, backfillErr)
+		}
+	}
+
+	// 7. Mark the highest fully-synced stable version as is_latest.
 	if setLatestErr := j.updateLatestVersion(ctx, cfg.ID); setLatestErr != nil {
 		log.Printf("[terraform-mirror] failed to update latest version for %s: %v", cfg.Name, setLatestErr)
 	}
@@ -341,7 +410,7 @@ func (j *TerraformMirrorSyncJob) performSync(
 // syncVersionBinaries downloads and stores binaries for a single version's platforms.
 func (j *TerraformMirrorSyncJob) syncVersionBinaries(
 	ctx context.Context,
-	client *mirror.TerraformReleasesClient,
+	client terraformReleasesClient,
 	cfg *models.TerraformMirrorConfig,
 	version string,
 	versionID uuid.UUID,
@@ -378,6 +447,16 @@ func (j *TerraformMirrorSyncJob) syncVersionBinaries(
 		}
 	}
 
+	// If GPG verification succeeded, back-fill the flag on any already-synced
+	// platforms for this version (they were skipped by ListPendingPlatforms but
+	// their gpg_verified column may still be false from the original sync run
+	// when no real key was embedded).
+	if sumsGPGVerified {
+		if backfillErr := j.repo.UpdateGPGVerifiedForVersion(ctx, versionID, true); backfillErr != nil {
+			log.Printf("[terraform-mirror] failed to back-fill gpg_verified for version %s: %v", version, backfillErr)
+		}
+	}
+
 	platformOK := 0
 	platformFail := 0
 	for _, p := range platforms {
@@ -407,7 +486,7 @@ func (j *TerraformMirrorSyncJob) syncVersionBinaries(
 // syncOnePlatform downloads a single binary and stores it.
 func (j *TerraformMirrorSyncJob) syncOnePlatform(
 	ctx context.Context,
-	client *mirror.TerraformReleasesClient,
+	client terraformReleasesClient,
 	version string,
 	p models.TerraformVersionPlatform,
 	sums map[string]string,
@@ -460,6 +539,79 @@ func (j *TerraformMirrorSyncJob) syncOnePlatform(
 	_ = j.repo.UpdatePlatformSyncStatus(ctx, p.ID, "synced", &storagePath, &backendName, sha256Verified, sumsGPGVerified, nil)
 	log.Printf("[terraform-mirror] stored %s %s/%s -> %s", version, p.OS, p.Arch, storagePath)
 	return true
+}
+
+// backfillGPGVerification re-verifies the SHA256SUMS GPG signature for any synced
+// version that still has gpg_verified=false on its platforms. No binaries are
+// re-downloaded — only the lightweight SUMS + signature files are fetched.
+func (j *TerraformMirrorSyncJob) backfillGPGVerification(
+	ctx context.Context,
+	client terraformReleasesClient,
+	cfg *models.TerraformMirrorConfig,
+	filteredVersions []mirror.TerraformVersionInfo,
+) error {
+	gpgKey := gpgKeyForTool(cfg.Tool)
+	if gpgKey == "" {
+		return nil
+	}
+
+	// Build a set of version strings we care about (already filtered by version/platform/stable rules).
+	wantedVersions := make(map[string]bool, len(filteredVersions))
+	for _, vi := range filteredVersions {
+		wantedVersions[vi.Version] = true
+	}
+
+	// Load all synced versions for this config.
+	syncedVersions, err := j.repo.ListVersions(ctx, cfg.ID, true /* syncedOnly */)
+	if err != nil {
+		return fmt.Errorf("failed to list synced versions: %w", err)
+	}
+
+	for _, sv := range syncedVersions {
+		if !wantedVersions[sv.Version] {
+			continue
+		}
+
+		// Check if any platform for this version still has gpg_verified=false.
+		platforms, plErr := j.repo.ListPlatformsForVersion(ctx, sv.ID)
+		if plErr != nil {
+			log.Printf("[terraform-mirror] backfill: failed to list platforms for %s: %v", sv.Version, plErr)
+			continue
+		}
+		needsBackfill := false
+		for _, p := range platforms {
+			if !p.GPGVerified {
+				needsBackfill = true
+				break
+			}
+		}
+		if !needsBackfill {
+			continue
+		}
+
+		// Fetch and verify the SUMS signature — no binary download needed.
+		_, sumsRaw, sumsErr := client.FetchSHASums(ctx, sv.Version)
+		if sumsErr != nil {
+			log.Printf("[terraform-mirror] backfill: failed to fetch SHA256SUMS for %s: %v", sv.Version, sumsErr)
+			continue
+		}
+		sigBytes, sigErr := client.FetchSHASumsSignature(ctx, sv.Version)
+		if sigErr != nil {
+			log.Printf("[terraform-mirror] backfill: failed to fetch GPG sig for %s: %v", sv.Version, sigErr)
+			continue
+		}
+		if verifyErr := validation.VerifySignature(gpgKey, sumsRaw, sigBytes); verifyErr != nil {
+			log.Printf("[terraform-mirror] backfill: GPG verification FAILED for %s: %v", sv.Version, verifyErr)
+			continue
+		}
+
+		log.Printf("[terraform-mirror] backfill: GPG verification OK for %s — updating platforms", sv.Version)
+		if updErr := j.repo.UpdateGPGVerifiedForVersion(ctx, sv.ID, true); updErr != nil {
+			log.Printf("[terraform-mirror] backfill: failed to update gpg_verified for %s: %v", sv.Version, updErr)
+		}
+	}
+
+	return nil
 }
 
 // updateLatestVersion scans all fully-synced versions for a config and sets is_latest
@@ -564,4 +716,128 @@ func splitSemver(v string) [3]int {
 		result[i] = n
 	}
 	return result
+}
+
+// filterTerraformVersions applies the version_filter expression to a slice of
+// TerraformVersionInfo entries. The filter syntax mirrors that of the provider
+// mirror's filterVersions helper:
+//
+//	"1.9." or "1.9"    – prefix match
+//	"latest:N"          – N most recent by semver
+//	">=1.5.0"           – semver constraint (>=, >, <=, <)
+//	"1.5.0,1.6.0"       – comma-separated exact versions
+//	"1.9.8"             – single exact version
+//
+// A nil or empty filter returns all versions unchanged.
+func filterTerraformVersions(versions []mirror.TerraformVersionInfo, filter *string) []mirror.TerraformVersionInfo {
+	if filter == nil || strings.TrimSpace(*filter) == "" {
+		return versions
+	}
+
+	fs := strings.TrimSpace(*filter)
+
+	// latest:N
+	if strings.HasPrefix(fs, "latest:") {
+		countStr := strings.TrimPrefix(fs, "latest:")
+		count, err := strconv.Atoi(countStr)
+		if err != nil || count <= 0 {
+			log.Printf("[terraform-mirror] invalid latest:N filter %q – returning all versions", fs)
+			return versions
+		}
+		return filterTFLatest(versions, count)
+	}
+
+	// Prefix with trailing dot or .x  (e.g. "1.9." or "1.9.x")
+	if strings.HasSuffix(fs, ".") || strings.HasSuffix(fs, ".x") {
+		prefix := strings.TrimSuffix(fs, "x")
+		return filterTFByPrefix(versions, prefix)
+	}
+
+	// Semver constraints
+	if strings.HasPrefix(fs, ">=") || strings.HasPrefix(fs, ">") ||
+		strings.HasPrefix(fs, "<=") || strings.HasPrefix(fs, "<") {
+		return filterTFBySemver(versions, fs)
+	}
+
+	// Comma-separated exact list
+	if strings.Contains(fs, ",") {
+		return filterTFByList(versions, fs)
+	}
+
+	// Single token: try prefix first, then exact match
+	if filtered := filterTFByPrefix(versions, fs+"."); len(filtered) > 0 {
+		return filtered
+	}
+	return filterTFByList(versions, fs)
+}
+
+func filterTFLatest(versions []mirror.TerraformVersionInfo, count int) []mirror.TerraformVersionInfo {
+	if len(versions) <= count {
+		return versions
+	}
+	sorted := make([]mirror.TerraformVersionInfo, len(versions))
+	copy(sorted, versions)
+	sort.Slice(sorted, func(i, j int) bool {
+		return compareSemver(sorted[i].Version, sorted[j].Version) > 0
+	})
+	return sorted[:count]
+}
+
+func filterTFByPrefix(versions []mirror.TerraformVersionInfo, prefix string) []mirror.TerraformVersionInfo {
+	var out []mirror.TerraformVersionInfo
+	for _, v := range versions {
+		if strings.HasPrefix(v.Version, prefix) {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func filterTFByList(versions []mirror.TerraformVersionInfo, list string) []mirror.TerraformVersionInfo {
+	wanted := make(map[string]bool)
+	for _, s := range strings.Split(list, ",") {
+		wanted[strings.TrimSpace(s)] = true
+	}
+	var out []mirror.TerraformVersionInfo
+	for _, v := range versions {
+		if wanted[v.Version] {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func filterTFBySemver(versions []mirror.TerraformVersionInfo, constraint string) []mirror.TerraformVersionInfo {
+	var op, target string
+	switch {
+	case strings.HasPrefix(constraint, ">="):
+		op, target = ">=", strings.TrimSpace(strings.TrimPrefix(constraint, ">="))
+	case strings.HasPrefix(constraint, "<="):
+		op, target = "<=", strings.TrimSpace(strings.TrimPrefix(constraint, "<="))
+	case strings.HasPrefix(constraint, ">"):
+		op, target = ">", strings.TrimSpace(strings.TrimPrefix(constraint, ">"))
+	case strings.HasPrefix(constraint, "<"):
+		op, target = "<", strings.TrimSpace(strings.TrimPrefix(constraint, "<"))
+	default:
+		return versions
+	}
+	var out []mirror.TerraformVersionInfo
+	for _, v := range versions {
+		cmp := compareSemver(v.Version, target)
+		include := false
+		switch op {
+		case ">=":
+			include = cmp >= 0
+		case "<=":
+			include = cmp <= 0
+		case ">":
+			include = cmp > 0
+		case "<":
+			include = cmp < 0
+		}
+		if include {
+			out = append(out, v)
+		}
+	}
+	return out
 }

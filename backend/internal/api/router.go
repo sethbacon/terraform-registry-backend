@@ -343,6 +343,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	// any named mirror config.  The :name segment identifies the mirror configuration.
 	tfBinaries := router.Group("/terraform/binaries")
 	{
+		tfBinaries.GET("", tfBinariesHandler.ListConfigs)
 		tfBinaries.GET("/:name/versions", tfBinariesHandler.ListVersions)
 		tfBinaries.GET("/:name/versions/latest", tfBinariesHandler.GetLatestVersion)
 		tfBinaries.GET("/:name/versions/:version", tfBinariesHandler.GetVersion)
