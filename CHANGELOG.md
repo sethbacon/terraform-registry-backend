@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`server.public_url` config field** (`TFR_SERVER_PUBLIC_URL` env var) — sets the
+  externally-reachable URL used when building OAuth callback URLs and post-OAuth redirects.
+  Required when the backend is deployed behind a reverse proxy where the public address
+  (e.g. `https://registry.example.com`) differs from the internal listen address (`base_url`).
+  Defaults to `server.base_url` when unset, preserving existing behaviour. Fixes #21.
+
 ### Fixed
 
 - **Network mirror Content-Type** — Mirror index and platform index handlers now return
