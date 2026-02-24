@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Azure DevOps OAuth refresh token not issued** — `AuthorizationEndpoint` in the Azure DevOps
+  connector now always includes the `offline_access` scope in the Microsoft Entra ID authorization
+  request. Without this scope, Microsoft does not issue a refresh token, causing the access token
+  to expire with no way to renew it silently. Fixes #19.
+
 - **Network mirror Content-Type** — Mirror index and platform index handlers now return
   `Content-Type: application/json` (without `; charset=utf-8`) to comply with the
   [Terraform Network Mirror Protocol spec](https://developer.hashicorp.com/terraform/internals/provider-network-mirror-protocol).

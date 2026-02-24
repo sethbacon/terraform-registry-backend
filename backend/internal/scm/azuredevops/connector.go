@@ -88,10 +88,26 @@ func (c *AzureDevOpsConnector) Platform() scm.ProviderKind {
 }
 
 func (c *AzureDevOpsConnector) AuthorizationEndpoint(stateParam string, requestedScopes []string) string {
-	// Use .default to request all Azure DevOps permissions granted to the app registration
-	scope := azureDevOpsResourceID + "/.default"
+	// Use .default to request all Azure DevOps permissions granted to the app registration.
+	// offline_access is required for Microsoft Entra ID to issue a refresh token alongside
+	// the access token. Without it only a short-lived access token (~1 h) is returned and
+	// automatic renewal is impossible once it expires.
+	scope := azureDevOpsResourceID + "/.default offline_access"
 	if len(requestedScopes) > 0 {
-		scope = strings.Join(requestedScopes, " ")
+		// Caller-supplied scopes override the default; ensure offline_access is always present
+		// so that a refresh token is always issued.
+		scopes := requestedScopes
+		hasOfflineAccess := false
+		for _, s := range scopes {
+			if s == "offline_access" {
+				hasOfflineAccess = true
+				break
+			}
+		}
+		if !hasOfflineAccess {
+			scopes = append(scopes, "offline_access")
+		}
+		scope = strings.Join(scopes, " ")
 	}
 
 	params := url.Values{}
