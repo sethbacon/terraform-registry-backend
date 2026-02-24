@@ -1909,7 +1909,7 @@
                         "Bearer": []
                     }
                 ],
-                "description": "Returns aggregated statistics for the admin dashboard including module, provider, user, organization, download, and SCM provider counts.",
+                "description": "Returns aggregated statistics for the admin dashboard including module, provider, user, organization, download, SCM provider, and mirror health counts.",
                 "produces": [
                     "application/json"
                 ],
@@ -8015,6 +8015,51 @@
                 }
             }
         },
+        "admin.BinaryMirrorStats": {
+            "type": "object",
+            "properties": {
+                "by_tool": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/admin.BinaryToolCount"
+                    }
+                },
+                "downloads": {
+                    "description": "total binary downloads served",
+                    "type": "integer"
+                },
+                "failed": {
+                    "description": "last_sync_status = 'failed'",
+                    "type": "integer"
+                },
+                "healthy": {
+                    "description": "last_sync_status = 'success' or never synced but enabled",
+                    "type": "integer"
+                },
+                "platforms": {
+                    "description": "total synced platform binaries",
+                    "type": "integer"
+                },
+                "syncing": {
+                    "description": "last_sync_status = 'running'",
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
+        "admin.BinaryToolCount": {
+            "type": "object",
+            "properties": {
+                "platforms": {
+                    "type": "integer"
+                },
+                "tool": {
+                    "type": "string"
+                }
+            }
+        },
         "admin.CreateAPIKeyRequest": {
             "type": "object",
             "required": [
@@ -8232,6 +8277,9 @@
         "admin.DashboardStats": {
             "type": "object",
             "properties": {
+                "binary_mirrors": {
+                    "$ref": "#/definitions/admin.BinaryMirrorStats"
+                },
                 "downloads": {
                     "type": "integer"
                 },
@@ -8241,8 +8289,17 @@
                 "organizations": {
                     "type": "integer"
                 },
+                "provider_mirrors": {
+                    "$ref": "#/definitions/admin.ProviderMirrorStats"
+                },
                 "providers": {
                     "$ref": "#/definitions/admin.ProviderStats"
+                },
+                "recent_syncs": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/admin.RecentSyncEntry"
+                    }
                 },
                 "scm_providers": {
                     "type": "integer"
@@ -8290,6 +8347,43 @@
         "admin.ModuleStats": {
             "type": "object",
             "properties": {
+                "by_system": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/admin.ModuleSystemCount"
+                    }
+                },
+                "downloads": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                },
+                "versions": {
+                    "type": "integer"
+                }
+            }
+        },
+        "admin.ModuleSystemCount": {
+            "type": "object",
+            "properties": {
+                "count": {
+                    "type": "integer"
+                },
+                "system": {
+                    "type": "string"
+                }
+            }
+        },
+        "admin.ProviderMirrorStats": {
+            "type": "object",
+            "properties": {
+                "failed": {
+                    "type": "integer"
+                },
+                "healthy": {
+                    "type": "integer"
+                },
                 "total": {
                     "type": "integer"
                 }
@@ -8298,6 +8392,9 @@
         "admin.ProviderStats": {
             "type": "object",
             "properties": {
+                "downloads": {
+                    "type": "integer"
+                },
                 "manual": {
                     "type": "integer"
                 },
@@ -8314,6 +8411,36 @@
                     "type": "integer"
                 },
                 "total_versions": {
+                    "type": "integer"
+                }
+            }
+        },
+        "admin.RecentSyncEntry": {
+            "type": "object",
+            "properties": {
+                "completed_at": {
+                    "type": "string"
+                },
+                "mirror_name": {
+                    "type": "string"
+                },
+                "mirror_type": {
+                    "description": "\"binary\" | \"provider\"",
+                    "type": "string"
+                },
+                "platforms_synced": {
+                    "type": "integer"
+                },
+                "started_at": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "triggered_by": {
+                    "type": "string"
+                },
+                "versions_synced": {
                     "type": "integer"
                 }
             }
