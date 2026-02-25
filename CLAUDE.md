@@ -1,5 +1,81 @@
 # CLAUDE.md — Terraform Registry Backend
 
+## Development Workflow
+
+All changes follow this workflow. Do not deviate from it.
+
+### Branches
+
+- `main` — production-ready, tagged releases only
+- `development` — integration branch; all feature/fix branches merge here first
+- Feature/fix branches are created from `development`, never from `main`
+
+### Step-by-step
+
+1. **Open a GitHub issue** describing the bug or feature before writing any code.
+
+2. **Create a branch from `development`**:
+
+   ```bash
+   git fetch origin
+   git checkout -b fix/short-description origin/development
+   # or: feature/short-description
+   ```
+
+3. **Implement the change**, updating `CHANGELOG.md` under `[Unreleased]` as you go.
+
+4. **Commit — no co-author attribution**:
+
+   ```bash
+   git add <specific files>
+   git commit -m "fix: short description of what was fixed
+
+   Closes #<issue-number>"
+   ```
+
+5. **Push to origin**:
+
+   ```bash
+   git push -u origin fix/short-description
+   ```
+
+6. **Open a PR from the feature branch → `development`**:
+
+   ```bash
+   gh pr create --base development --title "fix: short description" --body "Closes #<issue>"
+   ```
+
+   - Update `CHANGELOG.md` and any affected docs in this PR if not already done.
+   - Squash-merge into `development` when approved.
+
+7. **Open a PR from `development` → `main`** when the integration branch is ready to ship:
+
+   ```bash
+   gh pr create --base main --title "chore: release vX.Y.Z" --body "..."
+   ```
+
+### Releasing a version
+
+When a release is called for:
+
+1. Promote `[Unreleased]` in `CHANGELOG.md` to the new version with today's date:
+
+   ```markdown
+   ## [X.Y.Z] - YYYY-MM-DD
+   ```
+
+2. Commit directly on `development`:
+
+   ```bash
+   git commit -m "chore: release vX.Y.Z"
+   git tag vX.Y.Z
+   git push origin development --tags
+   ```
+
+3. Merge `development` → `main` via PR (step 7 above).
+
+---
+
 ## Project Overview
 
 An enterprise-grade private Terraform Registry implementing all three HashiCorp protocols:
