@@ -226,17 +226,20 @@ func (r *UserRepository) GetOrCreateUserFromOIDC(ctx context.Context, oidcSub, e
 		return user, nil
 	}
 
-	// No user found by OIDC sub — check for a pre-provisioned user by email.
-	// The setup wizard creates a user record with email but no oidc_sub.
-	// On first OIDC login, we link the OIDC identity to that pre-provisioned user
-	// so they inherit the admin role and org membership set up during the wizard.
+	// No user found by OIDC sub — check for an existing user by email.
+	// Two cases:
+	//   1. Pre-provisioned user (setup wizard): oidc_sub IS NULL — link OIDC identity.
+	//   2. Sub changed for same email (IdP re-provisioning or dev Keycloak restart):
+	//      oidc_sub has a stale value — update to the new sub so subsequent lookups
+	//      hit the fast path (GetUserByOIDCSub) instead of falling through here.
+	// Email is treated as the authoritative identity anchor for same-provider logins.
 	emailUser, err := r.GetUserByEmail(ctx, email)
 	if err != nil {
 		return nil, err
 	}
 
-	if emailUser != nil && emailUser.OIDCSub == nil {
-		// Pre-provisioned user found — link OIDC identity
+	if emailUser != nil {
+		// Update sub and name regardless of whether sub was previously set
 		emailUser.OIDCSub = &oidcSub
 		emailUser.Name = name
 		if err := r.UpdateUser(ctx, emailUser); err != nil {

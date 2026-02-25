@@ -453,6 +453,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 		{
 			authGroup.GET("/login", authHandlers.LoginHandler())
 			authGroup.GET("/callback", authHandlers.CallbackHandler())
+			authGroup.GET("/logout", authHandlers.LogoutHandler())
 		}
 
 		// Public search endpoints (no auth required, but rate limited)

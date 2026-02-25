@@ -6,8 +6,11 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -154,13 +157,13 @@ func (h *AuthHandlers) LoginHandler() gin.HandlerFunc {
 }
 
 // @Summary      OAuth callback handler
-// @Description  Handles the callback from OAuth provider after user authorizes. Internal endpoint - automatically redirected to by OAuth provider.
+// @Description  Handles the callback from OAuth provider after user authorizes. Exchanges the authorization code for a JWT and redirects the browser to the frontend /auth/callback page with the token as a query parameter.
 // @Tags         Authentication
 // @Accept       json
 // @Produce      json
 // @Param        code   query  string  true   "Authorization code from OAuth provider"
 // @Param        state  query  string  true   "State parameter for CSRF validation"
-// @Success      301  {object}  string  "Redirects to frontend with auth token in URL"
+// @Success      302  {object}  string  "Redirects to frontend /auth/callback?token=<jwt>"
 // @Failure      400  {object}  map[string]interface{}  "Invalid state or authorization code"
 // @Failure      401  {object}  map[string]interface{}  "Failed to exchange code for token"
 // @Failure      500  {object}  map[string]interface{}  "Database or internal error"
@@ -320,13 +323,82 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 			return
 		}
 
-		// Return JWT token
-		c.JSON(http.StatusOK, gin.H{
-			"token":      jwtToken,
-			"user":       user,
-			"expires_in": 86400, // 24 hours in seconds
-		})
+		// Derive the frontend base URL from the OIDC redirect URL (strip the /api/... path)
+		// and redirect the browser to the frontend callback page with the JWT in the query string.
+		// This completes the authorization code flow in the browser so the SPA can store the token.
+		frontendBase := deriveFrontendURL(h.cfg)
+		redirectTarget := fmt.Sprintf("%s/auth/callback?token=%s", frontendBase, url.QueryEscape(jwtToken))
+		c.Redirect(http.StatusFound, redirectTarget)
 	}
+}
+
+// @Summary      OIDC logout
+// @Description  Clears the local session and, when OIDC is active, redirects the browser to the provider's end_session_endpoint to terminate the SSO session. Falls back to a plain redirect to the frontend login page for non-OIDC setups.
+// @Tags         Authentication
+// @Accept       json
+// @Produce      json
+// @Param        post_logout_redirect_uri  query  string  false  "URL to redirect to after the provider logs out (defaults to frontend /login)"
+// @Success      302  {object}  string  "Redirects to OIDC end_session_endpoint or frontend /login"
+// @Router       /api/v1/auth/logout [get]
+// LogoutHandler terminates the OIDC SSO session by redirecting to the provider's end_session_endpoint.
+// GET /api/v1/auth/logout
+func (h *AuthHandlers) LogoutHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		frontendBase := deriveFrontendURL(h.cfg)
+		// After the IdP terminates the session, redirect to the frontend home page.
+		// The user can then choose to log in again from there.
+		postLogoutRedirect := frontendBase + "/"
+
+		// If the OIDC provider has an end_session_endpoint, redirect there so that
+		// the Keycloak (or other IdP) SSO session is also terminated.  Without this,
+		// clicking "Login with OIDC" after logout silently re-authenticates the user
+		// via the still-active IdP session cookie.
+		oidcProv := h.oidcProvider.Load()
+		if oidcProv != nil {
+			if endSessionURL := oidcProv.GetEndSessionEndpoint(); endSessionURL != "" {
+				logoutURL, err := url.Parse(endSessionURL)
+				if err == nil {
+					q := logoutURL.Query()
+					q.Set("post_logout_redirect_uri", postLogoutRedirect)
+					// Keycloak requires either id_token_hint or client_id when
+					// post_logout_redirect_uri is set (returns 400 without one of them).
+					// We use client_id (supported since Keycloak 19) — it is public
+					// config, requires nothing stored client-side, and avoids the
+					// security concern of storing raw ID tokens in localStorage.
+					q.Set("client_id", h.cfg.Auth.OIDC.ClientID)
+					logoutURL.RawQuery = q.Encode()
+					c.Redirect(http.StatusFound, logoutURL.String())
+					return
+				}
+			}
+		}
+
+		// No OIDC end_session_endpoint available — redirect to the frontend home page.
+		c.Redirect(http.StatusFound, postLogoutRedirect)
+	}
+}
+
+// deriveFrontendURL returns the browser-facing base URL of the frontend SPA.
+// It tries (in order):
+//  1. cfg.Server.PublicURL — set explicitly to the frontend's public address
+//  2. The origin (scheme + host) of cfg.Auth.OIDC.RedirectURL — the registered callback URL
+//     already points to the frontend's public address so stripping its path gives the base.
+//  3. cfg.Server.BaseURL — internal backend address, last resort.
+func deriveFrontendURL(cfg *config.Config) string {
+	if cfg.Server.PublicURL != "" {
+		return strings.TrimRight(cfg.Server.PublicURL, "/")
+	}
+	if cfg.Auth.OIDC.RedirectURL != "" {
+		if u, err := url.Parse(cfg.Auth.OIDC.RedirectURL); err == nil {
+			return fmt.Sprintf("%s://%s", u.Scheme, u.Host)
+		}
+	}
+	if cfg.Auth.AzureAD.RedirectURL != "" {
+		if u, err := url.Parse(cfg.Auth.AzureAD.RedirectURL); err == nil {
+			return fmt.Sprintf("%s://%s", u.Scheme, u.Host)
+		}
+	}
+	return strings.TrimRight(cfg.Server.BaseURL, "/")
 }
 
 // @Summary      Refresh JWT token

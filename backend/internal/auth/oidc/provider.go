@@ -75,6 +75,18 @@ func (p *OIDCProvider) GetAuthURL(state string) string {
 	return p.config.AuthCodeURL(state)
 }
 
+// GetEndSessionEndpoint returns the OIDC end_session_endpoint from the discovery document,
+// or an empty string if the provider does not advertise one.
+func (p *OIDCProvider) GetEndSessionEndpoint() string {
+	var claims struct {
+		EndSessionEndpoint string `json:"end_session_endpoint"`
+	}
+	if err := p.provider.Claims(&claims); err != nil {
+		return ""
+	}
+	return claims.EndSessionEndpoint
+}
+
 // ExchangeCode exchanges the authorization code for tokens
 func (p *OIDCProvider) ExchangeCode(ctx context.Context, code string) (*oauth2.Token, error) {
 	token, err := p.config.Exchange(ctx, code)
