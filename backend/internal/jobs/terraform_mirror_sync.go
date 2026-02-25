@@ -759,9 +759,10 @@ func filterTerraformVersions(versions []mirror.TerraformVersionInfo, filter *str
 		return filterTFBySemver(versions, fs)
 	}
 
-	// Comma-separated exact list
+	// Comma-separated list — each token uses the same single-token logic
+	// (prefix-first, then exact), so "1.13., 1.14." and "1.13, 1.14" both work.
 	if strings.Contains(fs, ",") {
-		return filterTFByList(versions, fs)
+		return filterTFByTokenList(versions, fs)
 	}
 
 	// Single token: try prefix first, then exact match
@@ -802,6 +803,36 @@ func filterTFByList(versions []mirror.TerraformVersionInfo, list string) []mirro
 	for _, v := range versions {
 		if wanted[v.Version] {
 			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// filterTFByTokenList applies single-token logic (prefix-first, then exact) to each
+// comma-separated token, union-ing the results. This allows "1.13., 1.14." and
+// "1.13, 1.14" to both work as prefix matches.
+func filterTFByTokenList(versions []mirror.TerraformVersionInfo, list string) []mirror.TerraformVersionInfo {
+	seen := make(map[string]bool)
+	var out []mirror.TerraformVersionInfo
+	for _, token := range strings.Split(list, ",") {
+		t := strings.TrimSpace(token)
+		if t == "" {
+			continue
+		}
+		var matched []mirror.TerraformVersionInfo
+		if strings.HasSuffix(t, ".") || strings.HasSuffix(t, ".x") {
+			prefix := strings.TrimSuffix(t, "x")
+			matched = filterTFByPrefix(versions, prefix)
+		} else if filtered := filterTFByPrefix(versions, t+"."); len(filtered) > 0 {
+			matched = filtered
+		} else {
+			matched = filterTFByList(versions, t)
+		}
+		for _, v := range matched {
+			if !seen[v.Version] {
+				seen[v.Version] = true
+				out = append(out, v)
+			}
 		}
 	}
 	return out
