@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Terraform mirror version filter ignores comma-separated prefix patterns** — when a comma was
+  present in the version filter string, the filter was routed directly to exact-match logic,
+  causing patterns like `1.13, 1.14` or `1.13., 1.14.` to match zero versions. Each comma-separated
+  token is now evaluated with the same single-token logic (prefix-first, then exact match), so
+  `1.13, 1.14`, `1.13., 1.14.`, and `1.13.x, 1.14.x` all correctly match all patch releases
+  under those minor versions. Fixes #26.
+
 ---
 
 ## [1.3.1] - 2026-02-24
