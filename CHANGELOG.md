@@ -18,6 +18,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `1.13, 1.14`, `1.13., 1.14.`, and `1.13.x, 1.14.x` all correctly match all patch releases
   under those minor versions. Fixes #26.
 
+- **OIDC/AzureAD callback returns JSON instead of redirecting to frontend** — the OAuth callback
+  handler at `GET /api/v1/auth/callback` was returning a JSON body with the JWT token directly
+  to the browser, leaving the user on a raw API response. The handler now redirects the browser
+  to `<frontend-base>/auth/callback?token=<jwt>`. The frontend base URL is derived from
+  `server.public_url` (or the registered OIDC redirect URL's origin as fallback). Fixes #32.
+
+- **OIDC login fails after IdP restart with `Failed to get or create user`** — when the identity
+  provider is restarted (e.g. Keycloak with `KC_DB: dev-file` wipes its H2 database), user
+  subject identifiers (subs) are regenerated. `GetOrCreateUserFromOIDC` only linked an existing
+  email-matched user if their `oidc_sub` was `NULL`, causing a unique-constraint error when the
+  sub had changed. The function now updates `oidc_sub` whenever a user is found by email but the
+  sub doesn't match, treating email as the authoritative identity anchor for same-provider logins.
+  Fixes #33.
+
+- **OIDC logout does not terminate the IdP SSO session** — after clicking Logout, the Keycloak
+  (or other OIDC) session cookie remained active in the browser. Clicking "Login with OIDC" again
+  would silently re-authenticate without prompting for credentials. A new `GET /api/v1/auth/logout`
+  endpoint reads the `end_session_endpoint` from the OIDC discovery document (via new
+  `GetEndSessionEndpoint()` on `OIDCProvider`) and redirects the browser there with `client_id`
+  and `post_logout_redirect_uri=<frontend>/`, fully terminating the IdP SSO session. Fixes #34.
+
 ---
 
 ## [1.3.1] - 2026-02-24
