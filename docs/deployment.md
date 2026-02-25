@@ -218,44 +218,156 @@ The backend app is configured with internal ingress only — it is not directly 
 
 ## AWS ECS Fargate
 
-A full CloudFormation stack is provided:
+A production-ready Terraform IaC deployment is available at
+[`terraform-registry-infra`](https://github.com/sethbacon/terraform-registry-infra).
+It is the recommended path for ECS — follow its own README for the full quick-start.
+The notes below capture the key design decisions and gotchas discovered during deployment.
 
-```bash
-cd deployments/aws-ecs
+### Architecture
 
-# Edit and deploy the CloudFormation stack
-aws cloudformation deploy \
-  --template-file cloudformation.yaml \
-  --stack-name terraform-registry \
-  --parameter-overrides \
-    Environment=production \
-    DomainName=registry.example.com \
-    CertificateArn=arn:aws:acm:us-east-1:...:certificate/... \
-  --capabilities CAPABILITY_IAM
-
-# Or use the helper script
-./deploy.sh
+```text
+Internet
+    ↓
+ALB (public subnets, ports 80 + 443)
+ ├── /v1/*  /terraform/*  /.well-known/*  /webhooks/*  /swagger.json → Backend TG (port 8080)
+ ├── /api/*                                                          → Backend TG (port 8080)
+ └── /*  (default)                                                   → Frontend TG (port 80)
+         ↓
+    RDS PostgreSQL (private subnets)
+    S3 bucket (module / provider storage)
+    Secrets Manager (db password, JWT secret, encryption key, db host)
 ```
 
-Resources created:
+ECS tasks run in **public subnets** with `assign_public_ip = true`. This eliminates the need
+for a NAT Gateway, which saves ~$32/month but requires every task to reach the internet via
+its own public IP rather than a shared NAT address.
 
-- VPC with public and private subnets + NAT gateway
-- ECS cluster with backend and frontend Fargate services
-- Application Load Balancer with HTTPS (ACM certificate required)
-- RDS PostgreSQL in private subnets
-- S3 bucket for storage
-- ECR repositories for container images
-- Secrets Manager secrets for credentials
-- IAM roles with least-privilege policies
-- CloudWatch log groups
+### ALB Path Routing — Two Rules Required
 
-The backend task pulls secrets from Secrets Manager at container startup. Container images must be pushed to ECR before deploying:
+The ALB routes traffic to backend or frontend using path-based listener rules. The backend
+serves two distinct URL namespaces:
+
+| Namespace    | Routes                                | Purpose                            |
+| ------------ | ------------------------------------- | ---------------------------------- |
+| `/v1/*` etc. | Terraform protocol, mirror, discovery | Used directly by `terraform init`  |
+| `/api/*`     | Admin UI, auth, dev login             | Used by the React frontend         |
+
+AWS ALB listener rules accept a maximum of **5 path-pattern values per rule**, so these
+must be split into two rules:
+
+```hcl
+# Priority 10 — Terraform protocol paths
+resource "aws_lb_listener_rule" "api" {
+  priority = 10
+  condition {
+    path_pattern {
+      values = ["/v1/*", "/terraform/*", "/.well-known/*", "/webhooks/*", "/swagger.json"]
+    }
+  }
+}
+
+# Priority 11 — Admin/UI API
+resource "aws_lb_listener_rule" "api_ui" {
+  priority = 11
+  condition {
+    path_pattern { values = ["/api/*"] }
+  }
+}
+```
+
+If you combine both into one rule you will hit the 5-value limit and see a Terraform error.
+
+### Nginx in ECS — No `/api/` Proxy Block
+
+The frontend nginx template (`nginx-ecs.conf.template`) intentionally does **not** contain
+a `/api/` proxy block. In ECS, the ALB routes `/api/*` requests directly to the backend
+target group before they reach nginx — nginx only receives frontend (`/*`) traffic. Adding
+an `/api/` proxy in nginx would cause the request to loop or result in a 502 because the
+nginx container cannot resolve the backend container's hostname (there is no internal DNS
+between Fargate tasks without service discovery).
+
+The `BACKEND_URL` environment variable passed to the frontend container is used by nginx
+to forward Terraform protocol paths (`/v1/*`, `/.well-known/*`, etc.) — those paths are
+handled by nginx as a fallback for requests that reach the frontend target group via the
+default ALB rule. In practice, once the ALB rules are correctly configured, this proxy in
+nginx should rarely be exercised.
+
+### `TFR_SERVER_BASE_URL` vs `TFR_SERVER_PUBLIC_URL`
+
+Two URL configuration variables serve different purposes:
+
+| Variable                | Value                          | Purpose                                                                                                               |
+| ----------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| `TFR_SERVER_BASE_URL`   | `https://registry.example.com` | Terraform protocol — embedded in discovery responses and module/provider download URLs that `terraform` CLI will fetch|
+| `TFR_SERVER_PUBLIC_URL` | `https://registry.example.com` | OAuth redirect URL — where the browser is sent after OIDC login completes                                             |
+
+In an ECS deployment behind an ALB both should be set to your public domain. If
+`TFR_SERVER_PUBLIC_URL` is omitted it falls back to `TFR_SERVER_BASE_URL`, which works
+as long as the backend's `base_url` is already the public URL. If you ever need to split
+them (e.g. different internal vs. external address) set both explicitly.
+
+### ACM Certificate and Terraform Plan-Time Errors
+
+If you manage the ACM certificate with Terraform, the certificate ARN is not known until
+`apply` time. Using it to gate a `count` on the HTTPS listener causes:
+
+```text
+Error: Invalid count argument — depends on resource attributes that cannot be determined
+until apply
+```
+
+Resolve this by using a **static input variable** (e.g. `domain_name != ""`) to control
+whether the HTTPS listener is created, and only reference the computed `certificate_arn`
+on the listener resource itself (not in a `count`). See the `alb` module for the
+`has_certificate = var.domain_name != ""` pattern.
+
+### Dev Mode — Admin User Seeding
+
+With `dev_mode = true` the Terraform IaC runs a one-shot ECS task (`postgres:16-alpine`)
+after each apply to seed the dev admin user (`admin@dev.local`). The seed task:
+
+1. Waits 30 seconds for the backend to finish database migrations
+2. Runs the seed SQL via `psql` inside the Fargate task
+3. Exits — Terraform waits for the task to stop and checks the exit code
+
+The `local-exec` provisioner that triggers the seed task uses **PowerShell** (`interpreter
+= ["PowerShell", "-Command"]`) because on Windows the bash subprocess used by `local-exec`
+does not inherit the system `PATH` and cannot find `aws.exe`. If you are running Terraform
+from Linux or macOS, switch the interpreter back to `/bin/bash`.
+
+Log in with the dev admin at `POST /api/v1/dev/login`:
 
 ```bash
-aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin <account>.dkr.ecr.us-east-1.amazonaws.com
-docker build -t <account>.dkr.ecr.us-east-1.amazonaws.com/terraform-registry-backend:latest backend/
-docker push <account>.dkr.ecr.us-east-1.amazonaws.com/terraform-registry-backend:latest
+curl -X POST https://registry.example.com/api/v1/dev/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "admin@dev.local", "password": "dev"}'
 ```
+
+### Resources Created
+
+- VPC with public subnets (ECS) and private subnets (RDS)
+- Internet Gateway — ECS tasks use `assign_public_ip` instead of a NAT Gateway
+- ECS Fargate cluster with backend and frontend services
+- Application Load Balancer with HTTP→HTTPS redirect and two backend routing rules
+- ACM certificate with Route 53 DNS validation (optional — required for HTTPS)
+- RDS PostgreSQL 16 in private subnets
+- S3 bucket for module and provider storage
+- ECR repositories for backend and frontend container images
+- Secrets Manager secrets for database password, JWT secret, encryption key, and DB host
+- IAM execution role (ECR pull + Secrets Manager read) and task role (S3 + ECS Exec/SSM)
+- CloudWatch log groups (7-day retention)
+
+### Estimated Cost (dev, us-east-1, single replicas)
+
+| Resource                                                            | Monthly (~) |
+| ------------------------------------------------------------------- | ----------- |
+| ECS Fargate (backend 0.5 vCPU/1 GB + frontend 0.25 vCPU/512 MB)     | ~$14        |
+| ALB                                                                 | ~$18        |
+| RDS `db.t3.micro`                                                   | ~$15        |
+| S3 + ECR + Secrets Manager                                          | ~$2         |
+| **Total**                                                           | **~$49**    |
+
+No NAT Gateway removes ~$32/month compared to the classic VPC design.
 
 ---
 
