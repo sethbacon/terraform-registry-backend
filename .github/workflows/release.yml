@@ -57,6 +57,7 @@ jobs:
     permissions:
       contents: write
       issues: write
+    secrets: inherit  # passes GIST_TOKEN (coverage badge) and other secrets to the reusable workflow
     uses: ./.github/workflows/ci.yml
 
   # ── Build binaries ───────────────────────────────────────────────────────
