@@ -1216,6 +1216,119 @@
                 }
             }
         },
+        "/api/v1/admin/oidc/config": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Returns the currently active OIDC configuration including group mapping settings. Client secret is never returned. Requires admin scope.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "OIDC"
+                ],
+                "summary": "Get active OIDC configuration",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.OIDCConfigResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "No active OIDC configuration",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/admin/oidc/group-mapping": {
+            "put": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Updates the group claim name, group-to-role mappings, and default role for the active OIDC configuration. Takes effect on the next login. Requires admin scope.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "OIDC"
+                ],
+                "summary": "Update OIDC group mapping settings",
+                "parameters": [
+                    {
+                        "description": "Group mapping configuration",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.OIDCGroupMappingInput"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.OIDCConfigResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request body",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "No active OIDC configuration",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/admin/policies": {
             "get": {
                 "security": [
@@ -9063,9 +9176,21 @@
                 "created_by": {
                     "type": "string"
                 },
+                "default_role": {
+                    "type": "string"
+                },
                 "extra_config": {
                     "type": "object",
                     "additionalProperties": true
+                },
+                "group_claim_name": {
+                    "type": "string"
+                },
+                "group_mappings": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.OIDCGroupMapping"
+                    }
                 },
                 "id": {
                     "type": "string"
@@ -9096,6 +9221,37 @@
                 },
                 "updated_by": {
                     "type": "string"
+                }
+            }
+        },
+        "models.OIDCGroupMapping": {
+            "type": "object",
+            "properties": {
+                "group": {
+                    "type": "string"
+                },
+                "organization": {
+                    "type": "string"
+                },
+                "role": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.OIDCGroupMappingInput": {
+            "type": "object",
+            "properties": {
+                "default_role": {
+                    "type": "string"
+                },
+                "group_claim_name": {
+                    "type": "string"
+                },
+                "group_mappings": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.OIDCGroupMapping"
+                    }
                 }
             }
         },

@@ -541,3 +541,28 @@ func TestLoad_InvalidYAML(t *testing.T) {
 		t.Error("Load() expected error for invalid YAML, got nil")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ServerConfig.GetPublicURL
+// ---------------------------------------------------------------------------
+
+func TestGetPublicURL_WithPublicURL(t *testing.T) {
+	s := ServerConfig{PublicURL: "https://public.example.com", BaseURL: "http://internal:8080"}
+	if got := s.GetPublicURL(); got != "https://public.example.com" {
+		t.Errorf("GetPublicURL = %q, want %q", got, "https://public.example.com")
+	}
+}
+
+func TestGetPublicURL_FallbackToBaseURL(t *testing.T) {
+	s := ServerConfig{BaseURL: "http://internal:8080"}
+	if got := s.GetPublicURL(); got != "http://internal:8080" {
+		t.Errorf("GetPublicURL = %q, want %q", got, "http://internal:8080")
+	}
+}
+
+func TestGetPublicURL_BothEmpty(t *testing.T) {
+	s := ServerConfig{}
+	if got := s.GetPublicURL(); got != "" {
+		t.Errorf("GetPublicURL = %q, want empty", got)
+	}
+}

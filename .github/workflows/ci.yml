@@ -70,7 +70,9 @@ jobs:
 
       - name: Run Go tests (with coverage)
         working-directory: backend
-        run: go test ./... -race -coverprofile=coverage.out -covermode=atomic
+        run: |
+          go clean -testcache
+          go test ./... -race -coverprofile=coverage.out -covermode=atomic
 
       - name: Check coverage threshold
         working-directory: backend

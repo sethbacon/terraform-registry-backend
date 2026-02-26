@@ -29,6 +29,13 @@ type OIDCConfig struct {
 	UpdatedBy             uuid.NullUUID   `db:"updated_by" json:"updated_by,omitempty"`
 }
 
+// OIDCGroupMapping maps a single IdP group claim value to an organization and role template.
+type OIDCGroupMapping struct {
+	Group        string `json:"group"`
+	Organization string `json:"organization"`
+	Role         string `json:"role"`
+}
+
 // OIDCConfigInput is used for creating/updating OIDC configuration via the API
 type OIDCConfigInput struct {
 	Name         string                 `json:"name,omitempty"`
@@ -41,21 +48,72 @@ type OIDCConfigInput struct {
 	ExtraConfig  map[string]interface{} `json:"extra_config,omitempty"`
 }
 
+// OIDCGroupMappingInput is used for updating only the group mapping configuration.
+// The client_secret is not required for this partial update.
+type OIDCGroupMappingInput struct {
+	GroupClaimName string             `json:"group_claim_name"`
+	GroupMappings  []OIDCGroupMapping `json:"group_mappings"`
+	DefaultRole    string             `json:"default_role"`
+}
+
 // OIDCConfigResponse is the API response for OIDC configuration (no secrets)
 type OIDCConfigResponse struct {
-	ID           uuid.UUID              `json:"id"`
-	Name         string                 `json:"name"`
-	ProviderType string                 `json:"provider_type"`
-	IssuerURL    string                 `json:"issuer_url"`
-	ClientID     string                 `json:"client_id"`
-	RedirectURL  string                 `json:"redirect_url"`
-	Scopes       []string               `json:"scopes"`
-	IsActive     bool                   `json:"is_active"`
-	ExtraConfig  map[string]interface{} `json:"extra_config,omitempty"`
-	CreatedAt    time.Time              `json:"created_at"`
-	UpdatedAt    time.Time              `json:"updated_at"`
-	CreatedBy    *uuid.UUID             `json:"created_by,omitempty"`
-	UpdatedBy    *uuid.UUID             `json:"updated_by,omitempty"`
+	ID             uuid.UUID              `json:"id"`
+	Name           string                 `json:"name"`
+	ProviderType   string                 `json:"provider_type"`
+	IssuerURL      string                 `json:"issuer_url"`
+	ClientID       string                 `json:"client_id"`
+	RedirectURL    string                 `json:"redirect_url"`
+	Scopes         []string               `json:"scopes"`
+	IsActive       bool                   `json:"is_active"`
+	GroupClaimName string                 `json:"group_claim_name,omitempty"`
+	GroupMappings  []OIDCGroupMapping     `json:"group_mappings,omitempty"`
+	DefaultRole    string                 `json:"default_role,omitempty"`
+	ExtraConfig    map[string]interface{} `json:"extra_config,omitempty"`
+	CreatedAt      time.Time              `json:"created_at"`
+	UpdatedAt      time.Time              `json:"updated_at"`
+	CreatedBy      *uuid.UUID             `json:"created_by,omitempty"`
+	UpdatedBy      *uuid.UUID             `json:"updated_by,omitempty"`
+}
+
+// groupMappingExtra is the shape of the group-mapping keys inside ExtraConfig.
+type groupMappingExtra struct {
+	GroupClaimName string             `json:"group_claim_name"`
+	GroupMappings  []OIDCGroupMapping `json:"group_mappings"`
+	DefaultRole    string             `json:"default_role"`
+}
+
+// GetGroupMappingConfig reads group mapping settings from ExtraConfig.
+func (c *OIDCConfig) GetGroupMappingConfig() (claimName string, mappings []OIDCGroupMapping, defaultRole string) {
+	if len(c.ExtraConfig) == 0 {
+		return
+	}
+	var extra groupMappingExtra
+	if err := json.Unmarshal(c.ExtraConfig, &extra); err != nil {
+		return
+	}
+	return extra.GroupClaimName, extra.GroupMappings, extra.DefaultRole
+}
+
+// SetGroupMappingConfig stores group mapping settings into ExtraConfig, preserving
+// any unrelated keys that may already be present.
+func (c *OIDCConfig) SetGroupMappingConfig(claimName string, mappings []OIDCGroupMapping, defaultRole string) error {
+	// Decode existing extra config to preserve unknown keys.
+	existing := make(map[string]interface{})
+	if len(c.ExtraConfig) > 0 {
+		if err := json.Unmarshal(c.ExtraConfig, &existing); err != nil {
+			return err
+		}
+	}
+	existing["group_claim_name"] = claimName
+	existing["group_mappings"] = mappings
+	existing["default_role"] = defaultRole
+	b, err := json.Marshal(existing)
+	if err != nil {
+		return err
+	}
+	c.ExtraConfig = json.RawMessage(b)
+	return nil
 }
 
 // ToResponse converts an OIDCConfig to a safe API response (no secrets)
@@ -80,9 +138,10 @@ func (c *OIDCConfig) ToResponse() *OIDCConfigResponse {
 		resp.Scopes = []string{"openid", "email", "profile"}
 	}
 
-	// Parse extra config from JSONB
+	// Parse extra config from JSONB — expose group mapping as first-class fields
 	if len(c.ExtraConfig) > 0 {
 		_ = json.Unmarshal(c.ExtraConfig, &resp.ExtraConfig) // nolint:errcheck
+		resp.GroupClaimName, resp.GroupMappings, resp.DefaultRole = c.GetGroupMappingConfig()
 	}
 
 	if c.CreatedBy.Valid {

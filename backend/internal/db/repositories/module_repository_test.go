@@ -553,3 +553,85 @@ func TestModuleParseSemverParts_Zero(t *testing.T) {
 		t.Errorf("got %v, want %v", got, want)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// UpsertModule
+// ---------------------------------------------------------------------------
+
+func TestUpsertModule_Success(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+
+	mock.ExpectQuery("INSERT INTO modules").
+		WillReturnRows(sqlmock.NewRows(modCreateCols).AddRow("mod-new", time.Now(), time.Now()))
+
+	mod := &models.Module{
+		OrganizationID: "org-1",
+		Namespace:      "hashicorp",
+		Name:           "vpc",
+		System:         "aws",
+	}
+	if err := repo.UpsertModule(context.Background(), mod); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mod.ID != "mod-new" {
+		t.Errorf("expected ID mod-new, got %q", mod.ID)
+	}
+}
+
+func TestUpsertModule_DBError(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+
+	mock.ExpectQuery("INSERT INTO modules").
+		WillReturnError(errDB)
+
+	mod := &models.Module{OrganizationID: "org-1", Namespace: "ns", Name: "n", System: "aws"}
+	if err := repo.UpsertModule(context.Background(), mod); err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetModuleByID
+// ---------------------------------------------------------------------------
+
+func TestGetModuleByID_Found(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+
+	mock.ExpectQuery(`SELECT.*FROM modules.*WHERE.*m\.id`).
+		WillReturnRows(sampleModuleRow())
+
+	mod, err := repo.GetModuleByID(context.Background(), "mod-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mod == nil {
+		t.Fatal("expected module, got nil")
+	}
+}
+
+func TestGetModuleByID_NotFound(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+
+	mock.ExpectQuery(`SELECT.*FROM modules.*WHERE.*m\.id`).
+		WillReturnRows(emptyModuleRow())
+
+	mod, err := repo.GetModuleByID(context.Background(), "missing")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mod != nil {
+		t.Fatal("expected nil, got module")
+	}
+}
+
+func TestGetModuleByID_DBError(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+
+	mock.ExpectQuery(`SELECT.*FROM modules.*WHERE.*m\.id`).
+		WillReturnError(errDB)
+
+	_, err := repo.GetModuleByID(context.Background(), "mod-1")
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
