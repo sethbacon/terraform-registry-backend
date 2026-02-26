@@ -54,7 +54,7 @@ jobs:
     # issues when new findings are detected.  Reusable workflows can only
     # receive permissions that the caller explicitly grants.
     permissions:
-      contents: read
+      contents: write  # swagger auto-commit in ci.yml needs write
       issues: write
     uses: ./.github/workflows/ci.yml
 
