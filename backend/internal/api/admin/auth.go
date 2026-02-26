@@ -28,6 +28,7 @@ type AuthHandlers struct {
 	db              *sql.DB
 	userRepo        *repositories.UserRepository
 	orgRepo         *repositories.OrganizationRepository
+	oidcConfigRepo  *repositories.OIDCConfigRepository
 	oidcProvider    atomic.Pointer[oidc.OIDCProvider]
 	azureADProvider *azuread.AzureADProvider
 	sessionStore    map[string]*SessionState // In-memory for MVP; use Redis in production
@@ -42,13 +43,14 @@ type SessionState struct {
 }
 
 // NewAuthHandlers creates a new AuthHandlers instance
-func NewAuthHandlers(cfg *config.Config, db *sql.DB) (*AuthHandlers, error) {
+func NewAuthHandlers(cfg *config.Config, db *sql.DB, oidcConfigRepo *repositories.OIDCConfigRepository) (*AuthHandlers, error) {
 	h := &AuthHandlers{
-		cfg:          cfg,
-		db:           db,
-		userRepo:     repositories.NewUserRepository(db),
-		orgRepo:      repositories.NewOrganizationRepository(db),
-		sessionStore: make(map[string]*SessionState),
+		cfg:            cfg,
+		db:             db,
+		userRepo:       repositories.NewUserRepository(db),
+		orgRepo:        repositories.NewOrganizationRepository(db),
+		oidcConfigRepo: oidcConfigRepo,
+		sessionStore:   make(map[string]*SessionState),
 	}
 
 	// Initialize OIDC provider if enabled
@@ -249,8 +251,10 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 				return
 			}
 
-			// Extract group claims for role mapping (no-op when group_claim_name is not configured)
-			oidcGroups = oidcProv.ExtractGroups(idToken, h.cfg.Auth.OIDC.GroupClaimName)
+			// Extract group claims for role mapping.
+			// DB config group mapping settings take precedence over env/file config.
+			effectiveClaimName := h.resolveGroupClaimName(ctx)
+			oidcGroups = oidcProv.ExtractGroups(idToken, effectiveClaimName)
 
 		case "azuread":
 			if h.azureADProvider == nil {
@@ -576,6 +580,45 @@ func (h *AuthHandlers) MeHandler() gin.HandlerFunc {
 	}
 }
 
+// resolveGroupClaimName returns the effective group claim name to use when
+// extracting IdP group memberships from the OIDC ID token.
+// Priority: DB-stored OIDC config > env/file config.
+func (h *AuthHandlers) resolveGroupClaimName(ctx context.Context) string {
+	if h.oidcConfigRepo != nil {
+		if dbCfg, err := h.oidcConfigRepo.GetActiveOIDCConfig(ctx); err == nil && dbCfg != nil {
+			claimName, _, _ := dbCfg.GetGroupMappingConfig()
+			if claimName != "" {
+				return claimName
+			}
+		}
+	}
+	return h.cfg.Auth.OIDC.GroupClaimName
+}
+
+// resolveGroupMappingConfig returns the effective group mapping configuration.
+// DB-stored settings take precedence over env/file config so that changes made
+// via the admin UI take effect without restarting the server.
+func (h *AuthHandlers) resolveGroupMappingConfig(ctx context.Context) (claimName string, mappings []config.OIDCGroupMapping, defaultRole string) {
+	if h.oidcConfigRepo != nil {
+		if dbCfg, err := h.oidcConfigRepo.GetActiveOIDCConfig(ctx); err == nil && dbCfg != nil {
+			cn, dbMappings, dr := dbCfg.GetGroupMappingConfig()
+			if cn != "" || len(dbMappings) > 0 || dr != "" {
+				// Convert DB model mappings to config type
+				cfgMappings := make([]config.OIDCGroupMapping, len(dbMappings))
+				for i, m := range dbMappings {
+					cfgMappings[i] = config.OIDCGroupMapping{
+						Group:        m.Group,
+						Organization: m.Organization,
+						Role:         m.Role,
+					}
+				}
+				return cn, cfgMappings, dr
+			}
+		}
+	}
+	return h.cfg.Auth.OIDC.GroupClaimName, h.cfg.Auth.OIDC.GroupMappings, h.cfg.Auth.OIDC.DefaultRole
+}
+
 // applyGroupMappings resolves the user's IdP groups against the configured
 // group_mappings and upserts their org memberships accordingly.
 //
@@ -590,8 +633,8 @@ func (h *AuthHandlers) MeHandler() gin.HandlerFunc {
 // Groups/orgs not mentioned in any mapping are left untouched so that manually
 // assigned memberships are not wiped by an unrelated login.
 func (h *AuthHandlers) applyGroupMappings(ctx context.Context, userID string, groups []string) error {
-	cfg := h.cfg.Auth.OIDC
-	if len(cfg.GroupMappings) == 0 && cfg.DefaultRole == "" {
+	_, mappings, defaultRole := h.resolveGroupMappingConfig(ctx)
+	if len(mappings) == 0 && defaultRole == "" {
 		return nil
 	}
 
@@ -603,7 +646,7 @@ func (h *AuthHandlers) applyGroupMappings(ctx context.Context, userID string, gr
 
 	matched := false
 
-	for _, mapping := range cfg.GroupMappings {
+	for _, mapping := range mappings {
 		if _, ok := groupSet[mapping.Group]; !ok {
 			continue
 		}
@@ -633,8 +676,8 @@ func (h *AuthHandlers) applyGroupMappings(ctx context.Context, userID string, gr
 		slog.Info("OIDC group mapping applied", "user_id", userID, "group", mapping.Group, "org", mapping.Organization, "role", mapping.Role)
 	}
 
-	// Fall back to default_role in the default organization when nothing matched.
-	if !matched && cfg.DefaultRole != "" {
+	// Fall back to defaultRole in the default organization when nothing matched.
+	if !matched && defaultRole != "" {
 		org, err := h.orgRepo.GetDefaultOrganization(ctx)
 		if err != nil || org == nil {
 			return fmt.Errorf("default organization not found for default_role fallback: %w", err)
@@ -646,16 +689,16 @@ func (h *AuthHandlers) applyGroupMappings(ctx context.Context, userID string, gr
 		}
 
 		if isMember {
-			if err := h.orgRepo.UpdateMemberRole(ctx, org.ID, userID, cfg.DefaultRole); err != nil {
-				return fmt.Errorf("update default role user=%s role=%s: %w", userID, cfg.DefaultRole, err)
+			if err := h.orgRepo.UpdateMemberRole(ctx, org.ID, userID, defaultRole); err != nil {
+				return fmt.Errorf("update default role user=%s role=%s: %w", userID, defaultRole, err)
 			}
 		} else {
-			if err := h.orgRepo.AddMemberWithParams(ctx, org.ID, userID, cfg.DefaultRole); err != nil {
-				return fmt.Errorf("add default member user=%s role=%s: %w", userID, cfg.DefaultRole, err)
+			if err := h.orgRepo.AddMemberWithParams(ctx, org.ID, userID, defaultRole); err != nil {
+				return fmt.Errorf("add default member user=%s role=%s: %w", userID, defaultRole, err)
 			}
 		}
 
-		slog.Info("OIDC default role applied", "user_id", userID, "role", cfg.DefaultRole)
+		slog.Info("OIDC default role applied", "user_id", userID, "role", defaultRole)
 	}
 
 	return nil

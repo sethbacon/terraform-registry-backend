@@ -352,7 +352,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 
 	// Initialize admin handlers
 	var authHandlers *admin.AuthHandlers
-	authHandlers, err = admin.NewAuthHandlers(cfg, db)
+	authHandlers, err = admin.NewAuthHandlers(cfg, db, oidcConfigRepo)
 	if err != nil {
 		log.Fatalf("Failed to initialize auth handlers: %v", err)
 	}
@@ -411,6 +411,9 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 
 	// Initialize storage configuration handlers
 	storageHandlers := admin.NewStorageHandlers(cfg, storageConfigRepo, tokenCipher)
+
+	// Initialize OIDC admin configuration handlers
+	oidcAdminHandlers := admin.NewOIDCConfigAdminHandlers(oidcConfigRepo)
 
 	// Initialize setup wizard handlers
 	setupHandlers := setup.NewHandlers(
@@ -703,6 +706,14 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 				storageGroup.DELETE("/configs/:id", storageHandlers.DeleteStorageConfig)
 				storageGroup.POST("/configs/:id/activate", storageHandlers.ActivateStorageConfig)
 				storageGroup.POST("/configs/test", storageHandlers.TestStorageConfig)
+			}
+
+			// OIDC admin configuration management (requires admin scope)
+			oidcAdminGroup := authenticatedGroup.Group("/admin/oidc")
+			oidcAdminGroup.Use(middleware.RequireScope(auth.ScopeAdmin))
+			{
+				oidcAdminGroup.GET("/config", oidcAdminHandlers.GetActiveOIDCConfig)
+				oidcAdminGroup.PUT("/group-mapping", oidcAdminHandlers.UpdateGroupMapping)
 			}
 		}
 
