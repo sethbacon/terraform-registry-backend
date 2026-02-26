@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -26,7 +27,7 @@ func newAuthRouter(t *testing.T) (*AuthHandlers, sqlmock.Sqlmock, *gin.Engine) {
 	cfg := &config.Config{}
 	// OIDC and AzureAD disabled (zero values)
 
-	h, err := NewAuthHandlers(cfg, db)
+	h, err := NewAuthHandlers(cfg, db, nil)
 	if err != nil {
 		t.Fatalf("NewAuthHandlers: %v", err)
 	}
@@ -52,7 +53,7 @@ func TestNewAuthHandlers_NilProviders(t *testing.T) {
 	defer db.Close()
 
 	cfg := &config.Config{} // OIDC and AzureAD disabled
-	h, err := NewAuthHandlers(cfg, db)
+	h, err := NewAuthHandlers(cfg, db, nil)
 	if err != nil {
 		t.Fatalf("NewAuthHandlers error: %v", err)
 	}
@@ -168,7 +169,7 @@ func TestRefreshHandler_UserNotFound(t *testing.T) {
 	defer db.Close()
 
 	cfg := &config.Config{}
-	h, _ := NewAuthHandlers(cfg, db)
+	h, _ := NewAuthHandlers(cfg, db, nil)
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
 		c.Set("user_id", "user-1")
@@ -217,7 +218,7 @@ func TestMeHandler_UserNotFound(t *testing.T) {
 	defer db.Close()
 
 	cfg := &config.Config{}
-	h, _ := NewAuthHandlers(cfg, db)
+	h, _ := NewAuthHandlers(cfg, db, nil)
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
 		c.Set("user_id", "user-1")
@@ -272,7 +273,7 @@ func TestCallbackHandler_ExpiredSession(t *testing.T) {
 	defer db.Close()
 
 	cfg := &config.Config{}
-	h, _ := NewAuthHandlers(cfg, db)
+	h, _ := NewAuthHandlers(cfg, db, nil)
 	r := gin.New()
 	r.GET("/auth/callback", h.CallbackHandler())
 
@@ -309,7 +310,7 @@ func TestMeHandler_Success_NoMemberships(t *testing.T) {
 	defer db.Close()
 
 	cfg := &config.Config{}
-	h, _ := NewAuthHandlers(cfg, db)
+	h, _ := NewAuthHandlers(cfg, db, nil)
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
 		c.Set("user_id", "user-1")
@@ -342,7 +343,7 @@ func TestMeHandler_DBError(t *testing.T) {
 	defer db.Close()
 
 	cfg := &config.Config{}
-	h, _ := NewAuthHandlers(cfg, db)
+	h, _ := NewAuthHandlers(cfg, db, nil)
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
 		c.Set("user_id", "user-1")
@@ -371,7 +372,7 @@ func TestRefreshHandler_Success(t *testing.T) {
 	defer db.Close()
 
 	cfg := &config.Config{}
-	h, _ := NewAuthHandlers(cfg, db)
+	h, _ := NewAuthHandlers(cfg, db, nil)
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
 		c.Set("user_id", "user-1")
@@ -393,5 +394,218 @@ func TestRefreshHandler_Success(t *testing.T) {
 	resp := getJSON(w)
 	if resp["token"] == nil {
 		t.Error("response missing 'token'")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// deriveFrontendURL
+// ---------------------------------------------------------------------------
+
+func TestDeriveFrontendURL_PublicURL(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Server.PublicURL = "https://app.example.com/"
+	got := deriveFrontendURL(cfg)
+	if got != "https://app.example.com" {
+		t.Errorf("deriveFrontendURL = %q, want %q", got, "https://app.example.com")
+	}
+}
+
+func TestDeriveFrontendURL_OIDCRedirectURL(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Auth.OIDC.RedirectURL = "https://app.example.com/api/v1/auth/callback"
+	got := deriveFrontendURL(cfg)
+	if got != "https://app.example.com" {
+		t.Errorf("deriveFrontendURL = %q, want %q", got, "https://app.example.com")
+	}
+}
+
+func TestDeriveFrontendURL_AzureADRedirectURL(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Auth.AzureAD.RedirectURL = "https://azure.example.com/callback"
+	got := deriveFrontendURL(cfg)
+	if got != "https://azure.example.com" {
+		t.Errorf("deriveFrontendURL = %q, want %q", got, "https://azure.example.com")
+	}
+}
+
+func TestDeriveFrontendURL_BaseURL(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Server.BaseURL = "http://localhost:8080/"
+	got := deriveFrontendURL(cfg)
+	if got != "http://localhost:8080" {
+		t.Errorf("deriveFrontendURL = %q, want %q", got, "http://localhost:8080")
+	}
+}
+
+func TestDeriveFrontendURL_Empty(t *testing.T) {
+	cfg := &config.Config{}
+	got := deriveFrontendURL(cfg)
+	if got != "" {
+		t.Errorf("deriveFrontendURL = %q, want empty", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SetOIDCProvider
+// ---------------------------------------------------------------------------
+
+func TestSetOIDCProvider_Nil(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+
+	h, _ := NewAuthHandlers(&config.Config{}, db, nil)
+	h.SetOIDCProvider(nil)
+
+	if got := h.oidcProvider.Load(); got != nil {
+		t.Error("expected oidcProvider to be nil after SetOIDCProvider(nil)")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// resolveGroupClaimName — nil repo falls back to cfg
+// ---------------------------------------------------------------------------
+
+func TestResolveGroupClaimName_NilRepo_UsesConfig(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.OIDC.GroupClaimName = "groups"
+	h, _ := NewAuthHandlers(cfg, db, nil)
+
+	got := h.resolveGroupClaimName(context.Background())
+	if got != "groups" {
+		t.Errorf("resolveGroupClaimName = %q, want %q", got, "groups")
+	}
+}
+
+func TestResolveGroupClaimName_NilRepo_Empty(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+
+	h, _ := NewAuthHandlers(&config.Config{}, db, nil)
+	got := h.resolveGroupClaimName(context.Background())
+	if got != "" {
+		t.Errorf("resolveGroupClaimName = %q, want empty", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// resolveGroupMappingConfig — nil repo falls back to cfg
+// ---------------------------------------------------------------------------
+
+func TestResolveGroupMappingConfig_NilRepo(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.OIDC.GroupClaimName = "grps"
+	cfg.Auth.OIDC.DefaultRole = "viewer"
+	cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
+		{Group: "admins", Organization: "acme", Role: "admin"},
+	}
+	h, _ := NewAuthHandlers(cfg, db, nil)
+
+	cn, mappings, dr := h.resolveGroupMappingConfig(context.Background())
+	if cn != "grps" {
+		t.Errorf("claimName = %q, want %q", cn, "grps")
+	}
+	if dr != "viewer" {
+		t.Errorf("defaultRole = %q, want %q", dr, "viewer")
+	}
+	if len(mappings) != 1 || mappings[0].Group != "admins" {
+		t.Errorf("mappings = %v, want [{admins acme admin}]", mappings)
+	}
+}
+
+func TestResolveGroupMappingConfig_NilRepo_Empty(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+
+	h, _ := NewAuthHandlers(&config.Config{}, db, nil)
+	cn, mappings, dr := h.resolveGroupMappingConfig(context.Background())
+	if cn != "" || dr != "" || len(mappings) != 0 {
+		t.Errorf("expected empty values, got cn=%q dr=%q mappings=%v", cn, dr, mappings)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// applyGroupMappings — early-exit when nothing configured
+// ---------------------------------------------------------------------------
+
+func TestApplyGroupMappings_NoMappingsNoDefaultRole(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+
+	h, _ := NewAuthHandlers(&config.Config{}, db, nil)
+	err := h.applyGroupMappings(context.Background(), "user-1", []string{"admins"})
+	if err != nil {
+		t.Errorf("applyGroupMappings: expected nil error, got %v", err)
+	}
+}
+
+func TestApplyGroupMappings_EmptyGroupsNoDefault(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
+		{Group: "admins", Organization: "acme", Role: "admin"},
+	}
+	// DefaultRole is empty, so unmatched users are not assigned to any org
+	h, _ := NewAuthHandlers(cfg, db, nil)
+	err := h.applyGroupMappings(context.Background(), "user-1", []string{})
+	if err != nil {
+		t.Errorf("applyGroupMappings: expected nil error, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// LogoutHandler — nil OIDC provider, redirects to frontend home
+// ---------------------------------------------------------------------------
+
+func TestLogoutHandler_NoOIDC_RedirectsToHome(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Server.PublicURL = "https://app.example.com"
+	h, _ := NewAuthHandlers(cfg, db, nil)
+
+	r := gin.New()
+	r.GET("/auth/logout", h.LogoutHandler())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/auth/logout", nil))
+
+	if w.Code != http.StatusFound {
+		t.Errorf("status = %d, want 302", w.Code)
+	}
+	loc := w.Header().Get("Location")
+	if loc != "https://app.example.com/" {
+		t.Errorf("Location = %q, want %q", loc, "https://app.example.com/")
+	}
+}
+
+func TestLogoutHandler_BaseURL_Fallback(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Server.BaseURL = "http://localhost:8080"
+	h, _ := NewAuthHandlers(cfg, db, nil)
+
+	r := gin.New()
+	r.GET("/auth/logout", h.LogoutHandler())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/auth/logout", nil))
+
+	if w.Code != http.StatusFound {
+		t.Errorf("status = %d, want 302", w.Code)
+	}
+	loc := w.Header().Get("Location")
+	if loc != "http://localhost:8080/" {
+		t.Errorf("Location = %q, want %q", loc, "http://localhost:8080/")
 	}
 }

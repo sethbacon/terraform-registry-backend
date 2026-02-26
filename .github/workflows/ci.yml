@@ -60,21 +60,19 @@ jobs:
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git add docs/swagger.json
             git commit -m "chore: regenerate swagger.json [skip ci]"
-            # GITHUB_HEAD_REF is the PR source branch (set only for pull_request events).
-            # GITHUB_REF_NAME is the branch name for push events (e.g. "development").
-            # We never push to the PR base branch — only to the head branch that owns the change.
-            if [ -n "$GITHUB_HEAD_REF" ]; then
-              git push origin "HEAD:refs/heads/${GITHUB_HEAD_REF}"
-            else
-              git push origin "HEAD:refs/heads/${GITHUB_REF_NAME}"
-            fi
+            # Push back to the source branch (works for both PRs and direct pushes).
+            # GITHUB_HEAD_REF is set for pull_request events; GITHUB_REF_NAME is used otherwise.
+            TARGET_BRANCH="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+            git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
           else
             echo "swagger.json is up-to-date — nothing to commit"
           fi
 
       - name: Run Go tests (with coverage)
         working-directory: backend
-        run: go test ./... -race -coverprofile=coverage.out -covermode=atomic
+        run: |
+          go clean -testcache
+          go test ./... -race -coverprofile=coverage.out -covermode=atomic
 
       - name: Check coverage threshold
         working-directory: backend

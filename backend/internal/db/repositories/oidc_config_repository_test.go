@@ -626,3 +626,30 @@ func TestActivateOIDCConfig_ActivateError(t *testing.T) {
 		t.Error("expected error from activation")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// UpdateOIDCConfigExtraConfig
+// ---------------------------------------------------------------------------
+
+func TestUpdateOIDCConfigExtraConfig_Success(t *testing.T) {
+	repo, mock := newOIDCConfigRepo(t)
+
+	mock.ExpectExec("UPDATE oidc_config SET extra_config").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	extraConfig := []byte(`{"group_claim":"groups"}`)
+	if err := repo.UpdateOIDCConfigExtraConfig(context.Background(), uuid.New(), extraConfig); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestUpdateOIDCConfigExtraConfig_DBError(t *testing.T) {
+	repo, mock := newOIDCConfigRepo(t)
+
+	mock.ExpectExec("UPDATE oidc_config SET extra_config").
+		WillReturnError(errOIDCDB)
+
+	if err := repo.UpdateOIDCConfigExtraConfig(context.Background(), uuid.New(), []byte(`{}`)); err == nil {
+		t.Error("expected error, got nil")
+	}
+}
