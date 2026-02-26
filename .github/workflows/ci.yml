@@ -12,6 +12,8 @@ jobs:
   backend-test:
     name: Backend Tests & Quality
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # needed to push auto-generated swagger.json back to the branch
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -46,14 +48,24 @@ jobs:
           go install github.com/swaggo/swag/cmd/swag@latest
           echo "$GITHUB_WORKSPACE/bin" >> $GITHUB_PATH
 
-      - name: Swagger generation (check for diffs)
+      - name: Swagger generation (auto-commit if changed)
         working-directory: backend
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           swag init -g cmd/server/main.go --outputTypes json
           if ! git diff --exit-code docs/swagger.json; then
-            echo "Swagger JSON out-of-date. Regenerate and commit backend/docs/swagger.json"
-            git --no-pager diff -- docs/swagger.json || true
-            exit 1
+            echo "swagger.json changed — committing updated docs"
+            git config user.name  "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add docs/swagger.json
+            git commit -m "chore: regenerate swagger.json [skip ci]"
+            # Push back to the source branch (works for both PRs and direct pushes).
+            # GITHUB_HEAD_REF is set for pull_request events; GITHUB_REF_NAME is used otherwise.
+            TARGET_BRANCH="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+            git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
+          else
+            echo "swagger.json is up-to-date — nothing to commit"
           fi
 
       - name: Run Go tests (with coverage)
