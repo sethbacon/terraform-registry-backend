@@ -172,24 +172,42 @@ func (h *AuthHandlers) LoginHandler() gin.HandlerFunc {
 // GET /api/v1/auth/callback?code=...&state=...
 func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Derive the frontend base URL once; used for both the success redirect and all
+		// error redirects so the user always lands on the frontend CallbackPage.
+		frontendBase := deriveFrontendURL(h.cfg)
+
+		// callbackError redirects the browser to the frontend /auth/callback page with
+		// error details as query parameters. The frontend CallbackPage displays a
+		// user-friendly message and navigates to /login after a short delay.
+		// Falls back to a plain JSON response only when no frontend URL can be derived.
+		callbackError := func(errCode, description string) {
+			if frontendBase == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": description})
+				return
+			}
+			target := fmt.Sprintf(
+				"%s/auth/callback?error=%s&error_description=%s",
+				frontendBase,
+				url.QueryEscape(errCode),
+				url.QueryEscape(description),
+			)
+			c.Redirect(http.StatusFound, target)
+		}
+
 		code := c.Query("code")
 		state := c.Query("state")
 
 		// Validate state
 		sessionState, exists := h.sessionStore[state]
 		if !exists {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "Invalid state parameter",
-			})
+			callbackError("invalid_state", "Invalid state parameter. Please try logging in again.")
 			return
 		}
 
 		// Check state expiration (5 minutes)
 		if time.Since(sessionState.CreatedAt) > 5*time.Minute {
 			delete(h.sessionStore, state)
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "State expired",
-			})
+			callbackError("state_expired", "Login session expired. Please try logging in again.")
 			return
 		}
 
@@ -206,105 +224,81 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 		case "oidc":
 			oidcProv := h.oidcProvider.Load()
 			if oidcProv == nil {
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"error": "OIDC provider not configured",
-				})
+				callbackError("provider_not_configured", "OIDC provider is not configured.")
 				return
 			}
 
 			// Exchange code for token
 			token, err := oidcProv.ExchangeCode(ctx, code)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"error": "Failed to exchange code for token",
-				})
+				callbackError("token_exchange_failed", "Failed to exchange authorization code for token.")
 				return
 			}
 
 			// Extract ID token
 			rawIDToken, ok := token.Extra("id_token").(string)
 			if !ok {
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"error": "No id_token in response",
-				})
+				callbackError("no_id_token", "The identity provider did not return an ID token.")
 				return
 			}
 
 			// Verify ID token
 			idToken, err := oidcProv.VerifyIDToken(ctx, rawIDToken)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"error": "Failed to verify ID token",
-				})
+				callbackError("id_token_invalid", "The ID token could not be verified.")
 				return
 			}
 
 			// Extract user info
 			sub, email, name, err = oidcProv.ExtractUserInfo(idToken)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"error": "Failed to extract user info",
-				})
+				callbackError("user_info_failed", "Failed to extract user information from the ID token.")
 				return
 			}
 
 		case "azuread":
 			if h.azureADProvider == nil {
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"error": "Azure AD provider not configured",
-				})
+				callbackError("provider_not_configured", "Azure AD provider is not configured.")
 				return
 			}
 
 			// Exchange code for token
 			token, err := h.azureADProvider.ExchangeCode(ctx, code)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"error": "Failed to exchange code for token",
-				})
+				callbackError("token_exchange_failed", "Failed to exchange authorization code for token.")
 				return
 			}
 
 			// Extract ID token
 			rawIDToken, ok := token.Extra("id_token").(string)
 			if !ok {
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"error": "No id_token in response",
-				})
+				callbackError("no_id_token", "The identity provider did not return an ID token.")
 				return
 			}
 
 			// Verify ID token
 			idToken, err := h.azureADProvider.VerifyIDToken(ctx, rawIDToken)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"error": "Failed to verify ID token",
-				})
+				callbackError("id_token_invalid", "The ID token could not be verified.")
 				return
 			}
 
 			// Extract user info
 			sub, email, name, err = h.azureADProvider.ExtractUserInfo(idToken)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"error": "Failed to extract user info",
-				})
+				callbackError("user_info_failed", "Failed to extract user information from the ID token.")
 				return
 			}
 
 		default:
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "Invalid provider type",
-			})
+			callbackError("unknown_provider", "Unknown authentication provider.")
 			return
 		}
 
 		// Get or create user
 		user, err := h.userRepo.GetOrCreateUserByOIDC(ctx, sub, email, name)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to get or create user",
-			})
+			callbackError("user_creation_failed", "Failed to look up or create your account.")
 			return
 		}
 
@@ -317,16 +311,12 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 		// Generate JWT token for user
 		jwtToken, err := auth.GenerateJWT(user.ID, user.Email, scopes, 24*time.Hour)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to generate JWT",
-			})
+			callbackError("jwt_failed", "Failed to generate an authentication token.")
 			return
 		}
 
-		// Derive the frontend base URL from the OIDC redirect URL (strip the /api/... path)
-		// and redirect the browser to the frontend callback page with the JWT in the query string.
-		// This completes the authorization code flow in the browser so the SPA can store the token.
-		frontendBase := deriveFrontendURL(h.cfg)
+		// Redirect the browser to the frontend callback page with the JWT in the query string.
+		// This completes the authorization code flow so the SPA can store the token.
 		redirectTarget := fmt.Sprintf("%s/auth/callback?token=%s", frontendBase, url.QueryEscape(jwtToken))
 		c.Redirect(http.StatusFound, redirectTarget)
 	}
