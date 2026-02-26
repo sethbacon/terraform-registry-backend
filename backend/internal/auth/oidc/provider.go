@@ -107,6 +107,40 @@ func (p *OIDCProvider) VerifyIDToken(ctx context.Context, rawIDToken string) (*o
 	return idToken, nil
 }
 
+// ExtractGroups reads the named claim from the ID token and returns its string values.
+// claimName is typically "groups", "roles", or "memberOf" depending on the IdP.
+// Returns an empty slice (not an error) when the claim is absent or empty.
+func (p *OIDCProvider) ExtractGroups(idToken *oidc.IDToken, claimName string) []string {
+	if claimName == "" {
+		return nil
+	}
+
+	var raw map[string]interface{}
+	if err := idToken.Claims(&raw); err != nil {
+		return nil
+	}
+
+	val, ok := raw[claimName]
+	if !ok {
+		return nil
+	}
+
+	switch v := val.(type) {
+	case []interface{}:
+		groups := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok && s != "" {
+				groups = append(groups, s)
+			}
+		}
+		return groups
+	case []string:
+		return v
+	default:
+		return nil
+	}
+}
+
 // ExtractUserInfo extracts user information from the ID token
 func (p *OIDCProvider) ExtractUserInfo(idToken *oidc.IDToken) (sub, email, name string, err error) {
 	// Standard claims
