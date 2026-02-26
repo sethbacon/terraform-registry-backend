@@ -1246,7 +1246,7 @@
                         }
                     },
                     "404": {
-                        "description": "No active OIDC configuration",
+                        "description": "No active OIDC group configuration",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -1313,7 +1313,7 @@
                         }
                     },
                     "404": {
-                        "description": "No active OIDC configuration",
+                        "description": "No active OIDC group configuration",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
