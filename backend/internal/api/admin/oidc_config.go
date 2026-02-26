@@ -28,7 +28,7 @@ func NewOIDCConfigAdminHandlers(oidcConfigRepo *repositories.OIDCConfigRepositor
 // @Produce      json
 // @Success      200  {object}  models.OIDCConfigResponse
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
-// @Failure      404  {object}  map[string]interface{}  "No active OIDC configuration"
+// @Failure      404  {object}  map[string]interface{}  "No active OIDC group configuration"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/admin/oidc/config [get]
 func (h *OIDCConfigAdminHandlers) GetActiveOIDCConfig(c *gin.Context) {
@@ -36,11 +36,11 @@ func (h *OIDCConfigAdminHandlers) GetActiveOIDCConfig(c *gin.Context) {
 
 	cfg, err := h.oidcConfigRepo.GetActiveOIDCConfig(ctx)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to retrieve OIDC configuration"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve OIDC group configuration"})
 		return
 	}
 	if cfg == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "no active OIDC configuration"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "No active OIDC group configuration"})
 		return
 	}
 
@@ -57,7 +57,7 @@ func (h *OIDCConfigAdminHandlers) GetActiveOIDCConfig(c *gin.Context) {
 // @Success      200  {object}  models.OIDCConfigResponse
 // @Failure      400  {object}  map[string]interface{}  "Invalid request body"
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
-// @Failure      404  {object}  map[string]interface{}  "No active OIDC configuration"
+// @Failure      404  {object}  map[string]interface{}  "No active OIDC group configuration"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/admin/oidc/group-mapping [put]
 func (h *OIDCConfigAdminHandlers) UpdateGroupMapping(c *gin.Context) {
@@ -71,28 +71,28 @@ func (h *OIDCConfigAdminHandlers) UpdateGroupMapping(c *gin.Context) {
 
 	cfg, err := h.oidcConfigRepo.GetActiveOIDCConfig(ctx)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to retrieve OIDC configuration"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve OIDC configuration"})
 		return
 	}
 	if cfg == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "no active OIDC configuration"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "No active OIDC group configuration"})
 		return
 	}
 
 	if err := cfg.SetGroupMappingConfig(input.GroupClaimName, input.GroupMappings, input.DefaultRole); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encode group mapping"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to encode group mapping"})
 		return
 	}
 
 	if err := h.oidcConfigRepo.UpdateOIDCConfigExtraConfig(ctx, cfg.ID, cfg.ExtraConfig); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save group mapping"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save group mapping"})
 		return
 	}
 
 	// Return the updated config
 	updated, err := h.oidcConfigRepo.GetActiveOIDCConfig(ctx)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to retrieve updated configuration"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve updated configuration"})
 		return
 	}
 
