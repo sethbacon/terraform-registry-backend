@@ -28,6 +28,7 @@ type AuthHandlers struct {
 	db              *sql.DB
 	userRepo        *repositories.UserRepository
 	orgRepo         *repositories.OrganizationRepository
+	oidcConfigRepo  *repositories.OIDCConfigRepository
 	oidcProvider    atomic.Pointer[oidc.OIDCProvider]
 	azureADProvider *azuread.AzureADProvider
 	sessionStore    map[string]*SessionState // In-memory for MVP; use Redis in production
@@ -42,13 +43,14 @@ type SessionState struct {
 }
 
 // NewAuthHandlers creates a new AuthHandlers instance
-func NewAuthHandlers(cfg *config.Config, db *sql.DB) (*AuthHandlers, error) {
+func NewAuthHandlers(cfg *config.Config, db *sql.DB, oidcConfigRepo *repositories.OIDCConfigRepository) (*AuthHandlers, error) {
 	h := &AuthHandlers{
-		cfg:          cfg,
-		db:           db,
-		userRepo:     repositories.NewUserRepository(db),
-		orgRepo:      repositories.NewOrganizationRepository(db),
-		sessionStore: make(map[string]*SessionState),
+		cfg:            cfg,
+		db:             db,
+		userRepo:       repositories.NewUserRepository(db),
+		orgRepo:        repositories.NewOrganizationRepository(db),
+		oidcConfigRepo: oidcConfigRepo,
+		sessionStore:   make(map[string]*SessionState),
 	}
 
 	// Initialize OIDC provider if enabled
@@ -200,6 +202,7 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 
 		var sub, email, name string
 		var err error
+		var oidcGroups []string // populated for OIDC logins when group_claim_name is configured
 
 		// Exchange code for tokens based on provider
 		switch sessionState.ProviderType {
@@ -247,6 +250,11 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 				})
 				return
 			}
+
+			// Extract group claims for role mapping.
+			// DB config group mapping settings take precedence over env/file config.
+			effectiveClaimName := h.resolveGroupClaimName(ctx)
+			oidcGroups = oidcProv.ExtractGroups(idToken, effectiveClaimName)
 
 		case "azuread":
 			if h.azureADProvider == nil {
@@ -306,6 +314,13 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 				"error": "Failed to get or create user",
 			})
 			return
+		}
+
+		// Apply OIDC group-to-role mappings (no-op when not configured or no groups extracted)
+		if len(oidcGroups) > 0 || h.cfg.Auth.OIDC.DefaultRole != "" {
+			if mapErr := h.applyGroupMappings(ctx, user.ID, oidcGroups); mapErr != nil {
+				slog.Warn("failed to apply OIDC group mappings", "user_id", user.ID, "error", mapErr)
+			}
 		}
 
 		// Fetch user scopes to embed in JWT (avoids per-request DB lookup)
@@ -563,4 +578,128 @@ func (h *AuthHandlers) MeHandler() gin.HandlerFunc {
 
 		c.JSON(http.StatusOK, response)
 	}
+}
+
+// resolveGroupClaimName returns the effective group claim name to use when
+// extracting IdP group memberships from the OIDC ID token.
+// Priority: DB-stored OIDC config > env/file config.
+func (h *AuthHandlers) resolveGroupClaimName(ctx context.Context) string {
+	if h.oidcConfigRepo != nil {
+		if dbCfg, err := h.oidcConfigRepo.GetActiveOIDCConfig(ctx); err == nil && dbCfg != nil {
+			claimName, _, _ := dbCfg.GetGroupMappingConfig()
+			if claimName != "" {
+				return claimName
+			}
+		}
+	}
+	return h.cfg.Auth.OIDC.GroupClaimName
+}
+
+// resolveGroupMappingConfig returns the effective group mapping configuration.
+// DB-stored settings take precedence over env/file config so that changes made
+// via the admin UI take effect without restarting the server.
+func (h *AuthHandlers) resolveGroupMappingConfig(ctx context.Context) (claimName string, mappings []config.OIDCGroupMapping, defaultRole string) {
+	if h.oidcConfigRepo != nil {
+		if dbCfg, err := h.oidcConfigRepo.GetActiveOIDCConfig(ctx); err == nil && dbCfg != nil {
+			cn, dbMappings, dr := dbCfg.GetGroupMappingConfig()
+			if cn != "" || len(dbMappings) > 0 || dr != "" {
+				// Convert DB model mappings to config type
+				cfgMappings := make([]config.OIDCGroupMapping, len(dbMappings))
+				for i, m := range dbMappings {
+					cfgMappings[i] = config.OIDCGroupMapping{
+						Group:        m.Group,
+						Organization: m.Organization,
+						Role:         m.Role,
+					}
+				}
+				return cn, cfgMappings, dr
+			}
+		}
+	}
+	return h.cfg.Auth.OIDC.GroupClaimName, h.cfg.Auth.OIDC.GroupMappings, h.cfg.Auth.OIDC.DefaultRole
+}
+
+// applyGroupMappings resolves the user's IdP groups against the configured
+// group_mappings and upserts their org memberships accordingly.
+//
+// Logic per configured mapping:
+//   - If the user belongs to the mapped group → ensure they are a member of the
+//     mapped organization with the mapped role (insert or update).
+//   - Memberships created by a previous login are updated if the role changed.
+//
+// If no mapping matches any of the user's groups but default_role is set, the
+// user is added to (or kept in) the default organization with that role.
+//
+// Groups/orgs not mentioned in any mapping are left untouched so that manually
+// assigned memberships are not wiped by an unrelated login.
+func (h *AuthHandlers) applyGroupMappings(ctx context.Context, userID string, groups []string) error {
+	_, mappings, defaultRole := h.resolveGroupMappingConfig(ctx)
+	if len(mappings) == 0 && defaultRole == "" {
+		return nil
+	}
+
+	// Build a set of the user's groups for O(1) lookup.
+	groupSet := make(map[string]struct{}, len(groups))
+	for _, g := range groups {
+		groupSet[g] = struct{}{}
+	}
+
+	matched := false
+
+	for _, mapping := range mappings {
+		if _, ok := groupSet[mapping.Group]; !ok {
+			continue
+		}
+		matched = true
+
+		org, err := h.orgRepo.GetByName(ctx, mapping.Organization)
+		if err != nil || org == nil {
+			slog.Warn("OIDC group mapping: organization not found", "org", mapping.Organization, "group", mapping.Group)
+			continue
+		}
+
+		isMember, _, err := h.orgRepo.CheckMembership(ctx, org.ID, userID)
+		if err != nil {
+			return fmt.Errorf("check membership org=%s user=%s: %w", org.ID, userID, err)
+		}
+
+		if isMember {
+			if err := h.orgRepo.UpdateMemberRole(ctx, org.ID, userID, mapping.Role); err != nil {
+				return fmt.Errorf("update member role org=%s user=%s role=%s: %w", org.ID, userID, mapping.Role, err)
+			}
+		} else {
+			if err := h.orgRepo.AddMemberWithParams(ctx, org.ID, userID, mapping.Role); err != nil {
+				return fmt.Errorf("add member org=%s user=%s role=%s: %w", org.ID, userID, mapping.Role, err)
+			}
+		}
+
+		slog.Info("OIDC group mapping applied", "user_id", userID, "group", mapping.Group, "org", mapping.Organization, "role", mapping.Role)
+	}
+
+	// Fall back to defaultRole in the default organization when nothing matched.
+	if !matched && defaultRole != "" {
+		org, err := h.orgRepo.GetDefaultOrganization(ctx)
+		if err != nil || org == nil {
+			return fmt.Errorf("default organization not found for default_role fallback: %w", err)
+		}
+
+		isMember, _, err := h.orgRepo.CheckMembership(ctx, org.ID, userID)
+		if err != nil {
+			return fmt.Errorf("check membership default org user=%s: %w", userID, err)
+		}
+
+		if isMember {
+			if err := h.orgRepo.UpdateMemberRole(ctx, org.ID, userID, defaultRole); err != nil {
+				return fmt.Errorf("update default role user=%s role=%s: %w", userID, defaultRole, err)
+			}
+		} else {
+			if err := h.orgRepo.AddMemberWithParams(ctx, org.ID, userID, defaultRole); err != nil {
+				return fmt.Errorf("add default member user=%s role=%s: %w", userID, defaultRole, err)
+			}
+		}
+
+		slog.Info("OIDC default role applied", "user_id", userID, "role", defaultRole)
+	}
+
+	return nil
 }

@@ -228,6 +228,13 @@ func (r *OIDCConfigRepository) DeleteOIDCConfig(ctx context.Context, id uuid.UUI
 	return err
 }
 
+// UpdateOIDCConfigExtraConfig updates only the extra_config column (used for group mapping settings).
+func (r *OIDCConfigRepository) UpdateOIDCConfigExtraConfig(ctx context.Context, id uuid.UUID, extraConfig []byte) error {
+	query := `UPDATE oidc_config SET extra_config = $1, updated_at = $2 WHERE id = $3`
+	_, err := r.db.ExecContext(ctx, query, extraConfig, time.Now(), id)
+	return err
+}
+
 // DeactivateAllOIDCConfigs sets is_active=false for all configurations
 func (r *OIDCConfigRepository) DeactivateAllOIDCConfigs(ctx context.Context) error {
 	query := `UPDATE oidc_config SET is_active = false, updated_at = $1`

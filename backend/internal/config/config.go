@@ -161,6 +161,14 @@ type APIKeyConfig struct {
 	Prefix  string `mapstructure:"prefix"`
 }
 
+// OIDCGroupMapping maps a single IdP group to an organization and role template.
+// Example: group "registry-admins" → org "default" + role "admin".
+type OIDCGroupMapping struct {
+	Group        string `mapstructure:"group"`
+	Organization string `mapstructure:"organization"`
+	Role         string `mapstructure:"role"`
+}
+
 // OIDCConfig holds generic OIDC provider configuration
 type OIDCConfig struct {
 	Enabled      bool     `mapstructure:"enabled"`
@@ -169,6 +177,17 @@ type OIDCConfig struct {
 	ClientSecret string   `mapstructure:"client_secret"`
 	RedirectURL  string   `mapstructure:"redirect_url"`
 	Scopes       []string `mapstructure:"scopes"`
+
+	// Group-to-role mapping — optional. When set, the IdP group claim is read
+	// on every login and used to assign (or update) the user's org membership.
+	//
+	// GroupClaimName: the JWT claim that contains the user's groups (e.g. "groups").
+	// GroupMappings:  list of {group, organization, role} mappings.
+	// DefaultRole:    role template to assign when no group matches; leave empty
+	//                 to make unmatched users members with no role template.
+	GroupClaimName string             `mapstructure:"group_claim_name"`
+	GroupMappings  []OIDCGroupMapping `mapstructure:"group_mappings"`
+	DefaultRole    string             `mapstructure:"default_role"`
 }
 
 // AzureADConfig holds Azure AD specific configuration
@@ -392,6 +411,9 @@ func bindEnvVars(v *viper.Viper) error {
 		"auth.oidc.client_secret",
 		"auth.oidc.redirect_url",
 		"auth.oidc.scopes",
+		"auth.oidc.group_claim_name",
+		"auth.oidc.group_mappings",
+		"auth.oidc.default_role",
 		"auth.azure_ad.enabled",
 		"auth.azure_ad.tenant_id",
 		"auth.azure_ad.client_id",
