@@ -310,11 +310,11 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 			return
 		}
 
-		// Apply OIDC group-to-role mappings (no-op when not configured or no groups extracted)
-		if len(oidcGroups) > 0 || h.cfg.Auth.OIDC.DefaultRole != "" {
-			if mapErr := h.applyGroupMappings(ctx, user.ID, oidcGroups); mapErr != nil {
-				slog.Warn("failed to apply OIDC group mappings", "user_id", user.ID, "error", mapErr)
-			}
+		// Apply OIDC group-to-role mappings. applyGroupMappings is a no-op when
+		// nothing is configured — the guard lives inside the function so it accounts
+		// for both DB-stored and env-var config.
+		if mapErr := h.applyGroupMappings(ctx, user.ID, oidcGroups); mapErr != nil {
+			slog.Warn("failed to apply OIDC group mappings", "user_id", user.ID, "error", mapErr)
 		}
 
 		// Fetch user scopes to embed in JWT (avoids per-request DB lookup)

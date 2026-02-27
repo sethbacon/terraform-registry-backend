@@ -39,6 +39,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `GetEndSessionEndpoint()` on `OIDCProvider`) and redirects the browser there with `client_id`
   and `post_logout_redirect_uri=<frontend>/`, fully terminating the IdP SSO session. Fixes #34.
 
+- **SCM provider creation returns 500 when webhook secret is omitted** — the `scm_providers`
+  table had `webhook_secret VARCHAR(255) NOT NULL` with no default. Submitting an SCM provider
+  without a webhook secret (the field is optional in the API) caused a database constraint
+  violation and a 500 response. Migration `000008` makes the column nullable with an empty-string
+  default so providers can be created without a webhook secret.
+
+- **OIDC group mappings not applied when no groups are in the token** — the OIDC callback handler
+  skipped `applyGroupMappings` entirely when the token contained no group claims, preventing the
+  environment-variable default role (`AUTH_OIDC_DEFAULT_ROLE`) from being applied to new users.
+  The guard has been removed; `applyGroupMappings` handles the no-groups case internally.
+
 ---
 
 ## [1.3.1] - 2026-02-24
