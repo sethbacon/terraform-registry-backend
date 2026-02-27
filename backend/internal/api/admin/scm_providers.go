@@ -2,6 +2,7 @@
 package admin
 
 import (
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -17,14 +18,16 @@ import (
 type SCMProviderHandlers struct {
 	cfg         *config.Config
 	scmRepo     *repositories.SCMRepository
+	orgRepo     *repositories.OrganizationRepository
 	tokenCipher *crypto.TokenCipher
 }
 
 // NewSCMProviderHandlers creates a new SCM provider handlers instance
-func NewSCMProviderHandlers(cfg *config.Config, scmRepo *repositories.SCMRepository, tokenCipher *crypto.TokenCipher) *SCMProviderHandlers {
+func NewSCMProviderHandlers(cfg *config.Config, scmRepo *repositories.SCMRepository, orgRepo *repositories.OrganizationRepository, tokenCipher *crypto.TokenCipher) *SCMProviderHandlers {
 	return &SCMProviderHandlers{
 		cfg:         cfg,
 		scmRepo:     scmRepo,
+		orgRepo:     orgRepo,
 		tokenCipher: tokenCipher,
 	}
 }
@@ -112,10 +115,23 @@ func (h *SCMProviderHandlers) CreateProvider(c *gin.Context) {
 		return
 	}
 
-	// Get organization ID - use provided org or default to nil (will use default org)
+	// Resolve organization ID: use the provided value, or fall back to the default organization.
 	orgID := uuid.Nil
-	if req.OrganizationID != nil && req.OrganizationID.String() != "00000000-0000-0000-0000-000000000000" {
+	if req.OrganizationID != nil && *req.OrganizationID != uuid.Nil {
 		orgID = *req.OrganizationID
+	}
+	if orgID == uuid.Nil {
+		defaultOrg, err := h.orgRepo.GetDefaultOrganization(c.Request.Context())
+		if err != nil || defaultOrg == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "no organization found — create an organization before adding an SCM provider"})
+			return
+		}
+		parsed, parseErr := uuid.Parse(defaultOrg.ID)
+		if parseErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to resolve organization"})
+			return
+		}
+		orgID = parsed
 	}
 
 	provider := &scm.SCMProviderRecord{
@@ -134,6 +150,7 @@ func (h *SCMProviderHandlers) CreateProvider(c *gin.Context) {
 	}
 
 	if err := h.scmRepo.CreateProvider(c.Request.Context(), provider); err != nil {
+		slog.Error("failed to create SCM provider", "error", err, "org_id", provider.OrganizationID, "provider_type", provider.ProviderType, "name", provider.Name)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create provider"})
 		return
 	}

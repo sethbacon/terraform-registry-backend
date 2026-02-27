@@ -45,6 +45,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   violation and a 500 response. Migration `000008` makes the column nullable with an empty-string
   default so providers can be created without a webhook secret.
 
+- **SCM provider creation returns 500 when organization is not explicitly selected** — when the
+  frontend does not supply an `organization_id` (single-org installs where no dropdown is shown),
+  the handler defaulted to `uuid.Nil` (`00000000-…`), violating the FK constraint to
+  `organizations`. The handler now calls `GetDefaultOrganization` as a fallback so the correct
+  org is resolved automatically. Returns a clear 400 if no organization exists at all.
+
 - **OIDC group mappings not applied when no groups are in the token** — the OIDC callback handler
   skipped `applyGroupMappings` entirely when the token contained no group claims, preventing the
   environment-variable default role (`AUTH_OIDC_DEFAULT_ROLE`) from being applied to new users.
