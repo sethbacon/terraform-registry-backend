@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Unlinking a module from SCM returns 500** — `module_versions.scm_repo_id` had a FK
+  constraint to `module_scm_repos(id)` with no delete action. Deleting a `module_scm_repos`
+  row (i.e. unlinking a module) would be rejected by Postgres whenever any version rows still
+  referenced it. Migration `000009` changes the constraint to `ON DELETE SET NULL` so
+  existing published versions are retained and their `scm_repo_id` is nulled out on unlink.
+
 - **Terraform mirror version filter ignores comma-separated prefix patterns** — when a comma was
   present in the version filter string, the filter was routed directly to exact-match logic,
   causing patterns like `1.13, 1.14` or `1.13., 1.14.` to match zero versions. Each comma-separated
