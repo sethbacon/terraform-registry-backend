@@ -541,6 +541,69 @@ func (h *MirrorHandler) GetMirrorStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, status)
 }
 
+// @Summary      List mirrored providers
+// @Description  List all providers that have been synced for a mirror configuration, including their synced versions. Requires admin scope.
+// @Tags         Mirror
+// @Security     Bearer
+// @Produce      json
+// @Param        id  path  string  true  "Mirror configuration ID (UUID)"
+// @Success      200  {object}  map[string]interface{}  "providers: []MirroredProviderWithVersions"
+// @Failure      400  {object}  map[string]interface{}  "Invalid mirror ID"
+// @Failure      401  {object}  map[string]interface{}  "Unauthorized"
+// @Failure      404  {object}  map[string]interface{}  "Mirror configuration not found"
+// @Failure      500  {object}  map[string]interface{}  "Internal server error"
+// @Router       /api/v1/admin/mirrors/{id}/providers [get]
+// ListMirroredProviders lists providers synced into a mirror config with their versions
+// GET /api/v1/admin/mirrors/:id/providers
+func (h *MirrorHandler) ListMirroredProviders(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid mirror ID"})
+		return
+	}
+
+	config, err := h.mirrorRepo.GetByID(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get mirror configuration: " + err.Error()})
+		return
+	}
+	if config == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Mirror configuration not found"})
+		return
+	}
+
+	providers, err := h.mirrorRepo.ListMirroredProviders(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list mirrored providers: " + err.Error()})
+		return
+	}
+
+	type MirroredProviderWithVersions struct {
+		models.MirroredProvider
+		Versions []interface{} `json:"versions"`
+	}
+
+	result := make([]MirroredProviderWithVersions, 0, len(providers))
+	for _, p := range providers {
+		versions, err := h.mirrorRepo.ListMirroredProviderVersions(c.Request.Context(), p.ID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list provider versions: " + err.Error()})
+			return
+		}
+		versionList := make([]interface{}, len(versions))
+		for i, v := range versions {
+			versionList[i] = v
+		}
+		result = append(result, MirroredProviderWithVersions{
+			MirroredProvider: p,
+			Versions:         versionList,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{"providers": result})
+}
+
 // RegisterRoutes registers all mirror management routes
 func (h *MirrorHandler) RegisterRoutes(router *gin.RouterGroup) {
 	mirrors := router.Group("/mirrors")
@@ -552,5 +615,6 @@ func (h *MirrorHandler) RegisterRoutes(router *gin.RouterGroup) {
 		mirrors.DELETE("/:id", h.DeleteMirrorConfig)
 		mirrors.POST("/:id/sync", h.TriggerSync)
 		mirrors.GET("/:id/status", h.GetMirrorStatus)
+		mirrors.GET("/:id/providers", h.ListMirroredProviders)
 	}
 }
