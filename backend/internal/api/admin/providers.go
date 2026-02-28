@@ -30,14 +30,12 @@ func NewProviderAdminHandlers(db *sql.DB, storageBackend storage.Storage, cfg *c
 }
 
 // @Summary      Get provider
-// @Description  Retrieve a provider with all its versions and platforms. Requires providers:read scope.
+// @Description  Retrieve a provider with all its versions and platforms. No authentication required; authentication is optional and provides user context.
 // @Tags         Providers
-// @Security     Bearer
 // @Produce      json
 // @Param        namespace  path  string  true  "Provider namespace"
 // @Param        type       path  string  true  "Provider type (e.g. aws, azurerm)"
 // @Success      200  {object}  map[string]interface{}  "id, namespace, type, versions, ..."
-// @Failure      401  {object}  map[string]interface{}  "Unauthorized"
 // @Failure      404  {object}  map[string]interface{}  "Provider not found"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/providers/{namespace}/{type} [get]

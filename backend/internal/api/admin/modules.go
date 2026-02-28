@@ -99,15 +99,13 @@ func (h *ModuleAdminHandlers) CreateModuleRecord(c *gin.Context) {
 }
 
 // @Summary      Get module
-// @Description  Retrieve a module with all its versions, download counts, and metadata. Requires modules:read scope.
+// @Description  Retrieve a module with all its versions, download counts, and metadata. No authentication required; authentication is optional and provides user context.
 // @Tags         Modules
-// @Security     Bearer
 // @Produce      json
 // @Param        namespace  path  string  true  "Module namespace"
 // @Param        name       path  string  true  "Module name"
 // @Param        system     path  string  true  "Target system (e.g. aws, azurerm)"
 // @Success      200  {object}  map[string]interface{}  "id, namespace, name, system, versions, download_count, ..."
-// @Failure      401  {object}  map[string]interface{}  "Unauthorized"
 // @Failure      404  {object}  map[string]interface{}  "Module not found"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/modules/{namespace}/{name}/{system} [get]

@@ -468,6 +468,16 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 			publicGroup.GET("/providers/search", providers.SearchHandler(db, cfg))
 		}
 
+		// Public detail endpoints — no auth required; optional auth populates user context if a
+		// token is present (used by the frontend to conditionally show management actions).
+		publicDetailGroup := apiV1.Group("")
+		publicDetailGroup.Use(middleware.OptionalAuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo))
+		publicDetailGroup.Use(middleware.RateLimitMiddleware(generalRateLimiter))
+		{
+			publicDetailGroup.GET("/modules/:namespace/:name/:system", moduleAdminHandlers.GetModule)
+			publicDetailGroup.GET("/providers/:namespace/:type", providerAdminHandlers.GetProvider)
+		}
+
 		// Authenticated-only endpoints
 		authenticatedGroup := apiV1.Group("")
 		authenticatedGroup.Use(middleware.AuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo))
@@ -495,9 +505,6 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 				middleware.RateLimitMiddleware(uploadRateLimiter), // Stricter rate limit for uploads
 				middleware.RequireScope(auth.ScopeProvidersWrite),
 				providers.UploadHandler(db, storageBackend, cfg))
-			authenticatedGroup.GET("/providers/:namespace/:type",
-				middleware.RequireScope(auth.ScopeProvidersRead),
-				providerAdminHandlers.GetProvider)
 			authenticatedGroup.DELETE("/providers/:namespace/:type",
 				middleware.RequireScope(auth.ScopeProvidersWrite),
 				providerAdminHandlers.DeleteProvider)
@@ -511,10 +518,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 				middleware.RequireScope(auth.ScopeProvidersWrite),
 				providerAdminHandlers.UndeprecateVersion)
 
-			// Modules admin endpoints - get, delete, deprecate
-			authenticatedGroup.GET("/modules/:namespace/:name/:system",
-				middleware.RequireScope(auth.ScopeModulesRead),
-				moduleAdminHandlers.GetModule)
+			// Modules admin endpoints - delete, deprecate (GET moved to publicDetailGroup above)
 			authenticatedGroup.DELETE("/modules/:namespace/:name/:system",
 				middleware.RequireScope(auth.ScopeModulesWrite),
 				moduleAdminHandlers.DeleteModule)
