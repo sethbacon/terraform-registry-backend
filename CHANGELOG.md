@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [1.4.0] - 2026-02-28
+
+### Added
+
+- **`GET /api/v1/admin/mirrors/:id/providers`** — new endpoint that lists all providers tracked
+  under a given mirror configuration, including upstream namespace/type, last sync timestamp,
+  last synced version, and sync-enabled flag.
+
 ### Fixed
 
 - **Specific-tag sync imports no versions** — when the SCM wizard linked a module with an
@@ -69,6 +79,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   skipped `applyGroupMappings` entirely when the token contained no group claims, preventing the
   environment-variable default role (`AUTH_OIDC_DEFAULT_ROLE`) from being applied to new users.
   The guard has been removed; `applyGroupMappings` handles the no-groups case internally.
+
+- **Module and provider detail pages return 401 for unauthenticated users** — `GET /api/v1/modules/:namespace/:name/:system`
+  and `GET /api/v1/providers/:namespace/:type` were registered in the authenticated route group
+  requiring `modules:read` / `providers:read` scope, making the public detail pages inaccessible
+  without a login. Both endpoints are now served under an optional-auth group that decodes tokens
+  when present but does not reject unauthenticated requests.
+
+- **Mirrored providers not visible on Providers page** — mirror configurations created without an
+  explicit `organization_id` were stored with `NULL`, and the sync job carried the empty org ID
+  through to the provider records it created. In multi-tenant mode the provider search filters by
+  the default organization, so providers with `NULL` org were invisible. `CreateMirrorConfig` now
+  defaults to the default organization, and the sync job resolves the default org when the config
+  has none assigned.
 
 ---
 

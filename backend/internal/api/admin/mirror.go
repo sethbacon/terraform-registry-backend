@@ -24,13 +24,15 @@ type MirrorSyncJobInterface interface {
 // MirrorHandler handles mirror configuration endpoints
 type MirrorHandler struct {
 	mirrorRepo *repositories.MirrorRepository
+	orgRepo    *repositories.OrganizationRepository
 	syncJob    MirrorSyncJobInterface
 }
 
 // NewMirrorHandler creates a new mirror handler
-func NewMirrorHandler(mirrorRepo *repositories.MirrorRepository) *MirrorHandler {
+func NewMirrorHandler(mirrorRepo *repositories.MirrorRepository, orgRepo *repositories.OrganizationRepository) *MirrorHandler {
 	return &MirrorHandler{
 		mirrorRepo: mirrorRepo,
+		orgRepo:    orgRepo,
 	}
 }
 
@@ -98,7 +100,7 @@ func (h *MirrorHandler) CreateMirrorConfig(c *gin.Context) {
 		syncInterval = *req.SyncIntervalHours
 	}
 
-	// Parse organization ID if provided
+	// Parse organization ID if provided; fall back to the default organization
 	var orgID *uuid.UUID
 	if req.OrganizationID != nil && *req.OrganizationID != "" {
 		parsed, err := uuid.Parse(*req.OrganizationID)
@@ -107,6 +109,13 @@ func (h *MirrorHandler) CreateMirrorConfig(c *gin.Context) {
 			return
 		}
 		orgID = &parsed
+	} else {
+		// Default to the default organization so mirrored providers are discoverable
+		defaultOrg, err := h.orgRepo.GetDefaultOrganization(c.Request.Context())
+		if err == nil && defaultOrg != nil {
+			parsed := uuid.MustParse(defaultOrg.ID)
+			orgID = &parsed
+		}
 	}
 
 	// Convert filter arrays to JSON strings
