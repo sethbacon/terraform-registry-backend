@@ -74,6 +74,16 @@ func TestExtractVersionFromTag(t *testing.T) {
 		{"v1.0.0", "[invalid", "", "invalid regex"},
 		// Nested glob with multiple capture groups → only first capture used
 		{"v1.2.3", "v*.*.*", "", "multiple wildcards → first capture is '1' which is not semver"},
+		// Dot in glob literal should not match arbitrary character (regex QuoteMeta)
+		{"v1X2.3", "v1.2.*", "", "dot in pattern must not match non-dot char"},
+		// Exact match (no wildcard): tag equals pattern, strip 'v'
+		{"v0.1.7", "v0.1.7", "0.1.7", "exact match with v prefix"},
+		// Exact match without 'v' prefix
+		{"0.1.7", "0.1.7", "0.1.7", "exact match no v prefix"},
+		// Exact match: tag does not equal pattern
+		{"v0.1.8", "v0.1.7", "", "exact match — different tag"},
+		// Exact match: pattern is valid semver tag but tag has extra suffix
+		{"v0.1.7-beta", "v0.1.7", "", "exact match — suffix mismatch"},
 	}
 
 	for _, tt := range tests {

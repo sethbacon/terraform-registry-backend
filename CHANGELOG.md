@@ -11,6 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Specific-tag sync imports no versions** — when the SCM wizard linked a module with an
+  exact tag as the pattern (e.g. `0.1.7`, no wildcard), `extractVersionFromTag` built a regex
+  with no capture group, `FindStringSubmatch` returned only the full match, and the version
+  check `len(matches) < 2` caused every tag to be skipped. The function now handles
+  no-wildcard patterns as an exact equality check and derives the version directly from the tag
+  name. Separately, literal dots in glob patterns (e.g. `v1.2.*`) were not escaped, allowing
+  them to match any character; non-wildcard segments are now passed through `regexp.QuoteMeta`.
+
+- **Unlinking a module from SCM returns 500** — `module_versions.scm_repo_id` had a FK
+  constraint to `module_scm_repos(id)` with no delete action. Deleting a `module_scm_repos`
+  row (i.e. unlinking a module) would be rejected by Postgres whenever any version rows still
+  referenced it. Migration `000009` changes the constraint to `ON DELETE SET NULL` so
+  existing published versions are retained and their `scm_repo_id` is nulled out on unlink.
+
 - **Terraform mirror version filter ignores comma-separated prefix patterns** — when a comma was
   present in the version filter string, the filter was routed directly to exact-match logic,
   causing patterns like `1.13, 1.14` or `1.13., 1.14.` to match zero versions. Each comma-separated
@@ -38,6 +52,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   endpoint reads the `end_session_endpoint` from the OIDC discovery document (via new
   `GetEndSessionEndpoint()` on `OIDCProvider`) and redirects the browser there with `client_id`
   and `post_logout_redirect_uri=<frontend>/`, fully terminating the IdP SSO session. Fixes #34.
+
+- **SCM provider creation returns 500 when webhook secret is omitted** — the `scm_providers`
+  table had `webhook_secret VARCHAR(255) NOT NULL` with no default. Submitting an SCM provider
+  without a webhook secret (the field is optional in the API) caused a database constraint
+  violation and a 500 response. Migration `000008` makes the column nullable with an empty-string
+  default so providers can be created without a webhook secret.
+
+- **SCM provider creation returns 500 when organization is not explicitly selected** — when the
+  frontend does not supply an `organization_id` (single-org installs where no dropdown is shown),
+  the handler defaulted to `uuid.Nil` (`00000000-…`), violating the FK constraint to
+  `organizations`. The handler now calls `GetDefaultOrganization` as a fallback so the correct
+  org is resolved automatically. Returns a clear 400 if no organization exists at all.
+
+- **OIDC group mappings not applied when no groups are in the token** — the OIDC callback handler
+  skipped `applyGroupMappings` entirely when the token contained no group claims, preventing the
+  environment-variable default role (`AUTH_OIDC_DEFAULT_ROLE`) from being applied to new users.
+  The guard has been removed; `applyGroupMappings` handles the no-groups case internally.
 
 ---
 
