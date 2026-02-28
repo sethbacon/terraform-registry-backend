@@ -320,9 +320,28 @@ func (p *SCMPublisher) createImmutableTarball(srcPath, destPath, commitSHA strin
 
 // extractVersionFromTag extracts a semantic version from a tag name
 func (p *SCMPublisher) extractVersionFromTag(tag, glob string) string {
-	// Convert glob pattern to regex
-	pattern := strings.ReplaceAll(glob, "*", "(.*)")
-	pattern = fmt.Sprintf("^%s$", pattern)
+	semverPattern := `^(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z-]+)?(\+[0-9A-Za-z-]+)?$`
+
+	// Exact match: no wildcard in pattern — the tag must equal the pattern exactly.
+	// The version is derived directly from the tag name (strip leading 'v').
+	if !strings.Contains(glob, "*") {
+		if tag != glob {
+			return ""
+		}
+		version := strings.TrimPrefix(tag, "v")
+		if matched, _ := regexp.MatchString(semverPattern, version); !matched {
+			return ""
+		}
+		return version
+	}
+
+	// Glob pattern: escape regex metacharacters in the non-wildcard parts, then
+	// replace each '*' with a capture group so the version segment can be extracted.
+	parts := strings.Split(glob, "*")
+	for i, part := range parts {
+		parts[i] = regexp.QuoteMeta(part)
+	}
+	pattern := fmt.Sprintf("^%s$", strings.Join(parts, "(.*)"))
 
 	re, err := regexp.Compile(pattern)
 	if err != nil {
@@ -340,7 +359,6 @@ func (p *SCMPublisher) extractVersionFromTag(tag, glob string) string {
 	version = strings.TrimPrefix(version, "v")
 
 	// Validate semantic version format
-	semverPattern := `^(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z-]+)?(\+[0-9A-Za-z-]+)?$`
 	if matched, _ := regexp.MatchString(semverPattern, version); !matched {
 		return ""
 	}
