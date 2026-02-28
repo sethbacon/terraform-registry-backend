@@ -252,6 +252,7 @@ func filterPlatforms(platforms []mirror.ProviderPlatform, filter *string) []mirr
 type MirrorSyncJob struct {
 	mirrorRepo         *repositories.MirrorRepository
 	providerRepo       *repositories.ProviderRepository
+	orgRepo            *repositories.OrganizationRepository
 	storageBackend     storage.Storage
 	storageBackendName string
 	activeSyncs        map[uuid.UUID]bool
@@ -265,12 +266,14 @@ type MirrorSyncJob struct {
 func NewMirrorSyncJob(
 	mirrorRepo *repositories.MirrorRepository,
 	providerRepo *repositories.ProviderRepository,
+	orgRepo *repositories.OrganizationRepository,
 	storageBackend storage.Storage,
 	storageBackendName string,
 ) *MirrorSyncJob {
 	return &MirrorSyncJob{
 		mirrorRepo:         mirrorRepo,
 		providerRepo:       providerRepo,
+		orgRepo:            orgRepo,
 		storageBackend:     storageBackend,
 		storageBackendName: storageBackendName,
 		activeSyncs:        make(map[uuid.UUID]bool),
@@ -554,14 +557,16 @@ func (j *MirrorSyncJob) syncProvider(ctx context.Context, upstreamClient *mirror
 	}
 
 	// Determine organization ID for the provider
-	// In multi-tenant mode, use the org from config; in single-tenant mode, we'll need a default org
 	var orgID string
 	if config.OrganizationID != nil {
 		orgID = config.OrganizationID.String()
 	} else {
-		// For single-tenant mode, we need to get or create a default organization
-		// For now, we'll use an empty string which SearchProviders handles as single-tenant mode
-		orgID = ""
+		// Config has no org assigned — fall back to the default organization so the
+		// provider is visible in org-scoped searches (multi-tenant mode).
+		defaultOrg, err := j.orgRepo.GetDefaultOrganization(ctx)
+		if err == nil && defaultOrg != nil {
+			orgID = defaultOrg.ID
+		}
 	}
 
 	// Check if this provider already exists locally

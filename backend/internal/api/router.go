@@ -117,7 +117,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	oidcConfigRepo := repositories.NewOIDCConfigRepository(sqlxDB)
 
 	// Initialize mirror sync job
-	mirrorSyncJob := jobs.NewMirrorSyncJob(mirrorRepo, providerRepo, storageBackend, cfg.Storage.DefaultBackend)
+	mirrorSyncJob := jobs.NewMirrorSyncJob(mirrorRepo, providerRepo, orgRepo, storageBackend, cfg.Storage.DefaultBackend)
 	// Start background sync job - check every 10 minutes for mirrors that need syncing
 	mirrorSyncJob.Start(context.Background(), 10)
 	log.Println("Mirror sync job started (checking every 10 minutes)")
@@ -388,7 +388,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	userHandlers := admin.NewUserHandlers(cfg, db)
 	orgHandlers := admin.NewOrganizationHandlers(cfg, db)
 	statsHandlers := admin.NewStatsHandler(sqlxDB)
-	mirrorHandlers := admin.NewMirrorHandler(mirrorRepo)
+	mirrorHandlers := admin.NewMirrorHandler(mirrorRepo, orgRepo)
 	mirrorHandlers.SetSyncJob(mirrorSyncJob) // Connect sync job for manual triggers
 
 	// Initialize Terraform binary mirror admin handler
