@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Specific-tag sync imports no versions** — when the SCM wizard linked a module with an
+  exact tag as the pattern (e.g. `0.1.7`, no wildcard), `extractVersionFromTag` built a regex
+  with no capture group, `FindStringSubmatch` returned only the full match, and the version
+  check `len(matches) < 2` caused every tag to be skipped. The function now handles
+  no-wildcard patterns as an exact equality check and derives the version directly from the tag
+  name. Separately, literal dots in glob patterns (e.g. `v1.2.*`) were not escaped, allowing
+  them to match any character; non-wildcard segments are now passed through `regexp.QuoteMeta`.
+
 - **Unlinking a module from SCM returns 500** — `module_versions.scm_repo_id` had a FK
   constraint to `module_scm_repos(id)` with no delete action. Deleting a `module_scm_repos`
   row (i.e. unlinking a module) would be rejected by Postgres whenever any version rows still
