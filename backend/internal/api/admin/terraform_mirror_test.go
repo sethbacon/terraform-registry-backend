@@ -573,7 +573,7 @@ func TestTMGetStatus_Success(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM terraform_mirror_configs WHERE id").
 		WillReturnRows(sampleTMCRow())
 	mock.ExpectQuery("SELECT.*COUNT.*FROM terraform_version_platforms").
-		WillReturnRows(sqlmock.NewRows([]string{"total", "synced", "pending"}).AddRow(10, 8, 2))
+		WillReturnRows(sqlmock.NewRows([]string{"version_count", "platform_count", "pending_count"}).AddRow(10, 8, 2))
 	mock.ExpectQuery("SELECT.*FROM terraform_versions WHERE config_id.*is_latest").
 		WillReturnRows(sqlmock.NewRows(tfvCols))
 
@@ -872,7 +872,7 @@ func TestTMGetStatus_WithLatestVersion(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM terraform_mirror_configs WHERE id").
 		WillReturnRows(sampleTMCRow())
 	mock.ExpectQuery("SELECT.*COUNT.*FROM terraform_version_platforms").
-		WillReturnRows(sqlmock.NewRows([]string{"total", "synced", "pending"}).AddRow(5, 3, 2))
+		WillReturnRows(sqlmock.NewRows([]string{"version_count", "platform_count", "pending_count"}).AddRow(5, 3, 2))
 	// GetLatestVersion returns a real version row
 	mock.ExpectQuery("SELECT.*FROM terraform_versions WHERE config_id.*is_latest").
 		WillReturnRows(sampleTFVRow())

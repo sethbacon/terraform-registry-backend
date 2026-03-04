@@ -612,23 +612,23 @@ func (r *TerraformMirrorRepository) UpdateGPGVerifiedForVersion(ctx context.Cont
 	return nil
 }
 
-// CountVersionStats returns total, synced, and pending platform counts for a config.
-func (r *TerraformMirrorRepository) CountVersionStats(ctx context.Context, configID uuid.UUID) (total, synced, pending int, err error) {
+// CountVersionStats returns distinct version count, total platform count, and pending platform count for a config.
+func (r *TerraformMirrorRepository) CountVersionStats(ctx context.Context, configID uuid.UUID) (versionCount, platformCount, pendingCount int, err error) {
 	row := r.db.QueryRowContext(ctx, `
 		SELECT
-			COUNT(*) AS total,
-			COUNT(*) FILTER (WHERE p.sync_status = 'synced') AS synced,
-			COUNT(*) FILTER (WHERE p.sync_status IN ('pending','failed')) AS pending
+			COUNT(DISTINCT v.id) AS version_count,
+			COUNT(*) AS platform_count,
+			COUNT(*) FILTER (WHERE p.sync_status IN ('pending','failed')) AS pending_count
 		FROM terraform_version_platforms p
 		JOIN terraform_versions v ON v.id = p.version_id
 		WHERE v.config_id = $1
 	`, configID)
 
-	if scanErr := row.Scan(&total, &synced, &pending); scanErr != nil {
+	if scanErr := row.Scan(&versionCount, &platformCount, &pendingCount); scanErr != nil {
 		return 0, 0, 0, fmt.Errorf("failed to count terraform platform stats: %w", scanErr)
 	}
 
-	return total, synced, pending, nil
+	return versionCount, platformCount, pendingCount, nil
 }
 
 // ---- Sync History ----------------------------------------------------------
