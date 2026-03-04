@@ -426,7 +426,6 @@ func (h *MirrorHandler) DeleteMirrorConfig(c *gin.Context) {
 // @Failure      400  {object}  map[string]interface{}  "Invalid mirror ID"
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
 // @Failure      404  {object}  map[string]interface{}  "Mirror configuration not found"
-// @Failure      409  {object}  map[string]interface{}  "Sync already in progress"
 // @Failure      503  {object}  map[string]interface{}  "Sync job not configured"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/admin/mirrors/{id}/sync [post]
@@ -463,7 +462,7 @@ func (h *MirrorHandler) TriggerSync(c *gin.Context) {
 		log.Printf("API: Triggering manual sync for mirror %s (ID: %s)", config.Name, id) // #nosec G706 -- logged value is application-internal (config string, integer, or application-constructed path); not raw user-controlled request input
 		if err := h.syncJob.TriggerManualSync(c.Request.Context(), id); err != nil {
 			if err.Error() == "sync already in progress for this mirror" {
-				c.JSON(http.StatusConflict, gin.H{"error": "A sync is already in progress for this mirror"})
+				c.JSON(http.StatusAccepted, gin.H{"message": "Sync already in progress"})
 				return
 			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to trigger sync: " + err.Error()})
