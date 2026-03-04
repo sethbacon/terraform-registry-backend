@@ -201,7 +201,7 @@ func (h *TerraformMirrorHandler) GetStatus(c *gin.Context) {
 		return
 	}
 
-	total, synced, pending, statsErr := h.repo.CountVersionStats(c.Request.Context(), id)
+	versionCount, platformCount, pendingCount, statsErr := h.repo.CountVersionStats(c.Request.Context(), id)
 	if statsErr != nil {
 		log.Printf("[terraform-mirror] failed to count stats for %s: %v", id, statsErr)
 	}
@@ -214,9 +214,9 @@ func (h *TerraformMirrorHandler) GetStatus(c *gin.Context) {
 
 	c.JSON(http.StatusOK, models.TerraformMirrorStatusResponse{
 		Config:        cfg,
-		VersionCount:  synced,
-		PlatformCount: total,
-		PendingCount:  pending,
+		VersionCount:  versionCount,
+		PlatformCount: platformCount,
+		PendingCount:  pendingCount,
 		LatestVersion: latestStr,
 	})
 }
