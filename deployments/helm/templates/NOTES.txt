@@ -1,0 +1,33 @@
+Terraform Registry has been deployed!
+
+{{- if .Values.ingress.enabled }}
+
+Access the registry at:
+{{- range .Values.ingress.hosts }}
+  https://{{ .host }}
+{{- end }}
+{{- end }}
+
+Backend service: {{ include "terraform-registry.fullname" . }}-backend
+{{- if .Values.frontend.enabled }}
+Frontend service: {{ include "terraform-registry.fullname" . }}-frontend
+{{- end }}
+
+To verify the deployment:
+  kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }}
+
+To check backend health:
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "terraform-registry.fullname" . }}-backend {{ .Values.service.backend.port }}:{{ .Values.service.backend.port }}
+  curl http://localhost:{{ .Values.service.backend.port }}/health
+
+{{- if not .Values.externalDatabase.host }}
+
+WARNING: No external database host configured!
+  Set externalDatabase.host in your values file.
+{{- end }}
+
+{{- if and (not .Values.security.jwtSecret) (not .Values.security.existingSecret) }}
+
+WARNING: No JWT secret configured!
+  Set security.jwtSecret or security.existingSecret in your values file.
+{{- end }}

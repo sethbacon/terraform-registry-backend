@@ -1,0 +1,80 @@
+{{- if .Values.frontend.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "terraform-registry.fullname" . }}-frontend-nginx
+  labels:
+    {{- include "terraform-registry.labels" . | nindent 4 }}
+data:
+  default.conf: |
+    server {
+        listen 80;
+        server_name _;
+        root /usr/share/nginx/html;
+        index index.html;
+
+        client_max_body_size 500m;
+
+        location / {
+            try_files $uri $uri/ /index.html;
+        }
+
+        {{- $backendUrl := printf "http://%s:%d" (include "terraform-registry.backendServiceName" .) (int .Values.server.port) }}
+
+        location /api/ {
+            proxy_pass {{ $backendUrl }};
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        location = /swagger.json {
+            proxy_pass {{ $backendUrl }};
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        location /v1/ {
+            proxy_pass {{ $backendUrl }};
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        location /.well-known/ {
+            proxy_pass {{ $backendUrl }};
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        location /webhooks/ {
+            proxy_pass {{ $backendUrl }};
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        location /terraform/ {
+            proxy_pass {{ $backendUrl }};
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        location /health {
+            proxy_pass {{ $backendUrl }};
+        }
+
+        location /ready {
+            proxy_pass {{ $backendUrl }};
+        }
+    }
+{{- end }}

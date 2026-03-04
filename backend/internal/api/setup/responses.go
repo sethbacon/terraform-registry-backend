@@ -1,0 +1,40 @@
+package setup
+
+// ValidateTokenResponse is returned by POST /api/v1/setup/validate-token.
+type ValidateTokenResponse struct {
+	Valid   bool   `json:"valid"`
+	Message string `json:"message"`
+}
+
+// TestOIDCConfigResponse is returned by POST /api/v1/setup/oidc/test.
+type TestOIDCConfigResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+	Issuer  string `json:"issuer,omitempty"`
+}
+
+// TestStorageConfigResponse is returned by POST /api/v1/setup/storage/test.
+type TestStorageConfigResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+}
+
+// SaveStorageConfigResponse is returned by POST /api/v1/setup/storage.
+type SaveStorageConfigResponse struct {
+	Message string      `json:"message"`
+	Config  interface{} `json:"config"`
+}
+
+// ConfigureAdminResponse is returned by POST /api/v1/setup/admin.
+type ConfigureAdminResponse struct {
+	Message      string `json:"message"`
+	Email        string `json:"email"`
+	Organization string `json:"organization"`
+	Role         string `json:"role"`
+}
+
+// CompleteSetupResponse is returned by POST /api/v1/setup/complete.
+type CompleteSetupResponse struct {
+	Message        string `json:"message"`
+	SetupCompleted bool   `json:"setup_completed"`
+}

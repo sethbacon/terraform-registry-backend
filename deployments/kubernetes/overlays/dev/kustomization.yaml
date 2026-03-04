@@ -1,0 +1,62 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: terraform-registry-dev
+
+resources:
+  - ../../base
+
+namePrefix: dev-
+
+patches:
+  # Single replica for dev
+  - target:
+      kind: Deployment
+      name: backend
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+  - target:
+      kind: Deployment
+      name: frontend
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+
+  # Enable dev mode and debug logging
+  - target:
+      kind: ConfigMap
+      name: terraform-registry-config
+    patch: |-
+      - op: replace
+        path: /data/TFR_LOGGING_LEVEL
+        value: debug
+      - op: replace
+        path: /data/DEV_MODE
+        value: "true"
+      - op: replace
+        path: /data/TFR_SERVER_BASE_URL
+        value: "https://registry-dev.example.com"
+
+  # Dev ingress hostname
+  - target:
+      kind: Ingress
+      name: terraform-registry
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: registry-dev.example.com
+      - op: replace
+        path: /spec/tls/0/hosts/0
+        value: registry-dev.example.com
+
+  # Smaller PVC for dev
+  - target:
+      kind: PersistentVolumeClaim
+      name: terraform-registry-storage
+    patch: |-
+      - op: replace
+        path: /spec/resources/requests/storage
+        value: 5Gi

@@ -1,0 +1,45 @@
+[Unit]
+Description=Terraform Registry Server
+Documentation=https://github.com/your-org/terraform-registry
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=registry
+Group=registry
+WorkingDirectory=/opt/terraform-registry
+
+ExecStart=/opt/terraform-registry/terraform-registry serve
+ExecReload=/bin/kill -HUP $MAINPID
+
+EnvironmentFile=/etc/terraform-registry/environment
+
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/opt/terraform-registry/storage
+ReadWritePaths=/var/log/terraform-registry
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=terraform-registry
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,14 @@
+# PVC for local storage backend.
+# Not needed if using cloud storage (S3, Azure Blob, GCS).
+# Note: ReadWriteOnce limits to single-node. For multi-replica with local
+# storage, use ReadWriteMany with NFS/EFS, or switch to cloud storage.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: terraform-registry-storage
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi

@@ -1,0 +1,303 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, development ]
+  pull_request:
+    branches: [ main, development ]
+  workflow_dispatch: {}
+  workflow_call: {}   # allows release.yml to call this as a prerequisite
+
+jobs:
+  backend-test:
+    name: Backend Tests & Quality
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # needed to push auto-generated swagger.json back to the branch
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: backend/go.sum
+
+      - name: Check go mod tidy
+        working-directory: backend
+        run: |
+          go mod tidy
+          if ! git diff --exit-code go.mod go.sum; then
+            echo "go.mod or go.sum is out of date — run 'go mod tidy' and commit the result"
+            exit 1
+          fi
+
+      - name: Build
+        working-directory: backend
+        run: go build ./...
+
+      - name: Vet
+        working-directory: backend
+        run: go vet ./...
+
+      - name: Install swag
+        run: |
+          mkdir -p $GITHUB_WORKSPACE/bin
+          export GOBIN="$GITHUB_WORKSPACE/bin"
+          go install github.com/swaggo/swag/cmd/swag@latest
+          echo "$GITHUB_WORKSPACE/bin" >> $GITHUB_PATH
+
+      - name: Swagger generation (auto-commit if changed)
+        working-directory: backend
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          swag init -g cmd/server/main.go --outputTypes json
+          if ! git diff --exit-code docs/swagger.json; then
+            echo "swagger.json changed — committing updated docs"
+            git config user.name  "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add docs/swagger.json
+            git commit -m "chore: regenerate swagger.json [skip ci]"
+            # Push back to the source branch (works for both PRs and direct pushes).
+            # GITHUB_HEAD_REF is set for pull_request events; GITHUB_REF_NAME is used otherwise.
+            TARGET_BRANCH="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+            git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
+          else
+            echo "swagger.json is up-to-date — nothing to commit"
+          fi
+
+      - name: Run Go tests (with coverage)
+        working-directory: backend
+        run: |
+          go clean -testcache
+          go test ./... -race -coverprofile=coverage.out -covermode=atomic
+
+      - name: Check coverage threshold
+        working-directory: backend
+        # Coverage targets follow a risk-based approach (Google / Graphite benchmarks):
+        #   - Security & core business logic (auth, middleware, repositories): target 85-95%
+        #   - APIs & handlers: target 75-85%
+        #   - Utilities & helpers: target 70-80%
+        #   - Overall floor: 65% (Google "acceptable"), goal 70% ("good for production")
+        # The threshold below is the hard CI floor; the build fails if coverage drops below it.
+        run: |
+          THRESHOLD=65
+          COVERAGE=$(go tool cover -func=coverage.out | grep "^total:" | awk '{print $3}' | tr -d '%')
+          echo "Coverage: ${COVERAGE}%  (threshold: ${THRESHOLD}%)"
+          awk -v cov="$COVERAGE" -v thr="$THRESHOLD" 'BEGIN {
+            if (cov + 0 < thr + 0) {
+              print "FAIL: " cov "% is below the " thr "% minimum threshold."
+              print "See docs/development.md for coverage guidelines and improvement targets."
+              exit 1
+            }
+            print "PASS: " cov "% meets the " thr "% threshold."
+          }'
+
+      - name: Upload Go coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-coverage
+          path: backend/coverage.out
+
+      - name: Compute coverage badge inputs
+        # Only update the badge on pushes to main/development — not on PRs.
+        if: github.event_name == 'push'
+        id: badge
+        working-directory: backend
+        run: |
+          COVERAGE=$(go tool cover -func=coverage.out | grep "^total:" | awk '{print $3}' | tr -d '%')
+          echo "percent=${COVERAGE}" >> $GITHUB_OUTPUT
+          if awk "BEGIN {exit !(${COVERAGE} >= 80)}"; then
+            echo "color=brightgreen" >> $GITHUB_OUTPUT
+          elif awk "BEGIN {exit !(${COVERAGE} >= 70)}"; then
+            echo "color=green" >> $GITHUB_OUTPUT
+          elif awk "BEGIN {exit !(${COVERAGE} >= 60)}"; then
+            echo "color=yellow" >> $GITHUB_OUTPUT
+          else
+            echo "color=red" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update coverage badge gist
+        # Requires:
+        #   secrets.GIST_TOKEN  — GitHub PAT with the 'gist' scope
+        #   vars.COVERAGE_GIST_ID — ID of a pre-created public gist (any file in it will do)
+        # Once set, the action writes / overwrites 'coverage.json' in that gist, which the
+        # shields.io endpoint badge in README.md reads.
+        if: github.event_name == 'push'
+        uses: schneegans/dynamic-badges-action@v1.7.0
+        with:
+          auth: ${{ secrets.GIST_TOKEN }}
+          gistID: ${{ vars.COVERAGE_GIST_ID }}
+          filename: coverage.json
+          label: Coverage
+          message: ${{ steps.badge.outputs.percent }}%
+          color: ${{ steps.badge.outputs.color }}
+
+  gosec:
+    name: Security Scan (gosec)
+    runs-on: ubuntu-latest
+    # Run in parallel with backend-test — no dependency needed.
+    # Needs issues:write to open a GitHub issue when new findings are detected.
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: backend/go.sum
+
+      - name: Install gosec
+        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+
+      - name: Run gosec
+        working-directory: backend
+        # No -exclude flags: false positives and accepted risks are suppressed inline
+        # with // #nosec <rule> -- <justification> annotations (see gosec-report.md).
+        # gosec exits non-zero when findings exist; we capture that via the compare step.
+        run: gosec -fmt json -out gosec-results.json ./... || true
+
+      - name: Compare against baseline
+        id: compare
+        working-directory: backend
+        # Exits 0 → no new findings. Exits 1 → new findings; issue body written to /tmp/issue-body.md.
+        run: |
+          python3 scripts/gosec-compare.py \
+            --results  gosec-results.json \
+            --baseline gosec-baseline.json \
+            --base-dir . \
+            --output   /tmp/issue-body.md
+        continue-on-error: true
+
+      - name: Open GitHub issue for new findings
+        if: steps.compare.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Ensure labels exist (idempotent — --force updates if already present).
+          gh label create "security"  --color "d73a4a" --description "Security finding"          --repo "$GITHUB_REPOSITORY" --force || true
+          gh label create "automated" --color "0075ca" --description "Created automatically by CI" --repo "$GITHUB_REPOSITORY" --force || true
+
+          TITLE="security: new gosec findings on ${GITHUB_REF_NAME} ($(date -u +%Y-%m-%d))"
+          # Avoid duplicate open issues for the same branch/day.
+          EXISTING=$(gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --label "security,automated" \
+            --search "gosec ${GITHUB_REF_NAME}" \
+            --json number \
+            --jq length)
+          if [ "$EXISTING" -gt 0 ]; then
+            echo "An open gosec issue already exists for this branch — skipping duplicate creation."
+            exit 0
+          fi
+          gh issue create \
+            --repo  "$GITHUB_REPOSITORY" \
+            --title "$TITLE" \
+            --body-file /tmp/issue-body.md \
+            --label "security,automated"
+
+      - name: Fail job if new findings detected
+        if: steps.compare.outcome == 'failure'
+        run: |
+          echo "New gosec findings detected — see the GitHub issue created above."
+          echo "Fix or suppress findings with // #nosec <rule> -- <reason>, then update gosec-baseline.json:"
+          echo "  bash backend/scripts/update-gosec-baseline.sh"
+          exit 1
+
+      - name: Upload gosec results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gosec-results
+          path: backend/gosec-results.json
+
+  docker-build:
+    name: Docker Build Smoke Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build backend Docker image
+        run: docker build -t terraform-registry-backend:ci backend/
+
+      - name: Verify image starts (health check smoke test)
+        run: |
+          # Start the container with DEV_MODE so it doesn't require a live database for the health probe.
+          docker run -d \
+            --name registry-smoke \
+            -e DEV_MODE=true \
+            -e TFR_DATABASE_HOST=nonexistent \
+            -p 18080:8080 \
+            terraform-registry-backend:ci || true
+          # Give it 5 seconds and check it didn't immediately crash.
+          sleep 5
+          STATUS=$(docker inspect --format='{{.State.Status}}' registry-smoke 2>/dev/null || echo "missing")
+          echo "Container status: $STATUS"
+          docker rm -f registry-smoke 2>/dev/null || true
+          # Container exits fast (can't connect to DB) — that is expected; we just want build
+          # to succeed, not crash at process startup. Status "exited" is acceptable here.
+          if [ "$STATUS" = "missing" ]; then
+            echo "Container never started — Docker build artifact broken"
+            exit 1
+          fi
+
+  deployment-validate:
+    name: Deployment Config Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate Docker Compose configs
+        working-directory: deployments
+        run: |
+          # docker-compose.prod.yml requires .env.production to exist (env_file directive).
+          # Touch a stub so compose config doesn't fail on a missing file.
+          touch .env.production
+          docker compose -f docker-compose.yml config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml config --quiet
+          docker compose -f docker-compose.test.yml config --quiet
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: 'latest'
+
+      - name: Helm lint
+        run: |
+          helm lint deployments/helm/ \
+            --set config.baseUrl=https://registry.example.com \
+            --set config.jwtSecret=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            --set config.databasePassword=password \
+            --set config.encryptionKey=00000000000000000000000000000000
+
+      - name: Kustomize validate (dev overlay)
+        run: kubectl kustomize deployments/kubernetes/overlays/dev > /dev/null
+
+      - name: Kustomize validate (production overlay)
+        run: kubectl kustomize deployments/kubernetes/overlays/production > /dev/null
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: latest
+
+      - name: Terraform validate (AWS)
+        working-directory: deployments/terraform/aws
+        run: terraform init -backend=false && terraform validate
+
+      - name: Terraform validate (Azure)
+        working-directory: deployments/terraform/azure
+        run: terraform init -backend=false && terraform validate
+
+      - name: Terraform validate (GCP)
+        working-directory: deployments/terraform/gcp
+        run: terraform init -backend=false && terraform validate

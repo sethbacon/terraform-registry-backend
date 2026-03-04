@@ -1,0 +1,60 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "location": {
+      "value": "eastus"
+    },
+    "environmentName": {
+      "value": "terraform-registry"
+    },
+    "backendImage": {
+      "value": "myregistry.azurecr.io/terraform-registry-backend:latest"
+    },
+    "frontendImage": {
+      "value": "myregistry.azurecr.io/terraform-registry-frontend:latest"
+    },
+    "databaseHost": {
+      "value": "my-postgres-server.postgres.database.azure.com"
+    },
+    "databaseName": {
+      "value": "terraform_registry"
+    },
+    "databaseUser": {
+      "value": "registry"
+    },
+    "databasePassword": {
+      "value": "<REPLACE_WITH_DATABASE_PASSWORD>"
+    },
+    "jwtSecret": {
+      "value": "<REPLACE_WITH_JWT_SECRET>"
+    },
+    "encryptionKey": {
+      "value": "<REPLACE_WITH_32_BYTE_ENCRYPTION_KEY>"
+    },
+    "customDomain": {
+      "value": ""
+    },
+    "backendMinReplicas": {
+      "value": 1
+    },
+    "backendMaxReplicas": {
+      "value": 10
+    },
+    "frontendMinReplicas": {
+      "value": 1
+    },
+    "frontendMaxReplicas": {
+      "value": 5
+    },
+    "acrLoginServer": {
+      "value": "myregistry.azurecr.io"
+    },
+    "acrUsername": {
+      "value": ""
+    },
+    "acrPassword": {
+      "value": ""
+    }
+  }
+}
