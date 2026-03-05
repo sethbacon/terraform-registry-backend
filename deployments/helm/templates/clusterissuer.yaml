@@ -1,0 +1,62 @@
+{{- if .Values.gatewayAPI.enabled -}}
+{{- if not .Values.gatewayAPI.email }}
+{{- fail "gatewayAPI.email is required when gatewayAPI.enabled=true for Let's Encrypt ClusterIssuer registration." }}
+{{- end }}
+# ── Let's Encrypt Staging (untrusted, no rate limits — use for testing) ────────
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+  labels:
+    {{- include "terraform-registry.labels" . | nindent 4 }}
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: {{ .Values.gatewayAPI.email | quote }}
+    privateKeySecretRef:
+      name: letsencrypt-staging-account-key
+    solvers:
+      - http01:
+          gatewayHTTPRoute:
+            parentRefs:
+              - name: {{ include "terraform-registry.fullname" . }}-gateway
+                namespace: {{ .Release.Namespace }}
+                kind: Gateway
+---
+# ── Let's Encrypt Production (trusted, rate-limited — use for production) ──────
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+  labels:
+    {{- include "terraform-registry.labels" . | nindent 4 }}
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: {{ .Values.gatewayAPI.email | quote }}
+    privateKeySecretRef:
+      name: letsencrypt-prod-account-key
+    solvers:
+      - http01:
+          gatewayHTTPRoute:
+            parentRefs:
+              - name: {{ include "terraform-registry.fullname" . }}-gateway
+                namespace: {{ .Release.Namespace }}
+                kind: Gateway
+---
+# ── TLS Certificate (issued by the configured ClusterIssuer) ───────────────────
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "terraform-registry.fullname" . }}-tls
+  labels:
+    {{- include "terraform-registry.labels" . | nindent 4 }}
+spec:
+  secretName: {{ .Values.gatewayAPI.tlsSecretName }}
+  issuerRef:
+    name: {{ .Values.gatewayAPI.certManagerIssuer }}
+    kind: ClusterIssuer
+    group: cert-manager.io
+  dnsNames:
+    - {{ .Values.gatewayAPI.hostname | quote }}
+{{- end }}

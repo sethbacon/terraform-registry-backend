@@ -1,0 +1,133 @@
+# NetworkPolicy resources for the terraform-registry namespace.
+#
+# IMPORTANT: NetworkPolicy enforcement requires a CNI plugin that supports it.
+# On AKS use Azure CNI (or Azure CNI Overlay) with either:
+#   - Azure Network Policy Manager: --network-policy azure
+#   - Calico:                       --network-policy calico
+# Kubenet does NOT support NetworkPolicy.
+#
+# These policies implement a default-deny-ingress pattern with explicit allow
+# rules for required traffic flows:
+#
+#   [External/Gateway] ──(80)──▶ frontend ──(8080)──▶ backend
+#   [External/Gateway] ──(8080)─────────────────────▶ backend  (direct API/Terraform routes)
+#                                                         ▲
+#                                   Prometheus ──(9090)───┘
+#
+# Egress is unrestricted by default. The backend must reach PostgreSQL,
+# cloud storage endpoints (Azure Blob, S3, GCS), OIDC providers, and the
+# container registry. To restrict egress, uncomment the policy below and
+# customise the CIDR / port rules for your environment.
+#
+# To add egress restriction, create a separate file (e.g. networkpolicy-egress.yaml)
+# and add it to your overlay's resources list:
+#
+# ---
+# # Default deny egress, then allow only required destinations
+# apiVersion: networking.k8s.io/v1
+# kind: NetworkPolicy
+# metadata:
+#   name: backend-restrict-egress
+# spec:
+#   podSelector:
+#     matchLabels:
+#       app.kubernetes.io/component: backend
+#   policyTypes:
+#     - Egress
+#   egress:
+#     # DNS
+#     - ports:
+#         - port: 53
+#           protocol: UDP
+#         - port: 53
+#           protocol: TCP
+#     # PostgreSQL
+#     - ports:
+#         - port: 5432
+#           protocol: TCP
+#     # HTTPS (cloud storage, OIDC, container registry)
+#     - ports:
+#         - port: 443
+#           protocol: TCP
+
+# ── 1. Default: deny all ingress in this namespace ────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+# ── 2. Frontend: allow HTTP from anywhere ─────────────────────────────────────
+# Traffic arrives from external sources (Application Gateway for Containers,
+# cloud load balancers, or the nginx Ingress Controller). AGfC routes packets
+# directly to pod IPs (Azure CNI), so the source is the AGfC subnet—not a
+# cluster-namespaced pod. Allow all sources on port 80.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: frontend
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: 80
+          protocol: TCP
+---
+# ── 3. Backend: allow HTTP from frontend pods and external Gateway/LB ─────────
+# The Gateway API HTTPRoute (used in AKS/EKS/GKE overlays) routes /api/*,
+# /v1/*, /.well-known/*, /terraform/*, /webhooks/* directly to the backend
+# service—not through the frontend nginx proxy. This traffic originates from
+# the cloud load balancer (AGfC, ALB, GKE LB), which is outside the cluster
+# pod network. We must allow all sources on port 8080 in addition to
+# frontend-only access, because the LB source IP is not a labelled pod.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-backend-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: backend
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: 8080
+          protocol: TCP
+---
+# ── 4. Backend metrics: allow Prometheus scrape from the monitoring namespace ──
+# The namespace label kubernetes.io/metadata.name is automatically applied by
+# Kubernetes 1.21+. If using an older cluster or a custom namespace label,
+# adjust the namespaceSelector below.
+#
+# For AKS with Azure Managed Prometheus / Azure Monitor, traffic arrives from
+# the kube-system or azuremonitor-metrics namespace. Add additional from entries
+# as needed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-backend-metrics
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: backend
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 9090
+          protocol: TCP

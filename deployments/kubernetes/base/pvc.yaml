@@ -1,7 +1,26 @@
-# PVC for local storage backend.
-# Not needed if using cloud storage (S3, Azure Blob, GCS).
-# Note: ReadWriteOnce limits to single-node. For multi-replica with local
-# storage, use ReadWriteMany with NFS/EFS, or switch to cloud storage.
+# PVC for the local storage backend.
+# Not needed (and should be disabled) when using cloud storage:
+#   Azure Blob (TFR_STORAGE_DEFAULT_BACKEND=azure) — recommended for AKS
+#   AWS S3    (TFR_STORAGE_DEFAULT_BACKEND=s3)
+#   GCS       (TFR_STORAGE_DEFAULT_BACKEND=gcs)
+#
+# ReadWriteOnce (RWO) vs ReadWriteMany (RWX)
+# ------------------------------------------
+# ReadWriteOnce (default): only one node may mount the volume at a time.
+#   Use when replicas=1, or when all backend pods are on the same node.
+#   AKS default StorageClass: managed-csi (Azure Disk, RWO).
+#
+# ReadWriteMany: multiple nodes may mount simultaneously.
+#   Required when replicas>1 and pods may land on different nodes.
+#   AKS StorageClass for RWX: azurefile-csi (Azure Files, NFS or SMB).
+#   Override storageClassName in your overlay:
+#     storageClassName: azurefile-csi
+#     accessModes: [ReadWriteMany]
+#
+# NOTE: If you switch to Azure Blob storage (recommended for AKS), set
+#   TFR_STORAGE_DEFAULT_BACKEND=azure in the ConfigMap and disable
+#   this PVC by removing pvc.yaml from your overlay's resources list,
+#   or setting storage.persistence.enabled=false in Helm values.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -9,6 +28,9 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
+  # storageClassName: ""  # Leave blank to use cluster default.
+  #                       # AKS Azure Disk (RWO): managed-csi
+  #                       # AKS Azure Files (RWX): azurefile-csi
   resources:
     requests:
       storage: 10Gi

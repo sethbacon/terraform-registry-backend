@@ -31,7 +31,7 @@ backend:
     runAsNonRoot: true
   # -- Container security context
   securityContext:
-    readOnlyRootFilesystem: false
+    readOnlyRootFilesystem: true
     allowPrivilegeEscalation: false
   nodeSelector: {}
   tolerations: []
@@ -146,20 +146,33 @@ multiTenancy:
   defaultOrganization: "default"
 
 # -- Security
+# IMPORTANT: For production deployments, use existingSecret (or Key Vault CSI /
+# External Secrets Operator) instead of setting jwtSecret / encryptionKey here.
+# Values passed via --set or in a values file are stored in plain text inside
+# the Helm release Secret (sh.helm.release.v1.*), readable by anyone with
+# get-secrets RBAC in the namespace.
 security:
   # -- JWT secret (required, min 32 chars). Ignored if existingSecret is set.
   jwtSecret: ""
   # -- Encryption key for sensitive data (32 bytes). Ignored if existingSecret is set.
   encryptionKey: ""
-  # -- Use an existing secret containing TFR_JWT_SECRET and ENCRYPTION_KEY keys
+  # -- Use an existing secret containing TFR_JWT_SECRET and ENCRYPTION_KEY keys.
+  # This is the recommended approach for production — it avoids storing secrets
+  # in Helm release history. Create the Secret before installing the chart:
+  #   kubectl create secret generic my-registry-secrets \
+  #     --from-literal=TFR_JWT_SECRET="$(openssl rand -hex 32)" \
+  #     --from-literal=ENCRYPTION_KEY="$(openssl rand -hex 16)" \
+  #     -n terraform-registry
   existingSecret: ""
   rateLimiting:
     enabled: true
     requestsPerMinute: 60
     burst: 10
   cors:
-    allowedOrigins:
-      - "*"
+    # -- Allowed CORS origins. Set to your registry's public URL in production.
+    # Defaults to empty (no cross-origin requests allowed). Example:
+    #   allowedOrigins: ["https://registry.example.com"]
+    allowedOrigins: []
 
 # -- Logging
 logging:
@@ -222,3 +235,93 @@ serviceMonitor:
   enabled: false
   interval: 30s
   labels: {}
+
+# -- Kubernetes Gateway API
+# Supports AKS (Application Gateway for Containers), AWS EKS (ALB Controller),
+# GKE (built-in Gateway), and any other Gateway API-compliant implementation.
+# When gatewayAPI.enabled=true, set ingress.enabled=false to avoid deploying
+# the legacy nginx Ingress resource alongside Gateway API resources.
+gatewayAPI:
+  # -- Enable Gateway API resources (GatewayClass, Gateway, HTTPRoute, ClusterIssuers, Certificate)
+  enabled: false
+  # -- Create a GatewayClass resource. Set false for GKE, which pre-provisions
+  # GatewayClasses (gke-l7-global-external-managed, etc.) — no user GatewayClass needed.
+  # Set true for AKS (AGfC) and EKS (AWS LBC) which require a user-created GatewayClass.
+  createGatewayClass: true
+  # -- GatewayClass name.
+  # AKS/AGfC:     azure-alb-external (or azure-alb-internal for private)
+  # EKS/AWS LBC:  aws-alb-external   (or any name you choose)
+  # GKE:          gke-l7-global-external-managed (pre-provisioned, no createGatewayClass needed)
+  gatewayClassName: azure-alb-external
+  # -- GatewayClass controller name. Only used when createGatewayClass: true.
+  # AKS/AGfC:  alb.networking.azure.io/alb-controller
+  # EKS/AWS:   gateway.k8s.aws/alb
+  # GKE:       (not needed — set createGatewayClass: false)
+  controllerName: "alb.networking.azure.io/alb-controller"
+  # -- AKS/AGfC only: ARM resource ID of the Application Gateway for Containers resource.
+  # Format: /subscriptions/<SUB>/resourceGroups/<RG>/providers/
+  #         Microsoft.ServiceNetworking/trafficControllers/<AGFC_NAME>
+  # Leave empty for EKS and GKE.
+  albId: ""
+  # -- Additional annotations to merge onto the Gateway resource.
+  # Use for provider-specific annotations not covered by albId above.
+  # Example for EKS:  service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+  # Example for GKE:  networking.gke.io/certmap: my-cert-map  (optional)
+  gatewayAnnotations: {}
+  # -- Public hostname for the registry (must match your DNS record and TLS certificate)
+  hostname: "registry.example.com"
+  # -- cert-manager ClusterIssuer name for automatic TLS provisioning.
+  # Use letsencrypt-staging during testing; switch to letsencrypt-prod for production.
+  certManagerIssuer: "letsencrypt-staging"
+  # -- Name of the TLS Secret created by cert-manager.
+  # Must match the Gateway listener's certificateRefs[].name.
+  tlsSecretName: "terraform-registry-tls"
+  # -- Email address for Let's Encrypt certificate expiry notifications (required)
+  email: ""
+
+# -- Azure Key Vault + Secrets Store CSI Driver (AKS-specific)
+# When enabled, creates a SecretProviderClass that syncs secrets from Azure Key
+# Vault into the terraform-registry-secrets Kubernetes Secret at pod startup.
+# The backend Deployment gets a CSI volume and mount injected automatically.
+# Requires: AKS Secrets Store CSI Driver add-on + Azure Workload Identity.
+#
+# For AWS EKS or GCP GKE: use backend.extraVolumes + backend.extraVolumeMounts
+# to mount a cloud-specific SecretProviderClass applied separately (or via the
+# Kustomize overlays in overlays/eks/ or overlays/gke/).
+keyVault:
+  # -- Enable Azure Key Vault CSI Driver integration
+  enabled: false
+  # -- Azure Key Vault resource name (not full URI — just the vault name)
+  name: ""
+  # -- Azure AD Tenant ID (UUID)
+  tenantId: ""
+  # -- Client ID of the User-Assigned Managed Identity used for Key Vault access.
+  # Must match workloadIdentity.clientId if workloadIdentity is also enabled.
+  clientId: ""
+
+# -- Azure Workload Identity (AKS-specific)
+# When enabled, adds the azure.workload.identity/client-id annotation to the
+# ServiceAccount so the Workload Identity webhook injects OIDC tokens into pods.
+# A federated credential must be configured on the managed identity pointing to
+# this ServiceAccount (see docs/deployment/aks-prerequisites.md).
+#
+# For AWS EKS:  use serviceAccount.annotations with eks.amazonaws.com/role-arn
+# For GCP GKE:  use serviceAccount.annotations with iam.gke.io/gcp-service-account
+workloadIdentity:
+  # -- Enable Azure Workload Identity annotation on ServiceAccount
+  enabled: false
+  # -- Client ID of the User-Assigned Managed Identity (UUID)
+  clientId: ""
+
+# -- Kubernetes NetworkPolicy
+# When enabled, creates a default-deny-ingress policy for the namespace with
+# explicit allow rules for frontend HTTP, backend API, and Prometheus metrics.
+# Requires a CNI that supports NetworkPolicy: Azure CNI, Calico, Cilium, etc.
+# Kubenet clusters do NOT enforce NetworkPolicy — the resources are accepted but
+# ignored. Set enabled: false if your cluster uses kubenet.
+networkPolicy:
+  # -- Enable NetworkPolicy resources (recommended for production)
+  enabled: true
+  # -- Namespace label value where Prometheus / metrics scraper runs.
+  # Used to allow scraping backend port 9090. Set to match your monitoring namespace.
+  prometheusNamespace: "monitoring"

@@ -1018,6 +1018,7 @@ func (j *MirrorSyncJob) TriggerManualSync(ctx context.Context, mirrorID uuid.UUI
 	}
 	// Mark as active immediately to prevent race conditions
 	j.activeSyncs[mirrorID] = true
+	j.activeSyncsMutex.Unlock()
 
 	// Get mirror config using the request context
 	config, err := j.mirrorRepo.GetByID(ctx, mirrorID)

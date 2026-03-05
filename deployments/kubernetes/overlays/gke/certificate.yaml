@@ -1,0 +1,14 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: terraform-registry-tls
+  namespace: terraform-registry
+spec:
+  secretName: terraform-registry-tls
+  issuerRef:
+    name: letsencrypt-staging
+    kind: ClusterIssuer
+    group: cert-manager.io
+  dnsNames:
+    # Replace with your actual public hostname (must match Cloud DNS record)
+    - "registry.yourdomain.com"

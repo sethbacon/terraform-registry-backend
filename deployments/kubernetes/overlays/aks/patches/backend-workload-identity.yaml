@@ -1,0 +1,52 @@
+# Strategic merge patch: adds CSI Secrets Store volume, volumeMount, and
+# topology spread constraints to the backend Deployment for AKS.
+#
+# CSI volume:
+#   Mounting the SecretProviderClass as a CSI volume triggers the Secrets Store
+#   CSI Driver to fetch secrets from Azure Key Vault and sync them into the
+#   terraform-registry-secrets Kubernetes Secret at pod start-up.
+#   The mount directory itself (/mnt/secrets-store) is a side-effect mechanism;
+#   the pod reads env vars via envFrom (secretRef) not the mounted files.
+#
+# Topology spread constraints:
+#   - hostname: hard spread (DoNotSchedule) ensures no two backend pods share a node.
+#   - zone: soft spread (ScheduleAnyway) distributes pods across availability zones.
+#   Adjust maxSkew and whenUnsatisfiable to match your cluster's node pool topology.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+spec:
+  template:
+    spec:
+      containers:
+        - name: backend
+          volumeMounts:
+            # CSI volume mount triggers Key Vault secret sync.
+            # The path /mnt/secrets-store will contain individual secret files,
+            # but the backend reads secrets via envFrom (secretRef), not these files.
+            - name: secrets-store
+              mountPath: /mnt/secrets-store
+              readOnly: true
+      volumes:
+        - name: secrets-store
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: terraform-registry-secrets
+      # Spread backend pods across nodes and zones.
+      # Requires at least 2 nodes in the node pool for DoNotSchedule to be satisfiable.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/component: backend
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/component: backend

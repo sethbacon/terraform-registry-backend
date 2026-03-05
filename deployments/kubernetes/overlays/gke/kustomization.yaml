@@ -1,0 +1,83 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# ============================================================
+# GKE overlay — Google Kubernetes Engine
+# ============================================================
+# Uses:
+#   - GKE built-in Gateway controller + Gateway API for ingress
+#     (GatewayClass gke-l7-global-external-managed — no GatewayClass resource needed)
+#   - cert-manager + Let's Encrypt for TLS
+#   - GCP Secrets Manager + Secrets Store CSI Driver (GCP provider) for secrets
+#   - GKE Workload Identity for pod-level GCP IAM access
+#   - Google Cloud Storage (GCS) for module/provider artifact storage
+#   - Cloud SQL for PostgreSQL (via Auth Proxy sidecar or private IP)
+#
+# Prerequisites: See docs/deployment/gke-prerequisites.md
+# Deployment:   See docs/deployment/gke-deployment.md
+#
+# REQUIRED: Replace ALL <PLACEHOLDER> values before applying.
+#
+# Apply with:
+#   kubectl apply -k deployments/kubernetes/overlays/gke/
+# ============================================================
+
+namespace: terraform-registry
+
+resources:
+  - ../../base
+  - gateway.yaml
+  - httproute.yaml
+  - secretproviderclass.yaml
+  - clusterissuer.yaml
+  - certificate.yaml
+
+patches:
+  # 1. Add GKE Workload Identity annotation to ServiceAccount
+  - path: patches/serviceaccount-workload-identity.yaml
+    target:
+      kind: ServiceAccount
+      name: terraform-registry
+
+  # 2. Add CSI secret volume + zone topology spread to backend Deployment
+  - path: patches/backend-csi-and-topology.yaml
+    target:
+      kind: Deployment
+      name: backend
+
+  # 3. Override ConfigMap with GKE-specific values (Cloud SQL, GCS storage)
+  - path: patches/configmap-gke.yaml
+    target:
+      kind: ConfigMap
+      name: terraform-registry-config
+
+  # 4. Add Cloud SQL Auth Proxy sidecar for database connectivity.
+  #    REQUIRED: Replace <PROJECT_ID>, <REGION>, <INSTANCE_NAME> in the patch.
+  #    If using private IP instead, remove this patch and set TFR_DATABASE_HOST
+  #    to the private IP in configmap-gke.yaml.
+  - path: patches/backend-cloudsql-proxy.yaml
+    target:
+      kind: Deployment
+      name: backend
+
+  # 5. Remove the legacy nginx Ingress resource — all traffic is handled by
+  #    Gateway API (gateway.yaml + httproute.yaml) on GKE.
+  - target:
+      kind: Ingress
+      name: terraform-registry-ingress
+    patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: terraform-registry-ingress
+
+# Pin image tags for GKE deployment.
+# Replace <REGION>, <PROJECT_ID>, <AR_REPO> with your Artifact Registry values.
+images:
+  - name: terraform-registry-backend
+    newName: <REGION>-docker.pkg.dev/<PROJECT_ID>/<AR_REPO>/terraform-registry-backend
+    newTag: v1.0.0
+  - name: terraform-registry-frontend
+    newName: <REGION>-docker.pkg.dev/<PROJECT_ID>/<AR_REPO>/terraform-registry-frontend
+    newTag: v1.0.0

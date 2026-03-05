@@ -1,0 +1,25 @@
+# JSON 6902 patch: EKS-specific ConfigMap overrides.
+#
+# Replace ALL <PLACEHOLDER> values before applying:
+#   <RDS_ENDPOINT>   RDS endpoint (e.g. mydb.xxxxxxxx.us-east-1.rds.amazonaws.com)
+#   <S3_BUCKET_NAME> S3 bucket name for module/provider artifact storage
+#   <AWS_REGION>     AWS Region (e.g. us-east-1)
+#   <HOSTNAME>       Public hostname (e.g. registry.company.com)
+- op: replace
+  path: /data/TFR_DATABASE_HOST
+  value: "<RDS_ENDPOINT>"
+- op: replace
+  path: /data/TFR_STORAGE_DEFAULT_BACKEND
+  value: "s3"
+- op: add
+  path: /data/TFR_STORAGE_S3_BUCKET
+  value: "<S3_BUCKET_NAME>"
+- op: add
+  path: /data/TFR_STORAGE_S3_REGION
+  value: "<AWS_REGION>"
+- op: replace
+  path: /data/TFR_SERVER_BASE_URL
+  value: "https://<HOSTNAME>"
+- op: replace
+  path: /data/TFR_LOGGING_LEVEL
+  value: "warn"

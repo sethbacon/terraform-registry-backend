@@ -1,0 +1,75 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# ============================================================
+# EKS overlay — AWS Elastic Kubernetes Service
+# ============================================================
+# Uses:
+#   - AWS Load Balancer Controller (LBC) v2.6+ + Gateway API for ingress
+#   - cert-manager + Let's Encrypt for TLS
+#   - AWS Secrets and Configuration Provider (ASCP) + Secrets Store CSI Driver
+#   - IRSA (IAM Roles for Service Accounts) for pod-level AWS IAM access
+#   - Amazon S3 for module/provider artifact storage
+#   - Amazon RDS for PostgreSQL for the database
+#
+# Prerequisites: See docs/deployment/eks-prerequisites.md
+# Deployment:   See docs/deployment/eks-deployment.md
+#
+# REQUIRED: Replace ALL <PLACEHOLDER> values in this overlay and its patches
+# before applying.
+#
+# Apply with:
+#   kubectl apply -k deployments/kubernetes/overlays/eks/
+# ============================================================
+
+namespace: terraform-registry
+
+resources:
+  - ../../base
+  - gateway.yaml
+  - httproute.yaml
+  - secretproviderclass.yaml
+  - clusterissuer.yaml
+  - certificate.yaml
+
+patches:
+  # 1. Add IRSA annotation to ServiceAccount
+  - path: patches/serviceaccount-irsa.yaml
+    target:
+      kind: ServiceAccount
+      name: terraform-registry
+
+  # 2. Add CSI secret volume + zone topology spread to backend Deployment
+  - path: patches/backend-csi-and-topology.yaml
+    target:
+      kind: Deployment
+      name: backend
+
+  # 3. Override ConfigMap with EKS-specific values (RDS host, S3 storage)
+  - path: patches/configmap-eks.yaml
+    target:
+      kind: ConfigMap
+      name: terraform-registry-config
+
+  # 4. Remove the legacy nginx Ingress resource — all traffic is handled by
+  #    Gateway API (gateway.yaml + httproute.yaml) on EKS.
+  - target:
+      kind: Ingress
+      name: terraform-registry-ingress
+    patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: terraform-registry-ingress
+
+# Pin image tags for EKS deployment.
+# Replace <ACCOUNT_ID> and <REGION> with your AWS account and region.
+# Replace <IMAGE_TAG> with the version to deploy.
+images:
+  - name: terraform-registry-backend
+    newName: <ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/terraform-registry-backend
+    newTag: v1.0.0
+  - name: terraform-registry-frontend
+    newName: <ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/terraform-registry-frontend
+    newTag: v1.0.0

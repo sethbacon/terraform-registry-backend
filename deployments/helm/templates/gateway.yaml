@@ -1,0 +1,65 @@
+---
+{{- if .Values.gatewayAPI.enabled -}}
+{{- if not .Values.gatewayAPI.email }}
+{{- fail "gatewayAPI.email is required when gatewayAPI.enabled=true. Set it to your ops email for Let's Encrypt certificate notifications." }}
+{{- end }}
+{{- if not .Values.gatewayAPI.hostname }}
+{{- fail "gatewayAPI.hostname is required when gatewayAPI.enabled=true." }}
+{{- end }}
+
+{{- /* GatewayClass — only created when createGatewayClass=true (not needed for GKE) */ -}}
+{{- if .Values.gatewayAPI.createGatewayClass }}
+# ── GatewayClass ─────────────────────────────────────────────────────────────
+# Cluster-scoped resource. Tells Gateway API which controller handles Gateways
+# that reference this class.
+# AKS/AGfC:  controllerName: alb.networking.azure.io/alb-controller
+# EKS/ALB:   controllerName: gateway.k8s.aws/alb
+# GKE:       set createGatewayClass=false (GKE pre-provisions GatewayClasses)
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: {{ .Values.gatewayAPI.gatewayClassName }}
+  labels:
+    {{- include "terraform-registry.labels" . | nindent 4 }}
+spec:
+  controllerName: {{ required "gatewayAPI.controllerName is required when createGatewayClass=true" .Values.gatewayAPI.controllerName | quote }}
+---
+{{- end }}
+# ── Gateway — HTTP and HTTPS listeners ────────────────────────────────────────
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ include "terraform-registry.fullname" . }}-gateway
+  labels:
+    {{- include "terraform-registry.labels" . | nindent 4 }}
+  annotations:
+    {{- /* AKS/AGfC: albId annotation associates Gateway with the AGfC ARM resource */ -}}
+    {{- if .Values.gatewayAPI.albId }}
+    alb.networking.azure.io/alb-id: {{ .Values.gatewayAPI.albId | quote }}
+    {{- end }}
+    cert-manager.io/cluster-issuer: {{ .Values.gatewayAPI.certManagerIssuer | quote }}
+    {{- with .Values.gatewayAPI.gatewayAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  gatewayClassName: {{ .Values.gatewayAPI.gatewayClassName }}
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: Same
+    - name: https
+      port: 443
+      protocol: HTTPS
+      hostname: {{ .Values.gatewayAPI.hostname | quote }}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: {{ .Values.gatewayAPI.tlsSecretName }}
+            kind: Secret
+      allowedRoutes:
+        namespaces:
+          from: Same
+{{- end }}

@@ -1,0 +1,85 @@
+# ============================================================
+# AKS Overlay — Kustomize overlay for Azure Kubernetes Service
+# ============================================================
+# Prerequisites before applying:
+#   1. AKS cluster with OIDC Issuer + Workload Identity + Secrets Store CSI Driver enabled
+#   2. cert-manager installed with ExperimentalGatewayAPISupport=true
+#   3. ALB Controller installed (Azure Application Gateway for Containers)
+#   4. Azure Application Gateway for Containers resource and Frontend provisioned
+#   5. Azure Key Vault with secrets: jwt-secret, encryption-key, database-password
+#   6. User-Assigned Managed Identity with federated credential on this ServiceAccount
+#
+# REQUIRED: Before applying, replace ALL occurrences of angle-bracket placeholders:
+#   <ACR_NAME>               Azure Container Registry name (e.g. mycompanyacr)
+#   <IMAGE_TAG>              Image tag to deploy (e.g. v1.0.0)
+#   <SUBSCRIPTION_ID>        Azure Subscription ID (UUID)
+#   <RESOURCE_GROUP>         Resource group containing the AGfC resource
+#   <AGFC_NAME>              Application Gateway for Containers resource name
+#   <AZURE_POSTGRES_SERVER>  PostgreSQL Flexible Server name (without .postgres.database.azure.com)
+#   <AZURE_STORAGE_ACCOUNT>  Azure Blob Storage account name
+#   <STORAGE_CONTAINER>      Azure Blob container name (default: terraform-registry)
+#   <KEY_VAULT_NAME>         Azure Key Vault name
+#   <TENANT_ID>              Azure AD Tenant ID (UUID)
+#   <AZURE_CLIENT_ID>        User-Assigned Managed Identity Client ID (UUID)
+#   <HOSTNAME>               Your public DNS hostname (e.g. registry.company.com)
+#   <EMAIL>                  Email address for Let's Encrypt certificate notifications
+#
+# Apply with:
+#   kubectl apply -k deployments/kubernetes/overlays/aks/
+#
+# See docs/deployment/aks-new-cluster.md for complete setup instructions.
+# ============================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: terraform-registry
+
+resources:
+  - ../../base
+  - gateway.yaml
+  - httproute.yaml
+  - secretproviderclass.yaml
+  - clusterissuer.yaml
+  - certificate.yaml
+
+patches:
+  # 1. Add Azure Workload Identity client-id annotation to ServiceAccount
+  - path: patches/serviceaccount-workload-identity.yaml
+    target:
+      kind: ServiceAccount
+      name: terraform-registry
+
+  # 2. Add CSI secrets volume + mount to backend pod; add topology spread constraints
+  - path: patches/backend-workload-identity.yaml
+    target:
+      kind: Deployment
+      name: backend
+
+  # 3. Override ConfigMap with AKS-specific values (DB host, Azure Blob storage)
+  - path: patches/configmap-aks.yaml
+    target:
+      kind: ConfigMap
+      name: terraform-registry-config
+
+  # 4. Remove the legacy nginx Ingress resource — all traffic is handled by
+  #    Gateway API (gateway.yaml + httproute.yaml) on AKS.
+  - target:
+      kind: Ingress
+      name: terraform-registry-ingress
+    patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: terraform-registry-ingress
+
+images:
+  # Replace <ACR_NAME> with your Azure Container Registry name (without .azurecr.io)
+  # Replace <IMAGE_TAG> with the semver version to deploy (e.g. v1.0.0)
+  # In CI/CD: kustomize edit set image terraform-registry-backend=<repo>:<tag>
+  - name: terraform-registry-backend
+    newName: <ACR_NAME>.azurecr.io/terraform-registry-backend
+    newTag: <IMAGE_TAG>
+  - name: terraform-registry-frontend
+    newName: <ACR_NAME>.azurecr.io/terraform-registry-frontend
+    newTag: <IMAGE_TAG>

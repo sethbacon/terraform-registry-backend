@@ -16,6 +16,7 @@ resources:
   - service-frontend.yaml
   - ingress.yaml
   - pdb.yaml
+  - networkpolicy.yaml
 
 labels:
   - pairs:

@@ -11,6 +11,11 @@ spec:
       port: 8080
       targetPort: http
       protocol: TCP
+    # Prometheus metrics port. The metrics endpoint is unauthenticated.
+    # The NetworkPolicy restricts scraping to monitoring/kube-system namespaces,
+    # but this only works when your CNI enforces NetworkPolicy. On clusters
+    # without NetworkPolicy enforcement (e.g. kubenet), the metrics endpoint
+    # is accessible from any pod in the cluster.
     - name: metrics
       port: 9090
       targetPort: metrics

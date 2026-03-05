@@ -1,0 +1,168 @@
+# ============================================================
+# values-gke.yaml — Google Kubernetes Engine Deployment Values
+# ============================================================
+# Copy this file and fill in ALL <PLACEHOLDER> values before deploying.
+# Do NOT commit a filled-in copy that contains real IDs or secrets.
+#
+# Prerequisites: See docs/deployment/gke-prerequisites.md
+#
+# Deploy with:
+#   helm upgrade --install terraform-registry ./deployments/helm \
+#     --namespace terraform-registry --create-namespace \
+#     -f deployments/helm/values-gke.yaml
+#
+# For secrets management (GCP Secret Manager via CSI driver), the
+# SecretProviderClass must be applied separately — see overlays/gke/ for
+# the Kustomize-based approach, or apply secretproviderclass.yaml manually.
+# ============================================================
+
+# ── Images: Google Artifact Registry ─────────────────────────────────────────
+backend:
+  image:
+    # Format: <REGION>-docker.pkg.dev/<PROJECT_ID>/<REPO_NAME>/terraform-registry-backend
+    repository: <REGION>-docker.pkg.dev/<PROJECT_ID>/<AR_REPO>/terraform-registry-backend
+    tag: "v1.0.0"
+    pullPolicy: IfNotPresent
+  replicaCount: 3
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  # Mount the CSI secret volume so GCP Secrets Manager provider syncs secrets
+  # into the terraform-registry-secrets k8s Secret at pod startup.
+  # Apply overlays/gke/secretproviderclass.yaml before deploying this chart.
+  extraVolumes:
+    - name: secrets-store
+      csi:
+        driver: secrets-store.csi.k8s.io
+        readOnly: true
+        volumeAttributes:
+          secretProviderClass: terraform-registry-secrets
+  extraVolumeMounts:
+    - name: secrets-store
+      mountPath: /mnt/secrets-store
+      readOnly: true
+
+frontend:
+  enabled: true
+  image:
+    repository: <REGION>-docker.pkg.dev/<PROJECT_ID>/<AR_REPO>/terraform-registry-frontend
+    tag: "v1.0.0"
+    pullPolicy: IfNotPresent
+  replicaCount: 2
+
+# ── Server ─────────────────────────────────────────────────────────────────────
+server:
+  baseUrl: "https://<HOSTNAME>"
+
+# ── Database: Cloud SQL for PostgreSQL ────────────────────────────────────────
+# Option A: Use the Cloud SQL Auth Proxy as a sidecar (recommended).
+#   host: 127.0.0.1, port: 5432, sslMode: disable (proxy handles TLS).
+#   See: https://cloud.google.com/sql/docs/postgres/connect-kubernetes-engine
+# Option B: Connect via Private IP directly (requires private services access).
+#   host: <CLOUD_SQL_PRIVATE_IP>, sslMode: require
+externalDatabase:
+  host: "127.0.0.1" # Cloud SQL Auth Proxy sidecar address
+  port: 5432
+  name: "terraform_registry"
+  user: "registry"
+  sslMode: "disable" # Proxy handles TLS when using Auth Proxy
+  password: ""
+  existingSecret: ""
+
+# ── Storage: Google Cloud Storage ─────────────────────────────────────────────
+storage:
+  backend: "gcs"
+  gcs:
+    bucket: "<GCS_BUCKET_NAME>"
+    projectId: "<PROJECT_ID>"
+    # Workload Identity provides credentials — no key file needed.
+    authMethod: "workload-identity"
+    credentialsFile: ""
+  persistence:
+    enabled: false
+
+# ── Security: secrets from GCP Secret Manager ─────────────────────────────────
+security:
+  jwtSecret: ""
+  encryptionKey: ""
+  existingSecret: ""
+
+# ── Logging ────────────────────────────────────────────────────────────────────
+logging:
+  level: "warn"
+  format: "json"
+
+# ── ServiceAccount: GKE Workload Identity ─────────────────────────────────────
+# Links this Kubernetes ServiceAccount to a Google Service Account (GSA).
+# The GSA must have:
+#   - roles/storage.objectAdmin on the GCS bucket
+#   - roles/cloudsql.client (if using Cloud SQL Auth Proxy)
+#   - roles/secretmanager.secretAccessor on the registry secrets
+# Bind the KSA to the GSA:
+#   gcloud iam service-accounts add-iam-policy-binding \
+#     <GSA_NAME>@<PROJECT_ID>.iam.gserviceaccount.com \
+#     --role roles/iam.workloadIdentityUser \
+#     --member "serviceAccount:<PROJECT_ID>.svc.id.goog[terraform-registry/terraform-registry]"
+serviceAccount:
+  create: true
+  annotations:
+    iam.gke.io/gcp-service-account: "<GSA_NAME>@<PROJECT_ID>.iam.gserviceaccount.com"
+
+# ── Gateway API: GKE built-in Controller ──────────────────────────────────────
+# GKE provides GatewayClasses automatically — no GatewayClass resource needed.
+# Available GatewayClasses:
+#   gke-l7-global-external-managed   — Global External Application Load Balancer
+#   gke-l7-regional-external-managed — Regional External Application Load Balancer
+#   gke-l7-rilb                      — Internal Application Load Balancer
+#
+# Enable the Gateway API in GKE:
+#   gcloud container clusters update <CLUSTER> --gateway-api=standard --region <REGION>
+#
+# cert-manager with GKE Gateway: requires cert-manager >= 1.14 with
+#   --set "featureGates=ExperimentalGatewayAPISupport=true"
+gatewayAPI:
+  enabled: true
+  # GKE pre-provisions GatewayClasses — do NOT create one.
+  createGatewayClass: false
+  gatewayClassName: gke-l7-global-external-managed
+  controllerName: "" # not used when createGatewayClass: false
+  albId: "" # not applicable for GKE
+  gatewayAnnotations: {}
+  hostname: "<HOSTNAME>"
+  certManagerIssuer: "letsencrypt-staging"
+  tlsSecretName: "terraform-registry-tls"
+  email: "<OPS_EMAIL>"
+
+# ── Disable legacy nginx Ingress ───────────────────────────────────────────────
+ingress:
+  enabled: false
+
+# ── Azure-specific features: disabled for GKE ─────────────────────────────────
+keyVault:
+  enabled: false
+workloadIdentity:
+  enabled: false
+
+# ── NetworkPolicy ──────────────────────────────────────────────────────────────
+# GKE supports NetworkPolicy with Calico or Dataplane V2 (Cilium-based).
+# Enable with: gcloud container clusters create ... --enable-network-policy
+# Or for Dataplane V2: --enable-dataplane-v2
+networkPolicy:
+  enabled: true
+  prometheusNamespace: "monitoring"
+
+# ── Autoscaling ────────────────────────────────────────────────────────────────
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
