@@ -1,0 +1,32 @@
+# Strategic merge patch: add Cloud SQL Auth Proxy sidecar to backend Deployment.
+# The proxy handles IAM authentication and TLS to Cloud SQL.
+#
+# REQUIRED: Replace <PROJECT_ID>, <REGION>, and <INSTANCE_NAME> before applying.
+#   <PROJECT_ID>    — gcloud config get-value project
+#   <REGION>        — your Cloud SQL instance region (e.g. us-central1)
+#   <INSTANCE_NAME> — your Cloud SQL instance name (e.g. terraform-registry-db)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: terraform-registry
+spec:
+  template:
+    spec:
+      containers:
+        - name: cloud-sql-proxy
+          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.11.0
+          args:
+            - "--structured-logs"
+            - "--port=5432"
+            - "<PROJECT_ID>:<REGION>:<INSTANCE_NAME>"
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 10m
+            limits:
+              memory: 128Mi
+              cpu: 100m

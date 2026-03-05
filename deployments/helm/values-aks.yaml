@@ -1,0 +1,155 @@
+# ============================================================
+# values-aks.yaml — AKS Deployment Values
+# ============================================================
+# Copy this file and fill in ALL <PLACEHOLDER> values before deploying.
+# Do NOT commit a filled-in copy that contains real secrets or IDs.
+#
+# Deploy with:
+#   helm upgrade --install terraform-registry ./deployments/helm \
+#     --namespace terraform-registry --create-namespace \
+#     -f deployments/helm/values-aks.yaml
+#
+# Or override specific values at deploy time:
+#   helm upgrade ... -f values-aks.yaml \
+#     --set externalDatabase.host=<PG_FQDN> \
+#     --set gatewayAPI.albId=<AGfC_RESOURCE_ID>
+#
+# See docs/deployment/aks-new-cluster.md for complete setup instructions.
+# See docs/deployment/aks-prerequisites.md for required Azure resources.
+# ============================================================
+
+# ── Images: replace with your ACR FQDN and pinned tags ────────────────────────
+backend:
+  image:
+    # Replace <ACR_NAME> with your ACR name (e.g. mycompanyacr → mycompanyacr.azurecr.io)
+    repository: <ACR_NAME>.azurecr.io/terraform-registry-backend
+    # Pin to a specific semver tag. Never use 'latest' in production.
+    tag: "v1.0.0"
+    pullPolicy: IfNotPresent
+  # Production resource sizing — adjust to match your workload
+  replicaCount: 3
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+frontend:
+  enabled: true
+  image:
+    repository: <ACR_NAME>.azurecr.io/terraform-registry-frontend
+    tag: "v1.0.0"
+    pullPolicy: IfNotPresent
+  replicaCount: 2
+
+# ── Server ─────────────────────────────────────────────────────────────────────
+server:
+  # Must match gatewayAPI.hostname below
+  baseUrl: "https://<HOSTNAME>"
+
+# ── Database: Azure Database for PostgreSQL Flexible Server ────────────────────
+externalDatabase:
+  # Flexible Server FQDN: <server-name>.postgres.database.azure.com
+  host: "<AZURE_POSTGRES_SERVER>.postgres.database.azure.com"
+  port: 5432
+  name: "terraform_registry"
+  user: "registry"
+  sslMode: "require"
+  # Leave password blank — it is pulled from Azure Key Vault via the CSI driver.
+  # Set existingSecret if you want to reference a pre-existing k8s Secret instead.
+  password: ""
+  existingSecret: ""
+
+# ── Storage: Azure Blob Storage ────────────────────────────────────────────────
+# Azure Blob is recommended for AKS multi-replica deployments.
+# The PVC is created but unused when backend=azure.
+storage:
+  backend: "azure"
+  azure:
+    # Azure Storage Account name
+    accountName: "<AZURE_STORAGE_ACCOUNT_NAME>"
+    # Name of the blob container (will be created if it doesn't exist on first upload)
+    containerName: "terraform-registry"
+    # accountKey pulled from Key Vault via CSI driver — leave blank here.
+    accountKey: ""
+  # Disable local PVC since we're using Azure Blob
+  persistence:
+    enabled: false
+
+# ── Security: secrets from Azure Key Vault (keyVault.enabled below) ────────────
+# Leave jwtSecret and encryptionKey blank — they are fetched from Key Vault.
+security:
+  jwtSecret: ""
+  encryptionKey: ""
+  existingSecret: ""
+
+# ── Logging ────────────────────────────────────────────────────────────────────
+logging:
+  level: "warn"
+  format: "json"
+
+# ── ServiceAccount + Azure Workload Identity ──────────────────────────────────
+serviceAccount:
+  create: true
+  annotations: {}
+
+workloadIdentity:
+  enabled: true
+  # Client ID of the User-Assigned Managed Identity.
+  # This identity must have:
+  #   - Key Vault Secret User role on the Key Vault
+  #   - Storage Blob Data Contributor role on the Storage Account
+  #   - A federated credential pointing to this ServiceAccount
+  clientId: "<MANAGED_IDENTITY_CLIENT_ID>"
+
+# ── Azure Key Vault CSI Driver ─────────────────────────────────────────────────
+keyVault:
+  enabled: true
+  # Key Vault resource name (not the full URI)
+  name: "<KEY_VAULT_NAME>"
+  # Azure AD Tenant ID (UUID)
+  tenantId: "<TENANT_ID>"
+  # Client ID of the Managed Identity (must match workloadIdentity.clientId)
+  clientId: "<MANAGED_IDENTITY_CLIENT_ID>"
+
+# ── Gateway API: Application Gateway for Containers ───────────────────────────
+gatewayAPI:
+  enabled: true
+  gatewayClassName: azure-alb-external
+  # Full ARM resource ID of the Application Gateway for Containers resource.
+  # Get it with: az network alb show -g <RG> -n <AGFC_NAME> --query id -o tsv
+  albId: >-
+    /subscriptions/<SUBSCRIPTION_ID>/resourceGroups/<RESOURCE_GROUP>/providers/Microsoft.ServiceNetworking/trafficControllers/<AGFC_NAME>
+  # Public hostname (DNS A record must point to the AGfC frontend IP before cert issuance)
+  hostname: "<HOSTNAME>"
+  # Use letsencrypt-staging during initial testing (untrusted cert, no rate limits)
+  # Switch to letsencrypt-prod once ACME challenge succeeds
+  certManagerIssuer: "letsencrypt-staging"
+  tlsSecretName: "terraform-registry-tls"
+  # Email for Let's Encrypt expiry notifications (required by ACME)
+  email: "<OPS_EMAIL>"
+
+# ── Disable legacy nginx Ingress (replaced by Gateway API above) ───────────────
+ingress:
+  enabled: false
+
+# ── NetworkPolicy ──────────────────────────────────────────────────────────────
+# Requires AKS with Azure CNI + Azure Network Policy Manager or Calico.
+networkPolicy:
+  enabled: true
+  prometheusNamespace: "monitoring"
+
+# ── Horizontal Pod Autoscaler ──────────────────────────────────────────────────
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# ── PodDisruptionBudget ────────────────────────────────────────────────────────
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1

@@ -1,0 +1,42 @@
+# Strategic merge patch: add CSI secret volume + zone topology spread to backend.
+#
+# CSI volume mount:
+#   The Secrets Store CSI Driver requires a volume mount to trigger secret sync.
+#   When the pod starts, the CSI driver fetches secrets from Key Vault and
+#   materialises them in the terraform-registry-secrets Kubernetes Secret (via
+#   secretObjects in SecretProviderClass). The pod reads those secrets via envFrom.
+#   The /mnt/secrets-store directory is empty — its only purpose is to trigger sync.
+#
+# Topology spread:
+#   Ensures backend pods are spread across AKS availability zones. Requires the
+#   cluster to span multiple zones (--zones 1 2 3 in az aks create).
+#   whenUnsatisfiable: DoNotSchedule — prevents scheduling if spread cannot be
+#   maintained (prefer ScheduleAnyway for clusters with fewer than 3 zones).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: terraform-registry
+spec:
+  template:
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/component: backend
+      containers:
+        - name: backend
+          volumeMounts:
+            - name: secrets-store
+              mountPath: /mnt/secrets-store
+              readOnly: true
+      volumes:
+        - name: secrets-store
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: terraform-registry-secrets

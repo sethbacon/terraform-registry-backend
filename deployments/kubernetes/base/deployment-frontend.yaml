@@ -14,6 +14,9 @@ spec:
       labels:
         app.kubernetes.io/component: frontend
     spec:
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: frontend
           image: terraform-registry-frontend:latest
@@ -21,6 +24,13 @@ spec:
             - name: http
               containerPort: 80
               protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - NET_BIND_SERVICE
           livenessProbe:
             httpGet:
               path: /

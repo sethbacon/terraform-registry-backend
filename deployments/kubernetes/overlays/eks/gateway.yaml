@@ -1,0 +1,71 @@
+# ============================================================
+# Gateway API Resources — AWS Load Balancer Controller (ALB)
+# ============================================================
+# GatewayClass + Gateway for AWS Application Load Balancer (ALB) via
+# the AWS Load Balancer Controller (LBC) v2.6+ Gateway API support.
+#
+# Prerequisites:
+#   - AWS LBC v2.6+ installed:
+#       helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+#         -n kube-system \
+#         --set clusterName=<CLUSTER_NAME> \
+#         --set serviceAccount.create=true \
+#         --set serviceAccount.name=aws-load-balancer-controller \
+#         --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=<LBC_ROLE_ARN>"
+#   - Gateway API CRDs installed:
+#       kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.0/standard-install.yaml
+#   - cert-manager installed with ExperimentalGatewayAPISupport=true
+#   - Public subnet tags: kubernetes.io/role/elb=1
+#   - Subnet auto-discovery or explicit subnet annotation on Gateway
+#
+# Before applying, replace:
+#   <HOSTED_ZONE_ID>   — Route53 Hosted Zone ID for DNS (optional, for ALB annotations)
+#   registry.yourdomain.com — Your public DNS hostname
+# ============================================================
+
+# ── GatewayClass — references the AWS LBC controller ─────────────────────────
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: aws-alb-external
+spec:
+  controllerName: gateway.k8s.aws/alb
+---
+# ── Gateway — ALB with HTTP redirect and HTTPS termination ────────────────────
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: terraform-registry-gateway
+  namespace: terraform-registry
+  annotations:
+    # cert-manager creates a temporary HTTPRoute for the ACME HTTP-01 challenge.
+    cert-manager.io/cluster-issuer: letsencrypt-staging
+    # Route traffic via internet-facing ALB (external load balancer).
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+    # Use IP mode for target registration (recommended for EKS with VPC CNI).
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
+    # Optional: specify subnets explicitly if auto-discovery is not configured
+    # service.beta.kubernetes.io/aws-load-balancer-subnets: "subnet-xxx,subnet-yyy"
+spec:
+  gatewayClassName: aws-alb-external
+  listeners:
+    # HTTP listener — ACME challenge + redirect to HTTPS
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: Same
+    # HTTPS listener — ALB terminates TLS using the cert-manager-issued Secret
+    - name: https
+      port: 443
+      protocol: HTTPS
+      hostname: "registry.yourdomain.com"
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: terraform-registry-tls
+            kind: Secret
+      allowedRoutes:
+        namespaces:
+          from: Same

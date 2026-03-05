@@ -1,0 +1,74 @@
+# ============================================================
+# Gateway API Resources — Application Gateway for Containers (AGfC)
+# ============================================================
+# GatewayClass + Gateway for AGfC with Kubernetes Gateway API v1.
+#
+# Replace ALL <PLACEHOLDER> values before applying.
+#
+# The GatewayClass is cluster-scoped; it is shared across namespaces.
+# The Gateway is namespace-scoped (terraform-registry).
+#
+# TLS is terminated at the Gateway using a cert-manager-issued Let's Encrypt
+# certificate stored in the terraform-registry-tls Secret.
+# HTTP traffic (port 80) is redirected to HTTPS via an HTTPRoute in httproute.yaml.
+#
+# Documentation: docs/deployment/aks-new-cluster.md
+# ============================================================
+
+# ── GatewayClass — references the AGfC ALB Controller ─────────────────────────
+# The ALB Controller (deployed in the azure-alb-system namespace) reconciles
+# all Gateway resources that reference this GatewayClass.
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: azure-alb-external
+spec:
+  controllerName: alb.networking.azure.io/alb-controller
+---
+# ── Gateway — defines traffic entry points ────────────────────────────────────
+# The alb.networking.azure.io/alb-id annotation associates this Gateway with
+# your pre-provisioned Application Gateway for Containers ARM resource.
+#
+# The cert-manager.io/cluster-issuer annotation instructs cert-manager to create
+# an HTTPRoute for the ACME HTTP-01 challenge on the http listener.
+# Use letsencrypt-staging until the full flow is validated, then switch to
+# letsencrypt-prod (or edit the certificate.yaml to change the issuerRef).
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: terraform-registry-gateway
+  namespace: terraform-registry
+  annotations:
+    # Full ARM resource ID of the Application Gateway for Containers resource.
+    # Format: /subscriptions/<SUBSCRIPTION_ID>/resourceGroups/<RESOURCE_GROUP>/
+    #         providers/Microsoft.ServiceNetworking/trafficControllers/<AGFC_NAME>
+    alb.networking.azure.io/alb-id: >-
+      /subscriptions/<SUBSCRIPTION_ID>/resourceGroups/<RESOURCE_GROUP>/providers/Microsoft.ServiceNetworking/trafficControllers/<AGFC_NAME>
+    # cert-manager annotation: creates ACME HTTP-01 challenge HTTPRoute automatically.
+    # Change to letsencrypt-prod after verifying sandbox certificate issuance.
+    cert-manager.io/cluster-issuer: letsencrypt-staging
+spec:
+  gatewayClassName: azure-alb-external
+  listeners:
+    # HTTP listener — used only for ACME HTTP-01 challenge and redirect to HTTPS
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: Same
+    # HTTPS listener — all application traffic
+    # Replace <HOSTNAME> with your public DNS name (must match the Certificate dnsName)
+    - name: https
+      port: 443
+      protocol: HTTPS
+      hostname: "<HOSTNAME>"
+      tls:
+        mode: Terminate
+        certificateRefs:
+          # Secret created by cert-manager (see certificate.yaml)
+          - name: terraform-registry-tls
+            kind: Secret
+      allowedRoutes:
+        namespaces:
+          from: Same

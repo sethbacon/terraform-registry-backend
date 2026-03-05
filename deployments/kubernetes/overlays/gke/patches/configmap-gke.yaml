@@ -1,0 +1,33 @@
+# JSON 6902 patch: GKE-specific ConfigMap overrides.
+#
+# Replace ALL <PLACEHOLDER> values before applying:
+#   <CLOUD_SQL_HOST>   Cloud SQL Private IP, or 127.0.0.1 if using Auth Proxy sidecar
+#   <GCS_BUCKET_NAME>  GCS bucket name for module/provider artifact storage
+#   <PROJECT_ID>       GCP Project ID
+#   <HOSTNAME>         Public hostname (e.g. registry.company.com)
+#
+# Cloud SQL Auth Proxy note:
+#   If using the Auth Proxy sidecar (recommended), set host to 127.0.0.1 and
+#   sslMode to disable. The proxy handles TLS and IAM authentication.
+#   Example sidecar: https://cloud.google.com/sql/docs/postgres/connect-kubernetes-engine
+- op: replace
+  path: /data/TFR_DATABASE_HOST
+  value: "127.0.0.1"
+- op: replace
+  path: /data/TFR_DATABASE_SSL_MODE
+  value: "disable"
+- op: replace
+  path: /data/TFR_STORAGE_DEFAULT_BACKEND
+  value: "gcs"
+- op: add
+  path: /data/TFR_STORAGE_GCS_BUCKET
+  value: "<GCS_BUCKET_NAME>"
+- op: add
+  path: /data/TFR_STORAGE_GCS_PROJECT_ID
+  value: "<PROJECT_ID>"
+- op: replace
+  path: /data/TFR_SERVER_BASE_URL
+  value: "https://<HOSTNAME>"
+- op: replace
+  path: /data/TFR_LOGGING_LEVEL
+  value: "warn"

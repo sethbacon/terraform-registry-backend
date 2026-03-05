@@ -1,0 +1,77 @@
+{{- if .Values.networkPolicy.enabled -}}
+# ── Default: deny all ingress in this namespace ────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "terraform-registry.fullname" . }}-default-deny-ingress
+  labels:
+    {{- include "terraform-registry.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+# ── Frontend: allow HTTP from anywhere (external Gateway / load balancer) ──────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "terraform-registry.fullname" . }}-allow-frontend-ingress
+  labels:
+    {{- include "terraform-registry.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: frontend
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: {{ .Values.service.frontend.port }}
+          protocol: TCP
+---
+# ── Backend: allow HTTP from frontend pods and external Gateway/LB ───────────
+# Gateway API HTTPRoute sends /api/*, /v1/*, /.well-known/* etc. directly to
+# backend pods. Traffic from cloud load balancers originates outside the pod
+# network, so we allow all sources on the backend HTTP port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "terraform-registry.fullname" . }}-allow-backend-ingress
+  labels:
+    {{- include "terraform-registry.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: backend
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: {{ .Values.service.backend.port }}
+          protocol: TCP
+---
+# ── Backend metrics: allow Prometheus scrape ──────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "terraform-registry.fullname" . }}-allow-backend-metrics
+  labels:
+    {{- include "terraform-registry.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: backend
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.prometheusNamespace }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: {{ .Values.telemetry.metrics.prometheusPort }}
+          protocol: TCP
+{{- end }}
