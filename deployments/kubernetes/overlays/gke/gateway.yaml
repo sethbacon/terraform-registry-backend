@@ -1,0 +1,65 @@
+# ============================================================
+# Gateway API Resources — GKE built-in Gateway controller
+# ============================================================
+# GKE pre-provisions GatewayClasses — NO GatewayClass resource is needed here.
+# Available pre-provisioned GatewayClasses:
+#   gke-l7-global-external-managed   — Global External Application Load Balancer
+#   gke-l7-regional-external-managed — Regional External Application Load Balancer
+#   gke-l7-rilb                       — Internal Application Load Balancer
+#   gke-l7-gxlb                       — Classic HTTP(S) Load Balancer (legacy)
+#
+# This overlay uses the global external managed class (recommended for new workloads).
+#
+# Prerequisites:
+#   - GKE cluster with Gateway API enabled:
+#       gcloud container clusters update <CLUSTER> \
+#         --gateway-api=standard --region <REGION>
+#   - Static IP reserved (recommended for stable DNS):
+#       gcloud compute addresses create terraform-registry-ip --global
+#   - cert-manager installed with ExperimentalGatewayAPISupport=true
+#   - DNS record for <HOSTNAME> pointing to the reserved static IP BEFORE
+#     creating the Certificate (required for HTTP-01 ACME challenge)
+#
+# Before applying, replace:
+#   <STATIC_IP_NAME>          — Name of the reserved static IP (optional)
+#   registry.yourdomain.com   — Your public DNS hostname
+# ============================================================
+
+# ── Gateway — GKE-managed Global External Application Load Balancer ───────────
+# Note: No GatewayClass resource is created here. The gke-l7-global-external-managed
+# GatewayClass is pre-provisioned by GKE. The Gateway references it by name.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: terraform-registry-gateway
+  namespace: terraform-registry
+  annotations:
+    # cert-manager creates a temporary HTTPRoute for the ACME HTTP-01 challenge.
+    cert-manager.io/cluster-issuer: letsencrypt-staging
+    # Optional: bind to a pre-reserved static external IP.
+    # Ensures DNS record can be configured before the cluster is created.
+    # networking.gke.io/certmap: ""   # Alternative: use GCP Certificate Manager
+    # networking.gke.io/stable-ip-address: "true"
+spec:
+  gatewayClassName: gke-l7-global-external-managed
+  listeners:
+    # HTTP listener — ACME challenge + redirect to HTTPS
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: Same
+    # HTTPS listener — Google-managed ALB terminates TLS
+    - name: https
+      port: 443
+      protocol: HTTPS
+      hostname: "registry.yourdomain.com"
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: terraform-registry-tls
+            kind: Secret
+      allowedRoutes:
+        namespaces:
+          from: Same

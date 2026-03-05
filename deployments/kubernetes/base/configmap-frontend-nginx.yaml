@@ -1,74 +1,93 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: frontend-nginx-config
+    name: frontend-nginx-config
 data:
-  default.conf: |
-    server {
-        listen 80;
-        server_name _;
-        root /usr/share/nginx/html;
-        index index.html;
+    default.conf: |
+        server {
+            listen 80;
+            server_name _;
+            root /usr/share/nginx/html;
+            index index.html;
 
-        client_max_body_size 500m;
+            client_max_body_size 500m;
 
-        location / {
-            try_files $uri $uri/ /index.html;
+            # Security headers
+            add_header X-Frame-Options "DENY" always;
+            add_header X-Content-Type-Options "nosniff" always;
+            add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+            add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
+
+            location / {
+                try_files $uri $uri/ /index.html;
+            }
+
+            # API — includes large file uploads (modules up to 100MB, providers up to 500MB)
+            location /api/ {
+                proxy_pass http://backend:8080;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                proxy_read_timeout 600s;
+                proxy_send_timeout 600s;
+                proxy_connect_timeout 60s;
+            }
+
+            location = /swagger.json {
+                proxy_pass http://backend:8080;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+            }
+
+            # Terraform Module/Provider Registry protocol
+            location /v1/ {
+                proxy_pass http://backend:8080;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                proxy_read_timeout 600s;
+                proxy_send_timeout 600s;
+                proxy_connect_timeout 60s;
+            }
+
+            # OIDC / Terraform service discovery
+            location /.well-known/ {
+                proxy_pass http://backend:8080;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+            }
+
+            location /webhooks/ {
+                proxy_pass http://backend:8080;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+            }
+
+            # Network Mirror protocol — can involve long-running sync operations
+            location /terraform/ {
+                proxy_pass http://backend:8080;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                proxy_read_timeout 600s;
+                proxy_send_timeout 600s;
+                proxy_connect_timeout 60s;
+            }
+
+            location /health {
+                proxy_pass http://backend:8080;
+            }
+
+            location /ready {
+                proxy_pass http://backend:8080;
+            }
         }
-
-        location /api/ {
-            proxy_pass http://backend:8080;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
-        }
-
-        location = /swagger.json {
-            proxy_pass http://backend:8080;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
-        }
-
-        location /v1/ {
-            proxy_pass http://backend:8080;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
-        }
-
-        location /.well-known/ {
-            proxy_pass http://backend:8080;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
-        }
-
-        location /webhooks/ {
-            proxy_pass http://backend:8080;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
-        }
-
-        location /terraform/ {
-            proxy_pass http://backend:8080;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
-        }
-
-        location /health {
-            proxy_pass http://backend:8080;
-        }
-
-        location /ready {
-            proxy_pass http://backend:8080;
-        }
-    }

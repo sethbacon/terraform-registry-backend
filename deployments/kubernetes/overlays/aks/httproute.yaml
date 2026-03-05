@@ -1,0 +1,138 @@
+# ============================================================
+# HTTPRoute Resources — Kubernetes Gateway API v1
+# ============================================================
+# Three HTTPRoute resources:
+#
+#   1. http-redirect    — HTTP (port 80) → HTTPS redirect (301)
+#   2. backend-routes   — HTTPS: API/protocol paths → backend Service:8080
+#   3. frontend-route   — HTTPS: catch-all (/) → frontend Service:80
+#
+# Note on path priority (Gateway API spec):
+#   - Exact matches take priority over Prefix matches
+#   - Longer prefix matches take priority over shorter ones
+#   - /api/ and /v1/ (backend-routes) are matched before / (frontend-route)
+#
+# With AGfC routing API traffic directly to the backend pod, the frontend
+# nginx's proxy_pass directives for /api/, /v1/, etc. are NOT invoked for
+# those paths. Only SPA requests (HTML/JS/CSS) go to the frontend pod.
+#
+# Replace <HOSTNAME> with your domain (must match Gateway listener hostname).
+# ============================================================
+
+# ── 1. HTTP → HTTPS redirect ──────────────────────────────────────────────────
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: http-redirect
+  namespace: terraform-registry
+spec:
+  parentRefs:
+    - name: terraform-registry-gateway
+      sectionName: http
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            statusCode: 301
+---
+# ── 2. Backend API and protocol paths (HTTPS) ─────────────────────────────────
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: backend-routes
+  namespace: terraform-registry
+spec:
+  parentRefs:
+    - name: terraform-registry-gateway
+      sectionName: https
+  hostnames:
+    - "<HOSTNAME>"
+  rules:
+    # REST API — all admin, auth, provider, module, and mirror management endpoints
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/
+      backendRefs:
+        - name: backend
+          port: 8080
+    # Terraform Module/Provider Registry protocol (RFC)
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/
+      backendRefs:
+        - name: backend
+          port: 8080
+    # OIDC discovery and Terraform service discovery (.well-known endpoints)
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /.well-known/
+      backendRefs:
+        - name: backend
+          port: 8080
+    # Network Mirror protocol endpoints
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /terraform/
+      backendRefs:
+        - name: backend
+          port: 8080
+    # Webhook endpoints
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /webhooks/
+      backendRefs:
+        - name: backend
+          port: 8080
+    # Health and readiness probes (useful for external uptime monitoring)
+    - matches:
+        - path:
+            type: Exact
+            value: /health
+      backendRefs:
+        - name: backend
+          port: 8080
+    - matches:
+        - path:
+            type: Exact
+            value: /ready
+      backendRefs:
+        - name: backend
+          port: 8080
+    # OpenAPI spec
+    - matches:
+        - path:
+            type: Exact
+            value: /swagger.json
+      backendRefs:
+        - name: backend
+          port: 8080
+---
+# ── 3. Frontend SPA — catch-all (HTTPS) ───────────────────────────────────────
+# Matches any path not matched by backend-routes above.
+# The frontend nginx serves the React SPA and handles client-side routing
+# via the try_files $uri $uri/ /index.html fallback.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: frontend-route
+  namespace: terraform-registry
+spec:
+  parentRefs:
+    - name: terraform-registry-gateway
+      sectionName: https
+  hostnames:
+    - "<HOSTNAME>"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: frontend
+          port: 80

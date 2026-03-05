@@ -13,6 +13,10 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/component: backend
+        # Required by Azure Workload Identity to inject OIDC token.
+        # Safe to leave on non-AKS clusters (label is ignored if the
+        # azure-workload-identity mutating webhook is not installed).
+        azure.workload.identity/use: "true"
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "9090"
@@ -26,7 +30,16 @@ spec:
         runAsNonRoot: true
       containers:
         - name: backend
+          # Image and tag are overridden by each overlay's kustomization.yaml
+          # via the images transformer. Do not apply the base directly in production.
           image: terraform-registry-backend:latest
+          imagePullPolicy: Always
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           ports:
             - name: http
               containerPort: 8080
@@ -39,19 +52,23 @@ spec:
                 name: terraform-registry-config
             - secretRef:
                 name: terraform-registry-secrets
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 12
           livenessProbe:
             httpGet:
-              path: /health
+              path: /healthz
               port: http
-            initialDelaySeconds: 10
             periodSeconds: 30
             timeoutSeconds: 5
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /ready
+              path: /health
               port: http
-            initialDelaySeconds: 5
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
@@ -65,7 +82,11 @@ spec:
           volumeMounts:
             - name: storage
               mountPath: /app/storage
+            - name: tmp
+              mountPath: /tmp
       volumes:
         - name: storage
           persistentVolumeClaim:
             claimName: terraform-registry-storage
+        - name: tmp
+          emptyDir: {}

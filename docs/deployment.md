@@ -5,17 +5,17 @@ Choose the option that matches your environment and operational model.
 
 ## Deployment Options
 
-| Option | Best For | Location |
-| --- | --- | --- |
-| Docker Compose (dev) | Local development, quick evaluation | `deployments/docker-compose.yml` |
-| Docker Compose (prod) | Small teams, single-host production | `deployments/docker-compose.prod.yml` |
-| Kubernetes + Kustomize | Enterprise, multi-replica, GitOps | `deployments/kubernetes/` |
-| Helm Chart | Kubernetes with parameterized config | `deployments/helm/` |
-| Azure Container Apps | Azure-native, serverless scaling | `deployments/azure-container-apps/` |
-| AWS ECS Fargate | AWS-native, fully managed | `deployments/aws-ecs/` |
-| Google Cloud Run | GCP-native, serverless | `deployments/google-cloud-run/` |
-| Standalone Binary + systemd | On-premise, VMs, maximum control | `deployments/binary/` |
-| Terraform IaC | Reproducible cloud infrastructure | `deployments/terraform/` |
+| Option                      | Best For                             | Location                              |
+| --------------------------- | ------------------------------------ | ------------------------------------- |
+| Docker Compose (dev)        | Local development, quick evaluation  | `deployments/docker-compose.yml`      |
+| Docker Compose (prod)       | Small teams, single-host production  | `deployments/docker-compose.prod.yml` |
+| Kubernetes + Kustomize      | Enterprise, multi-replica, GitOps    | `deployments/kubernetes/`             |
+| Helm Chart                  | Kubernetes with parameterized config | `deployments/helm/`                   |
+| Azure Container Apps        | Azure-native, serverless scaling     | `deployments/azure-container-apps/`   |
+| AWS ECS Fargate             | AWS-native, fully managed            | `deployments/aws-ecs/`                |
+| Google Cloud Run            | GCP-native, serverless               | `deployments/google-cloud-run/`       |
+| Standalone Binary + systemd | On-premise, VMs, maximum control     | `deployments/binary/`                 |
+| Terraform IaC               | Reproducible cloud infrastructure    | `deployments/terraform/`              |
 
 ---
 
@@ -149,38 +149,44 @@ The production overlay includes:
 The Helm chart provides the most flexible deployment option for Kubernetes, supporting
 all storage backends, optional frontend deployment, and ingress customization.
 
-```bash
-# Preview the rendered manifests
-helm template terraform-registry deployments/helm/ \
-  --set config.baseUrl=https://registry.example.com \
-  --set config.jwtSecret=$(openssl rand -hex 32) \
-  --set config.databasePassword=yourpassword \
-  --set storage.backend=s3 \
-  --set storage.s3.bucket=my-registry-bucket \
-  --set storage.s3.region=us-east-1
+> **Security note:** Do not pass secrets (JWT secret, encryption key, database password)
+> via `--set` in production — values passed this way are stored in plain text in the
+> Helm release Secret. Use `security.existingSecret` and `externalDatabase.existingSecret`
+> to reference a pre-created Kubernetes Secret, or use Key Vault CSI / External Secrets
+> Operator to populate secrets externally.
 
-# Install to Kubernetes
+```bash
+# 1. Create secrets separately (not stored in Helm release history)
+kubectl create secret generic terraform-registry-secrets \
+  --from-literal=TFR_JWT_SECRET="$(openssl rand -hex 32)" \
+  --from-literal=ENCRYPTION_KEY="$(openssl rand -hex 16)" \
+  --from-literal=TFR_DATABASE_PASSWORD="yourpassword" \
+  -n terraform-registry
+
+# 2. Install the chart referencing the existing secret
 helm install terraform-registry deployments/helm/ \
   --namespace terraform-registry \
   --create-namespace \
+  --set security.existingSecret=terraform-registry-secrets \
+  --set externalDatabase.existingSecret=terraform-registry-secrets \
   -f my-values.yaml
 ```
 
 Key values in `values.yaml` to override:
 
-| Value | Description |
-| --- | --- |
-| `config.baseUrl` | Public URL returned to Terraform CLI (required) |
-| `config.jwtSecret` | JWT signing secret (required, min 32 chars) |
-| `config.databasePassword` | PostgreSQL password |
-| `config.encryptionKey` | SCM OAuth token encryption key |
-| `storage.backend` | `local` \| `azure` \| `s3` \| `gcs` |
-| `ingress.enabled` | Enable ingress resource |
-| `ingress.hostname` | Ingress hostname |
-| `ingress.tls.enabled` | Enable TLS on ingress |
-| `backend.replicas` | Number of backend replicas |
-| `autoscaling.enabled` | Enable HPA |
-| `frontend.enabled` | Deploy frontend container |
+| Value                     | Description                                     |
+| ------------------------- | ----------------------------------------------- |
+| `config.baseUrl`          | Public URL returned to Terraform CLI (required) |
+| `config.jwtSecret`        | JWT signing secret (required, min 32 chars)     |
+| `config.databasePassword` | PostgreSQL password                             |
+| `config.encryptionKey`    | SCM OAuth token encryption key                  |
+| `storage.backend`         | `local` \| `azure` \| `s3` \| `gcs`             |
+| `ingress.enabled`         | Enable ingress resource                         |
+| `ingress.hostname`        | Ingress hostname                                |
+| `ingress.tls.enabled`     | Enable TLS on ingress                           |
+| `backend.replicas`        | Number of backend replicas                      |
+| `autoscaling.enabled`     | Enable HPA                                      |
+| `frontend.enabled`        | Deploy frontend container                       |
 
 See `deployments/helm/values.yaml` for the full annotated values file.
 
@@ -247,10 +253,10 @@ its own public IP rather than a shared NAT address.
 The ALB routes traffic to backend or frontend using path-based listener rules. The backend
 serves two distinct URL namespaces:
 
-| Namespace    | Routes                                | Purpose                            |
-| ------------ | ------------------------------------- | ---------------------------------- |
-| `/v1/*` etc. | Terraform protocol, mirror, discovery | Used directly by `terraform init`  |
-| `/api/*`     | Admin UI, auth, dev login             | Used by the React frontend         |
+| Namespace    | Routes                                | Purpose                           |
+| ------------ | ------------------------------------- | --------------------------------- |
+| `/v1/*` etc. | Terraform protocol, mirror, discovery | Used directly by `terraform init` |
+| `/api/*`     | Admin UI, auth, dev login             | Used by the React frontend        |
 
 AWS ALB listener rules accept a maximum of **5 path-pattern values per rule**, so these
 must be split into two rules:
@@ -296,10 +302,10 @@ nginx should rarely be exercised.
 
 Two URL configuration variables serve different purposes:
 
-| Variable                | Value                          | Purpose                                                                                                               |
-| ----------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
-| `TFR_SERVER_BASE_URL`   | `https://registry.example.com` | Terraform protocol — embedded in discovery responses and module/provider download URLs that `terraform` CLI will fetch|
-| `TFR_SERVER_PUBLIC_URL` | `https://registry.example.com` | OAuth redirect URL — where the browser is sent after OIDC login completes                                             |
+| Variable                | Value                          | Purpose                                                                                                                |
+| ----------------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `TFR_SERVER_BASE_URL`   | `https://registry.example.com` | Terraform protocol — embedded in discovery responses and module/provider download URLs that `terraform` CLI will fetch |
+| `TFR_SERVER_PUBLIC_URL` | `https://registry.example.com` | OAuth redirect URL — where the browser is sent after OIDC login completes                                              |
 
 In an ECS deployment behind an ALB both should be set to your public domain. If
 `TFR_SERVER_PUBLIC_URL` is omitted it falls back to `TFR_SERVER_BASE_URL`, which works
@@ -359,13 +365,13 @@ curl -X POST https://registry.example.com/api/v1/dev/login \
 
 ### Estimated Cost (dev, us-east-1, single replicas)
 
-| Resource                                                            | Monthly (~) |
-| ------------------------------------------------------------------- | ----------- |
-| ECS Fargate (backend 0.5 vCPU/1 GB + frontend 0.25 vCPU/512 MB)     | ~$14        |
-| ALB                                                                 | ~$18        |
-| RDS `db.t3.micro`                                                   | ~$15        |
-| S3 + ECR + Secrets Manager                                          | ~$2         |
-| **Total**                                                           | **~$49**    |
+| Resource                                                        | Monthly (~) |
+| --------------------------------------------------------------- | ----------- |
+| ECS Fargate (backend 0.5 vCPU/1 GB + frontend 0.25 vCPU/512 MB) | ~$14        |
+| ALB                                                             | ~$18        |
+| RDS `db.t3.micro`                                               | ~$15        |
+| S3 + ECR + Secrets Manager                                      | ~$2         |
+| **Total**                                                       | **~$49**    |
 
 No NAT Gateway removes ~$32/month compared to the classic VPC design.
 
@@ -507,7 +513,7 @@ GET /healthz
 # Returns 200 OK: {"status": "ok"}
 ```
 
-Use `/health` for Kubernetes readiness probes (checks DB + storage connectivity) and `/healthz` for liveness probes (just process alive).
+Use `/healthz` for Kubernetes liveness probes (lightweight process-alive check) and `/health` for readiness probes (checks DB + storage connectivity). A startup probe on `/healthz` with a higher failure threshold allows slow-starting pods to initialize without being killed.
 
 ---
 
@@ -603,52 +609,58 @@ Verify each variable is set in the target environment before deploying. For the 
 
 #### Required — Database
 
-| Variable | Description |
-| --- | --- |
-| `DATABASE_URL` | PostgreSQL DSN `postgres://user:pass@host:5432/dbname?sslmode=require` |
-| `DB_MAX_OPEN_CONNS` | Max open connections (suggest: `25`) |
-| `DB_MAX_IDLE_CONNS` | Max idle connections (suggest: `5`) |
+| Variable                     | Description                                                      |
+| ---------------------------- | ---------------------------------------------------------------- |
+| `TFR_DATABASE_HOST`          | PostgreSQL host (e.g., `mydb.postgres.database.azure.com`)       |
+| `TFR_DATABASE_PORT`          | PostgreSQL port (default `5432`)                                 |
+| `TFR_DATABASE_NAME`          | Database name (default `terraform_registry`)                     |
+| `TFR_DATABASE_USER`          | Database user                                                    |
+| `TFR_DATABASE_PASSWORD`      | Database password (from secret store)                            |
+| `TFR_DATABASE_SSLMODE`       | SSL mode (`require` for production)                              |
+| `TFR_DATABASE_MAX_CONNECTIONS` | Max open connections (suggest: `25`)                           |
 
-- [ ] `DATABASE_URL` is set and resolves from the deployment host
+- [ ] `TFR_DATABASE_HOST` is set and resolves from the deployment host
 - [ ] Database credentials are sourced from the secret store (not hard-coded)
 
 #### Required — Storage
 
-| Variable | Description |
-| --- | --- |
-| `STORAGE_BACKEND` | `s3`, `gcs`, `azure`, or `local` |
-| `STORAGE_BUCKET` | Name of the storage bucket / container |
+| Variable                          | Description                            |
+| --------------------------------- | -------------------------------------- |
+| `TFR_STORAGE_DEFAULT_BACKEND`     | `s3`, `gcs`, `azure`, or `local`       |
+| `TFR_STORAGE_S3_BUCKET` / `TFR_STORAGE_AZURE_CONTAINER_NAME` / `TFR_STORAGE_GCS_BUCKET` | Name of the storage bucket / container |
 
 Storage-backend-specific:
 
 ##### AWS S3
 
-- [ ] `AWS_REGION` set
-- [ ] IAM role or `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` configured
+- [ ] `TFR_STORAGE_S3_REGION` set
+- [ ] IAM role (IRSA) or `TFR_STORAGE_S3_ACCESS_KEY_ID` / `TFR_STORAGE_S3_SECRET_ACCESS_KEY` configured
 - [ ] Bucket exists and the service account has `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`, `s3:ListBucket`
 
 ##### GCS
 
-- [ ] `GOOGLE_APPLICATION_CREDENTIALS` or Workload Identity configured
+- [ ] `TFR_STORAGE_GCS_PROJECT_ID` set
+- [ ] GKE Workload Identity or `TFR_STORAGE_GCS_CREDENTIALS_FILE` configured
 - [ ] Bucket exists with appropriate ACLs
 
 ##### Azure Blob
 
-- [ ] `AZURE_STORAGE_ACCOUNT` and `AZURE_STORAGE_KEY` (or managed identity) configured
+- [ ] `TFR_STORAGE_AZURE_ACCOUNT_NAME` and `TFR_STORAGE_AZURE_ACCOUNT_KEY` (or Workload Identity) configured
 - [ ] Container exists
 
 ##### Local
 
-- [ ] `STORAGE_LOCAL_PATH` points to a persistent volume (not ephemeral container storage)
+- [ ] `TFR_STORAGE_LOCAL_BASE_PATH` points to a persistent volume (not ephemeral container storage)
 
 #### Required — Authentication / Authorization
 
-| Variable | Description |
-| --- | --- |
-| `AUTH_ENABLED` | `true` in production |
-| `OIDC_ISSUER_URL` | OIDC provider discovery URL |
-| `OIDC_CLIENT_ID` | Registered client ID |
-| `OIDC_CLIENT_SECRET` | Registered client secret (from secret store) |
+| Variable                      | Description                                  |
+| ----------------------------- | -------------------------------------------- |
+| `TFR_AUTH_API_KEYS_ENABLED`   | `true` for API key authentication            |
+| `TFR_AUTH_OIDC_ENABLED`       | `true` to enable OIDC authentication         |
+| `TFR_AUTH_OIDC_ISSUER_URL`    | OIDC provider discovery URL                  |
+| `TFR_AUTH_OIDC_CLIENT_ID`     | Registered client ID                         |
+| `TFR_AUTH_OIDC_CLIENT_SECRET` | Registered client secret (from secret store) |
 
 - [ ] OIDC provider is reachable from the deployment host
 - [ ] Redirect URI(s) registered in the OIDC provider match the deployment URL
@@ -656,27 +668,57 @@ Storage-backend-specific:
 
 #### Required — Server
 
-| Variable | Description |
-| --- | --- |
-| `PORT` | HTTP port (default `8080`) |
-| `BASE_URL` | Public-facing URL including scheme, e.g., `https://registry.example.com` |
-| `DEV_MODE` | Must be `false` in production |
-| `LOG_FORMAT` | `json` recommended for production |
-| `LOG_LEVEL` | `info` or `warn` for production |
+| Variable              | Description                                                              |
+| --------------------- | ------------------------------------------------------------------------ |
+| `TFR_SERVER_PORT`     | HTTP port (default `8080`)                                               |
+| `TFR_SERVER_BASE_URL` | Public-facing URL including scheme, e.g., `https://registry.example.com` |
+| `DEV_MODE`            | Must be `false` in production                                            |
+| `TFR_LOGGING_FORMAT`  | `json` recommended for production                                        |
+| `TFR_LOGGING_LEVEL`   | `info` or `warn` for production                                          |
 
 - [ ] `DEV_MODE=false`
-- [ ] `BASE_URL` matches the DNS entry that will serve traffic
+- [ ] `TFR_SERVER_BASE_URL` matches the DNS entry that will serve traffic
 
 #### Optional — Observability
 
-| Variable | Description |
-| --- | --- |
-| `METRICS_ENABLED` | `true` to expose `/metrics` (Prometheus scrape target) |
-| `SENTRY_DSN` | Sentry error-tracking DSN *(optional)* |
+| Variable                    | Description                                            |
+| --------------------------- | ------------------------------------------------------ |
+| `TFR_TELEMETRY_ENABLED`    | `true` to expose `/metrics` (Prometheus scrape target) |
 
 ### 3. Database Migrations
 
-- [ ] A database backup has been taken immediately before migrating
+- [ ] A database backup has been taken immediately before migrating:
+
+  **Azure Database for PostgreSQL:**
+
+  ```bash
+  # Create an on-demand backup (Flexible Server backs up automatically, but
+  # an explicit backup before migration is good practice)
+  az postgres flexible-server backup create \
+    --resource-group <RG> --name <SERVER> --backup-name pre-migration-$(date +%Y%m%d)
+  ```
+
+  **Amazon RDS:**
+
+  ```bash
+  aws rds create-db-snapshot \
+    --db-instance-identifier terraform-registry-db \
+    --db-snapshot-identifier pre-migration-$(date +%Y%m%d)
+  aws rds wait db-snapshot-available \
+    --db-snapshot-identifier pre-migration-$(date +%Y%m%d)
+  ```
+
+  **Cloud SQL:**
+
+  ```bash
+  gcloud sql backups create --instance=terraform-registry-db --description="pre-migration"
+  ```
+
+  **Self-hosted PostgreSQL / Docker Compose:**
+
+  ```bash
+  pg_dump -h <HOST> -U registry -d terraform_registry -Fc -f pre-migration-$(date +%Y%m%d).dump
+  ```
 - [ ] The migration is idempotent (re-running it is safe)
 - [ ] Migration command confirmed:
 
@@ -688,7 +730,12 @@ Storage-backend-specific:
 
   ```bash
   docker run --rm \
-    -e DATABASE_URL="$DATABASE_URL" \
+    -e TFR_DATABASE_HOST="$TFR_DATABASE_HOST" \
+    -e TFR_DATABASE_PORT="$TFR_DATABASE_PORT" \
+    -e TFR_DATABASE_USER="$TFR_DATABASE_USER" \
+    -e TFR_DATABASE_PASSWORD="$TFR_DATABASE_PASSWORD" \
+    -e TFR_DATABASE_NAME="$TFR_DATABASE_NAME" \
+    -e TFR_DATABASE_SSLMODE="$TFR_DATABASE_SSLMODE" \
     ghcr.io/sethbacon/terraform-registry-backend:<version> \
     migrate up
   ```
@@ -862,6 +909,139 @@ terraform-registry migrate down 1
 - [ ] Rollback decision logged in the incident channel
 - [ ] Rollback completed and verified via smoke tests (Section 7)
 - [ ] Post-mortem scheduled
+
+---
+
+## Backup & Restore
+
+### Database Backup
+
+#### Azure Database for PostgreSQL Flexible Server
+
+Flexible Server creates automatic backups daily (configurable 1–35 day retention).
+For on-demand backups before upgrades:
+
+```bash
+az postgres flexible-server backup create \
+  --resource-group <RG> --name <SERVER> --backup-name manual-$(date +%Y%m%d)
+
+# List backups
+az postgres flexible-server backup list --resource-group <RG> --name <SERVER> -o table
+
+# Restore to a point in time (creates a new server)
+az postgres flexible-server restore \
+  --resource-group <RG> --name <SERVER>-restored \
+  --source-server <SERVER> --restore-time "2026-03-04T10:00:00Z"
+```
+
+#### Amazon RDS
+
+RDS creates automated snapshots daily (configurable 0–35 day retention).
+
+```bash
+# Manual snapshot
+aws rds create-db-snapshot \
+  --db-instance-identifier terraform-registry-db \
+  --db-snapshot-identifier manual-$(date +%Y%m%d)
+
+# Point-in-time restore (creates a new instance)
+aws rds restore-db-instance-to-point-in-time \
+  --source-db-instance-identifier terraform-registry-db \
+  --target-db-instance-identifier terraform-registry-db-restored \
+  --restore-time "2026-03-04T10:00:00Z"
+```
+
+#### Cloud SQL
+
+Cloud SQL creates automated backups with configurable retention.
+
+```bash
+# Manual backup
+gcloud sql backups create --instance=terraform-registry-db --description="manual backup"
+
+# List backups
+gcloud sql backups list --instance=terraform-registry-db
+
+# Restore from a backup
+gcloud sql backups restore <BACKUP_ID> --restore-instance=terraform-registry-db
+```
+
+#### Self-hosted PostgreSQL / Docker Compose
+
+```bash
+# Dump (compressed custom format)
+pg_dump -h <HOST> -U registry -d terraform_registry -Fc -f backup-$(date +%Y%m%d).dump
+
+# Restore
+pg_restore -h <HOST> -U registry -d terraform_registry --clean --if-exists backup-20260304.dump
+```
+
+### Storage Backup (PVC-based local storage)
+
+When using `TFR_STORAGE_DEFAULT_BACKEND=local`, module and provider artifacts are stored
+on a PersistentVolumeClaim. This data must be backed up separately from the database.
+
+> **Note:** If you use a cloud storage backend (S3, Azure Blob, GCS), backup and
+> versioning are handled by the cloud provider. Enable object versioning on your
+> bucket/container for point-in-time recovery.
+
+#### Kubernetes PVC Backup
+
+Use [Velero](https://velero.io/) for PVC-level backup and restore:
+
+```bash
+# Install Velero with appropriate storage provider plugin
+
+# Backup the namespace (includes PVCs)
+velero backup create terraform-registry-backup \
+  --include-namespaces terraform-registry \
+  --include-resources pvc,pv
+
+# Restore
+velero restore create --from-backup terraform-registry-backup
+```
+
+Alternatively, copy data out of the running pod:
+
+```bash
+# Snapshot PVC data to a local archive
+kubectl exec -n terraform-registry deployment/backend -- \
+  tar czf - /app/storage > storage-backup-$(date +%Y%m%d).tar.gz
+
+# Restore from archive
+kubectl exec -i -n terraform-registry deployment/backend -- \
+  tar xzf - -C / < storage-backup-20260304.tar.gz
+```
+
+#### Docker Compose (named volume)
+
+```bash
+# Backup
+docker run --rm \
+  -v terraform-registry_storage_data:/data:ro \
+  -v $(pwd):/backup \
+  alpine tar czf /backup/storage-backup-$(date +%Y%m%d).tar.gz -C /data .
+
+# Restore
+docker run --rm \
+  -v terraform-registry_storage_data:/data \
+  -v $(pwd):/backup \
+  alpine sh -c "rm -rf /data/* && tar xzf /backup/storage-backup-20260304.tar.gz -C /data"
+```
+
+#### Standalone Binary
+
+```bash
+# Backup the storage directory (default /app/storage)
+sudo tar czf /var/backups/terraform-registry-storage-$(date +%Y%m%d).tar.gz \
+  -C /app storage/
+
+# Restore
+sudo systemctl stop terraform-registry
+sudo tar xzf /var/backups/terraform-registry-storage-20260304.tar.gz -C /app
+sudo chown -R registry:registry /app/storage
+sudo systemctl start terraform-registry
+```
 
 ### 10. Sign-off
 

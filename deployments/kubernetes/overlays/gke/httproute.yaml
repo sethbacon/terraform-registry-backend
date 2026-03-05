@@ -1,0 +1,114 @@
+# ============================================================
+# HTTPRoute Resources — GKE Gateway API
+# ============================================================
+# Identical routing logic to AKS and EKS overlays.
+# Replace registry.yourdomain.com with your actual hostname.
+# ============================================================
+
+# ── 1. HTTP → HTTPS redirect ───────────────────────────────────────────────────
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: http-redirect
+  namespace: terraform-registry
+spec:
+  parentRefs:
+    - name: terraform-registry-gateway
+      sectionName: http
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            statusCode: 301
+---
+# ── 2. Backend API and Terraform protocol paths (HTTPS) ──────────────────────
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: backend-routes
+  namespace: terraform-registry
+spec:
+  parentRefs:
+    - name: terraform-registry-gateway
+      sectionName: https
+  hostnames:
+    - "registry.yourdomain.com"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/
+      backendRefs:
+        - name: backend
+          port: 8080
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/
+      backendRefs:
+        - name: backend
+          port: 8080
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /.well-known/
+      backendRefs:
+        - name: backend
+          port: 8080
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /terraform/
+      backendRefs:
+        - name: backend
+          port: 8080
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /webhooks/
+      backendRefs:
+        - name: backend
+          port: 8080
+    - matches:
+        - path:
+            type: Exact
+            value: /health
+      backendRefs:
+        - name: backend
+          port: 8080
+    - matches:
+        - path:
+            type: Exact
+            value: /ready
+      backendRefs:
+        - name: backend
+          port: 8080
+    - matches:
+        - path:
+            type: Exact
+            value: /swagger.json
+      backendRefs:
+        - name: backend
+          port: 8080
+---
+# ── 3. Frontend SPA — catch-all (HTTPS) ───────────────────────────────────────
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: frontend-route
+  namespace: terraform-registry
+spec:
+  parentRefs:
+    - name: terraform-registry-gateway
+      sectionName: https
+  hostnames:
+    - "registry.yourdomain.com"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: frontend
+          port: 80

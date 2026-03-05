@@ -446,8 +446,8 @@ func TestMirrorTriggerSync_AlreadyInProgress(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/mirrors/"+knownUUID+"/sync", nil))
 
-	if w.Code != http.StatusConflict {
-		t.Errorf("status = %d, want 409: body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Errorf("status = %d, want 202: body=%s", w.Code, w.Body.String())
 	}
 }
 

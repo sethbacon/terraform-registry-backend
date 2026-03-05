@@ -1,0 +1,167 @@
+# ============================================================
+# values-eks.yaml — AWS Elastic Kubernetes Service Deployment Values
+# ============================================================
+# Copy this file and fill in ALL <PLACEHOLDER> values before deploying.
+# Do NOT commit a filled-in copy that contains real IDs or secrets.
+#
+# Prerequisites: See docs/deployment/eks-prerequisites.md
+#
+# Deploy with:
+#   helm upgrade --install terraform-registry ./deployments/helm \
+#     --namespace terraform-registry --create-namespace \
+#     -f deployments/helm/values-eks.yaml
+#
+# For secrets management (AWS Secrets Manager via CSI driver), the
+# SecretProviderClass must be applied separately — see overlays/eks/ for
+# the Kustomize-based approach, or apply secretproviderclass.yaml manually.
+# The extraVolumes/extraVolumeMounts below hook into the CSI driver once the
+# SecretProviderClass exists in the cluster.
+# ============================================================
+
+# ── Images: Amazon ECR ────────────────────────────────────────────────────────
+backend:
+  image:
+    # Format: <ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/terraform-registry-backend
+    repository: <ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/terraform-registry-backend
+    tag: "v1.0.0"
+    pullPolicy: IfNotPresent
+  replicaCount: 3
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  # Mount the CSI secret volume so AWS ASCP syncs Secrets Manager values
+  # into the terraform-registry-secrets k8s Secret at pod startup.
+  # Apply overlays/eks/secretproviderclass.yaml before deploying this chart.
+  extraVolumes:
+    - name: secrets-store
+      csi:
+        driver: secrets-store.csi.k8s.io
+        readOnly: true
+        volumeAttributes:
+          secretProviderClass: terraform-registry-secrets
+  extraVolumeMounts:
+    - name: secrets-store
+      mountPath: /mnt/secrets-store
+      readOnly: true
+
+frontend:
+  enabled: true
+  image:
+    repository: <ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/terraform-registry-frontend
+    tag: "v1.0.0"
+    pullPolicy: IfNotPresent
+  replicaCount: 2
+
+# ── Server ─────────────────────────────────────────────────────────────────────
+server:
+  baseUrl: "https://<HOSTNAME>"
+
+# ── Database: Amazon RDS for PostgreSQL ───────────────────────────────────────
+externalDatabase:
+  # RDS endpoint: <db-instance-id>.xxxxxxxxxxxx.<region>.rds.amazonaws.com
+  host: "<RDS_ENDPOINT>"
+  port: 5432
+  name: "terraform_registry"
+  user: "registry"
+  sslMode: "require"
+  # Leave blank — DB password comes from AWS Secrets Manager via CSI driver.
+  password: ""
+  existingSecret: ""
+
+# ── Storage: AWS S3 ────────────────────────────────────────────────────────────
+storage:
+  backend: "s3"
+  s3:
+    region: "<AWS_REGION>"
+    bucket: "<S3_BUCKET_NAME>"
+    # Use IRSA (IAM Roles for Service Accounts) — no static credentials needed.
+    # The pod's ServiceAccount role must have s3:GetObject, s3:PutObject, etc.
+    authMethod: "irsa"
+    accessKeyId: ""
+    secretAccessKey: ""
+  persistence:
+    enabled: false
+
+# ── Security: secrets from AWS Secrets Manager ────────────────────────────────
+# Leave blank — secrets come from AWS Secrets Manager via the CSI driver.
+# The SecretProviderClass in overlays/eks/ syncs them into the k8s Secret.
+security:
+  jwtSecret: ""
+  encryptionKey: ""
+  existingSecret: ""
+
+# ── Logging ────────────────────────────────────────────────────────────────────
+logging:
+  level: "warn"
+  format: "json"
+
+# ── ServiceAccount: AWS IRSA ───────────────────────────────────────────────────
+# The role-arn must reference an IAM Role with trust policy allowing the
+# service account (system:serviceaccount:terraform-registry:terraform-registry)
+# to assume the role via OIDC. The role needs:
+#   - s3:GetObject, s3:PutObject, s3:DeleteObject, s3:ListBucket on the S3 bucket
+#   - secretsmanager:GetSecretValue on the registry secrets (for CSI driver)
+serviceAccount:
+  create: true
+  annotations:
+    eks.amazonaws.com/role-arn: "arn:aws:iam::<ACCOUNT_ID>:role/<IRSA_ROLE_NAME>"
+
+# ── Gateway API: AWS Load Balancer Controller ─────────────────────────────────
+# Requires AWS LBC v2.6+ installed in the cluster with Gateway API support.
+# Install LBC: https://kubernetes-sigs.github.io/aws-load-balancer-controller/
+#   helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+#     -n kube-system --set clusterName=<CLUSTER_NAME> \
+#     --set serviceAccount.create=false \
+#     --set serviceAccount.name=aws-load-balancer-controller
+gatewayAPI:
+  enabled: true
+  createGatewayClass: true
+  # Name is user-defined. The controller will reconcile all Gateways referencing it.
+  gatewayClassName: aws-alb-external
+  controllerName: "gateway.k8s.aws/alb"
+  # albId blank for EKS — no ARM resource ID needed.
+  albId: ""
+  # Additional Gateway annotations for AWS LBC.
+  # service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+  # service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+  gatewayAnnotations:
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+    service.beta.kubernetes.io/aws-load-balancer-type: "external"
+  hostname: "<HOSTNAME>"
+  # Use letsencrypt-staging during initial testing
+  certManagerIssuer: "letsencrypt-staging"
+  tlsSecretName: "terraform-registry-tls"
+  email: "<OPS_EMAIL>"
+
+# ── Disable legacy nginx Ingress ───────────────────────────────────────────────
+ingress:
+  enabled: false
+
+# ── Azure-specific features: disabled for EKS ─────────────────────────────────
+keyVault:
+  enabled: false
+workloadIdentity:
+  enabled: false
+
+# ── NetworkPolicy ──────────────────────────────────────────────────────────────
+# Requires EKS with Amazon VPC CNI + Calico or native VPC network policies.
+# Check: https://docs.aws.amazon.com/eks/latest/userguide/network-policy.html
+networkPolicy:
+  enabled: true
+  prometheusNamespace: "monitoring"
+
+# ── Autoscaling ────────────────────────────────────────────────────────────────
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1

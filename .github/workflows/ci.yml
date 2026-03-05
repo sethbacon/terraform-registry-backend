@@ -2,18 +2,18 @@ name: CI
 
 on:
   push:
-    branches: [ main, development ]
+    branches: [main, development]
   pull_request:
-    branches: [ main, development ]
+    branches: [main, development]
   workflow_dispatch: {}
-  workflow_call: {}   # allows release.yml to call this as a prerequisite
+  workflow_call: {} # allows release.yml to call this as a prerequisite
 
 jobs:
   backend-test:
     name: Backend Tests & Quality
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # needed to push auto-generated swagger.json back to the branch
+      contents: write # needed to push auto-generated swagger.json back to the branch
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -21,7 +21,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: "1.24"
           cache-dependency-path: backend/go.sum
 
       - name: Check go mod tidy
@@ -63,6 +63,10 @@ jobs:
             # Push back to the source branch (works for both PRs and direct pushes).
             # GITHUB_HEAD_REF is set for pull_request events; GITHUB_REF_NAME is used otherwise.
             TARGET_BRANCH="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+            # Fetch and rebase before pushing so concurrent commits to the same branch
+            # (e.g. two PR squash-merges landing seconds apart) don't cause a rejected push.
+            git fetch origin "${TARGET_BRANCH}"
+            git rebase "origin/${TARGET_BRANCH}"
             git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
           else
             echo "swagger.json is up-to-date — nothing to commit"
@@ -150,7 +154,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: "1.24"
           cache-dependency-path: backend/go.sum
 
       - name: Install gosec
@@ -269,7 +273,7 @@ jobs:
       - name: Install Helm
         uses: azure/setup-helm@v4
         with:
-          version: 'latest'
+          version: "latest"
 
       - name: Helm lint
         run: |

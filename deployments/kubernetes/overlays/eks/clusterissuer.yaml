@@ -1,0 +1,44 @@
+# ============================================================
+# cert-manager ClusterIssuers — Let's Encrypt (EKS)
+# ============================================================
+# Identical to the AKS overlay ClusterIssuers: uses HTTP-01 challenge
+# via a temporary HTTPRoute on the Gateway's http listener.
+#
+# Replace <EMAIL> with your ops email for expiry notifications.
+# ============================================================
+
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: <EMAIL>
+    privateKeySecretRef:
+      name: letsencrypt-staging-account-key
+    solvers:
+      - http01:
+          gatewayHTTPRoute:
+            parentRefs:
+              - name: terraform-registry-gateway
+                namespace: terraform-registry
+                kind: Gateway
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: <EMAIL>
+    privateKeySecretRef:
+      name: letsencrypt-prod-account-key
+    solvers:
+      - http01:
+          gatewayHTTPRoute:
+            parentRefs:
+              - name: terraform-registry-gateway
+                namespace: terraform-registry
+                kind: Gateway

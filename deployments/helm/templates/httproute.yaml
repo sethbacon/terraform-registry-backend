@@ -1,0 +1,117 @@
+{{- if .Values.gatewayAPI.enabled -}}
+# ── HTTP → HTTPS redirect ──────────────────────────────────────────────────────
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "terraform-registry.fullname" . }}-http-redirect
+  labels:
+    {{- include "terraform-registry.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ include "terraform-registry.fullname" . }}-gateway
+      sectionName: http
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            statusCode: 301
+---
+# ── Backend API and protocol paths (HTTPS) ────────────────────────────────────
+# Routes API, Terraform registry protocol, and auxiliary paths directly to the
+# backend service. Bypasses the frontend nginx proxy for these paths.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "terraform-registry.fullname" . }}-backend-routes
+  labels:
+    {{- include "terraform-registry.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ include "terraform-registry.fullname" . }}-gateway
+      sectionName: https
+  hostnames:
+    - {{ .Values.gatewayAPI.hostname | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/
+      backendRefs:
+        - name: {{ include "terraform-registry.backendServiceName" . }}
+          port: {{ .Values.service.backend.port }}
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/
+      backendRefs:
+        - name: {{ include "terraform-registry.backendServiceName" . }}
+          port: {{ .Values.service.backend.port }}
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /.well-known/
+      backendRefs:
+        - name: {{ include "terraform-registry.backendServiceName" . }}
+          port: {{ .Values.service.backend.port }}
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /terraform/
+      backendRefs:
+        - name: {{ include "terraform-registry.backendServiceName" . }}
+          port: {{ .Values.service.backend.port }}
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /webhooks/
+      backendRefs:
+        - name: {{ include "terraform-registry.backendServiceName" . }}
+          port: {{ .Values.service.backend.port }}
+    - matches:
+        - path:
+            type: Exact
+            value: /health
+      backendRefs:
+        - name: {{ include "terraform-registry.backendServiceName" . }}
+          port: {{ .Values.service.backend.port }}
+    - matches:
+        - path:
+            type: Exact
+            value: /ready
+      backendRefs:
+        - name: {{ include "terraform-registry.backendServiceName" . }}
+          port: {{ .Values.service.backend.port }}
+    - matches:
+        - path:
+            type: Exact
+            value: /swagger.json
+      backendRefs:
+        - name: {{ include "terraform-registry.backendServiceName" . }}
+          port: {{ .Values.service.backend.port }}
+{{- if .Values.frontend.enabled }}
+---
+# ── Frontend SPA — catch-all (HTTPS) ──────────────────────────────────────────
+# Lower priority than backend-routes above (Gateway API: shorter prefix / matches last).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "terraform-registry.fullname" . }}-frontend-route
+  labels:
+    {{- include "terraform-registry.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ include "terraform-registry.fullname" . }}-gateway
+      sectionName: https
+  hostnames:
+    - {{ .Values.gatewayAPI.hostname | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: {{ include "terraform-registry.fullname" . }}-frontend
+          port: {{ .Values.service.frontend.port }}
+{{- end }}
+{{- end }}

@@ -8,14 +8,13 @@ resources:
   - hpa.yaml
 
 patches:
-  # Higher replica counts for production
+  # Production resource sizing
   - target:
       kind: Deployment
       name: backend
     patch: |-
-      - op: replace
+      - op: remove
         path: /spec/replicas
-        value: 3
       - op: replace
         path: /spec/template/spec/containers/0/resources/requests/cpu
         value: 250m
@@ -36,7 +35,15 @@ patches:
         path: /spec/replicas
         value: 2
 
-  # Production logging
+  # Spread backend pods across nodes (best-effort, ScheduleAnyway).
+  # Cloud-specific overlays (aks/eks/gke) add zone-level spread instead.
+  - path: backend-topology-spread.yaml
+    target:
+      kind: Deployment
+      name: backend
+
+  # Production logging and server config
+  # REQUIRED: Replace <YOUR_HOSTNAME> with your actual public hostname.
   - target:
       kind: ConfigMap
       name: terraform-registry-config
@@ -46,9 +53,15 @@ patches:
         value: warn
       - op: replace
         path: /data/TFR_SERVER_BASE_URL
-        value: "https://registry.example.com"
+        value: "https://<YOUR_HOSTNAME>"
 
-  # Larger PVC for production
+  # Larger PVC for production.
+  # WARNING: The base PVC uses ReadWriteOnce (RWO), which only allows a single
+  # node to mount the volume. With HPA scaling to multiple replicas, pods on
+  # different nodes will fail to schedule. For multi-replica production:
+  #   - Switch to a cloud storage backend (s3, azure, gcs) and remove the PVC, OR
+  #   - Change accessModes to ReadWriteMany and use a suitable StorageClass
+  #     (e.g. azurefile-csi on AKS, efs-sc on EKS, filestore-sc on GKE)
   - target:
       kind: PersistentVolumeClaim
       name: terraform-registry-storage
@@ -58,10 +71,17 @@ patches:
         value: 50Gi
 
 # Pin image tags for production
+# Replace <REGISTRY> with your container registry FQDN, e.g.:
+#   ACR:  myregistry.azurecr.io
+#   ECR:  123456789.dkr.ecr.us-east-1.amazonaws.com
+#   GCR:  us-docker.pkg.dev/my-project/my-repo
+#   GHCR: ghcr.io/myorg
+# Replace <IMAGE_TAG> with the semver tag to deploy (e.g. v1.0.0).
+# In CI/CD pipelines use: kustomize edit set image terraform-registry-backend=<repo>:<tag>
 images:
   - name: terraform-registry-backend
-    newName: your-registry.example.com/terraform-registry-backend
-    newTag: v0.1.0
+    newName: <REGISTRY>/terraform-registry-backend
+    newTag: <IMAGE_TAG>
   - name: terraform-registry-frontend
-    newName: your-registry.example.com/terraform-registry-frontend
-    newTag: v0.1.0
+    newName: <REGISTRY>/terraform-registry-frontend
+    newTag: <IMAGE_TAG>
