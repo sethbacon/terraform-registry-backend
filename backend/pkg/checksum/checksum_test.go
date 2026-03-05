@@ -1,8 +1,13 @@
 package checksum
 
 import (
+	"archive/zip"
 	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
+	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -133,4 +138,159 @@ type errReader struct{}
 
 func (errReader) Read(_ []byte) (int, error) {
 	return 0, io.ErrUnexpectedEOF
+}
+
+func TestHashZip(t *testing.T) {
+	t.Run("invalid bytes return error", func(t *testing.T) {
+		_, err := HashZip([]byte("not a zip file"))
+		if err == nil {
+			t.Error("HashZip() expected error for invalid zip bytes, got nil")
+		}
+	})
+
+	t.Run("empty zip returns h1: prefix", func(t *testing.T) {
+		zf := buildOrderedTestZip(t, nil)
+		got, err := HashZip(zf)
+		if err != nil {
+			t.Fatalf("HashZip() error: %v", err)
+		}
+		if !strings.HasPrefix(got, "h1:") {
+			t.Errorf("HashZip() = %q, want h1: prefix", got)
+		}
+	})
+
+	t.Run("result has valid base64 payload", func(t *testing.T) {
+		zf := buildOrderedTestZip(t, [][2]string{{"hello.txt", "world"}})
+		got, err := HashZip(zf)
+		if err != nil {
+			t.Fatalf("HashZip() error: %v", err)
+		}
+		if !strings.HasPrefix(got, "h1:") {
+			t.Fatalf("HashZip() = %q, want h1: prefix", got)
+		}
+		if _, err := base64.StdEncoding.DecodeString(got[len("h1:"):]); err != nil {
+			t.Errorf("HashZip() base64 payload is invalid: %v", err)
+		}
+	})
+
+	t.Run("deterministic — same zip yields same hash", func(t *testing.T) {
+		zf := buildOrderedTestZip(t, [][2]string{{"a.txt", "alpha"}, {"b.txt", "beta"}})
+		h1, err := HashZip(zf)
+		if err != nil {
+			t.Fatalf("HashZip() error: %v", err)
+		}
+		h2, err := HashZip(zf)
+		if err != nil {
+			t.Fatalf("HashZip() error: %v", err)
+		}
+		if h1 != h2 {
+			t.Error("HashZip() returned different hashes for identical input")
+		}
+	})
+
+	t.Run("zip entry order does not affect hash", func(t *testing.T) {
+		// Two zips with same files but stored in opposite order inside the archive.
+		zfAB := buildOrderedTestZip(t, [][2]string{{"a.txt", "alpha"}, {"b.txt", "beta"}})
+		zfBA := buildOrderedTestZip(t, [][2]string{{"b.txt", "beta"}, {"a.txt", "alpha"}})
+		hAB, err := HashZip(zfAB)
+		if err != nil {
+			t.Fatalf("HashZip() AB error: %v", err)
+		}
+		hBA, err := HashZip(zfBA)
+		if err != nil {
+			t.Fatalf("HashZip() BA error: %v", err)
+		}
+		if hAB != hBA {
+			t.Errorf("HashZip() gave different hashes for same content in different zip order: %q vs %q", hAB, hBA)
+		}
+	})
+
+	t.Run("different file content produces different hash", func(t *testing.T) {
+		zA := buildOrderedTestZip(t, [][2]string{{"file.txt", "content-a"}})
+		zB := buildOrderedTestZip(t, [][2]string{{"file.txt", "content-b"}})
+		hA, err := HashZip(zA)
+		if err != nil {
+			t.Fatalf("HashZip() error: %v", err)
+		}
+		hB, err := HashZip(zB)
+		if err != nil {
+			t.Fatalf("HashZip() error: %v", err)
+		}
+		if hA == hB {
+			t.Error("HashZip() returned same hash for different file content")
+		}
+	})
+
+	t.Run("different file names produce different hash", func(t *testing.T) {
+		zA := buildOrderedTestZip(t, [][2]string{{"a.txt", "same"}})
+		zB := buildOrderedTestZip(t, [][2]string{{"b.txt", "same"}})
+		hA, err := HashZip(zA)
+		if err != nil {
+			t.Fatalf("HashZip() error: %v", err)
+		}
+		hB, err := HashZip(zB)
+		if err != nil {
+			t.Fatalf("HashZip() error: %v", err)
+		}
+		if hA == hB {
+			t.Error("HashZip() returned same hash for different file names")
+		}
+	})
+
+	t.Run("matches dirhash reference implementation", func(t *testing.T) {
+		// Cross-validate HashZip against an inline reference of the same algorithm.
+		// This catches regressions without hard-coding a magic opaque base64 string.
+		files := [][2]string{{"terraform-provider-example_v1.0.0", "binary content here"}, {"LICENSE", "MIT"}}
+		zf := buildOrderedTestZip(t, files)
+		got, err := HashZip(zf)
+		if err != nil {
+			t.Fatalf("HashZip() error: %v", err)
+		}
+		want := referenceDirhash(t, files)
+		if got != want {
+			t.Errorf("HashZip() = %q, want %q", got, want)
+		}
+	})
+}
+
+// buildOrderedTestZip creates a zip archive containing the given files in the
+// exact order provided. Pass nil for an empty archive.
+func buildOrderedTestZip(t *testing.T, files [][2]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+	for _, kv := range files {
+		f, err := w.Create(kv[0])
+		if err != nil {
+			t.Fatalf("buildOrderedTestZip: create %q: %v", kv[0], err)
+		}
+		if _, err := f.Write([]byte(kv[1])); err != nil {
+			t.Fatalf("buildOrderedTestZip: write %q: %v", kv[0], err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("buildOrderedTestZip: close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// referenceDirhash is an inline implementation of the h1: dirhash algorithm
+// used to cross-validate HashZip. It operates directly on string content
+// rather than zip entries, so it is independent of HashZip's zip-reading path.
+func referenceDirhash(t *testing.T, files [][2]string) string {
+	t.Helper()
+	names := make([]string, len(files))
+	content := make(map[string]string, len(files))
+	for i, kv := range files {
+		names[i] = kv[0]
+		content[kv[0]] = kv[1]
+	}
+	sort.Strings(names)
+	outer := sha256.New()
+	for _, name := range names {
+		inner := sha256.New()
+		inner.Write([]byte(content[name]))
+		fmt.Fprintf(outer, "%x  %s\n", inner.Sum(nil), name)
+	}
+	return "h1:" + base64.StdEncoding.EncodeToString(outer.Sum(nil))
 }

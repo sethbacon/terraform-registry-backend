@@ -32,7 +32,7 @@ var provVersionListCols = []string{
 
 var platformCols = []string{
 	"id", "provider_version_id", "os", "arch",
-	"filename", "storage_path", "storage_backend", "size_bytes", "shasum", "download_count",
+	"filename", "storage_path", "storage_backend", "size_bytes", "shasum", "h1_hash", "download_count",
 }
 
 var provCreateCols = []string{"id", "created_at", "updated_at"}
@@ -71,7 +71,7 @@ func sampleProvVersionListRows() *sqlmock.Rows {
 
 func samplePlatformRow() *sqlmock.Rows {
 	return sqlmock.NewRows(platformCols).
-		AddRow("plat-1", "ver-1", "linux", "amd64", "file.zip", "path/to/file.zip", "default", int64(1024), "abc", int64(0))
+		AddRow("plat-1", "ver-1", "linux", "amd64", "file.zip", "path/to/file.zip", "default", int64(1024), "abc", nil, int64(0))
 }
 
 func emptyPlatformRows() *sqlmock.Rows {

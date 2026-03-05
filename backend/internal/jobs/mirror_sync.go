@@ -23,6 +23,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/safego"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 	"github.com/terraform-registry/terraform-registry/internal/validation"
+	"github.com/terraform-registry/terraform-registry/pkg/checksum"
 
 	"github.com/google/uuid"
 )
@@ -926,8 +927,8 @@ func (j *MirrorSyncJob) syncPlatformBinary(
 	}
 
 	// Calculate SHA256 checksum
-	checksum := sha256.Sum256(binaryContent)
-	checksumHex := hex.EncodeToString(checksum[:])
+	sha256sum := sha256.Sum256(binaryContent)
+	checksumHex := hex.EncodeToString(sha256sum[:])
 
 	// Verify checksum if we have SHASUM data
 	expectedChecksum := packageInfo.SHA256Sum
@@ -963,6 +964,14 @@ func (j *MirrorSyncJob) syncPlatformBinary(
 		StorageBackend:    j.storageBackendName,
 		SizeBytes:         int64(len(binaryContent)),
 		Shasum:            checksumHex,
+	}
+
+	// Compute the h1: dirhash for the zip archive so that Terraform's network
+	// mirror protocol can serve both zh: (legacy) and h1: (preferred) hashes.
+	if h1, err := checksum.HashZip(binaryContent); err != nil {
+		log.Printf("Warning: failed to compute h1: hash for %s: %v", packageInfo.Filename, err)
+	} else {
+		platformRecord.H1Hash = &h1
 	}
 
 	if err := j.providerRepo.CreatePlatform(ctx, platformRecord); err != nil {

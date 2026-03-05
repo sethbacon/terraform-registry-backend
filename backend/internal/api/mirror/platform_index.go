@@ -3,8 +3,6 @@ package mirror
 
 import (
 	"database/sql"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -173,15 +171,15 @@ func PlatformIndexHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 				return
 			}
 
-			// Format hashes according to Network Mirror Protocol
-			// Network Mirror expects:
-			// - "h1:" prefix = SHA256 hash in base64
-			// - "zh:" prefix = ZIP hash (also SHA256, but may include file headers)
-			//
-			// For now, we'll provide the h1 hash from our SHA256 checksum
-			hashes := []string{
-				formatH1Hash(platform.Shasum),
+			// Build the hashes list for this platform.
+			// h1: (dirhash of zip contents) is the preferred scheme; include it first when
+			// available so that Terraform can populate its lock file with the better hash.
+			// zh: (hex SHA256 of the zip archive) is the legacy fallback and is always present.
+			var hashes []string
+			if platform.H1Hash != nil && *platform.H1Hash != "" {
+				hashes = append(hashes, *platform.H1Hash)
 			}
+			hashes = append(hashes, formatZhHash(platform.Shasum))
 
 			// Add to archives
 			archives[platformKey] = gin.H{
@@ -207,12 +205,12 @@ func PlatformIndexHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 	}
 }
 
-// formatH1Hash converts a hex SHA256 checksum to the "h1:" format used by Terraform.
-// "h1:" format is the SHA256 hash encoded as base64.
-func formatH1Hash(hexChecksum string) string {
-	hashBytes, err := hex.DecodeString(hexChecksum)
-	if err != nil {
+// formatZhHash converts a hex SHA256 checksum to the "zh:" format used by Terraform's
+// Network Mirror Protocol. zh: is the lowercase hex SHA256 of the zip archive bytes,
+// as defined by Terraform's PackageHashLegacyZipSHA scheme.
+func formatZhHash(hexChecksum string) string {
+	if hexChecksum == "" {
 		return ""
 	}
-	return "h1:" + base64.StdEncoding.EncodeToString(hashBytes)
+	return "zh:" + hexChecksum
 }
