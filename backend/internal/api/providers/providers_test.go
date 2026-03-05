@@ -75,10 +75,10 @@ var providerVersionGetCols = []string{
 	"deprecated", "deprecated_at", "deprecation_message", "created_at",
 }
 
-// GetPlatform: id, provider_version_id, os, arch, filename, storage_path, storage_backend, size_bytes, shasum, download_count
+// GetPlatform: id, provider_version_id, os, arch, filename, storage_path, storage_backend, size_bytes, shasum, h1_hash, download_count
 var platformCols = []string{
 	"id", "provider_version_id", "os", "arch", "filename",
-	"storage_path", "storage_backend", "size_bytes", "shasum", "download_count",
+	"storage_path", "storage_backend", "size_bytes", "shasum", "h1_hash", "download_count",
 }
 
 // SearchProvidersWithStats result: id, org_id, namespace, type, description, source,
@@ -125,7 +125,7 @@ func samplePlatformRow() *sqlmock.Rows {
 		AddRow("plat-1", "ver-1", "linux", "amd64",
 			"terraform-provider-aws_4.0.0_linux_amd64.zip",
 			"providers/hashicorp/aws/4.0.0/terraform-provider-aws_linux_amd64.zip",
-			"local", int64(1024000), "sha256abc", int64(0))
+			"local", int64(1024000), "sha256abc", nil, int64(0))
 }
 
 func sampleProviderSearchRow() *sqlmock.Rows {

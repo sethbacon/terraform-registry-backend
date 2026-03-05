@@ -240,33 +240,35 @@ func TestPlatformIndex_VersionNotFound(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// formatH1Hash
+// formatZhHash
 // ---------------------------------------------------------------------------
 
-func TestFormatH1Hash_ZeroHash(t *testing.T) {
+func TestFormatZhHash_ZeroHash(t *testing.T) {
 	// 64 hex chars (32 bytes = sha256.Size) all zeros
-	result := formatH1Hash("0000000000000000000000000000000000000000000000000000000000000000")
-	if !strings.HasPrefix(result, "h1:") {
-		t.Errorf("result = %q, should start with h1:", result)
+	result := formatZhHash("0000000000000000000000000000000000000000000000000000000000000000")
+	if !strings.HasPrefix(result, "zh:") {
+		t.Errorf("result = %q, should start with zh:", result)
 	}
 }
 
-func TestFormatH1Hash_KnownHash(t *testing.T) {
+func TestFormatZhHash_KnownHash(t *testing.T) {
 	// SHA256 of "hello" = 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
-	result := formatH1Hash("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824")
-	if !strings.HasPrefix(result, "h1:") {
-		t.Errorf("result = %q, should start with h1:", result)
+	// zh: prepends the prefix directly to the hex string (lowercase hex, per Terraform spec)
+	result := formatZhHash("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824")
+	expected := "zh:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+	if result != expected {
+		t.Errorf("result = %q, want %q", result, expected)
 	}
 	// Verify it's different from zero hash
-	zeroResult := formatH1Hash("0000000000000000000000000000000000000000000000000000000000000000")
+	zeroResult := formatZhHash("0000000000000000000000000000000000000000000000000000000000000000")
 	if result == zeroResult {
 		t.Error("non-zero hash should differ from zero hash")
 	}
 }
 
-func TestFormatH1Hash_Empty(t *testing.T) {
-	result := formatH1Hash("")
-	if !strings.HasPrefix(result, "h1:") {
-		t.Errorf("result = %q, should start with h1:", result)
+func TestFormatZhHash_Empty(t *testing.T) {
+	result := formatZhHash("")
+	if result != "" {
+		t.Errorf("result = %q, want empty string for empty input", result)
 	}
 }

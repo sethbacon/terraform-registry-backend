@@ -548,7 +548,7 @@ func (h *MirrorHandler) GetMirrorStatus(c *gin.Context) {
 // @Security     Bearer
 // @Produce      json
 // @Param        id  path  string  true  "Mirror configuration ID (UUID)"
-// @Success      200  {object}  admin.WebhookEventsResponse  "providers: []models.MirroredProvider with versions"
+// @Success      200  {object}  admin.ListMirroredProvidersResponse
 // @Failure      400  {object}  map[string]interface{}  "Invalid mirror ID"
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
 // @Failure      404  {object}  map[string]interface{}  "Mirror configuration not found"

@@ -57,7 +57,7 @@ var versionCols = []string{
 
 var platformCols = []string{
 	"id", "provider_version_id", "os", "arch",
-	"filename", "storage_path", "storage_backend", "size_bytes", "shasum", "download_count",
+	"filename", "storage_path", "storage_backend", "size_bytes", "shasum", "h1_hash", "download_count",
 }
 
 var versionGetCols = []string{
@@ -349,7 +349,7 @@ func TestDeleteProvider_Success_WithVersionsAndPlatforms(t *testing.T) {
 			AddRow("plat-1", "ver-1", "linux", "amd64",
 				"terraform-provider-aws_5.0.0_linux_amd64.zip",
 				"providers/hashicorp/aws/5.0.0/linux_amd64.zip",
-				"local", 1024, "abc123", 0))
+				"local", 1024, "abc123", nil, 0))
 	// DeleteProvider
 	mock.ExpectExec("DELETE FROM providers").
 		WillReturnResult(sqlmock.NewResult(1, 1))
