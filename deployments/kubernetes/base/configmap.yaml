@@ -6,19 +6,38 @@ data:
   # Server
   TFR_SERVER_HOST: "0.0.0.0"
   TFR_SERVER_PORT: "8080"
+  # REQUIRED: Override TFR_SERVER_BASE_URL in your overlay to match your public hostname.
   TFR_SERVER_BASE_URL: "https://registry.example.com"
 
   # Database (password in Secret)
-  TFR_DATABASE_HOST: "postgres.terraform-registry.svc.cluster.local"
+  # REQUIRED: Override TFR_DATABASE_HOST in your overlay.
+  # For Azure Database for PostgreSQL Flexible Server the host looks like:
+  #   <server-name>.postgres.database.azure.com
+  # For an in-cluster PostgreSQL (e.g. Bitnami chart) use the service FQDN:
+  #   <release>-postgresql.<namespace>.svc.cluster.local
+  TFR_DATABASE_HOST: ""
   TFR_DATABASE_PORT: "5432"
   TFR_DATABASE_NAME: "terraform_registry"
   TFR_DATABASE_USER: "registry"
   TFR_DATABASE_SSL_MODE: "require"
 
-  # Storage
+  # Storage backend — override in your overlay.
+  # Options: local | s3 | azure | gcs
+  #
+  # "local" uses a PersistentVolumeClaim mounted at TFR_STORAGE_LOCAL_BASE_PATH.
+  #   ReadWriteOnce (default) only supports a single node. For multiple replicas
+  #   across nodes use storageClass: azurefile-csi (ReadWriteMany) or switch to
+  #   a cloud storage backend.
+  #
+  # "azure" uses Azure Blob Storage — recommended for AKS multi-replica deployments.
+  #   Set TFR_STORAGE_AZURE_ACCOUNT_NAME and TFR_STORAGE_AZURE_CONTAINER_NAME here.
+  #   Store TFR_STORAGE_AZURE_ACCOUNT_KEY in the Secret (or Key Vault).
   TFR_STORAGE_DEFAULT_BACKEND: "local"
   TFR_STORAGE_LOCAL_BASE_PATH: "/app/storage"
   TFR_STORAGE_LOCAL_SERVE_DIRECTLY: "true"
+  # Azure Blob Storage (used when TFR_STORAGE_DEFAULT_BACKEND=azure)
+  TFR_STORAGE_AZURE_ACCOUNT_NAME: ""
+  TFR_STORAGE_AZURE_CONTAINER_NAME: ""
 
   # Auth
   TFR_AUTH_API_KEYS_ENABLED: "true"
@@ -29,7 +48,7 @@ data:
   TFR_MULTI_TENANCY_ENABLED: "false"
   TFR_MULTI_TENANCY_DEFAULT_ORGANIZATION: "default"
 
-  # Security (TLS terminated at Ingress)
+  # Security (TLS terminated at Gateway/Ingress)
   TFR_SECURITY_TLS_ENABLED: "false"
   TFR_SECURITY_RATE_LIMITING_ENABLED: "true"
 

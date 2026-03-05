@@ -1,0 +1,33 @@
+# JSON 6902 patch: AKS-specific ConfigMap overrides.
+#
+# Replaces the placeholder database host (left empty in base) and
+# configures Azure Blob Storage as the artifact storage backend.
+#
+# Replace ALL <PLACEHOLDER> values before applying:
+#   <AZURE_POSTGRES_SERVER>  PostgreSQL Flexible Server resource name
+#                            (hostname will be <name>.postgres.database.azure.com)
+#   <AZURE_STORAGE_ACCOUNT>  Azure Storage Account name (lowercase, no hyphens in name)
+#   <STORAGE_CONTAINER>      Blob container name (e.g. terraform-registry)
+#   <HOSTNAME>               Public hostname (e.g. registry.company.com)
+#
+# When TFR_STORAGE_DEFAULT_BACKEND=azure is set:
+#   - The PVC (pvc.yaml from base) is created but unused by the backend.
+#   - The backend uses Azure Blob Storage for all module/provider artifacts.
+#   - TFR_STORAGE_AZURE_ACCOUNT_KEY must be in the Secret (via Key Vault CSI).
+#     Alternatively, set up the managed identity with Blob Data Contributor role
+#     and configure the backend to use managed identity authentication.
+- op: replace
+  path: /data/TFR_DATABASE_HOST
+  value: "<AZURE_POSTGRES_SERVER>.postgres.database.azure.com"
+- op: replace
+  path: /data/TFR_STORAGE_DEFAULT_BACKEND
+  value: "azure"
+- op: replace
+  path: /data/TFR_STORAGE_AZURE_ACCOUNT_NAME
+  value: "<AZURE_STORAGE_ACCOUNT>"
+- op: replace
+  path: /data/TFR_STORAGE_AZURE_CONTAINER_NAME
+  value: "<STORAGE_CONTAINER>"
+- op: replace
+  path: /data/TFR_SERVER_BASE_URL
+  value: "https://<HOSTNAME>"
