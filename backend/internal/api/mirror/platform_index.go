@@ -2,10 +2,12 @@
 package mirror
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"sync"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
+	"github.com/terraform-registry/terraform-registry/internal/telemetry"
 	"github.com/terraform-registry/terraform-registry/internal/validation"
 )
 
@@ -192,6 +195,24 @@ func PlatformIndexHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 			"archives": archives,
 		}
 
+		// Track the download: parse the Terraform User-Agent to determine
+		// which platform the client will actually fetch, then increment
+		// only that platform's download counter.
+		if clientOS, clientArch := parseTerraformPlatform(c.GetHeader("User-Agent")); clientOS != "" {
+			for _, platform := range platforms {
+				if platform.OS == clientOS && platform.Arch == clientArch {
+					platformID := platform.ID
+					go func() {
+						if err := providerRepo.IncrementDownloadCount(context.Background(), platformID); err != nil {
+							// Log error but don't fail the request
+						}
+					}()
+					telemetry.ProviderDownloadsTotal.WithLabelValues(namespace, providerType, clientOS, clientArch).Inc()
+					break
+				}
+			}
+		}
+
 		// Use c.Data with plain "application/json" (no charset) to satisfy the
 		// Terraform Network Mirror Protocol spec, which rejects unknown content-type
 		// parameters. Gin's c.JSON would append "; charset=utf-8" and trigger a
@@ -213,4 +234,23 @@ func formatZhHash(hexChecksum string) string {
 		return ""
 	}
 	return "zh:" + hexChecksum
+}
+
+// terraformPlatformRe matches the OS/arch pair in a Terraform User-Agent string.
+// Terraform sends User-Agent headers in the form:
+//
+//	Terraform/1.5.0 (+https://www.terraform.io) linux_amd64
+//	OpenTofu/1.6.0 linux_arm64
+//
+// The regex captures (os)_(arch) from the trailing platform token.
+var terraformPlatformRe = regexp.MustCompile(`(?:Terraform|OpenTofu)/\S+.*?\b([a-z]+)_([a-z0-9]+)`)
+
+// parseTerraformPlatform extracts (os, arch) from a Terraform/OpenTofu User-Agent.
+// Returns ("", "") if the header doesn't match.
+func parseTerraformPlatform(ua string) (string, string) {
+	m := terraformPlatformRe.FindStringSubmatch(ua)
+	if m == nil {
+		return "", ""
+	}
+	return m[1], m[2]
 }
