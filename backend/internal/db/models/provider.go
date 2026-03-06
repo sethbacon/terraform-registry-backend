@@ -45,6 +45,16 @@ type ProviderVersion struct {
 	PublishedByName *string // User name who published this version (joined from users table)
 }
 
+// ProviderVersionShasum holds one entry from the upstream SHA256SUMS file for a
+// provider version.  All entries are stored verbatim (including platforms that
+// are not locally mirrored) so the Network Mirror Protocol endpoint can serve
+// zh: hashes for every platform in the upstream release.
+type ProviderVersionShasum struct {
+	ProviderVersionID string // FK → provider_versions.id
+	Filename          string // e.g. "terraform-provider-aws_6.35.1_linux_amd64.zip"
+	SHA256Hex         string // lowercase hex SHA256 of the zip archive
+}
+
 // ProviderPlatform represents a platform-specific binary for a provider version
 type ProviderPlatform struct {
 	ID                string

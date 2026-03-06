@@ -732,6 +732,75 @@ func (r *ProviderRepository) SearchProvidersWithStats(ctx context.Context, orgID
 	return results, total, nil
 }
 
+// UpsertProviderVersionShasums stores the full set of filename→sha256hex entries
+// from an upstream SHA256SUMS file for a provider version.  Using an upsert
+// means it is safe to call on both new syncs and re-syncs; existing rows are
+// silently overwritten with the latest checksum values.
+func (r *ProviderRepository) UpsertProviderVersionShasums(ctx context.Context, versionID string, shasums map[string]string) error {
+	if len(shasums) == 0 {
+		return nil
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO provider_version_shasums (provider_version_id, filename, sha256_hex)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (provider_version_id, filename) DO UPDATE SET sha256_hex = EXCLUDED.sha256_hex
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to prepare upsert statement: %w", err)
+	}
+	defer stmt.Close()
+
+	for filename, sha256hex := range shasums {
+		if _, err := stmt.ExecContext(ctx, versionID, filename, sha256hex); err != nil {
+			return fmt.Errorf("failed to upsert shasum for %s: %w", filename, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit shasums transaction: %w", err)
+	}
+	return nil
+}
+
+// ListProviderVersionShasums returns all SHA256SUMS entries stored for a
+// provider version, ordered by filename.
+func (r *ProviderRepository) ListProviderVersionShasums(ctx context.Context, versionID string) ([]models.ProviderVersionShasum, error) {
+	query := `
+		SELECT provider_version_id, filename, sha256_hex
+		FROM provider_version_shasums
+		WHERE provider_version_id = $1
+		ORDER BY filename
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, versionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list provider version shasums: %w", err)
+	}
+	defer rows.Close()
+
+	var result []models.ProviderVersionShasum
+	for rows.Next() {
+		var s models.ProviderVersionShasum
+		if err := rows.Scan(&s.ProviderVersionID, &s.Filename, &s.SHA256Hex); err != nil {
+			return nil, fmt.Errorf("failed to scan provider version shasum: %w", err)
+		}
+		result = append(result, s)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating provider version shasums: %w", err)
+	}
+
+	return result, nil
+}
+
 // compareSemver compares two semver strings
 // Returns: -1 if a < b, 0 if a == b, 1 if a > b
 func compareSemver(a, b string) int {
