@@ -2,13 +2,13 @@
 
 This document describes how to set up a local development environment, generate API docs, and run tests.
 
-Prerequisites
+## Prerequisites
 
 - Go 1.24+
 - Docker & Docker Compose (for test environment)
 - Make (optional)
 
-Install tools
+## Install Tools
 
 1. Install `swag` (OpenAPI generator):
 
@@ -16,7 +16,7 @@ Install tools
     go install github.com/swaggo/swag/cmd/swag@latest
     ```
 
-Generate Swagger JSON
+## Generate Swagger JSON
 
 ```bash
 cd backend
@@ -24,7 +24,7 @@ swag init -g cmd/server/main.go --outputTypes json
 # Commit backend/docs/swagger.json if changed
 ```
 
-Run backend (dev)
+## Run Backend (Dev)
 
 ```bash
 # use DEV_MODE in development to enable dev-login endpoints used by E2E
@@ -33,7 +33,7 @@ DEV_MODE=true go run cmd/server/main.go serve
 
 For all `TFR_*` environment variables and their YAML equivalents, see the [Configuration Reference](configuration.md).
 
-Makefile targets (repo root)
+## Makefile Targets
 
 - `make swag` — regenerate Swagger JSON
 - `make backend-test` — run `go test ./...`
@@ -42,7 +42,7 @@ Makefile targets (repo root)
 
 For frontend development and E2E setup, see [terraform-registry-frontend](https://github.com/sethbacon/terraform-registry-frontend).
 
-Test Coverage
+## Test Coverage
 
 CI enforces a minimum threshold on `go test ./... -coverprofile=coverage.out`. The build fails if total statement coverage drops below **65%**. The aspirational goal is **70%** ("good for production" per Graphite / Google's "commendable" benchmark).
 
@@ -58,7 +58,7 @@ Component targets follow a risk-based approach:
 | Config & utilities | `internal/config`, `internal/telemetry` | 70–80% |
 | Generated / migration code | `internal/db` (schema init) | Excluded — no meaningful unit-testable logic |
 
-Measure coverage locally:
+### Measure Coverage Locally
 
 ```bash
 cd backend
@@ -71,6 +71,6 @@ go tool cover -html=coverage.out
 go tool cover -func=coverage.out | grep -v "^total:" | awk '{print $NF, $0}' | sort -V
 ```
 
-Troubleshooting
+## Troubleshooting
 
 - If `swag init` reports missing annotations, check `docs/SWAGGER_ANNOTATION_CHECKLIST.md`.

@@ -5,23 +5,148 @@ steps before attempting fixes.
 
 ## Diagnostic Tools
 
-The backend ships with several utility commands in `backend/cmd/`:
+The backend ships with several utility commands in `backend/cmd/`. All database
+tools respect the same `TFR_DATABASE_*` environment variables used by
+`cmd/server`, so no extra configuration is needed in a standard deployment.
+
+### cmd/check-db — database connectivity and table inspection
+
+Verifies that the database is reachable and prints row counts for every major
+table. Exits non-zero on failure, making it suitable for deployment gates and
+health checks.
 
 ```bash
 cd backend
 
-# Test database connectivity
+# Uses the same defaults as the server (registry/registry@localhost/terraform_registry)
 go run cmd/check-db/main.go
 
-# Repair dirty migration state (use after interrupted migration)
+# Override connection details via env vars
+TFR_DATABASE_HOST=db.internal \
+TFR_DATABASE_PASSWORD=secret \
+go run cmd/check-db/main.go
+```
+
+**Example output:**
+
+```txt
+Connected to localhost:5432/terraform_registry as registry
+
+=== ROW COUNTS ===
+  users                           3
+  api_keys                        5
+  organizations                   2
+  organization_members            4
+  role_templates                  2
+  modules                         8
+  module_versions                 23
+  providers                       1
+  provider_versions               6
+  terraform_mirrors               2
+  storage_configs                 1
+  scm_providers                   1
+  audit_logs                      142
+  schema_migrations               1
+
+=== MIGRATION STATE ===
+  version=1  dirty=false
+
+=== MODULES ===
+  myorg/vpc/aws  (id: 3f2a…)
+  myorg/vpc/azurerm  (id: 9c1b…)
+
+=== PROVIDERS ===
+  myorg/myprovider  (id: 7d4e…)
+```
+
+### cmd/fix-migration — repair dirty migration state
+
+When a migration is interrupted mid-run the `schema_migrations` table is left
+with `dirty=true`, which blocks the server from starting. This tool clears the
+flag so the server can retry.
+
+```bash
+cd backend
+
+# Preview what the tool would do without making changes
+go run cmd/fix-migration/main.go --dry-run
+
+# Clear the dirty flag (irreversible — ensure the partial migration is safe to retry)
 go run cmd/fix-migration/main.go
 
-# Test API connectivity (basic health check)
-go run cmd/test-api/main.go
-
-# Generate bcrypt hash for an API key (for manual DB operations)
-go run cmd/hash/main.go <api-key-value>
+# Remote database
+TFR_DATABASE_HOST=db.internal \
+TFR_DATABASE_PASSWORD=secret \
+go run cmd/fix-migration/main.go
 ```
+
+**When to use this:**
+
+```txt
+Dirty database version 5. Fix and force version.
+```
+
+If you see the error above at server startup, run `--dry-run` first to confirm
+the version, then run without the flag. After clearing the flag, restart the
+server — it will retry the migration from the beginning.
+
+### cmd/hash — generate a bcrypt hash for an API key
+
+The registry stores only bcrypt hashes of API keys. Use this tool when
+inserting a key directly into the database (e.g., during initial seeding or
+disaster recovery).
+
+```bash
+cd backend
+
+# Via flag
+go run cmd/hash/main.go -key "tfr_myapikey"
+
+# Via stdin (useful in scripts or with a password manager)
+echo "tfr_myapikey" | go run cmd/hash/main.go
+
+# Insert the result directly into the database
+HASH=$(go run cmd/hash/main.go -key "tfr_myapikey")
+psql -U registry -d terraform_registry \
+  -c "UPDATE api_keys SET key_hash='$HASH' WHERE prefix='tfr_myap';"
+```
+
+### cmd/api-test — end-to-end API smoke test
+
+Runs a full suite of HTTP requests against a live registry, covering modules,
+providers, mirrors, users, organizations, SCM providers, storage, OIDC, audit
+logs, and more. Prints a pass/fail/skip summary and exits non-zero if any test
+fails — suitable for post-deployment validation.
+
+```bash
+cd backend
+
+# Compile once
+go build -o api-test.exe ./cmd/api-test
+
+# Run against local dev server
+./api-test.exe -url http://localhost:8080 -key "tfr_myapikey"
+
+# Run against staging
+./api-test.exe -url https://registry.staging.example.com -key "$STAGING_API_KEY"
+```
+
+**Example output:**
+
+```txt
+[PASS] #1   GET     /terraform.json                                          200  (1ms)
+[PASS] #2   GET     /api/v1/admin/organizations                              200  (2ms)
+...
+[SKIP] #47  GET     /api/v1/admin/tf-mirrors/:id/versions/:version → no synced version data available
+...
+=== Results: 111 passed, 0 failed, 2 skipped ===
+
+--- Skipped Tests ---
+  #47 GET /api/v1/admin/tf-mirrors/:id/versions/:version → no synced version data available
+  #52 GET /api/v1/storage/configs/:id → no storage config exists
+```
+
+---
 
 Increase log verbosity to see detailed request tracing:
 
@@ -68,7 +193,10 @@ Dirty database version 5. Fix and force version.
 This happens when a migration was partially applied (e.g., due to a crash or timeout).
 
 ```bash
-# 1. Identify which migration failed
+# 1. Preview the current dirty state (no writes)
+go run cmd/fix-migration/main.go --dry-run
+
+# 2. Clear the dirty flag
 go run cmd/fix-migration/main.go
 
 # 2. If the fix tool cannot resolve it automatically, manually reset:
@@ -151,7 +279,7 @@ export TFR_DEV_MODE=true
 - Verify the key starts with the configured prefix (default `tfr_`)
 - Check the key has not expired (Admin → API Keys → check Expires column)
 - Check the key has the required scope for the endpoint (e.g., `modules:write` for upload)
-- Use `go run cmd/hash/main.go <key>` to verify the hash matches what's in the database
+- Use `go run cmd/hash/main.go -key <key>` to regenerate the hash and compare it against the `key_hash` column in the `api_keys` table
 
 ### OIDC Login Fails
 
@@ -442,16 +570,16 @@ The `/api-docs` page loads ReDoc from a CDN (`cdn.jsdelivr.net`). If the page is
 
 ## Common Error Messages
 
-| Error | Likely Cause | Fix |
-| --- | --- | --- |
-| `version already exists` | Duplicate module/provider version upload | Version strings are immutable; bump the version number |
-| `invalid semver format` | Version string not following `X.Y.Z` | Use a valid semver: `1.0.0`, not `v1.0.0` or `1.0` |
-| `file too large` | Module > 100MB or provider > 500MB | Reduce archive size; check for accidentally included build artifacts |
-| `path traversal detected` | Archive contains `../` paths | Re-create the archive with relative paths only |
-| `namespace not found` | Organization/namespace doesn't exist | Create the organization first via Admin → Organizations |
-| `insufficient permissions` | Missing required scope | Check the API key or user's role template scopes |
-| `token is expired` | JWT expired | Re-login; check server/client clock sync |
-| `encryption key missing` | `ENCRYPTION_KEY` not set | Set the `ENCRYPTION_KEY` environment variable |
+| Error                      | Likely Cause                             | Fix                                                                  |
+| -------------------------- | ---------------------------------------- | -------------------------------------------------------------------- |
+| `version already exists`   | Duplicate module/provider version upload | Version strings are immutable; bump the version number               |
+| `invalid semver format`    | Version string not following `X.Y.Z`     | Use a valid semver: `1.0.0`, not `v1.0.0` or `1.0`                   |
+| `file too large`           | Module > 100MB or provider > 500MB       | Reduce archive size; check for accidentally included build artifacts |
+| `path traversal detected`  | Archive contains `../` paths             | Re-create the archive with relative paths only                       |
+| `namespace not found`      | Organization/namespace doesn't exist     | Create the organization first via Admin → Organizations              |
+| `insufficient permissions` | Missing required scope                   | Check the API key or user's role template scopes                     |
+| `token is expired`         | JWT expired                              | Re-login; check server/client clock sync                             |
+| `encryption key missing`   | `ENCRYPTION_KEY` not set                 | Set the `ENCRYPTION_KEY` environment variable                        |
 
 ---
 
@@ -546,7 +674,7 @@ If `curl http://localhost:9090/metrics` times out or returns connection refused:
 If the above guidance doesn't resolve your issue:
 
 1. Check the backend logs with `TFR_LOGGING_LEVEL=debug` for detailed error context
-2. Check the [GitHub Issues](https://github.com/sethbacon/terraform-registry/issues) for similar reports
+2. Check the [GitHub Issues](https://github.com/sethbacon/terraform-registry-backend/issues) for similar reports
 3. Open a new issue with:
    - The exact error message
    - Relevant log output (sanitize credentials)
