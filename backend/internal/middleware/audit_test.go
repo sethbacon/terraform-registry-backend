@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/audit"
+	"github.com/terraform-registry/terraform-registry/internal/config"
 )
 
 // captureShipper collects audit log entries via a buffered channel.
@@ -257,5 +258,40 @@ func TestAuditMiddleware_BackwardCompat(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
+
+func TestAuditMiddleware_FailedWriteSkippedWhenLogFailedRequestsFalse(t *testing.T) {
+	cs := newCaptureShipper(1)
+	r := gin.New()
+	cfg := &config.AuditConfig{Enabled: true, LogFailedRequests: false}
+	r.Use(AuditMiddlewareWithShipper(nil, cs, cfg))
+	r.POST("/modules/test", func(c *gin.Context) { c.Status(http.StatusBadRequest) })
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/modules/test", nil)
+	r.ServeHTTP(w, req)
+
+	select {
+	case <-cs.ch:
+		t.Error("shipper called for failed POST with LogFailedRequests=false, want no shipping")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestAuditMiddleware_FailedWriteLoggedWhenLogFailedRequestsTrue(t *testing.T) {
+	cs := newCaptureShipper(1)
+	r := gin.New()
+	cfg := &config.AuditConfig{Enabled: true, LogFailedRequests: true}
+	r.Use(AuditMiddlewareWithShipper(nil, cs, cfg))
+	r.POST("/modules/test", func(c *gin.Context) { c.Status(http.StatusBadRequest) })
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/modules/test", nil)
+	r.ServeHTTP(w, req)
+
+	entry := cs.waitForEntry(t, 500*time.Millisecond)
+	if entry.ResourceType != "module" {
+		t.Errorf("ResourceType = %q, want module", entry.ResourceType)
 	}
 }
