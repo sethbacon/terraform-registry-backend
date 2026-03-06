@@ -67,7 +67,7 @@ func newMirrorAPIRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	cfg := &config.Config{}
 	r := gin.New()
 	r.GET("/providers/:hostname/:namespace/:type/index.json", IndexHandler(db, cfg))
-	r.GET("/providers/:hostname/:namespace/:type/:versionfile", PlatformIndexHandler(db, cfg))
+	r.GET("/providers/:hostname/:namespace/:type/:versionfile", PlatformIndexHandler(db, cfg, nil))
 	return mock, r
 }
 
@@ -363,7 +363,7 @@ func TestPlatformIndex_StorageInitError(t *testing.T) {
 	cfg.Storage.DefaultBackend = "nonexistent-backend"
 
 	r := gin.New()
-	r.GET("/providers/:hostname/:namespace/:type/:versionfile", PlatformIndexHandler(db, cfg))
+	r.GET("/providers/:hostname/:namespace/:type/:versionfile", PlatformIndexHandler(db, cfg, nil))
 
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
 		WillReturnRows(sampleMirrorAPIOrg())
@@ -396,7 +396,7 @@ func TestPlatformIndex_Success_EmptyPlatforms(t *testing.T) {
 	cfg.Server.BaseURL = "http://localhost:8080"
 
 	r := gin.New()
-	r.GET("/providers/:hostname/:namespace/:type/:versionfile", PlatformIndexHandler(db, cfg))
+	r.GET("/providers/:hostname/:namespace/:type/:versionfile", PlatformIndexHandler(db, cfg, nil))
 
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
 		WillReturnRows(sampleMirrorAPIOrg())
@@ -447,7 +447,7 @@ func TestPlatformIndex_Success_WithPlatforms(t *testing.T) {
 	}
 
 	r := gin.New()
-	r.GET("/providers/:hostname/:namespace/:type/:versionfile", PlatformIndexHandler(db, cfg))
+	r.GET("/providers/:hostname/:namespace/:type/:versionfile", PlatformIndexHandler(db, cfg, nil))
 
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
 		WillReturnRows(sampleMirrorAPIOrg())
