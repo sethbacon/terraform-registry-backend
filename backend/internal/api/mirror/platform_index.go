@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -188,6 +189,57 @@ func PlatformIndexHandler(db *sql.DB, cfg *config.Config, auditRepo *repositorie
 			archives[platformKey] = gin.H{
 				"url":    downloadURL,
 				"hashes": hashes,
+			}
+		}
+
+		// Enrich archives with zh: hashes for platforms present in the upstream
+		// SHA256SUMS file but not synced locally.  Terraform records all hashes it
+		// sees in the version JSON into the lock file, so including every platform's
+		// zh: here lets clients build a complete cross-platform lock file from this
+		// mirror alone when running `terraform providers lock -platform=...`.
+		//
+		// Unmirrored platforms are given their upstream HashiCorp download URL.  If
+		// the ShasumURL field is empty (e.g. manually-uploaded providers) the block
+		// is skipped gracefully.
+		if providerVersion.ShasumURL != "" {
+			upstreamBase := providerVersion.ShasumURL
+			if idx := strings.LastIndex(upstreamBase, "/"); idx >= 0 {
+				upstreamBase = upstreamBase[:idx]
+			}
+
+			shasums, err := providerRepo.ListProviderVersionShasums(c.Request.Context(), providerVersion.ID)
+			if err != nil {
+				slog.Warn("failed to list provider version shasums for platform index; unmirrored platform zh: hashes will be omitted",
+					"provider_version_id", providerVersion.ID, "error", err)
+			} else {
+				for _, s := range shasums {
+					// Only include zip archives; skip manifest.json and similar entries
+					if !strings.HasSuffix(s.Filename, ".zip") {
+						continue
+					}
+
+					// Derive the os_arch key from the filename.
+					// Format: terraform-provider-TYPE_VERSION_OS_ARCH.zip
+					// The OS and ARCH tokens are always the last two underscore-separated
+					// parts of the stem.
+					stem := strings.TrimSuffix(s.Filename, ".zip")
+					parts := strings.Split(stem, "_")
+					if len(parts) < 2 {
+						continue
+					}
+					platformKey := parts[len(parts)-2] + "_" + parts[len(parts)-1]
+
+					if _, alreadyMirrored := archives[platformKey]; alreadyMirrored {
+						// Platform is physically synced locally; its entry already has
+						// a full URL + h1: + zh: — no enrichment needed.
+						continue
+					}
+
+					archives[platformKey] = gin.H{
+						"url":    upstreamBase + "/" + s.Filename,
+						"hashes": []string{formatZhHash(s.SHA256Hex)},
+					}
+				}
 			}
 		}
 
