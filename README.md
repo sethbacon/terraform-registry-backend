@@ -1,4 +1,12 @@
 <!-- markdownlint-disable MD024 -->
+# Enterprise Terraform Registry — Backend
+
+A fully-featured, enterprise-grade Terraform registry implementing all three HashiCorp protocols with multi-tenancy support.
+
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Go Version](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go)](https://go.dev/)
+[![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/sethbacon/52d7faafe77a38f35ea962247c7ec210/raw/coverage.json)](https://github.com/sethbacon/terraform-registry-backend/actions/workflows/ci.yml)
+
 - [Enterprise Terraform Registry — Backend](#enterprise-terraform-registry-%E2%80%94-backend)
   - [Features](#features)
     - [Terraform Protocol Support](#terraform-protocol-support)
@@ -31,14 +39,6 @@
   - [Disclaimer](#disclaimer)
   - [Acknowledgments](#acknowledgments)
     - [Trademark Notice](#trademark-notice)
-
-# Enterprise Terraform Registry — Backend
-
-A fully-featured, enterprise-grade Terraform registry implementing all three HashiCorp protocols with multi-tenancy support.
-
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Go Version](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go)](https://go.dev/)
-[![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/sethbacon/52d7faafe77a38f35ea962247c7ec210/raw/coverage.json)](https://github.com/sethbacon/terraform-registry-backend/actions/workflows/ci.yml)
 
 ## Features
 
