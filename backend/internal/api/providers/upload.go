@@ -356,6 +356,17 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 			Shasum:            sha256sum,
 		}
 
+		// Compute the h1: dirhash from the already-spooled temp file so the
+		// network mirror protocol can serve the preferred hash scheme without
+		// reloading the binary from storage.
+		if h1, err := checksum.HashZipFile(tmpFile, size); err != nil {
+			slog.Warn("failed to compute h1: hash for uploaded provider binary; zh: will be used as fallback",
+				"provider", fmt.Sprintf("%s/%s@%s %s/%s", namespace, providerType, version, targetOS, arch),
+				"error", err)
+		} else {
+			platform.H1Hash = &h1
+		}
+
 		if err := providerRepo.CreatePlatform(c.Request.Context(), platform); err != nil {
 			// Try to clean up uploaded file
 			if delErr := storageBackend.Delete(c.Request.Context(), uploadResult.Path); delErr != nil {

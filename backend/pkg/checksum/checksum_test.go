@@ -294,3 +294,40 @@ func referenceDirhash(t *testing.T, files [][2]string) string {
 	}
 	return "h1:" + base64.StdEncoding.EncodeToString(outer.Sum(nil))
 }
+
+func TestHashZipFile(t *testing.T) {
+	t.Run("invalid bytes return error", func(t *testing.T) {
+		data := []byte("not a zip file")
+		_, err := HashZipFile(bytes.NewReader(data), int64(len(data)))
+		if err == nil {
+			t.Error("HashZipFile() expected error for invalid zip bytes, got nil")
+		}
+	})
+
+	t.Run("produces same result as HashZip", func(t *testing.T) {
+		files := [][2]string{{"terraform-provider-example_v1.0.0", "binary"}, {"LICENSE", "MIT"}}
+		zf := buildOrderedTestZip(t, files)
+		want, err := HashZip(zf)
+		if err != nil {
+			t.Fatalf("HashZip() error: %v", err)
+		}
+		got, err := HashZipFile(bytes.NewReader(zf), int64(len(zf)))
+		if err != nil {
+			t.Fatalf("HashZipFile() error: %v", err)
+		}
+		if got != want {
+			t.Errorf("HashZipFile() = %q, want %q (same as HashZip)", got, want)
+		}
+	})
+
+	t.Run("empty zip returns h1: prefix", func(t *testing.T) {
+		zf := buildOrderedTestZip(t, nil)
+		got, err := HashZipFile(bytes.NewReader(zf), int64(len(zf)))
+		if err != nil {
+			t.Fatalf("HashZipFile() error: %v", err)
+		}
+		if !strings.HasPrefix(got, "h1:") {
+			t.Errorf("HashZipFile() = %q, want h1: prefix", got)
+		}
+	})
+}

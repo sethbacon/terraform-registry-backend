@@ -52,7 +52,23 @@ func HashZip(zipContent []byte) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to read zip archive: %w", err)
 	}
+	return hashZipReader(r)
+}
 
+// HashZipFile computes the Terraform h1: dirhash for a zip archive given as an
+// io.ReaderAt plus its byte length. This avoids loading the entire file into
+// memory, making it suitable for large provider binaries spooled to disk (e.g.
+// during a direct-upload via the API). The algorithm is identical to HashZip.
+func HashZipFile(r io.ReaderAt, size int64) (string, error) {
+	zr, err := zip.NewReader(r, size)
+	if err != nil {
+		return "", fmt.Errorf("failed to read zip archive: %w", err)
+	}
+	return hashZipReader(zr)
+}
+
+// hashZipReader is the shared implementation of the h1: dirhash algorithm.
+func hashZipReader(r *zip.Reader) (string, error) {
 	// Collect and sort entry names for deterministic ordering.
 	names := make([]string, 0, len(r.File))
 	files := make(map[string]*zip.File, len(r.File))
