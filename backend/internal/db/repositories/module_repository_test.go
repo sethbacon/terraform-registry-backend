@@ -635,3 +635,298 @@ func TestGetModuleByID_DBError(t *testing.T) {
 		t.Error("expected error, got nil")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// GetAllWithSourceCommit
+// ---------------------------------------------------------------------------
+
+var modVersionSourceCommitCols = modVersionGetCols // same columns as GetVersion
+
+func sampleModVersionSourceCommitRows() *sqlmock.Rows {
+	return sqlmock.NewRows(modVersionSourceCommitCols).
+		AddRow("ver-1", "mod-1", "1.0.0", "path/file.tar.gz", "default",
+			int64(1024), "checksum", nil, nil, int64(5), false, nil, nil, time.Now(),
+			"abc123", "v1.0.0", "scm-1").
+		AddRow("ver-2", "mod-2", "2.0.0", "path/file2.tar.gz", "default",
+			int64(2048), "checksum2", nil, nil, int64(10), false, nil, nil, time.Now(),
+			"def456", "v2.0.0", "scm-2")
+}
+
+func TestGetAllWithSourceCommit_Success(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE commit_sha IS NOT NULL").
+		WillReturnRows(sampleModVersionSourceCommitRows())
+
+	versions, err := repo.GetAllWithSourceCommit(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(versions) != 2 {
+		t.Errorf("len(versions) = %d, want 2", len(versions))
+	}
+	if versions[0].ID != "ver-1" {
+		t.Errorf("versions[0].ID = %s, want ver-1", versions[0].ID)
+	}
+	if versions[0].CommitSHA == nil || *versions[0].CommitSHA != "abc123" {
+		t.Errorf("versions[0].CommitSHA = %v, want abc123", versions[0].CommitSHA)
+	}
+}
+
+func TestGetAllWithSourceCommit_Empty(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE commit_sha IS NOT NULL").
+		WillReturnRows(sqlmock.NewRows(modVersionSourceCommitCols))
+
+	versions, err := repo.GetAllWithSourceCommit(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(versions) != 0 {
+		t.Errorf("len(versions) = %d, want 0", len(versions))
+	}
+}
+
+func TestGetAllWithSourceCommit_DBError(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE commit_sha IS NOT NULL").
+		WillReturnError(errDB)
+
+	_, err := repo.GetAllWithSourceCommit(context.Background())
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+func TestGetAllWithSourceCommit_ScanError(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+	// Return a row with wrong column count to trigger scan error
+	badRows := sqlmock.NewRows([]string{"id"}).AddRow("ver-1")
+	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE commit_sha IS NOT NULL").
+		WillReturnRows(badRows)
+
+	_, err := repo.GetAllWithSourceCommit(context.Background())
+	if err == nil {
+		t.Error("expected scan error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SearchModulesWithStats
+// ---------------------------------------------------------------------------
+
+var moduleSearchWithStatsCols = []string{
+	"id", "organization_id", "namespace", "name", "system",
+	"description", "source", "created_by", "created_by_name",
+	"created_at", "updated_at",
+	"latest_version", "total_downloads",
+}
+
+func sampleModuleSearchWithStatsRow() *sqlmock.Rows {
+	latestVersion := "1.0.0"
+	return sqlmock.NewRows(moduleSearchWithStatsCols).
+		AddRow("mod-1", "org-1", "hashicorp", "vpc", "aws", nil, nil, nil, nil,
+			time.Now(), time.Now(), &latestVersion, int64(42))
+}
+
+func TestSearchModulesWithStats_Success(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+	mock.ExpectQuery("SELECT COUNT").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectQuery("SELECT.*FROM modules.*LEFT JOIN LATERAL").
+		WillReturnRows(sampleModuleSearchWithStatsRow())
+
+	results, total, err := repo.SearchModulesWithStats(context.Background(), "org-1", "vpc", "", "", 10, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 1 {
+		t.Errorf("total = %d, want 1", total)
+	}
+	if len(results) != 1 {
+		t.Fatalf("len(results) = %d, want 1", len(results))
+	}
+	if results[0].ID != "mod-1" {
+		t.Errorf("results[0].ID = %s, want mod-1", results[0].ID)
+	}
+	if results[0].TotalDownloads != 42 {
+		t.Errorf("results[0].TotalDownloads = %d, want 42", results[0].TotalDownloads)
+	}
+}
+
+func TestSearchModulesWithStats_Empty(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+	mock.ExpectQuery("SELECT COUNT").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery("SELECT.*FROM modules.*LEFT JOIN LATERAL").
+		WillReturnRows(sqlmock.NewRows(moduleSearchWithStatsCols))
+
+	results, total, err := repo.SearchModulesWithStats(context.Background(), "", "", "", "", 10, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 0 {
+		t.Errorf("total = %d, want 0", total)
+	}
+	if len(results) != 0 {
+		t.Errorf("len(results) = %d, want 0", len(results))
+	}
+}
+
+func TestSearchModulesWithStats_CountError(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+	mock.ExpectQuery("SELECT COUNT").
+		WillReturnError(errDB)
+
+	_, _, err := repo.SearchModulesWithStats(context.Background(), "org-1", "vpc", "", "", 10, 0)
+	if err == nil {
+		t.Error("expected error on count query failure")
+	}
+}
+
+func TestSearchModulesWithStats_QueryError(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+	mock.ExpectQuery("SELECT COUNT").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectQuery("SELECT.*FROM modules.*LEFT JOIN LATERAL").
+		WillReturnError(errDB)
+
+	_, _, err := repo.SearchModulesWithStats(context.Background(), "org-1", "vpc", "", "", 10, 0)
+	if err == nil {
+		t.Error("expected error on search query failure")
+	}
+}
+
+func TestSearchModulesWithStats_WithAllFilters(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+	mock.ExpectQuery("SELECT COUNT").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectQuery("SELECT.*FROM modules.*LEFT JOIN LATERAL").
+		WillReturnRows(sampleModuleSearchWithStatsRow())
+
+	results, total, err := repo.SearchModulesWithStats(context.Background(), "org-1", "vpc", "hashicorp", "aws", 10, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 1 {
+		t.Errorf("total = %d, want 1", total)
+	}
+	if len(results) != 1 {
+		t.Errorf("len(results) = %d, want 1", len(results))
+	}
+}
+
+func TestSearchModulesWithStats_ScanError(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+	mock.ExpectQuery("SELECT COUNT").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	// Return rows with wrong column count to trigger scan error
+	badRows := sqlmock.NewRows([]string{"id"}).AddRow("mod-1")
+	mock.ExpectQuery("SELECT.*FROM modules.*LEFT JOIN LATERAL").
+		WillReturnRows(badRows)
+
+	_, _, err := repo.SearchModulesWithStats(context.Background(), "org-1", "", "", "", 10, 0)
+	if err == nil {
+		t.Error("expected scan error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Missing DBError tests for partially-covered methods
+// ---------------------------------------------------------------------------
+
+func TestUpdateModule_DBError(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+	mock.ExpectQuery("UPDATE modules.*SET description").
+		WillReturnError(errDB)
+
+	m := &models.Module{ID: "mod-1"}
+	if err := repo.UpdateModule(context.Background(), m); err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+func TestCreateVersion_DBError(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+	mock.ExpectQuery("INSERT INTO module_versions").
+		WillReturnError(errDB)
+
+	v := &models.ModuleVersion{ModuleID: "mod-1", Version: "2.0.0", StoragePath: "path/v2.tar.gz"}
+	if err := repo.CreateVersion(context.Background(), v); err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+func TestGetVersion_DBError(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").
+		WillReturnError(errDB)
+
+	_, err := repo.GetVersion(context.Background(), "mod-1", "1.0.0")
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+func TestIncrementDownloadCount_DBError(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+	mock.ExpectExec("UPDATE module_versions.*SET download_count").
+		WithArgs("ver-1").
+		WillReturnError(errDB)
+
+	if err := repo.IncrementDownloadCount(context.Background(), "ver-1"); err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+func TestDeleteModule_DBError(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+	mock.ExpectExec("DELETE FROM modules").
+		WithArgs("mod-1").
+		WillReturnError(errDB)
+
+	if err := repo.DeleteModule(context.Background(), "mod-1"); err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+func TestDeleteModuleVersion_DBError(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+	mock.ExpectExec("DELETE FROM module_versions").
+		WithArgs("ver-1").
+		WillReturnError(errDB)
+
+	if err := repo.DeleteVersion(context.Background(), "ver-1"); err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+func TestDeprecateVersion_DBError(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+	mock.ExpectExec("UPDATE module_versions.*SET deprecated").
+		WillReturnError(errDB)
+
+	msg := "outdated"
+	if err := repo.DeprecateVersion(context.Background(), "ver-1", &msg); err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+func TestUndeprecateVersion_NotFound(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+	mock.ExpectExec("UPDATE module_versions.*SET deprecated = false").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	if err := repo.UndeprecateVersion(context.Background(), "ver-missing"); err == nil {
+		t.Error("expected error for not found, got nil")
+	}
+}
+
+func TestUndeprecateVersion_DBError(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+	mock.ExpectExec("UPDATE module_versions.*SET deprecated = false").
+		WillReturnError(errDB)
+
+	if err := repo.UndeprecateVersion(context.Background(), "ver-1"); err == nil {
+		t.Error("expected error, got nil")
+	}
+}

@@ -703,3 +703,515 @@ func TestSetLatestVersion_DBError(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+// --- Platform helpers ---
+
+var tfPlatformCols = []string{
+	"id", "version_id", "os", "arch", "upstream_url", "filename", "sha256",
+	"storage_key", "storage_backend", "sha256_verified", "gpg_verified",
+	"sync_status", "sync_error", "synced_at", "download_count", "created_at", "updated_at",
+}
+
+func testTFPlatform(versionID uuid.UUID) *models.TerraformVersionPlatform {
+	now := time.Now().UTC().Truncate(time.Second)
+	return &models.TerraformVersionPlatform{
+		ID:          uuid.New(),
+		VersionID:   versionID,
+		OS:          "linux",
+		Arch:        "amd64",
+		UpstreamURL: "https://releases.hashicorp.com/terraform/1.9.0/terraform_1.9.0_linux_amd64.zip",
+		Filename:    "terraform_1.9.0_linux_amd64.zip",
+		SHA256:      "abc123",
+		SyncStatus:  "pending",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+}
+
+func newTFPlatformRow(mock sqlmock.Sqlmock, p *models.TerraformVersionPlatform) *sqlmock.Rows {
+	return mock.NewRows(tfPlatformCols).AddRow(
+		p.ID, p.VersionID, p.OS, p.Arch, p.UpstreamURL, p.Filename, p.SHA256,
+		p.StorageKey, p.StorageBackend, p.SHA256Verified, p.GPGVerified,
+		p.SyncStatus, p.SyncError, p.SyncedAt, p.DownloadCount, p.CreatedAt, p.UpdatedAt,
+	)
+}
+
+// --- Sync History helpers ---
+
+var tfSyncHistoryCols = []string{
+	"id", "config_id", "triggered_by", "started_at", "completed_at", "status",
+	"versions_synced", "platforms_synced", "versions_failed", "error_message", "sync_details",
+}
+
+func testTFSyncHistory(configID uuid.UUID) *models.TerraformSyncHistory {
+	return &models.TerraformSyncHistory{
+		ID:          uuid.New(),
+		ConfigID:    configID,
+		TriggeredBy: "scheduler",
+		StartedAt:   time.Now().UTC().Truncate(time.Second),
+		Status:      "running",
+	}
+}
+
+func newTFSyncHistoryRow(mock sqlmock.Sqlmock, h *models.TerraformSyncHistory) *sqlmock.Rows {
+	return mock.NewRows(tfSyncHistoryCols).AddRow(
+		h.ID, h.ConfigID, h.TriggeredBy, h.StartedAt, h.CompletedAt, h.Status,
+		h.VersionsSynced, h.PlatformsSynced, h.VersionsFailed, h.ErrorMessage, h.SyncDetails,
+	)
+}
+
+// --- Create ---
+
+func TestTerraformMirrorCreate_Success(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	cfg := testMirrorConfig()
+
+	mock.ExpectQuery(`INSERT INTO terraform_mirror_configs`).
+		WillReturnRows(newTfMirrorConfigRow(mock, cfg))
+
+	err := repo.Create(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestTerraformMirrorCreate_DBError(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	cfg := testMirrorConfig()
+
+	mock.ExpectQuery(`INSERT INTO terraform_mirror_configs`).
+		WillReturnError(fmt.Errorf("db error"))
+
+	err := repo.Create(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// --- UpsertVersion ---
+
+func TestTerraformMirrorUpsertVersion_Success(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	configID := uuid.New()
+	v := testTFVersion(configID)
+
+	mock.ExpectQuery(`INSERT INTO terraform_versions`).
+		WillReturnRows(newTFVersionRow(mock, v))
+
+	err := repo.UpsertVersion(context.Background(), v)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestTerraformMirrorUpsertVersion_DBError(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	configID := uuid.New()
+	v := testTFVersion(configID)
+
+	mock.ExpectQuery(`INSERT INTO terraform_versions`).
+		WillReturnError(fmt.Errorf("db error"))
+
+	err := repo.UpsertVersion(context.Background(), v)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// --- UpsertPlatform ---
+
+func TestTerraformMirrorUpsertPlatform_Success(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	versionID := uuid.New()
+	p := testTFPlatform(versionID)
+	platformID := p.ID
+
+	mock.ExpectQuery(`INSERT INTO terraform_version_platforms`).
+		WillReturnRows(mock.NewRows([]string{"id"}).AddRow(platformID))
+
+	err := repo.UpsertPlatform(context.Background(), p)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.ID != platformID {
+		t.Fatalf("expected platform ID %v, got %v", platformID, p.ID)
+	}
+}
+
+func TestTerraformMirrorUpsertPlatform_DBError(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	versionID := uuid.New()
+	p := testTFPlatform(versionID)
+
+	mock.ExpectQuery(`INSERT INTO terraform_version_platforms`).
+		WillReturnError(fmt.Errorf("db error"))
+
+	err := repo.UpsertPlatform(context.Background(), p)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// --- GetPlatform ---
+
+func TestTerraformMirrorGetPlatform_NotFound(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	versionID := uuid.New()
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_version_platforms`).
+		WithArgs(versionID, "linux", "amd64").
+		WillReturnRows(mock.NewRows(tfPlatformCols))
+
+	p, err := repo.GetPlatform(context.Background(), versionID, "linux", "amd64")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p != nil {
+		t.Fatal("expected nil platform for not-found")
+	}
+}
+
+func TestTerraformMirrorGetPlatform_Success(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	versionID := uuid.New()
+	expected := testTFPlatform(versionID)
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_version_platforms`).
+		WithArgs(versionID, "linux", "amd64").
+		WillReturnRows(newTFPlatformRow(mock, expected))
+
+	p, err := repo.GetPlatform(context.Background(), versionID, "linux", "amd64")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p == nil || p.ID != expected.ID {
+		t.Fatalf("unexpected platform: %v", p)
+	}
+}
+
+func TestTerraformMirrorGetPlatform_DBError(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	versionID := uuid.New()
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_version_platforms`).
+		WithArgs(versionID, "linux", "amd64").
+		WillReturnError(fmt.Errorf("db error"))
+
+	_, err := repo.GetPlatform(context.Background(), versionID, "linux", "amd64")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// --- IncrementDownloadCount ---
+
+func TestTerraformMirrorIncrementDownloadCount_Success(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	platformID := uuid.New()
+
+	mock.ExpectExec(`UPDATE terraform_version_platforms SET download_count`).
+		WithArgs(platformID).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	err := repo.IncrementDownloadCount(context.Background(), platformID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestTerraformMirrorIncrementDownloadCount_DBError(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	platformID := uuid.New()
+
+	mock.ExpectExec(`UPDATE terraform_version_platforms SET download_count`).
+		WithArgs(platformID).
+		WillReturnError(fmt.Errorf("db error"))
+
+	err := repo.IncrementDownloadCount(context.Background(), platformID)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// --- ListPlatformsForVersion ---
+
+func TestTerraformMirrorListPlatformsForVersion_Success(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	versionID := uuid.New()
+	p := testTFPlatform(versionID)
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_version_platforms`).
+		WithArgs(versionID).
+		WillReturnRows(newTFPlatformRow(mock, p))
+
+	platforms, err := repo.ListPlatformsForVersion(context.Background(), versionID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(platforms) != 1 {
+		t.Fatalf("expected 1 platform, got %d", len(platforms))
+	}
+}
+
+func TestTerraformMirrorListPlatformsForVersion_DBError(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	versionID := uuid.New()
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_version_platforms`).
+		WithArgs(versionID).
+		WillReturnError(fmt.Errorf("db error"))
+
+	_, err := repo.ListPlatformsForVersion(context.Background(), versionID)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// --- ListPendingPlatforms ---
+
+func TestTerraformMirrorListPendingPlatforms_Success(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	configID := uuid.New()
+	versionID := uuid.New()
+	p := testTFPlatform(versionID)
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_version_platforms`).
+		WithArgs(configID).
+		WillReturnRows(newTFPlatformRow(mock, p))
+
+	platforms, err := repo.ListPendingPlatforms(context.Background(), configID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(platforms) != 1 {
+		t.Fatalf("expected 1 platform, got %d", len(platforms))
+	}
+}
+
+func TestTerraformMirrorListPendingPlatforms_DBError(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	configID := uuid.New()
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_version_platforms`).
+		WithArgs(configID).
+		WillReturnError(fmt.Errorf("db error"))
+
+	_, err := repo.ListPendingPlatforms(context.Background(), configID)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// --- UpdatePlatformSyncStatus ---
+
+func TestTerraformMirrorUpdatePlatformSyncStatus_Synced(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	id := uuid.New()
+	storageKey := "key/path"
+	storageBackend := "s3"
+
+	mock.ExpectExec(`UPDATE terraform_version_platforms`).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	err := repo.UpdatePlatformSyncStatus(context.Background(), id, "synced", &storageKey, &storageBackend, true, true, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestTerraformMirrorUpdatePlatformSyncStatus_Failed(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	id := uuid.New()
+	syncErr := "download failed"
+
+	mock.ExpectExec(`UPDATE terraform_version_platforms`).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	err := repo.UpdatePlatformSyncStatus(context.Background(), id, "failed", nil, nil, false, false, &syncErr)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestTerraformMirrorUpdatePlatformSyncStatus_DBError(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	id := uuid.New()
+
+	mock.ExpectExec(`UPDATE terraform_version_platforms`).
+		WillReturnError(fmt.Errorf("db error"))
+
+	err := repo.UpdatePlatformSyncStatus(context.Background(), id, "synced", nil, nil, false, false, nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// --- UpdateGPGVerifiedForVersion ---
+
+func TestTerraformMirrorUpdateGPGVerifiedForVersion_Success(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	versionID := uuid.New()
+
+	mock.ExpectExec(`UPDATE terraform_version_platforms`).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	err := repo.UpdateGPGVerifiedForVersion(context.Background(), versionID, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestTerraformMirrorUpdateGPGVerifiedForVersion_DBError(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	versionID := uuid.New()
+
+	mock.ExpectExec(`UPDATE terraform_version_platforms`).
+		WillReturnError(fmt.Errorf("db error"))
+
+	err := repo.UpdateGPGVerifiedForVersion(context.Background(), versionID, true)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// --- CountVersionStats ---
+
+func TestTerraformMirrorCountVersionStats_Success(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	configID := uuid.New()
+
+	mock.ExpectQuery(`SELECT.*COUNT`).
+		WithArgs(configID).
+		WillReturnRows(mock.NewRows([]string{"version_count", "platform_count", "pending_count"}).AddRow(5, 12, 3))
+
+	vc, pc, pend, err := repo.CountVersionStats(context.Background(), configID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if vc != 5 || pc != 12 || pend != 3 {
+		t.Fatalf("unexpected counts: version=%d platform=%d pending=%d", vc, pc, pend)
+	}
+}
+
+func TestTerraformMirrorCountVersionStats_DBError(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	configID := uuid.New()
+
+	mock.ExpectQuery(`SELECT.*COUNT`).
+		WithArgs(configID).
+		WillReturnError(fmt.Errorf("db error"))
+
+	_, _, _, err := repo.CountVersionStats(context.Background(), configID)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// --- CreateSyncHistory ---
+
+func TestTerraformMirrorCreateSyncHistory_Success(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	configID := uuid.New()
+	h := testTFSyncHistory(configID)
+
+	mock.ExpectExec(`INSERT INTO terraform_sync_history`).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	err := repo.CreateSyncHistory(context.Background(), h)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestTerraformMirrorCreateSyncHistory_DBError(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	configID := uuid.New()
+	h := testTFSyncHistory(configID)
+
+	mock.ExpectExec(`INSERT INTO terraform_sync_history`).
+		WillReturnError(fmt.Errorf("db error"))
+
+	err := repo.CreateSyncHistory(context.Background(), h)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// --- CompleteSyncHistory ---
+
+func TestTerraformMirrorCompleteSyncHistory_Success(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	id := uuid.New()
+
+	mock.ExpectExec(`UPDATE terraform_sync_history`).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	err := repo.CompleteSyncHistory(context.Background(), id, "success", 5, 12, 0, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestTerraformMirrorCompleteSyncHistory_DBError(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	id := uuid.New()
+
+	mock.ExpectExec(`UPDATE terraform_sync_history`).
+		WillReturnError(fmt.Errorf("db error"))
+
+	err := repo.CompleteSyncHistory(context.Background(), id, "failed", 0, 0, 3, nil, nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// --- ListSyncHistory ---
+
+func TestTerraformMirrorListSyncHistory_Success(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	configID := uuid.New()
+	h := testTFSyncHistory(configID)
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_sync_history`).
+		WithArgs(configID, 10).
+		WillReturnRows(newTFSyncHistoryRow(mock, h))
+
+	history, err := repo.ListSyncHistory(context.Background(), configID, 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("expected 1 history entry, got %d", len(history))
+	}
+}
+
+func TestTerraformMirrorListSyncHistory_DefaultLimit(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	configID := uuid.New()
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_sync_history`).
+		WithArgs(configID, 50).
+		WillReturnRows(mock.NewRows(tfSyncHistoryCols))
+
+	history, err := repo.ListSyncHistory(context.Background(), configID, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(history) != 0 {
+		t.Fatalf("expected 0 history entries, got %d", len(history))
+	}
+}
+
+func TestTerraformMirrorListSyncHistory_DBError(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	configID := uuid.New()
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_sync_history`).
+		WithArgs(configID, 10).
+		WillReturnError(fmt.Errorf("db error"))
+
+	_, err := repo.ListSyncHistory(context.Background(), configID, 10)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -607,5 +608,335 @@ func TestLogoutHandler_BaseURL_Fallback(t *testing.T) {
 	loc := w.Header().Get("Location")
 	if loc != "http://localhost:8080/" {
 		t.Errorf("Location = %q, want %q", loc, "http://localhost:8080/")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MeHandler — success path with memberships and role template
+// ---------------------------------------------------------------------------
+
+func TestMeHandler_SuccessWithMemberships(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	h, _ := NewAuthHandlers(cfg, db, nil)
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set("user_id", "user-1")
+		c.Next()
+	})
+	r.GET("/auth/me", h.MeHandler())
+
+	// GetUserByID
+	mock.ExpectQuery("SELECT.*FROM users WHERE id").
+		WillReturnRows(sqlmock.NewRows(authUserCols).
+			AddRow("user-1", "member@example.com", "Member User", nil, time.Now(), time.Now()))
+	// Memberships query returns one membership with role template
+	mock.ExpectQuery("SELECT.*FROM organization_members").
+		WillReturnRows(sqlmock.NewRows(meOrgMembershipCols).
+			AddRow("org-1", "acme", "role-1", time.Now(), "admin", "Administrator", `["admin","write","read"]`))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/auth/me", nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	resp := getJSON(w)
+	memberships, ok := resp["memberships"].([]interface{})
+	if !ok || len(memberships) != 1 {
+		t.Fatalf("memberships = %v, want slice of length 1", resp["memberships"])
+	}
+	m := memberships[0].(map[string]interface{})
+	if m["organization_name"] != "acme" {
+		t.Errorf("organization_name = %v, want acme", m["organization_name"])
+	}
+	if m["role_template"] == nil {
+		t.Error("role_template should not be nil for membership with role")
+	}
+	// Primary role template should be set for backward compatibility
+	if resp["role_template"] == nil {
+		t.Error("top-level role_template should not be nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CallbackHandler — unknown provider type in session
+// ---------------------------------------------------------------------------
+
+func TestCallbackHandler_UnknownProviderType(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	h, _ := NewAuthHandlers(cfg, db, nil)
+	r := gin.New()
+	r.GET("/auth/callback", h.CallbackHandler())
+
+	// Inject a session with unknown provider type
+	h.sessionStore["test-state"] = &SessionState{
+		State:        "test-state",
+		CreatedAt:    time.Now(),
+		ProviderType: "unknown",
+	}
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet,
+		"/auth/callback?code=abc&state=test-state", nil))
+
+	// Unknown provider → 400 (via callbackError with JSON since no frontendBase)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 (unknown provider type): body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CallbackHandler — OIDC provider not configured during callback
+// ---------------------------------------------------------------------------
+
+func TestCallbackHandler_OIDCProviderNotConfigured(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	h, _ := NewAuthHandlers(cfg, db, nil)
+	r := gin.New()
+	r.GET("/auth/callback", h.CallbackHandler())
+
+	h.sessionStore["oidc-state"] = &SessionState{
+		State:        "oidc-state",
+		CreatedAt:    time.Now(),
+		ProviderType: "oidc",
+	}
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet,
+		"/auth/callback?code=abc&state=oidc-state", nil))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 (OIDC not configured): body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CallbackHandler — AzureAD provider not configured during callback
+// ---------------------------------------------------------------------------
+
+func TestCallbackHandler_AzureADProviderNotConfigured(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	h, _ := NewAuthHandlers(cfg, db, nil)
+	r := gin.New()
+	r.GET("/auth/callback", h.CallbackHandler())
+
+	h.sessionStore["azure-state"] = &SessionState{
+		State:        "azure-state",
+		CreatedAt:    time.Now(),
+		ProviderType: "azuread",
+	}
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet,
+		"/auth/callback?code=abc&state=azure-state", nil))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 (AzureAD not configured): body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CallbackHandler — error redirects to frontend when frontendBase is set
+// ---------------------------------------------------------------------------
+
+func TestCallbackHandler_ErrorRedirectsToFrontend(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Server.PublicURL = "https://app.example.com"
+	h, _ := NewAuthHandlers(cfg, db, nil)
+	r := gin.New()
+	r.GET("/auth/callback", h.CallbackHandler())
+
+	// Invalid state with frontendBase configured → redirect to frontend error page
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet,
+		"/auth/callback?code=abc&state=badstate", nil))
+
+	if w.Code != http.StatusFound {
+		t.Errorf("status = %d, want 302 (redirect to frontend error)", w.Code)
+	}
+	loc := w.Header().Get("Location")
+	if loc == "" {
+		t.Fatal("expected Location header")
+	}
+	if !strings.Contains(loc, "app.example.com") || !strings.Contains(loc, "error=") {
+		t.Errorf("Location = %q, want redirect to app.example.com with error params", loc)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// applyGroupMappings — group matches, adds new member
+// ---------------------------------------------------------------------------
+
+var authOrgCols = []string{"id", "name", "display_name", "created_at", "updated_at"}
+var authMemberCols = []string{"organization_id", "user_id", "role_template_id", "created_at"}
+
+func TestApplyGroupMappings_MatchingGroup_AddMember(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
+		{Group: "developers", Organization: "acme", Role: "editor"},
+	}
+	h, _ := NewAuthHandlers(cfg, db, nil)
+
+	// GetByName("acme") → found
+	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
+		WithArgs("acme").
+		WillReturnRows(sqlmock.NewRows(authOrgCols).
+			AddRow("org-1", "acme", "Acme Corp", time.Now(), time.Now()))
+
+	// CheckMembership → GetMember → not found (no rows)
+	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
+		WillReturnRows(sqlmock.NewRows(authMemberCols))
+
+	// AddMemberWithParams → lookup role template
+	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
+		WithArgs("editor").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-1"))
+
+	// AddMemberWithRoleTemplate → INSERT
+	mock.ExpectExec("INSERT INTO organization_members").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	err := h.applyGroupMappings(context.Background(), "user-1", []string{"developers"})
+	if err != nil {
+		t.Errorf("applyGroupMappings: unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// applyGroupMappings — group matches, updates existing member
+// ---------------------------------------------------------------------------
+
+func TestApplyGroupMappings_MatchingGroup_UpdateMember(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
+		{Group: "admins", Organization: "acme", Role: "admin"},
+	}
+	h, _ := NewAuthHandlers(cfg, db, nil)
+
+	// GetByName("acme") → found
+	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
+		WithArgs("acme").
+		WillReturnRows(sqlmock.NewRows(authOrgCols).
+			AddRow("org-1", "acme", "Acme Corp", time.Now(), time.Now()))
+
+	// CheckMembership → GetMember → found (is already a member)
+	roleID := "rt-old"
+	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
+		WillReturnRows(sqlmock.NewRows(authMemberCols).
+			AddRow("org-1", "user-1", &roleID, time.Now()))
+
+	// UpdateMemberRole → lookup role template
+	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
+		WithArgs("admin").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-admin"))
+
+	// UpdateMemberRoleTemplate → UPDATE
+	mock.ExpectExec("UPDATE organization_members.*SET role_template_id").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	err := h.applyGroupMappings(context.Background(), "user-1", []string{"admins"})
+	if err != nil {
+		t.Errorf("applyGroupMappings: unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// applyGroupMappings — no match, default role fallback adds member
+// ---------------------------------------------------------------------------
+
+func TestApplyGroupMappings_DefaultRoleFallback(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
+		{Group: "admins", Organization: "acme", Role: "admin"},
+	}
+	cfg.Auth.OIDC.DefaultRole = "viewer"
+	h, _ := NewAuthHandlers(cfg, db, nil)
+
+	// No group matches → falls through to default role
+
+	// GetDefaultOrganization → GetByName("default") → found
+	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
+		WithArgs("default").
+		WillReturnRows(sqlmock.NewRows(authOrgCols).
+			AddRow("org-default", "default", "Default Org", time.Now(), time.Now()))
+
+	// CheckMembership → GetMember → not found
+	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
+		WillReturnRows(sqlmock.NewRows(authMemberCols))
+
+	// AddMemberWithParams → lookup role template
+	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
+		WithArgs("viewer").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-viewer"))
+
+	// INSERT
+	mock.ExpectExec("INSERT INTO organization_members").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	err := h.applyGroupMappings(context.Background(), "user-1", []string{"unmatched-group"})
+	if err != nil {
+		t.Errorf("applyGroupMappings: unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// applyGroupMappings — org not found, skips gracefully
+// ---------------------------------------------------------------------------
+
+func TestApplyGroupMappings_OrgNotFound_Skipped(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
+		{Group: "devs", Organization: "nonexistent", Role: "editor"},
+	}
+	h, _ := NewAuthHandlers(cfg, db, nil)
+
+	// GetByName("nonexistent") → not found (no rows)
+	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
+		WithArgs("nonexistent").
+		WillReturnRows(sqlmock.NewRows(authOrgCols))
+
+	// Skips gracefully — no error, no membership changes
+	err := h.applyGroupMappings(context.Background(), "user-1", []string{"devs"})
+	if err != nil {
+		t.Errorf("applyGroupMappings: unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
 	}
 }
