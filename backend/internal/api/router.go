@@ -318,7 +318,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	}
 
 	// File serving endpoint for local storage with ServeDirectly enabled
-	router.GET("/v1/files/*filepath", modules.ServeFileHandler(storageBackend, cfg))
+	router.GET("/v1/files/*filepath", modules.ServeFileHandler(storageBackend, cfg, db))
 
 	// Provider Registry endpoints (v1)
 	// These are for the standard Provider Registry Protocol
