@@ -166,7 +166,7 @@ func newDownloadRouter(t *testing.T, store *mockStore) (sqlmock.Sqlmock, *gin.En
 func newServeRouter(t *testing.T, store *mockStore) *gin.Engine {
 	t.Helper()
 	r := gin.New()
-	r.GET("/v1/files/*filepath", ServeFileHandler(store, &config.Config{}))
+	r.GET("/v1/files/*filepath", ServeFileHandler(store, &config.Config{}, nil))
 	return r
 }
 
