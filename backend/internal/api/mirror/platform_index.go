@@ -2,6 +2,7 @@
 package mirror
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 	"github.com/terraform-registry/terraform-registry/internal/validation"
@@ -32,7 +34,7 @@ import (
 // PlatformIndexHandler handles network mirror platform index requests
 // Implements: GET /terraform/providers/:hostname/:namespace/:type/:version.json
 // Returns download URLs and hashes for all platforms of a specific version
-func PlatformIndexHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
+func PlatformIndexHandler(db *sql.DB, cfg *config.Config, auditRepo *repositories.AuditRepository) gin.HandlerFunc {
 	providerRepo := repositories.NewProviderRepository(db)
 	orgRepo := repositories.NewOrganizationRepository(db)
 
@@ -190,6 +192,24 @@ func PlatformIndexHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 
 		response := gin.H{
 			"archives": archives,
+		}
+
+		// Audit log the mirror platform index request asynchronously
+		if auditRepo != nil {
+			resourceType := "provider"
+			action := "GET " + c.Request.URL.Path
+			ip := c.ClientIP()
+			versionIDForAudit := providerVersion.ID
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = auditRepo.CreateAuditLog(ctx, &models.AuditLog{
+					Action:       action,
+					ResourceType: &resourceType,
+					ResourceID:   &versionIDForAudit,
+					IPAddress:    &ip,
+				})
+			}()
 		}
 
 		// Use c.Data with plain "application/json" (no charset) to satisfy the

@@ -318,7 +318,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	}
 
 	// File serving endpoint for local storage with ServeDirectly enabled
-	router.GET("/v1/files/*filepath", modules.ServeFileHandler(storageBackend, cfg, db))
+	router.GET("/v1/files/*filepath", modules.ServeFileHandler(storageBackend, cfg, db, auditRepo))
 
 	// Provider Registry endpoints (v1)
 	// These are for the standard Provider Registry Protocol
@@ -335,7 +335,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	v1Mirror := router.Group("/terraform/providers")
 	{
 		v1Mirror.GET("/:hostname/:namespace/:type/index.json", mirror.IndexHandler(db, cfg))
-		v1Mirror.GET("/:hostname/:namespace/:type/:versionfile", mirror.PlatformIndexHandler(db, cfg))
+		v1Mirror.GET("/:hostname/:namespace/:type/:versionfile", mirror.PlatformIndexHandler(db, cfg, auditRepo))
 	}
 
 	// Terraform Binary Mirror endpoints (public, no auth required)
