@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
+	"github.com/terraform-registry/terraform-registry/internal/telemetry"
 	"github.com/terraform-registry/terraform-registry/internal/validation"
 )
 
@@ -252,6 +254,29 @@ func PlatformIndexHandler(db *sql.DB, cfg *config.Config, auditRepo *repositorie
 			"archives": archives,
 		}
 
+		// Track provider downloads for storage backends that do not route through
+		// ServeFileHandler.  When local storage has ServeDirectly: true, Terraform
+		// fetches the binary via /v1/files/… and ServeFileHandler increments the
+		// counter there.  For every other configuration (S3, Azure, GCS, or local
+		// without ServeDirectly) the binary is delivered from a signed/external URL
+		// and ServeFileHandler is never called, so this is the only place to count it.
+		if cfg.Storage.DefaultBackend != "local" || !cfg.Storage.Local.ServeDirectly {
+			if clientOS, clientArch := parseTerraformPlatform(c.GetHeader("User-Agent")); clientOS != "" {
+				for _, platform := range platforms {
+					if platform.OS == clientOS && platform.Arch == clientArch {
+						platformID := platform.ID
+						go func() {
+							if err := providerRepo.IncrementDownloadCount(context.Background(), platformID); err != nil {
+								slog.Error("failed to increment download count for mirror provider", "error", err)
+							}
+						}()
+						telemetry.ProviderDownloadsTotal.WithLabelValues(namespace, providerType, clientOS, clientArch).Inc()
+						break
+					}
+				}
+			}
+		}
+
 		// Audit log the mirror platform index request asynchronously
 		if auditRepo != nil {
 			resourceType := "provider"
@@ -293,4 +318,23 @@ func formatZhHash(hexChecksum string) string {
 		return ""
 	}
 	return "zh:" + hexChecksum
+}
+
+// terraformPlatformRe matches the OS/arch pair in a Terraform/OpenTofu User-Agent string.
+// Terraform sends User-Agent headers in one of these forms:
+//
+//	Terraform/1.5.0 (+https://www.terraform.io) linux_amd64
+//	OpenTofu/1.6.0 linux_arm64
+//
+// The regex captures (os)_(arch) from the trailing platform token.
+var terraformPlatformRe = regexp.MustCompile(`(?:Terraform|OpenTofu)/\S+.*?\b([a-z]+)_([a-z0-9]+)`)
+
+// parseTerraformPlatform extracts (os, arch) from a Terraform/OpenTofu User-Agent.
+// Returns ("", "") if the header is absent or does not match.
+func parseTerraformPlatform(ua string) (string, string) {
+	m := terraformPlatformRe.FindStringSubmatch(ua)
+	if m == nil {
+		return "", ""
+	}
+	return m[1], m[2]
 }
