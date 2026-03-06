@@ -30,7 +30,7 @@ For example, `database.host` in YAML becomes `TFR_DATABASE_HOST` as an env var.
 | `TFR_DATABASE_NAME` | string | `terraform_registry` | Yes | Database name |
 | `TFR_DATABASE_USER` | string | `registry` | Yes | Database user |
 | `TFR_DATABASE_PASSWORD` | string | — | Yes | Database password |
-| `TFR_DATABASE_SSL_MODE` | string | `prefer` | No | `disable`, `require`, `verify-full` |
+| `TFR_DATABASE_SSL_MODE` | string | `require` | No | `disable`, `prefer`, `require`, `verify-ca`, `verify-full` |
 | `TFR_DATABASE_MAX_CONNECTIONS` | int | `25` | No | Connection pool size |
 | `TFR_SERVER_HOST` | string | `0.0.0.0` | No | Bind address |
 | `TFR_SERVER_PORT` | int | `8080` | No | HTTP listen port |
@@ -62,7 +62,7 @@ database:
   name: terraform_registry
   user: registry
   password: ${DATABASE_PASSWORD}   # use env var; never commit credentials
-  ssl_mode: prefer                 # prefer for local, require or verify-full in production
+  ssl_mode: require                # require is the default; use prefer for local development
   max_connections: 25              # tune based on your PostgreSQL max_connections setting
 ```
 
@@ -260,7 +260,7 @@ The JWT secret signs authentication tokens. In production:
 ### Encryption Key
 
 ```bash
-export ENCRYPTION_KEY=$(openssl rand -hex 16)   # generates 32 hex chars = 16 bytes; use hex 32 for 32 bytes
+export ENCRYPTION_KEY=$(openssl rand -hex 16)   # produces 32 hex characters = 32 bytes (required for AES-256)
 ```
 
 The encryption key protects SCM OAuth tokens stored in the database (AES-256). It is separate

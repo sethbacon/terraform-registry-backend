@@ -243,5 +243,5 @@ swag init -g cmd/server/main.go --outputTypes json
 go build ./cmd/server
 ```
 
-See [swagger_annotation_checklist.md](swagger_annotation_checklist.md) for the full
+See [SWAGGER_ANNOTATION_CHECKLIST.md](SWAGGER_ANNOTATION_CHECKLIST.md) for the full
 list of annotated endpoints and annotation rules.
