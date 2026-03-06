@@ -14,6 +14,7 @@ package terraform_binaries
 import (
 	"context"
 	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -319,14 +320,16 @@ func (h *Handler) DownloadBinary(c *gin.Context) {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			_ = h.auditRepo.CreateAuditLog(ctx, &models.AuditLog{
+			if err := h.auditRepo.CreateAuditLog(ctx, &models.AuditLog{
 				Action:         action,
 				ResourceType:   &resourceType,
 				ResourceID:     &versionIDForAudit,
 				IPAddress:      &ip,
 				UserID:         userIDStr,
 				OrganizationID: orgIDStr,
-			})
+			}); err != nil {
+				slog.Error("failed to write audit log for binary download", "error", err, "action", action)
+			}
 		}()
 	}
 

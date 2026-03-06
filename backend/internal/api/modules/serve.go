@@ -4,6 +4,7 @@ package modules
 import (
 	"context"
 	"database/sql"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -94,16 +95,16 @@ func ServeFileHandler(storageBackend storage.Storage, cfg *config.Config, db *sq
 			}
 			action := "GET " + c.Request.URL.Path
 			ip := c.ClientIP()
-			filePathForAudit := filePath
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
-				_ = auditRepo.CreateAuditLog(ctx, &models.AuditLog{
+				if err := auditRepo.CreateAuditLog(ctx, &models.AuditLog{
 					Action:       action,
 					ResourceType: &resourceType,
-					ResourceID:   &filePathForAudit,
 					IPAddress:    &ip,
-				})
+				}); err != nil {
+					slog.Error("failed to write audit log for file download", "error", err, "action", action)
+				}
 			}()
 		}
 
