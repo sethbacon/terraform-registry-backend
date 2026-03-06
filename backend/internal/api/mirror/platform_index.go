@@ -193,14 +193,19 @@ func PlatformIndexHandler(db *sql.DB, cfg *config.Config, auditRepo *repositorie
 		}
 
 		// Enrich archives with zh: hashes for platforms present in the upstream
-		// SHA256SUMS file but not synced locally.  Terraform records all hashes it
-		// sees in the version JSON into the lock file, so including every platform's
-		// zh: here lets clients build a complete cross-platform lock file from this
-		// mirror alone when running `terraform providers lock -platform=...`.
+		// SHA256SUMS file but not synced locally.
 		//
-		// Unmirrored platforms are given their upstream HashiCorp download URL.  If
-		// the ShasumURL field is empty (e.g. manually-uploaded providers) the block
-		// is skipped gracefully.
+		// Terraform only records hashes for the platform it downloads during
+		// `terraform init`.  To build a complete cross-platform lock file, users
+		// run `terraform providers lock -platform=linux_amd64 -platform=darwin_amd64`,
+		// which downloads and verifies each platform binary explicitly.  Including
+		// unmirrored platform entries here (with their upstream HashiCorp download URL
+		// and zh: hash) means that command works even for platforms not locally
+		// synced — Terraform will fall back to the upstream URL, verify the binary
+		// against the zh: hash we serve, and record the result.
+		//
+		// If the ShasumURL field is empty (e.g. manually-uploaded providers) the
+		// block is skipped gracefully.
 		if providerVersion.ShasumURL != "" {
 			upstreamBase := providerVersion.ShasumURL
 			if idx := strings.LastIndex(upstreamBase, "/"); idx >= 0 {
