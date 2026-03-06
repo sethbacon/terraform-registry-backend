@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	_ "github.com/terraform-registry/terraform-registry/internal/storage/local"
 )
 
 func TestMain(m *testing.M) {
@@ -275,6 +277,44 @@ func TestTestOIDCConfig_InvalidProviderType(t *testing.T) {
 	}
 }
 
+func TestTestOIDCConfig_DiscoveryFailure(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Start a test server that always returns 404 to simulate an unreachable OIDC issuer.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	r := gin.New()
+	r.POST("/oidc/test", env.h.TestOIDCConfig)
+
+	// Valid input that passes validation but the issuer discovery will fail.
+	body := jsonBody(map[string]string{
+		"provider_type": "generic_oidc",
+		"issuer_url":    ts.URL,
+		"client_id":     "test-client",
+		"client_secret": "test-secret",
+		"redirect_url":  "https://app/callback",
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/oidc/test", body))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", w.Code, w.Body.String())
+	}
+
+	resp := getJSON(w)
+	if resp["success"] != false {
+		t.Errorf("success = %v, want false", resp["success"])
+	}
+	msg, _ := resp["message"].(string)
+	if msg == "" {
+		t.Error("expected non-empty failure message")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // SaveOIDCConfig
 // ---------------------------------------------------------------------------
@@ -421,6 +461,61 @@ func TestTestStorageConfig_BadJSON(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestTestStorageConfig_LocalSuccess(t *testing.T) {
+	env := newTestEnv(t)
+
+	r := gin.New()
+	r.POST("/storage/test", env.h.TestStorageConfig)
+
+	body := jsonBody(map[string]interface{}{
+		"backend_type":    "local",
+		"local_base_path": t.TempDir(),
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/storage/test", body))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", w.Code, w.Body.String())
+	}
+
+	resp := getJSON(w)
+	if resp["success"] != true {
+		t.Errorf("success = %v, want true, body: %s", resp["success"], w.Body.String())
+	}
+}
+
+func TestTestStorageConfig_InitFailure(t *testing.T) {
+	env := newTestEnv(t)
+
+	r := gin.New()
+	r.POST("/storage/test", env.h.TestStorageConfig)
+
+	// Create a regular file to block os.MkdirAll from creating a directory under it.
+	blockFile := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blockFile, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	badPath := filepath.Join(blockFile, "sub", "dir")
+
+	body := jsonBody(map[string]interface{}{
+		"backend_type":    "local",
+		"local_base_path": badPath,
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/storage/test", body))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", w.Code, w.Body.String())
+	}
+
+	resp := getJSON(w)
+	if resp["success"] != false {
+		t.Errorf("success = %v, want false", resp["success"])
 	}
 }
 
@@ -588,6 +683,210 @@ func TestConfigureAdmin_Success(t *testing.T) {
 	resp := getJSON(w)
 	if resp["email"] != "admin@example.com" {
 		t.Errorf("email = %v, want admin@example.com", resp["email"])
+	}
+}
+
+func TestConfigureAdmin_ExistingUserFallback(t *testing.T) {
+	env := newTestEnv(t)
+
+	r := gin.New()
+	r.POST("/admin", env.h.ConfigureAdmin)
+
+	body := jsonBody(map[string]string{"email": "admin@example.com"})
+
+	now := time.Now()
+	orgCols := []string{"id", "name", "display_name", "created_at", "updated_at"}
+	env.orgMock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
+		WithArgs("default").
+		WillReturnRows(sqlmock.NewRows(orgCols).AddRow("org-1", "default", "Default Org", now, now))
+
+	// CreateUser fails (e.g. duplicate key)
+	env.userMock.ExpectExec("INSERT INTO users").
+		WillReturnError(errDB)
+
+	// GetUserByEmail returns the existing user
+	userCols := []string{"id", "email", "name", "oidc_sub", "created_at", "updated_at"}
+	env.userMock.ExpectQuery("SELECT.*FROM users.*WHERE email").
+		WithArgs("admin@example.com").
+		WillReturnRows(sqlmock.NewRows(userCols).AddRow(
+			"existing-user-id", "admin@example.com", "admin@example.com", nil, now, now,
+		))
+
+	// AddMemberWithParams
+	env.orgMock.ExpectQuery("SELECT id FROM role_templates WHERE name").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-admin-id"))
+	env.orgMock.ExpectExec("INSERT INTO organization_members").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	// SetPendingAdminEmail
+	env.oidcMock.ExpectExec("UPDATE system_settings SET").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/admin", body))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", w.Code, w.Body.String())
+	}
+
+	resp2 := getJSON(w)
+	if resp2["email"] != "admin@example.com" {
+		t.Errorf("email = %v, want admin@example.com", resp2["email"])
+	}
+}
+
+func TestConfigureAdmin_CreateAndFindBothFail(t *testing.T) {
+	env := newTestEnv(t)
+
+	r := gin.New()
+	r.POST("/admin", env.h.ConfigureAdmin)
+
+	body := jsonBody(map[string]string{"email": "admin@example.com"})
+
+	now := time.Now()
+	orgCols := []string{"id", "name", "display_name", "created_at", "updated_at"}
+	env.orgMock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
+		WithArgs("default").
+		WillReturnRows(sqlmock.NewRows(orgCols).AddRow("org-1", "default", "Default Org", now, now))
+
+	// CreateUser fails
+	env.userMock.ExpectExec("INSERT INTO users").
+		WillReturnError(errDB)
+
+	// GetUserByEmail also fails
+	env.userMock.ExpectQuery("SELECT.*FROM users.*WHERE email").
+		WithArgs("admin@example.com").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/admin", body))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestConfigureAdmin_AddMemberFails_UpdateRoleSucceeds(t *testing.T) {
+	env := newTestEnv(t)
+
+	r := gin.New()
+	r.POST("/admin", env.h.ConfigureAdmin)
+
+	body := jsonBody(map[string]string{"email": "admin@example.com"})
+
+	now := time.Now()
+	orgCols := []string{"id", "name", "display_name", "created_at", "updated_at"}
+	env.orgMock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
+		WithArgs("default").
+		WillReturnRows(sqlmock.NewRows(orgCols).AddRow("org-1", "default", "Default Org", now, now))
+
+	// CreateUser succeeds
+	env.userMock.ExpectExec("INSERT INTO users").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	// AddMemberWithParams: role template lookup succeeds but INSERT fails
+	env.orgMock.ExpectQuery("SELECT id FROM role_templates WHERE name").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-admin-id"))
+	env.orgMock.ExpectExec("INSERT INTO organization_members").
+		WillReturnError(errDB)
+
+	// UpdateMemberRole: role template lookup succeeds and UPDATE succeeds
+	env.orgMock.ExpectQuery("SELECT id FROM role_templates WHERE name").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-admin-id"))
+	env.orgMock.ExpectExec("UPDATE organization_members").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	// SetPendingAdminEmail
+	env.oidcMock.ExpectExec("UPDATE system_settings SET").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/admin", body))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", w.Code, w.Body.String())
+	}
+
+	resp2 := getJSON(w)
+	if resp2["email"] != "admin@example.com" {
+		t.Errorf("email = %v, want admin@example.com", resp2["email"])
+	}
+}
+
+func TestConfigureAdmin_AddMemberFails_UpdateRoleFails(t *testing.T) {
+	env := newTestEnv(t)
+
+	r := gin.New()
+	r.POST("/admin", env.h.ConfigureAdmin)
+
+	body := jsonBody(map[string]string{"email": "admin@example.com"})
+
+	now := time.Now()
+	orgCols := []string{"id", "name", "display_name", "created_at", "updated_at"}
+	env.orgMock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
+		WithArgs("default").
+		WillReturnRows(sqlmock.NewRows(orgCols).AddRow("org-1", "default", "Default Org", now, now))
+
+	// CreateUser succeeds
+	env.userMock.ExpectExec("INSERT INTO users").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	// AddMemberWithParams: role template lookup succeeds but INSERT fails
+	env.orgMock.ExpectQuery("SELECT id FROM role_templates WHERE name").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-admin-id"))
+	env.orgMock.ExpectExec("INSERT INTO organization_members").
+		WillReturnError(errDB)
+
+	// UpdateMemberRole: role template lookup fails
+	env.orgMock.ExpectQuery("SELECT id FROM role_templates WHERE name").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/admin", body))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestConfigureAdmin_PendingAdminEmailFails(t *testing.T) {
+	env := newTestEnv(t)
+
+	r := gin.New()
+	r.POST("/admin", env.h.ConfigureAdmin)
+
+	body := jsonBody(map[string]string{"email": "admin@example.com"})
+
+	now := time.Now()
+	orgCols := []string{"id", "name", "display_name", "created_at", "updated_at"}
+	env.orgMock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
+		WithArgs("default").
+		WillReturnRows(sqlmock.NewRows(orgCols).AddRow("org-1", "default", "Default Org", now, now))
+
+	// CreateUser succeeds
+	env.userMock.ExpectExec("INSERT INTO users").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	// AddMemberWithParams succeeds
+	env.orgMock.ExpectQuery("SELECT id FROM role_templates WHERE name").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-admin-id"))
+	env.orgMock.ExpectExec("INSERT INTO organization_members").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	// SetPendingAdminEmail fails (non-fatal)
+	env.oidcMock.ExpectExec("UPDATE system_settings SET").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/admin", body))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (non-fatal error), body: %s", w.Code, w.Body.String())
+	}
+
+	resp2 := getJSON(w)
+	if resp2["email"] != "admin@example.com" {
+		t.Errorf("email = %v, want admin@example.com", resp2["email"])
 	}
 }
 

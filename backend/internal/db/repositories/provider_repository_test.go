@@ -653,3 +653,399 @@ func TestUpdateProvider_DBError(t *testing.T) {
 		t.Error("expected error")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// SearchProvidersWithStats
+// ---------------------------------------------------------------------------
+
+// providerSearchWithStatsCols matches the SELECT column order in SearchProvidersWithStats
+var providerSearchWithStatsCols = []string{
+	"id", "organization_id", "namespace", "type", "description", "source",
+	"created_by", "created_by_name", "created_at", "updated_at",
+	"latest_version", "total_downloads",
+}
+
+func sampleProviderSearchWithStatsRow() *sqlmock.Rows {
+	latestVer := "2.1.0"
+	return sqlmock.NewRows(providerSearchWithStatsCols).
+		AddRow("prov-1", "org-1", "hashicorp", "aws", nil, nil, nil, nil, time.Now(), time.Now(), &latestVer, int64(100))
+}
+
+func TestSearchProvidersWithStats_Success(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	mock.ExpectQuery("SELECT COUNT").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectQuery("SELECT.*FROM providers.*LEFT JOIN LATERAL").
+		WillReturnRows(sampleProviderSearchWithStatsRow())
+
+	results, total, err := repo.SearchProvidersWithStats(context.Background(), "org-1", "aws", "hashicorp", 10, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 1 {
+		t.Errorf("total = %d, want 1", total)
+	}
+	if len(results) != 1 {
+		t.Fatalf("len(results) = %d, want 1", len(results))
+	}
+	if results[0].ID != "prov-1" {
+		t.Errorf("ID = %s, want prov-1", results[0].ID)
+	}
+	if results[0].OrganizationID != "org-1" {
+		t.Errorf("OrganizationID = %s, want org-1", results[0].OrganizationID)
+	}
+	if results[0].LatestVersion == nil || *results[0].LatestVersion != "2.1.0" {
+		t.Errorf("LatestVersion = %v, want 2.1.0", results[0].LatestVersion)
+	}
+	if results[0].TotalDownloads != 100 {
+		t.Errorf("TotalDownloads = %d, want 100", results[0].TotalDownloads)
+	}
+}
+
+func TestSearchProvidersWithStats_Empty(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	mock.ExpectQuery("SELECT COUNT").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery("SELECT.*FROM providers.*LEFT JOIN LATERAL").
+		WillReturnRows(sqlmock.NewRows(providerSearchWithStatsCols))
+
+	results, total, err := repo.SearchProvidersWithStats(context.Background(), "", "", "", 10, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 0 || len(results) != 0 {
+		t.Errorf("expected empty results, got total=%d, len=%d", total, len(results))
+	}
+}
+
+func TestSearchProvidersWithStats_CountError(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	mock.ExpectQuery("SELECT COUNT").
+		WillReturnError(errDB)
+
+	_, _, err := repo.SearchProvidersWithStats(context.Background(), "", "aws", "", 10, 0)
+	if err == nil {
+		t.Error("expected error on count query failure")
+	}
+}
+
+func TestSearchProvidersWithStats_QueryError(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	mock.ExpectQuery("SELECT COUNT").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectQuery("SELECT.*FROM providers.*LEFT JOIN LATERAL").
+		WillReturnError(errDB)
+
+	_, _, err := repo.SearchProvidersWithStats(context.Background(), "", "aws", "", 10, 0)
+	if err == nil {
+		t.Error("expected error on search query failure")
+	}
+}
+
+func TestSearchProvidersWithStats_NoOrgFilter(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	mock.ExpectQuery("SELECT COUNT").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectQuery("SELECT.*FROM providers.*LEFT JOIN LATERAL").
+		WillReturnRows(sampleProviderSearchWithStatsRow())
+
+	results, total, err := repo.SearchProvidersWithStats(context.Background(), "", "aws", "", 10, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 1 || len(results) != 1 {
+		t.Errorf("expected 1 result, got total=%d, len=%d", total, len(results))
+	}
+}
+
+func TestSearchProvidersWithStats_NullLatestVersion(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	mock.ExpectQuery("SELECT COUNT").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectQuery("SELECT.*FROM providers.*LEFT JOIN LATERAL").
+		WillReturnRows(sqlmock.NewRows(providerSearchWithStatsCols).
+			AddRow("prov-2", nil, "hashicorp", "gcp", nil, nil, nil, nil, time.Now(), time.Now(), nil, int64(0)))
+
+	results, total, err := repo.SearchProvidersWithStats(context.Background(), "", "", "", 10, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 1 || len(results) != 1 {
+		t.Fatalf("expected 1 result, got total=%d, len=%d", total, len(results))
+	}
+	if results[0].LatestVersion != nil {
+		t.Errorf("LatestVersion = %v, want nil", results[0].LatestVersion)
+	}
+	if results[0].OrganizationID != "" {
+		t.Errorf("OrganizationID = %q, want empty string", results[0].OrganizationID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CreateProvider – additional error path
+// ---------------------------------------------------------------------------
+
+func TestCreateProvider_DBError(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	mock.ExpectQuery("INSERT INTO providers").
+		WillReturnError(errDB)
+
+	p := &models.Provider{Namespace: "hashicorp", Type: "aws"}
+	if err := repo.CreateProvider(context.Background(), p); err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+func TestCreateProvider_EmptyOrgID(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	mock.ExpectQuery("INSERT INTO providers").
+		WillReturnRows(sqlmock.NewRows(provCreateCols).AddRow("prov-new", time.Now(), time.Now()))
+
+	p := &models.Provider{OrganizationID: "", Namespace: "hashicorp", Type: "aws"}
+	if err := repo.CreateProvider(context.Background(), p); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.ID != "prov-new" {
+		t.Errorf("ID = %s, want prov-new", p.ID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CreateVersion – additional error path
+// ---------------------------------------------------------------------------
+
+func TestCreateProviderVersion_DBError(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	mock.ExpectQuery("INSERT INTO provider_versions").
+		WillReturnError(errDB)
+
+	v := &models.ProviderVersion{ProviderID: "prov-1", Version: "6.0.0", Protocols: []string{"6.0"}}
+	if err := repo.CreateVersion(context.Background(), v); err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetVersion – additional error path
+// ---------------------------------------------------------------------------
+
+func TestGetProviderVersion_DBError(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	mock.ExpectQuery("SELECT.*FROM provider_versions.*WHERE provider_id").
+		WillReturnError(errDB)
+
+	_, err := repo.GetVersion(context.Background(), "prov-1", "5.0.0")
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ListVersions – additional error path
+// ---------------------------------------------------------------------------
+
+func TestListProviderVersions_DBError(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	mock.ExpectQuery("SELECT.*FROM provider_versions.*WHERE pv.provider_id").
+		WillReturnError(errDB)
+
+	_, err := repo.ListVersions(context.Background(), "prov-1")
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ListPlatforms – additional error path
+// ---------------------------------------------------------------------------
+
+func TestListPlatforms_DBError(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	mock.ExpectQuery("SELECT.*FROM provider_platforms.*WHERE provider_version_id").
+		WillReturnError(errDB)
+
+	_, err := repo.ListPlatforms(context.Background(), "ver-1")
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DeleteVersion – additional error paths
+// ---------------------------------------------------------------------------
+
+func TestDeleteProviderVersion_DBError(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	mock.ExpectExec("DELETE FROM provider_versions").
+		WillReturnError(errDB)
+
+	if err := repo.DeleteVersion(context.Background(), "ver-1"); err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+func TestDeleteProviderVersion_NotFound(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	mock.ExpectExec("DELETE FROM provider_versions").
+		WithArgs("ver-missing").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	err := repo.DeleteVersion(context.Background(), "ver-missing")
+	if err == nil {
+		t.Error("expected error for not found version, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DeprecateVersion – additional error paths
+// ---------------------------------------------------------------------------
+
+func TestDeprecateProviderVersion_DBError(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	mock.ExpectExec("UPDATE provider_versions.*SET deprecated = true").
+		WillReturnError(errDB)
+
+	msg := "old version"
+	if err := repo.DeprecateVersion(context.Background(), "ver-1", &msg); err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+func TestDeprecateProviderVersion_NotFound(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	mock.ExpectExec("UPDATE provider_versions.*SET deprecated = true").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	msg := "old version"
+	if err := repo.DeprecateVersion(context.Background(), "ver-missing", &msg); err == nil {
+		t.Error("expected error for not found version, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// UndeprecateVersion – additional error paths
+// ---------------------------------------------------------------------------
+
+func TestUndeprecateProviderVersion_DBError(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	mock.ExpectExec("UPDATE provider_versions.*SET deprecated = false").
+		WillReturnError(errDB)
+
+	if err := repo.UndeprecateVersion(context.Background(), "ver-1"); err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+func TestUndeprecateProviderVersion_NotFound(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	mock.ExpectExec("UPDATE provider_versions.*SET deprecated = false").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	if err := repo.UndeprecateVersion(context.Background(), "ver-missing"); err == nil {
+		t.Error("expected error for not found version, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CreatePlatform – additional error path
+// ---------------------------------------------------------------------------
+
+func TestCreatePlatform_DBError(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	mock.ExpectQuery("INSERT INTO provider_platforms").
+		WillReturnError(errDB)
+
+	plat := &models.ProviderPlatform{
+		ProviderVersionID: "ver-1", OS: "linux", Arch: "amd64",
+		Filename: "file.zip", StoragePath: "path/file.zip", StorageBackend: "default",
+	}
+	if err := repo.CreatePlatform(context.Background(), plat); err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetPlatform – additional error path
+// ---------------------------------------------------------------------------
+
+func TestGetPlatform_DBError(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	mock.ExpectQuery("SELECT.*FROM provider_platforms.*WHERE provider_version_id.*AND os.*AND arch").
+		WillReturnError(errDB)
+
+	_, err := repo.GetPlatform(context.Background(), "ver-1", "linux", "amd64")
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// IncrementDownloadCount – additional error path
+// ---------------------------------------------------------------------------
+
+func TestIncrementProviderDownloadCount_DBError(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	mock.ExpectExec("UPDATE provider_platforms.*SET download_count").
+		WillReturnError(errDB)
+
+	if err := repo.IncrementDownloadCount(context.Background(), "plat-1"); err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetTotalDownloadCount – additional error path
+// ---------------------------------------------------------------------------
+
+func TestGetTotalDownloadCount_DBError(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	mock.ExpectQuery("SELECT COALESCE.*FROM provider_platforms").
+		WillReturnError(errDB)
+
+	_, err := repo.GetTotalDownloadCount(context.Background(), "prov-1")
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DeletePlatform – additional error paths
+// ---------------------------------------------------------------------------
+
+func TestDeletePlatform_DBError(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	mock.ExpectExec("DELETE FROM provider_platforms").
+		WillReturnError(errDB)
+
+	if err := repo.DeletePlatform(context.Background(), "plat-1"); err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+func TestDeletePlatform_NotFound(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	mock.ExpectExec("DELETE FROM provider_platforms").
+		WithArgs("plat-missing").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	err := repo.DeletePlatform(context.Background(), "plat-missing")
+	if err == nil {
+		t.Error("expected error for not found platform, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DeleteProvider – additional error path (NotFound)
+// ---------------------------------------------------------------------------
+
+func TestDeleteProvider_NotFound(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	mock.ExpectExec("DELETE FROM providers").
+		WithArgs("prov-missing").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	err := repo.DeleteProvider(context.Background(), "prov-missing")
+	if err == nil {
+		t.Error("expected error for not found provider, got nil")
+	}
+}

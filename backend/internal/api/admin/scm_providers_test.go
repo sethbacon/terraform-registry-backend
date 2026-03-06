@@ -185,6 +185,149 @@ func TestSCMCreate_DBError(t *testing.T) {
 	}
 }
 
+func TestSCMCreate_InvalidJSON(t *testing.T) {
+	_, r := newSCMProviderRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/scm-providers",
+		bytes.NewBufferString("{invalid json")))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestSCMCreate_PATBased_MissingBaseURL(t *testing.T) {
+	_, r := newSCMProviderRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/scm-providers",
+		jsonBody(map[string]interface{}{
+			"provider_type": "bitbucket_dc",
+			"name":          "test-bdc",
+		})))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestSCMCreate_PATBased_EmptyBaseURL(t *testing.T) {
+	_, r := newSCMProviderRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/scm-providers",
+		jsonBody(map[string]interface{}{
+			"provider_type": "bitbucket_dc",
+			"name":          "test-bdc",
+			"base_url":      "",
+		})))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestSCMCreate_PATBased_Success(t *testing.T) {
+	mock, r := newSCMProviderRouter(t)
+	// Default org lookup
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "created_at", "updated_at"}).
+			AddRow(knownUUID, "default", "Default", time.Now(), time.Now()))
+	mock.ExpectExec("INSERT INTO scm_providers").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/scm-providers",
+		jsonBody(map[string]interface{}{
+			"provider_type": "bitbucket_dc",
+			"name":          "test-bdc",
+			"base_url":      "https://bitbucket.example.com",
+		})))
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestSCMCreate_NoDefaultOrg(t *testing.T) {
+	mock, r := newSCMProviderRouter(t)
+	// Default org lookup returns no rows
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "created_at", "updated_at"}))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/scm-providers",
+		jsonBody(map[string]interface{}{
+			"provider_type": "github",
+			"name":          "test-github",
+			"client_id":     "cid",
+			"client_secret": "csec",
+		})))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestSCMCreate_DefaultOrgDBError(t *testing.T) {
+	mock, r := newSCMProviderRouter(t)
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/scm-providers",
+		jsonBody(map[string]interface{}{
+			"provider_type": "github",
+			"name":          "test-github",
+			"client_id":     "cid",
+			"client_secret": "csec",
+		})))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestSCMCreate_DefaultOrgInvalidUUID(t *testing.T) {
+	mock, r := newSCMProviderRouter(t)
+	// Default org returns a row with an unparseable UUID
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "created_at", "updated_at"}).
+			AddRow("not-a-uuid", "default", "Default", time.Now(), time.Now()))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/scm-providers",
+		jsonBody(map[string]interface{}{
+			"provider_type": "github",
+			"name":          "test-github",
+			"client_id":     "cid",
+			"client_secret": "csec",
+		})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestSCMCreate_WithExplicitOrgID(t *testing.T) {
+	mock, r := newSCMProviderRouter(t)
+	// Explicit org ID skips default org lookup — only INSERT expected
+	mock.ExpectExec("INSERT INTO scm_providers").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/scm-providers",
+		jsonBody(map[string]interface{}{
+			"provider_type":   "github",
+			"name":            "test-github",
+			"client_id":       "cid",
+			"client_secret":   "csec",
+			"organization_id": knownUUID,
+		})))
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ListProviders
 // ---------------------------------------------------------------------------
@@ -350,6 +493,72 @@ func TestSCMUpdate_DBError(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestSCMUpdate_InvalidBody(t *testing.T) {
+	_, r := newSCMProviderRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/scm-providers/"+knownUUID,
+		bytes.NewBufferString("{invalid json")))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestSCMUpdate_GetProviderDBError(t *testing.T) {
+	mock, r := newSCMProviderRouter(t)
+	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/scm-providers/"+knownUUID,
+		jsonBody(map[string]interface{}{"name": "new-name"})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestSCMUpdate_WithClientSecret(t *testing.T) {
+	mock, r := newSCMProviderRouter(t)
+	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
+		WillReturnRows(sampleSCMProviderRow())
+	mock.ExpectExec("UPDATE scm_providers SET").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	// Updating client_secret exercises the tokenCipher.Seal path during update
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/scm-providers/"+knownUUID,
+		jsonBody(map[string]interface{}{"client_secret": "new-secret"})))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestSCMUpdate_AllFields(t *testing.T) {
+	mock, r := newSCMProviderRouter(t)
+	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
+		WillReturnRows(sampleSCMProviderRow())
+	mock.ExpectExec("UPDATE scm_providers SET").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/scm-providers/"+knownUUID,
+		jsonBody(map[string]interface{}{
+			"name":           "updated-github",
+			"base_url":       "https://github.example.com",
+			"tenant_id":      "tenant-123",
+			"client_id":      "new-client-id",
+			"client_secret":  "new-client-secret",
+			"webhook_secret": "new-webhook-secret",
+			"is_active":      false,
+		})))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
 	}
 }
 

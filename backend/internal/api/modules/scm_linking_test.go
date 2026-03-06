@@ -208,6 +208,119 @@ func TestLinkModule_AlreadyLinked(t *testing.T) {
 	}
 }
 
+func TestLinkModule_GetModuleByID_DBError(t *testing.T) {
+	_, modMock, r := newSCMLinkingRouter(t)
+	// GetModuleByID returns a DB error
+	modMock.ExpectQuery("SELECT.*FROM modules m.*WHERE m.id").
+		WillReturnError(errSCMLinkDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/modules/"+scmLinkModuleUUID+"/scm",
+		linkBody(map[string]interface{}{
+			"provider_id":      scmLinkProviderUUID,
+			"repository_owner": "owner",
+			"repository_name":  "repo",
+		})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestLinkModule_ModuleNotFound(t *testing.T) {
+	_, modMock, r := newSCMLinkingRouter(t)
+	// GetModuleByID returns no rows → nil module
+	modMock.ExpectQuery("SELECT.*FROM modules m.*WHERE m.id").
+		WillReturnRows(sqlmock.NewRows(moduleSCMCols))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/modules/"+scmLinkModuleUUID+"/scm",
+		linkBody(map[string]interface{}{
+			"provider_id":      scmLinkProviderUUID,
+			"repository_owner": "owner",
+			"repository_name":  "repo",
+		})))
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestLinkModule_GetProvider_DBError(t *testing.T) {
+	scmMock, modMock, r := newSCMLinkingRouter(t)
+	// Module exists
+	modMock.ExpectQuery("SELECT.*FROM modules m.*WHERE m.id").
+		WillReturnRows(sampleModuleForSCMRow(scmLinkModuleUUID))
+	// GetProvider returns DB error
+	scmMock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
+		WillReturnError(errSCMLinkDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/modules/"+scmLinkModuleUUID+"/scm",
+		linkBody(map[string]interface{}{
+			"provider_id":      scmLinkProviderUUID,
+			"repository_owner": "owner",
+			"repository_name":  "repo",
+		})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestLinkModule_GetModuleSourceRepo_DBError(t *testing.T) {
+	scmMock, modMock, r := newSCMLinkingRouter(t)
+	// Module exists
+	modMock.ExpectQuery("SELECT.*FROM modules m.*WHERE m.id").
+		WillReturnRows(sampleModuleForSCMRow(scmLinkModuleUUID))
+	// Provider exists
+	scmMock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
+		WillReturnRows(sampleSCMProviderRowLink())
+	// GetModuleSourceRepo returns DB error
+	scmMock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE module_id").
+		WillReturnError(errSCMLinkDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/modules/"+scmLinkModuleUUID+"/scm",
+		linkBody(map[string]interface{}{
+			"provider_id":      scmLinkProviderUUID,
+			"repository_owner": "owner",
+			"repository_name":  "repo",
+		})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestLinkModule_CreateModuleSourceRepo_DBError(t *testing.T) {
+	scmMock, modMock, r := newSCMLinkingRouter(t)
+	// Module exists
+	modMock.ExpectQuery("SELECT.*FROM modules m.*WHERE m.id").
+		WillReturnRows(sampleModuleForSCMRow(scmLinkModuleUUID))
+	// Provider exists
+	scmMock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
+		WillReturnRows(sampleSCMProviderRowLink())
+	// Module not yet linked
+	scmMock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE module_id").
+		WillReturnRows(sqlmock.NewRows(moduleSourceRepoColsLink))
+	// Insert fails
+	scmMock.ExpectExec("INSERT INTO module_scm_repos").
+		WillReturnError(errSCMLinkDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/modules/"+scmLinkModuleUUID+"/scm",
+		linkBody(map[string]interface{}{
+			"provider_id":      scmLinkProviderUUID,
+			"repository_owner": "owner",
+			"repository_name":  "repo",
+		})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
 // TestLinkModule_Success_NilBaseURL verifies that LinkModuleToSCM succeeds and
 // returns 201 when the SCM provider has no base_url set (the common case for
 // cloud-hosted GitHub/GitLab providers, which use connector-level defaults).
@@ -278,6 +391,61 @@ func TestUnlinkModule_NotFound(t *testing.T) {
 	}
 }
 
+func TestUnlinkModule_GetLinkDBError(t *testing.T) {
+	scmMock, _, r := newSCMLinkingRouter(t)
+	// GetModuleSourceRepo returns DB error
+	scmMock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE module_id").
+		WillReturnError(errSCMLinkDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/modules/"+scmLinkModuleUUID+"/scm", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestUnlinkModule_DeleteDBError(t *testing.T) {
+	scmMock, _, r := newSCMLinkingRouter(t)
+	// Link exists (webhook_id is nil, so webhook removal block is skipped)
+	scmMock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE module_id").
+		WillReturnRows(sampleModuleSourceRepoRowLink())
+	// Delete fails
+	scmMock.ExpectExec("DELETE FROM module_scm_repos WHERE module_id").
+		WillReturnError(errSCMLinkDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/modules/"+scmLinkModuleUUID+"/scm", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestUnlinkModule_Success(t *testing.T) {
+	scmMock, _, r := newSCMLinkingRouter(t)
+	// Link exists (webhook_id is nil, so webhook removal block is skipped)
+	scmMock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE module_id").
+		WillReturnRows(sampleModuleSourceRepoRowLink())
+	// Delete succeeds
+	scmMock.ExpectExec("DELETE FROM module_scm_repos WHERE module_id").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/modules/"+scmLinkModuleUUID+"/scm", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["message"] != "module unlinked from repository" {
+		t.Errorf("unexpected message: %v", resp["message"])
+	}
+}
+
 // ---------------------------------------------------------------------------
 // GetModuleSCMInfo
 // ---------------------------------------------------------------------------
@@ -305,6 +473,44 @@ func TestGetSCMInfo_NotFound(t *testing.T) {
 	}
 }
 
+func TestGetSCMInfo_DBError(t *testing.T) {
+	scmMock, _, r := newSCMLinkingRouter(t)
+	// GetModuleSourceRepo returns DB error
+	scmMock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE module_id").
+		WillReturnError(errSCMLinkDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/modules/"+scmLinkModuleUUID+"/scm", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestGetSCMInfo_Success(t *testing.T) {
+	scmMock, _, r := newSCMLinkingRouter(t)
+	// GetModuleSourceRepo returns a link row
+	scmMock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE module_id").
+		WillReturnRows(sampleModuleSourceRepoRowLink())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/modules/"+scmLinkModuleUUID+"/scm", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["repository_owner"] != "owner" {
+		t.Errorf("unexpected repository_owner: %v", resp["repository_owner"])
+	}
+	if resp["repository_name"] != "repo" {
+		t.Errorf("unexpected repository_name: %v", resp["repository_name"])
+	}
+}
+
 // ---------------------------------------------------------------------------
 // TriggerManualSync
 // ---------------------------------------------------------------------------
@@ -329,6 +535,54 @@ func TestTriggerSync_NotLinked(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestTriggerSync_GetLinkDBError(t *testing.T) {
+	scmMock, _, r := newSCMLinkingRouter(t)
+	// GetModuleSourceRepo returns DB error
+	scmMock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE module_id").
+		WillReturnError(errSCMLinkDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/modules/"+scmLinkModuleUUID+"/scm/sync", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestTriggerSync_ProviderNotFound(t *testing.T) {
+	scmMock, _, r := newSCMLinkingRouter(t)
+	// Link exists
+	scmMock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE module_id").
+		WillReturnRows(sampleModuleSourceRepoRowLink())
+	// GetProvider returns no rows → nil provider
+	scmMock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
+		WillReturnRows(sqlmock.NewRows(scmProviderColsLink))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/modules/"+scmLinkModuleUUID+"/scm/sync", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestTriggerSync_ProviderDBError(t *testing.T) {
+	scmMock, _, r := newSCMLinkingRouter(t)
+	// Link exists
+	scmMock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE module_id").
+		WillReturnRows(sampleModuleSourceRepoRowLink())
+	// GetProvider returns DB error
+	scmMock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
+		WillReturnError(errSCMLinkDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/modules/"+scmLinkModuleUUID+"/scm/sync", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
 	}
 }
 
@@ -519,6 +773,167 @@ func TestGetWebhookEvents_Success(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Router helper (with user_id injected into gin context)
+// ---------------------------------------------------------------------------
+
+// scmOAuthTokenCols matches the columns selected by GetUserToken (SELECT * FROM scm_oauth_tokens).
+var scmOAuthTokenCols = []string{
+	"id", "user_id", "scm_provider_id",
+	"access_token_encrypted", "refresh_token_encrypted",
+	"token_type", "expires_at", "scopes",
+	"created_at", "updated_at",
+}
+
+func newSCMLinkingRouterWithUserID(t *testing.T, userID uuid.UUID) (sqlmock.Sqlmock, sqlmock.Sqlmock, *gin.Engine) {
+	t.Helper()
+
+	scmDB, scmMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New (scm): %v", err)
+	}
+	t.Cleanup(func() { scmDB.Close() })
+
+	modDB, modMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New (mod): %v", err)
+	}
+	t.Cleanup(func() { modDB.Close() })
+
+	scmRepo := repositories.NewSCMRepository(sqlx.NewDb(scmDB, "sqlmock"))
+	moduleRepo := repositories.NewModuleRepository(modDB)
+	tokenCipher := &crypto.TokenCipher{}
+	scmPublisher := &services.SCMPublisher{}
+	h := NewSCMLinkingHandler(scmRepo, moduleRepo, tokenCipher, "https://registry.example.com", scmPublisher)
+
+	setUser := func(c *gin.Context) {
+		c.Set("user_id", userID)
+		c.Next()
+	}
+
+	r := gin.New()
+	r.POST("/modules/:id/scm", h.LinkModuleToSCM)
+	r.PUT("/modules/:id/scm", h.UpdateSCMLink)
+	r.DELETE("/modules/:id/scm", h.UnlinkModuleFromSCM)
+	r.GET("/modules/:id/scm", h.GetModuleSCMInfo)
+	r.POST("/modules/:id/scm/sync", setUser, h.TriggerManualSync)
+	r.GET("/modules/:id/scm/events", h.GetWebhookEvents)
+
+	return scmMock, modMock, r
+}
+
+// ---------------------------------------------------------------------------
+// LinkModuleToSCM — success with explicit base URL
+// ---------------------------------------------------------------------------
+
+func TestLinkModule_Success_WithExplicitBaseURL(t *testing.T) {
+	scmMock, modMock, r := newSCMLinkingRouter(t)
+
+	// Module exists
+	modMock.ExpectQuery("SELECT.*FROM modules m.*WHERE m.id").
+		WillReturnRows(sampleModuleForSCMRow(scmLinkModuleUUID))
+	// Provider exists with an explicit base_url (non-nil)
+	scmMock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
+		WillReturnRows(sqlmock.NewRows(scmProviderColsLink).AddRow(
+			scmLinkProviderUUID, uuid.Nil.String(), "github", "github-enterprise",
+			"https://github.example.com", nil, "client-id",
+			"encrypted-secret", "webhook-secret",
+			true, time.Now(), time.Now(),
+		))
+	// Module is not yet linked
+	scmMock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE module_id").
+		WillReturnRows(sqlmock.NewRows(moduleSourceRepoColsLink))
+	// Insert succeeds
+	scmMock.ExpectExec("INSERT INTO module_scm_repos").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/modules/"+scmLinkModuleUUID+"/scm",
+		linkBody(map[string]interface{}{
+			"provider_id":      scmLinkProviderUUID,
+			"repository_owner": "org",
+			"repository_name":  "terraform-module",
+		})))
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if _, ok := resp["webhook_callback_url"]; !ok {
+		t.Error("response missing webhook_callback_url")
+	}
+	if resp["message"] != "module linked to repository" {
+		t.Errorf("unexpected message: %v", resp["message"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TriggerManualSync — additional error paths
+// ---------------------------------------------------------------------------
+
+func TestTriggerSync_UserNotAuthenticated(t *testing.T) {
+	scmMock, _, r := newSCMLinkingRouter(t)
+	// Link exists
+	scmMock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE module_id").
+		WillReturnRows(sampleModuleSourceRepoRowLink())
+	// Provider exists
+	scmMock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
+		WillReturnRows(sampleSCMProviderRowLink())
+	// No user_id in gin context — getUserIDFromContext will fail
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/modules/"+scmLinkModuleUUID+"/scm/sync", nil))
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestTriggerSync_NotConnectedToSCM(t *testing.T) {
+	userID := uuid.New()
+	scmMock, _, r := newSCMLinkingRouterWithUserID(t, userID)
+	// Link exists
+	scmMock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE module_id").
+		WillReturnRows(sampleModuleSourceRepoRowLink())
+	// Provider exists
+	scmMock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
+		WillReturnRows(sampleSCMProviderRowLink())
+	// GetUserToken returns no rows (user has no token for this provider)
+	scmMock.ExpectQuery("SELECT.*FROM scm_oauth_tokens WHERE user_id").
+		WillReturnRows(sqlmock.NewRows(scmOAuthTokenCols))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/modules/"+scmLinkModuleUUID+"/scm/sync", nil))
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestTriggerSync_GetUserTokenDBError(t *testing.T) {
+	userID := uuid.New()
+	scmMock, _, r := newSCMLinkingRouterWithUserID(t, userID)
+	// Link exists
+	scmMock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE module_id").
+		WillReturnRows(sampleModuleSourceRepoRowLink())
+	// Provider exists
+	scmMock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
+		WillReturnRows(sampleSCMProviderRowLink())
+	// GetUserToken returns DB error
+	scmMock.ExpectQuery("SELECT.*FROM scm_oauth_tokens WHERE user_id").
+		WillReturnError(errSCMLinkDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/modules/"+scmLinkModuleUUID+"/scm/sync", nil))
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401: body=%s", w.Code, w.Body.String())
 	}
 }
 
