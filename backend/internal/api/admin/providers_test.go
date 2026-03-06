@@ -57,7 +57,7 @@ var versionCols = []string{
 
 var platformCols = []string{
 	"id", "provider_version_id", "os", "arch",
-	"filename", "storage_path", "storage_backend", "size_bytes", "shasum", "download_count",
+	"filename", "storage_path", "storage_backend", "size_bytes", "shasum", "h1_hash", "download_count",
 }
 
 var versionGetCols = []string{
@@ -349,7 +349,7 @@ func TestDeleteProvider_Success_WithVersionsAndPlatforms(t *testing.T) {
 			AddRow("plat-1", "ver-1", "linux", "amd64",
 				"terraform-provider-aws_5.0.0_linux_amd64.zip",
 				"providers/hashicorp/aws/5.0.0/linux_amd64.zip",
-				"local", 1024, "abc123", 0))
+				"local", 1024, "abc123", nil, 0))
 	// DeleteProvider
 	mock.ExpectExec("DELETE FROM providers").
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -658,5 +658,225 @@ func TestUndeprecateVersion_UndeprecateDBError(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetProvider — additional uncovered branches
+// ---------------------------------------------------------------------------
+
+func TestGetProvider_OrgFound_Success_WithVersionsAndPlatforms(t *testing.T) {
+	mock, r := newProviderRouter(t)
+
+	// Org found (non-nil org)
+	expectOrgFound(mock)
+	mock.ExpectQuery("SELECT.*FROM providers").
+		WillReturnRows(sampleProviderRow())
+	// ListVersions returns one version with deprecated fields set
+	protocols := []byte(`["6.0"]`)
+	deprecatedAt := time.Now()
+	deprecationMsg := "use v6 instead"
+	mock.ExpectQuery("SELECT.*FROM provider_versions").
+		WillReturnRows(sqlmock.NewRows(versionCols).
+			AddRow("ver-1", "prov-1", "5.0.0", protocols, "", "", "", nil, nil, true, &deprecatedAt, &deprecationMsg, time.Now()))
+	// ListPlatforms returns one platform
+	mock.ExpectQuery("SELECT.*FROM provider_platforms").
+		WillReturnRows(sqlmock.NewRows(platformCols).
+			AddRow("plat-1", "ver-1", "linux", "amd64",
+				"terraform-provider-aws_5.0.0_linux_amd64.zip",
+				"providers/hashicorp/aws/5.0.0/linux_amd64.zip",
+				"local", 1024, "abc123", nil, 5))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/providers/hashicorp/aws", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	resp := getJSON(w)
+	if resp["versions"] == nil {
+		t.Error("response missing 'versions' key")
+	}
+}
+
+func TestGetProvider_OrgFound_ProviderNotFound(t *testing.T) {
+	mock, r := newProviderRouter(t)
+
+	expectOrgFound(mock)
+	mock.ExpectQuery("SELECT.*FROM providers").
+		WillReturnRows(emptyProviderRow())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/providers/hashicorp/aws", nil))
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DeprecateVersion — additional DB error branches
+// ---------------------------------------------------------------------------
+
+func TestDeprecateVersion_OrgDBError(t *testing.T) {
+	mock, r := newProviderRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM organizations").
+		WithArgs("default").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/providers/hashicorp/aws/versions/5.0.0/deprecate",
+		jsonBody(map[string]string{"message": "outdated"})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestDeprecateVersion_ProviderDBError(t *testing.T) {
+	mock, r := newProviderRouter(t)
+
+	expectNoDefaultOrg(mock)
+	mock.ExpectQuery("SELECT.*FROM providers").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/providers/hashicorp/aws/versions/5.0.0/deprecate",
+		jsonBody(map[string]string{"message": "outdated"})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestDeprecateVersion_GetVersionDBError(t *testing.T) {
+	mock, r := newProviderRouter(t)
+
+	expectNoDefaultOrg(mock)
+	mock.ExpectQuery("SELECT.*FROM providers").
+		WillReturnRows(sampleProviderRow())
+	mock.ExpectQuery("SELECT.*FROM provider_versions.*WHERE provider_id").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/providers/hashicorp/aws/versions/5.0.0/deprecate",
+		jsonBody(map[string]string{"message": "outdated"})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestDeprecateVersion_DeprecateDBError(t *testing.T) {
+	mock, r := newProviderRouter(t)
+
+	expectNoDefaultOrg(mock)
+	mock.ExpectQuery("SELECT.*FROM providers").
+		WillReturnRows(sampleProviderRow())
+	mock.ExpectQuery("SELECT.*FROM provider_versions.*WHERE provider_id").
+		WillReturnRows(sampleVersionRow())
+	mock.ExpectExec("UPDATE provider_versions").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/providers/hashicorp/aws/versions/5.0.0/deprecate",
+		jsonBody(map[string]string{"message": "outdated"})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestDeprecateVersion_EmptyBody(t *testing.T) {
+	mock, r := newProviderRouter(t)
+
+	expectNoDefaultOrg(mock)
+	mock.ExpectQuery("SELECT.*FROM providers").
+		WillReturnRows(sampleProviderRow())
+	mock.ExpectQuery("SELECT.*FROM provider_versions.*WHERE provider_id").
+		WillReturnRows(sampleVersionRow())
+	mock.ExpectExec("UPDATE provider_versions").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	// Send empty body — req.Message will be ""
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/providers/hashicorp/aws/versions/5.0.0/deprecate", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DeleteVersion — platform cleanup with storage paths
+// ---------------------------------------------------------------------------
+
+func TestDeleteVersion_Success_WithPlatforms(t *testing.T) {
+	mock, r := newProviderRouter(t)
+
+	expectNoDefaultOrg(mock)
+	mock.ExpectQuery("SELECT.*FROM providers").
+		WillReturnRows(sampleProviderRow())
+	mock.ExpectQuery("SELECT.*FROM provider_versions.*WHERE provider_id").
+		WillReturnRows(sampleVersionRow())
+	// ListPlatforms returns one platform with non-empty StoragePath
+	mock.ExpectQuery("SELECT.*FROM provider_platforms").
+		WillReturnRows(sqlmock.NewRows(platformCols).
+			AddRow("plat-1", "ver-1", "linux", "amd64",
+				"terraform-provider-aws_5.0.0_linux_amd64.zip",
+				"providers/hashicorp/aws/5.0.0/linux_amd64.zip",
+				"local", 1024, "abc123", nil, 0))
+	// DeleteVersion
+	mock.ExpectExec("DELETE FROM provider_versions").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/providers/hashicorp/aws/versions/5.0.0", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DeleteProvider — org found path
+// ---------------------------------------------------------------------------
+
+func TestDeleteProvider_OrgFound_Success(t *testing.T) {
+	mock, r := newProviderRouter(t)
+
+	expectOrgFound(mock)
+	mock.ExpectQuery("SELECT.*FROM providers").
+		WillReturnRows(sampleProviderRow())
+	mock.ExpectQuery("SELECT.*FROM provider_versions").
+		WillReturnRows(emptyVersionRows())
+	mock.ExpectExec("DELETE FROM providers").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/providers/hashicorp/aws", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// UndeprecateVersion — provider not found
+// ---------------------------------------------------------------------------
+
+func TestUndeprecateVersion_ProviderNotFound(t *testing.T) {
+	mock, r := newProviderRouter(t)
+
+	expectNoDefaultOrg(mock)
+	mock.ExpectQuery("SELECT.*FROM providers").
+		WillReturnRows(emptyProviderRow())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/providers/hashicorp/aws/versions/5.0.0/deprecate", nil))
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
 	}
 }

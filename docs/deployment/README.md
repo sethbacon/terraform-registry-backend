@@ -1,5 +1,7 @@
 # Deployment Guide
 
+This directory contains cloud-specific Kubernetes deployment guides (AKS, EKS, GKE). For Docker Compose, standalone binary, Helm, and other deployment options, see the [main Deployment Guide](../deployment.md).
+
 This directory contains comprehensive documentation for deploying the Terraform Registry.
 
 ## Deployment Targets

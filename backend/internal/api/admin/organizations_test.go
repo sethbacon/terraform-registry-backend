@@ -537,3 +537,356 @@ func TestUpdateMember_Success(t *testing.T) {
 		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Additional coverage tests for UpdateOrganizationHandler
+// ---------------------------------------------------------------------------
+
+func TestUpdateOrganization_InvalidJSON(t *testing.T) {
+	_, r := newOrgRouter(t)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/organizations/org-1",
+		bytes.NewBufferString("not-json")))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestUpdateOrganization_GetByIDDBError(t *testing.T) {
+	mock, r := newOrgRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE id").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/organizations/org-1",
+		jsonBody(map[string]interface{}{"display_name": "Updated"})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestUpdateOrganization_UpdateDBError(t *testing.T) {
+	mock, r := newOrgRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE id").
+		WillReturnRows(sampleOrgRow())
+	mock.ExpectExec("UPDATE organizations").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/organizations/org-1",
+		jsonBody(map[string]interface{}{"display_name": "Updated"})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Additional coverage tests for DeleteOrganizationHandler
+// ---------------------------------------------------------------------------
+
+func TestDeleteOrganization_GetByIDDBError(t *testing.T) {
+	mock, r := newOrgRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE id").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/organizations/org-1", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestDeleteOrganization_DeleteDBError(t *testing.T) {
+	mock, r := newOrgRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE id").
+		WillReturnRows(sampleOrgRow())
+	mock.ExpectExec("DELETE FROM organizations").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/organizations/org-1", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Additional coverage tests for ListOrganizationsHandler
+// ---------------------------------------------------------------------------
+
+func TestListOrganizations_CountDBError(t *testing.T) {
+	mock, r := newOrgRouter(t)
+
+	// List succeeds
+	mock.ExpectQuery("SELECT.*FROM organizations.*ORDER BY").
+		WillReturnRows(sampleOrgRow())
+	// Count fails
+	mock.ExpectQuery("SELECT COUNT.*FROM organizations").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/organizations", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestListOrganizations_PaginationDefaults(t *testing.T) {
+	mock, r := newOrgRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM organizations.*ORDER BY").
+		WillReturnRows(sampleOrgRow())
+	mock.ExpectQuery("SELECT COUNT.*FROM organizations").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	// page < 1 and per_page > 100 should be clamped to defaults
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/organizations?page=0&per_page=200", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestListOrganizations_NegativePerPage(t *testing.T) {
+	mock, r := newOrgRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM organizations.*ORDER BY").
+		WillReturnRows(sampleOrgRow())
+	mock.ExpectQuery("SELECT COUNT.*FROM organizations").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	// per_page < 1 should be reset to 20
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/organizations?per_page=-5", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Additional coverage tests for AddMemberHandler
+// ---------------------------------------------------------------------------
+
+func TestAddMember_GetByIDDBError(t *testing.T) {
+	mock, r := newOrgRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE id").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/organizations/org-1/members",
+		jsonBody(map[string]string{"user_id": "user-2"})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestAddMember_GetMemberDBError(t *testing.T) {
+	mock, r := newOrgRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE id").
+		WillReturnRows(sampleOrgRow())
+	// GetMember returns error
+	mock.ExpectQuery("SELECT.*FROM organization_members WHERE organization_id").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/organizations/org-1/members",
+		jsonBody(map[string]string{"user_id": "user-2"})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestAddMember_AddMemberDBError(t *testing.T) {
+	mock, r := newOrgRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE id").
+		WillReturnRows(sampleOrgRow())
+	// GetMember finds no existing member
+	mock.ExpectQuery("SELECT.*FROM organization_members WHERE organization_id").
+		WillReturnRows(emptyOrgMemberRow())
+	// AddMember fails
+	mock.ExpectExec("INSERT INTO organization_members").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/organizations/org-1/members",
+		jsonBody(map[string]string{"user_id": "user-2"})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestAddMember_SuccessWithRole(t *testing.T) {
+	mock, r := newOrgRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE id").
+		WillReturnRows(sampleOrgRow())
+	// GetMember finds no existing member
+	mock.ExpectQuery("SELECT.*FROM organization_members WHERE organization_id").
+		WillReturnRows(emptyOrgMemberRow())
+	// AddMember
+	mock.ExpectExec("INSERT INTO organization_members").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	// GetMemberWithRole succeeds
+	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
+		WillReturnRows(sampleMemberWithRoleRow())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/organizations/org-1/members",
+		jsonBody(map[string]string{"user_id": "user-2"})))
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+	}
+	resp := getJSON(w)
+	if resp["member"] == nil {
+		t.Error("response missing 'member' key")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Additional coverage tests for RemoveMemberHandler
+// ---------------------------------------------------------------------------
+
+func TestRemoveMember_DBError(t *testing.T) {
+	mock, r := newOrgRouter(t)
+
+	mock.ExpectExec("DELETE FROM organization_members").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/organizations/org-1/members/user-1", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Additional coverage tests for SearchOrganizationsHandler
+// ---------------------------------------------------------------------------
+
+func TestSearchOrganizations_DBError(t *testing.T) {
+	mock, r := newOrgRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM organizations").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/organizations/search?q=test", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestSearchOrganizations_PaginationDefaults(t *testing.T) {
+	mock, r := newOrgRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM organizations").
+		WillReturnRows(sampleOrgRow())
+
+	// page < 1 and per_page > 100 should be clamped to defaults
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/organizations/search?q=test&page=0&per_page=200", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestSearchOrganizations_NegativePerPage(t *testing.T) {
+	mock, r := newOrgRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM organizations").
+		WillReturnRows(sampleOrgRow())
+
+	// per_page < 1 should be reset to 20
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/organizations/search?q=test&per_page=-1", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Additional coverage tests for ListMembersHandler
+// ---------------------------------------------------------------------------
+
+func TestListMembers_GetByIDDBError(t *testing.T) {
+	mock, r := newOrgRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE id").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/organizations/org-1/members", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestListMembers_ListMembersWithUsersDBError(t *testing.T) {
+	mock, r := newOrgRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE id").
+		WillReturnRows(sampleOrgRow())
+	// ListMembersWithUsers fails
+	mock.ExpectQuery("SELECT.*FROM organization_members.*JOIN users").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/organizations/org-1/members", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Additional coverage tests for UpdateMemberHandler
+// ---------------------------------------------------------------------------
+
+func TestUpdateMember_GetMemberWithRoleDBError(t *testing.T) {
+	mock, r := newOrgRouter(t)
+	mock.ExpectQuery("SELECT.*FROM organization_members WHERE organization_id").
+		WillReturnRows(sampleOrgMemberRow())
+	mock.ExpectExec("UPDATE organization_members").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	// GetMemberWithRole fails - handler should return basic member info (200)
+	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
+		WillReturnError(errDB)
+
+	body := `{"role_template_id": null}`
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/organizations/org-1/members/user-1",
+		bytes.NewBufferString(body)))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	resp := getJSON(w)
+	if resp["member"] == nil {
+		t.Error("response missing 'member' key")
+	}
+}

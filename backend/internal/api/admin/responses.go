@@ -245,6 +245,8 @@ type ProviderPlatformItem struct {
 	ID            string `json:"id"`
 	OS            string `json:"os"`
 	Arch          string `json:"arch"`
+	Filename      string `json:"filename"`
+	Shasum        string `json:"shasum"`
 	DownloadCount int64  `json:"download_count"`
 }
 
@@ -270,6 +272,44 @@ type ProviderDetailResponse struct {
 	Versions    []ProviderVersionItem `json:"versions"`
 	CreatedAt   time.Time             `json:"created_at"`
 	UpdatedAt   time.Time             `json:"updated_at"`
+}
+
+// MirroredPlatformSummary describes a single platform entry in the ListMirroredProviders response.
+type MirroredPlatformSummary struct {
+	ID                string `json:"id"`
+	ProviderVersionID string `json:"provider_version_id"`
+	OS                string `json:"os"`
+	Arch              string `json:"arch"`
+	Filename          string `json:"filename"`
+	Shasum            string `json:"shasum"`
+}
+
+// MirroredVersionSummary describes a provider version with its platforms in the ListMirroredProviders response.
+type MirroredVersionSummary struct {
+	ID                 string                    `json:"id"`
+	MirroredProviderID string                    `json:"mirrored_provider_id"`
+	ProviderVersionID  string                    `json:"provider_version_id"`
+	UpstreamVersion    string                    `json:"upstream_version"`
+	SyncedAt           time.Time                 `json:"synced_at"`
+	Platforms          []MirroredPlatformSummary `json:"platforms"`
+}
+
+// MirroredProviderSummary describes a provider with its versions in the ListMirroredProviders response.
+type MirroredProviderSummary struct {
+	ID                string                   `json:"id"`
+	MirrorConfigID    string                   `json:"mirror_config_id"`
+	ProviderID        string                   `json:"provider_id"`
+	UpstreamNamespace string                   `json:"upstream_namespace"`
+	UpstreamType      string                   `json:"upstream_type"`
+	LastSyncedAt      time.Time                `json:"last_synced_at"`
+	SyncEnabled       bool                     `json:"sync_enabled"`
+	CreatedAt         time.Time                `json:"created_at"`
+	Versions          []MirroredVersionSummary `json:"versions"`
+}
+
+// ListMirroredProvidersResponse is returned by GET /api/v1/admin/mirrors/{id}/providers.
+type ListMirroredProvidersResponse struct {
+	Providers []MirroredProviderSummary `json:"providers"`
 }
 
 // AuditLogResponse represents a single audit log entry in list or get responses.

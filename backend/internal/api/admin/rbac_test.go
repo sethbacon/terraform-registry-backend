@@ -961,3 +961,698 @@ func TestRBACReviewApproval_GetDBError(t *testing.T) {
 		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Router helper with organization_id in context
+// ---------------------------------------------------------------------------
+
+func newRBACRouterWithOrg(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	sqlxDB := sqlx.NewDb(db, "sqlmock")
+	rbacRepo := repositories.NewRBACRepository(sqlxDB)
+	h := NewRBACHandlers(rbacRepo)
+
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set("user_id", knownUserUUID)
+		c.Set("organization_id", knownUUID)
+		c.Next()
+	})
+
+	r.POST("/approvals", h.CreateApprovalRequest)
+
+	return mock, r
+}
+
+// ---------------------------------------------------------------------------
+// GetRoleTemplate — DB error
+// ---------------------------------------------------------------------------
+
+func TestRBACGetRoleTemplate_DBError(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/role-templates/"+knownUUID, nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CreateRoleTemplate — additional error paths
+// ---------------------------------------------------------------------------
+
+func TestRBACCreateRoleTemplate_GetByNameDBError(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectQuery("SELECT.*FROM role_templates WHERE name").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/role-templates",
+		jsonBody(map[string]interface{}{
+			"name":         "new-role",
+			"display_name": "New Role",
+			"scopes":       []string{"modules:read"},
+		})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestRBACCreateRoleTemplate_CreateDBError(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectQuery("SELECT.*FROM role_templates WHERE name").
+		WillReturnRows(emptyRTRows())
+	mock.ExpectExec("INSERT INTO role_templates").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/role-templates",
+		jsonBody(map[string]interface{}{
+			"name":         "new-role",
+			"display_name": "New Role",
+			"scopes":       []string{"modules:read"},
+		})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// UpdateRoleTemplate — additional error paths
+// ---------------------------------------------------------------------------
+
+func TestRBACUpdateRoleTemplate_InvalidID(t *testing.T) {
+	_, r := newRBACRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/role-templates/not-a-uuid",
+		jsonBody(map[string]interface{}{"name": "x", "display_name": "X", "scopes": []string{"a"}})))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestRBACUpdateRoleTemplate_GetDBError(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/role-templates/"+knownUUID,
+		jsonBody(map[string]interface{}{"name": "x", "display_name": "X", "scopes": []string{"a"}})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestRBACUpdateRoleTemplate_BindJSONError(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+		WillReturnRows(sampleRTRow())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/role-templates/"+knownUUID,
+		jsonBody(map[string]interface{}{})))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestRBACUpdateRoleTemplate_UpdateDBError(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+		WillReturnRows(sampleRTRow())
+	mock.ExpectExec("UPDATE role_templates.*SET display_name").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/role-templates/"+knownUUID,
+		jsonBody(map[string]interface{}{
+			"name":         "reader",
+			"display_name": "Reader Updated",
+			"scopes":       []string{"modules:read"},
+		})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DeleteRoleTemplate — invalid ID
+// ---------------------------------------------------------------------------
+
+func TestRBACDeleteRoleTemplate_InvalidID(t *testing.T) {
+	_, r := newRBACRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/role-templates/not-a-uuid", nil))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ListApprovalRequests — filter paths
+// ---------------------------------------------------------------------------
+
+func TestRBACListApprovals_WithStatusFilter(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectQuery("SELECT.*FROM mirror_approval_requests.*WHERE 1").
+		WillReturnRows(emptyApprovalListRows())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/approvals?status=pending", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestRBACListApprovals_WithValidOrgID(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectQuery("SELECT.*FROM mirror_approval_requests.*WHERE 1").
+		WillReturnRows(emptyApprovalListRows())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/approvals?organization_id="+knownUUID, nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetApprovalRequest — additional paths
+// ---------------------------------------------------------------------------
+
+func TestRBACGetApproval_DBError(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectQuery("SELECT.*FROM mirror_approval_requests WHERE id").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/approvals/"+knownUUID, nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestRBACGetApproval_Found(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectQuery("SELECT.*FROM mirror_approval_requests WHERE id").
+		WillReturnRows(sampleApprovalRow())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/approvals/"+knownUUID, nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CreateApprovalRequest — with organization_id in context
+// ---------------------------------------------------------------------------
+
+func TestRBACCreateApproval_WithOrgContext(t *testing.T) {
+	mock, r := newRBACRouterWithOrg(t)
+	mock.ExpectExec("INSERT INTO mirror_approval_requests").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/approvals",
+		jsonBody(map[string]interface{}{
+			"mirror_config_id":   knownUUID,
+			"provider_namespace": "hashicorp",
+			"reason":             "need it",
+		})))
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ReviewApproval — additional error paths
+// ---------------------------------------------------------------------------
+
+func TestRBACReviewApproval_InvalidID(t *testing.T) {
+	_, r := newRBACRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/approvals/not-a-uuid/review",
+		jsonBody(map[string]interface{}{"status": "approved"})))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestRBACReviewApproval_MissingBody(t *testing.T) {
+	_, r := newRBACRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/approvals/"+knownUUID+"/review",
+		jsonBody(map[string]interface{}{})))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ListMirrorPolicies — with valid org ID
+// ---------------------------------------------------------------------------
+
+func TestRBACListMirrorPolicies_WithValidOrgID(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectQuery("SELECT.*FROM mirror_policies.*WHERE mp.organization_id IS NULL").
+		WillReturnRows(emptyMPListRows())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/policies?organization_id="+knownUUID, nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetMirrorPolicy — additional paths
+// ---------------------------------------------------------------------------
+
+func TestRBACGetMirrorPolicy_InvalidID(t *testing.T) {
+	_, r := newRBACRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/policies/not-a-uuid", nil))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestRBACGetMirrorPolicy_Found(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectQuery("SELECT.*FROM mirror_policies WHERE id").
+		WillReturnRows(sampleMPRow())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/policies/"+knownUUID, nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CreateMirrorPolicy — with valid organization ID in body
+// ---------------------------------------------------------------------------
+
+func TestRBACCreateMirrorPolicy_WithValidOrgID(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectExec("INSERT INTO mirror_policies").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/policies",
+		jsonBody(map[string]interface{}{
+			"name":            "allow-org",
+			"policy_type":     "allow",
+			"organization_id": knownUUID,
+		})))
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// UpdateMirrorPolicy — bind error
+// ---------------------------------------------------------------------------
+
+func TestRBACUpdateMirrorPolicy_BindJSONError(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectQuery("SELECT.*FROM mirror_policies WHERE id").
+		WillReturnRows(sampleMPRow())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/policies/"+knownUUID,
+		jsonBody(map[string]interface{}{})))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DeleteMirrorPolicy — DB error
+// ---------------------------------------------------------------------------
+
+func TestRBACDeleteMirrorPolicy_DBError(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectExec("DELETE FROM mirror_policies").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/policies/"+knownUUID, nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// EvaluatePolicy — with valid organization ID
+// ---------------------------------------------------------------------------
+
+func TestRBACEvaluatePolicy_WithValidOrgID(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectQuery("SELECT.*FROM mirror_policies.*WHERE mp.organization_id IS NULL").
+		WillReturnRows(emptyMPListRows())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/policies/evaluate?organization_id="+knownUUID,
+		jsonBody(map[string]interface{}{
+			"registry":  "registry.terraform.io",
+			"namespace": "hashicorp",
+			"provider":  "aws",
+		})))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Router helper without user_id in context (tests absent-context paths)
+// ---------------------------------------------------------------------------
+
+func newRBACRouterNoUser(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	sqlxDB := sqlx.NewDb(db, "sqlmock")
+	rbacRepo := repositories.NewRBACRepository(sqlxDB)
+	h := NewRBACHandlers(rbacRepo)
+
+	r := gin.New()
+	// No user_id middleware — exercises context-absent code paths
+
+	r.POST("/approvals", h.CreateApprovalRequest)
+	r.PUT("/approvals/:id/review", h.ReviewApproval)
+	r.POST("/policies", h.CreateMirrorPolicy)
+
+	return mock, r
+}
+
+// ---------------------------------------------------------------------------
+// CreateApprovalRequest — user_id extraction verified in response
+// ---------------------------------------------------------------------------
+
+func TestRBACCreateApproval_ResponseIncludesRequestedBy(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectExec("INSERT INTO mirror_approval_requests").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/approvals",
+		jsonBody(map[string]interface{}{
+			"mirror_config_id":   knownUUID,
+			"provider_namespace": "hashicorp",
+		})))
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+	}
+	resp := getJSON(w)
+	if resp["requested_by"] != knownUserUUID {
+		t.Errorf("requested_by = %v, want %s", resp["requested_by"], knownUserUUID)
+	}
+}
+
+func TestRBACCreateApproval_NoUserInContext(t *testing.T) {
+	mock, r := newRBACRouterNoUser(t)
+	mock.ExpectExec("INSERT INTO mirror_approval_requests").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/approvals",
+		jsonBody(map[string]interface{}{
+			"mirror_config_id":   knownUUID,
+			"provider_namespace": "hashicorp",
+		})))
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+	}
+	resp := getJSON(w)
+	if _, exists := resp["requested_by"]; exists {
+		t.Errorf("expected no requested_by when user_id absent from context, got %v", resp["requested_by"])
+	}
+}
+
+func TestRBACCreateApproval_WithProviderName(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectExec("INSERT INTO mirror_approval_requests").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/approvals",
+		jsonBody(map[string]interface{}{
+			"mirror_config_id":   knownUUID,
+			"provider_namespace": "hashicorp",
+			"provider_name":      "aws",
+			"reason":             "need aws provider",
+		})))
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+	}
+	resp := getJSON(w)
+	if resp["provider_name"] != "aws" {
+		t.Errorf("provider_name = %v, want aws", resp["provider_name"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ReviewApproval — reviewer_id extraction from context
+// ---------------------------------------------------------------------------
+
+func TestRBACReviewApproval_RejectedSuccess(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectExec("UPDATE mirror_approval_requests.*SET status").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery("SELECT.*FROM mirror_approval_requests WHERE id").
+		WillReturnRows(sampleApprovalRow())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/approvals/"+knownUUID+"/review",
+		jsonBody(map[string]interface{}{"status": "rejected", "notes": "not needed"})))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestRBACReviewApproval_NoUserInContext(t *testing.T) {
+	mock, r := newRBACRouterNoUser(t)
+	mock.ExpectExec("UPDATE mirror_approval_requests.*SET status").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery("SELECT.*FROM mirror_approval_requests WHERE id").
+		WillReturnRows(sampleApprovalRow())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/approvals/"+knownUUID+"/review",
+		jsonBody(map[string]interface{}{"status": "approved", "notes": "ok"})))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CreateMirrorPolicy — created_by extraction from context
+// ---------------------------------------------------------------------------
+
+func TestRBACCreateMirrorPolicy_ResponseIncludesCreatedBy(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectExec("INSERT INTO mirror_policies").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/policies",
+		jsonBody(map[string]interface{}{
+			"name":        "allow-all",
+			"policy_type": "allow",
+		})))
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+	}
+	resp := getJSON(w)
+	if resp["created_by"] != knownUserUUID {
+		t.Errorf("created_by = %v, want %s", resp["created_by"], knownUserUUID)
+	}
+}
+
+func TestRBACCreateMirrorPolicy_NoUserInContext(t *testing.T) {
+	mock, r := newRBACRouterNoUser(t)
+	mock.ExpectExec("INSERT INTO mirror_policies").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/policies",
+		jsonBody(map[string]interface{}{
+			"name":        "allow-all",
+			"policy_type": "allow",
+		})))
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+	}
+	resp := getJSON(w)
+	if _, exists := resp["created_by"]; exists {
+		t.Errorf("expected no created_by when user_id absent from context, got %v", resp["created_by"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// EvaluatePolicy — full evaluation flow
+// ---------------------------------------------------------------------------
+
+func TestRBACEvaluatePolicy_AllowPolicyMatch(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectQuery("SELECT.*FROM mirror_policies.*WHERE mp.organization_id IS NULL").
+		WillReturnRows(sqlmock.NewRows(mpListCols).AddRow(
+			knownUUID, nil, "allow-all", nil, "allow",
+			nil, nil, nil,
+			10, true, false, time.Now(), time.Now(), nil,
+			"Global", "",
+		))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/policies/evaluate",
+		jsonBody(map[string]interface{}{
+			"registry":  "registry.terraform.io",
+			"namespace": "hashicorp",
+			"provider":  "aws",
+		})))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	resp := getJSON(w)
+	if resp["allowed"] != true {
+		t.Errorf("allowed = %v, want true", resp["allowed"])
+	}
+	reason, _ := resp["reason"].(string)
+	if reason != "Allowed by policy: allow-all" {
+		t.Errorf("reason = %q, want %q", reason, "Allowed by policy: allow-all")
+	}
+}
+
+func TestRBACEvaluatePolicy_DenyPolicyMatch(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectQuery("SELECT.*FROM mirror_policies.*WHERE mp.organization_id IS NULL").
+		WillReturnRows(sqlmock.NewRows(mpListCols).AddRow(
+			knownUUID, nil, "deny-all", nil, "deny",
+			nil, nil, nil,
+			10, true, false, time.Now(), time.Now(), nil,
+			"Global", "",
+		))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/policies/evaluate",
+		jsonBody(map[string]interface{}{
+			"registry":  "registry.terraform.io",
+			"namespace": "hashicorp",
+			"provider":  "aws",
+		})))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	resp := getJSON(w)
+	if resp["allowed"] != false {
+		t.Errorf("allowed = %v, want false", resp["allowed"])
+	}
+	reason, _ := resp["reason"].(string)
+	if reason != "Denied by policy: deny-all" {
+		t.Errorf("reason = %q, want %q", reason, "Denied by policy: deny-all")
+	}
+}
+
+func TestRBACEvaluatePolicy_InactivePolicySkipped(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectQuery("SELECT.*FROM mirror_policies.*WHERE mp.organization_id IS NULL").
+		WillReturnRows(sqlmock.NewRows(mpListCols).AddRow(
+			knownUUID, nil, "inactive-allow", nil, "allow",
+			nil, nil, nil,
+			10, false, false, time.Now(), time.Now(), nil,
+			"Global", "",
+		))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/policies/evaluate",
+		jsonBody(map[string]interface{}{
+			"registry":  "registry.terraform.io",
+			"namespace": "hashicorp",
+			"provider":  "aws",
+		})))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	resp := getJSON(w)
+	if resp["allowed"] != false {
+		t.Errorf("allowed = %v, want false (inactive policy should be skipped)", resp["allowed"])
+	}
+}
+
+func TestRBACEvaluatePolicy_RequiresApproval(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectQuery("SELECT.*FROM mirror_policies.*WHERE mp.organization_id IS NULL").
+		WillReturnRows(sqlmock.NewRows(mpListCols).AddRow(
+			knownUUID, nil, "approval-required", nil, "allow",
+			nil, nil, nil,
+			10, true, true, time.Now(), time.Now(), nil,
+			"Global", "",
+		))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/policies/evaluate",
+		jsonBody(map[string]interface{}{
+			"registry":  "registry.terraform.io",
+			"namespace": "hashicorp",
+			"provider":  "aws",
+		})))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	resp := getJSON(w)
+	if resp["allowed"] != true {
+		t.Errorf("allowed = %v, want true", resp["allowed"])
+	}
+	if resp["requires_approval"] != true {
+		t.Errorf("requires_approval = %v, want true", resp["requires_approval"])
+	}
+}

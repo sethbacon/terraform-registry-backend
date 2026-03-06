@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"io"
+	"strings"
 	"testing"
 	"time"
 )
@@ -323,12 +324,20 @@ func TestRecord_WithNote(t *testing.T) {
 
 func TestSkipTest(t *testing.T) {
 	origPassed, origFailed, origSkipped := passed, failed, skipped
-	defer func() { passed, failed, skipped = origPassed, origFailed, origSkipped }()
+	origSkippedTests := skippedTests
+	defer func() {
+		passed, failed, skipped = origPassed, origFailed, origSkipped
+		skippedTests = origSkippedTests
+	}()
 
 	passed, failed, skipped = 0, 0, 0
+	skippedTests = nil
 	skipTest("GET", "/test", "prerequisite failed")
 	if skipped != 1 {
 		t.Errorf("want skipped=1, got %d", skipped)
+	}
+	if len(skippedTests) != 1 {
+		t.Errorf("want 1 entry in skippedTests, got %d", len(skippedTests))
 	}
 }
 
@@ -361,5 +370,168 @@ func TestParseResp_ObjectJSON(t *testing.T) {
 	note := checkFields(r.Object, "organizations", "pagination")
 	if note != "" {
 		t.Errorf("field check failed: %s", note)
+	}
+}
+
+func TestParseResp_MalformedJSON(t *testing.T) {
+	// Truncated JSON beginning with '{' — unmarshal fails; should not panic.
+	r := parseResp(200, []byte(`{"bad":`), time.Millisecond)
+	if r.Code != 200 {
+		t.Errorf("status code must be preserved, got %d", r.Code)
+	}
+	if r.IsArray || r.IsNull {
+		t.Error("malformed JSON should not set IsArray or IsNull")
+	}
+	// Object will be nil because unmarshal failed
+	if r.Object != nil {
+		t.Errorf("expected nil Object for malformed JSON, got %v", r.Object)
+	}
+}
+
+// ── record — additional behavioural cases ─────────────────────────────────────
+
+func TestRecord_MultipleWants_MatchesSecond(t *testing.T) {
+	origPassed, origFailed, origSkipped := passed, failed, skipped
+	origFailed2 := failedTests
+	defer func() {
+		passed, failed, skipped = origPassed, origFailed, origSkipped
+		failedTests = origFailed2
+	}()
+
+	passed, failed, skipped = 0, 0, 0
+	failedTests = nil
+
+	ok := record("POST", "/test", 201, []int{200, 201}, time.Millisecond, "")
+	if !ok {
+		t.Error("want true when got matches the second want code")
+	}
+	if passed != 1 || failed != 0 {
+		t.Errorf("want passed=1 failed=0, got passed=%d failed=%d", passed, failed)
+	}
+}
+
+func TestRecord_MultipleWants_NoneMatch(t *testing.T) {
+	origPassed, origFailed, origSkipped := passed, failed, skipped
+	origFailed2 := failedTests
+	defer func() {
+		passed, failed, skipped = origPassed, origFailed, origSkipped
+		failedTests = origFailed2
+	}()
+
+	passed, failed, skipped = 0, 0, 0
+	failedTests = nil
+
+	ok := record("GET", "/test", 500, []int{200, 201, 404}, time.Millisecond, "")
+	if ok {
+		t.Error("want false when got matches none of the want codes")
+	}
+	if failed != 1 {
+		t.Errorf("want failed=1, got %d", failed)
+	}
+}
+
+func TestRecord_FailMessageContainsKeyInfo(t *testing.T) {
+	origPassed, origFailed, origSkipped := passed, failed, skipped
+	origFailed2 := failedTests
+	defer func() {
+		passed, failed, skipped = origPassed, origFailed, origSkipped
+		failedTests = origFailed2
+	}()
+
+	passed, failed, skipped = 0, 0, 0
+	failedTests = nil
+
+	record("DELETE", "/api/v1/resource/abc", 500, []int{200, 204}, time.Millisecond, "")
+	if len(failedTests) != 1 {
+		t.Fatalf("want 1 fail entry, got %d", len(failedTests))
+	}
+	entry := failedTests[0]
+	for _, want := range []string{"/api/v1/resource/abc", "500", "200", "204"} {
+		if !strings.Contains(entry, want) {
+			t.Errorf("fail entry should contain %q: %s", want, entry)
+		}
+	}
+}
+
+// ── checkFields — additional behavioural cases ────────────────────────────────
+
+func TestCheckFields_NoKeys(t *testing.T) {
+	m := map[string]interface{}{"id": "1"}
+	if note := checkFields(m); note != "" {
+		t.Errorf("want empty note for empty key list, got %q", note)
+	}
+}
+
+func TestCheckFields_AllMissingListed(t *testing.T) {
+	note := checkFields(map[string]interface{}{}, "alpha", "beta", "gamma")
+	for _, key := range []string{"alpha", "beta", "gamma"} {
+		if !strings.Contains(note, key) {
+			t.Errorf("note should list missing key %q: %s", key, note)
+		}
+	}
+}
+
+// ── fmtWant — three items ─────────────────────────────────────────────────────
+
+func TestFmtWant_Three(t *testing.T) {
+	got := fmtWant([]int{200, 201, 404})
+	if got != "200 or 201 or 404" {
+		t.Errorf("want %q, got %q", "200 or 201 or 404", got)
+	}
+}
+
+// ── str — empty string value ──────────────────────────────────────────────────
+
+func TestStr_EmptyStringValue(t *testing.T) {
+	m := map[string]interface{}{"key": ""}
+	if got := str(m, "key"); got != "" {
+		t.Errorf("empty string value should return empty string, got %q", got)
+	}
+}
+
+// ── nested — slice (non-map) value ────────────────────────────────────────────
+
+func TestNested_ArrayValue(t *testing.T) {
+	m := map[string]interface{}{"key": []interface{}{1, 2, 3}}
+	if got := nested(m, "key"); got != nil {
+		t.Errorf("want nil when value is a slice, not a map; got %v", got)
+	}
+}
+
+// ── makeTarGz — archive integrity ────────────────────────────────────────────
+
+func TestMakeTarGz_ExactlyOneEntry(t *testing.T) {
+	data := makeTarGz()
+	gz, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("gzip open: %v", err)
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+
+	if _, err := tr.Next(); err != nil {
+		t.Fatalf("expected first tar entry: %v", err)
+	}
+	if _, err := tr.Next(); err != io.EOF {
+		t.Errorf("expected EOF after single entry, got %v", err)
+	}
+}
+
+// ── makeProviderZip — entry content ──────────────────────────────────────────
+
+func TestMakeProviderZip_EntryContent(t *testing.T) {
+	data := makeProviderZip()
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatalf("zip open: %v", err)
+	}
+	rc, err := zr.File[0].Open()
+	if err != nil {
+		t.Fatalf("zip entry open: %v", err)
+	}
+	defer rc.Close()
+	content, _ := io.ReadAll(rc)
+	if !bytes.Contains(content, []byte("mock provider binary")) {
+		t.Errorf("unexpected zip entry content: %q", content)
 	}
 }

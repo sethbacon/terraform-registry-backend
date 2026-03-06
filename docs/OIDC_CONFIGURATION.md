@@ -85,7 +85,7 @@ Configure OIDC using environment variables with the `TFR_AUTH_OIDC_` prefix:
 export TFR_AUTH_OIDC_ENABLED=true
 
 # OIDC issuer URL (e.g., https://accounts.google.com, https://login.microsoftonline.com/tenant-id/v2.0)
-export TFR_AUTH_OIDC_ISSUER_URL=https://your-oidc-provider/.well-known/openid-configuration
+export TFR_AUTH_OIDC_ISSUER_URL=https://your-oidc-provider
 
 # OAuth 2.0 Client ID
 export TFR_AUTH_OIDC_CLIENT_ID=your_client_id
@@ -349,7 +349,7 @@ Okta is a best-in-class identity platform with excellent enterprise support.
    - **Client Secret** → `TFR_AUTH_OIDC_CLIENT_SECRET`
 3. Note your Okta domain (e.g., `dev-123456.okta.com`)
 
-#### Step 4: Configure Terraform Registry for Okta
+#### Step 3: Configure Terraform Registry for Okta
 
 ```bash
 export TFR_AUTH_OIDC_ENABLED=true
@@ -743,5 +743,5 @@ The following OIDC-specific items supplement that checklist:
 
 For support with Terraform Registry OIDC configuration:
 
-1. Check implementation plan for current features
-2. Review codebase in `/backend/internal/auth/`
+1. Check [GitHub Issues](https://github.com/sethbacon/terraform-registry-backend/issues) for similar reports
+2. Review the source code in `backend/internal/auth/` for implementation details
