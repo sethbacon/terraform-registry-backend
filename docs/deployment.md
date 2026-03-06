@@ -28,7 +28,7 @@ Before deploying to production, prepare the following:
 openssl rand -hex 32
 
 # 2. Generate an encryption key for SCM OAuth tokens
-openssl rand -hex 16   # produces 32 hex chars = 16 bytes key material
+openssl rand -hex 16   # produces 32 hex characters = 32 bytes (required for AES-256)
 
 # 3. Generate a strong database password
 openssl rand -base64 32
@@ -94,6 +94,8 @@ Key differences from dev:
 ---
 
 ## Kubernetes + Kustomize
+
+> **Cloud-managed Kubernetes (AKS, EKS, GKE)?** See the [Kubernetes Cloud Deployment Guides](deployment/README.md) for cloud-specific prerequisites, ingress controller setup, managed secret integration, and workload identity configuration.
 
 ### Structure
 
@@ -341,10 +343,10 @@ The `local-exec` provisioner that triggers the seed task uses **PowerShell** (`i
 does not inherit the system `PATH` and cannot find `aws.exe`. If you are running Terraform
 from Linux or macOS, switch the interpreter back to `/bin/bash`.
 
-Log in with the dev admin at `POST /api/v1/dev/login`:
+Log in with the dev admin at `POST /auth/dev/login`:
 
 ```bash
-curl -X POST https://registry.example.com/api/v1/dev/login \
+curl -X POST https://registry.example.com/auth/dev/login \
   -H "Content-Type: application/json" \
   -d '{"email": "admin@dev.local", "password": "dev"}'
 ```
@@ -609,24 +611,24 @@ Verify each variable is set in the target environment before deploying. For the 
 
 #### Required — Database
 
-| Variable                     | Description                                                      |
-| ---------------------------- | ---------------------------------------------------------------- |
-| `TFR_DATABASE_HOST`          | PostgreSQL host (e.g., `mydb.postgres.database.azure.com`)       |
-| `TFR_DATABASE_PORT`          | PostgreSQL port (default `5432`)                                 |
-| `TFR_DATABASE_NAME`          | Database name (default `terraform_registry`)                     |
-| `TFR_DATABASE_USER`          | Database user                                                    |
-| `TFR_DATABASE_PASSWORD`      | Database password (from secret store)                            |
-| `TFR_DATABASE_SSLMODE`       | SSL mode (`require` for production)                              |
-| `TFR_DATABASE_MAX_CONNECTIONS` | Max open connections (suggest: `25`)                           |
+| Variable                       | Description                                                |
+| ------------------------------ | ---------------------------------------------------------- |
+| `TFR_DATABASE_HOST`            | PostgreSQL host (e.g., `mydb.postgres.database.azure.com`) |
+| `TFR_DATABASE_PORT`            | PostgreSQL port (default `5432`)                           |
+| `TFR_DATABASE_NAME`            | Database name (default `terraform_registry`)               |
+| `TFR_DATABASE_USER`            | Database user                                              |
+| `TFR_DATABASE_PASSWORD`        | Database password (from secret store)                      |
+| `TFR_DATABASE_SSL_MODE`        | SSL mode (`require` for production)                        |
+| `TFR_DATABASE_MAX_CONNECTIONS` | Max open connections (suggest: `25`)                       |
 
 - [ ] `TFR_DATABASE_HOST` is set and resolves from the deployment host
 - [ ] Database credentials are sourced from the secret store (not hard-coded)
 
 #### Required — Storage
 
-| Variable                          | Description                            |
-| --------------------------------- | -------------------------------------- |
-| `TFR_STORAGE_DEFAULT_BACKEND`     | `s3`, `gcs`, `azure`, or `local`       |
+| Variable                                                                                | Description                            |
+| --------------------------------------------------------------------------------------- | -------------------------------------- |
+| `TFR_STORAGE_DEFAULT_BACKEND`                                                           | `s3`, `gcs`, `azure`, or `local`       |
 | `TFR_STORAGE_S3_BUCKET` / `TFR_STORAGE_AZURE_CONTAINER_NAME` / `TFR_STORAGE_GCS_BUCKET` | Name of the storage bucket / container |
 
 Storage-backend-specific:
@@ -681,9 +683,9 @@ Storage-backend-specific:
 
 #### Optional — Observability
 
-| Variable                    | Description                                            |
-| --------------------------- | ------------------------------------------------------ |
-| `TFR_TELEMETRY_ENABLED`    | `true` to expose `/metrics` (Prometheus scrape target) |
+| Variable                | Description                                            |
+| ----------------------- | ------------------------------------------------------ |
+| `TFR_TELEMETRY_ENABLED` | `true` to expose `/metrics` (Prometheus scrape target) |
 
 ### 3. Database Migrations
 
@@ -719,11 +721,12 @@ Storage-backend-specific:
   ```bash
   pg_dump -h <HOST> -U registry -d terraform_registry -Fc -f pre-migration-$(date +%Y%m%d).dump
   ```
+
 - [ ] The migration is idempotent (re-running it is safe)
 - [ ] Migration command confirmed:
 
   ```bash
-  cd backend && go run ./cmd/migrate up
+  cd backend && go run cmd/server/main.go migrate up
   ```
 
   or via Docker:
@@ -735,7 +738,7 @@ Storage-backend-specific:
     -e TFR_DATABASE_USER="$TFR_DATABASE_USER" \
     -e TFR_DATABASE_PASSWORD="$TFR_DATABASE_PASSWORD" \
     -e TFR_DATABASE_NAME="$TFR_DATABASE_NAME" \
-    -e TFR_DATABASE_SSLMODE="$TFR_DATABASE_SSLMODE" \
+    -e TFR_DATABASE_SSL_MODE="$TFR_DATABASE_SSL_MODE" \
     ghcr.io/sethbacon/terraform-registry-backend:<version> \
     migrate up
   ```
@@ -843,8 +846,8 @@ BASE="https://registry.example.com"
 # Health endpoint
 curl -sf "${BASE}/health" | jq .
 
-# Metrics endpoint (if enabled)
-curl -sf "${BASE}/metrics" | grep terraform_registry_
+# Metrics endpoint (if enabled) — served on a separate port, not the main application port
+curl -sf "http://localhost:9090/metrics" | grep '^http_requests_total'
 
 # API — list providers (unauthenticated, should return 401 or empty list)
 curl -s "${BASE}/v1/providers" | jq .
@@ -1029,7 +1032,7 @@ docker run --rm \
   alpine sh -c "rm -rf /data/* && tar xzf /backup/storage-backup-20260304.tar.gz -C /data"
 ```
 
-#### Standalone Binary
+#### Standalone Binary Backup
 
 ```bash
 # Backup the storage directory (default /app/storage)
