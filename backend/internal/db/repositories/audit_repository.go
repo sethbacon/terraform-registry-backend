@@ -39,14 +39,14 @@ func (r *AuditRepository) CreateAuditLog(ctx context.Context, log *models.AuditL
 	log.ID = uuid.New().String()
 	log.CreatedAt = time.Now()
 
-	// Marshal metadata to JSONB
-	var metadataJSON []byte
-	var err error
+	// Marshal metadata to JSONB; use nil interface so lib/pq sends SQL NULL when absent.
+	var metadataArg interface{}
 	if log.Metadata != nil {
-		metadataJSON, err = json.Marshal(log.Metadata)
+		metadataJSON, err := json.Marshal(log.Metadata)
 		if err != nil {
 			return err
 		}
+		metadataArg = metadataJSON
 	}
 
 	query := `
@@ -54,6 +54,7 @@ func (r *AuditRepository) CreateAuditLog(ctx context.Context, log *models.AuditL
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 	`
 
+	var err error
 	_, err = r.db.ExecContext(ctx, query,
 		log.ID,
 		log.UserID,
@@ -61,7 +62,7 @@ func (r *AuditRepository) CreateAuditLog(ctx context.Context, log *models.AuditL
 		log.Action,
 		log.ResourceType,
 		log.ResourceID,
-		metadataJSON,
+		metadataArg,
 		log.IPAddress,
 		log.CreatedAt,
 	)

@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -203,12 +204,14 @@ func PlatformIndexHandler(db *sql.DB, cfg *config.Config, auditRepo *repositorie
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
-				_ = auditRepo.CreateAuditLog(ctx, &models.AuditLog{
+				if err := auditRepo.CreateAuditLog(ctx, &models.AuditLog{
 					Action:       action,
 					ResourceType: &resourceType,
 					ResourceID:   &versionIDForAudit,
 					IPAddress:    &ip,
-				})
+				}); err != nil {
+					slog.Error("failed to write audit log for mirror platform index", "error", err, "action", action)
+				}
 			}()
 		}
 

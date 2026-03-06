@@ -8,6 +8,7 @@ package modules
 import (
 	"context"
 	"database/sql"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -143,14 +144,16 @@ func DownloadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Con
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
-				_ = auditRepo.CreateAuditLog(ctx, &models.AuditLog{
+				if err := auditRepo.CreateAuditLog(ctx, &models.AuditLog{
 					Action:         action,
 					ResourceType:   &resourceType,
 					ResourceID:     &versionIDForAudit,
 					IPAddress:      &ip,
 					UserID:         userIDStr,
 					OrganizationID: orgIDStr,
-				})
+				}); err != nil {
+					slog.Error("failed to write audit log for module download", "error", err, "action", action)
+				}
 			}()
 		}
 
