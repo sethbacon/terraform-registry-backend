@@ -524,8 +524,8 @@ HTTP server starts.
 
 | `TFR_LOGGING_FORMAT` | Handler | Best for |
 | --- | --- | --- |
-| `json` | `slog.JSONHandler` | Production (machine-parseable; Loki, CloudWatch, Datadog) |
-| `text` (default) | `slog.NewTextHandler` | Local development (human-readable key=value) |
+| `json` (default) | `slog.JSONHandler` | Production (machine-parseable; Loki, CloudWatch, Datadog) |
+| `text` | `slog.NewTextHandler` | Local development (human-readable key=value) |
 
 ### Log level
 
@@ -660,7 +660,7 @@ variables or in `backend/config.yaml` under the `telemetry:` and `logging:` keys
 | `TFR_TELEMETRY_METRICS_PROMETHEUS_PORT` | `telemetry.metrics.prometheus_port` | `9090` | Port for the Prometheus scrape endpoint |
 | `TFR_TELEMETRY_PROFILING_ENABLED` | `telemetry.profiling.enabled` | `false` | Enable pprof endpoint |
 | `TFR_TELEMETRY_PROFILING_PORT` | `telemetry.profiling.port` | `6060` | Port for the pprof endpoint |
-| `TFR_LOGGING_FORMAT` | `logging.format` | `text` | Log format: `json` or `text` |
+| `TFR_LOGGING_FORMAT` | `logging.format` | `json` | Log format: `json` or `text` |
 | `TFR_LOGGING_LEVEL` | `logging.level` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 | `TFR_DATABASE_MAX_CONNECTIONS` | `database.max_connections` | `25` | Maximum DB connections in pool |
 | `TFR_DATABASE_MIN_IDLE_CONNECTIONS` | `database.min_idle_connections` | `5` | Minimum idle DB connections kept warm |

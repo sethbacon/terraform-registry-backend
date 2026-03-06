@@ -1,10 +1,12 @@
 // Package main — integration test binary for the Terraform Registry API.
-// Runs 94 tests across 15 phases, cleans up everything it creates, and
+// Runs ~115 tests across 18 phases, cleans up everything it creates, and
 // reports any remaining swagger/spec discrepancies separately from failures.
 //
 // Usage:
 //
-//	go run ./cmd/api-test/
+//	go run ./cmd/api-test/ -key <api-key>
+//	go run ./cmd/api-test/ -url http://registry.local:8080 -key <api-key>
+//	./api-test.exe -key <api-key>
 package main
 
 import (
@@ -13,35 +15,42 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
 
-const (
-	baseURL = "http://registry.local:8080"
-	apiKey  = "tfr_I7pB4kK8WdAsB1aPUIoamYZHn5r7EgDpj4zeUy5IE3k" // #nosec G101 -- integration test credential, not a production secret
+var (
+	baseURL string
+	apiKey  string // #nosec G101 -- integration test credential, not a production secret
 )
 
 var state struct {
-	orgID        string // ID of test org we create (phase 4)
-	defaultOrgID string // ID of an existing org the API-key user belongs to (phase 3)
-	userID       string
-	keyID        string
-	roleID       string
-	scmID        string
-	mirrorID     string
-	tfMirrorID   string
-	policyID     string
+	orgID           string // ID of test org we create (phase 4)
+	defaultOrgID    string // ID of an existing org the API-key user belongs to (phase 3)
+	userID          string
+	keyID           string
+	roleID          string
+	scmID           string
+	mirrorID        string
+	tfMirrorID      string
+	policyID        string
+	auditLogID      string // captured in phase 14 for detail-read test
+	approvalID      string // captured in phase 9 for phase 13 detail-read test
+	storageConfigID string // captured in phase 3 for phase 16 detail-read test
+	tfMirrorVersion string // captured in phase 10 for version-detail test
 }
 
 var (
 	passed, failed, skipped int
 	swaggerDiscrepancies    []string
 	failedTests             []string
+	skippedTests            []string
 )
 
 // APIResp holds a parsed HTTP response that may be a JSON object, array, or null.
@@ -201,6 +210,7 @@ func record(method, path string, got int, want []int, elapsed time.Duration, not
 
 func skipTest(method, path, reason string) {
 	skipped++
+	skippedTests = append(skippedTests, fmt.Sprintf("#%-3d %-7s %s → %s", passed+failed+skipped, method, path, reason))
 	fmt.Printf("[SKIP] #%-3d %-7s %-72s → %s\n", passed+failed+skipped, method, path, reason)
 }
 
@@ -253,14 +263,30 @@ func phase1() {
 	r = doJSON("GET", "/version", nil, false)
 	record("GET", "/version", r.Code, []int{200}, r.Elapsed, "")
 
+	// OpenAPI spec — verify it is served and is valid JSON
+	r = doJSON("GET", "/swagger.json", nil, false)
+	swaggerNote := ""
+	if r.Object == nil {
+		swaggerNote = "not a JSON object"
+	}
+	record("GET", "/swagger.json", r.Code, []int{200}, r.Elapsed, swaggerNote)
+
 	r = doJSON("GET", "/v1/modules/nonexistent/nonexistent/nonexistent/versions", nil, false)
 	record("GET", "/v1/modules/nonexistent/nonexistent/nonexistent/versions", r.Code, []int{404}, r.Elapsed, "")
 
 	r = doJSON("GET", "/v1/providers/nonexistent/nonexistent/versions", nil, false)
 	record("GET", "/v1/providers/nonexistent/nonexistent/versions", r.Code, []int{404}, r.Elapsed, "")
 
+	// Terraform binary mirror — public listing
 	r = doJSON("GET", "/terraform/binaries", nil, false)
 	record("GET", "/terraform/binaries", r.Code, []int{200, 404}, r.Elapsed, "")
+
+	// Terraform binary version listing (public sub-routes)
+	r = doJSON("GET", "/terraform/binaries/terraform/versions", nil, false)
+	record("GET", "/terraform/binaries/terraform/versions", r.Code, []int{200, 404}, r.Elapsed, "")
+
+	r = doJSON("GET", "/terraform/binaries/terraform/versions/latest", nil, false)
+	record("GET", "/terraform/binaries/terraform/versions/latest", r.Code, []int{200, 404}, r.Elapsed, "")
 
 	r = doJSON("GET", "/api/v1/modules/search?q=test", nil, false)
 	record("GET", "/api/v1/modules/search?q=test", r.Code, []int{200}, r.Elapsed, "")
@@ -322,15 +348,27 @@ func phase3() {
 	note = checkFields(r.Object, "organizations", "pagination")
 	record("GET", "/api/v1/organizations", r.Code, []int{200}, r.Elapsed, note)
 
+	r = doJSON("GET", "/api/v1/organizations/search?q=default", nil, true)
+	record("GET", "/api/v1/organizations/search?q=default", r.Code, []int{200}, r.Elapsed, "")
+
 	r = doJSON("GET", "/api/v1/users", nil, true)
 	note = checkFields(r.Object, "users", "pagination")
 	record("GET", "/api/v1/users", r.Code, []int{200}, r.Elapsed, note)
 
+	r = doJSON("GET", "/api/v1/users/search?q=admin", nil, true)
+	record("GET", "/api/v1/users/search?q=admin", r.Code, []int{200}, r.Elapsed, "")
+
 	r = doJSON("GET", "/api/v1/storage/config", nil, true)
 	record("GET", "/api/v1/storage/config", r.Code, []int{200, 404}, r.Elapsed, "")
 
+	// storage/configs returns a bare array; capture first ID for phase 16
 	r = doJSON("GET", "/api/v1/storage/configs", nil, true)
 	record("GET", "/api/v1/storage/configs", r.Code, []int{200}, r.Elapsed, "")
+	if r.IsArray && len(r.Array) > 0 {
+		if cfg, ok := r.Array[0].(map[string]interface{}); ok {
+			state.storageConfigID = str(cfg, "id")
+		}
+	}
 
 	r = doJSON("GET", "/api/v1/admin/oidc/config", nil, true)
 	record("GET", "/api/v1/admin/oidc/config", r.Code, []int{200, 404}, r.Elapsed, "")
@@ -388,6 +426,7 @@ func phase5() {
 		for _, ep := range [][2]string{
 			{"GET", "/api/v1/users/{id}"},
 			{"PUT", "/api/v1/users/{id}"},
+			{"GET", "/api/v1/users/{id}/memberships"},
 			{"POST", "/api/v1/organizations/{id}/members"},
 			{"PUT", "/api/v1/organizations/{id}/members/{id}"},
 			{"DELETE", "/api/v1/organizations/{id}/members/{id}"},
@@ -407,6 +446,11 @@ func phase5() {
 		map[string]interface{}{"name": "API Test User Updated"}, true)
 	note = checkFields(nested(r.Object, "user"), "id", "email", "name")
 	record("PUT", "/api/v1/users/"+state.userID, r.Code, []int{200}, r.Elapsed, note)
+
+	// Per-user memberships endpoint
+	r = doJSON("GET", "/api/v1/users/"+state.userID+"/memberships", nil, true)
+	note = checkFields(r.Object, "memberships")
+	record("GET", "/api/v1/users/"+state.userID+"/memberships", r.Code, []int{200}, r.Elapsed, note)
 
 	if state.orgID != "" {
 		r = doJSON("POST", "/api/v1/organizations/"+state.orgID+"/members",
@@ -601,7 +645,9 @@ func phase9() {
 			{"GET", "/api/v1/admin/mirrors/{id}"},
 			{"PUT", "/api/v1/admin/mirrors/{id}"},
 			{"GET", "/api/v1/admin/mirrors/{id}/status"},
+			{"POST", "/api/v1/admin/mirrors/{id}/sync"},
 			{"GET", "/api/v1/admin/mirrors/{id}/providers"},
+			{"POST", "/api/v1/admin/approvals"},
 			{"DELETE", "/api/v1/admin/mirrors/{id}"},
 		} {
 			skipTest(ep[0], ep[1], "create mirror failed")
@@ -625,10 +671,35 @@ func phase9() {
 	r = doJSON("GET", "/api/v1/admin/mirrors/"+state.mirrorID+"/status", nil, true)
 	record("GET", "/api/v1/admin/mirrors/"+state.mirrorID+"/status", r.Code, []int{200, 404}, r.Elapsed, "")
 
+	// Trigger sync — no body required; returns 200 or 202
+	r = doJSON("POST", "/api/v1/admin/mirrors/"+state.mirrorID+"/sync", nil, true)
+	record("POST", "/api/v1/admin/mirrors/"+state.mirrorID+"/sync", r.Code, []int{200, 202}, r.Elapsed, "")
+
 	// Providers: {"providers": [...]}
 	r = doJSON("GET", "/api/v1/admin/mirrors/"+state.mirrorID+"/providers", nil, true)
 	note = checkFields(r.Object, "providers")
 	record("GET", "/api/v1/admin/mirrors/"+state.mirrorID+"/providers", r.Code, []int{200}, r.Elapsed, note)
+
+	// Create an approval request scoped to this mirror
+	r = doJSON("POST", "/api/v1/admin/approvals",
+		map[string]interface{}{
+			"mirror_config_id":   state.mirrorID,
+			"provider_namespace": "hashicorp",
+			"reason":             "integration test approval request",
+		}, true)
+	note = checkFields(r.Object, "id")
+	if record("POST", "/api/v1/admin/approvals", r.Code, []int{201}, r.Elapsed, note) {
+		state.approvalID = str(r.Object, "id")
+	}
+
+	// Read approval back immediately (before mirror deletion may cascade-delete it)
+	if state.approvalID != "" {
+		r = doJSON("GET", "/api/v1/admin/approvals/"+state.approvalID, nil, true)
+		note = checkFields(r.Object, "id")
+		record("GET", "/api/v1/admin/approvals/"+state.approvalID, r.Code, []int{200}, r.Elapsed, note)
+	} else {
+		skipTest("GET", "/api/v1/admin/approvals/{id}", "approval not created")
+	}
 
 	r = doJSON("DELETE", "/api/v1/admin/mirrors/"+state.mirrorID, nil, true)
 	record("DELETE", "/api/v1/admin/mirrors/"+state.mirrorID, r.Code, []int{200}, r.Elapsed, "")
@@ -662,7 +733,9 @@ func phase10() {
 			{"GET", "/api/v1/admin/terraform-mirrors/{id}"},
 			{"PUT", "/api/v1/admin/terraform-mirrors/{id}"},
 			{"GET", "/api/v1/admin/terraform-mirrors/{id}/status"},
+			{"POST", "/api/v1/admin/terraform-mirrors/{id}/sync"},
 			{"GET", "/api/v1/admin/terraform-mirrors/{id}/versions"},
+			{"GET", "/api/v1/admin/terraform-mirrors/{id}/versions/{version}"},
 			{"GET", "/api/v1/admin/terraform-mirrors/{id}/history"},
 			{"DELETE", "/api/v1/admin/terraform-mirrors/{id}"},
 		} {
@@ -682,8 +755,32 @@ func phase10() {
 	r = doJSON("GET", "/api/v1/admin/terraform-mirrors/"+state.tfMirrorID+"/status", nil, true)
 	record("GET", "/api/v1/admin/terraform-mirrors/"+state.tfMirrorID+"/status", r.Code, []int{200}, r.Elapsed, "")
 
+	// Trigger sync — no body; returns 202 with enqueue message
+	r = doJSON("POST", "/api/v1/admin/terraform-mirrors/"+state.tfMirrorID+"/sync", nil, true)
+	record("POST", "/api/v1/admin/terraform-mirrors/"+state.tfMirrorID+"/sync", r.Code, []int{200, 202}, r.Elapsed, "")
+
+	// Versions list; capture a version string for detail test
 	r = doJSON("GET", "/api/v1/admin/terraform-mirrors/"+state.tfMirrorID+"/versions", nil, true)
 	record("GET", "/api/v1/admin/terraform-mirrors/"+state.tfMirrorID+"/versions", r.Code, []int{200}, r.Elapsed, "")
+	if r.IsArray && len(r.Array) > 0 {
+		if v, ok := r.Array[0].(map[string]interface{}); ok {
+			state.tfMirrorVersion = str(v, "version")
+		}
+	} else if r.Object != nil {
+		if versions, ok := r.Object["versions"].([]interface{}); ok && len(versions) > 0 {
+			if v, ok := versions[0].(map[string]interface{}); ok {
+				state.tfMirrorVersion = str(v, "version")
+			}
+		}
+	}
+
+	// Version detail — only reachable if a version was synced
+	if state.tfMirrorVersion != "" {
+		r = doJSON("GET", "/api/v1/admin/terraform-mirrors/"+state.tfMirrorID+"/versions/"+state.tfMirrorVersion, nil, true)
+		record("GET", "/api/v1/admin/terraform-mirrors/"+state.tfMirrorID+"/versions/"+state.tfMirrorVersion, r.Code, []int{200}, r.Elapsed, "")
+	} else {
+		skipTest("GET", "/api/v1/admin/terraform-mirrors/{id}/versions/{version}", "no synced versions available")
+	}
 
 	r = doJSON("GET", "/api/v1/admin/terraform-mirrors/"+state.tfMirrorID+"/history", nil, true)
 	record("GET", "/api/v1/admin/terraform-mirrors/"+state.tfMirrorID+"/history", r.Code, []int{200}, r.Elapsed, "")
@@ -845,7 +942,7 @@ func phase13() {
 		skipTest("DELETE", "/api/v1/admin/policies/{id}", "create policy failed")
 	}
 
-	// Approvals — returns [] (empty array) when none exist
+	// Approvals list — returns [] (empty array) when none exist
 	r = doJSON("GET", "/api/v1/admin/approvals", nil, true)
 	approvalNote := ""
 	if r.IsNull {
@@ -854,12 +951,101 @@ func phase13() {
 			"[D] GET /api/v1/admin/approvals: returns JSON null instead of empty array []")
 	}
 	record("GET", "/api/v1/admin/approvals", r.Code, []int{200}, r.Elapsed, approvalNote)
+
+	// Re-fetch the approval after its mirror was deleted; 404 verifies cascade-delete behaviour
+	if state.approvalID != "" {
+		r = doJSON("GET", "/api/v1/admin/approvals/"+state.approvalID, nil, true)
+		cascadeNote := ""
+		if r.Code == 404 {
+			cascadeNote = "cascade-deleted with mirror (expected)"
+		}
+		record("GET", "/api/v1/admin/approvals/"+state.approvalID+" (post-mirror-delete)", r.Code, []int{200, 404}, r.Elapsed, cascadeNote)
+	} else {
+		skipTest("GET", "/api/v1/admin/approvals/{id}", "no approval created in phase 9")
+	}
 }
 
-// ── Phase 14: Cleanup ────────────────────────────────────────────────────────
+// ── Phase 14: Audit Logs ─────────────────────────────────────────────────────
 
 func phase14() {
-	fmt.Println("\n=== Phase 14: Final Cleanup ===")
+	fmt.Println("\n=== Phase 14: Audit Logs ===")
+
+	r := doJSON("GET", "/api/v1/admin/audit-logs", nil, true)
+	note := checkFields(r.Object, "logs", "pagination")
+	record("GET", "/api/v1/admin/audit-logs", r.Code, []int{200}, r.Elapsed, note)
+
+	// Capture a log ID from the list for the detail test
+	if logs, ok := r.Object["logs"].([]interface{}); ok && len(logs) > 0 {
+		if item, ok := logs[0].(map[string]interface{}); ok {
+			state.auditLogID = str(item, "id")
+		}
+	}
+
+	if state.auditLogID != "" {
+		r = doJSON("GET", "/api/v1/admin/audit-logs/"+state.auditLogID, nil, true)
+		note = checkFields(r.Object, "id", "action")
+		record("GET", "/api/v1/admin/audit-logs/"+state.auditLogID, r.Code, []int{200}, r.Elapsed, note)
+	} else {
+		skipTest("GET", "/api/v1/admin/audit-logs/{id}", "no audit log entries available")
+	}
+}
+
+// ── Phase 15: Dev Mode Endpoints ─────────────────────────────────────────────
+
+func phase15() {
+	fmt.Println("\n=== Phase 15: Dev Mode Endpoints (DEV_MODE=true required) ===")
+
+	r := doJSON("GET", "/api/v1/dev/status", nil, false)
+	// 200 in dev mode, 403 in production
+	record("GET", "/api/v1/dev/status", r.Code, []int{200, 403}, r.Elapsed, "")
+
+	// Dev login — no body; logs in as admin@dev.local; returns token + user + expires_in
+	r = doJSON("POST", "/api/v1/dev/login", nil, false)
+	if r.Code == 200 {
+		note := checkFields(r.Object, "token", "user", "expires_in")
+		record("POST", "/api/v1/dev/login", r.Code, []int{200}, r.Elapsed, note)
+	} else {
+		// 403 when not in dev mode — acceptable
+		record("POST", "/api/v1/dev/login", r.Code, []int{200, 403}, r.Elapsed, "")
+	}
+}
+
+// ── Phase 16: OIDC Group Mapping + Storage Config Detail ─────────────────────
+
+func phase16() {
+	fmt.Println("\n=== Phase 16: OIDC Group Mapping + Storage Config Detail ===")
+
+	// Update OIDC group mapping — all fields optional; empty body is a valid clear-all
+	r := doJSON("PUT", "/api/v1/admin/oidc/group-mapping",
+		map[string]interface{}{
+			"group_claim_name": "groups",
+			"group_mappings":   []interface{}{},
+			"default_role":     "",
+		}, true)
+	record("PUT", "/api/v1/admin/oidc/group-mapping", r.Code, []int{200}, r.Elapsed, "")
+
+	// Storage config detail read — uses ID captured in phase 3
+	if state.storageConfigID != "" {
+		r = doJSON("GET", "/api/v1/storage/configs/"+state.storageConfigID, nil, true)
+		note := checkFields(r.Object, "id", "backend_type", "is_active")
+		record("GET", "/api/v1/storage/configs/"+state.storageConfigID, r.Code, []int{200}, r.Elapsed, note)
+	} else {
+		skipTest("GET", "/api/v1/storage/configs/{id}", "no storage config available")
+	}
+
+	// Test a local storage backend connection — accepts 200 (success) or 422 (path inaccessible)
+	r = doJSON("POST", "/api/v1/storage/configs/test",
+		map[string]interface{}{
+			"backend_type":    "local",
+			"local_base_path": "/app/storage",
+		}, true)
+	record("POST", "/api/v1/storage/configs/test", r.Code, []int{200, 400, 422}, r.Elapsed, "")
+}
+
+// ── Phase 17: Cleanup ────────────────────────────────────────────────────────
+
+func phase17() {
+	fmt.Println("\n=== Phase 17: Final Cleanup ===")
 
 	if state.userID != "" {
 		r := doJSON("DELETE", "/api/v1/users/"+state.userID, nil, true)
@@ -878,10 +1064,10 @@ func phase14() {
 	}
 }
 
-// ── Phase 15: 404 verification ───────────────────────────────────────────────
+// ── Phase 18: 404 verification ───────────────────────────────────────────────
 
-func phase15() {
-	fmt.Println("\n=== Phase 15: 404 Verification (deleted resources) ===")
+func phase18() {
+	fmt.Println("\n=== Phase 18: 404 Verification (deleted resources) ===")
 
 	r := doJSON("GET", "/api/v1/modules/testns/testmod/aws", nil, true)
 	record("GET", "/api/v1/modules/testns/testmod/aws", r.Code, []int{404}, r.Elapsed, "verify deleted")
@@ -893,9 +1079,27 @@ func phase15() {
 // ── main ─────────────────────────────────────────────────────────────────────
 
 func main() {
+	urlFlag := flag.String("url", "http://registry.local:8080", "Base URL of the registry API")
+	keyFlag := flag.String("key", "", "API key for authenticated requests") // #nosec G101 -- integration test credential
+	flag.Parse()
+
+	baseURL = *urlFlag
+	apiKey = *keyFlag
+
+	if apiKey == "" {
+		fmt.Fprintln(os.Stderr, "error: -key flag is required")
+		flag.Usage()
+		os.Exit(1)
+	}
+
+	keyPreview := apiKey
+	if len(keyPreview) > 18 {
+		keyPreview = keyPreview[:18]
+	}
+
 	fmt.Println("Terraform Registry API Test")
 	fmt.Printf("Target:     %s\n", baseURL)
-	fmt.Printf("API Key:    %s...\n\n", apiKey[:18])
+	fmt.Printf("API Key:    %s...\n\n", keyPreview)
 
 	phase1()
 	phase2()
@@ -912,6 +1116,9 @@ func main() {
 	phase13()
 	phase14()
 	phase15()
+	phase16()
+	phase17()
+	phase18()
 
 	fmt.Println("\n" + strings.Repeat("=", 80))
 	fmt.Printf("Results: %d passed, %d failed, %d skipped  (total: %d)\n",
@@ -921,6 +1128,13 @@ func main() {
 		fmt.Println("\n--- Swagger / Spec Discrepancies ---")
 		for _, d := range swaggerDiscrepancies {
 			fmt.Println(" ", d)
+		}
+	}
+
+	if len(skippedTests) > 0 {
+		fmt.Println("\n--- Skipped Tests ---")
+		for _, s := range skippedTests {
+			fmt.Println(" ", s)
 		}
 	}
 

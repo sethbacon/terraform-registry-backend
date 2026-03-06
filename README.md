@@ -1,4 +1,36 @@
 <!-- markdownlint-disable MD024 -->
+- [Enterprise Terraform Registry — Backend](#enterprise-terraform-registry-%E2%80%94-backend)
+  - [Features](#features)
+    - [Terraform Protocol Support](#terraform-protocol-support)
+    - [Authentication \& Authorization](#authentication-%26-authorization)
+    - [Multi-Tenancy](#multi-tenancy)
+    - [Module Source Control (SCM) Integration](#module-source-control-(scm)-integration)
+    - [Storage Backends](#storage-backends)
+    - [Deployment Options](#deployment-options)
+    - [Terraform Binary Mirror](#terraform-binary-mirror)
+    - [Observability \& CI/CD](#observability-%26-ci%2Fcd)
+  - [Architecture](#architecture)
+  - [Installation](#installation)
+    - [Prerequisites](#prerequisites)
+    - [Quick Start with Docker Compose](#quick-start-with-docker-compose)
+    - [First-Run Setup](#first-run-setup)
+    - [Manual Setup](#manual-setup)
+  - [Configuration](#configuration)
+  - [Monitoring \& Observability](#monitoring-%26-observability)
+    - [Prometheus + Grafana Stack](#prometheus-%2B-grafana-stack)
+  - [Usage with Terraform](#usage-with-terraform)
+    - [Publishing Modules](#publishing-modules)
+    - [Publishing Providers](#publishing-providers)
+  - [Development](#development)
+    - [Running Tests](#running-tests)
+    - [Building](#building)
+  - [Documentation](#documentation)
+  - [References](#references)
+  - [Contributing](#contributing)
+  - [License](#license)
+  - [Disclaimer](#disclaimer)
+  - [Acknowledgments](#acknowledgments)
+    - [Trademark Notice](#trademark-notice)
 
 # Enterprise Terraform Registry — Backend
 
@@ -25,12 +57,12 @@ A fully-featured, enterprise-grade Terraform registry implementing all three Has
 
 ### Multi-Tenancy
 
-- **Organization Management** - Isolated namespaces for teams and projects
+- **Organization Management** - Isolated organization namespaces for teams and projects
 - **User Management** - Comprehensive user administration
-- **Organization Membership** - Role-based team collaboration (owner, admin, member, viewer)
+- **Organization Membership** - Role-based team collaboration (viewer, publisher, devops, user_manager, auditor, admin)
 - **Configurable Modes** - Single-tenant or multi-tenant deployment
 
-### SCM Integration
+### Module Source Control (SCM) Integration
 
 - **GitHub Integration** - Connect modules to GitHub repositories with OAuth
 - **Azure DevOps Integration** - Native support for Azure Repos
@@ -84,9 +116,9 @@ A fully-featured, enterprise-grade Terraform registry implementing all three Has
                    │ REST API / Protocol Endpoints
 ┌──────────────────▼─────────────────────────────────┐
 │              Go 1.24 Backend (Gin)                 │
-│  Modules API │ Providers API │ Mirror │ Admin       │
+│  Modules API │ Providers API │ Mirror │ Admin      │
 │  Terraform Binary Mirror                           │
-│  Auth: JWT │ API Keys │ OIDC │ Azure AD │ RBAC      │
+│  Auth: JWT │ API Keys │ OIDC │ Azure AD │ RBAC     │
 │  SCM: GitHub │ Azure DevOps │ GitLab │ Bitbucket   │
 │  Storage: Local │ Azure Blob │ S3 │ GCS            │
 └──────────────────┬─────────────────────────────────┘
@@ -280,7 +312,15 @@ go build -o terraform-registry cmd/server/main.go
 - [Deployment Guide](docs/deployment.md) - Production deployment for all platforms
 - [Troubleshooting](docs/troubleshooting.md) - Common issues and diagnostic tools
 - [Development Guide](docs/development.md) - Local development setup
-- [OIDC Configuration](docs/oidc_configuration.md) - SSO provider setup
+- [OIDC Configuration](docs/OIDC_CONFIGURATION.md) - SSO provider setup
+- [Terraform CLI Configuration](docs/terraform-cli-configuration.md) - Configure the Terraform CLI to use this registry
+- [Kubernetes Cloud Guides](docs/deployment/README.md) - AKS, EKS, and GKE deployment guides
+
+## References
+
+- [Module Registry Protocol](https://developer.hashicorp.com/terraform/internals/module-registry-protocol)
+- [Provider Registry Protocol](https://developer.hashicorp.com/terraform/internals/provider-registry-protocol)
+- [Provider Network Mirror Protocol](https://developer.hashicorp.com/terraform/internals/provider-network-mirror-protocol)
 
 **Frontend:** [terraform-registry-frontend](https://github.com/sethbacon/terraform-registry-frontend)
 

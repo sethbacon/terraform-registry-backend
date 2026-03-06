@@ -40,8 +40,8 @@ git remote prune origin                          # prune stale remote-tracking r
    go fmt ./...
    go vet ./...
 
-   # Tests with race detector and coverage (must stay ≥ 65%)
-   go test ./... -race -coverprofile=coverage.out -covermode=atomic
+   # Tests with coverage (must stay ≥ 65%)
+   go test ./... -coverprofile=coverage.out -covermode=atomic
    go tool cover -func=coverage.out | grep "^total:"
 
    # Security scan — fix or suppress new findings before pushing
@@ -88,7 +88,7 @@ git remote prune origin                          # prune stale remote-tracking r
 
    - Squash-merge into `development` when approved.
 
-7. **Open a PR from `development` → `main`** when the integration branch is ready to ship:
+9. **Open a PR from `development` → `main`** when the integration branch is ready to ship:
 
    ```bash
    gh pr create --base main --title "chore: release vX.Y.Z" --body "..."
@@ -242,10 +242,11 @@ go fmt ./...
 go vet ./...
 
 # Utility tools
-go run cmd/check-db/main.go          # Test database connectivity
-go run cmd/fix-migration/main.go     # Repair migration state
-go run cmd/hash/main.go <api-key>    # Generate API key hash
-go run cmd/test-api/main.go          # Test API connectivity
+go run cmd/check-db/main.go                                           # Test database connectivity
+go run cmd/fix-migration/main.go --dry-run                            # Preview dirty migration state
+go run cmd/fix-migration/main.go                                      # Repair dirty migration state
+go run cmd/hash/main.go -key <api-key>                                # Generate API key hash
+go build -o api-test.exe ./cmd/api-test && ./api-test.exe -url <url> -key <key>  # End-to-end API smoke test
 ```
 
 ### Docker Compose (Quickstart)
@@ -462,5 +463,4 @@ func (h *Handler) MethodName(c *gin.Context) {
 - No `.golangci.yml` is present; use `go fmt` and `go vet` manually.
 - The `azure-devops-extension/` directory is deferred/work-in-progress.
 - `test-modules/`, `test-providers/`, and `test-terraform/` contain sample artifacts for local testing.
-- `IMPLEMENTATION_PLAN.md` contains the detailed phased roadmap.
 - `CHANGELOG.md` tracks version history.

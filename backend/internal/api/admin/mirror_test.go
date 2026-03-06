@@ -831,7 +831,7 @@ var mirroredProviderVersionCols = []string{
 
 var providerPlatformCols = []string{
 	"id", "provider_version_id", "os", "arch", "filename",
-	"storage_path", "storage_backend", "size_bytes", "shasum", "download_count",
+	"storage_path", "storage_backend", "size_bytes", "shasum", "h1_hash", "download_count",
 }
 
 func newMirrorProvidersRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
@@ -932,7 +932,7 @@ func TestListMirroredProviders_WithProviderAndVersions(t *testing.T) {
 			knownUUID, versionID, "linux", "amd64",
 			"terraform-provider-aws_1.0.0_linux_amd64.zip",
 			"providers/hashicorp/aws/1.0.0/linux_amd64.zip",
-			"local", int64(1024), "abc123", int64(0),
+			"local", int64(1024), "abc123", nil, int64(0),
 		))
 
 	w := httptest.NewRecorder()
