@@ -16,6 +16,7 @@ import (
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 )
 
@@ -705,5 +706,92 @@ func TestUploadHandler_Success_ExistingModule(t *testing.T) {
 	w := doPOSTReq(r, req)
 	if w.Code != http.StatusCreated {
 		t.Errorf("status = %d, want 201; body: %s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DownloadHandler — additional uncovered branches
+// ---------------------------------------------------------------------------
+
+func TestDownloadHandler_OrgNotFound(t *testing.T) {
+	mock, r := newDownloadRouter(t, &mockStore{})
+
+	// GetDefaultOrganization returns no rows → org == nil → 500
+	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
+		WillReturnRows(sqlmock.NewRows(orgCols2))
+
+	w := doGET(r, "/v1/modules/hashicorp/consul/aws/1.0.0/download")
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestDownloadHandler_ModuleError(t *testing.T) {
+	mock, r := newDownloadRouter(t, &mockStore{})
+
+	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow2())
+	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnError(errDB2)
+
+	w := doGET(r, "/v1/modules/hashicorp/consul/aws/1.0.0/download")
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestDownloadHandler_VersionError(t *testing.T) {
+	mock, r := newDownloadRouter(t, &mockStore{})
+
+	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow2())
+	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(sampleModuleRow2())
+	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id.*AND version").WillReturnError(errDB2)
+
+	w := doGET(r, "/v1/modules/hashicorp/consul/aws/1.0.0/download")
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestDownloadHandler_SuccessWithAuditContext(t *testing.T) {
+	store := &mockStore{getURLResult: "https://example.com/module.tgz"}
+	db, mock, _ := sqlmock.New()
+	t.Cleanup(func() { db.Close() })
+
+	auditRepo := repositories.NewAuditRepository(db)
+	r := gin.New()
+	// Inject user_id and organization_id into context via middleware
+	r.Use(func(c *gin.Context) {
+		c.Set("user_id", "test-user-id")
+		c.Set("organization_id", "test-org-id")
+		c.Next()
+	})
+	r.GET("/v1/modules/:namespace/:name/:system/:version/download",
+		DownloadHandler(db, store, &config.Config{}, auditRepo))
+
+	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow2())
+	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(sampleModuleRow2())
+	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id.*AND version").WillReturnRows(sampleModuleVersionGetRow())
+
+	w := doGET(r, "/v1/modules/hashicorp/consul/aws/1.0.0/download")
+	if w.Code != http.StatusNoContent {
+		t.Errorf("status = %d, want 204; body: %s", w.Code, w.Body.String())
+	}
+	if w.Header().Get("X-Terraform-Get") != "https://example.com/module.tgz" {
+		t.Errorf("X-Terraform-Get = %q, want https://example.com/module.tgz", w.Header().Get("X-Terraform-Get"))
+	}
+	// Give async goroutines a moment to fire (best-effort)
+	time.Sleep(50 * time.Millisecond)
+}
+
+func TestDownloadHandler_SuccessNilAuditRepo(t *testing.T) {
+	store := &mockStore{getURLResult: "https://example.com/module.tgz"}
+	mock, r := newDownloadRouter(t, store)
+
+	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow2())
+	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(sampleModuleRow2())
+	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id.*AND version").WillReturnRows(sampleModuleVersionGetRow())
+
+	w := doGET(r, "/v1/modules/hashicorp/consul/aws/1.0.0/download")
+	if w.Code != http.StatusNoContent {
+		t.Errorf("status = %d, want 204; body: %s", w.Code, w.Body.String())
 	}
 }

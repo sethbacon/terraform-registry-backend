@@ -2,6 +2,7 @@ package admin
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
@@ -191,6 +193,26 @@ func TestStorageGetActiveConfig_DBError(t *testing.T) {
 	}
 }
 
+func TestStorageGetActiveConfig_Success(t *testing.T) {
+	mock, r := newStorageRouter(t)
+	mock.ExpectQuery("SELECT.*FROM storage_config WHERE is_active = true").
+		WillReturnRows(sampleActiveStorageCfgRow())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/storage/config", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	resp := getJSON(w)
+	if resp["backend_type"] != "local" {
+		t.Errorf("backend_type = %v, want local", resp["backend_type"])
+	}
+	if resp["is_active"] != true {
+		t.Errorf("is_active = %v, want true", resp["is_active"])
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ListStorageConfigs
 // ---------------------------------------------------------------------------
@@ -221,6 +243,29 @@ func TestStorageListConfigs_DBError(t *testing.T) {
 	}
 }
 
+func TestStorageListConfigs_Success(t *testing.T) {
+	mock, r := newStorageRouter(t)
+	mock.ExpectQuery("SELECT.*FROM storage_config.*ORDER BY").
+		WillReturnRows(sampleStorageCfgRow())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/storage/configs", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	var items []map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &items); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	if len(items) != 1 {
+		t.Errorf("len = %d, want 1", len(items))
+	}
+	if items[0]["backend_type"] != "local" {
+		t.Errorf("backend_type = %v, want local", items[0]["backend_type"])
+	}
+}
+
 // ---------------------------------------------------------------------------
 // GetStorageConfig
 // ---------------------------------------------------------------------------
@@ -245,6 +290,26 @@ func TestStorageGetConfig_NotFound(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestStorageGetConfig_Success(t *testing.T) {
+	mock, r := newStorageRouter(t)
+	mock.ExpectQuery("SELECT.*FROM storage_config WHERE id").
+		WillReturnRows(sampleStorageCfgRow())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/storage/configs/"+knownUUID, nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	resp := getJSON(w)
+	if resp["backend_type"] != "local" {
+		t.Errorf("backend_type = %v, want local", resp["backend_type"])
+	}
+	if resp["id"] != knownUUID {
+		t.Errorf("id = %v, want %s", resp["id"], knownUUID)
 	}
 }
 
@@ -919,5 +984,308 @@ func TestStorageDeleteConfig_DeleteDBError(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetSetupStatus — additional coverage paths
+// ---------------------------------------------------------------------------
+
+func TestStorageGetSetupStatus_SystemSettingsError(t *testing.T) {
+	mock, r := newStorageRouter(t)
+	// IsStorageConfigured succeeds
+	mock.ExpectQuery("SELECT storage_configured FROM system_settings").
+		WillReturnRows(sqlmock.NewRows([]string{"storage_configured"}).AddRow(true))
+	// GetSystemSettings fails
+	mock.ExpectQuery("SELECT.*FROM system_settings WHERE id = 1").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/setup/status", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestStorageGetSetupStatus_WithConfiguredTimestamp(t *testing.T) {
+	mock, r := newStorageRouter(t)
+	mock.ExpectQuery("SELECT storage_configured FROM system_settings").
+		WillReturnRows(sqlmock.NewRows([]string{"storage_configured"}).AddRow(true))
+	ts := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	mock.ExpectQuery("SELECT.*FROM system_settings WHERE id = 1").
+		WillReturnRows(sqlmock.NewRows(sysSettingsCols).
+			AddRow(1, true, ts, nil, time.Now(), time.Now()))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/setup/status", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	resp := getJSON(w)
+	if resp["storage_configured_at"] == nil {
+		t.Error("expected storage_configured_at in response")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetStorageConfig — DB error path
+// ---------------------------------------------------------------------------
+
+func TestStorageGetConfig_DBError(t *testing.T) {
+	mock, r := newStorageRouter(t)
+	mock.ExpectQuery("SELECT.*FROM storage_config WHERE id").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/storage/configs/"+knownUUID, nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CreateStorageConfig — additional coverage paths
+// ---------------------------------------------------------------------------
+
+func TestStorageCreateConfig_InvalidBody(t *testing.T) {
+	_, r := newStorageRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/storage/configs",
+		bytes.NewBufferString("not-json")))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestStorageCreateConfig_ValidationErrorLocalMissingPath(t *testing.T) {
+	_, r := newStorageRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/storage/configs",
+		jsonBody(map[string]interface{}{
+			"backend_type": "local",
+		})))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestStorageCreateConfig_CheckConfiguredError(t *testing.T) {
+	mock, r := newStorageRouter(t)
+	// IsStorageConfigured returns DB error
+	mock.ExpectQuery("SELECT storage_configured FROM system_settings").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/storage/configs",
+		jsonBody(map[string]interface{}{
+			"backend_type":    "local",
+			"local_base_path": "/tmp/storage",
+		})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestStorageCreateConfig_S3StaticSuccess(t *testing.T) {
+	cipher, err := crypto.NewTokenCipher(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("NewTokenCipher: %v", err)
+	}
+	mock, r := newStorageRouterWithCipher(t, cipher)
+	mock.ExpectQuery("SELECT storage_configured FROM system_settings").
+		WillReturnRows(sqlmock.NewRows([]string{"storage_configured"}))
+	mock.ExpectExec("INSERT INTO storage_config").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/storage/configs",
+		jsonBody(map[string]interface{}{
+			"backend_type":        "s3",
+			"s3_bucket":           "my-bucket",
+			"s3_region":           "us-east-1",
+			"s3_auth_method":      "static",
+			"s3_access_key_id":    "AKIATEST",
+			"s3_secret_access_key": "secret123",
+		})))
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestStorageCreateConfig_GCSServiceAccountSuccess(t *testing.T) {
+	cipher, err := crypto.NewTokenCipher(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("NewTokenCipher: %v", err)
+	}
+	mock, r := newStorageRouterWithCipher(t, cipher)
+	mock.ExpectQuery("SELECT storage_configured FROM system_settings").
+		WillReturnRows(sqlmock.NewRows([]string{"storage_configured"}))
+	mock.ExpectExec("INSERT INTO storage_config").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/storage/configs",
+		jsonBody(map[string]interface{}{
+			"backend_type":         "gcs",
+			"gcs_bucket":           "my-gcs-bucket",
+			"gcs_auth_method":      "service_account",
+			"gcs_credentials_json": `{"type":"service_account","project_id":"test"}`,
+		})))
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestStorageCreateConfig_S3AssumeRoleMissingARN(t *testing.T) {
+	_, r := newStorageRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/storage/configs",
+		jsonBody(map[string]interface{}{
+			"backend_type":   "s3",
+			"s3_bucket":      "my-bucket",
+			"s3_region":      "us-east-1",
+			"s3_auth_method": "assume_role",
+		})))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestStorageCreateConfig_S3OidcMissingARN(t *testing.T) {
+	_, r := newStorageRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/storage/configs",
+		jsonBody(map[string]interface{}{
+			"backend_type":   "s3",
+			"s3_bucket":      "my-bucket",
+			"s3_region":      "us-east-1",
+			"s3_auth_method": "oidc",
+		})))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestStorageCreateConfig_GCSServiceAccountMissingCreds(t *testing.T) {
+	_, r := newStorageRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/storage/configs",
+		jsonBody(map[string]interface{}{
+			"backend_type":    "gcs",
+			"gcs_bucket":      "my-gcs-bucket",
+			"gcs_auth_method": "service_account",
+		})))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestStorageCreateConfig_WithUserContext(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	sqlxDB := sqlx.NewDb(db, "sqlmock")
+	storageRepo := repositories.NewStorageConfigRepository(sqlxDB)
+	h := NewStorageHandlers(&config.Config{}, storageRepo, nil)
+
+	r := gin.New()
+	// Add middleware that sets user_id in context before the handler
+	r.POST("/storage/configs", func(c *gin.Context) {
+		c.Set("user_id", uuid.MustParse(knownUUID))
+	}, h.CreateStorageConfig)
+
+	// IsStorageConfigured: not configured
+	mock.ExpectQuery("SELECT storage_configured FROM system_settings").
+		WillReturnRows(sqlmock.NewRows([]string{"storage_configured"}))
+	// CreateStorageConfig INSERT
+	mock.ExpectExec("INSERT INTO storage_config").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	// SetStorageConfigured UPDATE (triggered because !configured && userUUID.Valid)
+	mock.ExpectExec("UPDATE system_settings SET").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/storage/configs",
+		jsonBody(map[string]interface{}{
+			"backend_type":    "local",
+			"local_base_path": "/tmp/storage",
+		})))
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// UpdateStorageConfig — S3/GCS credential encryption paths
+// ---------------------------------------------------------------------------
+
+func TestStorageUpdateConfig_S3StaticWithKeysSuccess(t *testing.T) {
+	cipher, err := crypto.NewTokenCipher(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("NewTokenCipher: %v", err)
+	}
+	mock, r := newStorageRouterWithCipher(t, cipher)
+	mock.ExpectQuery("SELECT.*FROM storage_config WHERE id").
+		WillReturnRows(sampleStorageCfgRow())
+	mock.ExpectQuery("SELECT storage_configured FROM system_settings").
+		WillReturnRows(sqlmock.NewRows([]string{"storage_configured"}).AddRow(false))
+	mock.ExpectExec("UPDATE storage_config").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/storage/configs/"+knownUUID,
+		jsonBody(map[string]interface{}{
+			"backend_type":        "s3",
+			"s3_bucket":           "my-bucket",
+			"s3_region":           "us-east-1",
+			"s3_auth_method":      "static",
+			"s3_access_key_id":    "AKIATEST",
+			"s3_secret_access_key": "secret123",
+		})))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestStorageUpdateConfig_GCSServiceAccountWithCredsSuccess(t *testing.T) {
+	cipher, err := crypto.NewTokenCipher(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("NewTokenCipher: %v", err)
+	}
+	mock, r := newStorageRouterWithCipher(t, cipher)
+	mock.ExpectQuery("SELECT.*FROM storage_config WHERE id").
+		WillReturnRows(sampleStorageCfgRow())
+	mock.ExpectQuery("SELECT storage_configured FROM system_settings").
+		WillReturnRows(sqlmock.NewRows([]string{"storage_configured"}).AddRow(false))
+	mock.ExpectExec("UPDATE storage_config").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/storage/configs/"+knownUUID,
+		jsonBody(map[string]interface{}{
+			"backend_type":         "gcs",
+			"gcs_bucket":           "my-gcs-bucket",
+			"gcs_auth_method":      "service_account",
+			"gcs_credentials_json": `{"type":"service_account","project_id":"test"}`,
+		})))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
 	}
 }

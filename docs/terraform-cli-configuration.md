@@ -4,12 +4,19 @@ This guide explains how to configure the Terraform CLI to authenticate with and 
 
 ## Table of Contents
 
-1. [CLI Config File Location](#cli-config-file-location)
-2. [Authentication (credentials block)](#authentication-credentials-block)
-3. [Using Modules from This Registry](#using-modules-from-this-registry)
-4. [Using Providers via Network Mirror](#using-providers-via-network-mirror)
-5. [TLS Trust for Private Deployments](#tls-trust-for-private-deployments)
-6. [Verifying the Configuration](#verifying-the-configuration)
+- [Terraform CLI Configuration](#terraform-cli-configuration)
+  - [Table of Contents](#table-of-contents)
+  - [CLI Config File Location](#cli-config-file-location)
+  - [Authentication - credentials block](#authentication---credentials-block)
+  - [Using Modules from This Registry](#using-modules-from-this-registry)
+  - [Using Providers via Network Mirror](#using-providers-via-network-mirror)
+    - [Falling back to the public registry for unlisted providers](#falling-back-to-the-public-registry-for-unlisted-providers)
+    - [Provider source addresses](#provider-source-addresses)
+    - [Verifying the mirror is active](#verifying-the-mirror-is-active)
+  - [TLS Trust for Private Deployments](#tls-trust-for-private-deployments)
+    - [Import the certificate](#import-the-certificate)
+    - [Certificate SAN requirements](#certificate-san-requirements)
+  - [Verifying the Configuration](#verifying-the-configuration)
 
 ---
 
@@ -17,20 +24,20 @@ This guide explains how to configure the Terraform CLI to authenticate with and 
 
 Terraform reads CLI configuration from:
 
-| OS | Default path | Override env var |
-|---|---|---|
-| Windows | `%APPDATA%\terraform.rc` | `TF_CLI_CONFIG_FILE` |
-| Linux / macOS | `~/.terraformrc` | `TF_CLI_CONFIG_FILE` |
+| OS            | Default path             | Override env var     |
+| ------------- | ------------------------ | -------------------- |
+| Windows       | `%APPDATA%\terraform.rc` | `TF_CLI_CONFIG_FILE` |
+| Linux / macOS | `~/.terraformrc`         | `TF_CLI_CONFIG_FILE` |
 
 If `TF_CLI_CONFIG_FILE` is set (e.g. in a CI environment or custom wrapper), that path takes precedence over the default. Ensure your `credentials` and `provider_installation` blocks are in whichever file Terraform is actually reading — check `TF_LOG=DEBUG terraform init` output for the line:
 
-```
+```txt
 [INFO]  Loading CLI configuration from <path>
 ```
 
 ---
 
-## Authentication (credentials block)
+## Authentication - credentials block
 
 Add a `credentials` block for the hostname of your registry. This token is sent as a `Bearer` header to all authenticated registry requests.
 
@@ -151,7 +158,7 @@ $env:TF_LOG="DEBUG"; terraform init 2>&1 | Select-String "mirror|terraform/provi
 
 Expected output confirms the mirror is active:
 
-```
+```txt
 [DEBUG] Explicit provider installation configuration is set
 [DEBUG] Querying available versions of provider registry.terraform.io/hashicorp/aws at network mirror https://registry.example.com/terraform/providers/
 [DEBUG] GET https://registry.example.com/terraform/providers/registry.terraform.io/hashicorp/aws/index.json
@@ -222,7 +229,7 @@ TF_LOG=DEBUG terraform init 2>&1 | grep -E "Loading CLI|Explicit provider|regist
 
 Expected lines:
 
-```
+```txt
 [INFO]  Loading CLI configuration from ~/.terraformrc
 [DEBUG] Explicit provider installation configuration is set
 [DEBUG] Querying available versions of provider ... at network mirror https://registry.example.com/terraform/providers/

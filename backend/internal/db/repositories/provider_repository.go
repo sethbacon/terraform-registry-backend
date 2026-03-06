@@ -400,8 +400,8 @@ func (r *ProviderRepository) UndeprecateVersion(ctx context.Context, versionID s
 // CreatePlatform inserts a new platform binary record
 func (r *ProviderRepository) CreatePlatform(ctx context.Context, platform *models.ProviderPlatform) error {
 	query := `
-		INSERT INTO provider_platforms (provider_version_id, os, arch, filename, storage_path, storage_backend, size_bytes, shasum)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO provider_platforms (provider_version_id, os, arch, filename, storage_path, storage_backend, size_bytes, shasum, h1_hash)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING id
 	`
 
@@ -414,6 +414,7 @@ func (r *ProviderRepository) CreatePlatform(ctx context.Context, platform *model
 		platform.StorageBackend,
 		platform.SizeBytes,
 		platform.Shasum,
+		platform.H1Hash,
 	).Scan(&platform.ID)
 
 	if err != nil {
@@ -426,7 +427,7 @@ func (r *ProviderRepository) CreatePlatform(ctx context.Context, platform *model
 // GetPlatform retrieves a specific platform binary by version ID, OS, and arch
 func (r *ProviderRepository) GetPlatform(ctx context.Context, versionID, os, arch string) (*models.ProviderPlatform, error) {
 	query := `
-		SELECT id, provider_version_id, os, arch, filename, storage_path, storage_backend, size_bytes, shasum, download_count
+		SELECT id, provider_version_id, os, arch, filename, storage_path, storage_backend, size_bytes, shasum, h1_hash, download_count
 		FROM provider_platforms
 		WHERE provider_version_id = $1 AND os = $2 AND arch = $3
 	`
@@ -442,6 +443,7 @@ func (r *ProviderRepository) GetPlatform(ctx context.Context, versionID, os, arc
 		&platform.StorageBackend,
 		&platform.SizeBytes,
 		&platform.Shasum,
+		&platform.H1Hash,
 		&platform.DownloadCount,
 	)
 
@@ -458,7 +460,7 @@ func (r *ProviderRepository) GetPlatform(ctx context.Context, versionID, os, arc
 // ListPlatforms retrieves all platform binaries for a provider version
 func (r *ProviderRepository) ListPlatforms(ctx context.Context, versionID string) ([]*models.ProviderPlatform, error) {
 	query := `
-		SELECT id, provider_version_id, os, arch, filename, storage_path, storage_backend, size_bytes, shasum, download_count
+		SELECT id, provider_version_id, os, arch, filename, storage_path, storage_backend, size_bytes, shasum, h1_hash, download_count
 		FROM provider_platforms
 		WHERE provider_version_id = $1
 		ORDER BY os, arch
@@ -483,6 +485,7 @@ func (r *ProviderRepository) ListPlatforms(ctx context.Context, versionID string
 			&p.StorageBackend,
 			&p.SizeBytes,
 			&p.Shasum,
+			&p.H1Hash,
 			&p.DownloadCount,
 		)
 		if err != nil {

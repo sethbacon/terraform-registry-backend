@@ -49,12 +49,13 @@ type ProviderVersion struct {
 type ProviderPlatform struct {
 	ID                string
 	ProviderVersionID string
-	OS                string // Operating system (linux, darwin, windows, etc.)
-	Arch              string // Architecture (amd64, arm64, 386, etc.)
-	Filename          string // Original filename of the provider binary
-	StoragePath       string // Path in storage backend
-	StorageBackend    string // Storage backend type (local, azure, s3)
-	SizeBytes         int64  // File size in bytes
-	Shasum            string // SHA256 checksum of the binary
-	DownloadCount     int64  // Number of times this platform binary has been downloaded
+	OS                string  // Operating system (linux, darwin, windows, etc.)
+	Arch              string  // Architecture (amd64, arm64, 386, etc.)
+	Filename          string  // Original filename of the provider binary
+	StoragePath       string  // Path in storage backend
+	StorageBackend    string  // Storage backend type (local, azure, s3)
+	SizeBytes         int64   // File size in bytes
+	Shasum            string  // SHA256 checksum of the binary
+	H1Hash            *string // Terraform h1: dirhash of the zip archive; nil for legacy rows
+	DownloadCount     int64   // Number of times this platform binary has been downloaded
 }

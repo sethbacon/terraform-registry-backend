@@ -789,9 +789,9 @@
                 ],
                 "responses": {
                     "200": {
-                        "description": "providers: []models.MirroredProvider with versions",
+                        "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/admin.WebhookEventsResponse"
+                            "$ref": "#/definitions/admin.ListMirroredProvidersResponse"
                         }
                     },
                     "400": {
@@ -8791,6 +8791,17 @@
                 "mirrors": {}
             }
         },
+        "admin.ListMirroredProvidersResponse": {
+            "type": "object",
+            "properties": {
+                "providers": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/admin.MirroredProviderSummary"
+                    }
+                }
+            }
+        },
         "admin.ListOrganizationsResponse": {
             "type": "object",
             "properties": {
@@ -8906,6 +8917,90 @@
             "type": "object",
             "properties": {
                 "message": {
+                    "type": "string"
+                }
+            }
+        },
+        "admin.MirroredPlatformSummary": {
+            "type": "object",
+            "properties": {
+                "arch": {
+                    "type": "string"
+                },
+                "filename": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "os": {
+                    "type": "string"
+                },
+                "provider_version_id": {
+                    "type": "string"
+                },
+                "shasum": {
+                    "type": "string"
+                }
+            }
+        },
+        "admin.MirroredProviderSummary": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "last_synced_at": {
+                    "type": "string"
+                },
+                "mirror_config_id": {
+                    "type": "string"
+                },
+                "provider_id": {
+                    "type": "string"
+                },
+                "sync_enabled": {
+                    "type": "boolean"
+                },
+                "upstream_namespace": {
+                    "type": "string"
+                },
+                "upstream_type": {
+                    "type": "string"
+                },
+                "versions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/admin.MirroredVersionSummary"
+                    }
+                }
+            }
+        },
+        "admin.MirroredVersionSummary": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string"
+                },
+                "mirrored_provider_id": {
+                    "type": "string"
+                },
+                "platforms": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/admin.MirroredPlatformSummary"
+                    }
+                },
+                "provider_version_id": {
+                    "type": "string"
+                },
+                "synced_at": {
+                    "type": "string"
+                },
+                "upstream_version": {
                     "type": "string"
                 }
             }
@@ -9100,10 +9195,16 @@
                 "download_count": {
                     "type": "integer"
                 },
+                "filename": {
+                    "type": "string"
+                },
                 "id": {
                     "type": "string"
                 },
                 "os": {
+                    "type": "string"
+                },
+                "shasum": {
                     "type": "string"
                 }
             }

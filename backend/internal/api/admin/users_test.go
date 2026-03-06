@@ -532,3 +532,244 @@ func TestGetUserMembershipsHandler_Success(t *testing.T) {
 		t.Errorf("status = %d, want 200", w.Code)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Additional uncovered branches
+// ---------------------------------------------------------------------------
+
+// DeleteUserHandler — DB error on GetUserByID
+func TestDeleteUserHandler_DBErrorOnGet(t *testing.T) {
+	mock, r := newUserRouter(t)
+
+	mock.ExpectQuery("SELECT").WithArgs("user-1").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/users/user-1", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+// DeleteUserHandler — DB error on Delete
+func TestDeleteUserHandler_DBErrorOnDelete(t *testing.T) {
+	mock, r := newUserRouter(t)
+
+	mock.ExpectQuery("SELECT").WithArgs("user-1").
+		WillReturnRows(sampleUserRow())
+	mock.ExpectExec("DELETE FROM users").WithArgs("user-1").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/users/user-1", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+// UpdateUserHandler — DB error on GetUserByID
+func TestUpdateUserHandler_DBErrorOnGet(t *testing.T) {
+	mock, r := newUserRouter(t)
+
+	mock.ExpectQuery("SELECT").WithArgs("user-1").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/users/user-1",
+		jsonBody(map[string]string{"name": "New Name"})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+// UpdateUserHandler — DB error on Update
+func TestUpdateUserHandler_DBErrorOnUpdate(t *testing.T) {
+	mock, r := newUserRouter(t)
+
+	mock.ExpectQuery("SELECT").WithArgs("user-1").
+		WillReturnRows(sampleUserRow())
+	mock.ExpectExec("UPDATE users").
+		WillReturnError(errDB)
+
+	newName := "Updated Name"
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/users/user-1",
+		jsonBody(map[string]*string{"name": &newName})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+// UpdateUserHandler — DB error on email availability check
+func TestUpdateUserHandler_EmailCheckDBError(t *testing.T) {
+	mock, r := newUserRouter(t)
+
+	mock.ExpectQuery("SELECT").WithArgs("user-1").
+		WillReturnRows(sampleUserRow())
+	mock.ExpectQuery("SELECT").WithArgs("new@example.com").
+		WillReturnError(errDB)
+
+	newEmail := "new@example.com"
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/users/user-1",
+		jsonBody(map[string]*string{"email": &newEmail})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+// UpdateUserHandler — email update same user (no conflict)
+func TestUpdateUserHandler_EmailUpdateSameUser(t *testing.T) {
+	mock, r := newUserRouter(t)
+
+	mock.ExpectQuery("SELECT").WithArgs("user-1").
+		WillReturnRows(sampleUserRow())
+	// GetUserByEmail returns the same user (not a conflict)
+	mock.ExpectQuery("SELECT").WithArgs("alice@example.com").
+		WillReturnRows(sqlmock.NewRows(userSQLCols).
+			AddRow("user-1", "alice@example.com", "Alice", nil, time.Now(), time.Now()))
+	mock.ExpectExec("UPDATE users").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	newEmail := "alice@example.com"
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/users/user-1",
+		jsonBody(map[string]*string{"email": &newEmail})))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// CreateUserHandler — DB error on Create
+func TestCreateUserHandler_DBErrorOnCreate(t *testing.T) {
+	mock, r := newUserRouter(t)
+
+	mock.ExpectQuery("SELECT").WithArgs("new@example.com").
+		WillReturnRows(emptyUserRows())
+	mock.ExpectExec("INSERT INTO users").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/users",
+		jsonBody(map[string]string{"email": "new@example.com", "name": "New User"})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+// GetUserHandler — DB error on ListUserOrganizations
+func TestGetUserHandler_OrgsDBError(t *testing.T) {
+	mock, r := newUserRouter(t)
+
+	mock.ExpectQuery("SELECT").WithArgs("user-1").
+		WillReturnRows(sampleUserRow())
+	mock.ExpectQuery("SELECT").WithArgs("user-1").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/users/user-1", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+// GetCurrentUserMembershipsHandler — invalid user_id type
+func TestGetCurrentUserMembershipsHandler_InvalidUserIDType(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+
+	h := NewUserHandlers(&config.Config{}, db)
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set("user_id", 12345) // integer, not string
+		c.Next()
+	})
+	r.GET("/users/me/memberships", h.GetCurrentUserMembershipsHandler())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/users/me/memberships", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+// GetCurrentUserMembershipsHandler — DB error on GetUserMemberships
+func TestGetCurrentUserMembershipsHandler_DBError(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	mock.ExpectQuery("SELECT").WithArgs("user-1").
+		WillReturnError(errDB)
+
+	h := NewUserHandlers(&config.Config{}, db)
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set("user_id", "user-1")
+		c.Next()
+	})
+	r.GET("/users/me/memberships", h.GetCurrentUserMembershipsHandler())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/users/me/memberships", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+// GetUserMembershipsHandler — DB error on GetUserByID
+func TestGetUserMembershipsHandler_DBErrorOnGet(t *testing.T) {
+	mock, r := newUserRouter(t)
+
+	mock.ExpectQuery("SELECT").WithArgs("user-1").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/users/user-1/memberships", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+// GetUserMembershipsHandler — DB error on GetUserMemberships
+func TestGetUserMembershipsHandler_DBErrorOnMemberships(t *testing.T) {
+	mock, r := newUserRouter(t)
+
+	mock.ExpectQuery("SELECT").WithArgs("user-1").
+		WillReturnRows(sampleUserRow())
+	mock.ExpectQuery("SELECT").WithArgs("user-1").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/users/user-1/memberships", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+// SearchUsersHandler — pagination edge cases
+func TestSearchUsersHandler_PaginationDefaults(t *testing.T) {
+	mock, r := newUserRouter(t)
+
+	mock.ExpectQuery("SELECT").
+		WillReturnRows(sampleUserRow())
+
+	// page < 1 and perPage > 100 → clamped to defaults
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/users/search?q=alice&page=-5&per_page=999", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
