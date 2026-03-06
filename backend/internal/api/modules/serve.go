@@ -1,18 +1,30 @@
-// serve.go handles direct file serving of module archives from local storage backends.
+// serve.go handles direct file serving of module and provider archives from local storage backends.
 package modules
 
 import (
+	"context"
+	"database/sql"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
+	"github.com/terraform-registry/terraform-registry/internal/telemetry"
 )
 
 // ServeFileHandler handles direct file serving for local storage
 // Implements: GET /v1/files/*filepath
 // Only used when local storage has ServeDirectly: true
-func ServeFileHandler(storageBackend storage.Storage, cfg *config.Config) gin.HandlerFunc {
+func ServeFileHandler(storageBackend storage.Storage, cfg *config.Config, db *sql.DB) gin.HandlerFunc {
+	var providerRepo *repositories.ProviderRepository
+	var orgRepo *repositories.OrganizationRepository
+	if db != nil {
+		providerRepo = repositories.NewProviderRepository(db)
+		orgRepo = repositories.NewOrganizationRepository(db)
+	}
+
 	return func(c *gin.Context) {
 		// Get file path from URL
 		filePath := c.Param("filepath")
@@ -62,6 +74,14 @@ func ServeFileHandler(storageBackend storage.Storage, cfg *config.Config) gin.Ha
 		}
 		defer reader.Close()
 
+		// Track provider downloads: path is providers/{namespace}/{type}/{version}/{os}/{arch}/{file}
+		if providerRepo != nil {
+			if ns, pt, ver, osName, arch, ok := parseProviderFilePath(filePath); ok {
+				go trackProviderDownload(providerRepo, orgRepo, ns, pt, ver, osName, arch)
+				telemetry.ProviderDownloadsTotal.WithLabelValues(ns, pt, osName, arch).Inc()
+			}
+		}
+
 		// Set response headers
 		c.Header("Content-Type", "application/gzip")
 		c.Header("Content-Disposition", "attachment")
@@ -69,5 +89,42 @@ func ServeFileHandler(storageBackend storage.Storage, cfg *config.Config) gin.Ha
 
 		// Stream file to client
 		c.DataFromReader(http.StatusOK, metadata.Size, "application/gzip", reader, nil)
+	}
+}
+
+// parseProviderFilePath extracts components from a provider file path of the form:
+// providers/{namespace}/{type}/{version}/{os}/{arch}/{filename}
+func parseProviderFilePath(path string) (namespace, providerType, version, os, arch string, ok bool) {
+	parts := strings.Split(path, "/")
+	if len(parts) < 7 || parts[0] != "providers" {
+		return "", "", "", "", "", false
+	}
+	return parts[1], parts[2], parts[3], parts[4], parts[5], true
+}
+
+// trackProviderDownload looks up the provider platform and increments its download count.
+func trackProviderDownload(providerRepo *repositories.ProviderRepository, orgRepo *repositories.OrganizationRepository, namespace, providerType, version, osName, arch string) {
+	ctx := context.Background()
+	org, err := orgRepo.GetDefaultOrganization(ctx)
+	if err != nil || org == nil {
+		return
+	}
+	provider, err := providerRepo.GetProvider(ctx, org.ID, namespace, providerType)
+	if err != nil || provider == nil {
+		return
+	}
+	pv, err := providerRepo.GetVersion(ctx, provider.ID, version)
+	if err != nil || pv == nil {
+		return
+	}
+	platforms, err := providerRepo.ListPlatforms(ctx, pv.ID)
+	if err != nil {
+		return
+	}
+	for _, p := range platforms {
+		if p.OS == osName && p.Arch == arch {
+			_ = providerRepo.IncrementDownloadCount(ctx, p.ID)
+			return
+		}
 	}
 }
