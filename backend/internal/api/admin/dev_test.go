@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
@@ -153,6 +154,39 @@ func TestDevLogin_DBError(t *testing.T) {
 	}
 }
 
+func TestDevLogin_Success(t *testing.T) {
+	t.Setenv("TFR_JWT_SECRET", "test-secret-key-that-is-at-least-32-characters-long")
+	mock, r := newDevRouter(t, nil)
+
+	now := time.Now()
+
+	// GetUserByEmail returns the dev admin user
+	mock.ExpectQuery("SELECT.*FROM users WHERE email").
+		WillReturnRows(sqlmock.NewRows(devUserCols).
+			AddRow("user-1", "admin@dev.local", "Dev Admin", nil, now, now))
+
+	// GetUserCombinedScopes -> GetUserMemberships (empty)
+	mock.ExpectQuery("SELECT.*FROM organization_members").
+		WillReturnRows(sqlmock.NewRows(membershipSQLCols))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/dev/login", nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	resp := getJSON(w)
+	if resp["token"] == nil {
+		t.Error("response missing 'token' key")
+	}
+	if resp["user"] == nil {
+		t.Error("response missing 'user' key")
+	}
+	if resp["expires_in"] == nil {
+		t.Error("response missing 'expires_in' key")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ImpersonateUserHandler
 // ---------------------------------------------------------------------------
@@ -190,6 +224,39 @@ func TestImpersonate_TargetUserNotFound(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestImpersonate_Success(t *testing.T) {
+	t.Setenv("TFR_JWT_SECRET", "test-secret-key-that-is-at-least-32-characters-long")
+	mock, r := newDevRouter(t, []string{"admin"})
+
+	now := time.Now()
+
+	// GetUserByID returns the target user
+	mock.ExpectQuery("SELECT.*FROM users WHERE id").
+		WillReturnRows(sqlmock.NewRows(devUserCols).
+			AddRow(knownUUID, "target@example.com", "Target User", nil, now, now))
+
+	// GetUserCombinedScopes -> GetUserMemberships (empty)
+	mock.ExpectQuery("SELECT.*FROM organization_members").
+		WillReturnRows(sqlmock.NewRows(membershipSQLCols))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/dev/impersonate/"+knownUUID, nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	resp := getJSON(w)
+	if resp["token"] == nil {
+		t.Error("response missing 'token' key")
+	}
+	if resp["user"] == nil {
+		t.Error("response missing 'user' key")
+	}
+	if resp["message"] == nil {
+		t.Error("response missing 'message' key")
 	}
 }
 
@@ -245,5 +312,56 @@ func TestListDevUsers_Empty(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestListDevUsers_Success(t *testing.T) {
+	mock, r := newDevRouter(t, []string{"admin"})
+
+	now := time.Now()
+
+	// ListUsers: COUNT then SELECT returning one user
+	mock.ExpectQuery("SELECT COUNT").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectQuery("SELECT.*FROM users.*ORDER BY").
+		WillReturnRows(sqlmock.NewRows(devUserCols).
+			AddRow("user-1", "alice@example.com", "Alice", nil, now, now))
+
+	// GetUserWithOrgRoles for user-1:
+	// 1. GetUserByID
+	mock.ExpectQuery("SELECT.*FROM users WHERE id").
+		WillReturnRows(sqlmock.NewRows(devUserCols).
+			AddRow("user-1", "alice@example.com", "Alice", nil, now, now))
+	// 2. membership query with a role
+	mock.ExpectQuery("SELECT.*FROM organization_members").
+		WillReturnRows(sqlmock.NewRows(membershipSQLCols).
+			AddRow("org-1", "default", "rt-1", now, "admin", "Administrator", `["admin"]`))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/dev/users", nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	resp := getJSON(w)
+	if resp["users"] == nil {
+		t.Error("response missing 'users' key")
+	}
+	if resp["dev_mode"] == nil {
+		t.Error("response missing 'dev_mode' key")
+	}
+	users, ok := resp["users"].([]interface{})
+	if !ok {
+		t.Fatal("'users' is not an array")
+	}
+	if len(users) != 1 {
+		t.Errorf("expected 1 user, got %d", len(users))
+	}
+	u, ok := users[0].(map[string]interface{})
+	if !ok {
+		t.Fatal("user entry is not an object")
+	}
+	if u["primary_role"] != "Administrator" {
+		t.Errorf("primary_role = %v, want Administrator", u["primary_role"])
 	}
 }
