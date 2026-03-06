@@ -94,14 +94,12 @@ func ServeFileHandler(storageBackend storage.Storage, cfg *config.Config, db *sq
 			}
 			action := "GET " + c.Request.URL.Path
 			ip := c.ClientIP()
-			filePathForAudit := filePath
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 				_ = auditRepo.CreateAuditLog(ctx, &models.AuditLog{
 					Action:       action,
 					ResourceType: &resourceType,
-					ResourceID:   &filePathForAudit,
 					IPAddress:    &ip,
 				})
 			}()
