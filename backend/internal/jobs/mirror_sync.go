@@ -719,6 +719,13 @@ func (j *MirrorSyncJob) syncProvider(ctx context.Context, upstreamClient *mirror
 			if pkgErr == nil {
 				shasumContent, _ := upstreamClient.DownloadFile(ctx, packageInfo.SHASumsURL)
 				shasumMap = parseSHASUMFile(string(shasumContent))
+				// Persist the full SHA256SUMS so the version JSON can serve zh: hashes
+				// for ALL platforms, including those not mirrored locally.
+				if len(shasumMap) > 0 {
+					if err := j.providerRepo.UpsertProviderVersionShasums(ctx, existingVersion.ID, shasumMap); err != nil {
+						log.Printf("Warning: failed to store SHA256SUMS for re-sync of %s/%s@%s: %v", namespace, providerName, version.Version, err)
+					}
+				}
 			} else {
 				log.Printf("Warning: failed to get package info for SHASUM for %s/%s@%s: %v", namespace, providerName, version.Version, pkgErr)
 			}
@@ -852,6 +859,15 @@ func (j *MirrorSyncJob) syncProviderVersion(
 
 	if err := j.providerRepo.CreateVersion(ctx, versionRecord); err != nil {
 		return fmt.Errorf("failed to create version record: %w", err)
+	}
+
+	// Persist the full SHA256SUMS map so the Network Mirror Protocol endpoint can
+	// serve zh: hashes for ALL platforms in the upstream release (not just the
+	// subset we sync locally).  A warning is logged on failure but is non-fatal.
+	if len(shasumMap) > 0 {
+		if err := j.providerRepo.UpsertProviderVersionShasums(ctx, versionRecord.ID, shasumMap); err != nil {
+			log.Printf("Warning: failed to store SHA256SUMS for %s/%s@%s: %v", namespace, providerName, version.Version, err)
+		}
 	}
 
 	// Download and store each platform binary (using filtered platforms)

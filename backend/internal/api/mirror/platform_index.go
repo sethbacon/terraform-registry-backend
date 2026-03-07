@@ -2,17 +2,23 @@
 package mirror
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
+	"github.com/terraform-registry/terraform-registry/internal/telemetry"
 	"github.com/terraform-registry/terraform-registry/internal/validation"
 )
 
@@ -32,7 +38,7 @@ import (
 // PlatformIndexHandler handles network mirror platform index requests
 // Implements: GET /terraform/providers/:hostname/:namespace/:type/:version.json
 // Returns download URLs and hashes for all platforms of a specific version
-func PlatformIndexHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
+func PlatformIndexHandler(db *sql.DB, cfg *config.Config, auditRepo *repositories.AuditRepository) gin.HandlerFunc {
 	providerRepo := repositories.NewProviderRepository(db)
 	orgRepo := repositories.NewOrganizationRepository(db)
 
@@ -188,8 +194,107 @@ func PlatformIndexHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 			}
 		}
 
+		// Enrich archives with zh: hashes for platforms present in the upstream
+		// SHA256SUMS file but not synced locally.
+		//
+		// Terraform only records hashes for the platform it downloads during
+		// `terraform init`.  To build a complete cross-platform lock file, users
+		// run `terraform providers lock -platform=linux_amd64 -platform=darwin_amd64`,
+		// which downloads and verifies each platform binary explicitly.  Including
+		// unmirrored platform entries here (with their upstream HashiCorp download URL
+		// and zh: hash) means that command works even for platforms not locally
+		// synced — Terraform will fall back to the upstream URL, verify the binary
+		// against the zh: hash we serve, and record the result.
+		//
+		// If the ShasumURL field is empty (e.g. manually-uploaded providers) the
+		// block is skipped gracefully.
+		if providerVersion.ShasumURL != "" {
+			upstreamBase := providerVersion.ShasumURL
+			if idx := strings.LastIndex(upstreamBase, "/"); idx >= 0 {
+				upstreamBase = upstreamBase[:idx]
+			}
+
+			shasums, err := providerRepo.ListProviderVersionShasums(c.Request.Context(), providerVersion.ID)
+			if err != nil {
+				slog.Warn("failed to list provider version shasums for platform index; unmirrored platform zh: hashes will be omitted",
+					"provider_version_id", providerVersion.ID, "error", err)
+			} else {
+				for _, s := range shasums {
+					// Only include zip archives; skip manifest.json and similar entries
+					if !strings.HasSuffix(s.Filename, ".zip") {
+						continue
+					}
+
+					// Derive the os_arch key from the filename.
+					// Format: terraform-provider-TYPE_VERSION_OS_ARCH.zip
+					// The OS and ARCH tokens are always the last two underscore-separated
+					// parts of the stem.
+					stem := strings.TrimSuffix(s.Filename, ".zip")
+					parts := strings.Split(stem, "_")
+					if len(parts) < 2 {
+						continue
+					}
+					platformKey := parts[len(parts)-2] + "_" + parts[len(parts)-1]
+
+					if _, alreadyMirrored := archives[platformKey]; alreadyMirrored {
+						// Platform is physically synced locally; its entry already has
+						// a full URL + h1: + zh: — no enrichment needed.
+						continue
+					}
+
+					archives[platformKey] = gin.H{
+						"url":    upstreamBase + "/" + s.Filename,
+						"hashes": []string{formatZhHash(s.SHA256Hex)},
+					}
+				}
+			}
+		}
+
 		response := gin.H{
 			"archives": archives,
+		}
+
+		// Track provider downloads for storage backends that do not route through
+		// ServeFileHandler.  When local storage has ServeDirectly: true, Terraform
+		// fetches the binary via /v1/files/… and ServeFileHandler increments the
+		// counter there.  For every other configuration (S3, Azure, GCS, or local
+		// without ServeDirectly) the binary is delivered from a signed/external URL
+		// and ServeFileHandler is never called, so this is the only place to count it.
+		if cfg.Storage.DefaultBackend != "local" || !cfg.Storage.Local.ServeDirectly {
+			if clientOS, clientArch := parseTerraformPlatform(c.GetHeader("User-Agent")); clientOS != "" {
+				for _, platform := range platforms {
+					if platform.OS == clientOS && platform.Arch == clientArch {
+						platformID := platform.ID
+						go func() {
+							if err := providerRepo.IncrementDownloadCount(context.Background(), platformID); err != nil {
+								slog.Error("failed to increment download count for mirror provider", "error", err)
+							}
+						}()
+						telemetry.ProviderDownloadsTotal.WithLabelValues(namespace, providerType, clientOS, clientArch).Inc()
+						break
+					}
+				}
+			}
+		}
+
+		// Audit log the mirror platform index request asynchronously
+		if auditRepo != nil {
+			resourceType := "provider"
+			action := "GET " + c.Request.URL.Path
+			ip := c.ClientIP()
+			versionIDForAudit := providerVersion.ID
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := auditRepo.CreateAuditLog(ctx, &models.AuditLog{
+					Action:       action,
+					ResourceType: &resourceType,
+					ResourceID:   &versionIDForAudit,
+					IPAddress:    &ip,
+				}); err != nil {
+					slog.Error("failed to write audit log for mirror platform index", "error", err, "action", action)
+				}
+			}()
 		}
 
 		// Use c.Data with plain "application/json" (no charset) to satisfy the
@@ -213,4 +318,23 @@ func formatZhHash(hexChecksum string) string {
 		return ""
 	}
 	return "zh:" + hexChecksum
+}
+
+// terraformPlatformRe matches the OS/arch pair in a Terraform/OpenTofu User-Agent string.
+// Terraform sends User-Agent headers in one of these forms:
+//
+//	Terraform/1.5.0 (+https://www.terraform.io) linux_amd64
+//	OpenTofu/1.6.0 linux_arm64
+//
+// The regex captures (os)_(arch) from the trailing platform token.
+var terraformPlatformRe = regexp.MustCompile(`(?:Terraform|OpenTofu)/\S+.*?\b([a-z]+)_([a-z0-9]+)`)
+
+// parseTerraformPlatform extracts (os, arch) from a Terraform/OpenTofu User-Agent.
+// Returns ("", "") if the header is absent or does not match.
+func parseTerraformPlatform(ua string) (string, string) {
+	m := terraformPlatformRe.FindStringSubmatch(ua)
+	if m == nil {
+		return "", ""
+	}
+	return m[1], m[2]
 }

@@ -4,11 +4,14 @@ package modules
 import (
 	"context"
 	"database/sql"
+	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 	"github.com/terraform-registry/terraform-registry/internal/telemetry"
@@ -17,7 +20,7 @@ import (
 // ServeFileHandler handles direct file serving for local storage
 // Implements: GET /v1/files/*filepath
 // Only used when local storage has ServeDirectly: true
-func ServeFileHandler(storageBackend storage.Storage, cfg *config.Config, db *sql.DB) gin.HandlerFunc {
+func ServeFileHandler(storageBackend storage.Storage, cfg *config.Config, db *sql.DB, auditRepo *repositories.AuditRepository) gin.HandlerFunc {
 	var providerRepo *repositories.ProviderRepository
 	var orgRepo *repositories.OrganizationRepository
 	if db != nil {
@@ -80,6 +83,29 @@ func ServeFileHandler(storageBackend storage.Storage, cfg *config.Config, db *sq
 				go trackProviderDownload(providerRepo, orgRepo, ns, pt, ver, osName, arch)
 				telemetry.ProviderDownloadsTotal.WithLabelValues(ns, pt, osName, arch).Inc()
 			}
+		}
+
+		// Audit log the file download event asynchronously
+		if auditRepo != nil {
+			resourceType := "file"
+			if strings.HasPrefix(filePath, "providers/") {
+				resourceType = "provider"
+			} else if strings.HasPrefix(filePath, "modules/") {
+				resourceType = "module"
+			}
+			action := "GET " + c.Request.URL.Path
+			ip := c.ClientIP()
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := auditRepo.CreateAuditLog(ctx, &models.AuditLog{
+					Action:       action,
+					ResourceType: &resourceType,
+					IPAddress:    &ip,
+				}); err != nil {
+					slog.Error("failed to write audit log for file download", "error", err, "action", action)
+				}
+			}()
 		}
 
 		// Set response headers
