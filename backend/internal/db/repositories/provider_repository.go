@@ -66,6 +66,7 @@ func (r *ProviderRepository) GetProvider(ctx context.Context, orgID, namespace, 
 		FROM providers p
 		LEFT JOIN users u ON p.created_by = u.id
 		WHERE (p.organization_id = $1 OR p.organization_id IS NULL) AND p.namespace = $2 AND p.type = $3
+		ORDER BY CASE WHEN p.organization_id = $1 THEN 0 ELSE 1 END, p.created_at DESC
 		LIMIT 1
 	`
 

@@ -152,6 +152,36 @@ func TestGetProvider_DBError(t *testing.T) {
 	}
 }
 
+func TestGetProvider_QueryIncludesDeterministicOrdering(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	mock.ExpectQuery("ORDER BY CASE WHEN p.organization_id = \\$1 THEN 0 ELSE 1 END").
+		WillReturnRows(sampleProviderRow())
+
+	_, err := repo.GetProvider(context.Background(), "org-1", "hashicorp", "aws")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestGetProvider_ScansOrganizationIDWhenPresent(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	rows := sqlmock.NewRows(providerCols).
+		AddRow("prov-2", "org-1", "hashicorp", "aws", nil, nil, nil, time.Now(), time.Now(), nil)
+	mock.ExpectQuery("SELECT.*FROM providers.*WHERE").
+		WillReturnRows(rows)
+
+	p, err := repo.GetProvider(context.Background(), "org-1", "hashicorp", "aws")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p == nil {
+		t.Fatal("expected provider, got nil")
+	}
+	if p.OrganizationID != "org-1" {
+		t.Errorf("OrganizationID = %q, want org-1", p.OrganizationID)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // GetVersion
 // ---------------------------------------------------------------------------
