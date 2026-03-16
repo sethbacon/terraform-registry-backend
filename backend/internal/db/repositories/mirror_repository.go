@@ -208,6 +208,37 @@ func (r *MirrorRepository) UpdateSyncStatus(ctx context.Context, id uuid.UUID, s
 	return nil
 }
 
+// ResetStaleSyncs resets mirrors stuck in 'in_progress' state due to a previous process crash.
+// It marks the stale mirror_sync_history records as 'failed' and resets mirror_configurations
+// so they will be picked up by the next scheduled sync.
+func (r *MirrorRepository) ResetStaleSyncs(ctx context.Context) (int64, error) {
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE mirror_sync_history
+		SET status = 'failed',
+		    completed_at = NOW(),
+		    error_message = 'Sync interrupted: backend process restarted'
+		WHERE status = 'running'
+	`)
+	if err != nil {
+		return 0, fmt.Errorf("failed to reset stale sync history: %w", err)
+	}
+
+	historyRows, _ := result.RowsAffected()
+
+	_, err = r.db.ExecContext(ctx, `
+		UPDATE mirror_configurations
+		SET last_sync_status = 'failed',
+		    last_sync_error = 'Sync interrupted: backend process restarted',
+		    updated_at = NOW()
+		WHERE last_sync_status = 'in_progress'
+	`)
+	if err != nil {
+		return 0, fmt.Errorf("failed to reset stale mirror sync status: %w", err)
+	}
+
+	return historyRows, nil
+}
+
 // GetMirrorsNeedingSync retrieves mirror configurations that need to be synced
 func (r *MirrorRepository) GetMirrorsNeedingSync(ctx context.Context) ([]models.MirrorConfiguration, error) {
 	query := `

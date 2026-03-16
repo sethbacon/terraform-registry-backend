@@ -288,6 +288,13 @@ func NewMirrorSyncJob(
 func (j *MirrorSyncJob) Start(ctx context.Context, intervalMinutes int) {
 	log.Printf("Starting mirror sync job with interval of %d minutes", intervalMinutes)
 
+	// Reset any syncs left in 'in_progress' / 'running' state from a previous process crash.
+	if n, err := j.mirrorRepo.ResetStaleSyncs(ctx); err != nil {
+		log.Printf("Warning: failed to reset stale syncs on startup: %v", err)
+	} else if n > 0 {
+		log.Printf("Reset %d stale sync history record(s) from previous process", n)
+	}
+
 	j.wg.Add(1)
 	go func() {
 		close(j.startedCh) // signal that the goroutine is running (wg.Add already done)
