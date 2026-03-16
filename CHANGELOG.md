@@ -11,6 +11,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.6] - 2026-03-16
+
+### Fixed
+
+- fix: reset stale `in_progress` mirror sync status on startup so mirrors are automatically re-scheduled after a backend restart or ECS task replacement (#42)
+
+### Changed
+
+- chore: add `.gitattributes` to enforce LF line endings repo-wide (#42)
+
+---
+
+## [0.2.5] - 2026-03-08
+
+### Fixed
+
+- fix: make mirror provider lookup deterministic by preferring organization-scoped providers over NULL-org fallback, preventing network mirror index/version mismatch errors during `terraform init` (#39)
+
+---
 ## [0.2.4] - 2026-03-06
 
 ### Fixed
