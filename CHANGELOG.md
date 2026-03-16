@@ -11,6 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.6] - 2026-03-16
+
+### Fixed
+
+- fix: reset stale `in_progress` mirror sync status on startup so mirrors are automatically re-scheduled after a backend restart or ECS task replacement (#42)
+
+### Changed
+
+- chore: add `.gitattributes` to enforce LF line endings repo-wide (#42)
+
+---
+
 ## [0.2.5] - 2026-03-08
 
 ### Fixed
