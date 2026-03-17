@@ -46,13 +46,16 @@ func (r *StorageConfigRepository) IsStorageConfigured(ctx context.Context) (bool
 	return configured, err
 }
 
-// SetStorageConfigured marks storage as configured
+// SetStorageConfigured marks storage as configured.
+// storage_configured_by is nullable; uuid.Nil (all zeros) is treated as NULL so
+// that the FK to users(id) is not violated during initial setup when no user
+// exists yet.
 func (r *StorageConfigRepository) SetStorageConfigured(ctx context.Context, userID uuid.UUID) error {
 	query := `
 		UPDATE system_settings SET
 			storage_configured = true,
 			storage_configured_at = $1,
-			storage_configured_by = $2,
+			storage_configured_by = NULLIF($2, '00000000-0000-0000-0000-000000000000'::uuid),
 			updated_at = $1
 		WHERE id = 1`
 

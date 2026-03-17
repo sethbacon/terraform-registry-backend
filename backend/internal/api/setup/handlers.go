@@ -357,6 +357,7 @@ func (h *Handlers) SaveStorageConfig(c *gin.Context) {
 	// Encrypt sensitive fields
 	storageCfg, err := h.buildEncryptedStorageConfig(&input)
 	if err != nil {
+		slog.Error("setup: failed to encrypt storage credentials", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt storage credentials"})
 		return
 	}
