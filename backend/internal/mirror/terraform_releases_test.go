@@ -326,7 +326,7 @@ func TestParseSHASums_Empty(t *testing.T) {
 // DownloadBinary
 // ---------------------------------------------------------------------------
 
-func TestDownloadBinary_Success(t *testing.T) {
+func TestDownloadBinaryStream_Success(t *testing.T) {
 	content := []byte("fake zip content")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -337,21 +337,24 @@ func TestDownloadBinary_Success(t *testing.T) {
 	c := NewTerraformReleasesClient(srv.URL, "terraform")
 	c.DownloadClient = c.HTTPClient
 
-	data, sha, err := c.DownloadBinary(context.Background(), srv.URL+"/terraform_1.5.0_linux_amd64.zip")
+	body, _, err := c.DownloadBinaryStream(context.Background(), srv.URL+"/terraform_1.5.0_linux_amd64.zip")
 	if err != nil {
-		t.Fatalf("DownloadBinary error: %v", err)
+		t.Fatalf("DownloadBinaryStream error: %v", err)
+	}
+	defer body.Close()
+	data, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatalf("reading body: %v", err)
 	}
 	if !bytes.Equal(data, content) {
 		t.Error("downloaded content mismatch")
 	}
-	// Verify the returned sha matches the content.
-	expected := ComputeSHA256Hex(content)
-	if sha != expected {
-		t.Errorf("sha = %q, want %q", sha, expected)
+	if got, want := ComputeSHA256Hex(data), ComputeSHA256Hex(content); got != want {
+		t.Errorf("sha = %q, want %q", got, want)
 	}
 }
 
-func TestDownloadBinary_NonOKStatus(t *testing.T) {
+func TestDownloadBinaryStream_NonOKStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
@@ -360,15 +363,15 @@ func TestDownloadBinary_NonOKStatus(t *testing.T) {
 	c := NewTerraformReleasesClient(srv.URL, "terraform")
 	c.DownloadClient = c.HTTPClient
 
-	_, _, err := c.DownloadBinary(context.Background(), srv.URL+"/missing.zip")
+	_, _, err := c.DownloadBinaryStream(context.Background(), srv.URL+"/missing.zip")
 	if err == nil {
 		t.Error("expected error for 404, got nil")
 	}
 }
 
-func TestDownloadBinary_InvalidURL(t *testing.T) {
+func TestDownloadBinaryStream_InvalidURL(t *testing.T) {
 	c := NewTerraformReleasesClient("http://127.0.0.1:0", "terraform")
-	_, _, err := c.DownloadBinary(context.Background(), "http://127.0.0.1:0/file.zip")
+	_, _, err := c.DownloadBinaryStream(context.Background(), "http://127.0.0.1:0/file.zip")
 	if err == nil {
 		t.Error("expected connection error, got nil")
 	}
