@@ -47,8 +47,8 @@ func AuditMiddlewareWithShipper(auditRepo *repositories.AuditRepository, shipper
 			if isReadOp && !logReadOps {
 				return
 			}
-			if isFailed && !logFailedReqs && isReadOp {
-				// Skip failed read operations if not configured to log them
+			if isFailed && !logFailedReqs {
+				// Skip failed operations if not configured to log them
 				return
 			}
 		}

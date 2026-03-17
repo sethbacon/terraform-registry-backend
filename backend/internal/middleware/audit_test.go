@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/audit"
+	"github.com/terraform-registry/terraform-registry/internal/config"
 )
 
 // captureShipper collects audit log entries via a buffered channel.
@@ -140,6 +141,27 @@ func TestAuditMiddleware_FailedPostSkippedWithNilConfig(t *testing.T) {
 	select {
 	case <-cs.ch:
 		t.Error("shipper called for failed POST with nil config, want no shipping")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestAuditMiddleware_FailedWriteSkippedWhenLogFailedRequestsFalse(t *testing.T) {
+	// Regression test for #29: failed write operations were logged even when
+	// LogFailedRequests=false because the guard condition incorrectly required
+	// isReadOp to also be true before skipping.
+	cs := newCaptureShipper(1)
+	cfg := &config.AuditConfig{LogFailedRequests: false, LogReadOperations: false}
+	r := gin.New()
+	r.Use(AuditMiddlewareWithShipper(nil, cs, cfg))
+	r.POST("/modules/test", func(c *gin.Context) { c.Status(http.StatusBadRequest) })
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/modules/test", nil)
+	r.ServeHTTP(w, req)
+
+	select {
+	case <-cs.ch:
+		t.Error("shipper called for failed POST with LogFailedRequests=false, want no shipping")
 	case <-time.After(100 * time.Millisecond):
 	}
 }

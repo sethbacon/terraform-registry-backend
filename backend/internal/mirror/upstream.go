@@ -282,6 +282,37 @@ func (u *UpstreamRegistry) downloadFileOnce(ctx context.Context, fileURL string)
 	return data, nil
 }
 
+// DownloadStream is returned by DownloadFileStream.  The caller must close Body
+// when done regardless of error.
+type DownloadStream struct {
+	Body          io.ReadCloser
+	ContentLength int64 // -1 if unknown
+}
+
+// DownloadFileStream initiates a download and returns a streaming reader so
+// large binaries are not buffered in memory.  Unlike DownloadFile it makes only
+// one attempt (retries on a stream would require re-downloading) and it is the
+// caller's responsibility to close DownloadStream.Body.
+func (u *UpstreamRegistry) DownloadFileStream(ctx context.Context, fileURL string) (*DownloadStream, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", fileURL, nil) // #nosec G107 -- URL is admin-controlled
+	if err != nil {
+		return nil, fmt.Errorf("failed to create download request: %w", err)
+	}
+
+	resp, err := u.DownloadClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start download: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+		return nil, fmt.Errorf("download failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	return &DownloadStream{Body: resp.Body, ContentLength: resp.ContentLength}, nil
+}
+
 // ValidateRegistryURL validates that a registry URL is properly formatted
 func ValidateRegistryURL(registryURL string) error {
 	if registryURL == "" {
