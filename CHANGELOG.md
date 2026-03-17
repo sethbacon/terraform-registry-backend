@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.8] - 2026-03-17
+
+### Fixed
+
+- fix: make frontend pod security context configurable via Helm values to support rootless nginx on AKS (#47)
+
+---
+
 ## [0.2.7] - 2026-03-17
 
 ### Fixed
