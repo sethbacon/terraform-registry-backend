@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.7] - 2026-03-17
+
+### Fixed
+
+- fix: correct helm liveness and startup probe path from /healthz to /health (#44)
+
+---
+
 ## [0.2.6] - 2026-03-16
 
 ### Fixed
