@@ -4,13 +4,14 @@
 package jobs
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -943,15 +944,30 @@ func (j *MirrorSyncJob) syncPlatformBinary(
 
 	log.Printf("Downloading %s from %s", packageInfo.Filename, packageInfo.DownloadURL)
 
-	// Download the binary
-	binaryContent, err := upstreamClient.DownloadFile(ctx, packageInfo.DownloadURL)
+	// Stream binary to a temp file to avoid buffering large zips in memory.
+	stream, err := upstreamClient.DownloadFileStream(ctx, packageInfo.DownloadURL)
 	if err != nil {
 		return fmt.Errorf("failed to download binary: %w", err)
 	}
 
-	// Calculate SHA256 checksum
-	sha256sum := sha256.Sum256(binaryContent)
-	checksumHex := hex.EncodeToString(sha256sum[:])
+	tmpFile, err := os.CreateTemp("", "provider-binary-*.zip")
+	if err != nil {
+		stream.Body.Close()
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	defer func() {
+		tmpFile.Close()
+		os.Remove(tmpFile.Name())
+	}()
+
+	// Stream to disk, computing SHA256 in-flight.
+	hasher := sha256.New()
+	written, err := io.Copy(tmpFile, io.TeeReader(stream.Body, hasher))
+	stream.Body.Close()
+	if err != nil {
+		return fmt.Errorf("failed to stream binary to disk: %w", err)
+	}
+	checksumHex := hex.EncodeToString(hasher.Sum(nil))
 
 	// Verify checksum if we have SHASUM data
 	expectedChecksum := packageInfo.SHA256Sum
@@ -972,7 +988,11 @@ func (j *MirrorSyncJob) syncPlatformBinary(
 	storagePath := fmt.Sprintf("providers/%s/%s/%s/%s/%s/%s",
 		namespace, providerName, version, platform.OS, platform.Arch, packageInfo.Filename)
 
-	uploadResult, err := j.storageBackend.Upload(ctx, storagePath, bytes.NewReader(binaryContent), int64(len(binaryContent)))
+	if _, err := tmpFile.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("failed to seek temp file: %w", err)
+	}
+
+	uploadResult, err := j.storageBackend.Upload(ctx, storagePath, tmpFile, written)
 	if err != nil {
 		return fmt.Errorf("failed to store binary: %w", err)
 	}
@@ -985,13 +1005,14 @@ func (j *MirrorSyncJob) syncPlatformBinary(
 		Filename:          packageInfo.Filename,
 		StoragePath:       uploadResult.Path,
 		StorageBackend:    j.storageBackendName,
-		SizeBytes:         int64(len(binaryContent)),
+		SizeBytes:         written,
 		Shasum:            checksumHex,
 	}
 
-	// Compute the h1: dirhash for the zip archive so that Terraform's network
-	// mirror protocol can serve both zh: (legacy) and h1: (preferred) hashes.
-	if h1, err := checksum.HashZip(binaryContent); err != nil {
+	// Compute the h1: dirhash for the zip archive so Terraform's network mirror
+	// protocol can serve both zh: (legacy) and h1: (preferred) hashes.
+	// HashZipFile uses io.ReaderAt so the temp file can serve as the source.
+	if h1, err := checksum.HashZipFile(tmpFile, written); err != nil {
 		log.Printf("Warning: failed to compute h1: hash for %s: %v", packageInfo.Filename, err)
 	} else {
 		platformRecord.H1Hash = &h1
@@ -1001,7 +1022,7 @@ func (j *MirrorSyncJob) syncPlatformBinary(
 		return fmt.Errorf("failed to create platform record: %w", err)
 	}
 
-	log.Printf("Stored platform %s/%s: %s (%d bytes)", platform.OS, platform.Arch, storagePath, len(binaryContent))
+	log.Printf("Stored platform %s/%s: %s (%d bytes)", platform.OS, platform.Arch, storagePath, written)
 	return nil
 }
 

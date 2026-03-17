@@ -1,9 +1,11 @@
 package mirror
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -593,7 +595,7 @@ func TestGitHubFetchSHASumsSignature_NotFound(t *testing.T) {
 // DownloadBinary tests
 // ---------------------------------------------------------------------------
 
-func TestGitHubDownloadBinary_Success(t *testing.T) {
+func TestGitHubDownloadBinaryStream_Success(t *testing.T) {
 	zipContent := []byte("PK\x03\x04fake zip content")
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(zipContent)
@@ -601,26 +603,25 @@ func TestGitHubDownloadBinary_Success(t *testing.T) {
 	defer ts.Close()
 
 	client := newTestGitHubClient(ts, "opentofu", "opentofu", "opentofu")
-	data, sha, err := client.DownloadBinary(context.Background(), ts.URL+"/opentofu_1.9.0_linux_amd64.zip")
+	body, _, err := client.DownloadBinaryStream(context.Background(), ts.URL+"/opentofu_1.9.0_linux_amd64.zip")
 	if err != nil {
-		t.Fatalf("DownloadBinary error: %v", err)
+		t.Fatalf("DownloadBinaryStream error: %v", err)
 	}
-	if len(data) == 0 {
-		t.Error("expected non-empty data")
-	}
-	if sha == "" {
-		t.Error("expected non-empty SHA256")
+	defer body.Close()
+	data, _ := io.ReadAll(body)
+	if !bytes.Equal(data, zipContent) {
+		t.Error("downloaded content mismatch")
 	}
 }
 
-func TestGitHubDownloadBinary_NonOKStatus(t *testing.T) {
+func TestGitHubDownloadBinaryStream_NonOKStatus(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer ts.Close()
 
 	client := newTestGitHubClient(ts, "opentofu", "opentofu", "opentofu")
-	_, _, err := client.DownloadBinary(context.Background(), ts.URL+"/missing.zip")
+	_, _, err := client.DownloadBinaryStream(context.Background(), ts.URL+"/missing.zip")
 	if err == nil {
 		t.Fatal("expected error for non-200 response, got nil")
 	}

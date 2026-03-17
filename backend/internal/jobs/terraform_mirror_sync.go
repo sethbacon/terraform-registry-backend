@@ -12,11 +12,14 @@
 package jobs
 
 import (
-	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -230,7 +233,7 @@ type terraformReleasesClient interface {
 	ListVersions(ctx context.Context) ([]mirror.TerraformVersionInfo, error)
 	FetchSHASums(ctx context.Context, version string) (map[string]string, []byte, error)
 	FetchSHASumsSignature(ctx context.Context, version string) ([]byte, error)
-	DownloadBinary(ctx context.Context, downloadURL string) ([]byte, string, error)
+	DownloadBinaryStream(ctx context.Context, downloadURL string) (io.ReadCloser, int64, error)
 }
 
 // newReleasesClient constructs the appropriate client for the configured upstream URL.
@@ -504,13 +507,35 @@ func (j *TerraformMirrorSyncJob) syncOnePlatform(
 
 	log.Printf("[terraform-mirror] downloading %s (%s/%s)", version, p.OS, p.Arch)
 
-	data, actualSHA256, dlErr := client.DownloadBinary(ctx, p.UpstreamURL)
+	body, _, dlErr := client.DownloadBinaryStream(ctx, p.UpstreamURL)
 	if dlErr != nil {
 		errStr := dlErr.Error()
 		_ = j.repo.UpdatePlatformSyncStatus(ctx, p.ID, "failed", nil, nil, false, false, &errStr)
 		log.Printf("[terraform-mirror] download failed for %s %s/%s: %v", version, p.OS, p.Arch, dlErr)
 		return false
 	}
+
+	tmpFile, tmpErr := os.CreateTemp("", "terraform-binary-*.zip")
+	if tmpErr != nil {
+		body.Close()
+		errStr := fmt.Sprintf("failed to create temp file: %v", tmpErr)
+		_ = j.repo.UpdatePlatformSyncStatus(ctx, p.ID, "failed", nil, nil, false, false, &errStr)
+		return false
+	}
+	defer func() {
+		tmpFile.Close()
+		os.Remove(tmpFile.Name())
+	}()
+
+	hasher := sha256.New()
+	written, copyErr := io.Copy(tmpFile, io.TeeReader(body, hasher))
+	body.Close()
+	if copyErr != nil {
+		errStr := fmt.Sprintf("failed to stream binary to disk: %v", copyErr)
+		_ = j.repo.UpdatePlatformSyncStatus(ctx, p.ID, "failed", nil, nil, false, false, &errStr)
+		return false
+	}
+	actualSHA256 := hex.EncodeToString(hasher.Sum(nil))
 
 	sha256Verified := false
 	if sums != nil {
@@ -526,8 +551,14 @@ func (j *TerraformMirrorSyncJob) syncOnePlatform(
 		}
 	}
 
+	if _, seekErr := tmpFile.Seek(0, io.SeekStart); seekErr != nil {
+		errStr := fmt.Sprintf("failed to seek temp file: %v", seekErr)
+		_ = j.repo.UpdatePlatformSyncStatus(ctx, p.ID, "failed", nil, nil, sha256Verified, sumsGPGVerified, &errStr)
+		return false
+	}
+
 	storagePath := fmt.Sprintf("terraform-binaries/%s/%s/%s/%s", version, p.OS, p.Arch, p.Filename)
-	_, uploadErr := j.storageBackend.Upload(ctx, storagePath, bytes.NewReader(data), int64(len(data)))
+	_, uploadErr := j.storageBackend.Upload(ctx, storagePath, tmpFile, written)
 	if uploadErr != nil {
 		errStr := uploadErr.Error()
 		_ = j.repo.UpdatePlatformSyncStatus(ctx, p.ID, "failed", nil, nil, sha256Verified, sumsGPGVerified, &errStr)

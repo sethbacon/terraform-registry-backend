@@ -300,23 +300,24 @@ func (c *GitHubReleasesClient) FetchSHASumsSignature(ctx context.Context, versio
 
 // DownloadBinary downloads a binary zip from the given URL (already a full URL
 // from the GitHub asset list). Identical to TerraformReleasesClient.DownloadBinary.
-func (c *GitHubReleasesClient) DownloadBinary(ctx context.Context, downloadURL string) ([]byte, string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+func (c *GitHubReleasesClient) DownloadBinaryStream(ctx context.Context, downloadURL string) (io.ReadCloser, int64, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil) // #nosec G107 -- URL from admin-configured upstream
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to build download request: %w", err)
+		return nil, -1, fmt.Errorf("failed to build download request: %w", err)
 	}
 
-	resp, err := c.DownloadClient.Do(req) // #nosec G704 -- URL from admin-configured upstream
+	resp, err := c.DownloadClient.Do(req)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to download binary: %w", err)
+		return nil, -1, fmt.Errorf("failed to download binary: %w", err)
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, "", fmt.Errorf("upstream returned %d for binary download", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+		return nil, -1, fmt.Errorf("upstream returned %d for binary download: %s", resp.StatusCode, string(body))
 	}
 
-	return StreamWithSHA256(resp.Body)
+	return resp.Body, resp.ContentLength, nil
 }
 
 // ----- helpers --------------------------------------------------------------
