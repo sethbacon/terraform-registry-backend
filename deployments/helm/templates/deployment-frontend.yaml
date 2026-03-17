@@ -24,6 +24,9 @@ spec:
       securityContext:
         seccompProfile:
           type: RuntimeDefault
+        {{- with .Values.frontend.podSecurityContext }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       containers:
         - name: frontend
           image: {{ include "terraform-registry.frontendImage" . }}
