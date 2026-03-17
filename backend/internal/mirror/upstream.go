@@ -294,12 +294,12 @@ type DownloadStream struct {
 // one attempt (retries on a stream would require re-downloading) and it is the
 // caller's responsibility to close DownloadStream.Body.
 func (u *UpstreamRegistry) DownloadFileStream(ctx context.Context, fileURL string) (*DownloadStream, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", fileURL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", fileURL, nil) // #nosec G107 -- URL is admin-controlled
 	if err != nil {
 		return nil, fmt.Errorf("failed to create download request: %w", err)
 	}
 
-	resp, err := u.DownloadClient.Do(req) // #nosec G704 -- URL is admin-controlled
+	resp, err := u.DownloadClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start download: %w", err)
 	}

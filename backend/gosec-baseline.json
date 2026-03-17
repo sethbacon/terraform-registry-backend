@@ -10,7 +10,7 @@
 			},
 			"rule_id": "G115",
 			"details": "integer overflow conversion uint64 -\u003e int64",
-			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\scm\\azuredevops\\connector.go",
+			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\scm\\azuredevops\\connector.go",
 			"code": "538: \t\t\tName:     f.Name,\n539: \t\t\tSize:     int64(f.UncompressedSize64),\n540: \t\t\tMode:     int64(f.Mode()),\n",
 			"line": "539",
 			"column": "19",
@@ -26,7 +26,7 @@
 			},
 			"rule_id": "G115",
 			"details": "integer overflow conversion int64 -\u003e uint32",
-			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\services\\scm_publisher.go",
+			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\services\\scm_publisher.go",
 			"code": "219: \t\t\t}\n220: \t\t\tf, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR, os.FileMode(header.Mode)) // #nosec G304 -- path is constructed from validated namespace/name/version components; path traversal is prevented at the API and archive-extraction layers\n221: \t\t\tif err != nil {\n",
 			"line": "220",
 			"column": "68",
@@ -42,9 +42,9 @@
 			},
 			"rule_id": "G201",
 			"details": "SQL string formatting",
-			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\db\\repositories\\provider_repository.go",
-			"code": "592: \t// Query with pagination and JOIN for created_by_name\n593: \tsearchQuery := fmt.Sprintf(`\n594: \t\tSELECT p.id, p.organization_id, p.namespace, p.type, p.description, p.source,\n595: \t\t       p.created_by, u.name as created_by_name, p.created_at, p.updated_at\n596: \t\tFROM providers p\n597: \t\tLEFT JOIN users u ON p.created_by = u.id\n598: \t\t%s\n599: \t\tORDER BY p.created_at DESC\n600: \t\tLIMIT $%d OFFSET $%d\n601: \t`, whereClause, argCount+1, argCount+2)\n602: \n",
-			"line": "593-601",
+			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\db\\repositories\\provider_repository.go",
+			"code": "596: \t// Query with pagination and JOIN for created_by_name\n597: \tsearchQuery := fmt.Sprintf(`\n598: \t\tSELECT p.id, p.organization_id, p.namespace, p.type, p.description, p.source,\n599: \t\t       p.created_by, u.name as created_by_name, p.created_at, p.updated_at\n600: \t\tFROM providers p\n601: \t\tLEFT JOIN users u ON p.created_by = u.id\n602: \t\t%s\n603: \t\tORDER BY p.created_at DESC\n604: \t\tLIMIT $%d OFFSET $%d\n605: \t`, whereClause, argCount+1, argCount+2)\n606: \n",
+			"line": "597-605",
 			"column": "17",
 			"nosec": false,
 			"suppressions": null
@@ -58,9 +58,9 @@
 			},
 			"rule_id": "G201",
 			"details": "SQL string formatting",
-			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\db\\repositories\\provider_repository.go",
-			"code": "584: \t// Count total results\n585: \tcountQuery := fmt.Sprintf(\"SELECT COUNT(*) FROM providers p %s\", whereClause)\n586: \tvar total int\n",
-			"line": "585",
+			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\db\\repositories\\provider_repository.go",
+			"code": "588: \t// Count total results\n589: \tcountQuery := fmt.Sprintf(\"SELECT COUNT(*) FROM providers p %s\", whereClause)\n590: \tvar total int\n",
+			"line": "589",
 			"column": "16",
 			"nosec": false,
 			"suppressions": null
@@ -74,7 +74,7 @@
 			},
 			"rule_id": "G201",
 			"details": "SQL string formatting",
-			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\db\\repositories\\module_repository.go",
+			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\db\\repositories\\module_repository.go",
 			"code": "434: \t// Count total results\n435: \tcountQuery := fmt.Sprintf(\"SELECT COUNT(*) FROM modules %s\", whereClause)\n436: \tvar total int\n",
 			"line": "435",
 			"column": "16",
@@ -90,19 +90,35 @@
 			},
 			"rule_id": "G305",
 			"details": "File traversal when extracting zip/tar archive",
-			"file": "C:\\dev\\terraform-registry-backend\\backend\\internal\\services\\scm_publisher.go",
+			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\services\\scm_publisher.go",
 			"code": "205: \t\t// Prevent path traversal\n206: \t\ttarget := filepath.Join(dest, header.Name)\n207: \t\tif !strings.HasPrefix(target, filepath.Clean(dest)+string(os.PathSeparator)) {\n",
 			"line": "206",
 			"column": "13",
 			"nosec": false,
 			"suppressions": null
+		},
+		{
+			"severity": "LOW",
+			"confidence": "HIGH",
+			"cwe": {
+				"id": "703",
+				"url": "https://cwe.mitre.org/data/definitions/703.html"
+			},
+			"rule_id": "G104",
+			"details": "Errors unhandled",
+			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\mirror\\upstream.go",
+			"code": "308: \t\tbody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))\n309: \t\tresp.Body.Close()\n310: \t\treturn nil, fmt.Errorf(\"download failed with status %d: %s\", resp.StatusCode, string(body))\n",
+			"line": "309",
+			"column": "3",
+			"nosec": false,
+			"suppressions": null
 		}
 	],
 	"Stats": {
-		"files": 123,
-		"lines": 35605,
-		"nosec": 82,
-		"found": 6
+		"files": 122,
+		"lines": 36440,
+		"nosec": 86,
+		"found": 7
 	},
 	"GosecVersion": "dev"
 }
