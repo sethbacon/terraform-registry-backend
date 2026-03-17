@@ -152,6 +152,23 @@ When a release is called for:
    > Tagging on `development` before the merge leaves the tag pointing at the wrong commit —
    > it will never appear in `main`'s history as a tagged release.
 
+7. **Trigger the release workflow.** The `push` tag trigger can silently fail if the tag was
+   previously pushed pointing to a different commit. Always verify the workflow fired within
+   ~60 seconds by checking:
+
+   ```bash
+   gh run list --workflow=release.yml --limit=3
+   ```
+
+   If no new run appears, trigger it manually:
+
+   ```bash
+   gh workflow run release.yml --ref vX.Y.Z
+   ```
+
+   The workflow will: run CI → build multi-platform binaries → push Docker image to
+   `ghcr.io/sethbacon/terraform-registry-backend:vX.Y.Z` → create a GitHub Release.
+
 ---
 
 ## Project Overview
