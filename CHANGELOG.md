@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.9] - 2026-03-17
+
+### Fixed
+
+- fix: run frontend nginx on port 8080 so non-root container can bind without NET_BIND_SERVICE capability (#49)
+
+---
+
 ## [0.2.8] - 2026-03-17
 
 ### Fixed
