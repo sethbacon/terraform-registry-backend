@@ -63,13 +63,13 @@ spec:
           {{- end }}
           startupProbe:
             httpGet:
-              path: /healthz
+              path: /health
               port: http
             periodSeconds: 5
             failureThreshold: 12
           livenessProbe:
             httpGet:
-              path: /healthz
+              path: /health
               port: http
             periodSeconds: 30
             timeoutSeconds: 5
