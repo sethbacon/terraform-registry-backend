@@ -539,7 +539,12 @@ func (r *ModuleRepository) SearchModulesWithStats(ctx context.Context, orgID, se
 		LEFT JOIN users u ON m.created_by = u.id
 		LEFT JOIN LATERAL (
 			SELECT
-				(SELECT mv2.version FROM module_versions mv2 WHERE mv2.module_id = m.id ORDER BY mv2.created_at DESC LIMIT 1) AS latest_version,
+				(SELECT mv2.version FROM module_versions mv2 WHERE mv2.module_id = m.id
+			 ORDER BY
+			   COALESCE(CAST(NULLIF(SPLIT_PART(REGEXP_REPLACE(mv2.version, '^v', ''), '.', 1), '') AS INTEGER), 0) DESC,
+			   COALESCE(CAST(NULLIF(SPLIT_PART(REGEXP_REPLACE(mv2.version, '^v', ''), '.', 2), '') AS INTEGER), 0) DESC,
+			   COALESCE(CAST(NULLIF(SPLIT_PART(REGEXP_REPLACE(mv2.version, '^v', ''), '.', 3), '') AS INTEGER), 0) DESC
+			 LIMIT 1) AS latest_version,
 				SUM(mv.download_count) AS total_downloads
 			FROM module_versions mv
 			WHERE mv.module_id = m.id
