@@ -143,11 +143,15 @@ func (p *OIDCProvider) ExtractGroups(idToken *oidc.IDToken, claimName string) []
 
 // ExtractUserInfo extracts user information from the ID token
 func (p *OIDCProvider) ExtractUserInfo(idToken *oidc.IDToken) (sub, email, name string, err error) {
-	// Standard claims
+	// Standard claims. preferred_username is an Azure AD / Entra ID extension that
+	// carries the UPN (which is the user's email address). It is used as a fallback
+	// when the email claim is absent — Azure AD does not include email by default
+	// unless the optional claim is explicitly added to the App Registration.
 	var claims struct {
-		Sub   string `json:"sub"`
-		Email string `json:"email"`
-		Name  string `json:"name"`
+		Sub               string `json:"sub"`
+		Email             string `json:"email"`
+		Name              string `json:"name"`
+		PreferredUsername string `json:"preferred_username"`
 	}
 
 	if err := idToken.Claims(&claims); err != nil {
@@ -159,8 +163,12 @@ func (p *OIDCProvider) ExtractUserInfo(idToken *oidc.IDToken) (sub, email, name 
 		return "", "", "", fmt.Errorf("ID token missing 'sub' claim")
 	}
 
+	// email is required; fall back to preferred_username (Azure AD UPN) if absent.
 	if claims.Email == "" {
-		return "", "", "", fmt.Errorf("ID token missing 'email' claim")
+		claims.Email = claims.PreferredUsername
+	}
+	if claims.Email == "" {
+		return "", "", "", fmt.Errorf("ID token missing 'email' and 'preferred_username' claims")
 	}
 
 	// Name is optional, use email if not provided
