@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.15] - 2026-03-17
+
+### Fixed
+
+- fix: provider card shows latest semver version instead of latest uploaded version — `SearchProvidersWithStats` was ordering the `latest_version` subquery by upload time; now sorts by semver major/minor/patch so the correct highest version is always shown (#62)
+
+---
+
 ## [0.2.14] - 2026-03-17
 
 ### Fixed
