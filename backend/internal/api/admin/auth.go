@@ -255,6 +255,7 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 			// Extract user info
 			sub, email, name, err = oidcProv.ExtractUserInfo(idToken)
 			if err != nil {
+				slog.Error("oidc: failed to extract user info from ID token", "error", err)
 				callbackError("user_info_failed", "Failed to extract user information from the ID token.")
 				return
 			}
@@ -294,6 +295,7 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 			// Extract user info
 			sub, email, name, err = h.azureADProvider.ExtractUserInfo(idToken)
 			if err != nil {
+				slog.Error("azuread: failed to extract user info from ID token", "error", err)
 				callbackError("user_info_failed", "Failed to extract user information from the ID token.")
 				return
 			}

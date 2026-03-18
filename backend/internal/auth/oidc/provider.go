@@ -5,7 +5,9 @@ package oidc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/terraform-registry/terraform-registry/internal/config"
@@ -143,38 +145,65 @@ func (p *OIDCProvider) ExtractGroups(idToken *oidc.IDToken, claimName string) []
 
 // ExtractUserInfo extracts user information from the ID token
 func (p *OIDCProvider) ExtractUserInfo(idToken *oidc.IDToken) (sub, email, name string, err error) {
-	// Standard claims. preferred_username is an Azure AD / Entra ID extension that
-	// carries the UPN (which is the user's email address). It is used as a fallback
-	// when the email claim is absent — Azure AD does not include email by default
-	// unless the optional claim is explicitly added to the App Registration.
+	// Standard claims plus Azure AD / Entra ID extensions:
+	//   preferred_username — v2.0 token UPN, always present for member accounts
+	//   upn               — on-premises synced accounts
+	//   unique_name       — v1.0 token UPN (legacy)
+	// Azure AD does not include `email` by default unless the optional claim is
+	// added to the App Registration token configuration.
 	var claims struct {
 		Sub               string `json:"sub"`
 		Email             string `json:"email"`
 		Name              string `json:"name"`
 		PreferredUsername string `json:"preferred_username"`
+		UPN               string `json:"upn"`
+		UniqueName        string `json:"unique_name"`
 	}
 
 	if err := idToken.Claims(&claims); err != nil {
 		return "", "", "", fmt.Errorf("failed to parse ID token claims: %w", err)
 	}
 
-	// Validate required fields
 	if claims.Sub == "" {
 		return "", "", "", fmt.Errorf("ID token missing 'sub' claim")
 	}
 
-	// email is required; fall back to preferred_username (Azure AD UPN) if absent.
-	if claims.Email == "" {
-		claims.Email = claims.PreferredUsername
+	// Resolve email: try standard claim first, then Azure AD UPN variants.
+	resolved := claims.Email
+	if resolved == "" {
+		resolved = claims.PreferredUsername
 	}
-	if claims.Email == "" {
-		return "", "", "", fmt.Errorf("ID token missing 'email' and 'preferred_username' claims")
+	if resolved == "" {
+		resolved = claims.UPN
+	}
+	if resolved == "" {
+		resolved = claims.UniqueName
+	}
+	if resolved == "" {
+		// Log the raw token claims so the administrator can diagnose which
+		// claims the identity provider is actually sending.
+		var raw map[string]json.RawMessage
+		if jsonErr := idToken.Claims(&raw); jsonErr == nil {
+			keys := make([]string, 0, len(raw))
+			for k := range raw {
+				keys = append(keys, k)
+			}
+			slog.Error("oidc: no email identifier found in ID token",
+				"available_claims", keys,
+				"sub", string(raw["sub"]),
+				"preferred_username", string(raw["preferred_username"]),
+				"upn", string(raw["upn"]),
+				"unique_name", string(raw["unique_name"]),
+				"email", string(raw["email"]),
+			)
+		}
+		return "", "", "", fmt.Errorf("ID token missing email identifier (checked: email, preferred_username, upn, unique_name)")
 	}
 
-	// Name is optional, use email if not provided
+	// Name is optional, fall back to resolved email.
 	if claims.Name == "" {
-		claims.Name = claims.Email
+		claims.Name = resolved
 	}
 
-	return claims.Sub, claims.Email, claims.Name, nil
+	return claims.Sub, resolved, claims.Name, nil
 }
