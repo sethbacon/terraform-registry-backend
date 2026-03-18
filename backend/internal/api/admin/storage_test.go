@@ -1106,11 +1106,11 @@ func TestStorageCreateConfig_S3StaticSuccess(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/storage/configs",
 		jsonBody(map[string]interface{}{
-			"backend_type":        "s3",
-			"s3_bucket":           "my-bucket",
-			"s3_region":           "us-east-1",
-			"s3_auth_method":      "static",
-			"s3_access_key_id":    "AKIATEST",
+			"backend_type":         "s3",
+			"s3_bucket":            "my-bucket",
+			"s3_region":            "us-east-1",
+			"s3_auth_method":       "static",
+			"s3_access_key_id":     "AKIATEST",
 			"s3_secret_access_key": "secret123",
 		})))
 
@@ -1250,11 +1250,11 @@ func TestStorageUpdateConfig_S3StaticWithKeysSuccess(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("PUT", "/storage/configs/"+knownUUID,
 		jsonBody(map[string]interface{}{
-			"backend_type":        "s3",
-			"s3_bucket":           "my-bucket",
-			"s3_region":           "us-east-1",
-			"s3_auth_method":      "static",
-			"s3_access_key_id":    "AKIATEST",
+			"backend_type":         "s3",
+			"s3_bucket":            "my-bucket",
+			"s3_region":            "us-east-1",
+			"s3_auth_method":       "static",
+			"s3_access_key_id":     "AKIATEST",
 			"s3_secret_access_key": "secret123",
 		})))
 
