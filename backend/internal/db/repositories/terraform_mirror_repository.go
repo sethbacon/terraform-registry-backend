@@ -365,7 +365,7 @@ func (r *TerraformMirrorRepository) ListVersions(ctx context.Context, configID u
 		query += " AND sync_status = 'synced'"
 	}
 
-	query += " ORDER BY COALESCE(CAST(NULLIF(SPLIT_PART(REGEXP_REPLACE(version, '^v', ''), '.', 1), '') AS INTEGER), 0) DESC, COALESCE(CAST(NULLIF(SPLIT_PART(REGEXP_REPLACE(version, '^v', ''), '.', 2), '') AS INTEGER), 0) DESC, COALESCE(CAST(NULLIF(SPLIT_PART(REGEXP_REPLACE(version, '^v', ''), '.', 3), '') AS INTEGER), 0) DESC"
+	query += " ORDER BY COALESCE(CAST(NULLIF(SPLIT_PART(REGEXP_REPLACE(REGEXP_REPLACE(version, '^v', ''), '[-+].*$', ''), '.', 1), '') AS INTEGER), 0) DESC, COALESCE(CAST(NULLIF(SPLIT_PART(REGEXP_REPLACE(REGEXP_REPLACE(version, '^v', ''), '[-+].*$', ''), '.', 2), '') AS INTEGER), 0) DESC, COALESCE(CAST(NULLIF(SPLIT_PART(REGEXP_REPLACE(REGEXP_REPLACE(version, '^v', ''), '[-+].*$', ''), '.', 3), '') AS INTEGER), 0) DESC"
 
 	var versions []models.TerraformVersion
 	err := r.db.SelectContext(ctx, &versions, query, configID)

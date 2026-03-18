@@ -543,9 +543,9 @@ func (r *MirrorRepository) ListMirroredProviderVersions(ctx context.Context, mir
 		FROM mirrored_provider_versions
 		WHERE mirrored_provider_id = $1
 		ORDER BY
-			COALESCE(CAST(NULLIF(SPLIT_PART(REGEXP_REPLACE(upstream_version, '^v', ''), '.', 1), '') AS INTEGER), 0) DESC,
-			COALESCE(CAST(NULLIF(SPLIT_PART(REGEXP_REPLACE(upstream_version, '^v', ''), '.', 2), '') AS INTEGER), 0) DESC,
-			COALESCE(CAST(NULLIF(SPLIT_PART(REGEXP_REPLACE(upstream_version, '^v', ''), '.', 3), '') AS INTEGER), 0) DESC
+			COALESCE(CAST(NULLIF(SPLIT_PART(REGEXP_REPLACE(REGEXP_REPLACE(upstream_version, '^v', ''), '[-+].*$', ''), '.', 1), '') AS INTEGER), 0) DESC,
+			COALESCE(CAST(NULLIF(SPLIT_PART(REGEXP_REPLACE(REGEXP_REPLACE(upstream_version, '^v', ''), '[-+].*$', ''), '.', 2), '') AS INTEGER), 0) DESC,
+			COALESCE(CAST(NULLIF(SPLIT_PART(REGEXP_REPLACE(REGEXP_REPLACE(upstream_version, '^v', ''), '[-+].*$', ''), '.', 3), '') AS INTEGER), 0) DESC
 	`
 
 	var versions []models.MirroredProviderVersion
