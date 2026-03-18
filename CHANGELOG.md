@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.16] - 2026-03-17
+
+### Fixed
+
+- fix: module card, terraform binary mirror list, and mirror config detail modal now sort versions by semver instead of upload/sync time — `SearchModulesWithStats`, `TerraformMirrorRepository.ListVersions`, and `ListMirroredProviderVersions` all used `created_at`/`synced_at` ordering
+- fix: harden semver sort in `SearchProvidersWithStats` (v0.2.15) to guard against empty split parts with `COALESCE(CAST(NULLIF(...) AS INTEGER), 0)`
+
+---
+
 ## [0.2.15] - 2026-03-17
 
 ### Fixed
