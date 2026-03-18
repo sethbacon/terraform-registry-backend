@@ -689,7 +689,12 @@ func (r *ProviderRepository) SearchProvidersWithStats(ctx context.Context, orgID
 		LEFT JOIN users u ON p.created_by = u.id
 		LEFT JOIN LATERAL (
 			SELECT
-				(SELECT pv2.version FROM provider_versions pv2 WHERE pv2.provider_id = p.id ORDER BY pv2.created_at DESC LIMIT 1) AS latest_version,
+				(SELECT pv2.version FROM provider_versions pv2 WHERE pv2.provider_id = p.id
+				 ORDER BY
+				   CAST(SPLIT_PART(REGEXP_REPLACE(pv2.version, '^v', ''), '.', 1) AS INTEGER) DESC,
+				   CAST(SPLIT_PART(REGEXP_REPLACE(pv2.version, '^v', ''), '.', 2) AS INTEGER) DESC,
+				   CAST(SPLIT_PART(REGEXP_REPLACE(pv2.version, '^v', ''), '.', 3) AS INTEGER) DESC
+				 LIMIT 1) AS latest_version,
 				(SELECT COALESCE(SUM(pp.download_count), 0) FROM provider_platforms pp
 				 JOIN provider_versions pv3 ON pp.provider_version_id = pv3.id
 				 WHERE pv3.provider_id = p.id) AS total_downloads
