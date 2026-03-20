@@ -11,6 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.18] - 2026-03-20
+
+### Fixed
+
+- fix: mirror config detail **Latest Version** field now shows the highest semver version rather than the first version returned by the upstream registry (#74)
+- fix: storage config creation no longer unconditionally activates the new config — `activate=true` must be explicitly passed to make it active (#75)
+- fix: org creation now auto-adds the requesting user as an admin member so subsequent API calls succeed without a separate membership step (#76)
+
+### Added
+
+- feat: `POST /api/v1/admin/providers` and `GET /api/v1/admin/providers/:id` CRUD endpoints for provider records, enabling the Terraform provider `registry_provider_record` resource to create and read provider entries by UUID (#77)
+
+---
+
 ## [0.2.17] - 2026-03-17
 
 ### Fixed

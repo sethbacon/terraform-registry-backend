@@ -93,6 +93,8 @@ on dedicated ports and are deliberately excluded from the OpenAPI spec.
 
 ### Provider Registry
 
+- [x] `POST /api/v1/admin/providers` - Create provider record
+- [x] `GET /api/v1/admin/providers/:id` - Get provider record by UUID
 - [x] `GET /v1/providers/:namespace/:type/versions` - List provider versions (public)
 - [x] `GET /v1/providers/:namespace/:type/:version/download/:os/:arch` - Download provider (public)
 - [x] `GET /api/v1/providers/search` - Search providers (public)
@@ -104,7 +106,7 @@ on dedicated ports and are deliberately excluded from the OpenAPI spec.
 - [x] `DELETE /api/v1/providers/:namespace/:type/versions/:version/deprecate` - Remove deprecation
 
 **Files**: `backend/internal/api/providers/versions.go`, `download.go`, `search.go`, `upload.go`, `backend/internal/api/admin/providers.go`
-**Progress**: 9/9 annotated ✅
+**Progress**: 11/11 annotated ✅
 
 ---
 
@@ -271,8 +273,8 @@ complete operational coverage.
 ---
 
 ```txt
-Total Gin-router Endpoints: 104
-Annotated: 104
+Total Gin-router Endpoints: 106
+Annotated: 106
 Remaining: 0
 Completion: 100% ✅
 
@@ -283,7 +285,7 @@ Out-of-Band Endpoints (not in OpenAPI spec):
 Phase Breakdown:
   Phase 1 (Auth & API Keys):      10/10 (100%) ✅
   Phase 2 (Users & Orgs):         18/18 (100%) ✅
-  Phase 3 (Modules & Providers):  19/19 (100%) ✅
+  Phase 3 (Modules & Providers):  21/21 (100%) ✅
   Phase 4 (Storage):               9/9  (100%) ✅
   Phase 5 (SCM):                  18/18 (100%) ✅
   Phase 6 (Mirror):                9/9  (100%) ✅
@@ -310,5 +312,5 @@ Then visit `https://localhost/api-docs` to verify in the Swagger UI.
 
 ---
 
-**Last Updated**: 2026-02-20
-**Status**: ✅ All 104 Gin-router endpoints annotated — 100% complete; out-of-band observability endpoints documented in-checklist
+**Last Updated**: 2026-03-20
+**Status**: ✅ All 106 Gin-router endpoints annotated — 100% complete; out-of-band observability endpoints documented in-checklist

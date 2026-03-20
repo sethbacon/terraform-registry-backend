@@ -770,7 +770,13 @@ func (j *MirrorSyncJob) syncProvider(ctx context.Context, upstreamClient *mirror
 	if mirroredProvider != nil {
 		mirroredProvider.LastSyncedAt = time.Now()
 		if len(versions) > 0 {
-			mirroredProvider.LastSyncVersion = &versions[0].Version
+			highest := versions[0].Version
+			for _, v := range versions[1:] {
+				if compareSemver(v.Version, highest) > 0 {
+					highest = v.Version
+				}
+			}
+			mirroredProvider.LastSyncVersion = &highest
 		}
 		if err := j.mirrorRepo.UpdateMirroredProvider(ctx, mirroredProvider); err != nil {
 			log.Printf("Warning: failed to update mirrored provider sync time for %s/%s: %v", namespace, providerName, err)

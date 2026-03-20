@@ -1911,6 +1911,128 @@
                 }
             }
         },
+        "/api/v1/admin/providers": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Create a new provider record in the registry. Requires providers:write scope.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Providers"
+                ],
+                "summary": "Create provider record",
+                "parameters": [
+                    {
+                        "description": "Provider namespace, type, optional description and source",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/admin.CreateProviderRecordRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/models.Provider"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request body",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "Provider already exists",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/admin/providers/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Retrieve a provider record by its UUID. Requires providers:read scope.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Providers"
+                ],
+                "summary": "Get provider record by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Provider record UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.Provider"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Provider not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/admin/role-templates": {
             "get": {
                 "security": [
@@ -8597,6 +8719,27 @@
                 }
             }
         },
+        "admin.CreateProviderRecordRequest": {
+            "type": "object",
+            "required": [
+                "namespace",
+                "type"
+            ],
+            "properties": {
+                "description": {
+                    "type": "string"
+                },
+                "namespace": {
+                    "type": "string"
+                },
+                "source": {
+                    "type": "string"
+                },
+                "type": {
+                    "type": "string"
+                }
+            }
+        },
         "admin.CreateRoleTemplateRequest": {
             "type": "object",
             "required": [
@@ -10188,6 +10331,43 @@
                 "PolicyTypeDeny"
             ]
         },
+        "models.Provider": {
+            "type": "object",
+            "properties": {
+                "createdAt": {
+                    "type": "string"
+                },
+                "createdBy": {
+                    "description": "User ID who created this provider",
+                    "type": "string"
+                },
+                "createdByName": {
+                    "description": "Joined fields (not stored in providers table)",
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "namespace": {
+                    "type": "string"
+                },
+                "organizationID": {
+                    "type": "string"
+                },
+                "source": {
+                    "type": "string"
+                },
+                "type": {
+                    "type": "string"
+                },
+                "updatedAt": {
+                    "type": "string"
+                }
+            }
+        },
         "models.RoleTemplate": {
             "type": "object",
             "properties": {
@@ -10249,6 +10429,10 @@
                 "backend_type"
             ],
             "properties": {
+                "activate": {
+                    "description": "When true, make this config active on creation; defaults to false",
+                    "type": "boolean"
+                },
                 "azure_account_key": {
                     "description": "Plain text input, encrypted before storage",
                     "type": "string"

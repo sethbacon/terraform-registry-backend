@@ -69,6 +69,7 @@ type StorageConfig struct {
 // StorageConfigInput is used for creating/updating storage configuration
 type StorageConfigInput struct {
 	BackendType string `json:"backend_type" binding:"required,oneof=local azure s3 gcs"`
+	Activate    *bool  `json:"activate,omitempty"` // When true, make this config active on creation; defaults to false
 
 	// Local storage settings
 	LocalBasePath      string `json:"local_base_path,omitempty"`
