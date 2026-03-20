@@ -770,6 +770,7 @@ func TestStorageCreateConfig_AlreadyConfiguredDeactivates(t *testing.T) {
 		jsonBody(map[string]interface{}{
 			"backend_type":    "local",
 			"local_base_path": "/tmp/new-storage",
+			"activate":        true,
 		})))
 
 	if w.Code != http.StatusCreated {
@@ -789,6 +790,7 @@ func TestStorageCreateConfig_DeactivateError(t *testing.T) {
 		jsonBody(map[string]interface{}{
 			"backend_type":    "local",
 			"local_base_path": "/tmp/storage",
+			"activate":        true,
 		})))
 
 	if w.Code != http.StatusInternalServerError {

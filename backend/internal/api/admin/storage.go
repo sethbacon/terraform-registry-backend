@@ -214,8 +214,8 @@ func (h *StorageHandlers) CreateStorageConfig(c *gin.Context) {
 		return
 	}
 
-	// If storage is already configured, deactivate existing configs first
-	if configured {
+	// If activating, deactivate any existing active configs first
+	if input.Activate != nil && *input.Activate {
 		if err := h.storageConfigRepo.DeactivateAllStorageConfigs(ctx); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update existing configurations"})
 			return
@@ -584,10 +584,11 @@ func (h *StorageHandlers) validateStorageConfig(input *models.StorageConfigInput
 
 func (h *StorageHandlers) buildStorageConfig(input *models.StorageConfigInput, userID uuid.NullUUID) (*models.StorageConfig, error) {
 	now := time.Now()
+	isActive := input.Activate != nil && *input.Activate
 	config := &models.StorageConfig{
 		ID:          uuid.New(),
 		BackendType: input.BackendType,
-		IsActive:    true,
+		IsActive:    isActive,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 		CreatedBy:   userID,

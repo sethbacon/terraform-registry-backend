@@ -56,6 +56,45 @@ func (r *ProviderRepository) CreateProvider(ctx context.Context, provider *model
 	return nil
 }
 
+// GetProviderByID retrieves a provider record by its UUID
+func (r *ProviderRepository) GetProviderByID(ctx context.Context, id string) (*models.Provider, error) {
+	query := `
+		SELECT p.id, p.organization_id, p.namespace, p.type, p.description, p.source,
+		       p.created_by, p.created_at, p.updated_at, u.name as created_by_name
+		FROM providers p
+		LEFT JOIN users u ON p.created_by = u.id
+		WHERE p.id = $1
+	`
+
+	provider := &models.Provider{}
+	var scannedOrgID sql.NullString
+	err := r.db.QueryRowContext(ctx, query, id).Scan(
+		&provider.ID,
+		&scannedOrgID,
+		&provider.Namespace,
+		&provider.Type,
+		&provider.Description,
+		&provider.Source,
+		&provider.CreatedBy,
+		&provider.CreatedAt,
+		&provider.UpdatedAt,
+		&provider.CreatedByName,
+	)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil // Not found
+		}
+		return nil, fmt.Errorf("failed to get provider by ID: %w", err)
+	}
+
+	if scannedOrgID.Valid {
+		provider.OrganizationID = scannedOrgID.String
+	}
+
+	return provider, nil
+}
+
 // GetProvider retrieves a provider by organization, namespace, and type
 // In single-tenant mode (or when provider has NULL org_id), also matches providers with NULL organization_id
 func (r *ProviderRepository) GetProvider(ctx context.Context, orgID, namespace, providerType string) (*models.Provider, error) {

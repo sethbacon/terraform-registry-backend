@@ -6,7 +6,9 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 )
@@ -427,4 +429,113 @@ func (h *ProviderAdminHandlers) UndeprecateVersion(c *gin.Context) {
 		"type":      providerType,
 		"version":   version,
 	})
+}
+
+// CreateProviderRecordRequest is the payload for creating a new provider record
+type CreateProviderRecordRequest struct {
+	Namespace   string  `json:"namespace" binding:"required"`
+	Type        string  `json:"type" binding:"required"`
+	Description *string `json:"description,omitempty"`
+	Source      *string `json:"source,omitempty"`
+}
+
+// @Summary      Create provider record
+// @Description  Create a new provider record in the registry. Requires providers:write scope.
+// @Tags         Providers
+// @Security     Bearer
+// @Accept       json
+// @Produce      json
+// @Param        body  body  CreateProviderRecordRequest  true  "Provider namespace, type, optional description and source"
+// @Success      201  {object}  models.Provider
+// @Failure      400  {object}  map[string]interface{}  "Invalid request body"
+// @Failure      401  {object}  map[string]interface{}  "Unauthorized"
+// @Failure      409  {object}  map[string]interface{}  "Provider already exists"
+// @Failure      500  {object}  map[string]interface{}  "Internal server error"
+// @Router       /api/v1/admin/providers [post]
+// CreateProviderRecord creates a new provider record
+// POST /api/v1/admin/providers
+func (h *ProviderAdminHandlers) CreateProviderRecord(c *gin.Context) {
+	var req CreateProviderRecordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request: " + err.Error()})
+		return
+	}
+
+	// Get organization context (default org for single-tenant mode)
+	org, err := h.orgRepo.GetDefaultOrganization(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get organization context"})
+		return
+	}
+
+	var orgID string
+	if org != nil {
+		orgID = org.ID
+	}
+
+	// Check for duplicate
+	existing, err := h.providerRepo.GetProvider(c.Request.Context(), orgID, req.Namespace, req.Type)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check existing provider"})
+		return
+	}
+	if existing != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "Provider already exists"})
+		return
+	}
+
+	// Capture creating user
+	var createdBy *string
+	if rawUID, exists := c.Get("user_id"); exists {
+		if uid, ok := rawUID.(uuid.UUID); ok {
+			s := uid.String()
+			createdBy = &s
+		}
+	}
+
+	provider := &models.Provider{
+		OrganizationID: orgID,
+		Namespace:      req.Namespace,
+		Type:           req.Type,
+		Description:    req.Description,
+		Source:         req.Source,
+		CreatedBy:      createdBy,
+	}
+
+	if err := h.providerRepo.CreateProvider(c.Request.Context(), provider); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create provider: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusCreated, provider)
+}
+
+// @Summary      Get provider record by ID
+// @Description  Retrieve a provider record by its UUID. Requires providers:read scope.
+// @Tags         Providers
+// @Security     Bearer
+// @Produce      json
+// @Param        id  path  string  true  "Provider record UUID"
+// @Success      200  {object}  models.Provider
+// @Failure      401  {object}  map[string]interface{}  "Unauthorized"
+// @Failure      404  {object}  map[string]interface{}  "Provider not found"
+// @Failure      500  {object}  map[string]interface{}  "Internal server error"
+// @Router       /api/v1/admin/providers/{id} [get]
+// GetProviderByID retrieves a provider record by UUID
+// GET /api/v1/admin/providers/:id
+func (h *ProviderAdminHandlers) GetProviderByID(c *gin.Context) {
+	id := c.Param("id")
+
+	provider, err := h.providerRepo.GetProviderByID(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get provider"})
+		return
+	}
+
+	if provider == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Provider not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, provider)
 }
