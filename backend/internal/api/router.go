@@ -521,6 +521,14 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 				middleware.RequireScope(auth.ScopeProvidersWrite),
 				providerAdminHandlers.UndeprecateVersion)
 
+			// Provider record admin endpoints (create + get by UUID)
+			authenticatedGroup.POST("/admin/providers",
+				middleware.RequireScope(auth.ScopeProvidersWrite),
+				providerAdminHandlers.CreateProviderRecord)
+			authenticatedGroup.GET("/admin/providers/:id",
+				middleware.RequireScope(auth.ScopeProvidersRead),
+				providerAdminHandlers.GetProviderByID)
+
 			// Modules admin endpoints - delete, deprecate (GET moved to publicDetailGroup above)
 			authenticatedGroup.DELETE("/modules/:namespace/:name/:system",
 				middleware.RequireScope(auth.ScopeModulesWrite),
