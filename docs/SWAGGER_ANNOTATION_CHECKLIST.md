@@ -6,7 +6,7 @@ This checklist tracks Swagger/OpenAPI annotation progress for all API endpoints 
 
 **Target**: 100% API coverage with Swagger annotations
 
-**Current Status**: ✅ 104/104 annotated (100%) — All Gin-router endpoints complete
+**Current Status**: ✅ 107/107 annotated (100%) — All Gin-router endpoints complete
 
 See the **Out-of-Band Endpoints** section at the bottom for observability endpoints that live
 on dedicated ports and are deliberately excluded from the OpenAPI spec.
@@ -87,9 +87,10 @@ on dedicated ports and are deliberately excluded from the OpenAPI spec.
 - [x] `POST /api/v1/modules/:namespace/:name/:system/versions/:version/deprecate` - Deprecate version
 - [x] `DELETE /api/v1/modules/:namespace/:name/:system/versions/:version/deprecate` - Remove deprecation
 - [x] `POST /api/v1/admin/modules/create` - Create module record
+- [x] `PUT /api/v1/admin/modules/:id` - Update module record
 
 **Files**: `backend/internal/api/modules/versions.go`, `download.go`, `search.go`, `upload.go`, `backend/internal/api/admin/modules.go`
-**Progress**: 10/10 annotated ✅
+**Progress**: 11/11 annotated ✅
 
 ### Provider Registry
 

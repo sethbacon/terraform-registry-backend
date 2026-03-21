@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
@@ -245,8 +244,8 @@ func (h *OrganizationHandlers) CreateOrganizationHandler() gin.HandlerFunc {
 
 		// Auto-add the creating user as an admin member so they can immediately access the org
 		if rawUID, exists := c.Get("user_id"); exists {
-			if uid, ok := rawUID.(uuid.UUID); ok {
-				_ = h.orgRepo.AddMemberWithParams(c.Request.Context(), org.ID, uid.String(), "admin")
+			if uid, ok := rawUID.(string); ok && uid != "" {
+				_ = h.orgRepo.AddMemberWithParams(c.Request.Context(), org.ID, uid, "admin")
 			}
 		}
 
