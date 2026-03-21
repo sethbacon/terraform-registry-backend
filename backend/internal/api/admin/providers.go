@@ -6,7 +6,6 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
@@ -433,10 +432,11 @@ func (h *ProviderAdminHandlers) UndeprecateVersion(c *gin.Context) {
 
 // CreateProviderRecordRequest is the payload for creating a new provider record
 type CreateProviderRecordRequest struct {
-	Namespace   string  `json:"namespace" binding:"required"`
-	Type        string  `json:"type" binding:"required"`
-	Description *string `json:"description,omitempty"`
-	Source      *string `json:"source,omitempty"`
+	OrganizationID string  `json:"organization_id,omitempty"`
+	Namespace      string  `json:"namespace" binding:"required"`
+	Type           string  `json:"type" binding:"required"`
+	Description    *string `json:"description,omitempty"`
+	Source         *string `json:"source,omitempty"`
 }
 
 // @Summary      Create provider record
@@ -468,12 +468,14 @@ func (h *ProviderAdminHandlers) CreateProviderRecord(c *gin.Context) {
 		return
 	}
 
+	// Use organization from request if provided, otherwise fall back to default
 	var orgID string
-	if org != nil {
+	if req.OrganizationID != "" {
+		orgID = req.OrganizationID
+	} else if org != nil {
 		orgID = org.ID
 	}
 
-	// Check for duplicate
 	existing, err := h.providerRepo.GetProvider(c.Request.Context(), orgID, req.Namespace, req.Type)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check existing provider"})
@@ -487,9 +489,8 @@ func (h *ProviderAdminHandlers) CreateProviderRecord(c *gin.Context) {
 	// Capture creating user
 	var createdBy *string
 	if rawUID, exists := c.Get("user_id"); exists {
-		if uid, ok := rawUID.(uuid.UUID); ok {
-			s := uid.String()
-			createdBy = &s
+		if uid, ok := rawUID.(string); ok && uid != "" {
+			createdBy = &uid
 		}
 	}
 

@@ -7,18 +7,18 @@ import "time"
 
 // APIKey represents an API key for authentication
 type APIKey struct {
-	ID                       string
-	UserID                   *string // Optional: can be service account key
-	OrganizationID           string
-	Name                     string     // Friendly name (e.g., "CI/CD Pipeline Key")
-	Description              *string    // Optional human-friendly description
-	KeyHash                  string     // Bcrypt hash of the full key
-	KeyPrefix                string     // First 8-10 chars for display (e.g., "tfr_abc123")
-	Scopes                   []string   // JSONB array: ["modules:read", "modules:write", "providers:write"]
-	ExpiresAt                *time.Time // Optional expiration
-	LastUsedAt               *time.Time // Track last usage
-	ExpiryNotificationSentAt *time.Time // Set when expiry warning email was sent
-	CreatedAt                time.Time
+	ID                       string     `json:"id"`
+	UserID                   *string    `json:"user_id,omitempty"`
+	OrganizationID           string     `json:"organization_id"`
+	Name                     string     `json:"name"`
+	Description              *string    `json:"description,omitempty"`
+	KeyHash                  string     `json:"key_hash"`
+	KeyPrefix                string     `json:"key_prefix"`
+	Scopes                   []string   `json:"scopes"`
+	ExpiresAt                *time.Time `json:"expires_at,omitempty"`
+	LastUsedAt               *time.Time `json:"last_used_at,omitempty"`
+	ExpiryNotificationSentAt *time.Time `json:"expiry_notification_sent_at,omitempty"`
+	CreatedAt                time.Time  `json:"created_at"`
 	// Joined fields (not stored in api_keys table)
-	UserName *string // User name who created this key (joined from users table)
+	UserName *string `json:"user_name,omitempty"`
 }

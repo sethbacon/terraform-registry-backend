@@ -555,3 +555,32 @@ func (h *ModuleAdminHandlers) UpdateModuleRecord(c *gin.Context) {
 
 	c.JSON(http.StatusOK, module)
 }
+
+// @Summary      Get module record by ID
+// @Description  Retrieve a module record by its UUID. Requires modules:read scope.
+// @Tags         Modules
+// @Security     Bearer
+// @Produce      json
+// @Param        id  path  string  true  "Module record UUID"
+// @Success      200  {object}  models.Module
+// @Failure      401  {object}  map[string]interface{}  "Unauthorized"
+// @Failure      404  {object}  map[string]interface{}  "Module not found"
+// @Failure      500  {object}  map[string]interface{}  "Internal server error"
+// @Router       /api/v1/admin/modules/{id} [get]
+// GetModuleByIDRecord retrieves a module record by UUID
+// GET /api/v1/admin/modules/:id
+func (h *ModuleAdminHandlers) GetModuleByIDRecord(c *gin.Context) {
+	id := c.Param("id")
+
+	module, err := h.moduleRepo.GetModuleByID(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get module"})
+		return
+	}
+	if module == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "module not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, module)
+}
