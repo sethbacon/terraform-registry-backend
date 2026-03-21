@@ -11,6 +11,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.19] - 2026-03-20
+
+### Fixed
+
+- fix: org creator membership fails silently due to wrong type assertion — `c.Get("user_id")` returns a `string`, not `uuid.UUID`; the incorrect assertion always silently failed, leaving org creators without membership and causing 403 on all member-gated endpoints (#80, #82)
+- fix: add postgres healthcheck and required env vars (`TFR_DATABASE_SSL_MODE`, `ENCRYPTION_KEY`, `TFR_JWT_SECRET`) to `docker-compose.test.yml` so the acceptance-test stack starts correctly (#82)
+
+### Added
+
+- feat: `PUT /api/v1/admin/modules/{id}` endpoint for updating module records — the repository layer already had `UpdateModule`; only the HTTP handler and route registration were missing (#81, #82)
+
+---
+
 ## [0.2.18] - 2026-03-20
 
 ### Fixed
