@@ -6,17 +6,17 @@ import "time"
 
 // Provider represents a Terraform provider in the registry
 type Provider struct {
-	ID             string
-	OrganizationID string
-	Namespace      string
-	Type           string
-	Description    *string
-	Source         *string
-	CreatedBy      *string // User ID who created this provider
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	ID             string    `json:"id"`
+	OrganizationID string    `json:"organization_id"`
+	Namespace      string    `json:"namespace"`
+	Type           string    `json:"type"`
+	Description    *string   `json:"description,omitempty"`
+	Source         *string   `json:"source,omitempty"`
+	CreatedBy      *string   `json:"created_by,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 	// Joined fields (not stored in providers table)
-	CreatedByName *string // User name who created this provider (joined from users table)
+	CreatedByName *string `json:"created_by_name,omitempty"`
 }
 
 // ProviderSearchResult is returned by the search endpoint and includes aggregated

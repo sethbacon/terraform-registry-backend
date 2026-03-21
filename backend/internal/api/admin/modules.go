@@ -171,16 +171,18 @@ func (h *ModuleAdminHandlers) GetModule(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"id":             module.ID,
-		"namespace":      module.Namespace,
-		"name":           module.Name,
-		"system":         module.System,
-		"description":    module.Description,
-		"source":         module.Source,
-		"download_count": totalDownloads,
-		"versions":       versionsList,
-		"created_at":     module.CreatedAt,
-		"updated_at":     module.UpdatedAt,
+		"id":              module.ID,
+		"organization_id": module.OrganizationID,
+		"namespace":       module.Namespace,
+		"name":            module.Name,
+		"system":          module.System,
+		"description":     module.Description,
+		"source":          module.Source,
+		"created_by":      module.CreatedBy,
+		"download_count":  totalDownloads,
+		"versions":        versionsList,
+		"created_at":      module.CreatedAt,
+		"updated_at":      module.UpdatedAt,
 	})
 }
 
