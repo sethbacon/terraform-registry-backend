@@ -10408,14 +10408,13 @@
         "models.Provider": {
             "type": "object",
             "properties": {
-                "createdAt": {
+                "created_at": {
                     "type": "string"
                 },
-                "createdBy": {
-                    "description": "User ID who created this provider",
+                "created_by": {
                     "type": "string"
                 },
-                "createdByName": {
+                "created_by_name": {
                     "description": "Joined fields (not stored in providers table)",
                     "type": "string"
                 },
@@ -10428,7 +10427,7 @@
                 "namespace": {
                     "type": "string"
                 },
-                "organizationID": {
+                "organization_id": {
                     "type": "string"
                 },
                 "source": {
@@ -10437,7 +10436,7 @@
                 "type": {
                     "type": "string"
                 },
-                "updatedAt": {
+                "updated_at": {
                     "type": "string"
                 }
             }
