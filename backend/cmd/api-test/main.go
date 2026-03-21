@@ -31,19 +31,21 @@ var (
 )
 
 var state struct {
-	orgID           string // ID of test org we create (phase 4)
-	defaultOrgID    string // ID of an existing org the API-key user belongs to (phase 3)
-	userID          string
-	keyID           string
-	roleID          string
-	scmID           string
-	mirrorID        string
-	tfMirrorID      string
-	policyID        string
-	auditLogID      string // captured in phase 14 for detail-read test
-	approvalID      string // captured in phase 9 for phase 13 detail-read test
-	storageConfigID string // captured in phase 3 for phase 16 detail-read test
-	tfMirrorVersion string // captured in phase 10 for version-detail test
+	orgID            string // ID of test org we create (phase 4)
+	defaultOrgID     string // ID of an existing org the API-key user belongs to (phase 3)
+	userID           string
+	keyID            string
+	roleID           string
+	scmID            string
+	mirrorID         string
+	tfMirrorID       string
+	policyID         string
+	auditLogID       string // captured in phase 14 for detail-read test
+	approvalID       string // captured in phase 9 for phase 13 detail-read test
+	storageConfigID  string // captured in phase 3 for phase 16 detail-read test
+	tfMirrorVersion  string // captured in phase 10 for version-detail test
+	moduleID         string // captured in phase 11 for UpdateModuleRecord test
+	providerRecordID string // captured in phase 12 for CreateProviderRecord/GetProviderByID test
 }
 
 var (
@@ -797,7 +799,9 @@ func phase11() {
 
 	r := doJSON("POST", "/api/v1/admin/modules/create",
 		map[string]interface{}{"namespace": "testns", "name": "testmod", "system": "aws"}, true)
-	record("POST", "/api/v1/admin/modules/create", r.Code, []int{200, 201}, r.Elapsed, "")
+	if record("POST", "/api/v1/admin/modules/create", r.Code, []int{200, 201}, r.Elapsed, "") {
+		state.moduleID = str(r.Object, "id")
+	}
 
 	r = doMultipart("POST", "/api/v1/modules",
 		map[string]string{"namespace": "testns", "name": "testmod", "system": "aws", "version": "0.1.0"},
@@ -806,7 +810,21 @@ func phase11() {
 	record("POST", "/api/v1/modules", r.Code, []int{201}, r.Elapsed, note)
 
 	r = doJSON("GET", "/api/v1/modules/testns/testmod/aws", nil, true)
-	record("GET", "/api/v1/modules/testns/testmod/aws", r.Code, []int{200}, r.Elapsed, "")
+	note = checkFields(r.Object, "id", "created_by_name")
+	record("GET", "/api/v1/modules/testns/testmod/aws", r.Code, []int{200}, r.Elapsed, note)
+
+	// UpdateModuleRecord — new endpoint; use captured module ID
+	if state.moduleID != "" {
+		r = doJSON("PUT", "/api/v1/admin/modules/"+state.moduleID,
+			map[string]interface{}{
+				"description": "updated description",
+				"source":      "https://github.com/example/testmod",
+			}, true)
+		note = checkFields(r.Object, "id", "description", "source")
+		record("PUT", "/api/v1/admin/modules/"+state.moduleID, r.Code, []int{200}, r.Elapsed, note)
+	} else {
+		skipTest("PUT", "/api/v1/admin/modules/{id}", "module create failed — no ID available")
+	}
 
 	r = doJSON("GET", "/v1/modules/testns/testmod/aws/versions", nil, false)
 	record("GET", "/v1/modules/testns/testmod/aws/versions", r.Code, []int{200}, r.Elapsed, "")
@@ -890,6 +908,27 @@ func phase12() {
 
 	r = doJSON("DELETE", "/api/v1/providers/testns/testprovider", nil, true)
 	record("DELETE", "/api/v1/providers/testns/testprovider", r.Code, []int{200}, r.Elapsed, "")
+
+	// CreateProviderRecord — new endpoint (creates a provider stub without uploading a version)
+	r = doJSON("POST", "/api/v1/admin/providers",
+		map[string]interface{}{
+			"namespace":   "testns",
+			"type":        "testproviderrecord",
+			"description": "provider record test",
+		}, true)
+	note = checkFields(r.Object, "id", "namespace", "type")
+	if record("POST", "/api/v1/admin/providers", r.Code, []int{201}, r.Elapsed, note) {
+		state.providerRecordID = str(r.Object, "id")
+	}
+
+	// GetProviderByID — new endpoint
+	if state.providerRecordID != "" {
+		r = doJSON("GET", "/api/v1/admin/providers/"+state.providerRecordID, nil, true)
+		note = checkFields(r.Object, "id", "namespace", "type")
+		record("GET", "/api/v1/admin/providers/"+state.providerRecordID, r.Code, []int{200}, r.Elapsed, note)
+	} else {
+		skipTest("GET", "/api/v1/admin/providers/{id}", "CreateProviderRecord failed — no ID available")
+	}
 }
 
 // ── Phase 13: Policies & Approvals ───────────────────────────────────────────

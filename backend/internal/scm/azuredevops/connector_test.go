@@ -193,6 +193,48 @@ func TestFetchTags_Success(t *testing.T) {
 	}
 }
 
+func TestFetchTags_AnnotatedTagUsesPeeledSHA(t *testing.T) {
+	// The migration script creates annotated tags; ADO returns peeledObjectId (commit SHA)
+	// alongside objectId (tag object SHA). FetchTags must use peeledObjectId.
+	result := map[string]interface{}{
+		"value": []map[string]interface{}{
+			{
+				"name":           "refs/tags/v1.2.3",
+				"objectId":       "tagobjectsha0000000000000000000000000000",
+				"peeledObjectId": "commitsha0000000000000000000000000000000",
+			},
+		},
+	}
+	_, c := newTestConnector(t, func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(result)
+	})
+
+	tags, err := c.FetchTags(context.Background(), creds(), "proj", "repo", scm.DefaultPagination())
+	if err != nil {
+		t.Fatalf("FetchTags error: %v", err)
+	}
+	if len(tags) != 1 {
+		t.Fatalf("expected 1 tag, got %d", len(tags))
+	}
+	if tags[0].TargetCommit != "commitsha0000000000000000000000000000000" {
+		t.Errorf("TargetCommit = %q, want commit SHA (peeled); got tag object SHA", tags[0].TargetCommit)
+	}
+}
+
+func TestFetchTags_PeelTagsInURL(t *testing.T) {
+	// Verify the request includes peelTags=true so ADO returns peeledObjectId.
+	var requestURL string
+	_, c := newTestConnector(t, func(w http.ResponseWriter, r *http.Request) {
+		requestURL = r.URL.RawQuery
+		json.NewEncoder(w).Encode(map[string]interface{}{"value": []interface{}{}})
+	})
+
+	_, _ = c.FetchTags(context.Background(), creds(), "proj", "repo", scm.DefaultPagination())
+	if !strings.Contains(requestURL, "peelTags=true") {
+		t.Errorf("request URL query %q does not include peelTags=true", requestURL)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // FetchTagByName (uses FetchTags then filters)
 // ---------------------------------------------------------------------------
