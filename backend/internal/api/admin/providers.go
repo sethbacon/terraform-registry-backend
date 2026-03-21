@@ -511,6 +511,62 @@ func (h *ProviderAdminHandlers) CreateProviderRecord(c *gin.Context) {
 	c.JSON(http.StatusCreated, provider)
 }
 
+// UpdateProviderRecordRequest is the payload for updating a provider record's metadata.
+type UpdateProviderRecordRequest struct {
+	Description *string `json:"description,omitempty"`
+	Source      *string `json:"source,omitempty"`
+}
+
+// @Summary      Update provider record by ID
+// @Description  Update the description and/or source of a provider record. Requires providers:write scope.
+// @Tags         Providers
+// @Security     Bearer
+// @Accept       json
+// @Produce      json
+// @Param        id   path      string                      true  "Provider record UUID"
+// @Param        req  body      admin.UpdateProviderRecordRequest  true  "Fields to update"
+// @Success      200  {object}  models.Provider
+// @Failure      400  {object}  map[string]interface{}  "Bad request"
+// @Failure      401  {object}  map[string]interface{}  "Unauthorized"
+// @Failure      404  {object}  map[string]interface{}  "Provider not found"
+// @Failure      500  {object}  map[string]interface{}  "Internal server error"
+// @Router       /api/v1/admin/providers/{id} [put]
+// UpdateProviderRecord updates description/source of a provider record by UUID.
+// PUT /api/v1/admin/providers/:id
+func (h *ProviderAdminHandlers) UpdateProviderRecord(c *gin.Context) {
+	id := c.Param("id")
+
+	var req UpdateProviderRecordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request: " + err.Error()})
+		return
+	}
+
+	provider, err := h.providerRepo.GetProviderByID(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get provider"})
+		return
+	}
+	if provider == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Provider not found"})
+		return
+	}
+
+	if req.Description != nil {
+		provider.Description = req.Description
+	}
+	if req.Source != nil {
+		provider.Source = req.Source
+	}
+
+	if err := h.providerRepo.UpdateProvider(c.Request.Context(), provider); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update provider: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, provider)
+}
+
 // @Summary      Get provider record by ID
 // @Description  Retrieve a provider record by its UUID. Requires providers:read scope.
 // @Tags         Providers
