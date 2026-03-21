@@ -11,6 +11,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.22] - 2026-03-21
+
+### Fixed
+
+- fix: ADO `FetchTags` now adds `peelTags=true` and uses `peeledObjectId` as the commit SHA for annotated tags — migration script creates annotated tags whose `objectId` is the tag-object SHA, not the commit SHA, causing `DownloadSourceArchive` to 404 with `versionType=commit`
+- fix: `LinkModuleToSCM` auto-detects the repository's true default branch via `FetchRepository` when `default_branch` is omitted, instead of always defaulting to `"main"` — repos migrated from ADO with `master` as default branch now store correct metadata
+- fix: `UpdateSCMLink` no longer overwrites optional string fields with empty strings on partial update — fields absent from the request body now preserve their existing values
+- fix: `GetModule` response now includes `created_by_name` (user display name) and per-version `published_by` / `published_by_name` — these were already populated by the DB join but excluded from the `gin.H` response map
+
+### Changed
+
+- test: `api-test` integration tool now covers `PUT /api/v1/admin/modules/{id}` (UpdateModuleRecord), `POST /api/v1/admin/providers` (CreateProviderRecord), and `GET /api/v1/admin/providers/{id}` (GetProviderByID)
+
+---
+
 ## [0.2.21] - 2026-03-21
 
 ### Fixed

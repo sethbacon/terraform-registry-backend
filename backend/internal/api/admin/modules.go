@@ -153,13 +153,15 @@ func (h *ModuleAdminHandlers) GetModule(c *gin.Context) {
 	for _, v := range versions {
 		totalDownloads += v.DownloadCount
 		versionData := gin.H{
-			"id":             v.ID,
-			"version":        v.Version,
-			"size_bytes":     v.SizeBytes,
-			"checksum":       v.Checksum,
-			"download_count": v.DownloadCount,
-			"deprecated":     v.Deprecated,
-			"created_at":     v.CreatedAt,
+			"id":                v.ID,
+			"version":           v.Version,
+			"size_bytes":        v.SizeBytes,
+			"checksum":          v.Checksum,
+			"download_count":    v.DownloadCount,
+			"deprecated":        v.Deprecated,
+			"published_by":      v.PublishedBy,
+			"published_by_name": v.PublishedByName,
+			"created_at":        v.CreatedAt,
 		}
 		if v.DeprecatedAt != nil {
 			versionData["deprecated_at"] = v.DeprecatedAt
@@ -179,6 +181,7 @@ func (h *ModuleAdminHandlers) GetModule(c *gin.Context) {
 		"description":     module.Description,
 		"source":          module.Source,
 		"created_by":      module.CreatedBy,
+		"created_by_name": module.CreatedByName,
 		"download_count":  totalDownloads,
 		"versions":        versionsList,
 		"created_at":      module.CreatedAt,

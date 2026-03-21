@@ -359,7 +359,9 @@ func (c *AzureDevOpsConnector) FetchBranches(ctx context.Context, creds *scm.Acc
 }
 
 func (c *AzureDevOpsConnector) FetchTags(ctx context.Context, creds *scm.AccessToken, ownerName, repoName string, pagination scm.Pagination) ([]*scm.GitTag, error) {
-	endpoint := fmt.Sprintf("%s/%s/%s/_apis/git/repositories/%s/refs?filter=tags/&api-version=7.0", c.baseURL, c.organization, ownerName, repoName)
+	// peelTags=true causes ADO to include peeledObjectId for annotated tags,
+	// which is the actual commit SHA (objectId for annotated tags is the tag object SHA, not the commit).
+	endpoint := fmt.Sprintf("%s/%s/%s/_apis/git/repositories/%s/refs?filter=tags/&peelTags=true&api-version=7.0", c.baseURL, c.organization, ownerName, repoName)
 	fmt.Printf("[FetchTags] GET %s\n", endpoint)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
@@ -387,8 +389,9 @@ func (c *AzureDevOpsConnector) FetchTags(ctx context.Context, creds *scm.AccessT
 
 	var result struct {
 		Value []struct {
-			Name     string `json:"name"`
-			ObjectID string `json:"objectId"`
+			Name           string `json:"name"`
+			ObjectID       string `json:"objectId"`
+			PeeledObjectID string `json:"peeledObjectId"` // commit SHA for annotated tags; absent for lightweight tags
 		} `json:"value"`
 	}
 
@@ -399,9 +402,15 @@ func (c *AzureDevOpsConnector) FetchTags(ctx context.Context, creds *scm.AccessT
 	tags := make([]*scm.GitTag, len(result.Value))
 	for i, ref := range result.Value {
 		tagName := strings.TrimPrefix(ref.Name, "refs/tags/")
+		// For annotated tags peeledObjectId holds the commit SHA; objectId is the tag object SHA.
+		// For lightweight tags peeledObjectId is absent, so objectId is already the commit SHA.
+		commitSHA := ref.ObjectID
+		if ref.PeeledObjectID != "" {
+			commitSHA = ref.PeeledObjectID
+		}
 		tags[i] = &scm.GitTag{
 			TagName:      tagName,
-			TargetCommit: ref.ObjectID,
+			TargetCommit: commitSHA,
 		}
 	}
 

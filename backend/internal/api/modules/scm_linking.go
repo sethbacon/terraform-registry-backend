@@ -118,7 +118,7 @@ func (h *SCMLinkingHandler) LinkModuleToSCM(c *gin.Context) {
 
 	// Set defaults
 	if req.DefaultBranch == "" {
-		req.DefaultBranch = "main"
+		req.DefaultBranch = h.detectDefaultBranch(c.Request.Context(), c, provider, req.RepositoryOwner, req.RepositoryName)
 	}
 	if req.ModulePath == "" {
 		req.ModulePath = "/"
@@ -230,12 +230,24 @@ func (h *SCMLinkingHandler) UpdateSCMLink(c *gin.Context) {
 		return
 	}
 
-	// Update fields
-	link.RepositoryOwner = req.RepositoryOwner
-	link.RepositoryName = req.RepositoryName
-	link.DefaultBranch = req.DefaultBranch
-	link.ModulePath = req.ModulePath
-	link.TagPattern = req.TagPattern
+	// Update fields — only overwrite string fields when the request provides a non-empty value
+	// so partial updates (e.g. only changing default_branch) don't clobber the rest.
+	if req.RepositoryOwner != "" {
+		link.RepositoryOwner = req.RepositoryOwner
+	}
+	if req.RepositoryName != "" {
+		link.RepositoryName = req.RepositoryName
+	}
+	if req.DefaultBranch != "" {
+		link.DefaultBranch = req.DefaultBranch
+	}
+	if req.ModulePath != "" {
+		link.ModulePath = req.ModulePath
+	}
+	if req.TagPattern != "" {
+		link.TagPattern = req.TagPattern
+	}
+	// AutoPublish is boolean: always update because false is a valid intentional value.
 	link.AutoPublish = req.AutoPublish
 
 	if err := h.scmRepo.UpdateModuleSourceRepo(c.Request.Context(), link); err != nil {
@@ -589,4 +601,54 @@ func getUserIDFromContext(c *gin.Context) (uuid.UUID, error) {
 	default:
 		return uuid.UUID{}, fmt.Errorf("unexpected user ID type")
 	}
+}
+
+// detectDefaultBranch attempts to auto-detect the default branch of a repository
+// using the calling user's OAuth token. Returns "main" on any failure (non-fatal).
+func (h *SCMLinkingHandler) detectDefaultBranch(ctx context.Context, c *gin.Context, provider *scm.SCMProvider, owner, repoName string) string {
+	userID, err := getUserIDFromContext(c)
+	if err != nil {
+		return "main"
+	}
+	tokenRecord, err := h.scmRepo.GetUserToken(ctx, userID, provider.ID)
+	if err != nil || tokenRecord == nil {
+		return "main"
+	}
+	accessToken, err := h.tokenCipher.Open(tokenRecord.AccessTokenEncrypted)
+	if err != nil {
+		return "main"
+	}
+	clientSecret, err := h.tokenCipher.Open(provider.ClientSecretEncrypted)
+	if err != nil {
+		return "main"
+	}
+	baseURL := ""
+	if provider.BaseURL != nil {
+		baseURL = *provider.BaseURL
+	}
+	tenantID := ""
+	if provider.TenantID != nil {
+		tenantID = *provider.TenantID
+	}
+	connector, err := scm.BuildConnector(&scm.ConnectorSettings{
+		Kind:            provider.ProviderType,
+		InstanceBaseURL: baseURL,
+		ClientID:        provider.ClientID,
+		ClientSecret:    clientSecret,
+		CallbackURL:     fmt.Sprintf("%s/api/v1/scm-providers/%s/oauth/callback", h.publicURL, provider.ID),
+		TenantID:        tenantID,
+	})
+	if err != nil {
+		return "main"
+	}
+	token := &scm.OAuthToken{
+		AccessToken: accessToken,
+		TokenType:   tokenRecord.TokenType,
+		ExpiresAt:   tokenRecord.ExpiresAt,
+	}
+	sourceRepo, err := connector.FetchRepository(ctx, token, owner, repoName)
+	if err != nil || sourceRepo == nil || sourceRepo.DefaultBranch == "" {
+		return "main"
+	}
+	return sourceRepo.DefaultBranch
 }
