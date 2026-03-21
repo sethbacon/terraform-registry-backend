@@ -498,6 +498,9 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 			authenticatedGroup.POST("/admin/modules/create",
 				middleware.RequireScope(auth.ScopeModulesWrite),
 				moduleAdminHandlers.CreateModuleRecord)
+			authenticatedGroup.GET("/admin/modules/:id",
+				middleware.RequireScope(auth.ScopeModulesRead),
+				moduleAdminHandlers.GetModuleByIDRecord)
 			authenticatedGroup.PUT("/admin/modules/:id",
 				middleware.RequireScope(auth.ScopeModulesWrite),
 				moduleAdminHandlers.UpdateModuleRecord)
@@ -531,6 +534,9 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 			authenticatedGroup.GET("/admin/providers/:id",
 				middleware.RequireScope(auth.ScopeProvidersRead),
 				providerAdminHandlers.GetProviderByID)
+			authenticatedGroup.PUT("/admin/providers/:id",
+				middleware.RequireScope(auth.ScopeProvidersWrite),
+				providerAdminHandlers.UpdateProviderRecord)
 
 			// Modules admin endpoints - delete, deprecate (GET moved to publicDetailGroup above)
 			authenticatedGroup.DELETE("/modules/:namespace/:name/:system",
