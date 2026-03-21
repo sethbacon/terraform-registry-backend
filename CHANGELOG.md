@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.20] - 2026-03-21
+
+### Fixed
+
+- fix: add snake_case JSON tags to `models.Provider` — without them `CreateProviderRecord` and `GetProviderByID` responses decoded to empty structs on the client, leaving `organization_id` blank on every Read (#84, #86)
+- fix: add `organization_id`, `source`, and `created_by` to `GetModule` response — their absence caused a provider inconsistency error on every module update step since `UpdateModuleRecord` returns the full struct but `GetModule` did not (#85, #86)
+
+---
+
 ## [0.2.19] - 2026-03-20
 
 ### Fixed
