@@ -9,24 +9,32 @@ services:
       - "5433:5432"
     volumes:
       - postgres-data-test:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U registry -d terraform_registry"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
 
   backend:
     build:
-      context: ..
-      dockerfile: backend/Dockerfile
+      context: ../backend
     environment:
       - TFR_DATABASE_HOST=postgres
       - TFR_DATABASE_PORT=5432
       - TFR_DATABASE_NAME=terraform_registry
       - TFR_DATABASE_USER=registry
       - TFR_DATABASE_PASSWORD=registry
+      - TFR_DATABASE_SSL_MODE=disable
+      - ENCRYPTION_KEY=test-encryption-key-must-be-32ch
+      - TFR_JWT_SECRET=test-jwt-secret-that-is-32-chars!!
       - DEV_MODE=true
       - TFR_SERVER_HOST=0.0.0.0
       - TFR_SERVER_PORT=8080
     ports:
-      - "8080:8080"
+      - "8081:8080"
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
 
 volumes:
   postgres-data-test:

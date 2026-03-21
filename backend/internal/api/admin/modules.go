@@ -499,3 +499,57 @@ func (h *ModuleAdminHandlers) UndeprecateVersion(c *gin.Context) {
 		"version":   version,
 	})
 }
+
+// UpdateModuleRecord handler
+// @Summary      Update module record
+// @Description  Update a module record's description or source URL. Requires modules:write scope.
+// @Tags         Modules
+// @Security     Bearer
+// @Accept       json
+// @Produce      json
+// @Param        id    path  string  true  "Module UUID"
+// @Param        body  body  object  true  "Fields to update"
+// @Success      200  {object}  models.Module
+// @Failure      400  {object}  map[string]interface{}  "Invalid request"
+// @Failure      401  {object}  map[string]interface{}  "Unauthorized"
+// @Failure      404  {object}  map[string]interface{}  "Module not found"
+// @Failure      500  {object}  map[string]interface{}  "Internal server error"
+// @Router       /api/v1/admin/modules/{id} [put]
+// UpdateModuleRecord updates a module record
+// PUT /api/v1/admin/modules/:id
+func (h *ModuleAdminHandlers) UpdateModuleRecord(c *gin.Context) {
+	id := c.Param("id")
+
+	var req struct {
+		Description *string `json:"description"`
+		Source      *string `json:"source"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	module, err := h.moduleRepo.GetModuleByID(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get module"})
+		return
+	}
+	if module == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "module not found"})
+		return
+	}
+
+	if req.Description != nil {
+		module.Description = req.Description
+	}
+	if req.Source != nil {
+		module.Source = req.Source
+	}
+
+	if err := h.moduleRepo.UpdateModule(c.Request.Context(), module); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update module"})
+		return
+	}
+
+	c.JSON(http.StatusOK, module)
+}

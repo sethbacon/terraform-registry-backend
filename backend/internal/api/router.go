@@ -498,6 +498,9 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 			authenticatedGroup.POST("/admin/modules/create",
 				middleware.RequireScope(auth.ScopeModulesWrite),
 				moduleAdminHandlers.CreateModuleRecord)
+			authenticatedGroup.PUT("/admin/modules/:id",
+				middleware.RequireScope(auth.ScopeModulesWrite),
+				moduleAdminHandlers.UpdateModuleRecord)
 			authenticatedGroup.POST("/modules",
 				middleware.RateLimitMiddleware(uploadRateLimiter), // Stricter rate limit for uploads
 				middleware.RequireScope(auth.ScopeModulesWrite),
