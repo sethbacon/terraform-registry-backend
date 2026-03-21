@@ -11,6 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.21] - 2026-03-21
+
+### Fixed
+
+- fix: add snake_case JSON tags to `models.APIKey` — `organization_id` was decoding as empty on the client side because Go serialized fields as PascalCase without explicit tags (#88)
+- fix: add `organization_id` to `CreateProviderRecordRequest` and correct `created_by` type assertion (`uuid.UUID` → `string`) in provider create handler (#89)
+
+### Added
+
+- feat: `GET /api/v1/admin/modules/{id}` endpoint — required for Terraform provider `ImportState` on module resources (#90)
+- feat: `PUT /api/v1/admin/providers/{id}` endpoint for updating provider record description and source (#91)
+
+---
+
 ## [0.2.20] - 2026-03-21
 
 ### Fixed
