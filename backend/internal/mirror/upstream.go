@@ -313,6 +313,109 @@ func (u *UpstreamRegistry) DownloadFileStream(ctx context.Context, fileURL strin
 	return &DownloadStream{Body: resp.Body, ContentLength: resp.ContentLength}, nil
 }
 
+// ProviderDocEntry represents a single documentation entry from the upstream
+// registry's v1 provider detail response.
+type ProviderDocEntry struct {
+	ID          string  `json:"id"`
+	Title       string  `json:"title"`
+	Slug        string  `json:"slug"`
+	Category    string  `json:"category"`
+	Subcategory *string `json:"subcategory"`
+	Path        string  `json:"path"`
+	Language    string  `json:"language"`
+}
+
+// providerDetailResponse is the v1 provider detail response that includes the docs array.
+type providerDetailResponse struct {
+	Docs []ProviderDocEntry `json:"docs"`
+}
+
+// providerDocContentV2 is the JSONAPI envelope returned by the v2 provider-docs endpoint.
+type providerDocContentV2 struct {
+	Data struct {
+		Attributes struct {
+			Content   string  `json:"content"`
+			Title     string  `json:"title"`
+			Category  string  `json:"category"`
+			Slug      string  `json:"slug"`
+			Language  string  `json:"language"`
+			Truncated bool    `json:"truncated"`
+			Path      *string `json:"path"`
+		} `json:"attributes"`
+	} `json:"data"`
+}
+
+// GetProviderDocIndex fetches the documentation metadata array from the upstream
+// registry's v1 provider detail endpoint.
+func (u *UpstreamRegistry) GetProviderDocIndex(ctx context.Context, namespace, providerName string) ([]ProviderDocEntry, error) {
+	discovery, err := u.DiscoverServices(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("service discovery failed: %w", err)
+	}
+
+	base, _ := url.Parse(u.BaseURL)
+	provRef, _ := url.Parse(discovery.ProvidersV1)
+	providersBase := base.ResolveReference(provRef)
+	detailURL := fmt.Sprintf("%s/%s/%s",
+		strings.TrimSuffix(providersBase.String(), "/"),
+		namespace,
+		providerName)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", detailURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create doc index request: %w", err)
+	}
+
+	resp, err := u.HTTPClient.Do(req) // #nosec G107 -- URL is sourced from admin-controlled mirror configuration
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch provider doc index: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("provider doc index request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var detail providerDetailResponse
+	if err := json.NewDecoder(resp.Body).Decode(&detail); err != nil {
+		return nil, fmt.Errorf("failed to decode provider detail response: %w", err)
+	}
+
+	return detail.Docs, nil
+}
+
+// GetProviderDocContent fetches the full markdown content for a single documentation
+// entry from the upstream registry's v2 provider-docs endpoint.
+func (u *UpstreamRegistry) GetProviderDocContent(ctx context.Context, upstreamDocID string) (string, error) {
+	docURL := fmt.Sprintf("%s/v2/provider-docs/%s",
+		strings.TrimSuffix(u.BaseURL, "/"),
+		upstreamDocID)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", docURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create doc content request: %w", err)
+	}
+
+	resp, err := u.HTTPClient.Do(req) // #nosec G107 -- URL is sourced from admin-controlled mirror configuration
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch provider doc content: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("provider doc content request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var v2Resp providerDocContentV2
+	if err := json.NewDecoder(resp.Body).Decode(&v2Resp); err != nil {
+		return "", fmt.Errorf("failed to decode v2 provider doc response: %w", err)
+	}
+
+	return v2Resp.Data.Attributes.Content, nil
+}
+
 // ValidateRegistryURL validates that a registry URL is properly formatted
 func ValidateRegistryURL(registryURL string) error {
 	if registryURL == "" {

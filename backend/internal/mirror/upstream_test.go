@@ -269,3 +269,134 @@ func TestDownloadFile_ContextCancelled(t *testing.T) {
 		t.Error("expected error for cancelled context, got nil")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// GetProviderDocIndex
+// ---------------------------------------------------------------------------
+
+func TestGetProviderDocIndex_Success(t *testing.T) {
+	sub := "random"
+	_, u := newTestRegistry(t, newDiscoveryHandler("/v1/providers/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/hashicorp/"+sub) {
+			http.NotFound(w, r)
+			return
+		}
+		json.NewEncoder(w).Encode(providerDetailResponse{
+			Docs: []ProviderDocEntry{
+				{ID: "100", Title: "overview", Slug: "index", Category: "overview", Language: "hcl"},
+				{ID: "101", Title: "random_id", Slug: "random_id", Category: "resources", Language: "hcl"},
+			},
+		})
+	})))
+
+	docs, err := u.GetProviderDocIndex(context.Background(), "hashicorp", sub)
+	if err != nil {
+		t.Fatalf("GetProviderDocIndex error: %v", err)
+	}
+	if len(docs) != 2 {
+		t.Errorf("got %d docs, want 2", len(docs))
+	}
+	if docs[0].ID != "100" {
+		t.Errorf("first doc ID = %q, want 100", docs[0].ID)
+	}
+	if docs[1].Category != "resources" {
+		t.Errorf("second doc category = %q, want resources", docs[1].Category)
+	}
+}
+
+func TestGetProviderDocIndex_HTTPError(t *testing.T) {
+	_, u := newTestRegistry(t, newDiscoveryHandler("/v1/providers/", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	})))
+
+	_, err := u.GetProviderDocIndex(context.Background(), "acme", "nonexistent")
+	if err == nil {
+		t.Error("expected error for non-200 response")
+	}
+}
+
+func TestGetProviderDocIndex_EmptyDocs(t *testing.T) {
+	_, u := newTestRegistry(t, newDiscoveryHandler("/v1/providers/", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(providerDetailResponse{Docs: []ProviderDocEntry{}})
+	})))
+
+	docs, err := u.GetProviderDocIndex(context.Background(), "hashicorp", "null")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(docs) != 0 {
+		t.Errorf("expected empty docs, got %d", len(docs))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetProviderDocContent
+// ---------------------------------------------------------------------------
+
+func TestGetProviderDocContent_Success(t *testing.T) {
+	_, u := newTestRegistry(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/provider-docs/12345" {
+			http.NotFound(w, r)
+			return
+		}
+		json.NewEncoder(w).Encode(providerDocContentV2{
+			Data: struct {
+				Attributes struct {
+					Content   string  `json:"content"`
+					Title     string  `json:"title"`
+					Category  string  `json:"category"`
+					Slug      string  `json:"slug"`
+					Language  string  `json:"language"`
+					Truncated bool    `json:"truncated"`
+					Path      *string `json:"path"`
+				} `json:"attributes"`
+			}{
+				Attributes: struct {
+					Content   string  `json:"content"`
+					Title     string  `json:"title"`
+					Category  string  `json:"category"`
+					Slug      string  `json:"slug"`
+					Language  string  `json:"language"`
+					Truncated bool    `json:"truncated"`
+					Path      *string `json:"path"`
+				}{
+					Content:  "# Random Provider\n\nThis is the overview.",
+					Title:    "overview",
+					Category: "overview",
+					Slug:     "index",
+					Language: "hcl",
+				},
+			},
+		})
+	})
+
+	content, err := u.GetProviderDocContent(context.Background(), "12345")
+	if err != nil {
+		t.Fatalf("GetProviderDocContent error: %v", err)
+	}
+	if !strings.Contains(content, "Random Provider") {
+		t.Errorf("content = %q, expected to contain 'Random Provider'", content)
+	}
+}
+
+func TestGetProviderDocContent_HTTPError(t *testing.T) {
+	_, u := newTestRegistry(t, func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	})
+
+	_, err := u.GetProviderDocContent(context.Background(), "99999")
+	if err == nil {
+		t.Error("expected error for non-200 response")
+	}
+}
+
+func TestGetProviderDocContent_InvalidJSON(t *testing.T) {
+	_, u := newTestRegistry(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte("not json"))
+	})
+
+	_, err := u.GetProviderDocContent(context.Background(), "12345")
+	if err == nil {
+		t.Error("expected error for invalid JSON")
+	}
+}

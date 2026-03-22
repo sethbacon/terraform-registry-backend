@@ -254,6 +254,7 @@ func filterPlatforms(platforms []mirror.ProviderPlatform, filter *string) []mirr
 type MirrorSyncJob struct {
 	mirrorRepo         *repositories.MirrorRepository
 	providerRepo       *repositories.ProviderRepository
+	providerDocsRepo   *repositories.ProviderDocsRepository
 	orgRepo            *repositories.OrganizationRepository
 	storageBackend     storage.Storage
 	storageBackendName string
@@ -268,6 +269,7 @@ type MirrorSyncJob struct {
 func NewMirrorSyncJob(
 	mirrorRepo *repositories.MirrorRepository,
 	providerRepo *repositories.ProviderRepository,
+	providerDocsRepo *repositories.ProviderDocsRepository,
 	orgRepo *repositories.OrganizationRepository,
 	storageBackend storage.Storage,
 	storageBackendName string,
@@ -275,6 +277,7 @@ func NewMirrorSyncJob(
 	return &MirrorSyncJob{
 		mirrorRepo:         mirrorRepo,
 		providerRepo:       providerRepo,
+		providerDocsRepo:   providerDocsRepo,
 		orgRepo:            orgRepo,
 		storageBackend:     storageBackend,
 		storageBackendName: storageBackendName,
@@ -881,6 +884,33 @@ func (j *MirrorSyncJob) syncProviderVersion(
 	if len(shasumMap) > 0 {
 		if err := j.providerRepo.UpsertProviderVersionShasums(ctx, versionRecord.ID, shasumMap); err != nil {
 			log.Printf("Warning: failed to store SHA256SUMS for %s/%s@%s: %v", namespace, providerName, version.Version, err)
+		}
+	}
+
+	// Fetch and store documentation index entries from upstream.
+	// This is non-critical — a failure is logged but does not block the sync.
+	if j.providerDocsRepo != nil {
+		docEntries, err := upstreamClient.GetProviderDocIndex(ctx, namespace, providerName)
+		if err != nil {
+			log.Printf("Warning: failed to fetch doc index for %s/%s: %v", namespace, providerName, err)
+		} else if len(docEntries) > 0 {
+			docModels := make([]models.ProviderVersionDoc, len(docEntries))
+			for i, d := range docEntries {
+				docModels[i] = models.ProviderVersionDoc{
+					UpstreamDocID: d.ID,
+					Title:         d.Title,
+					Slug:          d.Slug,
+					Category:      d.Category,
+					Subcategory:   d.Subcategory,
+					Path:          &d.Path,
+					Language:      d.Language,
+				}
+			}
+			if err := j.providerDocsRepo.BulkCreateProviderVersionDocs(ctx, versionRecord.ID, docModels); err != nil {
+				log.Printf("Warning: failed to store doc index for %s/%s@%s: %v", namespace, providerName, version.Version, err)
+			} else {
+				log.Printf("Stored %d doc index entries for %s/%s@%s", len(docModels), namespace, providerName, version.Version)
+			}
 		}
 	}
 

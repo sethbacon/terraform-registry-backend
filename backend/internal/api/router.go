@@ -116,8 +116,10 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	storageConfigRepo := repositories.NewStorageConfigRepository(sqlxDB)
 	oidcConfigRepo := repositories.NewOIDCConfigRepository(sqlxDB)
 
+	providerDocsRepo := repositories.NewProviderDocsRepository(db)
+
 	// Initialize mirror sync job
-	mirrorSyncJob := jobs.NewMirrorSyncJob(mirrorRepo, providerRepo, orgRepo, storageBackend, cfg.Storage.DefaultBackend)
+	mirrorSyncJob := jobs.NewMirrorSyncJob(mirrorRepo, providerRepo, providerDocsRepo, orgRepo, storageBackend, cfg.Storage.DefaultBackend)
 	// Start background sync job - check every 10 minutes for mirrors that need syncing
 	mirrorSyncJob.Start(context.Background(), 10)
 	log.Println("Mirror sync job started (checking every 10 minutes)")
@@ -479,6 +481,8 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 		{
 			publicDetailGroup.GET("/modules/:namespace/:name/:system", moduleAdminHandlers.GetModule)
 			publicDetailGroup.GET("/providers/:namespace/:type", providerAdminHandlers.GetProvider)
+			publicDetailGroup.GET("/providers/:namespace/:type/versions/:version/docs", providers.ListProviderDocsHandler(db))
+			publicDetailGroup.GET("/providers/:namespace/:type/versions/:version/docs/:category/:slug", providers.GetProviderDocContentHandler(db, cfg))
 		}
 
 		// Authenticated-only endpoints

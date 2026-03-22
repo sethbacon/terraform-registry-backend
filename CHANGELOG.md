@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.23] - 2026-03-22
+
+### Added
+
+- feat: provider documentation browsing — new `provider_version_docs` table stores doc metadata fetched from the HashiCorp registry v1 API during mirror sync; two new endpoints (`GET /api/v1/providers/:namespace/:type/versions/:version/docs` and `GET /api/v1/providers/:namespace/:type/versions/:version/docs/:category/:slug`) serve the doc index and proxy markdown content from the registry v2 API with a 15-minute in-memory TTL cache
+
+---
+
 ## [0.2.22] - 2026-03-21
 
 ### Fixed
