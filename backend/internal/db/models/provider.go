@@ -55,6 +55,21 @@ type ProviderVersionShasum struct {
 	SHA256Hex         string // lowercase hex SHA256 of the zip archive
 }
 
+// ProviderVersionDoc holds documentation metadata for a provider version, sourced
+// from the upstream registry's v1 provider API.  Only the index entry is stored;
+// the full markdown content is fetched on demand from the v2 API.
+type ProviderVersionDoc struct {
+	ID                string  `json:"id"`
+	ProviderVersionID string  `json:"provider_version_id"`
+	UpstreamDocID     string  `json:"upstream_doc_id"`
+	Title             string  `json:"title"`
+	Slug              string  `json:"slug"`
+	Category          string  `json:"category"`
+	Subcategory       *string `json:"subcategory,omitempty"`
+	Path              *string `json:"path,omitempty"`
+	Language          string  `json:"language"`
+}
+
 // ProviderPlatform represents a platform-specific binary for a provider version
 type ProviderPlatform struct {
 	ID                string

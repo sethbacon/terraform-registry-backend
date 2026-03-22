@@ -433,7 +433,7 @@ func TestFilterPlatforms_CaseInsensitive(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestNewMirrorSyncJob(t *testing.T) {
-	job := NewMirrorSyncJob(nil, nil, nil, nil, "")
+	job := NewMirrorSyncJob(nil, nil, nil, nil, nil, "")
 	if job == nil {
 		t.Fatal("NewMirrorSyncJob returned nil")
 	}
@@ -472,7 +472,7 @@ func TestMirrorSyncJob_StartStop_ContextCancel(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM mirror_configurations").
 		WillReturnRows(sqlmock.NewRows(mirrorConfigCols))
 
-	job := NewMirrorSyncJob(mirrorRepo, nil, nil, nil, "")
+	job := NewMirrorSyncJob(mirrorRepo, nil, nil, nil, nil, "")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -499,7 +499,7 @@ func TestMirrorSyncJob_Stop_DirectStop(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM mirror_configurations").
 		WillReturnRows(sqlmock.NewRows(mirrorConfigCols))
 
-	job := NewMirrorSyncJob(mirrorRepo, nil, nil, nil, "")
+	job := NewMirrorSyncJob(mirrorRepo, nil, nil, nil, nil, "")
 
 	ctx := context.Background()
 	done := make(chan struct{})
