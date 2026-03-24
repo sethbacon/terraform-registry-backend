@@ -23,13 +23,6 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Tidy dependencies
-RUN go mod tidy
-
-# Install swag CLI and generate Swagger documentation (JSON only; embedded at build time)
-RUN go install github.com/swaggo/swag/cmd/swag@latest && \
-    swag init -g cmd/server/main.go --outputTypes json
-
 # Build the application
 ARG VERSION=dev
 ARG BUILD_DATE=unknown
