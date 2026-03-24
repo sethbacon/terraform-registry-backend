@@ -90,6 +90,11 @@ func (bg *BackgroundServices) Shutdown() {
 	slog.Info("all background services stopped")
 }
 
+// AppVersion and AppBuildDate are set by main before NewRouter is called.
+// They are populated from ldflags injected by GoReleaser at release time.
+var AppVersion = "dev"
+var AppBuildDate = "unknown"
+
 // NewRouter creates and configures the Gin router
 func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices) {
 	router := gin.New()
@@ -882,7 +887,8 @@ func serviceDiscoveryHandler(cfg *config.Config) gin.HandlerFunc {
 func versionHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
-			"version":     "0.1.0",
+			"version":     AppVersion,
+			"build_date":  AppBuildDate,
 			"api_version": "v1",
 			"protocols": gin.H{
 				"modules":   "v1",
