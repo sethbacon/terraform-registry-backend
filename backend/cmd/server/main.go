@@ -56,9 +56,11 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-const (
-	version = "0.1.0"
-)
+// Version and BuildDate are injected at build time by GoReleaser via ldflags:
+//
+//	-X main.Version=x.y.z  -X main.BuildDate=<RFC3339>
+var Version = "dev"
+var BuildDate = "unknown"
 
 func main() {
 	if err := run(); err != nil {
@@ -83,6 +85,8 @@ func run() error {
 	// Execute command
 	switch command {
 	case "serve":
+		api.AppVersion = Version
+		api.AppBuildDate = BuildDate
 		return serve(cfg)
 	case "migrate":
 		if len(os.Args) < 3 {
@@ -90,7 +94,7 @@ func run() error {
 		}
 		return runMigrations(cfg, os.Args[2])
 	case "version":
-		fmt.Printf("Terraform Registry v%s\n", version)
+		fmt.Printf("Terraform Registry v%s (built %s)\n", Version, BuildDate)
 		return nil
 	default:
 		return fmt.Errorf("unknown command: %s\nAvailable commands: serve, migrate, version", command)

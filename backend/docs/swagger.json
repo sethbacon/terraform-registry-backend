@@ -10078,6 +10078,9 @@
                 "api_version": {
                     "type": "string"
                 },
+                "build_date": {
+                    "type": "string"
+                },
                 "protocols": {
                     "$ref": "#/definitions/api.ProtocolVersions"
                 },
