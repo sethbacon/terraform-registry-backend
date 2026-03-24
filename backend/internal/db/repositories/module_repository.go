@@ -522,7 +522,7 @@ func (r *ModuleRepository) SearchModulesWithStats(ctx context.Context, orgID, se
 	}
 
 	// Count total results
-	countSQL := fmt.Sprintf("SELECT COUNT(*) FROM modules m %s", whereClause)
+	countSQL := fmt.Sprintf("SELECT COUNT(*) FROM modules m %s", whereClause) // #nosec G201 -- whereClause contains only parameterized SQL structural conditions; user values are passed via args
 	var total int
 	if err := r.db.QueryRowContext(ctx, countSQL, args...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("failed to count modules: %w", err)
@@ -531,6 +531,7 @@ func (r *ModuleRepository) SearchModulesWithStats(ctx context.Context, orgID, se
 	// Single query: modules + latest version + total downloads via lateral join.
 	// The lateral subquery fetches the latest version (by created_at) and sums
 	// download counts across ALL versions — replacing the per-module ListVersions loop.
+	// #nosec G201 -- whereClause contains only parameterized SQL structural conditions; user values are passed via args
 	searchSQL := fmt.Sprintf(`
 		SELECT m.id, m.organization_id, m.namespace, m.name, m.system, m.description, m.source,
 		       m.created_by, u.name AS created_by_name, m.created_at, m.updated_at,

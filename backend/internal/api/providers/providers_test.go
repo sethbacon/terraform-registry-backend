@@ -1064,6 +1064,7 @@ func TestDownloadHandler_SuccessWithShasumURLs(t *testing.T) {
 func TestDownloadHandler_SuccessWithAuditContext(t *testing.T) {
 	store := &mockStore{getURLResult: "https://example.com/provider.zip"}
 	db, mock, _ := sqlmock.New()
+	mock.MatchExpectationsInOrder(false)
 	t.Cleanup(func() { db.Close() })
 
 	auditRepo := repositories.NewAuditRepository(db)
@@ -1081,6 +1082,8 @@ func TestDownloadHandler_SuccessWithAuditContext(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM providers.*WHERE").WillReturnRows(sampleProviderRow())
 	mock.ExpectQuery("SELECT.*FROM provider_versions.*WHERE provider_id.*AND version").WillReturnRows(sampleProviderVersionGetRow())
 	mock.ExpectQuery("SELECT.*FROM provider_platforms.*WHERE provider_version_id").WillReturnRows(samplePlatformRow())
+	mock.ExpectExec("UPDATE provider_platforms").WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec("INSERT INTO audit_logs").WillReturnResult(sqlmock.NewResult(1, 1))
 
 	w := doGET(r, "/v1/providers/hashicorp/aws/4.0.0/download/linux/amd64")
 	if w.Code != http.StatusOK {

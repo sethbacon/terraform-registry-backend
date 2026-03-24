@@ -528,7 +528,8 @@ func (p *SCMPublisher) publishModuleVersion(
 
 	// Extract README from the archive
 	var readmeContent *string
-	if readmeFile, err := os.Open(archivePath); err == nil { // #nosec G304 -- path is constructed from validated namespace/name/version components; path traversal is prevented at the API and archive-extraction layers
+	// #nosec G304 -- path is constructed from validated namespace/name/version components; path traversal is prevented at the API and archive-extraction layers
+	if readmeFile, err := os.Open(archivePath); err == nil {
 		if readme, err := validation.ExtractReadme(readmeFile); err == nil && readme != "" {
 			readmeContent = &readme
 		}

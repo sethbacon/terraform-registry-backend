@@ -322,6 +322,7 @@ func TestDocContentCache_Eviction(t *testing.T) {
 	cache := newDocContentCache(2, 15*time.Minute)
 
 	cache.set("key1", "content1")
+	time.Sleep(time.Millisecond) // ensure key1 has a strictly older timestamp on low-resolution timers
 	cache.set("key2", "content2")
 	cache.set("key3", "content3") // should evict key1
 
