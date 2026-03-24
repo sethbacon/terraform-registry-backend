@@ -86,6 +86,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Upload deployment configs to release
+        run: gh release upload "${GITHUB_REF_NAME}" "/tmp/deployment-configs-${GITHUB_REF_NAME}.tar.gz"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   # ── Build + push Docker image ────────────────────────────────────────────
   docker:
     name: Publish Docker image
