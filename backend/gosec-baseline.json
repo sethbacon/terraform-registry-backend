@@ -276,8 +276,8 @@
 	],
 	"Stats": {
 		"files": 124,
-		"lines": 37541,
-		"nosec": 88,
+		"lines": 37545,
+		"nosec": 93,
 		"found": 17
 	},
 	"GosecVersion": "dev"

@@ -713,13 +713,14 @@ func (r *ProviderRepository) SearchProvidersWithStats(ctx context.Context, orgID
 	}
 
 	// Count total results
-	countSQL := fmt.Sprintf("SELECT COUNT(*) FROM providers p %s", whereClause)
+	countSQL := fmt.Sprintf("SELECT COUNT(*) FROM providers p %s", whereClause) // #nosec G201 -- whereClause contains only parameterized SQL structural conditions; user values are passed via args
 	var total int
 	if err := r.db.QueryRowContext(ctx, countSQL, args...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("failed to count providers: %w", err)
 	}
 
 	// Single query: providers + latest version + total platform downloads via lateral join
+	// #nosec G201 -- whereClause contains only parameterized SQL structural conditions; user values are passed via args
 	searchSQL := fmt.Sprintf(`
 		SELECT p.id, p.organization_id, p.namespace, p.type, p.description, p.source,
 		       p.created_by, u.name AS created_by_name, p.created_at, p.updated_at,
