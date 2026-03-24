@@ -1,0 +1,44 @@
+name: PR Checks
+
+# Validates PR hygiene on feature/fix branches.
+# Runs only on PRs targeting development — release PRs (development → main) are exempt.
+on:
+  pull_request:
+    branches:
+      - development
+
+jobs:
+  changelog-entry:
+    name: Changelog entry present
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for ## Changelog section with an entry
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          # Must have a ## Changelog section
+          if ! printf '%s' "$PR_BODY" | grep -q '^## Changelog'; then
+            echo "::error::PR body is missing a '## Changelog' section."
+            echo "Add a '## Changelog' section with one entry (see CLAUDE.md step 8)."
+            echo "Example:"
+            echo "  ## Changelog"
+            echo "  - fix: short description of what was fixed"
+            exit 1
+          fi
+
+          # Must have at least one bullet entry under ## Changelog
+          ENTRY=$(printf '%s' "$PR_BODY" | awk '/^## Changelog/{found=1;next} found && /^##/{exit} found && /^- /{print;exit}')
+          if [ -z "$ENTRY" ]; then
+            echo "::error::## Changelog section has no bullet entry."
+            echo "Add at least one line like: - fix: short description"
+            exit 1
+          fi
+
+          # Must not be the unedited placeholder
+          if echo "$ENTRY" | grep -qE '^\- (fix|feat|chore):$'; then
+            echo "::error::## Changelog entry looks like an unedited placeholder: $ENTRY"
+            echo "Replace it with an actual description."
+            exit 1
+          fi
+
+          echo "✅ Changelog entry found: $ENTRY"
