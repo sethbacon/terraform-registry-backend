@@ -271,7 +271,7 @@ jobs:
           docker compose -f docker-compose.test.yml config --quiet
 
       - name: Install Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@v5
         with:
           version: "latest"
 
@@ -290,7 +290,7 @@ jobs:
         run: kubectl kustomize deployments/kubernetes/overlays/production > /dev/null
 
       - name: Install Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: latest
 
