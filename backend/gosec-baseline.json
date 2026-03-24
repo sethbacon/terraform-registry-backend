@@ -11,8 +11,8 @@
 			"rule_id": "G115",
 			"details": "integer overflow conversion uint64 -\u003e int64",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\scm\\azuredevops\\connector.go",
-			"code": "538: \t\t\tName:     f.Name,\n539: \t\t\tSize:     int64(f.UncompressedSize64),\n540: \t\t\tMode:     int64(f.Mode()),\n",
-			"line": "539",
+			"code": "547: \t\t\tName:     f.Name,\n548: \t\t\tSize:     int64(f.UncompressedSize64),\n549: \t\t\tMode:     int64(f.Mode()),\n",
+			"line": "548",
 			"column": "19",
 			"nosec": false,
 			"suppressions": null
@@ -43,8 +43,8 @@
 			"rule_id": "G201",
 			"details": "SQL string formatting",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\db\\repositories\\provider_repository.go",
-			"code": "596: \t// Query with pagination and JOIN for created_by_name\n597: \tsearchQuery := fmt.Sprintf(`\n598: \t\tSELECT p.id, p.organization_id, p.namespace, p.type, p.description, p.source,\n599: \t\t       p.created_by, u.name as created_by_name, p.created_at, p.updated_at\n600: \t\tFROM providers p\n601: \t\tLEFT JOIN users u ON p.created_by = u.id\n602: \t\t%s\n603: \t\tORDER BY p.created_at DESC\n604: \t\tLIMIT $%d OFFSET $%d\n605: \t`, whereClause, argCount+1, argCount+2)\n606: \n",
-			"line": "597-605",
+			"code": "635: \t// Query with pagination and JOIN for created_by_name\n636: \tsearchQuery := fmt.Sprintf(`\n637: \t\tSELECT p.id, p.organization_id, p.namespace, p.type, p.description, p.source,\n638: \t\t       p.created_by, u.name as created_by_name, p.created_at, p.updated_at\n639: \t\tFROM providers p\n640: \t\tLEFT JOIN users u ON p.created_by = u.id\n641: \t\t%s\n642: \t\tORDER BY p.created_at DESC\n643: \t\tLIMIT $%d OFFSET $%d\n644: \t`, whereClause, argCount+1, argCount+2)\n645: \n",
+			"line": "636-644",
 			"column": "17",
 			"nosec": false,
 			"suppressions": null
@@ -59,8 +59,8 @@
 			"rule_id": "G201",
 			"details": "SQL string formatting",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\db\\repositories\\provider_repository.go",
-			"code": "588: \t// Count total results\n589: \tcountQuery := fmt.Sprintf(\"SELECT COUNT(*) FROM providers p %s\", whereClause)\n590: \tvar total int\n",
-			"line": "589",
+			"code": "627: \t// Count total results\n628: \tcountQuery := fmt.Sprintf(\"SELECT COUNT(*) FROM providers p %s\", whereClause)\n629: \tvar total int\n",
+			"line": "628",
 			"column": "16",
 			"nosec": false,
 			"suppressions": null
@@ -219,8 +219,8 @@
 			"rule_id": "G104",
 			"details": "Errors unhandled",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\jobs\\mirror_sync.go",
-			"code": "965: \twritten, err := io.Copy(tmpFile, io.TeeReader(stream.Body, hasher))\n966: \tstream.Body.Close()\n967: \tif err != nil {\n",
-			"line": "966",
+			"code": "1001: \twritten, err := io.Copy(tmpFile, io.TeeReader(stream.Body, hasher))\n1002: \tstream.Body.Close()\n1003: \tif err != nil {\n",
+			"line": "1002",
 			"column": "2",
 			"nosec": false,
 			"suppressions": null
@@ -235,8 +235,8 @@
 			"rule_id": "G104",
 			"details": "Errors unhandled",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\jobs\\mirror_sync.go",
-			"code": "959: \t\ttmpFile.Close()\n960: \t\tos.Remove(tmpFile.Name())\n961: \t}()\n",
-			"line": "960",
+			"code": "995: \t\ttmpFile.Close()\n996: \t\tos.Remove(tmpFile.Name())\n997: \t}()\n",
+			"line": "996",
 			"column": "3",
 			"nosec": false,
 			"suppressions": null
@@ -251,8 +251,8 @@
 			"rule_id": "G104",
 			"details": "Errors unhandled",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\jobs\\mirror_sync.go",
-			"code": "958: \tdefer func() {\n959: \t\ttmpFile.Close()\n960: \t\tos.Remove(tmpFile.Name())\n",
-			"line": "959",
+			"code": "994: \tdefer func() {\n995: \t\ttmpFile.Close()\n996: \t\tos.Remove(tmpFile.Name())\n",
+			"line": "995",
 			"column": "3",
 			"nosec": false,
 			"suppressions": null
@@ -267,17 +267,17 @@
 			"rule_id": "G104",
 			"details": "Errors unhandled",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\jobs\\mirror_sync.go",
-			"code": "954: \tif err != nil {\n955: \t\tstream.Body.Close()\n956: \t\treturn fmt.Errorf(\"failed to create temp file: %w\", err)\n",
-			"line": "955",
+			"code": "990: \tif err != nil {\n991: \t\tstream.Body.Close()\n992: \t\treturn fmt.Errorf(\"failed to create temp file: %w\", err)\n",
+			"line": "991",
 			"column": "3",
 			"nosec": false,
 			"suppressions": null
 		}
 	],
 	"Stats": {
-		"files": 122,
-		"lines": 36494,
-		"nosec": 86,
+		"files": 124,
+		"lines": 37545,
+		"nosec": 93,
 		"found": 17
 	},
 	"GosecVersion": "dev"

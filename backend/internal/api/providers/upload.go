@@ -179,6 +179,7 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 			})
 			return
 		}
+		// #nosec G602 -- magic is guaranteed 4 bytes by io.ReadFull which only succeeds when exactly n bytes are read
 		if !((magic[0] == 0x50 && magic[1] == 0x4B && magic[2] == 0x03 && magic[3] == 0x04) ||
 			(magic[0] == 0x50 && magic[1] == 0x4B && magic[2] == 0x05 && magic[3] == 0x06)) {
 			c.JSON(http.StatusBadRequest, gin.H{
