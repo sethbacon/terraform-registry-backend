@@ -31,8 +31,11 @@ RUN go install github.com/swaggo/swag/cmd/swag@latest && \
     swag init -g cmd/server/main.go --outputTypes json
 
 # Build the application
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-    -ldflags="-w -s" \
+ARG VERSION=dev
+ARG BUILD_DATE=unknown
+RUN CLEAN_VERSION="${VERSION#v}" && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -ldflags="-w -s -X main.Version=${CLEAN_VERSION} -X main.BuildDate=${BUILD_DATE}" \
     -o terraform-registry \
     ./cmd/server
 
