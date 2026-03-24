@@ -38,8 +38,6 @@ release:
     owner: sethbacon
     name: terraform-registry-backend
   name_template: "Release {{ .Tag }}"
-  extra_files:
-    - glob: "/tmp/deployment-configs-*.tar.gz"
   footer: |
     ## Docker Image
 
