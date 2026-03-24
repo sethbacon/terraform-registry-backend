@@ -59,6 +59,8 @@ git remote prune origin                          # prune stale remote-tracking r
    Closes #<issue-number>"
    ```
 
+   Do not add `Co-Authored-By:` trailers or `🤖 Generated with [Claude Code]` footers to commit messages or PR bodies.
+
 6. **Rebase onto `development` before pushing** to minimise merge conflicts with sibling branches:
 
    ```bash

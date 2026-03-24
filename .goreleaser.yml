@@ -39,7 +39,7 @@ release:
     name: terraform-registry-backend
   name_template: "Release {{ .Tag }}"
   extra_files:
-    - glob: "./deployment-configs-*.tar.gz"
+    - glob: "/tmp/deployment-configs-*.tar.gz"
   footer: |
     ## Docker Image
 

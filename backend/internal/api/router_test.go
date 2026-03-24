@@ -222,6 +222,9 @@ func TestVersionHandler(t *testing.T) {
 	if body["version"] == nil {
 		t.Error("response missing 'version'")
 	}
+	if body["build_date"] == nil {
+		t.Error("response missing 'build_date'")
+	}
 	if body["api_version"] == nil {
 		t.Error("response missing 'api_version'")
 	}
