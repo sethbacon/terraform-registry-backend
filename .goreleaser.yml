@@ -1,0 +1,57 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+builds:
+  - id: terraform-registry
+    dir: backend
+    main: ./cmd/server
+    binary: terraform-registry
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X main.Version={{ .Version }}
+      - -X main.BuildDate={{ .Date }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: terraform-registry-binaries
+    formats: [binary]
+    name_template: "terraform-registry-{{ .Os }}-{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+release:
+  github:
+    owner: sethbacon
+    name: terraform-registry-backend
+  name_template: "Release {{ .Tag }}"
+  extra_files:
+    - glob: "./deployment-configs-*.tar.gz"
+  footer: |
+    ## Docker Image
+
+    ```
+    docker pull ghcr.io/sethbacon/terraform-registry-backend:{{ .Tag }}
+    ```
+
+changelog:
+  use: github-native
+
+gomod:
+  proxy: false
+
+snapshot:
+  version_template: "{{ .Tag }}-dev"
