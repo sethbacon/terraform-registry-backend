@@ -890,9 +890,9 @@ func (j *MirrorSyncJob) syncProviderVersion(
 	// Fetch and store documentation index entries from upstream.
 	// This is non-critical — a failure is logged but does not block the sync.
 	if j.providerDocsRepo != nil {
-		docEntries, err := upstreamClient.GetProviderDocIndex(ctx, namespace, providerName)
+		docEntries, err := upstreamClient.GetProviderDocIndexByVersion(ctx, namespace, providerName, version.Version)
 		if err != nil {
-			log.Printf("Warning: failed to fetch doc index for %s/%s: %v", namespace, providerName, err)
+			log.Printf("Warning: failed to fetch doc index for %s/%s@%s: %v", namespace, providerName, version.Version, err)
 		} else if len(docEntries) > 0 {
 			docModels := make([]models.ProviderVersionDoc, len(docEntries))
 			for i, d := range docEntries {
