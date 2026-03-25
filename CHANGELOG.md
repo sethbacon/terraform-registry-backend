@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.28] - 2026-03-25
+
+### Fixed
+- fix: resolve numeric v2 provider-version ID before fetching doc index — `GetProviderDocIndexByVersion` was passing the semver string as `filter[provider-version]` to the upstream registry's v2 `provider-docs` API, which requires the numeric JSON:API provider-version ID; this caused HTTP 400 errors during mirror sync, leaving doc index entries empty and the provider documentation tab blank in the UI
+
+---
+
 ## [0.2.27] - 2026-03-24
 
 ### Fixed

@@ -365,22 +365,101 @@ type providerDocContentV2 struct {
 	} `json:"data"`
 }
 
+// providerVersionListV2 is the JSON:API envelope for
+// GET /v2/providers/{namespace}/{name}/versions.
+type providerVersionListV2 struct {
+	Data []providerVersionEntryV2 `json:"data"`
+	Meta struct {
+		Pagination struct {
+			CurrentPage int  `json:"current-page"`
+			NextPage    *int `json:"next-page"`
+		} `json:"pagination"`
+	} `json:"meta"`
+}
+
+// providerVersionEntryV2 is a single entry in the v2 provider-versions list.
+type providerVersionEntryV2 struct {
+	ID         string `json:"id"`
+	Attributes struct {
+		Version string `json:"version"`
+	} `json:"attributes"`
+}
+
+// resolveProviderVersionID pages through the upstream v2
+// /v2/providers/{namespace}/{name}/versions endpoint to find the numeric
+// JSON:API ID for the given semver string. The v2 provider-docs API requires
+// this numeric ID as filter[provider-version]; passing the semver string
+// directly causes a 400 "provider-version filter is required" error.
+func (u *UpstreamRegistry) resolveProviderVersionID(ctx context.Context, namespace, providerName, semver string) (string, error) {
+	base := strings.TrimSuffix(u.BaseURL, "/")
+	pageNum := 1
+
+	for {
+		reqURL := fmt.Sprintf(
+			"%s/v2/providers/%s/%s/versions?page[size]=100&page[number]=%d",
+			base,
+			url.PathEscape(namespace),
+			url.PathEscape(providerName),
+			pageNum,
+		)
+
+		req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil) // #nosec G107 -- URL built from admin-controlled mirror configuration
+		if err != nil {
+			return "", fmt.Errorf("failed to create v2 provider versions request (page %d): %w", pageNum, err)
+		}
+
+		resp, err := u.HTTPClient.Do(req)
+		if err != nil {
+			return "", fmt.Errorf("failed to fetch v2 provider versions (page %d): %w", pageNum, err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return "", fmt.Errorf("v2 provider versions request failed with status %d: %s", resp.StatusCode, string(body))
+		}
+
+		var page providerVersionListV2
+		decodeErr := json.NewDecoder(resp.Body).Decode(&page)
+		resp.Body.Close()
+		if decodeErr != nil {
+			return "", fmt.Errorf("failed to decode v2 provider versions response (page %d): %w", pageNum, decodeErr)
+		}
+
+		for _, entry := range page.Data {
+			if entry.Attributes.Version == semver {
+				return entry.ID, nil
+			}
+		}
+
+		if page.Meta.Pagination.NextPage == nil {
+			break
+		}
+		pageNum++
+	}
+
+	return "", fmt.Errorf("provider version %s/%s@%s not found in upstream v2 versions API", namespace, providerName, semver)
+}
+
 // GetProviderDocIndexByVersion fetches version-specific documentation metadata
 // from the upstream registry's v2 provider-docs API. It pages through all
 // results (page[size]=100) and returns them as a flat slice. Only HCL-language
 // entries are requested.
 func (u *UpstreamRegistry) GetProviderDocIndexByVersion(ctx context.Context, namespace, providerName, version string) ([]ProviderDocEntry, error) {
+	versionID, err := u.resolveProviderVersionID(ctx, namespace, providerName, version)
+	if err != nil {
+		return nil, fmt.Errorf("could not resolve v2 version ID for %s/%s@%s: %w", namespace, providerName, version, err)
+	}
+
 	base := strings.TrimSuffix(u.BaseURL, "/")
 	var all []ProviderDocEntry
 	pageNum := 1
 
 	for {
 		reqURL := fmt.Sprintf(
-			"%s/v2/provider-docs?filter[namespace]=%s&filter[provider-name]=%s&filter[provider-version]=%s&filter[language]=hcl&page[size]=100&page[number]=%d",
+			"%s/v2/provider-docs?filter[provider-version]=%s&filter[language]=hcl&page[size]=100&page[number]=%d",
 			base,
-			url.QueryEscape(namespace),
-			url.QueryEscape(providerName),
-			url.QueryEscape(version),
+			url.QueryEscape(versionID),
 			pageNum,
 		)
 
