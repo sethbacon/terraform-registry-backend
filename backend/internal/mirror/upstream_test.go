@@ -271,56 +271,113 @@ func TestDownloadFile_ContextCancelled(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// GetProviderDocIndex
+// GetProviderDocIndexByVersion
 // ---------------------------------------------------------------------------
 
-func TestGetProviderDocIndex_Success(t *testing.T) {
-	sub := "random"
-	_, u := newTestRegistry(t, newDiscoveryHandler("/v1/providers/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/hashicorp/"+sub) {
+func makeDocListPage(docs []providerDocEntryV2, nextPage *int) providerDocListV2 {
+	p := providerDocListV2{}
+	p.Data = docs
+	p.Meta.Pagination.NextPage = nextPage
+	return p
+}
+
+func makeDocEntry(id, slug, category, language string) providerDocEntryV2 {
+	e := providerDocEntryV2{ID: id}
+	e.Attributes.Slug = slug
+	e.Attributes.Category = category
+	e.Attributes.Language = language
+	e.Attributes.Title = slug
+	return e
+}
+
+func TestGetProviderDocIndexByVersion_SinglePage(t *testing.T) {
+	_, u := newTestRegistry(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/provider-docs" {
 			http.NotFound(w, r)
 			return
 		}
-		json.NewEncoder(w).Encode(providerDetailResponse{
-			Docs: []ProviderDocEntry{
-				{ID: "100", Title: "overview", Slug: "index", Category: "overview", Language: "hcl"},
-				{ID: "101", Title: "random_id", Slug: "random_id", Category: "resources", Language: "hcl"},
-			},
-		})
-	})))
+		q := r.URL.Query()
+		if q.Get("filter[namespace]") != "hashicorp" || q.Get("filter[provider-name]") != "aws" ||
+			q.Get("filter[provider-version]") != "5.0.0" || q.Get("filter[language]") != "hcl" {
+			http.Error(w, "unexpected query params", http.StatusBadRequest)
+			return
+		}
+		json.NewEncoder(w).Encode(makeDocListPage([]providerDocEntryV2{
+			makeDocEntry("100", "index", "overview", "hcl"),
+			makeDocEntry("101", "aws_s3_bucket", "resources", "hcl"),
+		}, nil))
+	}))
 
-	docs, err := u.GetProviderDocIndex(context.Background(), "hashicorp", sub)
+	docs, err := u.GetProviderDocIndexByVersion(context.Background(), "hashicorp", "aws", "5.0.0")
 	if err != nil {
-		t.Fatalf("GetProviderDocIndex error: %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(docs) != 2 {
-		t.Errorf("got %d docs, want 2", len(docs))
+		t.Fatalf("got %d docs, want 2", len(docs))
 	}
-	if docs[0].ID != "100" {
-		t.Errorf("first doc ID = %q, want 100", docs[0].ID)
+	if docs[0].ID != "100" || docs[0].Category != "overview" {
+		t.Errorf("first doc = {%q %q}, want {100 overview}", docs[0].ID, docs[0].Category)
 	}
-	if docs[1].Category != "resources" {
-		t.Errorf("second doc category = %q, want resources", docs[1].Category)
+	if docs[1].ID != "101" || docs[1].Category != "resources" {
+		t.Errorf("second doc = {%q %q}, want {101 resources}", docs[1].ID, docs[1].Category)
 	}
 }
 
-func TestGetProviderDocIndex_HTTPError(t *testing.T) {
-	_, u := newTestRegistry(t, newDiscoveryHandler("/v1/providers/", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "not found", http.StatusNotFound)
-	})))
+func TestGetProviderDocIndexByVersion_Pagination(t *testing.T) {
+	two := 2
+	_, u := newTestRegistry(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/provider-docs" {
+			http.NotFound(w, r)
+			return
+		}
+		switch r.URL.Query().Get("page[number]") {
+		case "1", "":
+			json.NewEncoder(w).Encode(makeDocListPage([]providerDocEntryV2{
+				makeDocEntry("1", "index", "overview", "hcl"),
+			}, &two))
+		case "2":
+			json.NewEncoder(w).Encode(makeDocListPage([]providerDocEntryV2{
+				makeDocEntry("2", "aws_instance", "resources", "hcl"),
+				makeDocEntry("3", "aws_vpc", "resources", "hcl"),
+			}, nil))
+		default:
+			http.Error(w, "unexpected page", http.StatusBadRequest)
+		}
+	}))
 
-	_, err := u.GetProviderDocIndex(context.Background(), "acme", "nonexistent")
+	docs, err := u.GetProviderDocIndexByVersion(context.Background(), "hashicorp", "aws", "5.0.0")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(docs) != 3 {
+		t.Fatalf("got %d docs across pages, want 3", len(docs))
+	}
+	if docs[2].ID != "3" {
+		t.Errorf("last doc ID = %q, want 3", docs[2].ID)
+	}
+}
+
+func TestGetProviderDocIndexByVersion_HTTPError(t *testing.T) {
+	_, u := newTestRegistry(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+	}))
+
+	_, err := u.GetProviderDocIndexByVersion(context.Background(), "hashicorp", "aws", "5.0.0")
 	if err == nil {
 		t.Error("expected error for non-200 response")
 	}
 }
 
-func TestGetProviderDocIndex_EmptyDocs(t *testing.T) {
-	_, u := newTestRegistry(t, newDiscoveryHandler("/v1/providers/", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		json.NewEncoder(w).Encode(providerDetailResponse{Docs: []ProviderDocEntry{}})
-	})))
+func TestGetProviderDocIndexByVersion_Empty(t *testing.T) {
+	_, u := newTestRegistry(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/provider-docs" {
+			http.NotFound(w, r)
+			return
+		}
+		json.NewEncoder(w).Encode(makeDocListPage(nil, nil))
+	}))
 
-	docs, err := u.GetProviderDocIndex(context.Background(), "hashicorp", "null")
+	docs, err := u.GetProviderDocIndexByVersion(context.Background(), "hashicorp", "null", "1.0.0")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

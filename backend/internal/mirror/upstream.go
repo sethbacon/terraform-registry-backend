@@ -313,8 +313,8 @@ func (u *UpstreamRegistry) DownloadFileStream(ctx context.Context, fileURL strin
 	return &DownloadStream{Body: resp.Body, ContentLength: resp.ContentLength}, nil
 }
 
-// ProviderDocEntry represents a single documentation entry from the upstream
-// registry's v1 provider detail response.
+// ProviderDocEntry represents a single documentation entry returned by the
+// upstream registry.
 type ProviderDocEntry struct {
 	ID          string  `json:"id"`
 	Title       string  `json:"title"`
@@ -325,9 +325,29 @@ type ProviderDocEntry struct {
 	Language    string  `json:"language"`
 }
 
-// providerDetailResponse is the v1 provider detail response that includes the docs array.
-type providerDetailResponse struct {
-	Docs []ProviderDocEntry `json:"docs"`
+// providerDocListV2 is the JSON:API envelope returned by the v2 provider-docs
+// list endpoint.
+type providerDocListV2 struct {
+	Data []providerDocEntryV2 `json:"data"`
+	Meta struct {
+		Pagination struct {
+			CurrentPage int  `json:"current-page"`
+			NextPage    *int `json:"next-page"`
+		} `json:"pagination"`
+	} `json:"meta"`
+}
+
+// providerDocEntryV2 is a single entry in the v2 provider-docs list response.
+type providerDocEntryV2 struct {
+	ID         string `json:"id"`
+	Attributes struct {
+		Category    string `json:"category"`
+		Language    string `json:"language"`
+		Path        string `json:"path"`
+		Slug        string `json:"slug"`
+		Subcategory string `json:"subcategory"`
+		Title       string `json:"title"`
+	} `json:"attributes"`
 }
 
 // providerDocContentV2 is the JSONAPI envelope returned by the v2 provider-docs endpoint.
@@ -345,44 +365,72 @@ type providerDocContentV2 struct {
 	} `json:"data"`
 }
 
-// GetProviderDocIndex fetches the documentation metadata array from the upstream
-// registry's v1 provider detail endpoint.
-func (u *UpstreamRegistry) GetProviderDocIndex(ctx context.Context, namespace, providerName string) ([]ProviderDocEntry, error) {
-	discovery, err := u.DiscoverServices(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("service discovery failed: %w", err)
+// GetProviderDocIndexByVersion fetches version-specific documentation metadata
+// from the upstream registry's v2 provider-docs API. It pages through all
+// results (page[size]=100) and returns them as a flat slice. Only HCL-language
+// entries are requested.
+func (u *UpstreamRegistry) GetProviderDocIndexByVersion(ctx context.Context, namespace, providerName, version string) ([]ProviderDocEntry, error) {
+	base := strings.TrimSuffix(u.BaseURL, "/")
+	var all []ProviderDocEntry
+	pageNum := 1
+
+	for {
+		reqURL := fmt.Sprintf(
+			"%s/v2/provider-docs?filter[namespace]=%s&filter[provider-name]=%s&filter[provider-version]=%s&filter[language]=hcl&page[size]=100&page[number]=%d",
+			base,
+			url.QueryEscape(namespace),
+			url.QueryEscape(providerName),
+			url.QueryEscape(version),
+			pageNum,
+		)
+
+		req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create v2 doc index request (page %d): %w", pageNum, err)
+		}
+
+		resp, err := u.HTTPClient.Do(req) // #nosec G107 -- URL built from admin-controlled mirror configuration
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch v2 provider doc index (page %d): %w", pageNum, err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("v2 provider doc index request failed with status %d: %s", resp.StatusCode, string(body))
+		}
+
+		var page providerDocListV2
+		decodeErr := json.NewDecoder(resp.Body).Decode(&page)
+		resp.Body.Close()
+		if decodeErr != nil {
+			return nil, fmt.Errorf("failed to decode v2 provider doc index response (page %d): %w", pageNum, decodeErr)
+		}
+
+		for _, entry := range page.Data {
+			var subcat *string
+			if entry.Attributes.Subcategory != "" {
+				s := entry.Attributes.Subcategory
+				subcat = &s
+			}
+			all = append(all, ProviderDocEntry{
+				ID:          entry.ID,
+				Title:       entry.Attributes.Title,
+				Slug:        entry.Attributes.Slug,
+				Category:    entry.Attributes.Category,
+				Subcategory: subcat,
+				Path:        entry.Attributes.Path,
+				Language:    entry.Attributes.Language,
+			})
+		}
+
+		if page.Meta.Pagination.NextPage == nil {
+			break
+		}
+		pageNum++
 	}
 
-	base, _ := url.Parse(u.BaseURL)
-	provRef, _ := url.Parse(discovery.ProvidersV1)
-	providersBase := base.ResolveReference(provRef)
-	detailURL := fmt.Sprintf("%s/%s/%s",
-		strings.TrimSuffix(providersBase.String(), "/"),
-		namespace,
-		providerName)
-
-	req, err := http.NewRequestWithContext(ctx, "GET", detailURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create doc index request: %w", err)
-	}
-
-	resp, err := u.HTTPClient.Do(req) // #nosec G107 -- URL is sourced from admin-controlled mirror configuration
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch provider doc index: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("provider doc index request failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var detail providerDetailResponse
-	if err := json.NewDecoder(resp.Body).Decode(&detail); err != nil {
-		return nil, fmt.Errorf("failed to decode provider detail response: %w", err)
-	}
-
-	return detail.Docs, nil
+	return all, nil
 }
 
 // GetProviderDocContent fetches the full markdown content for a single documentation
