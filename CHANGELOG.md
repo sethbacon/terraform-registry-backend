@@ -9,12 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-- fix: add `/version` proxy location to Helm nginx ConfigMap — the ConfigMap was missing the location block, causing the SPA fallback to intercept backend API requests in Kubernetes deployments
-- fix: remove `go mod tidy` and swag doc generation from Dockerfile — both steps fail in environments with corporate TLS interception; `swagger.json` is committed to the repo by CI and `go.sum` already pins all dependencies
+---
 
-### Maintenance
-- chore: add PR template, CI changelog enforcement, and collection script — `.github/PULL_REQUEST_TEMPLATE.md` pre-fills the changelog section; `pr-checks.yml` fails PRs without a valid entry; `collect-changelog.sh` automates release-time changelog collection
+## [0.2.29] - 2026-03-25
+
+### Fixed
+- fix: backfill doc index for existing provider versions with no docs — the mirror sync job now checks the doc count when skipping already-complete versions; if zero docs exist (due to a prior failed doc fetch), it fetches and stores the doc index without re-downloading binaries
 
 ---
 
