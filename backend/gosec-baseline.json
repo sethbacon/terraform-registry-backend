@@ -107,8 +107,8 @@
 			"rule_id": "G104",
 			"details": "Errors unhandled",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\mirror\\upstream.go",
-			"code": "509: \t\tdecodeErr := json.NewDecoder(resp.Body).Decode(\u0026page)\n510: \t\tresp.Body.Close()\n511: \t\tif decodeErr != nil {\n",
-			"line": "510",
+			"code": "522: \t\tdecodeErr := json.NewDecoder(resp.Body).Decode(\u0026page)\n523: \t\tresp.Body.Close()\n524: \t\tif decodeErr != nil {\n",
+			"line": "523",
 			"column": "3",
 			"nosec": false,
 			"suppressions": null
@@ -123,8 +123,8 @@
 			"rule_id": "G104",
 			"details": "Errors unhandled",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\mirror\\upstream.go",
-			"code": "503: \t\t\tbody, _ := io.ReadAll(resp.Body)\n504: \t\t\tresp.Body.Close()\n505: \t\t\treturn nil, fmt.Errorf(\"v2 provider doc index request failed with status %d: %s\", resp.StatusCode, string(body))\n",
-			"line": "504",
+			"code": "516: \t\t\tbody, _ := io.ReadAll(resp.Body)\n517: \t\t\tresp.Body.Close()\n518: \t\t\treturn nil, fmt.Errorf(\"v2 provider doc index request failed with status %d: %s\", resp.StatusCode, string(body))\n",
+			"line": "517",
 			"column": "4",
 			"nosec": false,
 			"suppressions": null
@@ -139,9 +139,9 @@
 			"rule_id": "G104",
 			"details": "Errors unhandled",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\mirror\\upstream.go",
-			"code": "455: \tdecodeErr = json.NewDecoder(resp.Body).Decode(\u0026versionsResp)\n456: \tresp.Body.Close()\n457: \tif decodeErr != nil {\n",
-			"line": "456",
-			"column": "2",
+			"code": "462: \t\tdecodeErr = json.NewDecoder(resp.Body).Decode(\u0026versionsResp)\n463: \t\tresp.Body.Close()\n464: \t\tif decodeErr != nil {\n",
+			"line": "463",
+			"column": "3",
 			"nosec": false,
 			"suppressions": null
 		},
@@ -155,9 +155,9 @@
 			"rule_id": "G104",
 			"details": "Errors unhandled",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\mirror\\upstream.go",
-			"code": "450: \t\tbody, _ := io.ReadAll(resp.Body)\n451: \t\tresp.Body.Close()\n452: \t\treturn \"\", fmt.Errorf(\"v2 provider-versions request failed with status %d: %s\", resp.StatusCode, string(body))\n",
-			"line": "451",
-			"column": "3",
+			"code": "457: \t\t\tbody, _ := io.ReadAll(resp.Body)\n458: \t\t\tresp.Body.Close()\n459: \t\t\treturn \"\", fmt.Errorf(\"v2 provider-versions request failed with status %d: %s\", resp.StatusCode, string(body))\n",
+			"line": "458",
+			"column": "4",
 			"nosec": false,
 			"suppressions": null
 		},
@@ -372,7 +372,7 @@
 	],
 	"Stats": {
 		"files": 124,
-		"lines": 37757,
+		"lines": 37773,
 		"nosec": 95,
 		"found": 23
 	},

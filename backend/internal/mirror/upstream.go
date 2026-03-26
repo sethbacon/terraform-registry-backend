@@ -433,34 +433,47 @@ func (u *UpstreamRegistry) resolveProviderVersionID(ctx context.Context, namespa
 		return "", fmt.Errorf("v2 provider lookup returned empty ID for %s/%s", namespace, providerName)
 	}
 
-	// Step 2: list all provider-versions under that provider ID.
-	versionsURL := fmt.Sprintf("%s/v2/providers/%s/provider-versions",
-		base,
-		provResp.Data.ID,
-	)
-	req, err = http.NewRequestWithContext(ctx, "GET", versionsURL, nil) // #nosec G107 -- URL built from admin-controlled mirror configuration
-	if err != nil {
-		return "", fmt.Errorf("failed to create v2 provider-versions request: %w", err)
-	}
-	resp, err = u.HTTPClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to fetch v2 provider-versions: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+	// Step 2: list all provider-versions under that provider ID, paging until
+	// the target semver is found or all pages are exhausted.  The upstream API
+	// sorts versions newest-first and does not populate meta.pagination; we stop
+	// when a page returns fewer entries than requested (last page reached).
+	const versionPageSize = 100
+	for versionPage := 1; ; versionPage++ {
+		versionsURL := fmt.Sprintf("%s/v2/providers/%s/provider-versions?page[size]=%d&page[number]=%d",
+			base,
+			provResp.Data.ID,
+			versionPageSize,
+			versionPage,
+		)
+		req, err = http.NewRequestWithContext(ctx, "GET", versionsURL, nil) // #nosec G107 -- URL built from admin-controlled mirror configuration
+		if err != nil {
+			return "", fmt.Errorf("failed to create v2 provider-versions request (page %d): %w", versionPage, err)
+		}
+		resp, err = u.HTTPClient.Do(req)
+		if err != nil {
+			return "", fmt.Errorf("failed to fetch v2 provider-versions (page %d): %w", versionPage, err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return "", fmt.Errorf("v2 provider-versions request failed with status %d: %s", resp.StatusCode, string(body))
+		}
+		var versionsResp providerVersionListV2
+		decodeErr = json.NewDecoder(resp.Body).Decode(&versionsResp)
 		resp.Body.Close()
-		return "", fmt.Errorf("v2 provider-versions request failed with status %d: %s", resp.StatusCode, string(body))
-	}
-	var versionsResp providerVersionListV2
-	decodeErr = json.NewDecoder(resp.Body).Decode(&versionsResp)
-	resp.Body.Close()
-	if decodeErr != nil {
-		return "", fmt.Errorf("failed to decode v2 provider-versions response: %w", decodeErr)
-	}
+		if decodeErr != nil {
+			return "", fmt.Errorf("failed to decode v2 provider-versions response (page %d): %w", versionPage, decodeErr)
+		}
 
-	for _, entry := range versionsResp.Data {
-		if entry.Attributes.Version == semver {
-			return entry.ID, nil
+		for _, entry := range versionsResp.Data {
+			if entry.Attributes.Version == semver {
+				return entry.ID, nil
+			}
+		}
+
+		// Stop when we receive a partial page — no more pages available.
+		if len(versionsResp.Data) < versionPageSize {
+			break
 		}
 	}
 
@@ -529,7 +542,10 @@ func (u *UpstreamRegistry) GetProviderDocIndexByVersion(ctx context.Context, nam
 			})
 		}
 
-		if page.Meta.Pagination.NextPage == nil {
+		// The registry API does not populate meta.pagination.next-page, so we
+		// cannot rely on that field.  Instead, stop when the page is not full
+		// (i.e. fewer entries than requested means we have reached the last page).
+		if len(page.Data) < 100 {
 			break
 		}
 		pageNum++
