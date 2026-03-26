@@ -134,3 +134,18 @@ func (r *ProviderDocsRepository) DeleteProviderVersionDocs(ctx context.Context, 
 	}
 	return nil
 }
+
+// CountProviderVersionDocs returns the number of doc index entries stored for a
+// provider version. A count of zero means the doc index was never populated (or
+// was cleared), allowing callers to decide whether a backfill is needed.
+func (r *ProviderDocsRepository) CountProviderVersionDocs(ctx context.Context, versionID string) (int, error) {
+	var count int
+	err := r.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM provider_version_docs WHERE provider_version_id = $1`,
+		versionID,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count provider version docs: %w", err)
+	}
+	return count, nil
+}

@@ -716,6 +716,39 @@ func (j *MirrorSyncJob) syncProvider(ctx context.Context, upstreamClient *mirror
 			}
 
 			if len(missingPlatforms) == 0 {
+				// Backfill doc index if it was never populated for this already-complete
+				// version. This recovers from prior syncs where doc fetch failed (e.g.,
+				// upstream API change). Only one COUNT query is issued; the upstream fetch
+				// is skipped entirely when docs already exist.
+				if j.providerDocsRepo != nil {
+					docCount, countErr := j.providerDocsRepo.CountProviderVersionDocs(ctx, existingVersion.ID)
+					if countErr != nil {
+						log.Printf("Warning: failed to count docs for %s/%s@%s: %v", namespace, providerName, version.Version, countErr)
+					} else if docCount == 0 {
+						docEntries, docErr := upstreamClient.GetProviderDocIndexByVersion(ctx, namespace, providerName, version.Version)
+						if docErr != nil {
+							log.Printf("Warning: failed to backfill doc index for %s/%s@%s: %v", namespace, providerName, version.Version, docErr)
+						} else if len(docEntries) > 0 {
+							docModels := make([]models.ProviderVersionDoc, len(docEntries))
+							for i, d := range docEntries {
+								docModels[i] = models.ProviderVersionDoc{
+									UpstreamDocID: d.ID,
+									Title:         d.Title,
+									Slug:          d.Slug,
+									Category:      d.Category,
+									Subcategory:   d.Subcategory,
+									Path:          &d.Path,
+									Language:      d.Language,
+								}
+							}
+							if storeErr := j.providerDocsRepo.BulkCreateProviderVersionDocs(ctx, existingVersion.ID, docModels); storeErr != nil {
+								log.Printf("Warning: failed to store backfilled doc index for %s/%s@%s: %v", namespace, providerName, version.Version, storeErr)
+							} else {
+								log.Printf("Backfilled %d doc index entries for %s/%s@%s", len(docModels), namespace, providerName, version.Version)
+							}
+						}
+					}
+				}
 				log.Printf("Version %s of %s/%s already exists with all platforms, skipping", version.Version, namespace, providerName)
 				continue
 			}

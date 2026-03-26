@@ -309,14 +309,17 @@ func makeDocEntry(id, slug, category, language string) providerDocEntryV2 {
 
 func TestResolveProviderVersionID_NotFound(t *testing.T) {
 	_, u := newTestRegistry(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v2/providers/hashicorp/aws/versions" {
+		switch r.URL.Path {
+		case "/v2/providers/hashicorp/aws":
+			json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"id": "100"}})
+		case "/v2/providers/100/provider-versions":
 			json.NewEncoder(w).Encode(makeVersionListPage([]providerVersionEntryV2{
 				makeVersionEntry("1", "4.0.0"),
 				makeVersionEntry("2", "4.1.0"),
 			}, nil))
-			return
+		default:
+			http.NotFound(w, r)
 		}
-		http.NotFound(w, r)
 	}))
 
 	_, err := u.resolveProviderVersionID(context.Background(), "hashicorp", "aws", "5.0.0")
@@ -325,24 +328,18 @@ func TestResolveProviderVersionID_NotFound(t *testing.T) {
 	}
 }
 
-func TestResolveProviderVersionID_Pagination(t *testing.T) {
-	two := 2
+func TestResolveProviderVersionID_Found(t *testing.T) {
 	_, u := newTestRegistry(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v2/providers/hashicorp/aws/versions" {
-			http.NotFound(w, r)
-			return
-		}
-		switch r.URL.Query().Get("page[number]") {
-		case "1", "":
+		switch r.URL.Path {
+		case "/v2/providers/hashicorp/aws":
+			json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"id": "100"}})
+		case "/v2/providers/100/provider-versions":
 			json.NewEncoder(w).Encode(makeVersionListPage([]providerVersionEntryV2{
 				makeVersionEntry("10", "4.0.0"),
-			}, &two))
-		case "2":
-			json.NewEncoder(w).Encode(makeVersionListPage([]providerVersionEntryV2{
 				makeVersionEntry("20", "5.0.0"),
 			}, nil))
 		default:
-			http.Error(w, "unexpected page", http.StatusBadRequest)
+			http.NotFound(w, r)
 		}
 	}))
 
@@ -362,7 +359,9 @@ func TestResolveProviderVersionID_Pagination(t *testing.T) {
 func TestGetProviderDocIndexByVersion_SinglePage(t *testing.T) {
 	_, u := newTestRegistry(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v2/providers/hashicorp/aws/versions":
+		case "/v2/providers/hashicorp/aws":
+			json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"id": "5000"}})
+		case "/v2/providers/5000/provider-versions":
 			json.NewEncoder(w).Encode(makeVersionListPage([]providerVersionEntryV2{
 				makeVersionEntry("999", "5.0.0"),
 			}, nil))
@@ -400,7 +399,9 @@ func TestGetProviderDocIndexByVersion_Pagination(t *testing.T) {
 	two := 2
 	_, u := newTestRegistry(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v2/providers/hashicorp/aws/versions":
+		case "/v2/providers/hashicorp/aws":
+			json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"id": "5000"}})
+		case "/v2/providers/5000/provider-versions":
 			json.NewEncoder(w).Encode(makeVersionListPage([]providerVersionEntryV2{
 				makeVersionEntry("777", "5.0.0"),
 			}, nil))
@@ -449,7 +450,9 @@ func TestGetProviderDocIndexByVersion_HTTPError(t *testing.T) {
 func TestGetProviderDocIndexByVersion_Empty(t *testing.T) {
 	_, u := newTestRegistry(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v2/providers/hashicorp/null/versions":
+		case "/v2/providers/hashicorp/null":
+			json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"id": "6000"}})
+		case "/v2/providers/6000/provider-versions":
 			json.NewEncoder(w).Encode(makeVersionListPage([]providerVersionEntryV2{
 				makeVersionEntry("555", "1.0.0"),
 			}, nil))
