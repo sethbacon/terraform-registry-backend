@@ -11,11 +11,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.30] - 2026-03-25
+
+### Fixed
+- fix: switch doc-index and provider-version pagination from next-page sentinel to length-based detection — the registry v2 API never populates `meta.pagination.next-page`; `GetProviderDocIndexByVersion` now fetches all pages (1,500+ entries for large providers like azurerm) and `resolveProviderVersionID` pages through all provider-version pages to handle providers with more than 100 releases
+
+---
+
 ## [0.2.29] - 2026-03-25
 
 ### Fixed
 - fix: backfill doc index for existing provider versions with no docs — the mirror sync job now checks the doc count when skipping already-complete versions; if zero docs exist (due to a prior failed doc fetch), it fetches and stores the doc index without re-downloading binaries
-- fix: resolve provider-version numeric ID via correct v2 API endpoints — `resolveProviderVersionID` now calls `GET /v2/providers/{namespace}/{name}` to obtain the provider's numeric ID, then `GET /v2/providers/{id}/provider-versions` to find the matching semver entry; the previous `/v2/providers/{namespace}/{name}/versions` path returned 404
+
+---
+
+## [0.2.28] - 2026-03-25
+
+### Fixed
+- fix: resolve numeric v2 provider-version ID before fetching doc index — `resolveProviderVersionID` now calls `GET /v2/providers/{namespace}/{name}` to obtain the provider's numeric ID then `GET /v2/providers/{id}/provider-versions` to find the matching semver entry
 
 ---
 

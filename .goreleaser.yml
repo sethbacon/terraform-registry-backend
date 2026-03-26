@@ -34,6 +34,7 @@ checksum:
   algorithm: sha256
 
 release:
+  draft: true
   github:
     owner: sethbacon
     name: terraform-registry-backend

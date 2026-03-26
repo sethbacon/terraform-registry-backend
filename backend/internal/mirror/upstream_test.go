@@ -3,6 +3,7 @@ package mirror
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -352,6 +353,42 @@ func TestResolveProviderVersionID_Found(t *testing.T) {
 	}
 }
 
+func TestResolveProviderVersionID_Pagination(t *testing.T) {
+	// Page 1 returns a full page of 100 versions (not the target); page 2 returns
+	// a partial page that contains the target version.
+	page1Versions := make([]providerVersionEntryV2, 100)
+	for i := range page1Versions {
+		page1Versions[i] = makeVersionEntry(fmt.Sprintf("%d", i+1000), fmt.Sprintf("1.%d.0", i))
+	}
+	_, u := newTestRegistry(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/providers/hashicorp/aws":
+			json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"id": "200"}})
+		case "/v2/providers/200/provider-versions":
+			switch r.URL.Query().Get("page[number]") {
+			case "1", "":
+				json.NewEncoder(w).Encode(makeVersionListPage(page1Versions, nil))
+			case "2":
+				json.NewEncoder(w).Encode(makeVersionListPage([]providerVersionEntryV2{
+					makeVersionEntry("9999", "99.0.0"),
+				}, nil))
+			default:
+				http.Error(w, "unexpected page", http.StatusBadRequest)
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+
+	id, err := u.resolveProviderVersionID(context.Background(), "hashicorp", "aws", "99.0.0")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if id != "9999" {
+		t.Errorf("got id %q, want %q", id, "9999")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // GetProviderDocIndexByVersion
 // ---------------------------------------------------------------------------
@@ -396,7 +433,13 @@ func TestGetProviderDocIndexByVersion_SinglePage(t *testing.T) {
 }
 
 func TestGetProviderDocIndexByVersion_Pagination(t *testing.T) {
-	two := 2
+	// The registry API does not populate meta.pagination; pagination is detected
+	// by receiving fewer entries than the requested page size (< 100).
+	// Page 1 returns a full page of 100 docs; page 2 returns 3 docs (partial → stop).
+	page1 := make([]providerDocEntryV2, 100)
+	for i := range page1 {
+		page1[i] = makeDocEntry(fmt.Sprintf("%d", i+1), fmt.Sprintf("resource_%d", i+1), "resources", "hcl")
+	}
 	_, u := newTestRegistry(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v2/providers/hashicorp/aws":
@@ -408,13 +451,12 @@ func TestGetProviderDocIndexByVersion_Pagination(t *testing.T) {
 		case "/v2/provider-docs":
 			switch r.URL.Query().Get("page[number]") {
 			case "1", "":
-				json.NewEncoder(w).Encode(makeDocListPage([]providerDocEntryV2{
-					makeDocEntry("1", "index", "overview", "hcl"),
-				}, &two))
+				json.NewEncoder(w).Encode(makeDocListPage(page1, nil))
 			case "2":
 				json.NewEncoder(w).Encode(makeDocListPage([]providerDocEntryV2{
-					makeDocEntry("2", "aws_instance", "resources", "hcl"),
-					makeDocEntry("3", "aws_vpc", "resources", "hcl"),
+					makeDocEntry("101", "index", "overview", "hcl"),
+					makeDocEntry("102", "aws_instance", "resources", "hcl"),
+					makeDocEntry("103", "aws_vpc", "resources", "hcl"),
 				}, nil))
 			default:
 				http.Error(w, "unexpected page", http.StatusBadRequest)
@@ -428,11 +470,11 @@ func TestGetProviderDocIndexByVersion_Pagination(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(docs) != 3 {
-		t.Fatalf("got %d docs across pages, want 3", len(docs))
+	if len(docs) != 103 {
+		t.Fatalf("got %d docs across pages, want 103", len(docs))
 	}
-	if docs[2].ID != "3" {
-		t.Errorf("last doc ID = %q, want 3", docs[2].ID)
+	if docs[102].ID != "103" {
+		t.Errorf("last doc ID = %q, want %q", docs[102].ID, "103")
 	}
 }
 
