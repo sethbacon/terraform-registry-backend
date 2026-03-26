@@ -107,8 +107,8 @@
 			"rule_id": "G104",
 			"details": "Errors unhandled",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\mirror\\upstream.go",
-			"code": "483: \t\tdecodeErr := json.NewDecoder(resp.Body).Decode(\u0026page)\n484: \t\tresp.Body.Close()\n485: \t\tif decodeErr != nil {\n",
-			"line": "484",
+			"code": "509: \t\tdecodeErr := json.NewDecoder(resp.Body).Decode(\u0026page)\n510: \t\tresp.Body.Close()\n511: \t\tif decodeErr != nil {\n",
+			"line": "510",
 			"column": "3",
 			"nosec": false,
 			"suppressions": null
@@ -123,8 +123,8 @@
 			"rule_id": "G104",
 			"details": "Errors unhandled",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\mirror\\upstream.go",
-			"code": "477: \t\t\tbody, _ := io.ReadAll(resp.Body)\n478: \t\t\tresp.Body.Close()\n479: \t\t\treturn nil, fmt.Errorf(\"v2 provider doc index request failed with status %d: %s\", resp.StatusCode, string(body))\n",
-			"line": "478",
+			"code": "503: \t\t\tbody, _ := io.ReadAll(resp.Body)\n504: \t\t\tresp.Body.Close()\n505: \t\t\treturn nil, fmt.Errorf(\"v2 provider doc index request failed with status %d: %s\", resp.StatusCode, string(body))\n",
+			"line": "504",
 			"column": "4",
 			"nosec": false,
 			"suppressions": null
@@ -139,8 +139,24 @@
 			"rule_id": "G104",
 			"details": "Errors unhandled",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\mirror\\upstream.go",
-			"code": "423: \t\tdecodeErr := json.NewDecoder(resp.Body).Decode(\u0026page)\n424: \t\tresp.Body.Close()\n425: \t\tif decodeErr != nil {\n",
-			"line": "424",
+			"code": "455: \tdecodeErr = json.NewDecoder(resp.Body).Decode(\u0026versionsResp)\n456: \tresp.Body.Close()\n457: \tif decodeErr != nil {\n",
+			"line": "456",
+			"column": "2",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "LOW",
+			"confidence": "HIGH",
+			"cwe": {
+				"id": "703",
+				"url": "https://cwe.mitre.org/data/definitions/703.html"
+			},
+			"rule_id": "G104",
+			"details": "Errors unhandled",
+			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\mirror\\upstream.go",
+			"code": "450: \t\tbody, _ := io.ReadAll(resp.Body)\n451: \t\tresp.Body.Close()\n452: \t\treturn \"\", fmt.Errorf(\"v2 provider-versions request failed with status %d: %s\", resp.StatusCode, string(body))\n",
+			"line": "451",
 			"column": "3",
 			"nosec": false,
 			"suppressions": null
@@ -155,9 +171,25 @@
 			"rule_id": "G104",
 			"details": "Errors unhandled",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\mirror\\upstream.go",
-			"code": "417: \t\t\tbody, _ := io.ReadAll(resp.Body)\n418: \t\t\tresp.Body.Close()\n419: \t\t\treturn \"\", fmt.Errorf(\"v2 provider versions request failed with status %d: %s\", resp.StatusCode, string(body))\n",
-			"line": "418",
-			"column": "4",
+			"code": "427: \tdecodeErr := json.NewDecoder(resp.Body).Decode(\u0026provResp)\n428: \tresp.Body.Close()\n429: \tif decodeErr != nil {\n",
+			"line": "428",
+			"column": "2",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "LOW",
+			"confidence": "HIGH",
+			"cwe": {
+				"id": "703",
+				"url": "https://cwe.mitre.org/data/definitions/703.html"
+			},
+			"rule_id": "G104",
+			"details": "Errors unhandled",
+			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\mirror\\upstream.go",
+			"code": "422: \t\tbody, _ := io.ReadAll(resp.Body)\n423: \t\tresp.Body.Close()\n424: \t\treturn \"\", fmt.Errorf(\"v2 provider lookup failed with status %d: %s\", resp.StatusCode, string(body))\n",
+			"line": "423",
+			"column": "3",
 			"nosec": false,
 			"suppressions": null
 		},
@@ -283,8 +315,8 @@
 			"rule_id": "G104",
 			"details": "Errors unhandled",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\jobs\\mirror_sync.go",
-			"code": "1001: \twritten, err := io.Copy(tmpFile, io.TeeReader(stream.Body, hasher))\n1002: \tstream.Body.Close()\n1003: \tif err != nil {\n",
-			"line": "1002",
+			"code": "1034: \twritten, err := io.Copy(tmpFile, io.TeeReader(stream.Body, hasher))\n1035: \tstream.Body.Close()\n1036: \tif err != nil {\n",
+			"line": "1035",
 			"column": "2",
 			"nosec": false,
 			"suppressions": null
@@ -299,8 +331,8 @@
 			"rule_id": "G104",
 			"details": "Errors unhandled",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\jobs\\mirror_sync.go",
-			"code": "995: \t\ttmpFile.Close()\n996: \t\tos.Remove(tmpFile.Name())\n997: \t}()\n",
-			"line": "996",
+			"code": "1028: \t\ttmpFile.Close()\n1029: \t\tos.Remove(tmpFile.Name())\n1030: \t}()\n",
+			"line": "1029",
 			"column": "3",
 			"nosec": false,
 			"suppressions": null
@@ -315,8 +347,8 @@
 			"rule_id": "G104",
 			"details": "Errors unhandled",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\jobs\\mirror_sync.go",
-			"code": "994: \tdefer func() {\n995: \t\ttmpFile.Close()\n996: \t\tos.Remove(tmpFile.Name())\n",
-			"line": "995",
+			"code": "1027: \tdefer func() {\n1028: \t\ttmpFile.Close()\n1029: \t\tos.Remove(tmpFile.Name())\n",
+			"line": "1028",
 			"column": "3",
 			"nosec": false,
 			"suppressions": null
@@ -331,8 +363,8 @@
 			"rule_id": "G104",
 			"details": "Errors unhandled",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\jobs\\mirror_sync.go",
-			"code": "990: \tif err != nil {\n991: \t\tstream.Body.Close()\n992: \t\treturn fmt.Errorf(\"failed to create temp file: %w\", err)\n",
-			"line": "991",
+			"code": "1023: \tif err != nil {\n1024: \t\tstream.Body.Close()\n1025: \t\treturn fmt.Errorf(\"failed to create temp file: %w\", err)\n",
+			"line": "1024",
 			"column": "3",
 			"nosec": false,
 			"suppressions": null
@@ -340,9 +372,9 @@
 	],
 	"Stats": {
 		"files": 124,
-		"lines": 37683,
-		"nosec": 94,
-		"found": 21
+		"lines": 37757,
+		"nosec": 95,
+		"found": 23
 	},
 	"GosecVersion": "dev"
 }

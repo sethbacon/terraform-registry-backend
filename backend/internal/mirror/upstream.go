@@ -365,8 +365,15 @@ type providerDocContentV2 struct {
 	} `json:"data"`
 }
 
+// providerV2Response is the JSON:API envelope for GET /v2/providers/{namespace}/{name}.
+type providerV2Response struct {
+	Data struct {
+		ID string `json:"id"`
+	} `json:"data"`
+}
+
 // providerVersionListV2 is the JSON:API envelope for
-// GET /v2/providers/{namespace}/{name}/versions.
+// GET /v2/providers/{id}/provider-versions.
 type providerVersionListV2 struct {
 	Data []providerVersionEntryV2 `json:"data"`
 	Meta struct {
@@ -385,57 +392,76 @@ type providerVersionEntryV2 struct {
 	} `json:"attributes"`
 }
 
-// resolveProviderVersionID pages through the upstream v2
-// /v2/providers/{namespace}/{name}/versions endpoint to find the numeric
-// JSON:API ID for the given semver string. The v2 provider-docs API requires
-// this numeric ID as filter[provider-version]; passing the semver string
-// directly causes a 400 "provider-version filter is required" error.
+// resolveProviderVersionID returns the numeric JSON:API provider-version ID for
+// the given semver string using a two-step lookup:
+//
+//  1. GET /v2/providers/{namespace}/{name}        → the provider's numeric ID.
+//  2. GET /v2/providers/{id}/provider-versions    → flat list of all versions.
+//
+// The v2 provider-docs API requires this numeric ID as filter[provider-version];
+// passing the semver string directly causes a 400 "provider-version filter is
+// required" error.
 func (u *UpstreamRegistry) resolveProviderVersionID(ctx context.Context, namespace, providerName, semver string) (string, error) {
 	base := strings.TrimSuffix(u.BaseURL, "/")
-	pageNum := 1
 
-	for {
-		reqURL := fmt.Sprintf(
-			"%s/v2/providers/%s/%s/versions?page[size]=100&page[number]=%d",
-			base,
-			url.PathEscape(namespace),
-			url.PathEscape(providerName),
-			pageNum,
-		)
-
-		req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil) // #nosec G107 -- URL built from admin-controlled mirror configuration
-		if err != nil {
-			return "", fmt.Errorf("failed to create v2 provider versions request (page %d): %w", pageNum, err)
-		}
-
-		resp, err := u.HTTPClient.Do(req)
-		if err != nil {
-			return "", fmt.Errorf("failed to fetch v2 provider versions (page %d): %w", pageNum, err)
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			return "", fmt.Errorf("v2 provider versions request failed with status %d: %s", resp.StatusCode, string(body))
-		}
-
-		var page providerVersionListV2
-		decodeErr := json.NewDecoder(resp.Body).Decode(&page)
+	// Step 1: resolve the provider's numeric ID.
+	providerURL := fmt.Sprintf("%s/v2/providers/%s/%s",
+		base,
+		url.PathEscape(namespace),
+		url.PathEscape(providerName),
+	)
+	req, err := http.NewRequestWithContext(ctx, "GET", providerURL, nil) // #nosec G107 -- URL built from admin-controlled mirror configuration
+	if err != nil {
+		return "", fmt.Errorf("failed to create v2 provider lookup request: %w", err)
+	}
+	resp, err := u.HTTPClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch v2 provider: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		if decodeErr != nil {
-			return "", fmt.Errorf("failed to decode v2 provider versions response (page %d): %w", pageNum, decodeErr)
-		}
+		return "", fmt.Errorf("v2 provider lookup failed with status %d: %s", resp.StatusCode, string(body))
+	}
+	var provResp providerV2Response
+	decodeErr := json.NewDecoder(resp.Body).Decode(&provResp)
+	resp.Body.Close()
+	if decodeErr != nil {
+		return "", fmt.Errorf("failed to decode v2 provider response: %w", decodeErr)
+	}
+	if provResp.Data.ID == "" {
+		return "", fmt.Errorf("v2 provider lookup returned empty ID for %s/%s", namespace, providerName)
+	}
 
-		for _, entry := range page.Data {
-			if entry.Attributes.Version == semver {
-				return entry.ID, nil
-			}
-		}
+	// Step 2: list all provider-versions under that provider ID.
+	versionsURL := fmt.Sprintf("%s/v2/providers/%s/provider-versions",
+		base,
+		provResp.Data.ID,
+	)
+	req, err = http.NewRequestWithContext(ctx, "GET", versionsURL, nil) // #nosec G107 -- URL built from admin-controlled mirror configuration
+	if err != nil {
+		return "", fmt.Errorf("failed to create v2 provider-versions request: %w", err)
+	}
+	resp, err = u.HTTPClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch v2 provider-versions: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return "", fmt.Errorf("v2 provider-versions request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+	var versionsResp providerVersionListV2
+	decodeErr = json.NewDecoder(resp.Body).Decode(&versionsResp)
+	resp.Body.Close()
+	if decodeErr != nil {
+		return "", fmt.Errorf("failed to decode v2 provider-versions response: %w", decodeErr)
+	}
 
-		if page.Meta.Pagination.NextPage == nil {
-			break
+	for _, entry := range versionsResp.Data {
+		if entry.Attributes.Version == semver {
+			return entry.ID, nil
 		}
-		pageNum++
 	}
 
 	return "", fmt.Errorf("provider version %s/%s@%s not found in upstream v2 versions API", namespace, providerName, semver)
