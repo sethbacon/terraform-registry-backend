@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- fix: switch doc-index and provider-version pagination from next-page sentinel to length-based detection — the registry v2 API never populates meta.pagination.next-page, so GetProviderDocIndexByVersion now fetches all pages (1,500+ entries for large providers like azurerm) and resolveProviderVersionID pages through all versions to handle providers with more than 100 releases
+
 ---
 
 ## [0.2.29] - 2026-03-25
