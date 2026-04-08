@@ -1079,3 +1079,225 @@ func TestDeleteProvider_NotFound(t *testing.T) {
 		t.Error("expected error for not found provider, got nil")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// GetProviderByID
+// ---------------------------------------------------------------------------
+
+func TestGetProviderByID_Found(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+
+	mock.ExpectQuery("SELECT.*FROM providers").
+		WithArgs("prov-1").
+		WillReturnRows(sampleProviderRow())
+
+	p, err := repo.GetProviderByID(context.Background(), "prov-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p == nil {
+		t.Fatal("expected provider, got nil")
+	}
+	if p.ID != "prov-1" {
+		t.Errorf("ID = %q, want %q", p.ID, "prov-1")
+	}
+}
+
+func TestGetProviderByID_NotFound(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+
+	mock.ExpectQuery("SELECT.*FROM providers").
+		WithArgs("missing").
+		WillReturnRows(emptyProviderRow())
+
+	p, err := repo.GetProviderByID(context.Background(), "missing")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p != nil {
+		t.Error("expected nil for not-found provider")
+	}
+}
+
+func TestGetProviderByID_DBError(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+
+	mock.ExpectQuery("SELECT.*FROM providers").
+		WithArgs("prov-err").
+		WillReturnError(errDB)
+
+	_, err := repo.GetProviderByID(context.Background(), "prov-err")
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ListVersionsPaginated
+// ---------------------------------------------------------------------------
+
+func TestListVersionsPaginated_Success(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs("prov-1").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	protocols := []byte(`["6.0"]`)
+	mock.ExpectQuery("SELECT.*FROM provider_versions").
+		WithArgs("prov-1", 10, 0).
+		WillReturnRows(sqlmock.NewRows(provVersionListCols).
+			AddRow("ver-1", "prov-1", "1.0.0", protocols, "", "", "", nil, nil, false, nil, nil, time.Now()))
+
+	versions, total, err := repo.ListVersionsPaginated(context.Background(), "prov-1", 10, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 1 {
+		t.Errorf("total = %d, want 1", total)
+	}
+	if len(versions) != 1 {
+		t.Errorf("len(versions) = %d, want 1", len(versions))
+	}
+}
+
+func TestListVersionsPaginated_CountError(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs("prov-1").
+		WillReturnError(errDB)
+
+	_, _, err := repo.ListVersionsPaginated(context.Background(), "prov-1", 10, 0)
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+func TestListVersionsPaginated_QueryError(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs("prov-1").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	mock.ExpectQuery("SELECT.*FROM provider_versions").
+		WithArgs("prov-1", 10, 0).
+		WillReturnError(errDB)
+
+	_, _, err := repo.ListVersionsPaginated(context.Background(), "prov-1", 10, 0)
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// UpsertProviderVersionShasums
+// ---------------------------------------------------------------------------
+
+func TestUpsertProviderVersionShasums_Empty(t *testing.T) {
+	repo, _ := newProviderRepo(t)
+
+	// No expectations needed — empty map is a no-op
+	err := repo.UpsertProviderVersionShasums(context.Background(), "ver-1", map[string]string{})
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestUpsertProviderVersionShasums_Success(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+
+	mock.ExpectBegin()
+	mock.ExpectPrepare("INSERT INTO provider_version_shasums")
+	mock.ExpectExec("INSERT INTO provider_version_shasums").
+		WithArgs("ver-1", "terraform_1.0.0_linux_amd64.zip", "abc123").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	err := repo.UpsertProviderVersionShasums(context.Background(), "ver-1",
+		map[string]string{"terraform_1.0.0_linux_amd64.zip": "abc123"})
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestUpsertProviderVersionShasums_BeginError(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+
+	mock.ExpectBegin().WillReturnError(errDB)
+
+	err := repo.UpsertProviderVersionShasums(context.Background(), "ver-1",
+		map[string]string{"file.zip": "sha"})
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+func TestUpsertProviderVersionShasums_ExecError(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+
+	mock.ExpectBegin()
+	mock.ExpectPrepare("INSERT INTO provider_version_shasums")
+	mock.ExpectExec("INSERT INTO provider_version_shasums").
+		WillReturnError(errDB)
+	mock.ExpectRollback()
+
+	err := repo.UpsertProviderVersionShasums(context.Background(), "ver-1",
+		map[string]string{"file.zip": "sha"})
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ListProviderVersionShasums
+// ---------------------------------------------------------------------------
+
+var shasumCols = []string{"provider_version_id", "filename", "sha256_hex"}
+
+func TestListProviderVersionShasums_Success(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+
+	mock.ExpectQuery("SELECT.*FROM provider_version_shasums").
+		WithArgs("ver-1").
+		WillReturnRows(sqlmock.NewRows(shasumCols).
+			AddRow("ver-1", "file.zip", "deadbeef"))
+
+	items, err := repo.ListProviderVersionShasums(context.Background(), "ver-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(items) != 1 {
+		t.Errorf("len = %d, want 1", len(items))
+	}
+}
+
+func TestListProviderVersionShasums_Empty(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+
+	mock.ExpectQuery("SELECT.*FROM provider_version_shasums").
+		WithArgs("ver-1").
+		WillReturnRows(sqlmock.NewRows(shasumCols))
+
+	items, err := repo.ListProviderVersionShasums(context.Background(), "ver-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(items) != 0 {
+		t.Errorf("len = %d, want 0", len(items))
+	}
+}
+
+func TestListProviderVersionShasums_DBError(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+
+	mock.ExpectQuery("SELECT.*FROM provider_version_shasums").
+		WithArgs("ver-err").
+		WillReturnError(errDB)
+
+	_, err := repo.ListProviderVersionShasums(context.Background(), "ver-err")
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}

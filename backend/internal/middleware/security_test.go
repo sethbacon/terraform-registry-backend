@@ -25,6 +25,18 @@ func applySecurityHeaders(cfg SecurityHeadersConfig) *httptest.ResponseRecorder 
 	return w
 }
 
+// applySecurityHeadersTLS simulates a TLS request by setting X-Forwarded-Proto: https.
+func applySecurityHeadersTLS(cfg SecurityHeadersConfig) *httptest.ResponseRecorder {
+	r := gin.New()
+	r.Use(SecurityHeadersMiddleware(cfg))
+	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	r.ServeHTTP(w, req)
+	return w
+}
+
 // ---------------------------------------------------------------------------
 // DefaultSecurityHeadersConfig
 // ---------------------------------------------------------------------------
@@ -103,7 +115,7 @@ func TestSecurityHeadersMiddleware_HSTS(t *testing.T) {
 			HSTSIncludeSubdomains: true,
 			HSTSPreload:           false,
 		}
-		w := applySecurityHeaders(cfg)
+		w := applySecurityHeadersTLS(cfg)
 		hsts := w.Header().Get("Strict-Transport-Security")
 		if !strings.Contains(hsts, "max-age=31536000") {
 			t.Errorf("HSTS = %q, want to contain max-age=31536000", hsts)
@@ -122,7 +134,7 @@ func TestSecurityHeadersMiddleware_HSTS(t *testing.T) {
 			HSTSMaxAge:  86400,
 			HSTSPreload: true,
 		}
-		w := applySecurityHeaders(cfg)
+		w := applySecurityHeadersTLS(cfg)
 		hsts := w.Header().Get("Strict-Transport-Security")
 		if !strings.Contains(hsts, "preload") {
 			t.Errorf("HSTS = %q, want to contain preload", hsts)
@@ -131,9 +143,20 @@ func TestSecurityHeadersMiddleware_HSTS(t *testing.T) {
 
 	t.Run("hsts disabled", func(t *testing.T) {
 		cfg := SecurityHeadersConfig{EnableHSTS: false}
-		w := applySecurityHeaders(cfg)
+		w := applySecurityHeadersTLS(cfg)
 		if got := w.Header().Get("Strict-Transport-Security"); got != "" {
 			t.Errorf("HSTS should be absent when disabled, got %q", got)
+		}
+	})
+
+	t.Run("hsts not sent over plain http", func(t *testing.T) {
+		cfg := SecurityHeadersConfig{
+			EnableHSTS: true,
+			HSTSMaxAge: 31536000,
+		}
+		w := applySecurityHeaders(cfg)
+		if got := w.Header().Get("Strict-Transport-Security"); got != "" {
+			t.Errorf("HSTS should not be sent over plain HTTP, got %q", got)
 		}
 	})
 }
@@ -270,41 +293,15 @@ func TestSecurityHeadersMiddleware_FixedHeaders(t *testing.T) {
 }
 
 func TestSecurityHeadersMiddleware_DefaultConfig(t *testing.T) {
-	w := applySecurityHeaders(DefaultSecurityHeadersConfig())
+	w := applySecurityHeadersTLS(DefaultSecurityHeadersConfig())
 	if w.Code != http.StatusOK {
 		t.Errorf("response code = %d, want 200", w.Code)
 	}
 	// Spot-check a few headers are set
 	if w.Header().Get("Strict-Transport-Security") == "" {
-		t.Error("Strict-Transport-Security should be set with default config")
+		t.Error("Strict-Transport-Security should be set with default config over TLS")
 	}
 	if w.Header().Get("X-Frame-Options") == "" {
 		t.Error("X-Frame-Options should be set with default config")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// itoa (unexported helper)
-// ---------------------------------------------------------------------------
-
-func TestItoa(t *testing.T) {
-	tests := []struct {
-		input int
-		want  string
-	}{
-		{0, "0"},
-		{1, "1"},
-		{9, "9"},
-		{10, "10"},
-		{123, "123"},
-		{31536000, "31536000"},
-		{-1, "-1"},
-		{-100, "-100"},
-	}
-	for _, tt := range tests {
-		got := itoa(tt.input)
-		if got != tt.want {
-			t.Errorf("itoa(%d) = %q, want %q", tt.input, got, tt.want)
-		}
 	}
 }

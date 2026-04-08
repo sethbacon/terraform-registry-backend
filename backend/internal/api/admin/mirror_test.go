@@ -901,6 +901,8 @@ func TestListMirroredProviders_EmptyProviders(t *testing.T) {
 	mock, r := newMirrorProvidersRouter(t)
 	mock.ExpectQuery("SELECT.*FROM mirror_configurations WHERE id").
 		WillReturnRows(sampleMirrorCfgRow())
+	mock.ExpectQuery("SELECT COUNT.*FROM mirrored_providers").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectQuery("SELECT.*FROM mirrored_providers").
 		WillReturnRows(sqlmock.NewRows(mirroredProviderCols))
 	w := httptest.NewRecorder()
@@ -918,6 +920,8 @@ func TestListMirroredProviders_WithProviderAndVersions(t *testing.T) {
 
 	mock.ExpectQuery("SELECT.*FROM mirror_configurations WHERE id").
 		WillReturnRows(sampleMirrorCfgRow())
+	mock.ExpectQuery("SELECT COUNT.*FROM mirrored_providers").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectQuery("SELECT.*FROM mirrored_providers").
 		WillReturnRows(sqlmock.NewRows(mirroredProviderCols).AddRow(
 			knownUUID, knownUUID, providerID, "hashicorp", "aws",

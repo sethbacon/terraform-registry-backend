@@ -890,3 +890,41 @@ func TestUpdateMember_GetMemberWithRoleDBError(t *testing.T) {
 		t.Error("response missing 'member' key")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// CreateOrganizationHandler — missing error paths
+// ---------------------------------------------------------------------------
+
+func TestCreateOrganization_CreateDBError(t *testing.T) {
+	mock, r := newOrgRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
+		WillReturnRows(emptyOrgRow())
+	mock.ExpectQuery("INSERT INTO organizations").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/organizations",
+		jsonBody(map[string]string{"name": "new-org", "display_name": "New Org"})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateOrganization_ExistenceCheckError(t *testing.T) {
+	mock, r := newOrgRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
+		WillReturnError(errDB)
+
+	req := httptest.NewRequest("POST", "/organizations",
+		jsonBody(map[string]string{"name": "new-org", "display_name": "New Org"}))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}

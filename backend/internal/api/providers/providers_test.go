@@ -194,6 +194,9 @@ func TestListVersionsHandler_Success(t *testing.T) {
 
 	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow())
 	mock.ExpectQuery("SELECT.*FROM providers.*WHERE").WillReturnRows(sampleProviderRow())
+	// ListVersionsPaginated — COUNT query
+	mock.ExpectQuery("SELECT COUNT.*FROM provider_versions").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	// ListVersionsPaginated — data query with LIMIT/OFFSET
 	mock.ExpectQuery("SELECT.*FROM provider_versions.*WHERE pv.provider_id").WillReturnRows(sampleProviderVersionListRow())
 	// ListVersionsHandler also calls ListPlatforms for each version
 	mock.ExpectQuery("SELECT.*FROM provider_platforms.*WHERE provider_version_id").WillReturnRows(samplePlatformRow())

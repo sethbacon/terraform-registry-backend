@@ -31,6 +31,8 @@ type TerraformMirrorConfig struct {
 	LastSyncError     *string    `json:"last_sync_error,omitempty" db:"last_sync_error"`
 	CreatedAt         time.Time  `json:"created_at" db:"created_at"`
 	UpdatedAt         time.Time  `json:"updated_at" db:"updated_at"`
+	CustomGPGKey      *string    `json:"custom_gpg_key,omitempty" db:"custom_gpg_key"`
+	SkipGPGVerify     bool       `json:"skip_gpg_verify" db:"skip_gpg_verify"`
 }
 
 // TerraformVersion represents a single Terraform/OpenTofu release version within a mirror config.

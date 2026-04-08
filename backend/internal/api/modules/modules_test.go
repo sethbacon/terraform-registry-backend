@@ -186,6 +186,7 @@ func TestListVersionsHandler_Success(t *testing.T) {
 
 	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow2())
 	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(sampleModuleRow2())
+	mock.ExpectQuery("SELECT COUNT.*FROM module_versions WHERE module_id").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE mv.module_id").WillReturnRows(sampleModuleVersionsRows())
 
 	w := doGET(r, "/v1/modules/hashicorp/consul/aws/versions")
@@ -793,5 +794,52 @@ func TestDownloadHandler_SuccessNilAuditRepo(t *testing.T) {
 	w := doGET(r, "/v1/modules/hashicorp/consul/aws/1.0.0/download")
 	if w.Code != http.StatusNoContent {
 		t.Errorf("status = %d, want 204; body: %s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// parseProviderFilePath
+// ---------------------------------------------------------------------------
+
+func TestParseProviderFilePath_Valid(t *testing.T) {
+	ns, pt, ver, os, arch, ok := parseProviderFilePath("providers/hashicorp/aws/5.0.0/linux/amd64/file.zip")
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if ns != "hashicorp" {
+		t.Errorf("namespace = %q, want hashicorp", ns)
+	}
+	if pt != "aws" {
+		t.Errorf("type = %q, want aws", pt)
+	}
+	if ver != "5.0.0" {
+		t.Errorf("version = %q, want 5.0.0", ver)
+	}
+	if os != "linux" {
+		t.Errorf("os = %q, want linux", os)
+	}
+	if arch != "amd64" {
+		t.Errorf("arch = %q, want amd64", arch)
+	}
+}
+
+func TestParseProviderFilePath_TooShort(t *testing.T) {
+	_, _, _, _, _, ok := parseProviderFilePath("providers/hashicorp/aws")
+	if ok {
+		t.Error("expected ok=false for too-short path")
+	}
+}
+
+func TestParseProviderFilePath_WrongPrefix(t *testing.T) {
+	_, _, _, _, _, ok := parseProviderFilePath("modules/hashicorp/aws/5.0.0/linux/amd64/file.zip")
+	if ok {
+		t.Error("expected ok=false for wrong prefix")
+	}
+}
+
+func TestParseProviderFilePath_Empty(t *testing.T) {
+	_, _, _, _, _, ok := parseProviderFilePath("")
+	if ok {
+		t.Error("expected ok=false for empty path")
 	}
 }

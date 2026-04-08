@@ -376,6 +376,41 @@ func (r *TerraformMirrorRepository) ListVersions(ctx context.Context, configID u
 	return versions, nil
 }
 
+// ListVersionsPaginated returns version rows for a config with limit/offset pagination and total count.
+func (r *TerraformMirrorRepository) ListVersionsPaginated(ctx context.Context, configID uuid.UUID, syncedOnly bool, limit, offset int) ([]models.TerraformVersion, int, error) {
+	// Count query
+	countQuery := `SELECT COUNT(*) FROM terraform_versions WHERE config_id = $1`
+	if syncedOnly {
+		countQuery += " AND sync_status = 'synced'"
+	}
+	var total int
+	if err := r.db.QueryRowContext(ctx, countQuery, configID).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("failed to count terraform versions: %w", err)
+	}
+
+	query := `
+		SELECT id, config_id, version, is_latest, is_deprecated, release_date,
+		       sync_status, sync_error, synced_at, created_at, updated_at
+		FROM terraform_versions
+		WHERE config_id = $1
+	`
+
+	if syncedOnly {
+		query += " AND sync_status = 'synced'"
+	}
+
+	query += " ORDER BY COALESCE(CAST(NULLIF(SPLIT_PART(REGEXP_REPLACE(REGEXP_REPLACE(version, '^v', ''), '[-+].*$', ''), '.', 1), '') AS INTEGER), 0) DESC, COALESCE(CAST(NULLIF(SPLIT_PART(REGEXP_REPLACE(REGEXP_REPLACE(version, '^v', ''), '[-+].*$', ''), '.', 2), '') AS INTEGER), 0) DESC, COALESCE(CAST(NULLIF(SPLIT_PART(REGEXP_REPLACE(REGEXP_REPLACE(version, '^v', ''), '[-+].*$', ''), '.', 3), '') AS INTEGER), 0) DESC"
+	query += fmt.Sprintf(" LIMIT %d OFFSET %d", limit, offset)
+
+	var versions []models.TerraformVersion
+	err := r.db.SelectContext(ctx, &versions, query, configID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to list terraform versions: %w", err)
+	}
+
+	return versions, total, nil
+}
+
 // UpdateVersionSyncStatus updates the sync_status, sync_error, and synced_at for a version.
 func (r *TerraformMirrorRepository) UpdateVersionSyncStatus(ctx context.Context, id uuid.UUID, status string, syncErr *string) error {
 	now := time.Now()

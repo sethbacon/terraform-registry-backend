@@ -930,3 +930,83 @@ func TestUndeprecateVersion_DBError(t *testing.T) {
 		t.Error("expected error, got nil")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ListVersionsPaginated
+// ---------------------------------------------------------------------------
+
+func TestModuleListVersionsPaginated_Success(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs("mod-1").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	mock.ExpectQuery("SELECT.*FROM module_versions").
+		WithArgs("mod-1", 10, 0).
+		WillReturnRows(sampleModVersionListRowsData())
+
+	versions, total, err := repo.ListVersionsPaginated(context.Background(), "mod-1", 10, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 1 {
+		t.Errorf("total = %d, want 1", total)
+	}
+	if len(versions) != 1 {
+		t.Errorf("len(versions) = %d, want 1", len(versions))
+	}
+}
+
+func TestModuleListVersionsPaginated_CountError(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs("mod-1").
+		WillReturnError(errDB)
+
+	_, _, err := repo.ListVersionsPaginated(context.Background(), "mod-1", 10, 0)
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+func TestModuleListVersionsPaginated_QueryError(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs("mod-1").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	mock.ExpectQuery("SELECT.*FROM module_versions").
+		WithArgs("mod-1", 10, 0).
+		WillReturnError(errDB)
+
+	_, _, err := repo.ListVersionsPaginated(context.Background(), "mod-1", 10, 0)
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+func TestModuleListVersionsPaginated_Empty(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs("mod-1").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+
+	mock.ExpectQuery("SELECT.*FROM module_versions").
+		WithArgs("mod-1", 10, 0).
+		WillReturnRows(emptyModVersionListRows())
+
+	versions, total, err := repo.ListVersionsPaginated(context.Background(), "mod-1", 10, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 0 {
+		t.Errorf("total = %d, want 0", total)
+	}
+	if len(versions) != 0 {
+		t.Errorf("len = %d, want 0", len(versions))
+	}
+}

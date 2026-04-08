@@ -483,6 +483,32 @@ func (r *MirrorRepository) ListMirroredProviders(ctx context.Context, mirrorConf
 	return providers, nil
 }
 
+// ListMirroredProvidersPaginated retrieves mirrored providers with limit/offset pagination and total count.
+func (r *MirrorRepository) ListMirroredProvidersPaginated(ctx context.Context, mirrorConfigID uuid.UUID, limit, offset int) ([]models.MirroredProvider, int, error) {
+	countQuery := `SELECT COUNT(*) FROM mirrored_providers WHERE mirror_config_id = $1`
+	var total int
+	if err := r.db.QueryRowContext(ctx, countQuery, mirrorConfigID).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("failed to count mirrored providers: %w", err)
+	}
+
+	query := `
+		SELECT id, mirror_config_id, provider_id, upstream_namespace, upstream_type,
+		       last_synced_at, last_sync_version, sync_enabled, created_at
+		FROM mirrored_providers
+		WHERE mirror_config_id = $1
+		ORDER BY upstream_namespace, upstream_type
+		LIMIT $2 OFFSET $3
+	`
+
+	var providers []models.MirroredProvider
+	err := r.db.SelectContext(ctx, &providers, query, mirrorConfigID, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to list mirrored providers: %w", err)
+	}
+
+	return providers, total, nil
+}
+
 // CreateMirroredProviderVersion tracks a synced version
 func (r *MirrorRepository) CreateMirroredProviderVersion(ctx context.Context, mpv *models.MirroredProviderVersion) error {
 	query := `

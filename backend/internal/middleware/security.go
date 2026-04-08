@@ -3,6 +3,8 @@
 package middleware
 
 import (
+	"strconv"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -69,9 +71,10 @@ func APISecurityHeadersConfig() SecurityHeadersConfig {
 // SecurityHeadersMiddleware adds security headers to all responses
 func SecurityHeadersMiddleware(config SecurityHeadersConfig) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// HTTP Strict Transport Security
-		if config.EnableHSTS {
-			hstsValue := "max-age=" + itoa(config.HSTSMaxAge)
+		// HTTP Strict Transport Security — only send over TLS connections
+		isTLS := c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https"
+		if config.EnableHSTS && isTLS {
+			hstsValue := "max-age=" + strconv.Itoa(config.HSTSMaxAge)
 			if config.HSTSIncludeSubdomains {
 				hstsValue += "; includeSubDomains"
 			}
@@ -119,33 +122,4 @@ func SecurityHeadersMiddleware(config SecurityHeadersConfig) gin.HandlerFunc {
 
 		c.Next()
 	}
-}
-
-// itoa converts an integer to a string without importing strconv
-func itoa(i int) string {
-	if i == 0 {
-		return "0"
-	}
-
-	negative := false
-	if i < 0 {
-		negative = true
-		i = -i
-	}
-
-	result := make([]byte, 0, 20)
-	for i > 0 {
-		result = append(result, byte('0'+i%10))
-		i /= 10
-	}
-
-	// Reverse
-	for left, right := 0, len(result)-1; left < right; left, right = left+1, right-1 {
-		result[left], result[right] = result[right], result[left]
-	}
-
-	if negative {
-		return "-" + string(result)
-	}
-	return string(result)
 }

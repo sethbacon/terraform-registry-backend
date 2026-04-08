@@ -5,6 +5,7 @@ package providers
 import (
 	"database/sql"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -44,7 +45,9 @@ type docCacheEntry struct {
 	fetchedAt time.Time
 }
 
-// docContentCache is a simple in-memory LRU-ish cache with TTL eviction.
+// docContentCache is a per-instance in-memory cache for provider documentation content.
+// Each instance caches independently with a 15-minute TTL. Cache inconsistency across
+// instances is acceptable for this read-heavy, low-sensitivity data.
 type docContentCache struct {
 	mu      sync.RWMutex
 	entries map[string]docCacheEntry
@@ -103,6 +106,8 @@ func (c *docContentCache) set(key, content string) {
 // @Param        version    path   string  true  "Provider version"
 // @Param        category   query  string  false "Filter by doc category (overview, resources, data-sources, etc.)"
 // @Param        language   query  string  false "Filter by language (hcl, python, typescript)"
+// @Param        limit      query  int     false "Maximum results (default 100, max 1000)"
+// @Param        offset     query  int     false "Offset for pagination (default 0)"
 // @Success      200  {object}  ProviderDocsListResponse
 // @Failure      404  {object}  map[string]interface{}  "Provider or version not found"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
@@ -115,6 +120,18 @@ func ListProviderDocsHandler(db *sql.DB) gin.HandlerFunc {
 		namespace := c.Param("namespace")
 		providerType := c.Param("type")
 		version := c.Param("version")
+
+		limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
+		offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+		if limit > 1000 {
+			limit = 1000
+		}
+		if limit < 1 {
+			limit = 1
+		}
+		if offset < 0 {
+			offset = 0
+		}
 
 		// Look up provider then version
 		provider, err := providerRepo.GetProviderByNamespaceType(c.Request.Context(), "", namespace, providerType)
@@ -146,7 +163,7 @@ func ListProviderDocsHandler(db *sql.DB) gin.HandlerFunc {
 			language = &lang
 		}
 
-		docs, err := docsRepo.ListProviderVersionDocs(c.Request.Context(), versionRecord.ID, category, language)
+		docs, total, err := docsRepo.ListProviderVersionDocsPaginated(c.Request.Context(), versionRecord.ID, category, language, limit, offset)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "Failed to list documentation"})
 			return
@@ -173,7 +190,13 @@ func ListProviderDocsHandler(db *sql.DB) gin.HandlerFunc {
 			}
 		}
 
-		c.JSON(http.StatusOK, resp)
+		c.JSON(http.StatusOK, gin.H{
+			"docs":       resp.Docs,
+			"categories": resp.Categories,
+			"total":      total,
+			"limit":      limit,
+			"offset":     offset,
+		})
 	}
 }
 

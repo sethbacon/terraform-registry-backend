@@ -18,7 +18,7 @@ import (
 )
 
 // @Summary      Upload module version
-// @Description  Upload a new module version as a .tar.gz archive. Creates the module if it doesn't exist. Requires modules:publish scope.
+// @Description  Uploads a new module version archive
 // @Tags         Modules
 // @Security     Bearer
 // @Accept       multipart/form-data
@@ -29,13 +29,13 @@ import (
 // @Param        version      formData  string  true   "Semantic version (e.g. 1.2.3)"
 // @Param        description  formData  string  false  "Module description"
 // @Param        source       formData  string  false  "Source URL"
-// @Param        file         formData  file    true   "Module archive (.tar.gz, max 100MB)"
-// @Success      201  {object}  modules.ModuleUploadResponse
-// @Failure      400  {object}  map[string]interface{}  "Invalid request, bad version format, or invalid archive"
-// @Failure      401  {object}  map[string]interface{}  "Unauthorized"
-// @Failure      409  {object}  map[string]interface{}  "Version already exists"
-// @Failure      500  {object}  map[string]interface{}  "Internal server error"
-// @Router       /api/v1/modules [post]
+// @Param        file         formData  file    true   "Module archive (tar.gz)"
+// @Success      201
+// @Failure      400  {object}  map[string]interface{}
+// @Failure      401  {object}  map[string]interface{}
+// @Failure      409  {object}  map[string]interface{}
+// @Failure      500  {object}  map[string]interface{}
+// @Router       /api/v1/modules/{namespace}/{name}/{provider}/{version} [post]
 // UploadHandler handles module upload requests
 // Implements: POST /api/v1/modules
 // Accepts multipart form with: namespace, name, system, version, description (optional), file

@@ -58,9 +58,14 @@ func TestListProviderDocsHandler_Success(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(docsVersionCols).
 			AddRow("ver-1", "prov-1", "3.6.0", []byte(`["5.0"]`), "", "", "", nil, false, nil, nil, time.Now()))
 
-	// ListProviderVersionDocs
-	mock.ExpectQuery("SELECT.*FROM provider_version_docs").
+	// ListProviderVersionDocsPaginated — COUNT query
+	mock.ExpectQuery("SELECT COUNT.*FROM provider_version_docs").
 		WithArgs("ver-1").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
+
+	// ListProviderVersionDocsPaginated — data query with LIMIT/OFFSET
+	mock.ExpectQuery("SELECT.*FROM provider_version_docs").
+		WithArgs("ver-1", 100, 0).
 		WillReturnRows(sqlmock.NewRows(docsDocCols).
 			AddRow("d1", "ver-1", "101", "overview", "index", "overview", nil, "docs/index.md", "hcl").
 			AddRow("d2", "ver-1", "102", "random_id", "random_id", "resources", nil, "docs/resources/random_id.md", "hcl"))
@@ -174,8 +179,14 @@ func TestListProviderDocsHandler_EmptyDocs(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(docsVersionCols).
 			AddRow("ver-1", "prov-1", "3.6.0", []byte(`["5.0"]`), "", "", "", nil, false, nil, nil, time.Now()))
 
-	mock.ExpectQuery("SELECT.*FROM provider_version_docs").
+	// ListProviderVersionDocsPaginated — COUNT query
+	mock.ExpectQuery("SELECT COUNT.*FROM provider_version_docs").
 		WithArgs("ver-1").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+
+	// ListProviderVersionDocsPaginated — data query with LIMIT/OFFSET
+	mock.ExpectQuery("SELECT.*FROM provider_version_docs").
+		WithArgs("ver-1", 100, 0).
 		WillReturnRows(sqlmock.NewRows(docsDocCols))
 
 	w := httptest.NewRecorder()
@@ -337,5 +348,243 @@ func TestDocContentCache_Eviction(t *testing.T) {
 	}
 	if content != "content3" {
 		t.Errorf("content = %q, want content3", content)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ListProviderDocsHandler — error paths
+// ---------------------------------------------------------------------------
+
+var docsTestErr = sqlmock.ErrCancelled
+
+func TestListProviderDocsHandler_ProviderDBError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery("SELECT.*FROM providers").WillReturnError(docsTestErr)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "namespace", Value: "hashicorp"},
+		{Key: "type", Value: "aws"},
+		{Key: "version", Value: "5.0.0"},
+	}
+	c.Request = httptest.NewRequest("GET", "/", nil)
+
+	handler := ListProviderDocsHandler(db)
+	handler(c)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestListProviderDocsHandler_VersionDBError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery("SELECT.*FROM providers").
+		WithArgs("hashicorp", "aws").
+		WillReturnRows(sqlmock.NewRows(docsProviderCols).
+			AddRow("prov-1", nil, "hashicorp", "aws", nil, nil, time.Now(), time.Now()))
+
+	mock.ExpectQuery("SELECT.*FROM provider_versions").WillReturnError(docsTestErr)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "namespace", Value: "hashicorp"},
+		{Key: "type", Value: "aws"},
+		{Key: "version", Value: "5.0.0"},
+	}
+	c.Request = httptest.NewRequest("GET", "/", nil)
+
+	handler := ListProviderDocsHandler(db)
+	handler(c)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestListProviderDocsHandler_DocsDBError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery("SELECT.*FROM providers").
+		WithArgs("hashicorp", "aws").
+		WillReturnRows(sqlmock.NewRows(docsProviderCols).
+			AddRow("prov-1", nil, "hashicorp", "aws", nil, nil, time.Now(), time.Now()))
+
+	mock.ExpectQuery("SELECT.*FROM provider_versions").
+		WithArgs("prov-1", "5.0.0").
+		WillReturnRows(sqlmock.NewRows(docsVersionCols).
+			AddRow("ver-1", "prov-1", "5.0.0", []byte(`["6.0"]`), "", "", "", nil, false, nil, nil, time.Now()))
+
+	// Count query for ListProviderVersionDocsPaginated
+	mock.ExpectQuery("SELECT COUNT").WillReturnError(docsTestErr)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "namespace", Value: "hashicorp"},
+		{Key: "type", Value: "aws"},
+		{Key: "version", Value: "5.0.0"},
+	}
+	c.Request = httptest.NewRequest("GET", "/", nil)
+
+	handler := ListProviderDocsHandler(db)
+	handler(c)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetProviderDocContentHandler — additional error paths
+// ---------------------------------------------------------------------------
+
+func TestGetProviderDocContentHandler_ProviderDBError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery("SELECT.*FROM providers").WillReturnError(docsTestErr)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "namespace", Value: "hashicorp"},
+		{Key: "type", Value: "aws"},
+		{Key: "version", Value: "5.0.0"},
+		{Key: "category", Value: "overview"},
+		{Key: "slug", Value: "index"},
+	}
+	c.Request = httptest.NewRequest("GET", "/", nil)
+
+	handler := GetProviderDocContentHandler(db, &config.Config{})
+	handler(c)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestGetProviderDocContentHandler_VersionDBError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery("SELECT.*FROM providers").
+		WithArgs("hashicorp", "aws").
+		WillReturnRows(sqlmock.NewRows(docsProviderCols).
+			AddRow("prov-1", nil, "hashicorp", "aws", nil, nil, time.Now(), time.Now()))
+
+	mock.ExpectQuery("SELECT.*FROM provider_versions").WillReturnError(docsTestErr)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "namespace", Value: "hashicorp"},
+		{Key: "type", Value: "aws"},
+		{Key: "version", Value: "5.0.0"},
+		{Key: "category", Value: "overview"},
+		{Key: "slug", Value: "index"},
+	}
+	c.Request = httptest.NewRequest("GET", "/", nil)
+
+	handler := GetProviderDocContentHandler(db, &config.Config{})
+	handler(c)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestGetProviderDocContentHandler_VersionNotFound(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery("SELECT.*FROM providers").
+		WithArgs("hashicorp", "aws").
+		WillReturnRows(sqlmock.NewRows(docsProviderCols).
+			AddRow("prov-1", nil, "hashicorp", "aws", nil, nil, time.Now(), time.Now()))
+
+	mock.ExpectQuery("SELECT.*FROM provider_versions").
+		WithArgs("prov-1", "99.0.0").
+		WillReturnRows(sqlmock.NewRows(docsVersionCols))
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "namespace", Value: "hashicorp"},
+		{Key: "type", Value: "aws"},
+		{Key: "version", Value: "99.0.0"},
+		{Key: "category", Value: "overview"},
+		{Key: "slug", Value: "index"},
+	}
+	c.Request = httptest.NewRequest("GET", "/", nil)
+
+	handler := GetProviderDocContentHandler(db, &config.Config{})
+	handler(c)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestGetProviderDocContentHandler_DocSlugDBError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery("SELECT.*FROM providers").
+		WithArgs("hashicorp", "aws").
+		WillReturnRows(sqlmock.NewRows(docsProviderCols).
+			AddRow("prov-1", nil, "hashicorp", "aws", nil, nil, time.Now(), time.Now()))
+
+	mock.ExpectQuery("SELECT.*FROM provider_versions").
+		WithArgs("prov-1", "5.0.0").
+		WillReturnRows(sqlmock.NewRows(docsVersionCols).
+			AddRow("ver-1", "prov-1", "5.0.0", []byte(`["6.0"]`), "", "", "", nil, false, nil, nil, time.Now()))
+
+	mock.ExpectQuery("SELECT.*FROM provider_version_docs").WillReturnError(docsTestErr)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "namespace", Value: "hashicorp"},
+		{Key: "type", Value: "aws"},
+		{Key: "version", Value: "5.0.0"},
+		{Key: "category", Value: "overview"},
+		{Key: "slug", Value: "index"},
+	}
+	c.Request = httptest.NewRequest("GET", "/", nil)
+
+	handler := GetProviderDocContentHandler(db, &config.Config{})
+	handler(c)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
 	}
 }

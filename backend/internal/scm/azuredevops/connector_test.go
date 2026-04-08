@@ -415,3 +415,156 @@ func TestWebhookStubs(t *testing.T) {
 		t.Error("VerifyDeliverySignature: expected false, got true")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// readErrorBody
+// ---------------------------------------------------------------------------
+
+func TestReadErrorBody_NilResponse(t *testing.T) {
+	result := readErrorBody(nil)
+	if result != "" {
+		t.Errorf("result = %q, want empty", result)
+	}
+}
+
+func TestReadErrorBody_EmptyBody(t *testing.T) {
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(""))}
+	result := readErrorBody(resp)
+	if result != "" {
+		t.Errorf("result = %q, want empty", result)
+	}
+}
+
+func TestReadErrorBody_WithContent(t *testing.T) {
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader("  error message  "))}
+	result := readErrorBody(resp)
+	if result != "error message" {
+		t.Errorf("result = %q, want 'error message'", result)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// redirectTransport redirects all HTTP(S) requests to a fixed base URL,
+// preserving the path and query — used to intercept http.DefaultClient calls
+// that use hard-coded external URLs (e.g. Entra token endpoint).
+// ---------------------------------------------------------------------------
+
+type redirectTransport struct {
+	base string // e.g. "http://127.0.0.1:12345"
+}
+
+func (rt *redirectTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	redirected := req.Clone(req.Context())
+	redirected.URL.Scheme = "http"
+	redirected.URL.Host = rt.base[len("http://"):]
+	return http.DefaultTransport.RoundTrip(redirected)
+}
+
+// withRedirectClient temporarily replaces http.DefaultTransport and restores it via t.Cleanup.
+func withRedirectClient(t *testing.T, srv *httptest.Server) {
+	t.Helper()
+	orig := http.DefaultClient.Transport
+	http.DefaultClient.Transport = &redirectTransport{base: srv.URL}
+	t.Cleanup(func() { http.DefaultClient.Transport = orig })
+}
+
+// ---------------------------------------------------------------------------
+// CompleteAuthorization
+// ---------------------------------------------------------------------------
+
+func TestCompleteAuthorization_Success(t *testing.T) {
+	tokenResp := map[string]interface{}{
+		"access_token":  "acc-token",
+		"refresh_token": "ref-token",
+		"token_type":    "Bearer",
+		"expires_in":    3600,
+		"scope":         "vso.code vso.project",
+	}
+	srv, c := newTestConnector(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(tokenResp)
+	})
+	withRedirectClient(t, srv)
+
+	token, err := c.CompleteAuthorization(context.Background(), "auth-code")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if token.AccessToken != "acc-token" {
+		t.Errorf("AccessToken = %q, want acc-token", token.AccessToken)
+	}
+	if token.RefreshToken != "ref-token" {
+		t.Errorf("RefreshToken = %q, want ref-token", token.RefreshToken)
+	}
+	if len(token.Scopes) != 2 {
+		t.Errorf("len(Scopes) = %d, want 2", len(token.Scopes))
+	}
+}
+
+func TestCompleteAuthorization_HTTPError(t *testing.T) {
+	srv, c := newTestConnector(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte("invalid credentials"))
+	})
+	withRedirectClient(t, srv)
+
+	_, err := c.CompleteAuthorization(context.Background(), "bad-code")
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RenewToken
+// ---------------------------------------------------------------------------
+
+func TestRenewToken_Success(t *testing.T) {
+	tokenResp := map[string]interface{}{
+		"access_token":  "new-token",
+		"refresh_token": "new-refresh",
+		"token_type":    "Bearer",
+		"expires_in":    3600,
+	}
+	srv, c := newTestConnector(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(tokenResp)
+	})
+	withRedirectClient(t, srv)
+
+	token, err := c.RenewToken(context.Background(), "old-refresh-token")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if token.AccessToken != "new-token" {
+		t.Errorf("AccessToken = %q, want new-token", token.AccessToken)
+	}
+}
+
+func TestRenewToken_HTTPError(t *testing.T) {
+	srv, c := newTestConnector(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte("invalid refresh token"))
+	})
+	withRedirectClient(t, srv)
+
+	_, err := c.RenewToken(context.Background(), "bad-refresh")
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+func TestBuildConnector_AzureDevOps(t *testing.T) {
+	settings := &scm.ConnectorSettings{
+		Kind:         scm.KindAzureDevOps,
+		ClientID:     "client-id",
+		ClientSecret: "client-secret",
+		CallbackURL:  "https://example.com/callback",
+	}
+	c, err := scm.BuildConnector(settings)
+	if err != nil {
+		t.Fatalf("BuildConnector: %v", err)
+	}
+	if c == nil {
+		t.Error("expected non-nil connector")
+	}
+}

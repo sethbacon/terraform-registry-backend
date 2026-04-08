@@ -188,7 +188,7 @@ func (r *StorageConfigRepository) ActivateStorageConfig(ctx context.Context, id 
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	// Deactivate all configs
 	_, err = tx.ExecContext(ctx, `UPDATE storage_config SET is_active = false, updated_at = $1`, time.Now())

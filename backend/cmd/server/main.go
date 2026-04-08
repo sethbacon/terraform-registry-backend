@@ -107,6 +107,9 @@ func serve(cfg *config.Config) error {
 	telemetry.SetupLogger(cfg.Logging.Format, cfg.Logging.Level)
 
 	// Set Gin mode
+	// Note: gin.SetMode sets the GIN_MODE env var as a side effect. Ensure
+	// jwt.isDevMode() does NOT check GIN_MODE to avoid accidentally enabling
+	// dev mode (skipping JWT secret requirement) in production.
 	if cfg.Logging.Level == "debug" {
 		gin.SetMode(gin.DebugMode)
 	} else {
@@ -208,12 +211,26 @@ func serve(cfg *config.Config) error {
 	// Create router
 	router, bgServices := api.NewRouter(cfg, database)
 
+	// Start daily cleanup of expired JWT revocation entries
+	tokenRepo := repositories.NewTokenRepository(database)
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := tokenRepo.CleanupExpiredRevocations(context.Background()); err != nil {
+				slog.Error("failed to clean up expired token revocations", "error", err)
+			}
+		}
+	}()
+
 	// Create HTTP server
 	server := &http.Server{
-		Addr:         cfg.Server.GetAddress(),
-		Handler:      router,
-		ReadTimeout:  cfg.Server.ReadTimeout,
-		WriteTimeout: cfg.Server.WriteTimeout,
+		Addr:              cfg.Server.GetAddress(),
+		Handler:           router,
+		ReadTimeout:       cfg.Server.ReadTimeout,
+		WriteTimeout:      cfg.Server.WriteTimeout,
+		ReadHeaderTimeout: 10 * time.Second,  // Prevents Slowloris attacks
+		IdleTimeout:       120 * time.Second, // Close idle keep-alive connections
 	}
 
 	// Start server in a goroutine

@@ -339,3 +339,56 @@ func TestGetMetadata_ChecksumMatchesUpload(t *testing.T) {
 		t.Errorf("GetMetadata checksum %q != Upload checksum %q", meta.Checksum, uploadResult.Checksum)
 	}
 }
+
+// TestGetMetadata_NoSidecar covers the code path where the .sha256 sidecar does
+// not exist and GetMetadata must compute the checksum by reading the file.
+func TestGetMetadata_NoSidecar(t *testing.T) {
+	s := newTestStorage(t, false, "")
+	ctx := context.Background()
+
+	// Write the file directly (bypassing Upload so no .sha256 sidecar is created).
+	content := []byte("no sidecar content")
+	fullPath := filepath.Join(s.basePath, "no-sidecar.txt")
+	if err := os.WriteFile(fullPath, content, 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	meta, err := s.GetMetadata(ctx, "no-sidecar.txt")
+	if err != nil {
+		t.Fatalf("GetMetadata() error: %v", err)
+	}
+
+	if meta.Path != "no-sidecar.txt" {
+		t.Errorf("Path = %q, want no-sidecar.txt", meta.Path)
+	}
+	if meta.Size != int64(len(content)) {
+		t.Errorf("Size = %d, want %d", meta.Size, len(content))
+	}
+	if len(meta.Checksum) != 64 {
+		t.Errorf("Checksum len = %d, want 64", len(meta.Checksum))
+	}
+	// Verify the sidecar was created as a side effect.
+	sidecarPath := fullPath + ".sha256"
+	if _, err := os.Stat(sidecarPath); os.IsNotExist(err) {
+		t.Error("sidecar .sha256 should have been created by GetMetadata")
+	}
+}
+
+// TestNew_NewDirectory verifies New succeeds when the base path does not yet exist.
+func TestNew_NewDirectory(t *testing.T) {
+	parent, err := os.MkdirTemp("", "new-dir-test-*")
+	if err != nil {
+		t.Fatal("MkdirTemp:", err)
+	}
+	defer os.RemoveAll(parent)
+
+	newPath := filepath.Join(parent, "subdir", "storage")
+	cfg := &config.LocalStorageConfig{BasePath: newPath}
+	s, err := New(cfg, "")
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	if s == nil {
+		t.Fatal("New() returned nil")
+	}
+}

@@ -444,6 +444,31 @@ func TestSCMCreateWebhookLog_Error(t *testing.T) {
 	}
 }
 
+func TestSCMCreateWebhookLog_PayloadMarshalError(t *testing.T) {
+	repo, _ := newSCMRepo(t)
+	// A channel value cannot be JSON-marshaled → json.Marshal returns error.
+	log := &scm.SCMWebhookLogRecord{
+		ID:      uuid.New(),
+		Payload: map[string]interface{}{"ch": make(chan int)},
+		Headers: map[string]interface{}{},
+	}
+	if err := repo.CreateWebhookLog(context.Background(), log); err == nil {
+		t.Error("expected marshal error for non-serializable payload")
+	}
+}
+
+func TestSCMCreateWebhookLog_HeadersMarshalError(t *testing.T) {
+	repo, _ := newSCMRepo(t)
+	log := &scm.SCMWebhookLogRecord{
+		ID:      uuid.New(),
+		Payload: map[string]interface{}{},
+		Headers: map[string]interface{}{"ch": make(chan int)},
+	}
+	if err := repo.CreateWebhookLog(context.Background(), log); err == nil {
+		t.Error("expected marshal error for non-serializable headers")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // GetWebhookLog (only error/not-found since Payload scanning is complex)
 // ---------------------------------------------------------------------------

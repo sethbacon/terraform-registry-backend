@@ -366,6 +366,71 @@ func (r *ProviderRepository) ListVersions(ctx context.Context, providerID string
 	return versions, nil
 }
 
+// ListVersionsPaginated retrieves versions for a provider with limit/offset pagination and total count.
+func (r *ProviderRepository) ListVersionsPaginated(ctx context.Context, providerID string, limit, offset int) ([]*models.ProviderVersion, int, error) {
+	// Get total count
+	countQuery := `SELECT COUNT(*) FROM provider_versions WHERE provider_id = $1`
+	var total int
+	if err := r.db.QueryRowContext(ctx, countQuery, providerID).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("failed to count provider versions: %w", err)
+	}
+
+	query := `
+		SELECT pv.id, pv.provider_id, pv.version, pv.protocols, pv.gpg_public_key, pv.shasums_url, pv.shasums_signature_url,
+		       pv.published_by, u.name as published_by_name,
+		       COALESCE(pv.deprecated, false), pv.deprecated_at, pv.deprecation_message, pv.created_at
+		FROM provider_versions pv
+		LEFT JOIN users u ON pv.published_by = u.id
+		WHERE pv.provider_id = $1
+		ORDER BY pv.created_at DESC
+		LIMIT $2 OFFSET $3
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, providerID, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to list provider versions: %w", err)
+	}
+	defer rows.Close()
+
+	var versions []*models.ProviderVersion
+	for rows.Next() {
+		v := &models.ProviderVersion{}
+		var protocolsJSON []byte
+
+		err := rows.Scan(
+			&v.ID,
+			&v.ProviderID,
+			&v.Version,
+			&protocolsJSON,
+			&v.GPGPublicKey,
+			&v.ShasumURL,
+			&v.ShasumSignatureURL,
+			&v.PublishedBy,
+			&v.PublishedByName,
+			&v.Deprecated,
+			&v.DeprecatedAt,
+			&v.DeprecationMessage,
+			&v.CreatedAt,
+		)
+		if err != nil {
+			return nil, 0, fmt.Errorf("failed to scan provider version: %w", err)
+		}
+
+		// Unmarshal protocols
+		if err := json.Unmarshal(protocolsJSON, &v.Protocols); err != nil {
+			return nil, 0, fmt.Errorf("failed to unmarshal protocols: %w", err)
+		}
+
+		versions = append(versions, v)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("error iterating provider versions: %w", err)
+	}
+
+	return versions, total, nil
+}
+
 // DeleteVersion deletes a specific provider version and all its platforms (cascade)
 func (r *ProviderRepository) DeleteVersion(ctx context.Context, versionID string) error {
 	query := `DELETE FROM provider_versions WHERE id = $1`

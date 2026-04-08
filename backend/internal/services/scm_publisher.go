@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -383,8 +384,7 @@ func (p *SCMPublisher) extractVersionFromTag(tag, glob string) string {
 // TriggerManualSync scans a repository for tags and publishes any matching versions
 // This is called when a user manually triggers a sync from the UI
 func (p *SCMPublisher) TriggerManualSync(ctx context.Context, moduleSourceRepo *scm.ModuleSourceRepoRecord, connector scm.Connector, token *scm.OAuthToken) error {
-	fmt.Printf("[TriggerManualSync] Starting sync for module %s from repo %s/%s\n",
-		moduleSourceRepo.ModuleID, moduleSourceRepo.RepositoryOwner, moduleSourceRepo.RepositoryName)
+	slog.Debug("starting manual sync", "module_id", moduleSourceRepo.ModuleID, "owner", moduleSourceRepo.RepositoryOwner, "repo", moduleSourceRepo.RepositoryName)
 
 	// List all tags from the repository
 	tags, err := connector.FetchTags(ctx, token, moduleSourceRepo.RepositoryOwner, moduleSourceRepo.RepositoryName, scm.DefaultPagination())
@@ -392,34 +392,34 @@ func (p *SCMPublisher) TriggerManualSync(ctx context.Context, moduleSourceRepo *
 		return fmt.Errorf("failed to list tags: %w", err)
 	}
 
-	fmt.Printf("[TriggerManualSync] Found %d tags in repository\n", len(tags))
+	slog.Debug("fetched repository tags", "tag_count", len(tags))
 
 	// Filter tags that match the pattern and publish them
 	tagPattern := moduleSourceRepo.TagPattern
 	if tagPattern == "" {
 		tagPattern = "v*"
 	}
-	fmt.Printf("[TriggerManualSync] Using tag pattern: %s\n", tagPattern)
+	slog.Debug("using tag pattern", "tag_pattern", tagPattern)
 
 	matchingTags := 0
 	for _, tag := range tags {
-		fmt.Printf("[TriggerManualSync] Checking tag: %s\n", tag.TagName)
+		slog.Debug("checking tag", "tag", tag.TagName)
 
 		// Check if tag matches pattern
 		version := p.extractVersionFromTag(tag.TagName, tagPattern)
 		if version == "" {
-			fmt.Printf("[TriggerManualSync] Tag %s does not match pattern, skipping\n", tag.TagName)
+			slog.Debug("tag does not match pattern, skipping", "tag", tag.TagName)
 			continue // Skip tags that don't match the pattern
 		}
 
-		fmt.Printf("[TriggerManualSync] Tag %s matches! Extracted version: %s\n", tag.TagName, version)
+		slog.Debug("tag matches pattern", "tag", tag.TagName, "version", version)
 
 		// Check if this version already exists — skip if so
 		existing, err := p.moduleRepo.GetVersion(ctx, moduleSourceRepo.ModuleID.String(), version)
 		if err != nil {
-			fmt.Printf("[TriggerManualSync] Warning: failed to check existing version %s: %v\n", version, err)
+			slog.Warn("failed to check existing version", "version", version, "error", err)
 		} else if existing != nil {
-			fmt.Printf("[TriggerManualSync] Version %s already exists, skipping\n", version)
+			slog.Debug("version already exists, skipping", "version", version)
 			continue
 		}
 
@@ -433,11 +433,11 @@ func (p *SCMPublisher) TriggerManualSync(ctx context.Context, moduleSourceRepo *
 
 		// Process this tag push (without a webhook log ID since this is manual)
 		// We'll pass a nil UUID since webhook logging isn't applicable here
-		fmt.Printf("[TriggerManualSync] Starting goroutine to process tag %s (commit: %s)\n", tag.TagName, tag.TargetCommit)
+		slog.Debug("starting goroutine to process tag", "tag", tag.TagName, "commit", tag.TargetCommit)
 		go p.processTagForManualSync(ctx, moduleSourceRepo, hook, connector, token)
 	}
 
-	fmt.Printf("[TriggerManualSync] Found %d matching tags out of %d total\n", matchingTags, len(tags))
+	slog.Debug("manual sync tag matching complete", "matching_tags", matchingTags, "total_tags", len(tags))
 
 	// Update last sync time
 	now := time.Now()
@@ -451,30 +451,30 @@ func (p *SCMPublisher) TriggerManualSync(ctx context.Context, moduleSourceRepo *
 
 // processTagForManualSync processes a single tag during manual sync (no webhook logging)
 func (p *SCMPublisher) processTagForManualSync(ctx context.Context, moduleSourceRepo *scm.ModuleSourceRepoRecord, hook *scm.IncomingHook, connector scm.Connector, token *scm.OAuthToken) {
-	fmt.Printf("[processTagForManualSync] Processing tag %s for module %s\n", hook.TagName, moduleSourceRepo.ModuleID)
+	slog.Debug("processing tag for manual sync", "tag", hook.TagName, "module_id", moduleSourceRepo.ModuleID)
 
 	// Extract version from tag name
 	version := p.extractVersionFromTag(hook.TagName, moduleSourceRepo.TagPattern)
 	if version == "" {
-		fmt.Printf("[processTagForManualSync] Failed to extract version from tag %s\n", hook.TagName)
+		slog.Warn("failed to extract version from tag", "tag", hook.TagName)
 		return
 	}
-	fmt.Printf("[processTagForManualSync] Extracted version: %s\n", version)
+	slog.Debug("extracted version from tag", "tag", hook.TagName, "version", version)
 
 	// Guard against races: the caller (TriggerManualSync) checks for existing versions before
 	// spawning goroutines, but a second goroutine may have created it in the meantime.
 	if existingVer, checkErr := p.moduleRepo.GetVersion(ctx, moduleSourceRepo.ModuleID.String(), version); checkErr == nil && existingVer != nil {
-		fmt.Printf("[processTagForManualSync] Version %s already exists, skipping\n", version)
+		slog.Debug("version already exists, skipping", "version", version, "module_id", moduleSourceRepo.ModuleID)
 		return
 	}
 
 	versionID, err := p.publishModuleVersion(ctx, connector, token, moduleSourceRepo, hook, version)
 	if err != nil {
-		fmt.Printf("[processTagForManualSync] Failed to publish version %s: %v\n", version, err)
+		slog.Warn("failed to publish version", "version", version, "error", err)
 		return
 	}
 
-	fmt.Printf("[processTagForManualSync] Successfully created version %s (ID %s) for module %s\n", version, versionID, moduleSourceRepo.ModuleID)
+	slog.Debug("successfully published version", "version", version, "version_id", versionID, "module_id", moduleSourceRepo.ModuleID)
 }
 
 // publishModuleVersion contains the shared logic for publishing a module version

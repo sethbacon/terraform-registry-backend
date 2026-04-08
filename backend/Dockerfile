@@ -26,14 +26,15 @@ COPY . .
 # Build the application
 ARG VERSION=dev
 ARG BUILD_DATE=unknown
+ARG TARGETARCH=amd64
 RUN CLEAN_VERSION="${VERSION#v}" && \
-    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
     -ldflags="-w -s -X main.Version=${CLEAN_VERSION} -X main.BuildDate=${BUILD_DATE}" \
     -o terraform-registry \
     ./cmd/server
 
 # Stage 2: Create minimal production image
-FROM alpine:3.19
+FROM alpine:3.21
 
 # Install runtime dependencies
 RUN apk add --no-cache ca-certificates tzdata

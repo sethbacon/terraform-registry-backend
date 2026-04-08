@@ -5,6 +5,8 @@ package middleware
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -87,15 +89,12 @@ func AuditMiddlewareWithShipper(auditRepo *repositories.AuditRepository, shipper
 		}
 
 		// Set resource type based on URL path
-		var resourceType string
-		if contains(c.Request.URL.Path, "/modules") {
-			resourceType = "module"
-			auditLog.ResourceType = &resourceType
-		} else if contains(c.Request.URL.Path, "/mirrors") {
-			resourceType = "mirror"
-			auditLog.ResourceType = &resourceType
-			// Add specific mirror action details
-			if contains(c.Request.URL.Path, "/sync") {
+		resourceType := getResourceType(c)
+		auditLog.ResourceType = &resourceType
+
+		// Add specific mirror action details
+		if resourceType == "mirror" {
+			if strings.Contains(c.Request.URL.Path, "/sync") {
 				action = "mirror.sync_triggered"
 			} else if c.Request.Method == "POST" {
 				action = "mirror.created"
@@ -105,18 +104,6 @@ func AuditMiddlewareWithShipper(auditRepo *repositories.AuditRepository, shipper
 				action = "mirror.deleted"
 			}
 			auditLog.Action = action
-		} else if contains(c.Request.URL.Path, "/providers") {
-			resourceType = "provider"
-			auditLog.ResourceType = &resourceType
-		} else if contains(c.Request.URL.Path, "/users") {
-			resourceType = "user"
-			auditLog.ResourceType = &resourceType
-		} else if contains(c.Request.URL.Path, "/apikeys") {
-			resourceType = "api_key"
-			auditLog.ResourceType = &resourceType
-		} else if contains(c.Request.URL.Path, "/organizations") {
-			resourceType = "organization"
-			auditLog.ResourceType = &resourceType
 		}
 
 		// Extract metadata from context if available
@@ -139,7 +126,7 @@ func AuditMiddlewareWithShipper(auditRepo *repositories.AuditRepository, shipper
 			// Write to database
 			if auditRepo != nil {
 				if err := auditRepo.CreateAuditLog(ctx, auditLog); err != nil {
-					fmt.Printf("Failed to create audit log in database: %v\n", err)
+					slog.Error("failed to create audit log", "error", err)
 				}
 			}
 
@@ -163,26 +150,29 @@ func AuditMiddlewareWithShipper(auditRepo *repositories.AuditRepository, shipper
 				}
 
 				if err := shipper.Ship(ctx, entry); err != nil {
-					fmt.Printf("Failed to ship audit log: %v\n", err)
+					slog.Error("failed to ship audit log", "error", err)
 				}
 			}
 		}()
 	}
 }
 
-// contains is a simple helper to check if a string contains a substring
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) &&
-		(s[:len(substr)] == substr || s[len(s)-len(substr):] == substr ||
-			indexOf(s, substr) >= 0))
-}
-
-// indexOf returns the index of the first instance of substr in s, or -1 if substr is not present
-func indexOf(s, substr string) int {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
+func getResourceType(c *gin.Context) string {
+	fullPath := c.FullPath()
+	switch {
+	case strings.HasPrefix(fullPath, "/api/v1/modules"):
+		return "module"
+	case strings.HasPrefix(fullPath, "/api/v1/providers"):
+		return "provider"
+	case strings.HasPrefix(fullPath, "/api/v1/admin/mirrors"):
+		return "mirror"
+	case strings.HasPrefix(fullPath, "/api/v1/admin/users"):
+		return "user"
+	case strings.HasPrefix(fullPath, "/api/v1/admin/apikeys"):
+		return "api_key"
+	case strings.HasPrefix(fullPath, "/api/v1/admin/organizations"):
+		return "organization"
+	default:
+		return "unknown"
 	}
-	return -1
 }

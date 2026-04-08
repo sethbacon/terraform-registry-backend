@@ -113,6 +113,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	providerRepo := repositories.NewProviderRepository(db)
 	auditRepo := repositories.NewAuditRepository(db)
 	orgRepo := repositories.NewOrganizationRepository(db)
+	tokenRepo := repositories.NewTokenRepository(db)
 
 	// Wrap *sql.DB with sqlx for SCM and mirror repositories
 	sqlxDB := sqlx.NewDb(db, "postgres")
@@ -359,7 +360,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 
 	// Initialize admin handlers
 	var authHandlers *admin.AuthHandlers
-	authHandlers, err = admin.NewAuthHandlers(cfg, db, oidcConfigRepo)
+	authHandlers, err = admin.NewAuthHandlers(cfg, db, oidcConfigRepo, tokenRepo)
 	if err != nil {
 		log.Fatalf("Failed to initialize auth handlers: %v", err)
 	}
@@ -492,7 +493,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 
 		// Authenticated-only endpoints
 		authenticatedGroup := apiV1.Group("")
-		authenticatedGroup.Use(middleware.AuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo))
+		authenticatedGroup.Use(middleware.AuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo))
 		authenticatedGroup.Use(middleware.RateLimitMiddleware(generalRateLimiter))
 		authenticatedGroup.Use(middleware.AuditMiddleware(auditRepo)) // Audit all authenticated actions
 		{
@@ -768,7 +769,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 			devGroup.POST("/login", devHandlers.DevLoginHandler())
 
 			// Impersonation endpoints (require auth + admin scope)
-			devGroup.Use(middleware.AuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo))
+			devGroup.Use(middleware.AuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo))
 			devGroup.GET("/users", devHandlers.ListUsersForImpersonationHandler())
 			devGroup.POST("/impersonate/:user_id", devHandlers.ImpersonateUserHandler())
 		}
@@ -950,10 +951,16 @@ func CORSMiddleware(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		origin := c.Request.Header.Get("Origin")
 
-		// Check if origin is allowed
+		// Check if origin is allowed and track which rule matched
 		allowed := false
+		matchedWildcard := false
 		for _, allowedOrigin := range cfg.Security.CORS.AllowedOrigins {
-			if allowedOrigin == "*" || allowedOrigin == origin {
+			if allowedOrigin == "*" {
+				allowed = true
+				matchedWildcard = true
+				break
+			}
+			if allowedOrigin == origin {
 				allowed = true
 				break
 			}
@@ -961,11 +968,17 @@ func CORSMiddleware(cfg *config.Config) gin.HandlerFunc {
 
 		if allowed {
 			if origin == "" {
+				// No Origin header — return wildcard, no credentials
 				c.Header("Access-Control-Allow-Origin", "*")
-			} else {
+			} else if matchedWildcard {
+				// Wildcard config but specific origin present —
+				// reflect origin WITHOUT credentials (safer than true wildcard)
 				c.Header("Access-Control-Allow-Origin", origin)
+			} else {
+				// Specific origin match — credentials allowed
+				c.Header("Access-Control-Allow-Origin", origin)
+				c.Header("Access-Control-Allow-Credentials", "true")
 			}
-			c.Header("Access-Control-Allow-Credentials", "true")
 			c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Accept, Authorization, X-Requested-With")
 			c.Header("Access-Control-Max-Age", "3600")

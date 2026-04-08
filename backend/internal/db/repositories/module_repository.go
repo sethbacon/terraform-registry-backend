@@ -301,6 +301,69 @@ func (r *ModuleRepository) ListVersions(ctx context.Context, moduleID string) ([
 	return versions, nil
 }
 
+// ListVersionsPaginated retrieves versions for a module with limit/offset pagination and total count.
+func (r *ModuleRepository) ListVersionsPaginated(ctx context.Context, moduleID string, limit, offset int) ([]*models.ModuleVersion, int, error) {
+	// Get total count
+	countQuery := `SELECT COUNT(*) FROM module_versions WHERE module_id = $1`
+	var total int
+	if err := r.db.QueryRowContext(ctx, countQuery, moduleID).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("failed to count module versions: %w", err)
+	}
+
+	query := `
+		SELECT mv.id, mv.module_id, mv.version, mv.storage_path, mv.storage_backend, mv.size_bytes, mv.checksum, mv.readme,
+		       mv.published_by, u.name as published_by_name, mv.download_count,
+		       COALESCE(mv.deprecated, false), mv.deprecated_at, mv.deprecation_message, mv.created_at,
+		       mv.commit_sha, mv.tag_name, mv.scm_repo_id::text
+		FROM module_versions mv
+		LEFT JOIN users u ON mv.published_by = u.id
+		WHERE mv.module_id = $1
+		ORDER BY mv.created_at DESC
+		LIMIT $2 OFFSET $3
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, moduleID, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to list module versions: %w", err)
+	}
+	defer rows.Close()
+
+	var versions []*models.ModuleVersion
+	for rows.Next() {
+		v := &models.ModuleVersion{}
+		err := rows.Scan(
+			&v.ID,
+			&v.ModuleID,
+			&v.Version,
+			&v.StoragePath,
+			&v.StorageBackend,
+			&v.SizeBytes,
+			&v.Checksum,
+			&v.Readme,
+			&v.PublishedBy,
+			&v.PublishedByName,
+			&v.DownloadCount,
+			&v.Deprecated,
+			&v.DeprecatedAt,
+			&v.DeprecationMessage,
+			&v.CreatedAt,
+			&v.CommitSHA,
+			&v.TagName,
+			&v.SCMRepoID,
+		)
+		if err != nil {
+			return nil, 0, fmt.Errorf("failed to scan module version: %w", err)
+		}
+		versions = append(versions, v)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("error iterating module versions: %w", err)
+	}
+
+	return versions, total, nil
+}
+
 // GetAllWithSourceCommit returns all module versions that have a commit SHA recorded,
 // which means they were published from an SCM source and can be verified.
 func (r *ModuleRepository) GetAllWithSourceCommit(ctx context.Context) ([]*models.ModuleVersion, error) {

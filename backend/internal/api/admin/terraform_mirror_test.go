@@ -478,6 +478,8 @@ func TestTMListVersions_Success(t *testing.T) {
 	mock, r := newTerraformMirrorRouter(t)
 	mock.ExpectQuery("SELECT.*FROM terraform_mirror_configs WHERE id").
 		WillReturnRows(sampleTMCRow())
+	mock.ExpectQuery("SELECT COUNT.*FROM terraform_versions WHERE config_id").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectQuery("SELECT.*FROM terraform_versions WHERE config_id").
 		WillReturnRows(sqlmock.NewRows(tfvCols))
 
@@ -858,9 +860,8 @@ func TestTMCreateConfig_InvalidPlatformFilter(t *testing.T) {
 			"upstream_url": "https://releases.hashicorp.com",
 		})))
 	_ = mock
-	if w.Code != http.StatusConflict && w.Code != http.StatusCreated && w.Code != http.StatusInternalServerError {
-		// Not an assertion test; just ensure it doesn't panic
-	}
+	// Not an assertion test; just ensure it doesn't panic
+	_ = w.Code
 }
 
 // ---------------------------------------------------------------------------
@@ -1026,6 +1027,8 @@ func TestTMListVersions_WithPlatforms(t *testing.T) {
 	mock, r := newTerraformMirrorRouter(t)
 	mock.ExpectQuery("SELECT.*FROM terraform_mirror_configs WHERE id").
 		WillReturnRows(sampleTMCRow())
+	mock.ExpectQuery("SELECT COUNT.*FROM terraform_versions WHERE config_id").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectQuery("SELECT.*FROM terraform_versions WHERE config_id").
 		WillReturnRows(sampleTFVRow())
 	// ListPlatformsForVersion for the returned version

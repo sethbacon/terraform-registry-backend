@@ -24,8 +24,8 @@ const (
 	MaxProviderBinarySize = 500 << 20 // 500MB
 )
 
-// @Summary      Upload provider platform binary
-// @Description  Upload a provider binary (.zip) for a specific platform. Creates provider and version if they don't exist. Requires providers:publish scope.
+// @Summary      Upload provider version
+// @Description  Uploads a new provider version binary and associated files
 // @Tags         Providers
 // @Security     Bearer
 // @Accept       multipart/form-data
@@ -40,12 +40,12 @@ const (
 // @Param        description    formData  string  false  "Provider description"
 // @Param        source         formData  string  false  "Source URL"
 // @Param        file           formData  file    true   "Provider binary (.zip, max 500MB)"
-// @Success      201  {object}  providers.ProviderUploadResponse
-// @Failure      400  {object}  map[string]interface{}  "Invalid request, version format, platform, or binary"
-// @Failure      401  {object}  map[string]interface{}  "Unauthorized"
-// @Failure      409  {object}  map[string]interface{}  "Platform already exists for this version"
-// @Failure      500  {object}  map[string]interface{}  "Internal server error"
-// @Router       /api/v1/providers [post]
+// @Success      201
+// @Failure      400  {object}  map[string]interface{}
+// @Failure      401  {object}  map[string]interface{}
+// @Failure      409  {object}  map[string]interface{}
+// @Failure      500  {object}  map[string]interface{}
+// @Router       /api/v1/providers/{namespace}/{type}/{version}/{os}/{arch} [post]
 // UploadHandler handles provider upload requests
 // Implements: POST /api/v1/providers
 // Accepts multipart form with: namespace, type, version, os, arch, protocols, gpg_public_key, file

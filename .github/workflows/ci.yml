@@ -41,6 +41,12 @@ jobs:
         working-directory: backend
         run: go vet ./...
 
+      - name: Lint
+        run: |
+          cd backend
+          go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+          golangci-lint run ./...
+
       - name: Install swag
         run: |
           mkdir -p $GITHUB_WORKSPACE/bin
@@ -76,7 +82,7 @@ jobs:
         working-directory: backend
         run: |
           go clean -testcache
-          go test ./... -race -coverprofile=coverage.out -covermode=atomic
+          go test ./internal/... ./pkg/... -race -coverprofile=coverage.out -covermode=atomic
 
       - name: Check coverage threshold
         working-directory: backend
@@ -84,10 +90,10 @@ jobs:
         #   - Security & core business logic (auth, middleware, repositories): target 85-95%
         #   - APIs & handlers: target 75-85%
         #   - Utilities & helpers: target 70-80%
-        #   - Overall floor: 65% (Google "acceptable"), goal 70% ("good for production")
+        #   - Overall floor: 75% (Google "good for production")
         # The threshold below is the hard CI floor; the build fails if coverage drops below it.
         run: |
-          THRESHOLD=65
+          THRESHOLD=75
           COVERAGE=$(go tool cover -func=coverage.out | grep "^total:" | awk '{print $3}' | tr -d '%')
           echo "Coverage: ${COVERAGE}%  (threshold: ${THRESHOLD}%)"
           awk -v cov="$COVERAGE" -v thr="$THRESHOLD" 'BEGIN {
@@ -98,6 +104,12 @@ jobs:
             }
             print "PASS: " cov "% meets the " thr "% threshold."
           }'
+
+      - name: Per-package coverage check
+        run: |
+          cd backend
+          chmod +x scripts/check_package_coverage.sh
+          ./scripts/check_package_coverage.sh
 
       - name: Upload Go coverage
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7

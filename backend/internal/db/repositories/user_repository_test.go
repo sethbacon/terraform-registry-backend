@@ -470,6 +470,77 @@ func TestGetUserWithOrgRoles_Success_NoMemberships(t *testing.T) {
 	}
 }
 
+func TestGetUserWithOrgRoles_DBError(t *testing.T) {
+	repo, mock := newUserRepo(t)
+
+	mock.ExpectQuery("SELECT.*FROM users.*WHERE id").
+		WithArgs("user-err").
+		WillReturnError(errDB)
+
+	result, err := repo.GetUserWithOrgRoles(context.Background(), "user-err")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if result != nil {
+		t.Error("expected nil result on error")
+	}
+}
+
+func TestGetUserWithOrgRoles_QueryError(t *testing.T) {
+	repo, mock := newUserRepo(t)
+
+	mock.ExpectQuery("SELECT.*FROM users.*WHERE id").
+		WithArgs("user-1").
+		WillReturnRows(sampleUserRow())
+	mock.ExpectQuery("SELECT.*FROM organization_members.*JOIN organizations").
+		WithArgs("user-1").
+		WillReturnError(errDB)
+
+	result, err := repo.GetUserWithOrgRoles(context.Background(), "user-1")
+	if err == nil {
+		t.Fatal("expected error from memberships query, got nil")
+	}
+	if result != nil {
+		t.Error("expected nil result on query error")
+	}
+}
+
+func TestGetUserWithOrgRoles_WithMemberships(t *testing.T) {
+	repo, mock := newUserRepo(t)
+
+	mock.ExpectQuery("SELECT.*FROM users.*WHERE id").
+		WithArgs("user-1").
+		WillReturnRows(sampleUserRow())
+
+	membCols := []string{
+		"organization_id", "organization_name", "role_template_id", "created_at",
+		"role_template_name", "role_template_display_name", "role_template_scopes",
+	}
+	rtID := "rt-1"
+	rtName := "admin"
+	rtDisplay := "Admin"
+	mock.ExpectQuery("SELECT.*FROM organization_members.*JOIN organizations").
+		WithArgs("user-1").
+		WillReturnRows(sqlmock.NewRows(membCols).AddRow(
+			"org-1", "MyOrg", &rtID, time.Now(), &rtName, &rtDisplay,
+			[]byte(`["modules:read","modules:write"]`),
+		))
+
+	result, err := repo.GetUserWithOrgRoles(context.Background(), "user-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected result, got nil")
+	}
+	if len(result.Memberships) != 1 {
+		t.Errorf("len(memberships) = %d, want 1", len(result.Memberships))
+	}
+	if len(result.Memberships[0].RoleTemplateScopes) != 2 {
+		t.Errorf("len(scopes) = %d, want 2", len(result.Memberships[0].RoleTemplateScopes))
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Create / Update / Delete delegate aliases
 // ---------------------------------------------------------------------------
@@ -600,5 +671,35 @@ func TestListUsersWithRoles_Success(t *testing.T) {
 	}
 	if len(users) != 1 {
 		t.Errorf("len = %d, want 1", len(users))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetOrCreateUserFromOIDC — email-match path
+// ---------------------------------------------------------------------------
+
+func TestGetOrCreateUserFromOIDC_EmailMatch(t *testing.T) {
+	repo, mock := newUserRepo(t)
+
+	// GetByOIDCSub finds no user
+	mock.ExpectQuery("SELECT.*FROM users.*WHERE oidc_sub").
+		WithArgs("sub-new").
+		WillReturnRows(emptyUserRow())
+
+	// GetByEmail finds pre-provisioned user
+	mock.ExpectQuery("SELECT.*FROM users.*WHERE email").
+		WithArgs("alice@example.com").
+		WillReturnRows(sampleUserRow())
+
+	// UpdateUser links the OIDC sub
+	mock.ExpectExec("UPDATE users").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	user, err := repo.GetOrCreateUserFromOIDC(context.Background(), "sub-new", "alice@example.com", "Alice Updated")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if user == nil {
+		t.Fatal("expected user, got nil")
 	}
 }
