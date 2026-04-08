@@ -860,9 +860,8 @@ func TestTMCreateConfig_InvalidPlatformFilter(t *testing.T) {
 			"upstream_url": "https://releases.hashicorp.com",
 		})))
 	_ = mock
-	if w.Code != http.StatusConflict && w.Code != http.StatusCreated && w.Code != http.StatusInternalServerError {
-		// Not an assertion test; just ensure it doesn't panic
-	}
+	// Not an assertion test; just ensure it doesn't panic
+	_ = w.Code
 }
 
 // ---------------------------------------------------------------------------

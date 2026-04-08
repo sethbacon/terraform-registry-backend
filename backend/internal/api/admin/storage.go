@@ -4,6 +4,7 @@ package admin
 import (
 	"context"
 	"database/sql"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -231,7 +232,7 @@ func (h *StorageHandlers) CreateStorageConfig(c *gin.Context) {
 	// Mark storage as configured if this is the first setup
 	if !configured && userUUID.Valid {
 		if err := h.storageConfigRepo.SetStorageConfigured(ctx, userUUID.UUID); err != nil {
-			// Log but don't fail - config was created
+			slog.Warn("failed to mark storage as configured", "error", err)
 		}
 	}
 
@@ -279,8 +280,7 @@ func (h *StorageHandlers) UpdateStorageConfig(c *gin.Context) {
 	// only allow updates that don't change the backend type
 	configured, _ := h.storageConfigRepo.IsStorageConfigured(ctx)
 	if configured && existing.IsActive {
-		// Allow updates but log a warning
-		// In a real implementation, you might want to add more checks here
+		slog.Warn("updating active storage config while storage is configured", "config_id", id)
 	}
 
 	var input models.StorageConfigInput

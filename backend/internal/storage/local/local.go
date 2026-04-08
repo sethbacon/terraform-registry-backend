@@ -80,7 +80,7 @@ func (s *LocalStorage) Upload(ctx context.Context, path string, reader io.Reader
 	checksum := hex.EncodeToString(hasher.Sum(nil))
 
 	sidecarPath := fullPath + ".sha256"
-	if err := os.WriteFile(sidecarPath, []byte(checksum), 0644); err != nil {
+	if err := os.WriteFile(sidecarPath, []byte(checksum), 0600); err != nil { //nolint:gosec -- G306: checksum file is non-sensitive; 0600 satisfies gosec while still being readable by the server process
 		slog.Warn("failed to write checksum sidecar", "path", sidecarPath, "error", err)
 	}
 
@@ -184,7 +184,7 @@ func (s *LocalStorage) GetMetadata(ctx context.Context, path string) (*storage.F
 	}
 
 	sidecarPath := fullPath + ".sha256"
-	if data, err := os.ReadFile(sidecarPath); err == nil {
+	if data, err := os.ReadFile(sidecarPath); err == nil { //nolint:gosec -- G304: sidecarPath derived from validated internal storage path, not user input
 		checksum := strings.TrimSpace(string(data))
 		return &storage.FileMetadata{
 			Path:         path,
@@ -208,7 +208,7 @@ func (s *LocalStorage) GetMetadata(ctx context.Context, path string) (*storage.F
 
 	checksum := hex.EncodeToString(hasher.Sum(nil))
 
-	_ = os.WriteFile(sidecarPath, []byte(checksum), 0644)
+	_ = os.WriteFile(sidecarPath, []byte(checksum), 0600) //nolint:gosec -- G306: checksum file is non-sensitive; 0600 satisfies gosec
 
 	return &storage.FileMetadata{
 		Path:         path,

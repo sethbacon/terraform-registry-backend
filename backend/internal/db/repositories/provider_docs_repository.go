@@ -120,7 +120,6 @@ func (r *ProviderDocsRepository) ListProviderVersionDocsPaginated(ctx context.Co
 	if language != nil && *language != "" {
 		fmt.Fprintf(&cb, " AND language = $%d", argIdx)
 		args = append(args, *language)
-		argIdx++
 	}
 
 	var total int

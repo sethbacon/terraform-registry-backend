@@ -27,8 +27,8 @@
 			"rule_id": "G115",
 			"details": "integer overflow conversion int64 -\u003e uint32",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\services\\scm_publisher.go",
-			"code": "219: \t\t\t}\n220: \t\t\tf, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR, os.FileMode(header.Mode)) // #nosec G304 -- path is constructed from validated namespace/name/version components; path traversal is prevented at the API and archive-extraction layers\n221: \t\t\tif err != nil {\n",
-			"line": "220",
+			"code": "220: \t\t\t}\n221: \t\t\tf, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR, os.FileMode(header.Mode)) // #nosec G304 -- path is constructed from validated namespace/name/version components; path traversal is prevented at the API and archive-extraction layers\n222: \t\t\tif err != nil {\n",
+			"line": "221",
 			"column": "68",
 			"nosec": false,
 			"suppressions": null
@@ -43,8 +43,8 @@
 			"rule_id": "G201",
 			"details": "SQL string formatting",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\db\\repositories\\provider_repository.go",
-			"code": "635: \t// Query with pagination and JOIN for created_by_name\n636: \tsearchQuery := fmt.Sprintf(`\n637: \t\tSELECT p.id, p.organization_id, p.namespace, p.type, p.description, p.source,\n638: \t\t       p.created_by, u.name as created_by_name, p.created_at, p.updated_at\n639: \t\tFROM providers p\n640: \t\tLEFT JOIN users u ON p.created_by = u.id\n641: \t\t%s\n642: \t\tORDER BY p.created_at DESC\n643: \t\tLIMIT $%d OFFSET $%d\n644: \t`, whereClause, argCount+1, argCount+2)\n645: \n",
-			"line": "636-644",
+			"code": "700: \t// Query with pagination and JOIN for created_by_name\n701: \tsearchQuery := fmt.Sprintf(`\n702: \t\tSELECT p.id, p.organization_id, p.namespace, p.type, p.description, p.source,\n703: \t\t       p.created_by, u.name as created_by_name, p.created_at, p.updated_at\n704: \t\tFROM providers p\n705: \t\tLEFT JOIN users u ON p.created_by = u.id\n706: \t\t%s\n707: \t\tORDER BY p.created_at DESC\n708: \t\tLIMIT $%d OFFSET $%d\n709: \t`, whereClause, argCount+1, argCount+2)\n710: \n",
+			"line": "701-709",
 			"column": "17",
 			"nosec": false,
 			"suppressions": null
@@ -59,8 +59,8 @@
 			"rule_id": "G201",
 			"details": "SQL string formatting",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\db\\repositories\\provider_repository.go",
-			"code": "627: \t// Count total results\n628: \tcountQuery := fmt.Sprintf(\"SELECT COUNT(*) FROM providers p %s\", whereClause)\n629: \tvar total int\n",
-			"line": "628",
+			"code": "692: \t// Count total results\n693: \tcountQuery := fmt.Sprintf(\"SELECT COUNT(*) FROM providers p %s\", whereClause)\n694: \tvar total int\n",
+			"line": "693",
 			"column": "16",
 			"nosec": false,
 			"suppressions": null
@@ -75,8 +75,8 @@
 			"rule_id": "G201",
 			"details": "SQL string formatting",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\db\\repositories\\module_repository.go",
-			"code": "434: \t// Count total results\n435: \tcountQuery := fmt.Sprintf(\"SELECT COUNT(*) FROM modules %s\", whereClause)\n436: \tvar total int\n",
-			"line": "435",
+			"code": "497: \t// Count total results\n498: \tcountQuery := fmt.Sprintf(\"SELECT COUNT(*) FROM modules %s\", whereClause)\n499: \tvar total int\n",
+			"line": "498",
 			"column": "16",
 			"nosec": false,
 			"suppressions": null
@@ -88,11 +88,28 @@
 				"id": "22",
 				"url": "https://cwe.mitre.org/data/definitions/22.html"
 			},
+			"rule_id": "G304",
+			"details": "Potential file inclusion via variable",
+			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\storage\\local\\local.go",
+			"code": "186: \tsidecarPath := fullPath + \".sha256\"\n187: \tif data, err := os.ReadFile(sidecarPath); err == nil { //nolint:gosec -- G304: sidecarPath derived from validated internal storage path, not user input\n188: \t\tchecksum := strings.TrimSpace(string(data))\n",
+			"line": "187",
+			"column": "18",
+			"nosec": false,
+			"suppressions": null,
+			"autofix": "Consider using os.Root to scope file access under a fixed root (Go \u003e=1.24). Prefer root.Open/root.Stat over os.Open/os.Stat to prevent directory traversal."
+		},
+		{
+			"severity": "MEDIUM",
+			"confidence": "HIGH",
+			"cwe": {
+				"id": "22",
+				"url": "https://cwe.mitre.org/data/definitions/22.html"
+			},
 			"rule_id": "G305",
 			"details": "File traversal when extracting zip/tar archive",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\services\\scm_publisher.go",
-			"code": "205: \t\t// Prevent path traversal\n206: \t\ttarget := filepath.Join(dest, header.Name)\n207: \t\tif !strings.HasPrefix(target, filepath.Clean(dest)+string(os.PathSeparator)) {\n",
-			"line": "206",
+			"code": "206: \t\t// Prevent path traversal\n207: \t\ttarget := filepath.Join(dest, header.Name)\n208: \t\tif !strings.HasPrefix(target, filepath.Clean(dest)+string(os.PathSeparator)) {\n",
+			"line": "207",
 			"column": "13",
 			"nosec": false,
 			"suppressions": null
@@ -371,10 +388,10 @@
 		}
 	],
 	"Stats": {
-		"files": 124,
-		"lines": 37773,
+		"files": 126,
+		"lines": 38346,
 		"nosec": 95,
-		"found": 23
+		"found": 24
 	},
 	"GosecVersion": "dev"
 }

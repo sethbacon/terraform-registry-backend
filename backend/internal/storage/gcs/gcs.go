@@ -72,10 +72,10 @@ func New(cfg *appconfig.GCSStorageConfig) (*GCSStorage, error) {
 		// Use service account credentials
 		if cfg.CredentialsJSON != "" {
 			// Use JSON credentials directly
-			opts = append(opts, option.WithCredentialsJSON([]byte(cfg.CredentialsJSON)))
+			opts = append(opts, option.WithCredentialsJSON([]byte(cfg.CredentialsJSON))) //nolint:staticcheck -- SA1019: replacement requires ADC/WIF refactor; tracked for future update
 		} else if cfg.CredentialsFile != "" {
 			// Use credentials file path
-			opts = append(opts, option.WithCredentialsFile(cfg.CredentialsFile))
+			opts = append(opts, option.WithCredentialsFile(cfg.CredentialsFile)) //nolint:staticcheck -- SA1019: replacement requires ADC/WIF refactor; tracked for future update
 		} else {
 			return nil, fmt.Errorf("credentials_file or credentials_json is required for service_account auth")
 		}

@@ -391,9 +391,7 @@ func (h *SCMOAuthHandlers) RefreshToken(c *gin.Context) {
 	// Convert scopes string back to array
 	var scopes []string
 	if tokenRecord.Scopes != nil && *tokenRecord.Scopes != "" {
-		for _, scope := range splitString(*tokenRecord.Scopes, ",") {
-			scopes = append(scopes, scope)
-		}
+		scopes = append(scopes, splitString(*tokenRecord.Scopes, ",")...)
 	}
 
 	// Refresh token using the refresh token string

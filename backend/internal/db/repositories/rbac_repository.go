@@ -194,7 +194,6 @@ func (r *RBACRepository) ListApprovalRequests(ctx context.Context, orgID *uuid.U
 	if status != nil {
 		query += ` AND mar.status = $` + string(rune('0'+argNum))
 		args = append(args, *status)
-		argNum++
 	}
 
 	query += ` ORDER BY mar.created_at DESC`
