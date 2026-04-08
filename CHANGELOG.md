@@ -11,6 +11,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.31] - 2026-04-07
+
+### Security
+
+- fix: deliver JWT auth tokens via HttpOnly secure cookies instead of URL query parameters — prevents token leakage in browser history, server logs, and referrer headers
+- fix: add JWT revocation via JTI blocklist with database-backed `revoked_tokens` table — logout now invalidates tokens server-side instead of relying solely on client-side cookie deletion
+- fix: prevent CORS `Access-Control-Allow-Credentials: true` from being sent with wildcard origins — only specific origin matches now receive credentials support
+- fix: make HSTS header conditional on TLS — `Strict-Transport-Security` is no longer sent over plain HTTP connections, per RFC 6797
+- fix: prevent decompression bombs in archive extraction by counting actual bytes written instead of trusting tar header sizes
+- fix: protect session store with `sync.Mutex` to prevent concurrent map read/write panics
+- fix: `generateRandomSecret()` now returns an error instead of silently falling back to a time-based secret
+- fix: remove `GIN_MODE` from `isDevMode()` check — development-only code paths are no longer accidentally enabled by Gin's debug mode
+- fix: add `ReadHeaderTimeout` (10s) and `IdleTimeout` (120s) to HTTP server to mitigate slowloris attacks
+
+### Added
+
+- feat: JWT revocation infrastructure — new migration `000013_jwt_revocation` creates `revoked_tokens` table; new `TokenRepository` with `RevokeToken`, `IsTokenRevoked`, and `CleanupExpiredRevocations` methods; daily cleanup goroutine in server startup
+- feat: pagination support with `limit`/`offset` query params and `{items, total, limit, offset}` envelope for module versions, provider versions, provider docs, mirrored providers, and mirror config versions
+- feat: background job registry with `Job` interface and `Registry` providing `Register`, `StartAll`, `StopAll` lifecycle management
+- feat: migration `000014_terraform_mirror_gpg_config` adds `custom_gpg_key` and `skip_gpg_verify` columns to `terraform_mirror_configs`
+- feat: checksum sidecar `.sha256` files for local storage — avoids re-reading entire files to compute checksums in `GetMetadata()`
+- feat: migration file count parity test ensuring every `.up.sql` has a matching `.down.sql`
+
+### Changed
+
+- refactor: replace all `fmt.Printf`/`fmt.Println` logging with structured `log/slog` calls in audit shipper, SCM linking, and SCM publisher
+- refactor: replace `getResourceType()` string-scanning helpers with `c.FullPath()` switch statement in audit middleware
+- refactor: remove custom `itoa()` and `min()` functions in favour of stdlib `strconv.Itoa()` and Go builtin `min()`
+- refactor: remove `contains()` and `indexOf()` helper functions from audit middleware
+- chore: add HA limitation comments to `RateLimiter` (in-memory token bucket) and `docContentCache` (in-memory TTL cache)
+- chore: add Swagger annotations to `ServeModuleFile`, `UploadModule`, and `UploadProviderVersion` handlers
+- chore: bump Go version from 1.26.0 to 1.26.1
+- chore: bump Docker runtime image from `alpine:3.19` to `alpine:3.21`; add `TARGETARCH` build arg for multi-platform builds
+- chore: raise CI coverage threshold from 65% to 75%; add per-package coverage gate (80% for auth and middleware)
+- chore: add `golangci-lint` step to CI pipeline with `.golangci.yml` configuration
+
+---
+
 ## [0.2.30] - 2026-03-25
 
 ### Fixed
