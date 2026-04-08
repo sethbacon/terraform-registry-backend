@@ -150,8 +150,7 @@ func DownloadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Con
 		go func() {
 			// Use background context to avoid cancellation when request completes
 			if err := providerRepo.IncrementDownloadCount(context.Background(), platformID); err != nil {
-				// Log error but don't fail the request
-				// TODO: Add proper logging in Phase 9
+				slog.Warn("failed to increment provider download count", "platform_id", platformID, "error", err)
 			}
 		}()
 
