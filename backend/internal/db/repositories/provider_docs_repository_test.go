@@ -285,3 +285,130 @@ func TestDeleteProviderVersionDocs_DBError(t *testing.T) {
 		t.Error("expected error on DB failure")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ListProviderVersionDocsPaginated
+// ---------------------------------------------------------------------------
+
+func TestListProviderVersionDocsPaginated_NoFilters(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	repo := NewProviderDocsRepository(db)
+
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs("ver-1").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	mock.ExpectQuery("SELECT.*FROM provider_version_docs").
+		WithArgs("ver-1", 10, 0).
+		WillReturnRows(sqlmock.NewRows(provDocCols).
+			AddRow("doc-1", "ver-1", "101", "Overview", "index", "overview", nil, "path/index.mdx", "hcl"))
+
+	docs, total, err := repo.ListProviderVersionDocsPaginated(context.Background(), "ver-1", nil, nil, 10, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 1 {
+		t.Errorf("total = %d, want 1", total)
+	}
+	if len(docs) != 1 {
+		t.Errorf("len = %d, want 1", len(docs))
+	}
+}
+
+func TestListProviderVersionDocsPaginated_WithFilters(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	repo := NewProviderDocsRepository(db)
+
+	cat := "resources"
+	lang := "hcl"
+
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs("ver-1", "resources", "hcl").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
+
+	mock.ExpectQuery("SELECT.*FROM provider_version_docs").
+		WithArgs("ver-1", "resources", "hcl", 10, 0).
+		WillReturnRows(sqlmock.NewRows(provDocCols).
+			AddRow("doc-1", "ver-1", "101", "Random ID", "random_id", "resources", nil, "path/resources/random_id.mdx", "hcl").
+			AddRow("doc-2", "ver-1", "102", "UUID", "uuid", "resources", nil, "path/resources/uuid.mdx", "hcl"))
+
+	docs, total, err := repo.ListProviderVersionDocsPaginated(context.Background(), "ver-1", &cat, &lang, 10, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 2 {
+		t.Errorf("total = %d, want 2", total)
+	}
+	if len(docs) != 2 {
+		t.Errorf("len = %d, want 2", len(docs))
+	}
+}
+
+func TestListProviderVersionDocsPaginated_CountError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	repo := NewProviderDocsRepository(db)
+
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs("ver-1").
+		WillReturnError(errDB)
+
+	_, _, err = repo.ListProviderVersionDocsPaginated(context.Background(), "ver-1", nil, nil, 10, 0)
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CountProviderVersionDocs
+// ---------------------------------------------------------------------------
+
+func TestCountProviderVersionDocs_Success(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	repo := NewProviderDocsRepository(db)
+
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs("ver-1").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(5))
+
+	count, err := repo.CountProviderVersionDocs(context.Background(), "ver-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if count != 5 {
+		t.Errorf("count = %d, want 5", count)
+	}
+}
+
+func TestCountProviderVersionDocs_DBError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	repo := NewProviderDocsRepository(db)
+
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs("ver-err").
+		WillReturnError(errDB)
+
+	_, err = repo.CountProviderVersionDocs(context.Background(), "ver-err")
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}

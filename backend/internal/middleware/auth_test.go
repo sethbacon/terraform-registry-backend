@@ -606,3 +606,71 @@ func TestOptionalAuthMiddleware_APIKey_NoMatch_PassesThrough(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// JWT revocation paths
+// ---------------------------------------------------------------------------
+
+func newTokenRepo(t *testing.T) (*repositories.TokenRepository, sqlmock.Sqlmock) {
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New (token): %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return repositories.NewTokenRepository(db), mock
+}
+
+// newAuthRouterWithRevocation builds a router with AuthMiddleware wired to a real tokenRepo.
+func newAuthRouterWithRevocation(t *testing.T,
+	userRepo *repositories.UserRepository, userMock sqlmock.Sqlmock,
+	orgRepo *repositories.OrganizationRepository,
+	tokenRepo *repositories.TokenRepository,
+) *gin.Engine {
+	t.Helper()
+	r := gin.New()
+	r.Use(AuthMiddleware(nil, userRepo, nil, orgRepo, tokenRepo))
+	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
+	return r
+}
+
+func TestAuthMiddleware_JWTRevoked(t *testing.T) {
+	userRepo, userMock := newUserRepo(t)
+	orgRepo, _ := newOrgRepo(t)
+	tokenRepo, tokenMock := newTokenRepo(t)
+
+	token := generateTestJWT(t, "user-1")
+
+	// IsTokenRevoked returns true
+	tokenMock.ExpectQuery("SELECT EXISTS").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+
+	// userRepo not called (aborted before)
+	_ = userMock
+
+	r := newAuthRouterWithRevocation(t, userRepo, userMock, orgRepo, tokenRepo)
+
+	if code := doAuthRequest(r, "Bearer "+token); code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401 (revoked token)", code)
+	}
+}
+
+func TestAuthMiddleware_JWTRevocationDBError(t *testing.T) {
+	userRepo, userMock := newUserRepo(t)
+	orgRepo, _ := newOrgRepo(t)
+	tokenRepo, tokenMock := newTokenRepo(t)
+
+	token := generateTestJWT(t, "user-1")
+
+	// IsTokenRevoked returns a DB error
+	tokenMock.ExpectQuery("SELECT EXISTS").
+		WillReturnError(errors.New("db error"))
+
+	_ = userMock
+
+	r := newAuthRouterWithRevocation(t, userRepo, userMock, orgRepo, tokenRepo)
+
+	if code := doAuthRequest(r, "Bearer "+token); code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500 (revocation DB error)", code)
+	}
+}
+
+// ---------------------------------------------------------------------------

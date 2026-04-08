@@ -199,6 +199,64 @@ func TestWebhook_InvalidConnectorType(t *testing.T) {
 	}
 }
 
+func TestWebhook_GetProviderDBError(t *testing.T) {
+	// Secret matches, but GetProvider returns DB error → 500
+	mock, r := newWebhookRouter(t)
+	providerID := uuid.New()
+
+	mock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE module_id").
+		WillReturnRows(sampleModuleSourceRepoRowWithURL(providerID,
+			"https://registry.example.com/webhooks/scm/"+webhookTestUUID+"/secret123"))
+	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
+		WillReturnError(webhookErrDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/webhooks/scm/"+webhookTestUUID+"/secret123", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500 (provider DB error): body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestWebhook_InvalidConnectorTypeMismatch(t *testing.T) {
+	// Secret matches, provider with unknown type → BuildConnector fails → 500
+	mock, r := newWebhookRouter(t)
+	providerID := uuid.New()
+
+	mock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE module_id").
+		WillReturnRows(sampleModuleSourceRepoRowWithURL(providerID,
+			"https://registry.example.com/webhooks/scm/"+webhookTestUUID+"/secret123"))
+	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
+		WillReturnRows(sampleProviderRow(providerID, "unknown_provider_type"))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/webhooks/scm/"+webhookTestUUID+"/secret123", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500 (unknown connector type after secret match): body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestWebhook_InvalidHMACSignature(t *testing.T) {
+	// bitbucket_dc is PAT-based so BuildConnector succeeds without OAuth creds.
+	// No valid HMAC signature → VerifyDeliverySignature returns false → 401.
+	mock, r := newWebhookRouter(t)
+	providerID := uuid.New()
+
+	mock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE module_id").
+		WillReturnRows(sampleModuleSourceRepoRowWithURL(providerID,
+			"https://registry.example.com/webhooks/scm/"+webhookTestUUID+"/secret123"))
+	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
+		WillReturnRows(sampleProviderRow(providerID, "bitbucket_dc"))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/webhooks/scm/"+webhookTestUUID+"/secret123", nil))
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401 (bad HMAC signature): body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestWebhook_InvalidSignature(t *testing.T) {
 	// bitbucket_dc is PAT-based: BuildConnector succeeds without CallbackURL.
 	// Empty X-Hub-Signature header → VerifyDeliverySignature returns false → 401.

@@ -685,3 +685,40 @@ func TestGetUserCombinedScopes_DBError(t *testing.T) {
 		t.Error("expected error")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// GetDefaultOrganization cache hit path
+// ---------------------------------------------------------------------------
+
+func TestGetDefaultOrganization_CacheHit(t *testing.T) {
+	repo, mock := newOrgRepo(t)
+
+	// First call hits the DB and populates the cache.
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
+		WithArgs("default").
+		WillReturnRows(sampleOrgRow())
+
+	org1, err := repo.GetDefaultOrganization(context.Background())
+	if err != nil {
+		t.Fatalf("first call unexpected error: %v", err)
+	}
+	if org1 == nil {
+		t.Fatal("first call: expected org, got nil")
+	}
+
+	// Second call should return from cache — no new DB query expected.
+	org2, err := repo.GetDefaultOrganization(context.Background())
+	if err != nil {
+		t.Fatalf("second call unexpected error: %v", err)
+	}
+	if org2 == nil {
+		t.Fatal("second call: expected org, got nil")
+	}
+	if org1.ID != org2.ID {
+		t.Errorf("cache returned different ID: %q vs %q", org1.ID, org2.ID)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations (extra DB query occurred): %v", err)
+	}
+}

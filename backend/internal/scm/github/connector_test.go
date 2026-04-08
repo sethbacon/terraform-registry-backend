@@ -459,3 +459,19 @@ func TestWebhookStubs(t *testing.T) {
 		t.Error("VerifyDeliverySignature: expected false, got true")
 	}
 }
+
+func TestBuildConnector_GitHub(t *testing.T) {
+	settings := &scm.ConnectorSettings{
+		Kind:         scm.KindGitHub,
+		ClientID:     "client-id",
+		ClientSecret: "client-secret",
+		CallbackURL:  "https://example.com/callback",
+	}
+	c, err := scm.BuildConnector(settings)
+	if err != nil {
+		t.Fatalf("BuildConnector: %v", err)
+	}
+	if c == nil {
+		t.Error("expected non-nil connector")
+	}
+}

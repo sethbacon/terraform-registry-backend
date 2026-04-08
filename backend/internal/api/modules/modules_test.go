@@ -796,3 +796,50 @@ func TestDownloadHandler_SuccessNilAuditRepo(t *testing.T) {
 		t.Errorf("status = %d, want 204; body: %s", w.Code, w.Body.String())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// parseProviderFilePath
+// ---------------------------------------------------------------------------
+
+func TestParseProviderFilePath_Valid(t *testing.T) {
+	ns, pt, ver, os, arch, ok := parseProviderFilePath("providers/hashicorp/aws/5.0.0/linux/amd64/file.zip")
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if ns != "hashicorp" {
+		t.Errorf("namespace = %q, want hashicorp", ns)
+	}
+	if pt != "aws" {
+		t.Errorf("type = %q, want aws", pt)
+	}
+	if ver != "5.0.0" {
+		t.Errorf("version = %q, want 5.0.0", ver)
+	}
+	if os != "linux" {
+		t.Errorf("os = %q, want linux", os)
+	}
+	if arch != "amd64" {
+		t.Errorf("arch = %q, want amd64", arch)
+	}
+}
+
+func TestParseProviderFilePath_TooShort(t *testing.T) {
+	_, _, _, _, _, ok := parseProviderFilePath("providers/hashicorp/aws")
+	if ok {
+		t.Error("expected ok=false for too-short path")
+	}
+}
+
+func TestParseProviderFilePath_WrongPrefix(t *testing.T) {
+	_, _, _, _, _, ok := parseProviderFilePath("modules/hashicorp/aws/5.0.0/linux/amd64/file.zip")
+	if ok {
+		t.Error("expected ok=false for wrong prefix")
+	}
+}
+
+func TestParseProviderFilePath_Empty(t *testing.T) {
+	_, _, _, _, _, ok := parseProviderFilePath("")
+	if ok {
+		t.Error("expected ok=false for empty path")
+	}
+}

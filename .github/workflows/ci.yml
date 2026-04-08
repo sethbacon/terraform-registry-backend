@@ -82,7 +82,7 @@ jobs:
         working-directory: backend
         run: |
           go clean -testcache
-          go test ./... -race -coverprofile=coverage.out -covermode=atomic
+          go test ./internal/... ./pkg/... -race -coverprofile=coverage.out -covermode=atomic
 
       - name: Check coverage threshold
         working-directory: backend

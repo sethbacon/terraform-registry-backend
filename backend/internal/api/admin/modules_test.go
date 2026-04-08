@@ -93,6 +93,8 @@ func newModuleRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	r.DELETE("/modules/:namespace/:name/:system/versions/:version", h.DeleteVersion)
 	r.POST("/modules/:namespace/:name/:system/versions/:version/deprecate", h.DeprecateVersion)
 	r.DELETE("/modules/:namespace/:name/:system/versions/:version/deprecate", h.UndeprecateVersion)
+	r.GET("/modules/id/:id", h.GetModuleByIDRecord)
+	r.PUT("/modules/id/:id", h.UpdateModuleRecord)
 
 	return mock, r
 }
@@ -768,6 +770,99 @@ func TestUndeprecateModuleVersion_Success(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/modules/hashicorp/vpc/aws/versions/1.0.0/deprecate", nil))
 
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetModuleByIDRecord tests
+// ---------------------------------------------------------------------------
+
+func TestGetModuleByIDRecord_DBError(t *testing.T) {
+	mock, r := newModuleRouter(t)
+	mock.ExpectQuery("SELECT.*FROM modules").WithArgs("mod-1").WillReturnError(errDB)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/modules/id/mod-1", nil))
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestGetModuleByIDRecord_NotFound(t *testing.T) {
+	mock, r := newModuleRouter(t)
+	mock.ExpectQuery("SELECT.*FROM modules").WithArgs("mod-999").WillReturnRows(emptyModuleRow())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/modules/id/mod-999", nil))
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestGetModuleByIDRecord_Success(t *testing.T) {
+	mock, r := newModuleRouter(t)
+	mock.ExpectQuery("SELECT.*FROM modules").WithArgs("mod-1").WillReturnRows(sampleModuleRow())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/modules/id/mod-1", nil))
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// UpdateModuleRecord tests
+// ---------------------------------------------------------------------------
+
+func TestUpdateModuleRecord_InvalidJSON(t *testing.T) {
+	_, r := newModuleRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/modules/id/mod-1", bytes.NewBufferString("{bad")))
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestUpdateModuleRecord_DBError(t *testing.T) {
+	mock, r := newModuleRouter(t)
+	mock.ExpectQuery("SELECT.*FROM modules").WithArgs("mod-1").WillReturnError(errDB)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/modules/id/mod-1",
+		jsonBody(map[string]string{"description": "new desc"})))
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestUpdateModuleRecord_NotFound(t *testing.T) {
+	mock, r := newModuleRouter(t)
+	mock.ExpectQuery("SELECT.*FROM modules").WithArgs("mod-999").WillReturnRows(emptyModuleRow())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/modules/id/mod-999",
+		jsonBody(map[string]string{"description": "new desc"})))
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestUpdateModuleRecord_UpdateError(t *testing.T) {
+	mock, r := newModuleRouter(t)
+	mock.ExpectQuery("SELECT.*FROM modules").WithArgs("mod-1").WillReturnRows(sampleModuleRow())
+	mock.ExpectQuery("UPDATE modules").WillReturnError(errDB)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/modules/id/mod-1",
+		jsonBody(map[string]string{"description": "new desc"})))
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestUpdateModuleRecord_Success(t *testing.T) {
+	mock, r := newModuleRouter(t)
+	mock.ExpectQuery("SELECT.*FROM modules").WithArgs("mod-1").WillReturnRows(sampleModuleRow())
+	mock.ExpectQuery("UPDATE modules").WillReturnRows(sqlmock.NewRows([]string{"updated_at"}).AddRow(time.Now()))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/modules/id/mod-1",
+		jsonBody(map[string]string{"description": "new desc"})))
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
 	}

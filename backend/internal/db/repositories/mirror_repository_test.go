@@ -637,3 +637,94 @@ func TestJsonToStringArray_InvalidJSON(t *testing.T) {
 		t.Error("expected error for invalid JSON")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ResetStaleSyncs
+// ---------------------------------------------------------------------------
+
+func TestResetStaleSyncs_Success(t *testing.T) {
+	repo, mock := newMirrorRepo(t)
+
+	mock.ExpectExec("UPDATE mirror_sync_history").
+		WillReturnResult(sqlmock.NewResult(0, 2))
+
+	mock.ExpectExec("UPDATE mirror_configurations").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	rows, err := repo.ResetStaleSyncs(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rows != 2 {
+		t.Errorf("rows = %d, want 2", rows)
+	}
+}
+
+func TestResetStaleSyncs_FirstExecError(t *testing.T) {
+	repo, mock := newMirrorRepo(t)
+
+	mock.ExpectExec("UPDATE mirror_sync_history").
+		WillReturnError(errDB)
+
+	_, err := repo.ResetStaleSyncs(context.Background())
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+func TestResetStaleSyncs_SecondExecError(t *testing.T) {
+	repo, mock := newMirrorRepo(t)
+
+	mock.ExpectExec("UPDATE mirror_sync_history").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	mock.ExpectExec("UPDATE mirror_configurations").
+		WillReturnError(errDB)
+
+	_, err := repo.ResetStaleSyncs(context.Background())
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ListMirroredProvidersPaginated
+// ---------------------------------------------------------------------------
+
+func TestListMirroredProvidersPaginated_Success(t *testing.T) {
+	repo, mock := newMirrorRepo(t)
+	mirrorID := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs(mirrorID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	mock.ExpectQuery("SELECT.*FROM mirrored_providers.*WHERE mirror_config_id").
+		WithArgs(mirrorID, 10, 0).
+		WillReturnRows(sampleMirroredProviderRow())
+
+	providers, total, err := repo.ListMirroredProvidersPaginated(context.Background(), mirrorID, 10, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 1 {
+		t.Errorf("total = %d, want 1", total)
+	}
+	if len(providers) != 1 {
+		t.Errorf("len = %d, want 1", len(providers))
+	}
+}
+
+func TestListMirroredProvidersPaginated_CountError(t *testing.T) {
+	repo, mock := newMirrorRepo(t)
+	mirrorID := uuid.New()
+
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs(mirrorID).
+		WillReturnError(errDB)
+
+	_, _, err := repo.ListMirroredProvidersPaginated(context.Background(), mirrorID, 10, 0)
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}

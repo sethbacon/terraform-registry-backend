@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -120,6 +121,9 @@ func newProviderRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	r.DELETE("/providers/:namespace/:type/versions/:version", h.DeleteVersion)
 	r.POST("/providers/:namespace/:type/versions/:version/deprecate", h.DeprecateVersion)
 	r.DELETE("/providers/:namespace/:type/versions/:version/deprecate", h.UndeprecateVersion)
+	r.POST("/providers/record", h.CreateProviderRecord)
+	r.GET("/providers/id/:id", h.GetProviderByID)
+	r.PUT("/providers/id/:id", h.UpdateProviderRecord)
 
 	return mock, r
 }
@@ -878,5 +882,163 @@ func TestUndeprecateVersion_ProviderNotFound(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetProviderByID tests
+// ---------------------------------------------------------------------------
+
+func TestGetProviderByID_DBError(t *testing.T) {
+	mock, r := newProviderRouter(t)
+	mock.ExpectQuery("SELECT.*FROM providers").WithArgs("prov-1").WillReturnError(errDB)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/providers/id/prov-1", nil))
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestGetProviderByID_NotFound(t *testing.T) {
+	mock, r := newProviderRouter(t)
+	mock.ExpectQuery("SELECT.*FROM providers").WithArgs("prov-999").WillReturnRows(emptyProviderRow())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/providers/id/prov-999", nil))
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestGetProviderByID_Success(t *testing.T) {
+	mock, r := newProviderRouter(t)
+	mock.ExpectQuery("SELECT.*FROM providers").WithArgs("prov-1").WillReturnRows(sampleProviderRow())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/providers/id/prov-1", nil))
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// UpdateProviderRecord tests
+// ---------------------------------------------------------------------------
+
+func TestUpdateProviderRecord_InvalidJSON(t *testing.T) {
+	_, r := newProviderRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/providers/id/prov-1", bytes.NewBufferString("{bad")))
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestUpdateProviderRecord_DBError(t *testing.T) {
+	mock, r := newProviderRouter(t)
+	mock.ExpectQuery("SELECT.*FROM providers").WithArgs("prov-1").WillReturnError(errDB)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/providers/id/prov-1",
+		jsonBody(map[string]string{"description": "updated"})))
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestUpdateProviderRecord_NotFound(t *testing.T) {
+	mock, r := newProviderRouter(t)
+	mock.ExpectQuery("SELECT.*FROM providers").WithArgs("prov-999").WillReturnRows(emptyProviderRow())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/providers/id/prov-999",
+		jsonBody(map[string]string{"description": "updated"})))
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestUpdateProviderRecord_UpdateError(t *testing.T) {
+	mock, r := newProviderRouter(t)
+	mock.ExpectQuery("SELECT.*FROM providers").WithArgs("prov-1").WillReturnRows(sampleProviderRow())
+	mock.ExpectQuery("UPDATE providers").WillReturnError(errDB)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/providers/id/prov-1",
+		jsonBody(map[string]string{"description": "updated"})))
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestUpdateProviderRecord_Success(t *testing.T) {
+	mock, r := newProviderRouter(t)
+	mock.ExpectQuery("SELECT.*FROM providers").WithArgs("prov-1").WillReturnRows(sampleProviderRow())
+	mock.ExpectQuery("UPDATE providers").WillReturnRows(
+		sqlmock.NewRows([]string{"updated_at"}).AddRow(time.Now()))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/providers/id/prov-1",
+		jsonBody(map[string]string{"description": "updated"})))
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CreateProviderRecord tests
+// ---------------------------------------------------------------------------
+
+func TestCreateProviderRecord_InvalidJSON(t *testing.T) {
+	_, r := newProviderRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/providers/record", bytes.NewBufferString("{bad")))
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestCreateProviderRecord_OrgDBError(t *testing.T) {
+	mock, r := newProviderRouter(t)
+	mock.ExpectQuery("SELECT.*FROM organizations").WithArgs("default").WillReturnError(errDB)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/providers/record",
+		jsonBody(map[string]string{"namespace": "hashicorp", "type": "aws"})))
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestCreateProviderRecord_AlreadyExists(t *testing.T) {
+	mock, r := newProviderRouter(t)
+	expectOrgFound(mock)
+	mock.ExpectQuery("SELECT.*FROM providers").WillReturnRows(sampleProviderRow())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/providers/record",
+		jsonBody(map[string]string{"namespace": "hashicorp", "type": "aws"})))
+	if w.Code != http.StatusConflict {
+		t.Errorf("status = %d, want 409", w.Code)
+	}
+}
+
+func TestCreateProviderRecord_CreateError(t *testing.T) {
+	mock, r := newProviderRouter(t)
+	expectOrgFound(mock)
+	mock.ExpectQuery("SELECT.*FROM providers").WillReturnRows(emptyProviderRow())
+	mock.ExpectQuery("INSERT INTO providers").WillReturnError(errDB)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/providers/record",
+		jsonBody(map[string]string{"namespace": "hashicorp", "type": "aws"})))
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestCreateProviderRecord_Success(t *testing.T) {
+	mock, r := newProviderRouter(t)
+	expectOrgFound(mock)
+	mock.ExpectQuery("SELECT.*FROM providers").WillReturnRows(emptyProviderRow())
+	mock.ExpectQuery("INSERT INTO providers").WillReturnRows(
+		sqlmock.NewRows([]string{"id", "created_at", "updated_at"}).
+			AddRow("prov-new", time.Now(), time.Now()))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/providers/record",
+		jsonBody(map[string]string{"namespace": "hashicorp", "type": "aws"})))
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201: body=%s", w.Code, w.Body.String())
 	}
 }

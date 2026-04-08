@@ -1215,3 +1215,89 @@ func TestTerraformMirrorListSyncHistory_DBError(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ListVersionsPaginated
+// ---------------------------------------------------------------------------
+
+func TestTerraformMirrorListVersionsPaginated_Success(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	configID := uuid.New()
+	v := testTFVersion(configID)
+
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs(configID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	mock.ExpectQuery("SELECT.*FROM terraform_versions").
+		WithArgs(configID).
+		WillReturnRows(newTFVersionRow(mock, v))
+
+	versions, total, err := repo.ListVersionsPaginated(context.Background(), configID, false, 10, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 1 {
+		t.Errorf("total = %d, want 1", total)
+	}
+	if len(versions) != 1 {
+		t.Errorf("len(versions) = %d, want 1", len(versions))
+	}
+}
+
+func TestTerraformMirrorListVersionsPaginated_SyncedOnly(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	configID := uuid.New()
+	v := testTFVersion(configID)
+
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs(configID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	mock.ExpectQuery("SELECT.*FROM terraform_versions").
+		WithArgs(configID).
+		WillReturnRows(newTFVersionRow(mock, v))
+
+	versions, total, err := repo.ListVersionsPaginated(context.Background(), configID, true, 10, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 1 {
+		t.Errorf("total = %d, want 1", total)
+	}
+	if len(versions) != 1 {
+		t.Errorf("len(versions) = %d, want 1", len(versions))
+	}
+}
+
+func TestTerraformMirrorListVersionsPaginated_CountError(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	configID := uuid.New()
+
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs(configID).
+		WillReturnError(errDB)
+
+	_, _, err := repo.ListVersionsPaginated(context.Background(), configID, false, 10, 0)
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+func TestTerraformMirrorListVersionsPaginated_QueryError(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	configID := uuid.New()
+
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs(configID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	mock.ExpectQuery("SELECT.*FROM terraform_versions").
+		WithArgs(configID).
+		WillReturnError(errDB)
+
+	_, _, err := repo.ListVersionsPaginated(context.Background(), configID, false, 10, 0)
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}

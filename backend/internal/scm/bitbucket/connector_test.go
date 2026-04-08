@@ -565,3 +565,27 @@ func TestSearchRepositories_HTTPError(t *testing.T) {
 		t.Error("SearchRepositories() expected error for non-200, got nil")
 	}
 }
+
+func TestBuildConnector_Bitbucket(t *testing.T) {
+	settings := &scm.ConnectorSettings{
+		Kind:            scm.KindBitbucketDC,
+		InstanceBaseURL: "http://bitbucket.example.com",
+	}
+	c, err := scm.BuildConnector(settings)
+	if err != nil {
+		t.Fatalf("BuildConnector: %v", err)
+	}
+	if c == nil {
+		t.Error("expected non-nil connector")
+	}
+}
+
+func TestBuildConnector_Bitbucket_NoURL(t *testing.T) {
+	settings := &scm.ConnectorSettings{
+		Kind: scm.KindBitbucketDC,
+	}
+	_, err := scm.BuildConnector(settings)
+	if err == nil {
+		t.Error("expected error for missing InstanceBaseURL")
+	}
+}

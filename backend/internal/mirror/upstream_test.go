@@ -585,3 +585,45 @@ func TestGetProviderDocContent_InvalidJSON(t *testing.T) {
 		t.Error("expected error for invalid JSON")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// DownloadFileStream
+// ---------------------------------------------------------------------------
+
+func TestDownloadFileStream_Success(t *testing.T) {
+	content := []byte("binary content")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
+		w.WriteHeader(http.StatusOK)
+		w.Write(content)
+	}))
+	defer srv.Close()
+
+	u := NewUpstreamRegistry("http://example.com")
+	u.DownloadClient = u.HTTPClient
+
+	stream, err := u.DownloadFileStream(context.Background(), srv.URL+"/binary")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer stream.Body.Close()
+	if stream.ContentLength != int64(len(content)) {
+		t.Errorf("ContentLength = %d, want %d", stream.ContentLength, len(content))
+	}
+}
+
+func TestDownloadFileStream_HTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte("not found"))
+	}))
+	defer srv.Close()
+
+	u := NewUpstreamRegistry("http://example.com")
+	u.DownloadClient = u.HTTPClient
+
+	_, err := u.DownloadFileStream(context.Background(), srv.URL+"/missing")
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
