@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 )
 
 var (
@@ -27,6 +28,7 @@ type Claims struct {
 	UserID string   `json:"user_id"`
 	Email  string   `json:"email"`
 	Scopes []string `json:"scopes,omitempty"`
+	JTI    string   `json:"jti"`
 	jwt.RegisteredClaims
 }
 
@@ -34,21 +36,19 @@ type Claims struct {
 func isDevMode() bool {
 	devMode := os.Getenv("DEV_MODE")
 	nodeEnv := os.Getenv("NODE_ENV")
-	ginMode := os.Getenv("GIN_MODE")
 
 	return devMode == "true" || devMode == "1" ||
-		nodeEnv == "development" ||
-		ginMode == "debug"
+		nodeEnv == "development"
 }
 
-// generateRandomSecret creates a cryptographically secure random secret
-func generateRandomSecret() string {
+// generateRandomSecret creates a cryptographically secure random secret.
+// Returns an error instead of a predictable fallback if the CSPRNG fails.
+func generateRandomSecret() (string, error) {
 	bytes := make([]byte, 32)
 	if _, err := rand.Read(bytes); err != nil {
-		// Fallback to a less secure but functional secret
-		return fmt.Sprintf("dev-fallback-%d", time.Now().UnixNano())
+		return "", fmt.Errorf("failed to generate random JWT secret: %w", err)
 	}
-	return hex.EncodeToString(bytes)
+	return hex.EncodeToString(bytes), nil
 }
 
 // ValidateJWTSecret checks that the JWT secret is properly configured.
@@ -61,8 +61,15 @@ func ValidateJWTSecret() error {
 
 		if secret == "" {
 			if isDevMode() {
-				// In dev mode, generate a random secret and warn
-				jwtSecret = generateRandomSecret()
+				// In dev mode, generate a random ephemeral secret. This is
+				// acceptable because it resets on every restart — the only
+				// consequence is that sessions don't persist across restarts.
+				randomSecret, err := generateRandomSecret()
+				if err != nil {
+					jwtSecretErr = err
+					return
+				}
+				jwtSecret = randomSecret
 				log.Printf("WARNING: TFR_JWT_SECRET not set. Using auto-generated secret for development.")
 				log.Printf("WARNING: Sessions will not persist across restarts. Set TFR_JWT_SECRET for persistent sessions.")
 			} else {
@@ -108,11 +115,13 @@ func GenerateJWT(userID, email string, scopes []string, expiresIn time.Duration)
 		UserID: userID,
 		Email:  email,
 		Scopes: scopes,
+		JTI:    uuid.New().String(),
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(expiresIn)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			Issuer:    "terraform-registry",
 			Subject:   userID,
+			ID:        uuid.New().String(),
 		},
 	}
 

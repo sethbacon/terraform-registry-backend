@@ -478,6 +478,8 @@ func TestTMListVersions_Success(t *testing.T) {
 	mock, r := newTerraformMirrorRouter(t)
 	mock.ExpectQuery("SELECT.*FROM terraform_mirror_configs WHERE id").
 		WillReturnRows(sampleTMCRow())
+	mock.ExpectQuery("SELECT COUNT.*FROM terraform_versions WHERE config_id").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectQuery("SELECT.*FROM terraform_versions WHERE config_id").
 		WillReturnRows(sqlmock.NewRows(tfvCols))
 
@@ -1026,6 +1028,8 @@ func TestTMListVersions_WithPlatforms(t *testing.T) {
 	mock, r := newTerraformMirrorRouter(t)
 	mock.ExpectQuery("SELECT.*FROM terraform_mirror_configs WHERE id").
 		WillReturnRows(sampleTMCRow())
+	mock.ExpectQuery("SELECT COUNT.*FROM terraform_versions WHERE config_id").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectQuery("SELECT.*FROM terraform_versions WHERE config_id").
 		WillReturnRows(sampleTFVRow())
 	// ListPlatformsForVersion for the returned version

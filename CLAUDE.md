@@ -40,7 +40,7 @@ git remote prune origin                          # prune stale remote-tracking r
    go fmt ./...
    go vet ./...
 
-   # Tests with coverage (must stay ≥ 65%)
+   # Tests with coverage (must stay ≥ 75%)
    go test ./... -coverprofile=coverage.out -covermode=atomic
    go tool cover -func=coverage.out | grep "^total:"
 
@@ -231,7 +231,7 @@ terraform-registry-backend/
 | Language       | Go 1.24.0                                                          |
 | HTTP Framework | Gin                                                                |
 | Database       | PostgreSQL 14+ via sqlx                                            |
-| Migrations     | golang-migrate (28 migrations)                                     |
+| Migrations     | golang-migrate (14 migrations (000001–000014))                     |
 | Auth           | JWT (golang-jwt/jwt v5), API keys, OIDC (coreos/go-oidc), Azure AD |
 | Config         | Viper (`TFR_` env prefix overrides YAML)                           |
 | Storage        | Local filesystem, Azure Blob, S3-compatible, GCS                   |
@@ -364,7 +364,7 @@ HTTP Handler (api/)
 
 ### Database
 
-- 28 versioned SQL migrations in `backend/internal/db/migrations/`.
+- 14 migrations (000001–000014) in `backend/internal/db/migrations/`.
 - Migrations run automatically at startup; use `migrate up/down` for manual control.
 - Always add a new migration file rather than editing existing ones.
 

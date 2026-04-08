@@ -186,6 +186,7 @@ func TestListVersionsHandler_Success(t *testing.T) {
 
 	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow2())
 	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(sampleModuleRow2())
+	mock.ExpectQuery("SELECT COUNT.*FROM module_versions WHERE module_id").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE mv.module_id").WillReturnRows(sampleModuleVersionsRows())
 
 	w := doGET(r, "/v1/modules/hashicorp/consul/aws/versions")

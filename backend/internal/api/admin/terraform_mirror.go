@@ -409,6 +409,8 @@ func (h *TerraformMirrorHandler) TriggerSync(c *gin.Context) {
 // @Param        id         path   string  true   "Mirror config UUID"
 // @Param        platforms  query  bool    false  "Include per-version platform details"
 // @Param        synced     query  bool    false  "Only return fully synced versions"
+// @Param        limit      query  int     false  "Maximum results (default 100, max 1000)"
+// @Param        offset     query  int     false  "Offset for pagination (default 0)"
 // @Success      200  {object}  models.TerraformVersionListResponse
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
 // @Failure      404  {object}  map[string]interface{}  "Not found"
@@ -427,7 +429,19 @@ func (h *TerraformMirrorHandler) ListVersions(c *gin.Context) {
 	syncedOnly := c.Query("synced") == "true"
 	withPlatforms := c.Query("platforms") == "true"
 
-	versions, err := h.repo.ListVersions(c.Request.Context(), id, syncedOnly)
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	if limit > 1000 {
+		limit = 1000
+	}
+	if limit < 1 {
+		limit = 1
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	versions, total, err := h.repo.ListVersionsPaginated(c.Request.Context(), id, syncedOnly, limit, offset)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list versions: " + err.Error()})
 		return
@@ -444,9 +458,11 @@ func (h *TerraformMirrorHandler) ListVersions(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, models.TerraformVersionListResponse{
-		Versions:   versions,
-		TotalCount: len(versions),
+	c.JSON(http.StatusOK, gin.H{
+		"versions": versions,
+		"total":    total,
+		"limit":    limit,
+		"offset":   offset,
 	})
 }
 

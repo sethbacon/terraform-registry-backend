@@ -54,7 +54,11 @@ type rateLimitEntry struct {
 	lastUpdate time.Time
 }
 
-// RateLimiter implements a token bucket rate limiter
+// RateLimiter implements a per-key token bucket rate limiter using in-process memory.
+// IMPORTANT: This is not suitable for horizontally scaled deployments — each instance
+// maintains independent state, allowing clients to exceed limits by rotating across
+// instances. For production HA deployments, replace with a Redis-backed implementation
+// (e.g., go-redis/redis_rate using the GCRA algorithm).
 type RateLimiter struct {
 	config  RateLimitConfig
 	entries map[string]*rateLimitEntry
@@ -208,12 +212,4 @@ func getRateLimitKey(c *gin.Context) string {
 		ip = c.Request.RemoteAddr
 	}
 	return "ip:" + ip
-}
-
-// Helper function for min (Go 1.21+ has this built-in, but for compatibility)
-func min(a, b float64) float64 {
-	if a < b {
-		return a
-	}
-	return b
 }

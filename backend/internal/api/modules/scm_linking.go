@@ -4,6 +4,7 @@ package modules
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -328,8 +329,7 @@ func (h *SCMLinkingHandler) UnlinkModuleFromSCM(c *gin.Context) {
 								ExpiresAt:   tokenRecord.ExpiresAt,
 							}
 							if rmErr := connector.RemoveWebhook(c.Request.Context(), token, link.RepositoryOwner, link.RepositoryName, *link.WebhookID); rmErr != nil {
-								fmt.Printf("[UnlinkModuleFromSCM] Warning: failed to remove webhook %s from %s/%s: %v\n",
-									*link.WebhookID, link.RepositoryOwner, link.RepositoryName, rmErr)
+								slog.Warn("failed to remove webhook", "webhook_id", *link.WebhookID, "owner", link.RepositoryOwner, "repo", link.RepositoryName, "error", rmErr)
 							}
 						}
 					}
@@ -402,11 +402,11 @@ func (h *SCMLinkingHandler) GetModuleSCMInfo(c *gin.Context) {
 // POST /api/v1/admin/modules/:id/scm/sync
 func (h *SCMLinkingHandler) TriggerManualSync(c *gin.Context) {
 	moduleIDStr := c.Param("id")
-	fmt.Printf("TriggerManualSync called for module ID: %s\n", moduleIDStr)
+	slog.Debug("TriggerManualSync called", "module_id", moduleIDStr)
 
 	moduleID, err := uuid.Parse(moduleIDStr)
 	if err != nil {
-		fmt.Printf("Invalid module ID: %s\n", moduleIDStr)
+		slog.Debug("invalid module ID", "module_id", moduleIDStr)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid module ID"})
 		return
 	}
@@ -498,7 +498,7 @@ func (h *SCMLinkingHandler) TriggerManualSync(c *gin.Context) {
 
 	// Proactively refresh if the token is expired or expires within 5 minutes.
 	if decryptedRefreshToken != "" && (token.IsExpired() || (token.ExpiresAt != nil && time.Until(*token.ExpiresAt) < 5*time.Minute)) {
-		fmt.Printf("[TriggerManualSync] Token expired/expiring soon, refreshing...\n")
+		slog.Debug("token expired or expiring soon, refreshing")
 		if newToken, err := connector.RenewToken(c.Request.Context(), decryptedRefreshToken); err == nil {
 			token.AccessToken = newToken.AccessToken
 			token.RefreshToken = newToken.RefreshToken
@@ -514,23 +514,23 @@ func (h *SCMLinkingHandler) TriggerManualSync(c *gin.Context) {
 					}
 				}
 				_ = h.scmRepo.SaveUserToken(c.Request.Context(), tokenRecord)
-				fmt.Printf("[TriggerManualSync] Token refreshed successfully\n")
+				slog.Debug("token refreshed successfully")
 			}
 		} else {
-			fmt.Printf("[TriggerManualSync] Token refresh failed: %v\n", err)
+			slog.Warn("token refresh failed", "error", err)
 		}
 	}
 
 	// Trigger async sync in background using a new context
 	// (c.Request.Context() would be canceled when the HTTP response is sent)
-	fmt.Printf("Starting async sync for module %s (repo: %s/%s)\n", moduleID, link.RepositoryOwner, link.RepositoryName)
+	slog.Debug("starting async sync", "module_id", moduleID, "owner", link.RepositoryOwner, "repo", link.RepositoryName)
 	go func() {
-		fmt.Printf("Running sync in goroutine for module %s\n", moduleID)
+		slog.Debug("running sync in goroutine", "module_id", moduleID)
 		if err := h.publisher.TriggerManualSync(context.Background(), link, connector, token); err != nil {
 			// Log error but don't fail the request
-			fmt.Printf("Manual sync failed for module %s: %v\n", moduleID, err)
+			slog.Warn("manual sync failed", "module_id", moduleID, "error", err)
 		} else {
-			fmt.Printf("Manual sync completed successfully for module %s\n", moduleID)
+			slog.Debug("manual sync completed successfully", "module_id", moduleID)
 		}
 	}()
 

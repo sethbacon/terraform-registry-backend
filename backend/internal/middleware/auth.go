@@ -26,7 +26,7 @@ import (
 )
 
 // AuthMiddleware validates authentication (JWT or API key)
-func AuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, apiKeyRepo *repositories.APIKeyRepository, orgRepo *repositories.OrganizationRepository) gin.HandlerFunc {
+func AuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, apiKeyRepo *repositories.APIKeyRepository, orgRepo *repositories.OrganizationRepository, tokenRepo *repositories.TokenRepository) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Check for Authorization header
 		authHeader := c.GetHeader("Authorization")
@@ -58,6 +58,21 @@ func AuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, a
 
 		// Try JWT first
 		if claims, err := auth.ValidateJWT(token); err == nil {
+			// Check if the token has been revoked
+			if claims.JTI != "" && tokenRepo != nil {
+				if revoked, rErr := tokenRepo.IsTokenRevoked(c.Request.Context(), claims.JTI); rErr != nil {
+					c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
+						"error": "Auth check failed",
+					})
+					return
+				} else if revoked {
+					c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+						"error": "Token has been revoked",
+					})
+					return
+				}
+			}
+
 			// JWT is valid, load user and set in context
 			user, err := userRepo.GetUserByID(c.Request.Context(), claims.UserID)
 			if err != nil {
@@ -78,6 +93,7 @@ func AuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, a
 			c.Set("user", user)
 			c.Set("user_id", user.ID)
 			c.Set("auth_method", "jwt")
+			c.Set("jwt_claims", claims)
 
 			// Use scopes embedded in JWT claims (avoids DB query per request)
 			scopes := claims.Scopes

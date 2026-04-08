@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
@@ -547,7 +548,9 @@ func (h *MirrorHandler) GetMirrorStatus(c *gin.Context) {
 // @Tags         Mirror
 // @Security     Bearer
 // @Produce      json
-// @Param        id  path  string  true  "Mirror configuration ID (UUID)"
+// @Param        id      path   string  true   "Mirror configuration ID (UUID)"
+// @Param        limit   query  int     false  "Maximum results (default 100, max 1000)"
+// @Param        offset  query  int     false  "Offset for pagination (default 0)"
 // @Success      200  {object}  admin.ListMirroredProvidersResponse
 // @Failure      400  {object}  map[string]interface{}  "Invalid mirror ID"
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
@@ -564,6 +567,18 @@ func (h *MirrorHandler) ListMirroredProviders(c *gin.Context) {
 		return
 	}
 
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	if limit > 1000 {
+		limit = 1000
+	}
+	if limit < 1 {
+		limit = 1
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
 	config, err := h.mirrorRepo.GetByID(c.Request.Context(), id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get mirror configuration: " + err.Error()})
@@ -574,7 +589,7 @@ func (h *MirrorHandler) ListMirroredProviders(c *gin.Context) {
 		return
 	}
 
-	providers, err := h.mirrorRepo.ListMirroredProviders(c.Request.Context(), id)
+	providers, total, err := h.mirrorRepo.ListMirroredProvidersPaginated(c.Request.Context(), id, limit, offset)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list mirrored providers: " + err.Error()})
 		return
@@ -639,7 +654,7 @@ func (h *MirrorHandler) ListMirroredProviders(c *gin.Context) {
 		})
 	}
 
-	c.JSON(http.StatusOK, gin.H{"providers": result})
+	c.JSON(http.StatusOK, gin.H{"providers": result, "total": total, "limit": limit, "offset": offset})
 }
 
 // RegisterRoutes registers all mirror management routes

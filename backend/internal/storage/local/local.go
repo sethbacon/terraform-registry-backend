@@ -10,8 +10,10 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/terraform-registry/terraform-registry/internal/config"
@@ -77,6 +79,11 @@ func (s *LocalStorage) Upload(ctx context.Context, path string, reader io.Reader
 
 	checksum := hex.EncodeToString(hasher.Sum(nil))
 
+	sidecarPath := fullPath + ".sha256"
+	if err := os.WriteFile(sidecarPath, []byte(checksum), 0644); err != nil {
+		slog.Warn("failed to write checksum sidecar", "path", sidecarPath, "error", err)
+	}
+
 	return &storage.UploadResult{
 		Path:     path,
 		Size:     written,
@@ -109,6 +116,9 @@ func (s *LocalStorage) Delete(ctx context.Context, path string) error {
 		}
 		return fmt.Errorf("failed to delete file: %w", err)
 	}
+
+	// Also remove the checksum sidecar if it exists
+	_ = os.Remove(fullPath + ".sha256")
 
 	// Try to remove empty parent directories (best effort)
 	dir := filepath.Dir(fullPath)
@@ -173,6 +183,17 @@ func (s *LocalStorage) GetMetadata(ctx context.Context, path string) (*storage.F
 		return nil, fmt.Errorf("failed to get file metadata: %w", err)
 	}
 
+	sidecarPath := fullPath + ".sha256"
+	if data, err := os.ReadFile(sidecarPath); err == nil {
+		checksum := strings.TrimSpace(string(data))
+		return &storage.FileMetadata{
+			Path:         path,
+			Size:         stat.Size(),
+			Checksum:     checksum,
+			LastModified: stat.ModTime(),
+		}, nil
+	}
+
 	// Calculate checksum by reading the file
 	file, err := os.Open(fullPath) // #nosec G304 -- path is constructed from validated namespace/name/version components; path traversal is prevented at the API and archive-extraction layers
 	if err != nil {
@@ -186,6 +207,8 @@ func (s *LocalStorage) GetMetadata(ctx context.Context, path string) (*storage.F
 	}
 
 	checksum := hex.EncodeToString(hasher.Sum(nil))
+
+	_ = os.WriteFile(sidecarPath, []byte(checksum), 0644)
 
 	return &storage.FileMetadata{
 		Path:         path,

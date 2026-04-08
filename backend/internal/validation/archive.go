@@ -51,12 +51,21 @@ func ValidateArchive(reader io.Reader, maxSize int64) error {
 		}
 
 		fileCount++
-		totalSize += header.Size
 
-		// Check for path traversal attacks
+		// Validate path before reading content
 		if err := validatePath(header.Name); err != nil {
 			return fmt.Errorf("invalid file path in archive: %w", err)
 		}
+
+		// Count actual decompressed bytes instead of trusting header.Size
+		// (header.Size is attacker-controlled and can be set to 0 while the
+		// entry contains arbitrary data).
+		cw := &countingWriter{}
+		limited := io.LimitReader(tarReader, maxSize-totalSize+1)
+		if _, err := io.Copy(cw, limited); err != nil {
+			return fmt.Errorf("failed to read archive entry: %w", err)
+		}
+		totalSize += cw.n
 
 		// Check size limit
 		if totalSize > maxSize {
@@ -101,4 +110,12 @@ func validatePath(path string) error {
 	}
 
 	return nil
+}
+
+// countingWriter counts the number of bytes written to it without storing them.
+type countingWriter struct{ n int64 }
+
+func (cw *countingWriter) Write(p []byte) (int, error) {
+	cw.n += int64(len(p))
+	return len(p), nil
 }

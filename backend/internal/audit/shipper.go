@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"sync"
@@ -117,7 +118,7 @@ func NewMultiShipper(configs []ShipperConfig) (*MultiShipper, error) {
 		case "syslog":
 			// Syslog is only supported on Unix systems
 			// On Windows, skip this shipper with a warning
-			fmt.Printf("Warning: syslog shipper is not supported on this platform, skipping\n")
+			slog.Warn("syslog shipper not supported on this platform, skipping")
 			continue
 		case "webhook":
 			if cfg.Webhook == nil {
@@ -153,7 +154,7 @@ func (ms *MultiShipper) Ship(ctx context.Context, entry *LogEntry) error {
 		if err := shipper.Ship(ctx, entry); err != nil {
 			lastErr = err
 			// Log error but continue to other shippers
-			fmt.Printf("Audit shipper error: %v\n", err)
+			slog.Error("audit shipper error", "error", err)
 		}
 	}
 	return lastErr
@@ -254,7 +255,7 @@ func (ws *WebhookShipper) flushBatch() {
 
 	data, err := json.Marshal(ws.batch)
 	if err != nil {
-		fmt.Printf("Failed to marshal audit batch: %v\n", err)
+		slog.Error("failed to flush audit batch", "error", err)
 		ws.batch = ws.batch[:0]
 		return
 	}
@@ -263,7 +264,7 @@ func (ws *WebhookShipper) flushBatch() {
 	defer cancel()
 
 	if err := ws.sendRequest(ctx, data); err != nil {
-		fmt.Printf("Failed to send audit batch: %v\n", err)
+		slog.Error("failed to flush audit batch", "error", err)
 	}
 
 	ws.batch = ws.batch[:0]
@@ -353,7 +354,7 @@ func (fs *FileShipper) Ship(ctx context.Context, entry *LogEntry) error {
 		info, err := fs.file.Stat()
 		if err == nil && info.Size() > int64(fs.cfg.MaxSizeMB)*1024*1024 {
 			if err := fs.rotate(); err != nil {
-				fmt.Printf("Failed to rotate audit log: %v\n", err)
+				slog.Warn("failed to rotate audit log", "error", err)
 			}
 		}
 	}

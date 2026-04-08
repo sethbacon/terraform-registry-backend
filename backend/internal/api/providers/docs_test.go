@@ -58,9 +58,14 @@ func TestListProviderDocsHandler_Success(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(docsVersionCols).
 			AddRow("ver-1", "prov-1", "3.6.0", []byte(`["5.0"]`), "", "", "", nil, false, nil, nil, time.Now()))
 
-	// ListProviderVersionDocs
-	mock.ExpectQuery("SELECT.*FROM provider_version_docs").
+	// ListProviderVersionDocsPaginated — COUNT query
+	mock.ExpectQuery("SELECT COUNT.*FROM provider_version_docs").
 		WithArgs("ver-1").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
+
+	// ListProviderVersionDocsPaginated — data query with LIMIT/OFFSET
+	mock.ExpectQuery("SELECT.*FROM provider_version_docs").
+		WithArgs("ver-1", 100, 0).
 		WillReturnRows(sqlmock.NewRows(docsDocCols).
 			AddRow("d1", "ver-1", "101", "overview", "index", "overview", nil, "docs/index.md", "hcl").
 			AddRow("d2", "ver-1", "102", "random_id", "random_id", "resources", nil, "docs/resources/random_id.md", "hcl"))
@@ -174,8 +179,14 @@ func TestListProviderDocsHandler_EmptyDocs(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(docsVersionCols).
 			AddRow("ver-1", "prov-1", "3.6.0", []byte(`["5.0"]`), "", "", "", nil, false, nil, nil, time.Now()))
 
-	mock.ExpectQuery("SELECT.*FROM provider_version_docs").
+	// ListProviderVersionDocsPaginated — COUNT query
+	mock.ExpectQuery("SELECT COUNT.*FROM provider_version_docs").
 		WithArgs("ver-1").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+
+	// ListProviderVersionDocsPaginated — data query with LIMIT/OFFSET
+	mock.ExpectQuery("SELECT.*FROM provider_version_docs").
+		WithArgs("ver-1", 100, 0).
 		WillReturnRows(sqlmock.NewRows(docsDocCols))
 
 	w := httptest.NewRecorder()

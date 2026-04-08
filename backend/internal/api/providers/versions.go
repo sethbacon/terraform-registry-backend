@@ -4,6 +4,7 @@ package providers
 import (
 	"database/sql"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -17,6 +18,8 @@ import (
 // @Produce      json
 // @Param        namespace  path  string  true  "Provider namespace"
 // @Param        type       path  string  true  "Provider type (e.g. aws, azurerm)"
+// @Param        limit      query int     false "Maximum results (default 100, max 1000)"
+// @Param        offset     query int     false "Offset for pagination (default 0)"
 // @Success      200  {object}  providers.ProviderVersionsResponse
 // @Failure      404  {object}  map[string]interface{}  "Provider not found"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
@@ -30,6 +33,18 @@ func ListVersionsHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		namespace := c.Param("namespace")
 		providerType := c.Param("type")
+
+		limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
+		offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+		if limit > 1000 {
+			limit = 1000
+		}
+		if limit < 1 {
+			limit = 1
+		}
+		if offset < 0 {
+			offset = 0
+		}
 
 		// Get organization context (default org for single-tenant mode)
 		org, err := orgRepo.GetDefaultOrganization(c.Request.Context())
@@ -62,8 +77,8 @@ func ListVersionsHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 			return
 		}
 
-		// Get all versions for the provider
-		versions, err := providerRepo.ListVersions(c.Request.Context(), provider.ID)
+		// Get all versions for the provider with pagination
+		versions, total, err := providerRepo.ListVersionsPaginated(c.Request.Context(), provider.ID, limit, offset)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to list provider versions",
@@ -126,6 +141,9 @@ func ListVersionsHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 
 		response := gin.H{
 			"versions": versionsList,
+			"total":    total,
+			"limit":    limit,
+			"offset":   offset,
 		}
 
 		c.JSON(http.StatusOK, response)

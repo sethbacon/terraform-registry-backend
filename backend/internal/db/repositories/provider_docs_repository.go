@@ -104,6 +104,72 @@ func (r *ProviderDocsRepository) ListProviderVersionDocs(ctx context.Context, ve
 	return docs, rows.Err()
 }
 
+// ListProviderVersionDocsPaginated retrieves docs with limit/offset pagination and total count.
+func (r *ProviderDocsRepository) ListProviderVersionDocsPaginated(ctx context.Context, versionID string, category, language *string, limit, offset int) ([]models.ProviderVersionDoc, int, error) {
+	// Build count query
+	var cb strings.Builder
+	cb.WriteString(`SELECT COUNT(*) FROM provider_version_docs WHERE provider_version_id = $1`)
+	args := []interface{}{versionID}
+	argIdx := 2
+
+	if category != nil && *category != "" {
+		fmt.Fprintf(&cb, " AND category = $%d", argIdx)
+		args = append(args, *category)
+		argIdx++
+	}
+	if language != nil && *language != "" {
+		fmt.Fprintf(&cb, " AND language = $%d", argIdx)
+		args = append(args, *language)
+		argIdx++
+	}
+
+	var total int
+	if err := r.db.QueryRowContext(ctx, cb.String(), args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("failed to count provider version docs: %w", err)
+	}
+
+	// Build data query
+	var b strings.Builder
+	b.WriteString(`SELECT id, provider_version_id, upstream_doc_id, title, slug, category, subcategory, path, language
+		FROM provider_version_docs WHERE provider_version_id = $1`)
+	dataArgs := []interface{}{versionID}
+	dataArgIdx := 2
+
+	if category != nil && *category != "" {
+		fmt.Fprintf(&b, " AND category = $%d", dataArgIdx)
+		dataArgs = append(dataArgs, *category)
+		dataArgIdx++
+	}
+	if language != nil && *language != "" {
+		fmt.Fprintf(&b, " AND language = $%d", dataArgIdx)
+		dataArgs = append(dataArgs, *language)
+		dataArgIdx++
+	}
+
+	fmt.Fprintf(&b, " ORDER BY category, title LIMIT $%d OFFSET $%d", dataArgIdx, dataArgIdx+1)
+	dataArgs = append(dataArgs, limit, offset)
+
+	rows, err := r.db.QueryContext(ctx, b.String(), dataArgs...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to list provider version docs: %w", err)
+	}
+	defer rows.Close()
+
+	var docs []models.ProviderVersionDoc
+	for rows.Next() {
+		var doc models.ProviderVersionDoc
+		if err := rows.Scan(
+			&doc.ID, &doc.ProviderVersionID, &doc.UpstreamDocID,
+			&doc.Title, &doc.Slug, &doc.Category, &doc.Subcategory,
+			&doc.Path, &doc.Language,
+		); err != nil {
+			return nil, 0, fmt.Errorf("failed to scan provider version doc: %w", err)
+		}
+		docs = append(docs, doc)
+	}
+	return docs, total, rows.Err()
+}
+
 // GetProviderVersionDocBySlug retrieves a single doc entry by category and slug.
 func (r *ProviderDocsRepository) GetProviderVersionDocBySlug(ctx context.Context, versionID, category, slug string) (*models.ProviderVersionDoc, error) {
 	query := `SELECT id, provider_version_id, upstream_doc_id, title, slug, category, subcategory, path, language

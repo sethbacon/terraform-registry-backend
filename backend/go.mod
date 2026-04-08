@@ -1,6 +1,6 @@
 module github.com/terraform-registry/terraform-registry
 
-go 1.26.0
+go 1.26.1
 
 require (
 	cloud.google.com/go/storage v1.59.2

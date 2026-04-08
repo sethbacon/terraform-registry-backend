@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -29,9 +30,14 @@ type AuthHandlers struct {
 	userRepo        *repositories.UserRepository
 	orgRepo         *repositories.OrganizationRepository
 	oidcConfigRepo  *repositories.OIDCConfigRepository
+	tokenRepo       *repositories.TokenRepository
 	oidcProvider    atomic.Pointer[oidc.OIDCProvider]
 	azureADProvider *azuread.AzureADProvider
-	sessionStore    map[string]*SessionState // In-memory for MVP; use Redis in production
+	// sessionStore holds OIDC CSRF state tokens. In-memory only — not shared across
+	// instances. In a multi-instance deployment, OIDC logins will fail when the callback
+	// hits a different instance than the authorization request. Replace with Redis for HA.
+	sessionStore map[string]*SessionState
+	sessionMu    sync.Mutex
 }
 
 // SessionState represents OAuth state during authentication flow
@@ -43,13 +49,14 @@ type SessionState struct {
 }
 
 // NewAuthHandlers creates a new AuthHandlers instance
-func NewAuthHandlers(cfg *config.Config, db *sql.DB, oidcConfigRepo *repositories.OIDCConfigRepository) (*AuthHandlers, error) {
+func NewAuthHandlers(cfg *config.Config, db *sql.DB, oidcConfigRepo *repositories.OIDCConfigRepository, tokenRepo *repositories.TokenRepository) (*AuthHandlers, error) {
 	h := &AuthHandlers{
 		cfg:            cfg,
 		db:             db,
 		userRepo:       repositories.NewUserRepository(db),
 		orgRepo:        repositories.NewOrganizationRepository(db),
 		oidcConfigRepo: oidcConfigRepo,
+		tokenRepo:      tokenRepo,
 		sessionStore:   make(map[string]*SessionState),
 	}
 
@@ -70,6 +77,22 @@ func NewAuthHandlers(cfg *config.Config, db *sql.DB, oidcConfigRepo *repositorie
 		}
 		h.azureADProvider = azProv
 	}
+
+	// Periodically clean up expired session states to prevent memory leaks
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			cutoff := time.Now().Add(-10 * time.Minute)
+			h.sessionMu.Lock()
+			for k, v := range h.sessionStore {
+				if v.CreatedAt.Before(cutoff) {
+					delete(h.sessionStore, k)
+				}
+			}
+			h.sessionMu.Unlock()
+		}
+	}()
 
 	return h, nil
 }
@@ -120,11 +143,13 @@ func (h *AuthHandlers) LoginHandler() gin.HandlerFunc {
 		}
 
 		// Store state in session (in-memory for MVP)
+		h.sessionMu.Lock()
 		h.sessionStore[state] = &SessionState{
 			State:        state,
 			CreatedAt:    time.Now(),
 			ProviderType: provider,
 		}
+		h.sessionMu.Unlock()
 
 		// Get authorization URL based on provider
 		var authURL string
@@ -159,13 +184,13 @@ func (h *AuthHandlers) LoginHandler() gin.HandlerFunc {
 }
 
 // @Summary      OAuth callback handler
-// @Description  Handles the callback from OAuth provider after user authorizes. Exchanges the authorization code for a JWT and redirects the browser to the frontend /auth/callback page with the token as a query parameter.
+// @Description  Handles the callback from OAuth provider after user authorizes. Exchanges the authorization code for a JWT, sets a `tfr_auth_token` HttpOnly cookie, and redirects to `/auth/callback`.
 // @Tags         Authentication
 // @Accept       json
 // @Produce      json
 // @Param        code   query  string  true   "Authorization code from OAuth provider"
 // @Param        state  query  string  true   "State parameter for CSRF validation"
-// @Success      302  {object}  string  "Redirects to frontend /auth/callback?token=<jwt>"
+// @Success      302  {object}  string  "Sets tfr_auth_token HttpOnly cookie and redirects to frontend /auth/callback"
 // @Failure      400  {object}  map[string]interface{}  "Invalid state or authorization code"
 // @Failure      401  {object}  map[string]interface{}  "Failed to exchange code for token"
 // @Failure      500  {object}  map[string]interface{}  "Database or internal error"
@@ -200,8 +225,10 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 		state := c.Query("state")
 
 		// Validate state
+		h.sessionMu.Lock()
 		sessionState, exists := h.sessionStore[state]
 		if !exists {
+			h.sessionMu.Unlock()
 			callbackError("invalid_state", "Invalid state parameter. Please try logging in again.")
 			return
 		}
@@ -209,12 +236,14 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 		// Check state expiration (5 minutes)
 		if time.Since(sessionState.CreatedAt) > 5*time.Minute {
 			delete(h.sessionStore, state)
+			h.sessionMu.Unlock()
 			callbackError("state_expired", "Login session expired. Please try logging in again.")
 			return
 		}
 
 		// Delete state to prevent reuse
 		delete(h.sessionStore, state)
+		h.sessionMu.Unlock()
 
 		ctx := context.Background()
 
@@ -332,25 +361,55 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 			return
 		}
 
-		// Redirect the browser to the frontend callback page with the JWT in the query string.
-		// This completes the authorization code flow so the SPA can store the token.
-		redirectTarget := fmt.Sprintf("%s/auth/callback?token=%s", frontendBase, url.QueryEscape(jwtToken))
+		// Set HttpOnly cookie — prevents JS access, logging, and Referer leakage
+		http.SetCookie(c.Writer, &http.Cookie{
+			Name:     "tfr_auth_token",
+			Value:    jwtToken,
+			Path:     "/",
+			MaxAge:   86400, // 24 hours
+			Secure:   true,
+			HttpOnly: true,
+			SameSite: http.SameSiteStrictMode,
+		})
+		redirectTarget := fmt.Sprintf("%s/auth/callback", frontendBase)
 		c.Redirect(http.StatusFound, redirectTarget)
 	}
 }
 
 // @Summary      OIDC logout
-// @Description  Clears the local session and, when OIDC is active, redirects the browser to the provider's end_session_endpoint to terminate the SSO session. Falls back to a plain redirect to the frontend login page for non-OIDC setups.
+// @Description  Revokes the current JWT, clears the auth cookie, and when OIDC is active, redirects the browser to the provider's end_session_endpoint to terminate the SSO session. Falls back to a plain redirect to the frontend login page for non-OIDC setups.
 // @Tags         Authentication
 // @Accept       json
 // @Produce      json
 // @Param        post_logout_redirect_uri  query  string  false  "URL to redirect to after the provider logs out (defaults to frontend /login)"
 // @Success      302  {object}  string  "Redirects to OIDC end_session_endpoint or frontend /login"
 // @Router       /api/v1/auth/logout [get]
-// LogoutHandler terminates the OIDC SSO session by redirecting to the provider's end_session_endpoint.
+// LogoutHandler revokes the current JWT, clears the auth cookie, and terminates
+// the OIDC SSO session by redirecting to the provider's end_session_endpoint.
 // GET /api/v1/auth/logout
 func (h *AuthHandlers) LogoutHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Revoke the current JWT if present
+		if claims, exists := c.Get("jwt_claims"); exists {
+			if jwtClaims, ok := claims.(*auth.Claims); ok && jwtClaims.JTI != "" {
+				if jwtClaims.ExpiresAt != nil {
+					_ = h.tokenRepo.RevokeToken(c.Request.Context(),
+						jwtClaims.JTI, jwtClaims.UserID, jwtClaims.ExpiresAt.Time)
+				}
+			}
+		}
+
+		// Clear the auth cookie
+		http.SetCookie(c.Writer, &http.Cookie{
+			Name:     "tfr_auth_token",
+			Value:    "",
+			Path:     "/",
+			MaxAge:   -1,
+			Secure:   true,
+			HttpOnly: true,
+			SameSite: http.SameSiteStrictMode,
+		})
+
 		frontendBase := deriveFrontendURL(h.cfg)
 		// After the IdP terminates the session, redirect to the frontend home page.
 		// The user can then choose to log in again from there.

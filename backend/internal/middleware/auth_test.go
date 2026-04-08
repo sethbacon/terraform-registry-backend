@@ -51,7 +51,7 @@ func newAuthRouterWithJWT(t *testing.T, userMock, orgMock sqlmock.Sqlmock,
 	userRepo *repositories.UserRepository, orgRepo *repositories.OrganizationRepository) *gin.Engine {
 	t.Helper()
 	r := gin.New()
-	r.Use(AuthMiddleware(nil, userRepo, nil, orgRepo))
+	r.Use(AuthMiddleware(nil, userRepo, nil, orgRepo, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 	return r
 }
@@ -69,7 +69,7 @@ func generateTestJWT(t *testing.T, userID string) string {
 // nil repos are safe for early-exit paths that abort before any repo call.
 func newAuthRouter() *gin.Engine {
 	r := gin.New()
-	r.Use(AuthMiddleware(nil, nil, nil, nil))
+	r.Use(AuthMiddleware(nil, nil, nil, nil, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 	return r
 }
@@ -247,7 +247,7 @@ func newAuthRouterWithRepos(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	repo, mock := newTestAPIKeyRepo(t)
 
 	r := gin.New()
-	r.Use(AuthMiddleware(nil, nil, repo, nil))
+	r.Use(AuthMiddleware(nil, nil, repo, nil, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 	return mock, r
 }
@@ -427,7 +427,7 @@ func TestAuthMiddleware_APIKeyWithUser(t *testing.T) {
 	userRepo := repositories.NewUserRepository(userDB)
 
 	r := gin.New()
-	r.Use(AuthMiddleware(nil, userRepo, apiKeyRepo, nil))
+	r.Use(AuthMiddleware(nil, userRepo, apiKeyRepo, nil, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	token := "tfr_apikey_test123"

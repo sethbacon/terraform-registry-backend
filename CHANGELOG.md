@@ -11,6 +11,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.32] - 2026-04-07
+
+### Security
+
+- fix: deliver JWT auth tokens via HttpOnly secure cookies instead of URL query parameters — prevents token leakage in browser history, server logs, and referrer headers
+- fix: add JWT revocation via JTI blocklist with database-backed `revoked_tokens` table — logout now invalidates tokens server-side instead of relying solely on client-side cookie deletion
+- fix: prevent CORS `Access-Control-Allow-Credentials: true` from being sent with wildcard origins — only specific origin matches now receive credentials support
+- fix: make HSTS header conditional on TLS — `Strict-Transport-Security` is no longer sent over plain HTTP connections, per RFC 6797
+- fix: prevent decompression bombs in archive extraction by counting actual bytes written instead of trusting tar header sizes
+- fix: protect session store with `sync.Mutex` to prevent concurrent map read/write panics
+- fix: `generateRandomSecret()` now returns an error instead of silently falling back to a time-based secret
+- fix: remove `GIN_MODE` from `isDevMode()` check — development-only code paths are no longer accidentally enabled by Gin's debug mode
+- fix: add `ReadHeaderTimeout` (10s) and `IdleTimeout` (120s) to HTTP server to mitigate slowloris attacks
+
+### Added
+
+- feat: JWT revocation infrastructure — new migration `000013_jwt_revocation` creates `revoked_tokens` table; new `TokenRepository` with `RevokeToken`, `IsTokenRevoked`, and `CleanupExpiredRevocations` methods; daily cleanup goroutine in server startup
+- feat: pagination support with `limit`/`offset` query params and `{items, total, limit, offset}` envelope for module versions, provider versions, provider docs, mirrored providers, and mirror config versions
+- feat: background job registry with `Job` interface and `Registry` providing `Register`, `StartAll`, `StopAll` lifecycle management
+- feat: migration `000014_terraform_mirror_gpg_config` adds `custom_gpg_key` and `skip_gpg_verify` columns to `terraform_mirror_configs`
+- feat: checksum sidecar `.sha256` files for local storage — avoids re-reading entire files to compute checksums in `GetMetadata()`
+- feat: migration file count parity test ensuring every `.up.sql` has a matching `.down.sql`
+
+### Changed
+
+- refactor: replace all `fmt.Printf`/`fmt.Println` logging with structured `log/slog` calls in audit shipper, SCM linking, and SCM publisher
+- refactor: replace `getResourceType()` string-scanning helpers with `c.FullPath()` switch statement in audit middleware
+- refactor: remove custom `itoa()` and `min()` functions in favour of stdlib `strconv.Itoa()` and Go builtin `min()`
+- refactor: remove `contains()` and `indexOf()` helper functions from audit middleware
+- chore: add HA limitation comments to `RateLimiter` (in-memory token bucket) and `docContentCache` (in-memory TTL cache)
+- chore: add Swagger annotations to `ServeModuleFile`, `UploadModule`, and `UploadProviderVersion` handlers
+- chore: bump Go version from 1.26.0 to 1.26.1
+- chore: bump Docker runtime image from `alpine:3.19` to `alpine:3.21`; add `TARGETARCH` build arg for multi-platform builds
+- chore: raise CI coverage threshold from 65% to 75%; add per-package coverage gate (80% for auth and middleware)
+- chore: add `golangci-lint` step to CI pipeline with `.golangci.yml` configuration
+
+---
+
 ## [0.2.31] - 2026-04-07
 
 ### Security
@@ -52,6 +90,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.30] - 2026-03-25
 
 ### Fixed
+
 - fix: switch doc-index and provider-version pagination from next-page sentinel to length-based detection — the registry v2 API never populates `meta.pagination.next-page`; `GetProviderDocIndexByVersion` now fetches all pages (1,500+ entries for large providers like azurerm) and `resolveProviderVersionID` pages through all provider-version pages to handle providers with more than 100 releases
 
 ---
@@ -59,6 +98,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.29] - 2026-03-25
 
 ### Fixed
+
 - fix: backfill doc index for existing provider versions with no docs — the mirror sync job now checks the doc count when skipping already-complete versions; if zero docs exist (due to a prior failed doc fetch), it fetches and stores the doc index without re-downloading binaries
 
 ---
@@ -66,6 +106,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.28] - 2026-03-25
 
 ### Fixed
+
 - fix: resolve numeric v2 provider-version ID before fetching doc index — `resolveProviderVersionID` now calls `GET /v2/providers/{namespace}/{name}` to obtain the provider's numeric ID then `GET /v2/providers/{id}/provider-versions` to find the matching semver entry
 
 ---
@@ -73,13 +114,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.25] - 2026-03-24
 
 ### Added
+
 - feat: expose real version and build date from `GET /version` — new endpoint returns `{"version":"x.y.z","build_date":"..."}` populated at build time via ldflags injected by GoReleaser and Docker `--build-arg`
 
 ### Fixed
+
 - fix: resolve GoReleaser dirty-state failure — deployment-configs tarball now written to `/tmp/` to avoid untracked file detection
 - fix: upload deployment-configs tarball via `gh release upload` — GoReleaser's `extra_files` glob rejects absolute paths; tarball attachment moved to a post-GoReleaser step
 
 ### Maintenance
+
 - chore: migrate release workflow to GoReleaser — replaces 5-platform matrix build job and hand-rolled `sha256sum` + release upload steps; binary names and checksums file unchanged
 - chore: upgrade GitHub Actions to Node 24 compatible versions
 
@@ -88,6 +132,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.27] - 2026-03-24
 
 ### Fixed
+
 - fix: fetch provider doc index from v2 API with version-specific filtering — replaces the v1 non-versioned endpoint with the upstream registry's v2 `provider-docs` API (`filter[provider-version]`), fixing empty doc listings for mirrored providers where the stored language or version didn't match
 
 ---
@@ -95,10 +140,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.26] - 2026-03-24
 
 ### Fixed
+
 - fix: add `/version` proxy location to Helm nginx ConfigMap — the ConfigMap was missing the location block, causing the SPA fallback to intercept backend API requests in Kubernetes deployments
 - fix: remove `go mod tidy` and swag doc generation from Dockerfile — both steps fail in environments with corporate TLS interception; `swagger.json` is committed to the repo by CI and `go.sum` already pins all dependencies
 
 ### Maintenance
+
 - chore: add PR template, CI changelog enforcement, and collection script — `.github/PULL_REQUEST_TEMPLATE.md` pre-fills the changelog section; `pr-checks.yml` fails PRs without a valid entry; `collect-changelog.sh` automates release-time changelog collection
 
 ---
@@ -106,13 +153,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.25] - 2026-03-24
 
 ### Added
+
 - feat: expose real version and build date from `GET /version` — new endpoint returns `{"version":"x.y.z","build_date":"..."}` populated at build time via ldflags injected by GoReleaser and Docker `--build-arg`
 
 ### Fixed
+
 - fix: resolve GoReleaser dirty-state failure — deployment-configs tarball now written to `/tmp/` to avoid untracked file detection
 - fix: upload deployment-configs tarball via `gh release upload` — GoReleaser's `extra_files` glob rejects absolute paths; tarball attachment moved to a post-GoReleaser step
 
 ### Maintenance
+
 - chore: migrate release workflow to GoReleaser — replaces 5-platform matrix build job and hand-rolled `sha256sum` + release upload steps; binary names and checksums file unchanged
 - chore: upgrade GitHub Actions to Node 24 compatible versions
 
@@ -121,6 +171,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.28] - 2026-03-25
 
 ### Fixed
+
 - fix: resolve numeric v2 provider-version ID before fetching doc index — `GetProviderDocIndexByVersion` was passing the semver string as `filter[provider-version]` to the upstream registry's v2 `provider-docs` API, which requires the numeric JSON:API provider-version ID; this caused HTTP 400 errors during mirror sync, leaving doc index entries empty and the provider documentation tab blank in the UI
 
 ---
@@ -128,6 +179,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.27] - 2026-03-24
 
 ### Fixed
+
 - fix: fetch provider doc index from v2 API with version-specific filtering — replaces the v1 non-versioned endpoint with the upstream registry's v2 `provider-docs` API (`filter[provider-version]`), fixing empty doc listings for mirrored providers where the stored language or version didn't match
 
 ---
@@ -135,10 +187,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.26] - 2026-03-24
 
 ### Fixed
+
 - fix: add `/version` proxy location to Helm nginx ConfigMap — the ConfigMap was missing the location block, causing the SPA fallback to intercept backend API requests in Kubernetes deployments
 - fix: remove `go mod tidy` and swag doc generation from Dockerfile — both steps fail in environments with corporate TLS interception; `swagger.json` is committed to the repo by CI and `go.sum` already pins all dependencies
 
 ### Maintenance
+
 - chore: add PR template, CI changelog enforcement, and collection script — `.github/PULL_REQUEST_TEMPLATE.md` pre-fills the changelog section; `pr-checks.yml` fails PRs without a valid entry; `collect-changelog.sh` automates release-time changelog collection
 
 ---
@@ -146,13 +200,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.25] - 2026-03-24
 
 ### Added
+
 - feat: expose real version and build date from `GET /version` — new endpoint returns `{"version":"x.y.z","build_date":"..."}` populated at build time via ldflags injected by GoReleaser and Docker `--build-arg`
 
 ### Fixed
+
 - fix: resolve GoReleaser dirty-state failure — deployment-configs tarball now written to `/tmp/` to avoid untracked file detection
 - fix: upload deployment-configs tarball via `gh release upload` — GoReleaser's `extra_files` glob rejects absolute paths; tarball attachment moved to a post-GoReleaser step
 
 ### Maintenance
+
 - chore: migrate release workflow to GoReleaser — replaces 5-platform matrix build job and hand-rolled `sha256sum` + release upload steps; binary names and checksums file unchanged
 - chore: upgrade GitHub Actions to Node 24 compatible versions
 
@@ -340,6 +397,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix: make mirror provider lookup deterministic by preferring organization-scoped providers over NULL-org fallback, preventing network mirror index/version mismatch errors during `terraform init` (#39)
 
 ---
+
 ## [0.2.4] - 2026-03-06
 
 ### Fixed

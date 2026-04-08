@@ -396,7 +396,7 @@ func (j *TerraformMirrorSyncJob) performSync(
 	// 6. GPG back-fill: for synced versions whose platforms have gpg_verified=false,
 	// re-verify the SUMS signature and update the flag in-place (no re-download).
 	// This covers the case where versions were synced before a real GPG key was embedded.
-	if cfg.GPGVerify && gpgKeyForTool(cfg.Tool) != "" {
+	if cfg.GPGVerify && gpgKeyForConfig(cfg) != "" {
 		if backfillErr := j.backfillGPGVerification(ctx, client, cfg, allVersions); backfillErr != nil {
 			log.Printf("[terraform-mirror] GPG back-fill error for %s: %v", cfg.Name, backfillErr)
 		}
@@ -431,7 +431,7 @@ func (j *TerraformMirrorSyncJob) syncVersionBinaries(
 	// GPG-verify the SUMS file if enabled.
 	sumsGPGVerified := false
 	if cfg.GPGVerify && sumsRaw != nil {
-		gpgKey := gpgKeyForTool(cfg.Tool)
+		gpgKey := gpgKeyForConfig(cfg)
 		if gpgKey != "" {
 			sigBytes, sigErr := client.FetchSHASumsSignature(ctx, version)
 			if sigErr != nil {
@@ -581,7 +581,7 @@ func (j *TerraformMirrorSyncJob) backfillGPGVerification(
 	cfg *models.TerraformMirrorConfig,
 	filteredVersions []mirror.TerraformVersionInfo,
 ) error {
-	gpgKey := gpgKeyForTool(cfg.Tool)
+	gpgKey := gpgKeyForConfig(cfg)
 	if gpgKey == "" {
 		return nil
 	}
@@ -699,6 +699,19 @@ func gpgKeyForTool(tool string) string {
 	default:
 		return ""
 	}
+}
+
+// gpgKeyForConfig returns the GPG key to use for a given mirror config,
+// checking custom config fields before falling back to the built-in key.
+// Returns "" if GPG verification should be skipped.
+func gpgKeyForConfig(cfg *models.TerraformMirrorConfig) string {
+	if cfg.SkipGPGVerify {
+		return ""
+	}
+	if cfg.CustomGPGKey != nil && *cfg.CustomGPGKey != "" {
+		return *cfg.CustomGPGKey
+	}
+	return gpgKeyForTool(cfg.Tool)
 }
 
 // ----- Semver helpers -------------------------------------------------------

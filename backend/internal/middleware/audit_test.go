@@ -41,55 +41,6 @@ func (s *captureShipper) waitForEntry(t *testing.T, timeout time.Duration) *audi
 }
 
 // ---------------------------------------------------------------------------
-// contains helper
-// ---------------------------------------------------------------------------
-
-func TestContains(t *testing.T) {
-	tests := []struct {
-		s, substr string
-		want      bool
-	}{
-		{"hello world", "world", true},
-		{"hello world", "hello", true},
-		{"hello world", "lo wo", true},
-		{"hello world", "xyz", false},
-		{"hello", "hello", true},
-		{"", "", true},
-		{"abc", "", true},
-		{"", "x", false},
-	}
-	for _, tt := range tests {
-		got := contains(tt.s, tt.substr)
-		if got != tt.want {
-			t.Errorf("contains(%q, %q) = %v, want %v", tt.s, tt.substr, got, tt.want)
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// indexOf helper
-// ---------------------------------------------------------------------------
-
-func TestIndexOf(t *testing.T) {
-	tests := []struct {
-		s, substr string
-		want      int
-	}{
-		{"hello world", "world", 6},
-		{"hello world", "hello", 0},
-		{"hello world", "xyz", -1},
-		{"abcabc", "abc", 0},
-		{"abc", "abcd", -1},
-	}
-	for _, tt := range tests {
-		got := indexOf(tt.s, tt.substr)
-		if got != tt.want {
-			t.Errorf("indexOf(%q, %q) = %d, want %d", tt.s, tt.substr, got, tt.want)
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
 // AuditMiddlewareWithShipper — early-exit / skip paths
 // ---------------------------------------------------------------------------
 
@@ -174,10 +125,10 @@ func TestAuditMiddleware_SuccessfulWriteShipped(t *testing.T) {
 	cs := newCaptureShipper(1)
 	r := gin.New()
 	r.Use(AuditMiddlewareWithShipper(nil, cs, nil))
-	r.POST("/modules/test", func(c *gin.Context) { c.Status(http.StatusOK) })
+	r.POST("/api/v1/modules/test", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest(http.MethodPost, "/modules/test", nil)
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/modules/test", nil)
 	req.RemoteAddr = "10.0.0.1:1234"
 	r.ServeHTTP(w, req)
 
@@ -210,13 +161,13 @@ func TestAuditMiddleware_ResourceTypeDetection(t *testing.T) {
 		path    string
 		wantRes string
 	}{
-		{"/modules/foo", "module"},
-		{"/providers/bar", "provider"},
-		{"/users/baz", "user"},
-		{"/apikeys/1", "api_key"},
-		{"/organizations/x", "organization"},
-		{"/mirrors/y", "mirror"},
-		{"/other/z", ""},
+		{"/api/v1/modules/foo", "module"},
+		{"/api/v1/providers/bar", "provider"},
+		{"/api/v1/admin/users/baz", "user"},
+		{"/api/v1/admin/apikeys/1", "api_key"},
+		{"/api/v1/admin/organizations/x", "organization"},
+		{"/api/v1/admin/mirrors/y", "mirror"},
+		{"/other/z", "unknown"},
 	}
 
 	for _, tt := range paths {
