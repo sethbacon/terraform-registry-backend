@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log/slog"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -549,8 +550,7 @@ func (s *S3Storage) UploadMultipart(ctx context.Context, path string, reader io.
 		},
 	})
 	if err != nil {
-		// Non-fatal: upload succeeded but metadata update failed
-		// Log this in production
+		slog.Warn("failed to update S3 object metadata with checksum", "path", path, "error", err)
 	}
 
 	return &storage.UploadResult{
