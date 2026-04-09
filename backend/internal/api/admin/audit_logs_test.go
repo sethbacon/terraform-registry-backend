@@ -212,3 +212,73 @@ func TestGetAuditLog_DBError(t *testing.T) {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
 }
+
+func TestListAuditLogs_WithFilters(t *testing.T) {
+	// Exercises action/resource_type/user_id/user_email filter branches
+	mock, r := newAuditLogRouter(t)
+
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM audit_logs").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery("SELECT al\\.id").
+		WillReturnRows(emptyAuditLogListRows())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET",
+		"/audit-logs?action=create&resource_type=module&user_id=abc&user_email=x@y.com", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
+
+func TestListAuditLogs_PageBelowOne(t *testing.T) {
+	// page=0 should be normalised to 1
+	mock, r := newAuditLogRouter(t)
+
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM audit_logs").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery("SELECT al\\.id").
+		WillReturnRows(emptyAuditLogListRows())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/audit-logs?page=0&per_page=0", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
+
+func TestListAuditLogs_PerPageExceedsMax(t *testing.T) {
+	// per_page=500 (>200) should be capped at 25
+	mock, r := newAuditLogRouter(t)
+
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM audit_logs").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery("SELECT al\\.id").
+		WillReturnRows(emptyAuditLogListRows())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/audit-logs?per_page=500", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
+
+func TestListAuditLogs_WithDateFilters(t *testing.T) {
+	// Exercises valid start_date and end_date filter branches
+	mock, r := newAuditLogRouter(t)
+
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM audit_logs").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery("SELECT al\\.id").
+		WillReturnRows(emptyAuditLogListRows())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET",
+		"/audit-logs?start_date=2024-01-01T00:00:00Z&end_date=2024-12-31T23:59:59Z", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}

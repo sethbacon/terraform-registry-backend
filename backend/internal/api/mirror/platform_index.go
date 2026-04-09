@@ -17,6 +17,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/services"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 	"github.com/terraform-registry/terraform-registry/internal/telemetry"
 	"github.com/terraform-registry/terraform-registry/internal/validation"
@@ -38,7 +39,7 @@ import (
 // PlatformIndexHandler handles network mirror platform index requests
 // Implements: GET /terraform/providers/:hostname/:namespace/:type/:version.json
 // Returns download URLs and hashes for all platforms of a specific version
-func PlatformIndexHandler(db *sql.DB, cfg *config.Config, auditRepo *repositories.AuditRepository) gin.HandlerFunc {
+func PlatformIndexHandler(db *sql.DB, cfg *config.Config, auditRepo *repositories.AuditRepository, pullThrough *services.PullThroughService) gin.HandlerFunc {
 	providerRepo := repositories.NewProviderRepository(db)
 	orgRepo := repositories.NewOrganizationRepository(db)
 
@@ -103,10 +104,27 @@ func PlatformIndexHandler(db *sql.DB, cfg *config.Config, auditRepo *repositorie
 		}
 
 		if provider == nil {
-			c.JSON(http.StatusNotFound, gin.H{
-				"errors": []string{"Provider not found"},
-			})
-			return
+			// Cache miss — attempt pull-through if configured
+			if pullThrough != nil {
+				configs, err := pullThrough.GetConfigsForProvider(c.Request.Context(), org.ID, namespace, providerType)
+				if err != nil || len(configs) == 0 {
+					c.Data(http.StatusNotFound, "application/json", []byte(`{"errors":["provider not found"]}`))
+					return
+				}
+				if _, err := pullThrough.FetchProviderMetadata(c.Request.Context(), configs[0], org.ID, namespace, providerType); err != nil {
+					slog.Error("pull-through fetch failed", "namespace", namespace, "type", providerType, "error", err)
+					c.Data(http.StatusBadGateway, "application/json", []byte(`{"errors":["upstream fetch failed"]}`))
+					return
+				}
+				provider, err = providerRepo.GetProvider(c.Request.Context(), org.ID, namespace, providerType)
+				if err != nil || provider == nil {
+					c.Data(http.StatusNotFound, "application/json", []byte(`{"errors":["provider not found after pull-through"]}`))
+					return
+				}
+			} else {
+				c.Data(http.StatusNotFound, "application/json", []byte(`{"errors":["provider not found"]}`))
+				return
+			}
 		}
 
 		// Get provider version
@@ -119,10 +137,26 @@ func PlatformIndexHandler(db *sql.DB, cfg *config.Config, auditRepo *repositorie
 		}
 
 		if providerVersion == nil {
-			c.JSON(http.StatusNotFound, gin.H{
-				"errors": []string{"Provider version not found"},
-			})
-			return
+			// Version not in local DB — attempt pull-through if not already tried
+			if pullThrough != nil {
+				configs, err := pullThrough.GetConfigsForProvider(c.Request.Context(), org.ID, namespace, providerType)
+				if err != nil || len(configs) == 0 {
+					c.Data(http.StatusNotFound, "application/json", []byte(`{"errors":["provider version not found"]}`))
+					return
+				}
+				if _, err := pullThrough.FetchProviderMetadata(c.Request.Context(), configs[0], org.ID, namespace, providerType); err != nil {
+					c.Data(http.StatusBadGateway, "application/json", []byte(`{"errors":["upstream fetch failed"]}`))
+					return
+				}
+				providerVersion, err = providerRepo.GetVersion(c.Request.Context(), provider.ID, version)
+				if err != nil || providerVersion == nil {
+					c.Data(http.StatusNotFound, "application/json", []byte(`{"errors":["provider version not found after pull-through"]}`))
+					return
+				}
+			} else {
+				c.Data(http.StatusNotFound, "application/json", []byte(`{"errors":["provider version not found"]}`))
+				return
+			}
 		}
 
 		// Get all platforms for this version

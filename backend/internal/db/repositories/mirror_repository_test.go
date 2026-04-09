@@ -31,6 +31,15 @@ var mirrorConfigCols = []string{
 	"created_at", "updated_at",
 }
 
+// Full column set used by GetPullThroughConfigsForProvider
+var pullThroughCols = []string{
+	"id", "name", "description", "upstream_registry_url", "organization_id",
+	"namespace_filter", "provider_filter", "version_filter", "platform_filter",
+	"enabled", "sync_interval_hours", "pull_through_enabled",
+	"pull_through_cache_ttl_hours", "last_sync_at", "last_sync_status", "last_sync_error",
+	"created_at", "updated_at", "created_by",
+}
+
 var mirroredProviderCols = []string{
 	"id", "mirror_config_id", "provider_id", "upstream_namespace", "upstream_type",
 	"last_synced_at", "sync_enabled", "created_at",
@@ -726,5 +735,211 @@ func TestListMirroredProvidersPaginated_CountError(t *testing.T) {
 	_, _, err := repo.ListMirroredProvidersPaginated(context.Background(), mirrorID, 10, 0)
 	if err == nil {
 		t.Error("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// matchesJSONFilter (pure helper — no DB required)
+// ---------------------------------------------------------------------------
+
+func TestMatchesJSONFilter_NilFilter(t *testing.T) {
+	if !matchesJSONFilter(nil, "linux") {
+		t.Error("nil filter should match everything")
+	}
+}
+
+func TestMatchesJSONFilter_EmptyFilter(t *testing.T) {
+	empty := ""
+	if !matchesJSONFilter(&empty, "linux") {
+		t.Error("empty filter should match everything")
+	}
+}
+
+func TestMatchesJSONFilter_MatchInList(t *testing.T) {
+	f := `["linux","darwin","windows"]`
+	if !matchesJSONFilter(&f, "linux") {
+		t.Error("expected match for 'linux' in JSON array")
+	}
+}
+
+func TestMatchesJSONFilter_NoMatchInList(t *testing.T) {
+	f := `["darwin","windows"]`
+	if matchesJSONFilter(&f, "linux") {
+		t.Error("expected no match for 'linux' not in JSON array")
+	}
+}
+
+func TestMatchesJSONFilter_SubstringButNotInList(t *testing.T) {
+	// "linux" appears as substring of "linuxalt" in filter but is not a list member
+	f := `["linuxalt","darwin"]`
+	if matchesJSONFilter(&f, "linux") {
+		t.Error("expected no match: 'linux' is not a list element even though it's a substring")
+	}
+}
+
+func TestMatchesJSONFilter_InvalidJSON_MatchesAll(t *testing.T) {
+	// Unparseable filter is treated as "match all"
+	bad := "not-json-but-contains-linux"
+	// matchesJSONFilter first checks if value is a substring; then tries to parse.
+	// Since "linux" is in the string, substring check passes. JSON parse fails → return true.
+	if !matchesJSONFilter(&bad, "linux") {
+		t.Error("unparseable filter containing value as substring should match")
+	}
+}
+
+func TestMatchesJSONFilter_NotSubstring(t *testing.T) {
+	// If value isn't even a substring, return false immediately (before JSON parse)
+	f := `["darwin","windows"]`
+	if matchesJSONFilter(&f, "linux") {
+		t.Error("expected no match when value not present as substring")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetPullThroughConfigsForProvider
+// ---------------------------------------------------------------------------
+
+// pullThroughRow builds a sqlmock row for a MirrorConfiguration with the
+// full column set returned by GetPullThroughConfigsForProvider.
+func pullThroughRow(id uuid.UUID, orgID uuid.UUID, nsFilter, provFilter *string) *sqlmock.Rows {
+	rows := sqlmock.NewRows(pullThroughCols)
+	rows.AddRow(
+		id,                              // id
+		"pt-mirror",                     // name
+		nil,                             // description
+		"https://registry.terraform.io", // upstream_registry_url
+		orgID,                           // organization_id
+		nsFilter,                        // namespace_filter
+		provFilter,                      // provider_filter
+		nil,                             // version_filter
+		nil,                             // platform_filter
+		true,                            // enabled
+		24,                              // sync_interval_hours
+		true,                            // pull_through_enabled
+		1,                               // pull_through_cache_ttl_hours
+		nil,                             // last_sync_at
+		nil,                             // last_sync_status
+		nil,                             // last_sync_error
+		time.Now(),                      // created_at
+		time.Now(),                      // updated_at
+		nil,                             // created_by
+	)
+	return rows
+}
+
+func TestGetPullThroughConfigsForProvider_DBError(t *testing.T) {
+	repo, mock := newMirrorRepo(t)
+	mock.ExpectQuery("SELECT id.*FROM mirror_configurations").
+		WillReturnError(errDB)
+
+	result, err := repo.GetPullThroughConfigsForProvider(context.Background(), "org1", "hashicorp", "aws")
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+	if result != nil {
+		t.Errorf("expected nil result on error, got %v", result)
+	}
+}
+
+func TestGetPullThroughConfigsForProvider_Empty(t *testing.T) {
+	repo, mock := newMirrorRepo(t)
+	mock.ExpectQuery("SELECT id.*FROM mirror_configurations").
+		WillReturnRows(sqlmock.NewRows(pullThroughCols))
+
+	result, err := repo.GetPullThroughConfigsForProvider(context.Background(), "org1", "hashicorp", "aws")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result) != 0 {
+		t.Errorf("expected 0 results, got %d", len(result))
+	}
+}
+
+func TestGetPullThroughConfigsForProvider_NilFiltersMatchAll(t *testing.T) {
+	// A config with nil namespace_filter and nil provider_filter matches any provider.
+	repo, mock := newMirrorRepo(t)
+	orgID := uuid.New()
+	mock.ExpectQuery("SELECT id.*FROM mirror_configurations").
+		WillReturnRows(pullThroughRow(uuid.New(), orgID, nil, nil))
+
+	result, err := repo.GetPullThroughConfigsForProvider(context.Background(), orgID.String(), "hashicorp", "aws")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result) != 1 {
+		t.Errorf("expected 1 result, got %d", len(result))
+	}
+}
+
+func TestGetPullThroughConfigsForProvider_FilteredOut(t *testing.T) {
+	// Namespace filter ["terraform"] does not match "hashicorp".
+	repo, mock := newMirrorRepo(t)
+	orgID := uuid.New()
+	nsFilter := `["terraform"]`
+	mock.ExpectQuery("SELECT id.*FROM mirror_configurations").
+		WillReturnRows(pullThroughRow(uuid.New(), orgID, &nsFilter, nil))
+
+	result, err := repo.GetPullThroughConfigsForProvider(context.Background(), orgID.String(), "hashicorp", "aws")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result) != 0 {
+		t.Errorf("expected 0 results (filtered out), got %d", len(result))
+	}
+}
+
+func TestGetPullThroughConfigsForProvider_SpecificitySort(t *testing.T) {
+	// Three configs returned from DB; most specific (both filters set) should sort first.
+	repo, mock := newMirrorRepo(t)
+	orgID := uuid.New()
+
+	nsFilter := `["hashicorp"]`
+	provFilter := `["aws"]`
+
+	// Row 1: no filters (score 0)
+	id1 := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	// Row 2: provider filter only (score 2)
+	id2 := uuid.MustParse("22222222-2222-2222-2222-222222222222")
+	// Row 3: both filters (score 3)
+	id3 := uuid.MustParse("33333333-3333-3333-3333-333333333333")
+
+	rows := sqlmock.NewRows(pullThroughCols)
+	// DB returns them in id1, id2, id3 order; sort should reorder to id3, id2, id1.
+	for _, row := range []struct {
+		id         uuid.UUID
+		nsFilter   *string
+		provFilter *string
+	}{
+		{id1, nil, nil},
+		{id2, nil, &provFilter},
+		{id3, &nsFilter, &provFilter},
+	} {
+		rows.AddRow(
+			row.id, "pt-mirror", nil, "https://registry.terraform.io", orgID,
+			row.nsFilter, row.provFilter, nil, nil,
+			true, 24, true, 1, nil, nil, nil,
+			time.Now(), time.Now(), nil,
+		)
+	}
+
+	mock.ExpectQuery("SELECT id.*FROM mirror_configurations").
+		WillReturnRows(rows)
+
+	result, err := repo.GetPullThroughConfigsForProvider(context.Background(), orgID.String(), "hashicorp", "aws")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(result))
+	}
+	// Most specific first: both filters (id3) → provider only (id2) → no filters (id1)
+	if result[0].ID != id3 {
+		t.Errorf("result[0] = %v, want id3 (%v)", result[0].ID, id3)
+	}
+	if result[1].ID != id2 {
+		t.Errorf("result[1] = %v, want id2 (%v)", result[1].ID, id2)
+	}
+	if result[2].ID != id1 {
+		t.Errorf("result[2] = %v, want id1 (%v)", result[2].ID, id1)
 	}
 }

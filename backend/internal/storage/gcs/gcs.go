@@ -27,9 +27,123 @@ func init() {
 	})
 }
 
+// ---------------------------------------------------------------------------
+// Interfaces — abstract the GCS SDK's chained-handle pattern into flat calls
+// ---------------------------------------------------------------------------
+
+// gcsClientAPI abstracts the GCS SDK operations used by GCSStorage.
+type gcsClientAPI interface {
+	Close() error
+	NewWriter(ctx context.Context, bucket, object string) gcsWriterAPI
+	NewReader(ctx context.Context, bucket, object string) (io.ReadCloser, error)
+	ObjectAttrs(ctx context.Context, bucket, object string) (*storage.ObjectAttrs, error)
+	DeleteObject(ctx context.Context, bucket, object string) error
+	UpdateObjectMetadata(ctx context.Context, bucket, object string, update storage.ObjectAttrsToUpdate) (*storage.ObjectAttrs, error)
+	CopyObject(ctx context.Context, bucket, srcObject, dstObject, storageClass string) error
+	ComposeObjects(ctx context.Context, bucket string, dst string, srcs []string) error
+	BucketAttrs(ctx context.Context, bucket string) (*storage.BucketAttrs, error)
+	CreateBucket(ctx context.Context, bucket, projectID string) error
+	ListObjects(ctx context.Context, bucket string, query *storage.Query) gcsObjectIteratorAPI
+	SignedURL(bucket, object string, opts *storage.SignedURLOptions) (string, error)
+}
+
+type gcsWriterAPI interface {
+	io.WriteCloser
+	SetMetadata(m map[string]string)
+	SetChunkSize(s int)
+}
+
+type gcsObjectIteratorAPI interface {
+	Next() (*storage.ObjectAttrs, error)
+}
+
+// ---------------------------------------------------------------------------
+// Real wrappers — delegate to the concrete GCS SDK types
+// ---------------------------------------------------------------------------
+
+// realGCSClient wraps *storage.Client and implements gcsClientAPI. // coverage:skip:trivial-delegation
+type realGCSClient struct {
+	client *storage.Client
+}
+
+func (r *realGCSClient) Close() error {
+	return r.client.Close()
+}
+
+func (r *realGCSClient) NewWriter(ctx context.Context, bucket, object string) gcsWriterAPI {
+	w := r.client.Bucket(bucket).Object(object).NewWriter(ctx)
+	return &realWriter{w: w}
+}
+
+func (r *realGCSClient) NewReader(ctx context.Context, bucket, object string) (io.ReadCloser, error) {
+	return r.client.Bucket(bucket).Object(object).NewReader(ctx)
+}
+
+func (r *realGCSClient) ObjectAttrs(ctx context.Context, bucket, object string) (*storage.ObjectAttrs, error) {
+	return r.client.Bucket(bucket).Object(object).Attrs(ctx)
+}
+
+func (r *realGCSClient) DeleteObject(ctx context.Context, bucket, object string) error {
+	return r.client.Bucket(bucket).Object(object).Delete(ctx)
+}
+
+func (r *realGCSClient) UpdateObjectMetadata(ctx context.Context, bucket, object string, update storage.ObjectAttrsToUpdate) (*storage.ObjectAttrs, error) {
+	return r.client.Bucket(bucket).Object(object).Update(ctx, update)
+}
+
+func (r *realGCSClient) CopyObject(ctx context.Context, bucket, srcObject, dstObject, storageClass string) error {
+	src := r.client.Bucket(bucket).Object(srcObject)
+	dst := r.client.Bucket(bucket).Object(dstObject)
+	copier := dst.CopierFrom(src)
+	copier.StorageClass = storageClass
+	_, err := copier.Run(ctx)
+	return err
+}
+
+func (r *realGCSClient) ComposeObjects(ctx context.Context, bucket string, dst string, srcs []string) error {
+	bkt := r.client.Bucket(bucket)
+	sources := make([]*storage.ObjectHandle, len(srcs))
+	for i, s := range srcs {
+		sources[i] = bkt.Object(s)
+	}
+	composer := bkt.Object(dst).ComposerFrom(sources...)
+	_, err := composer.Run(ctx)
+	return err
+}
+
+func (r *realGCSClient) BucketAttrs(ctx context.Context, bucket string) (*storage.BucketAttrs, error) {
+	return r.client.Bucket(bucket).Attrs(ctx)
+}
+
+func (r *realGCSClient) CreateBucket(ctx context.Context, bucket, projectID string) error {
+	return r.client.Bucket(bucket).Create(ctx, projectID, nil)
+}
+
+func (r *realGCSClient) ListObjects(ctx context.Context, bucket string, query *storage.Query) gcsObjectIteratorAPI {
+	return r.client.Bucket(bucket).Objects(ctx, query)
+}
+
+func (r *realGCSClient) SignedURL(bucket, object string, opts *storage.SignedURLOptions) (string, error) {
+	return r.client.Bucket(bucket).SignedURL(object, opts)
+}
+
+// realWriter wraps *storage.Writer and implements gcsWriterAPI. // coverage:skip:trivial-delegation
+type realWriter struct {
+	w *storage.Writer
+}
+
+func (rw *realWriter) Write(p []byte) (int, error)     { return rw.w.Write(p) }
+func (rw *realWriter) Close() error                    { return rw.w.Close() }
+func (rw *realWriter) SetMetadata(m map[string]string) { rw.w.Metadata = m }
+func (rw *realWriter) SetChunkSize(s int)              { rw.w.ChunkSize = s }
+
+// ---------------------------------------------------------------------------
+// GCSStorage
+// ---------------------------------------------------------------------------
+
 // GCSStorage implements the Storage interface for Google Cloud Storage
 type GCSStorage struct {
-	client *storage.Client
+	client gcsClientAPI
 	bucket string
 }
 
@@ -101,7 +215,7 @@ func New(cfg *appconfig.GCSStorageConfig) (*GCSStorage, error) {
 	}
 
 	return &GCSStorage{
-		client: client,
+		client: &realGCSClient{client: client},
 		bucket: cfg.Bucket,
 	}, nil
 }
@@ -124,14 +238,11 @@ func (s *GCSStorage) Upload(ctx context.Context, path string, reader io.Reader, 
 	hasher.Write(data)
 	checksum := hex.EncodeToString(hasher.Sum(nil))
 
-	// Get object handle
-	obj := s.client.Bucket(s.bucket).Object(path)
-
 	// Create writer and upload
-	writer := obj.NewWriter(ctx)
-	writer.Metadata = map[string]string{
+	writer := s.client.NewWriter(ctx, s.bucket, path)
+	writer.SetMetadata(map[string]string{
 		"sha256": checksum,
-	}
+	})
 
 	if _, err := writer.Write(data); err != nil {
 		return nil, fmt.Errorf("failed to write to GCS: %w", err)
@@ -150,9 +261,7 @@ func (s *GCSStorage) Upload(ctx context.Context, path string, reader io.Reader, 
 
 // Download retrieves a file from GCS
 func (s *GCSStorage) Download(ctx context.Context, path string) (io.ReadCloser, error) {
-	obj := s.client.Bucket(s.bucket).Object(path)
-
-	reader, err := obj.NewReader(ctx)
+	reader, err := s.client.NewReader(ctx, s.bucket, path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read from GCS: %w", err)
 	}
@@ -162,9 +271,7 @@ func (s *GCSStorage) Download(ctx context.Context, path string) (io.ReadCloser, 
 
 // Delete removes a file from GCS
 func (s *GCSStorage) Delete(ctx context.Context, path string) error {
-	obj := s.client.Bucket(s.bucket).Object(path)
-
-	if err := obj.Delete(ctx); err != nil {
+	if err := s.client.DeleteObject(ctx, s.bucket, path); err != nil {
 		// Check if object doesn't exist - that's okay
 		if err == storage.ErrObjectNotExist {
 			return nil
@@ -187,15 +294,13 @@ func (s *GCSStorage) GetURL(ctx context.Context, path string, ttl time.Duration)
 	}
 
 	// Generate signed URL
-	// Note: This requires the service account to have the iam.serviceAccountTokenCreator role
-	// or for ADC to have signBlob permissions
 	opts := &storage.SignedURLOptions{
 		Scheme:  storage.SigningSchemeV4,
 		Method:  "GET",
 		Expires: time.Now().Add(ttl),
 	}
 
-	url, err := s.client.Bucket(s.bucket).SignedURL(path, opts)
+	url, err := s.client.SignedURL(s.bucket, path, opts)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate signed URL: %w", err)
 	}
@@ -205,9 +310,7 @@ func (s *GCSStorage) GetURL(ctx context.Context, path string, ttl time.Duration)
 
 // Exists checks if a file exists at the specified path
 func (s *GCSStorage) Exists(ctx context.Context, path string) (bool, error) {
-	obj := s.client.Bucket(s.bucket).Object(path)
-
-	_, err := obj.Attrs(ctx)
+	_, err := s.client.ObjectAttrs(ctx, s.bucket, path)
 	if err != nil {
 		if err == storage.ErrObjectNotExist {
 			return false, nil
@@ -220,9 +323,7 @@ func (s *GCSStorage) Exists(ctx context.Context, path string) (bool, error) {
 
 // GetMetadata retrieves file metadata without downloading the entire file
 func (s *GCSStorage) GetMetadata(ctx context.Context, path string) (*appstorage.FileMetadata, error) {
-	obj := s.client.Bucket(s.bucket).Object(path)
-
-	attrs, err := obj.Attrs(ctx)
+	attrs, err := s.client.ObjectAttrs(ctx, s.bucket, path)
 	if err != nil {
 		if err == storage.ErrObjectNotExist {
 			return nil, fmt.Errorf("file not found: %s", path)
@@ -263,10 +364,8 @@ func (s *GCSStorage) GetMetadata(ctx context.Context, path string) (*appstorage.
 
 // EnsureBucket creates the bucket if it doesn't exist
 func (s *GCSStorage) EnsureBucket(ctx context.Context, projectID string) error {
-	bucket := s.client.Bucket(s.bucket)
-
 	// Check if bucket exists
-	_, err := bucket.Attrs(ctx)
+	_, err := s.client.BucketAttrs(ctx, s.bucket)
 	if err == nil {
 		// Bucket exists
 		return nil
@@ -281,7 +380,7 @@ func (s *GCSStorage) EnsureBucket(ctx context.Context, projectID string) error {
 		return fmt.Errorf("project_id is required to create a bucket")
 	}
 
-	if err := bucket.Create(ctx, projectID, nil); err != nil {
+	if err := s.client.CreateBucket(ctx, s.bucket, projectID); err != nil {
 		return fmt.Errorf("failed to create bucket: %w", err)
 	}
 
@@ -291,17 +390,9 @@ func (s *GCSStorage) EnsureBucket(ctx context.Context, projectID string) error {
 // SetStorageClass changes the storage class of an object
 // Supported classes: STANDARD, NEARLINE, COLDLINE, ARCHIVE
 func (s *GCSStorage) SetStorageClass(ctx context.Context, path string, storageClass string) error {
-	src := s.client.Bucket(s.bucket).Object(path)
-	dst := s.client.Bucket(s.bucket).Object(path)
-
-	// Copy the object to itself with new storage class
-	copier := dst.CopierFrom(src)
-	copier.StorageClass = storageClass
-
-	if _, err := copier.Run(ctx); err != nil {
+	if err := s.client.CopyObject(ctx, s.bucket, path, path, storageClass); err != nil {
 		return fmt.Errorf("failed to change storage class: %w", err)
 	}
-
 	return nil
 }
 
@@ -312,7 +403,7 @@ func (s *GCSStorage) ListObjects(ctx context.Context, prefix string, maxResults 
 	}
 
 	var objects []string
-	it := s.client.Bucket(s.bucket).Objects(ctx, query)
+	it := s.client.ListObjects(ctx, s.bucket, query)
 
 	for i := 0; maxResults <= 0 || i < maxResults; i++ {
 		attrs, err := it.Next()
@@ -351,17 +442,7 @@ func (s *GCSStorage) ComposeObjects(ctx context.Context, destPath string, source
 		return fmt.Errorf("cannot compose more than 32 objects at once")
 	}
 
-	bucket := s.client.Bucket(s.bucket)
-	dest := bucket.Object(destPath)
-
-	sources := make([]*storage.ObjectHandle, len(sourcePaths))
-	for i, path := range sourcePaths {
-		sources[i] = bucket.Object(path)
-	}
-
-	composer := dest.ComposerFrom(sources...)
-
-	if _, err := composer.Run(ctx); err != nil {
+	if err := s.client.ComposeObjects(ctx, s.bucket, destPath, sourcePaths); err != nil {
 		return fmt.Errorf("failed to compose objects: %w", err)
 	}
 
@@ -371,11 +452,9 @@ func (s *GCSStorage) ComposeObjects(ctx context.Context, destPath string, source
 // UploadResumable uploads a large file using resumable upload
 // Recommended for files larger than 5MB
 func (s *GCSStorage) UploadResumable(ctx context.Context, path string, reader io.Reader) (*appstorage.UploadResult, error) {
-	obj := s.client.Bucket(s.bucket).Object(path)
-
 	// Create resumable writer with chunked upload
-	writer := obj.NewWriter(ctx)
-	writer.ChunkSize = 16 * 1024 * 1024 // 16MB chunks
+	writer := s.client.NewWriter(ctx, s.bucket, path)
+	writer.SetChunkSize(16 * 1024 * 1024) // 16MB chunks
 
 	// Calculate checksum while uploading
 	hasher := sha256.New()
@@ -393,8 +472,7 @@ func (s *GCSStorage) UploadResumable(ctx context.Context, path string, reader io
 	checksum := hex.EncodeToString(hasher.Sum(nil))
 
 	// Update metadata with checksum
-	obj = s.client.Bucket(s.bucket).Object(path)
-	if _, err := obj.Update(ctx, storage.ObjectAttrsToUpdate{
+	if _, err := s.client.UpdateObjectMetadata(ctx, s.bucket, path, storage.ObjectAttrsToUpdate{
 		Metadata: map[string]string{
 			"sha256": checksum,
 		},

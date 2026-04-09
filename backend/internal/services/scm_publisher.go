@@ -18,18 +18,15 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/terraform-registry/terraform-registry/internal/analyzer"
+	"github.com/terraform-registry/terraform-registry/internal/archiver"
+	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/scm"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 	"github.com/terraform-registry/terraform-registry/internal/validation"
-)
-
-const (
-	// maxExtractBytes caps the number of bytes copied from any single tar entry
-	// during archive extraction to prevent decompression bomb attacks.
-	maxExtractBytes = 500 << 20 // 500 MB
 )
 
 // SCMPublisher handles automated publishing from SCM repositories
@@ -39,6 +36,9 @@ type SCMPublisher struct {
 	storageBackend storage.Storage
 	tokenCipher    *crypto.TokenCipher
 	tempDir        string
+	scanRepo       *repositories.ModuleScanRepository // optional: queue scans after publish
+	moduleDocsRepo *repositories.ModuleDocsRepository // optional: store terraform-docs after publish
+	scanningCfg    *config.ScanningConfig             // optional: scan feature flags
 }
 
 // NewSCMPublisher creates a new SCM publisher
@@ -52,7 +52,23 @@ func NewSCMPublisher(scmRepo *repositories.SCMRepository, moduleRepo *repositori
 	}
 }
 
+// WithScanQueue wires in the scan repository and config so the publisher queues
+// security scans after each successful module version publish.
+func (p *SCMPublisher) WithScanQueue(scanRepo *repositories.ModuleScanRepository, cfg *config.ScanningConfig) *SCMPublisher {
+	p.scanRepo = scanRepo
+	p.scanningCfg = cfg
+	return p
+}
+
+// WithModuleDocs wires in the module docs repository so the publisher extracts
+// and stores terraform-docs metadata after each successful publish.
+func (p *SCMPublisher) WithModuleDocs(docsRepo *repositories.ModuleDocsRepository) *SCMPublisher {
+	p.moduleDocsRepo = docsRepo
+	return p
+}
+
 // ProcessTagPush processes a tag push webhook and publishes a new version
+// coverage:skip:integration-only — requires live SCM connector, DB, and storage
 func (p *SCMPublisher) ProcessTagPush(ctx context.Context, logID uuid.UUID, moduleSourceRepo *scm.ModuleSourceRepoRecord, hook *scm.IncomingHook, connector scm.Connector) {
 	// Update webhook log to processing
 	if err := p.scmRepo.UpdateWebhookLogState(ctx, logID, "processing", nil, nil); err != nil {
@@ -185,51 +201,9 @@ func (p *SCMPublisher) downloadAndPackage(ctx context.Context, connector scm.Con
 	return outputPath, checksum, nil
 }
 
-// extractTarGz extracts a tar.gz archive
+// extractTarGz extracts a tar.gz archive by delegating to the shared archiver package.
 func (p *SCMPublisher) extractTarGz(r io.Reader, dest string) error {
-	gzr, err := gzip.NewReader(r)
-	if err != nil {
-		return err
-	}
-	defer gzr.Close()
-
-	tr := tar.NewReader(gzr)
-	for {
-		header, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return err
-		}
-
-		// Prevent path traversal
-		target := filepath.Join(dest, header.Name)
-		if !strings.HasPrefix(target, filepath.Clean(dest)+string(os.PathSeparator)) {
-			return fmt.Errorf("invalid file path: %s", header.Name)
-		}
-
-		switch header.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0750); err != nil {
-				return err
-			}
-		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(target), 0750); err != nil {
-				return err
-			}
-			f, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR, os.FileMode(header.Mode)) // #nosec G304 -- path is constructed from validated namespace/name/version components; path traversal is prevented at the API and archive-extraction layers
-			if err != nil {
-				return err
-			}
-			if _, err := io.Copy(f, io.LimitReader(tr, maxExtractBytes)); err != nil {
-				_ = f.Close()
-				return err
-			}
-			_ = f.Close()
-		}
-	}
-	return nil
+	return archiver.ExtractTarGz(r, dest)
 }
 
 // validateModuleStructure validates that the directory contains a valid Terraform module
@@ -382,6 +356,8 @@ func (p *SCMPublisher) extractVersionFromTag(tag, glob string) string {
 }
 
 // TriggerManualSync scans a repository for tags and publishes any matching versions
+// TriggerManualSync manually syncs all tags for a module source repo.
+// coverage:skip:integration-only — requires live SCM connector and DB
 // This is called when a user manually triggers a sync from the UI
 func (p *SCMPublisher) TriggerManualSync(ctx context.Context, moduleSourceRepo *scm.ModuleSourceRepoRecord, connector scm.Connector, token *scm.OAuthToken) error {
 	slog.Debug("starting manual sync", "module_id", moduleSourceRepo.ModuleID, "owner", moduleSourceRepo.RepositoryOwner, "repo", moduleSourceRepo.RepositoryName)
@@ -481,6 +457,7 @@ func (p *SCMPublisher) processTagForManualSync(ctx context.Context, moduleSource
 // from an SCM tag. It downloads the source archive, uploads it to storage,
 // extracts a README, and creates the database record. Both webhook-driven
 // (ProcessTagPush) and manual sync (processTagForManualSync) paths call this.
+// coverage:skip:integration-only — requires live SCM connector, DB, storage, analyzer, and scanner
 func (p *SCMPublisher) publishModuleVersion(
 	ctx context.Context,
 	connector scm.Connector,
@@ -559,6 +536,30 @@ func (p *SCMPublisher) publishModuleVersion(
 
 	if err := p.moduleRepo.CreateVersion(ctx, moduleVersion); err != nil {
 		return "", fmt.Errorf("create version: %w", err)
+	}
+
+	// Queue a security scan for the newly published version (non-fatal).
+	if p.scanRepo != nil && p.scanningCfg != nil && p.scanningCfg.Enabled && p.scanningCfg.BinaryPath != "" {
+		if err := p.scanRepo.CreatePendingScan(ctx, moduleVersion.ID); err != nil {
+			slog.Warn("scm-publisher: failed to queue security scan",
+				"version_id", moduleVersion.ID, "error", err)
+		}
+	}
+
+	// Extract and store terraform-docs metadata (non-fatal).
+	if p.moduleDocsRepo != nil {
+		if f, err := os.Open(archivePath); err == nil { // #nosec G304 -- archivePath is a temp file created by this process
+			defer f.Close()
+			if doc, err := analyzer.AnalyzeArchive(f); err != nil {
+				slog.Warn("scm-publisher: terraform-docs: failed to analyze archive",
+					"module", module.Name, "version", version, "error", err)
+			} else if doc != nil {
+				if err := p.moduleDocsRepo.UpsertModuleDocs(ctx, moduleVersion.ID, doc); err != nil {
+					slog.Warn("scm-publisher: terraform-docs: failed to store docs",
+						"version_id", moduleVersion.ID, "error", err)
+				}
+			}
+		}
 	}
 
 	return versionID, nil

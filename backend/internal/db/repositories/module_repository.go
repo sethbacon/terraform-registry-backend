@@ -248,9 +248,11 @@ func (r *ModuleRepository) ListVersions(ctx context.Context, moduleID string) ([
 		SELECT mv.id, mv.module_id, mv.version, mv.storage_path, mv.storage_backend, mv.size_bytes, mv.checksum, mv.readme,
 		       mv.published_by, u.name as published_by_name, mv.download_count,
 		       COALESCE(mv.deprecated, false), mv.deprecated_at, mv.deprecation_message, mv.created_at,
-		       mv.commit_sha, mv.tag_name, mv.scm_repo_id::text
+		       mv.commit_sha, mv.tag_name, mv.scm_repo_id::text,
+		       (mvd.module_version_id IS NOT NULL) AS has_docs
 		FROM module_versions mv
 		LEFT JOIN users u ON mv.published_by = u.id
+		LEFT JOIN module_version_docs mvd ON mvd.module_version_id = mv.id
 		WHERE mv.module_id = $1
 	`
 
@@ -282,6 +284,7 @@ func (r *ModuleRepository) ListVersions(ctx context.Context, moduleID string) ([
 			&v.CommitSHA,
 			&v.TagName,
 			&v.SCMRepoID,
+			&v.HasDocs,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan module version: %w", err)
@@ -314,9 +317,11 @@ func (r *ModuleRepository) ListVersionsPaginated(ctx context.Context, moduleID s
 		SELECT mv.id, mv.module_id, mv.version, mv.storage_path, mv.storage_backend, mv.size_bytes, mv.checksum, mv.readme,
 		       mv.published_by, u.name as published_by_name, mv.download_count,
 		       COALESCE(mv.deprecated, false), mv.deprecated_at, mv.deprecation_message, mv.created_at,
-		       mv.commit_sha, mv.tag_name, mv.scm_repo_id::text
+		       mv.commit_sha, mv.tag_name, mv.scm_repo_id::text,
+		       (mvd.module_version_id IS NOT NULL) AS has_docs
 		FROM module_versions mv
 		LEFT JOIN users u ON mv.published_by = u.id
+		LEFT JOIN module_version_docs mvd ON mvd.module_version_id = mv.id
 		WHERE mv.module_id = $1
 		ORDER BY mv.created_at DESC
 		LIMIT $2 OFFSET $3
@@ -350,6 +355,7 @@ func (r *ModuleRepository) ListVersionsPaginated(ctx context.Context, moduleID s
 			&v.CommitSHA,
 			&v.TagName,
 			&v.SCMRepoID,
+			&v.HasDocs,
 		)
 		if err != nil {
 			return nil, 0, fmt.Errorf("failed to scan module version: %w", err)
@@ -738,4 +744,28 @@ func (r *ModuleRepository) UndeprecateVersion(ctx context.Context, versionID str
 	}
 
 	return nil
+}
+
+// GetVersionByID retrieves a module version by its UUID (used by the scanner job).
+func (r *ModuleRepository) GetVersionByID(ctx context.Context, id string) (*models.ModuleVersion, error) {
+	query := `
+		SELECT id, module_id, version, storage_path, storage_backend, size_bytes, checksum, readme, published_by,
+		       download_count, COALESCE(deprecated, false), deprecated_at, deprecation_message, created_at,
+		       commit_sha, tag_name, scm_repo_id::text
+		FROM module_versions
+		WHERE id = $1
+	`
+	v := &models.ModuleVersion{}
+	err := r.db.QueryRowContext(ctx, query, id).Scan(
+		&v.ID, &v.ModuleID, &v.Version, &v.StoragePath, &v.StorageBackend, &v.SizeBytes, &v.Checksum,
+		&v.Readme, &v.PublishedBy, &v.DownloadCount, &v.Deprecated, &v.DeprecatedAt, &v.DeprecationMessage,
+		&v.CreatedAt, &v.CommitSHA, &v.TagName, &v.SCMRepoID,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get module version by ID: %w", err)
+	}
+	return v, nil
 }

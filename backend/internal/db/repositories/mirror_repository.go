@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
@@ -30,8 +31,9 @@ func (r *MirrorRepository) Create(ctx context.Context, config *models.MirrorConf
 	query := `
 		INSERT INTO mirror_configurations (
 			id, name, description, upstream_registry_url, organization_id, namespace_filter, provider_filter,
-			version_filter, platform_filter, enabled, sync_interval_hours, created_at, updated_at, created_by
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+			version_filter, platform_filter, enabled, sync_interval_hours, pull_through_enabled,
+			pull_through_cache_ttl_hours, created_at, updated_at, created_by
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 	`
 
 	_, err := r.db.ExecContext(ctx, query,
@@ -46,6 +48,8 @@ func (r *MirrorRepository) Create(ctx context.Context, config *models.MirrorConf
 		config.PlatformFilter,
 		config.Enabled,
 		config.SyncIntervalHours,
+		config.PullThroughEnabled,
+		config.PullThroughCacheTTLHours,
 		config.CreatedAt,
 		config.UpdatedAt,
 		config.CreatedBy,
@@ -62,7 +66,8 @@ func (r *MirrorRepository) Create(ctx context.Context, config *models.MirrorConf
 func (r *MirrorRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.MirrorConfiguration, error) {
 	query := `
 		SELECT id, name, description, upstream_registry_url, organization_id, namespace_filter, provider_filter,
-		       version_filter, platform_filter, enabled, sync_interval_hours, last_sync_at, last_sync_status, last_sync_error,
+		       version_filter, platform_filter, enabled, sync_interval_hours, pull_through_enabled,
+		       pull_through_cache_ttl_hours, last_sync_at, last_sync_status, last_sync_error,
 		       created_at, updated_at, created_by
 		FROM mirror_configurations
 		WHERE id = $1
@@ -84,7 +89,8 @@ func (r *MirrorRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.M
 func (r *MirrorRepository) GetByName(ctx context.Context, name string) (*models.MirrorConfiguration, error) {
 	query := `
 		SELECT id, name, description, upstream_registry_url, organization_id, namespace_filter, provider_filter,
-		       version_filter, platform_filter, enabled, sync_interval_hours, last_sync_at, last_sync_status, last_sync_error,
+		       version_filter, platform_filter, enabled, sync_interval_hours, pull_through_enabled,
+		       pull_through_cache_ttl_hours, last_sync_at, last_sync_status, last_sync_error,
 		       created_at, updated_at, created_by
 		FROM mirror_configurations
 		WHERE name = $1
@@ -106,7 +112,8 @@ func (r *MirrorRepository) GetByName(ctx context.Context, name string) (*models.
 func (r *MirrorRepository) List(ctx context.Context, enabledOnly bool) ([]models.MirrorConfiguration, error) {
 	query := `
 		SELECT id, name, description, upstream_registry_url, organization_id, namespace_filter, provider_filter,
-		       version_filter, platform_filter, enabled, sync_interval_hours, last_sync_at, last_sync_status, last_sync_error,
+		       version_filter, platform_filter, enabled, sync_interval_hours, pull_through_enabled,
+		       pull_through_cache_ttl_hours, last_sync_at, last_sync_status, last_sync_error,
 		       created_at, updated_at, created_by
 		FROM mirror_configurations
 	`
@@ -134,7 +141,8 @@ func (r *MirrorRepository) Update(ctx context.Context, config *models.MirrorConf
 		UPDATE mirror_configurations
 		SET name = $2, description = $3, upstream_registry_url = $4, organization_id = $5,
 		    namespace_filter = $6, provider_filter = $7, version_filter = $8, platform_filter = $9,
-		    enabled = $10, sync_interval_hours = $11, updated_at = $12
+		    enabled = $10, sync_interval_hours = $11, pull_through_enabled = $12,
+		    pull_through_cache_ttl_hours = $13, updated_at = $14
 		WHERE id = $1
 	`
 
@@ -150,6 +158,8 @@ func (r *MirrorRepository) Update(ctx context.Context, config *models.MirrorConf
 		config.PlatformFilter,
 		config.Enabled,
 		config.SyncIntervalHours,
+		config.PullThroughEnabled,
+		config.PullThroughCacheTTLHours,
 		config.UpdatedAt,
 	)
 
@@ -243,7 +253,8 @@ func (r *MirrorRepository) ResetStaleSyncs(ctx context.Context) (int64, error) {
 func (r *MirrorRepository) GetMirrorsNeedingSync(ctx context.Context) ([]models.MirrorConfiguration, error) {
 	query := `
 		SELECT id, name, description, upstream_registry_url, organization_id, namespace_filter, provider_filter,
-		       version_filter, platform_filter, enabled, sync_interval_hours, last_sync_at, last_sync_status, last_sync_error,
+		       version_filter, platform_filter, enabled, sync_interval_hours, pull_through_enabled,
+		       pull_through_cache_ttl_hours, last_sync_at, last_sync_status, last_sync_error,
 		       created_at, updated_at, created_by
 		FROM mirror_configurations
 		WHERE enabled = true
@@ -602,4 +613,75 @@ func (r *MirrorRepository) GetMirroredProviderVersionByVersionID(ctx context.Con
 	}
 
 	return &mpv, nil
+}
+
+// GetPullThroughConfigsForProvider returns enabled pull-through mirror configs whose
+// namespace_filter and provider_filter match the given values. Most-specific match first.
+// namespace_filter and provider_filter are stored as JSON arrays (TEXT columns).
+func (r *MirrorRepository) GetPullThroughConfigsForProvider(
+	ctx context.Context, orgID, namespace, providerType string,
+) ([]*models.MirrorConfiguration, error) {
+	const q = `
+		SELECT id, name, description, upstream_registry_url, organization_id, namespace_filter, provider_filter,
+		       version_filter, platform_filter, enabled, sync_interval_hours, pull_through_enabled,
+		       pull_through_cache_ttl_hours, last_sync_at, last_sync_status, last_sync_error,
+		       created_at, updated_at, created_by
+		FROM mirror_configurations
+		WHERE organization_id = $1
+		  AND enabled = true
+		  AND pull_through_enabled = true
+		ORDER BY created_at
+	`
+	var all []*models.MirrorConfiguration
+	if err := r.db.SelectContext(ctx, &all, q, orgID); err != nil {
+		return nil, fmt.Errorf("failed to query pull-through configs: %w", err)
+	}
+
+	// Filter by namespace and provider in Go — the DB column stores a JSON array.
+	var matched []*models.MirrorConfiguration
+	for _, cfg := range all {
+		if matchesJSONFilter(cfg.NamespaceFilter, namespace) && matchesJSONFilter(cfg.ProviderFilter, providerType) {
+			matched = append(matched, cfg)
+		}
+	}
+
+	// Return most-specific first: configs with both namespace+provider filters before
+	// configs with only one filter, and configs with no filters last.
+	specificity := func(cfg *models.MirrorConfiguration) int {
+		score := 0
+		if cfg.ProviderFilter != nil && *cfg.ProviderFilter != "" {
+			score += 2
+		}
+		if cfg.NamespaceFilter != nil && *cfg.NamespaceFilter != "" {
+			score++
+		}
+		return score
+	}
+	for i := 1; i < len(matched); i++ {
+		for j := i; j > 0 && specificity(matched[j]) > specificity(matched[j-1]); j-- {
+			matched[j], matched[j-1] = matched[j-1], matched[j]
+		}
+	}
+	return matched, nil
+}
+
+// matchesJSONFilter returns true if filter is nil/empty or the value appears in the JSON array.
+func matchesJSONFilter(filter *string, value string) bool {
+	if filter == nil || *filter == "" {
+		return true
+	}
+	// Simple substring check before full JSON unmarshal for performance.
+	if !strings.Contains(*filter, value) {
+		return false
+	}
+	var values []string
+	if err := json.Unmarshal([]byte(*filter), &values); err != nil {
+		return true // treat unparseable filter as "match all"
+	}
+	for _, v := range values {
+		if v == value {
+			return true
+		}
+	}
+	return false
 }

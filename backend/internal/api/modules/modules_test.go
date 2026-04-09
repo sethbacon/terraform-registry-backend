@@ -77,7 +77,7 @@ var moduleVersionListCols2 = []string{
 	"id", "module_id", "version", "storage_path", "storage_backend", "size_bytes", "checksum",
 	"readme", "published_by", "published_by_name", "download_count", "deprecated",
 	"deprecated_at", "deprecation_message", "created_at",
-	"commit_sha", "tag_name", "scm_repo_id",
+	"commit_sha", "tag_name", "scm_repo_id", "has_docs",
 }
 
 // GetVersion: 17 cols (no published_by_name, includes commit_sha, tag_name, scm_repo_id)
@@ -115,7 +115,7 @@ func sampleModuleVersionsRows() *sqlmock.Rows {
 	return sqlmock.NewRows(moduleVersionListCols2).
 		AddRow("ver-1", "mod-1", "1.0.0", "modules/hashicorp/consul/aws/1.0.0.tgz", "local",
 			1024, "abc123", nil, nil, nil, int64(5), false, nil, nil, time.Now(),
-			nil, nil, nil)
+			nil, nil, nil, false)
 }
 
 func sampleModuleVersionGetRow() *sqlmock.Rows {
@@ -498,7 +498,7 @@ func newModuleUploadRouter(t *testing.T, store storage.Storage) (sqlmock.Sqlmock
 	db, mock, _ := sqlmock.New()
 	t.Cleanup(func() { db.Close() })
 	r := gin.New()
-	r.POST("/api/v1/modules", UploadHandler(db, store, &config.Config{}))
+	r.POST("/api/v1/modules", UploadHandler(db, store, &config.Config{}, nil, nil))
 	return mock, r
 }
 

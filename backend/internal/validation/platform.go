@@ -43,7 +43,7 @@ func ValidatePlatform(os string, arch string) error {
 	}
 
 	// Validate specific OS/arch combinations that are known to be invalid
-	if err := validateOSArchCombination(os, arch); err != nil {
+	if err := validateOSArchCombination(os, arch); err != nil { // coverage:skip:validateOSArchCombination-always-returns-nil
 		return err
 	}
 

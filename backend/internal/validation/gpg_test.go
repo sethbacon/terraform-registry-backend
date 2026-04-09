@@ -407,3 +407,48 @@ func TestVerifyProviderSignature(t *testing.T) {
 		}
 	})
 }
+
+// ---------------------------------------------------------------------------
+// VerifySignature — direct unit tests for uncovered paths
+// ---------------------------------------------------------------------------
+
+// rawDetachSign creates a non-armored binary detached signature.
+func rawDetachSign(t *testing.T, data []byte, entity *openpgp.Entity) []byte {
+	t.Helper()
+	var sigBuf bytes.Buffer
+	if err := openpgp.DetachSign(&sigBuf, entity, bytes.NewReader(data), nil); err != nil {
+		t.Fatalf("DetachSign() error: %v", err)
+	}
+	return sigBuf.Bytes()
+}
+
+func TestVerifySignature_EmptyData(t *testing.T) {
+	pubKey, _ := generateTestGPGEntity(t)
+	if err := VerifySignature(pubKey, []byte{}, []byte("sig")); err == nil {
+		t.Error("expected error for empty data, got nil")
+	}
+}
+
+func TestVerifySignature_EmptySignature(t *testing.T) {
+	pubKey, _ := generateTestGPGEntity(t)
+	if err := VerifySignature(pubKey, []byte("data"), []byte{}); err == nil {
+		t.Error("expected error for empty signature, got nil")
+	}
+}
+
+func TestVerifySignature_EmptyKey(t *testing.T) {
+	if err := VerifySignature("", []byte("data"), []byte("sig")); err == nil {
+		t.Error("expected error for empty public key, got nil")
+	}
+}
+
+func TestVerifySignature_RawBinarySignature(t *testing.T) {
+	// Non-armored binary signature exercises the armor.Decode failure path.
+	pubKey, entity := generateTestGPGEntity(t)
+	data := []byte("hello world")
+	rawSig := rawDetachSign(t, data, entity)
+
+	if err := VerifySignature(pubKey, data, rawSig); err != nil {
+		t.Errorf("VerifySignature() with raw binary sig = %v, want nil", err)
+	}
+}

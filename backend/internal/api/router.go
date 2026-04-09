@@ -65,14 +65,16 @@ import (
 // be stopped during graceful shutdown. The caller (cmd/server) is responsible for
 // calling Shutdown() when the process receives a termination signal.
 type BackgroundServices struct {
-	mirrorSyncJob   *jobs.MirrorSyncJob
-	tfMirrorSyncJob *jobs.TerraformMirrorSyncJob
-	expiryNotifier  *jobs.APIKeyExpiryNotifier
-	rateLimiters    []*middleware.RateLimiter
+	mirrorSyncJob    *jobs.MirrorSyncJob
+	tfMirrorSyncJob  *jobs.TerraformMirrorSyncJob
+	expiryNotifier   *jobs.APIKeyExpiryNotifier
+	moduleScannerJob *jobs.ModuleScannerJob
+	rateLimiters     []*middleware.RateLimiter
 }
 
 // Shutdown stops all background goroutines. It should be called after the HTTP
 // server has been shut down so that in-flight requests are drained first.
+// coverage:skip:integration-only — requires a running router with live DB and jobs
 func (bg *BackgroundServices) Shutdown() {
 	slog.Info("stopping background services")
 	if bg.mirrorSyncJob != nil {
@@ -83,6 +85,9 @@ func (bg *BackgroundServices) Shutdown() {
 	}
 	if bg.expiryNotifier != nil {
 		bg.expiryNotifier.Stop()
+	}
+	if bg.moduleScannerJob != nil {
+		bg.moduleScannerJob.Stop()
 	}
 	for _, rl := range bg.rateLimiters {
 		rl.Stop()
@@ -95,7 +100,8 @@ func (bg *BackgroundServices) Shutdown() {
 var AppVersion = "dev"
 var AppBuildDate = "unknown"
 
-// NewRouter creates and configures the Gin router
+// NewRouter creates and configures the Gin router.
+// coverage:skip:integration-only — wires all repos, jobs, and services together; tested via E2E
 func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices) {
 	router := gin.New()
 
@@ -123,6 +129,11 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	oidcConfigRepo := repositories.NewOIDCConfigRepository(sqlxDB)
 
 	providerDocsRepo := repositories.NewProviderDocsRepository(db)
+	scanRepo := repositories.NewModuleScanRepository(db)
+	moduleDocsRepo := repositories.NewModuleDocsRepository(db)
+
+	// Initialize pull-through caching service
+	pullThroughSvc := services.NewPullThroughService(providerRepo, mirrorRepo, orgRepo)
 
 	// Initialize mirror sync job
 	mirrorSyncJob := jobs.NewMirrorSyncJob(mirrorRepo, providerRepo, providerDocsRepo, orgRepo, storageBackend, cfg.Storage.DefaultBackend)
@@ -143,6 +154,12 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	expiryNotifier := jobs.NewAPIKeyExpiryNotifier(apiKeyRepo, userRepo, &cfg.Notifications)
 	go expiryNotifier.Start(context.Background())
 	log.Println("API key expiry notifier started")
+
+	// Initialize and start the module security scanner job (no-op when scanning is disabled)
+	moduleScannerJob := jobs.NewModuleScannerJob(&cfg.Scanning, scanRepo, moduleRepo, storageBackend)
+	if err := moduleScannerJob.Start(context.Background()); err != nil {
+		log.Printf("module scanner job failed to start: %v", err)
+	}
 
 	// Get encryption key from environment for OAuth token encryption
 	encryptionKey := os.Getenv("ENCRYPTION_KEY")
@@ -342,8 +359,8 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	// They use a different path structure: /terraform/providers/:hostname/:namespace/:type/...
 	v1Mirror := router.Group("/terraform/providers")
 	{
-		v1Mirror.GET("/:hostname/:namespace/:type/index.json", mirror.IndexHandler(db, cfg))
-		v1Mirror.GET("/:hostname/:namespace/:type/:versionfile", mirror.PlatformIndexHandler(db, cfg, auditRepo))
+		v1Mirror.GET("/:hostname/:namespace/:type/index.json", mirror.IndexHandler(db, cfg, pullThroughSvc))
+		v1Mirror.GET("/:hostname/:namespace/:type/:versionfile", mirror.PlatformIndexHandler(db, cfg, auditRepo, pullThroughSvc))
 	}
 
 	// Terraform Binary Mirror endpoints (public, no auth required)
@@ -413,7 +430,9 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	auditLogHandlers := admin.NewAuditLogHandlers(db)
 
 	// Initialize SCM publisher service (needed by scmLinkingHandler)
-	scmPublisher := services.NewSCMPublisher(scmRepo, moduleRepo, storageBackend, tokenCipher)
+	scmPublisher := services.NewSCMPublisher(scmRepo, moduleRepo, storageBackend, tokenCipher).
+		WithScanQueue(scanRepo, &cfg.Scanning).
+		WithModuleDocs(moduleDocsRepo)
 
 	// Initialize SCM handlers with the already-created repositories and token cipher
 	scmProviderHandlers := admin.NewSCMProviderHandlers(cfg, scmRepo, orgRepo, tokenCipher)
@@ -486,6 +505,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 		publicDetailGroup.Use(middleware.RateLimitMiddleware(generalRateLimiter))
 		{
 			publicDetailGroup.GET("/modules/:namespace/:name/:system", moduleAdminHandlers.GetModule)
+			publicDetailGroup.GET("/modules/:namespace/:name/:system/versions/:version/docs", modules.GetModuleDocsHandler(db))
 			publicDetailGroup.GET("/providers/:namespace/:type", providerAdminHandlers.GetProvider)
 			publicDetailGroup.GET("/providers/:namespace/:type/versions/:version/docs", providers.ListProviderDocsHandler(db))
 			publicDetailGroup.GET("/providers/:namespace/:type/versions/:version/docs/:category/:slug", providers.GetProviderDocContentHandler(db, cfg))
@@ -517,7 +537,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 			authenticatedGroup.POST("/modules",
 				middleware.RateLimitMiddleware(uploadRateLimiter), // Stricter rate limit for uploads
 				middleware.RequireScope(auth.ScopeModulesWrite),
-				modules.UploadHandler(db, storageBackend, cfg))
+				modules.UploadHandler(db, storageBackend, cfg, scanRepo, moduleDocsRepo))
 
 			// Providers admin endpoints - require write permissions
 			authenticatedGroup.POST("/providers",
@@ -561,6 +581,9 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 			authenticatedGroup.DELETE("/modules/:namespace/:name/:system/versions/:version/deprecate",
 				middleware.RequireScope(auth.ScopeModulesWrite),
 				moduleAdminHandlers.UndeprecateVersion)
+			authenticatedGroup.GET("/admin/modules/:namespace/:name/:system/versions/:version/scan",
+				middleware.RequireScope(auth.ScopeAdmin),
+				admin.GetModuleScanHandler(db))
 
 			// API Keys management - self-service for own keys
 			// Users can manage their own API keys without api_keys:manage scope
@@ -779,10 +802,11 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	router.POST("/webhooks/scm/:module_source_repo_id/:secret", scmWebhookHandler.HandleWebhook)
 
 	bg := &BackgroundServices{
-		mirrorSyncJob:   mirrorSyncJob,
-		tfMirrorSyncJob: tfMirrorSyncJob,
-		expiryNotifier:  expiryNotifier,
-		rateLimiters:    []*middleware.RateLimiter{authRateLimiter, generalRateLimiter, uploadRateLimiter},
+		mirrorSyncJob:    mirrorSyncJob,
+		tfMirrorSyncJob:  tfMirrorSyncJob,
+		expiryNotifier:   expiryNotifier,
+		moduleScannerJob: moduleScannerJob,
+		rateLimiters:     []*middleware.RateLimiter{authRateLimiter, generalRateLimiter, uploadRateLimiter},
 	}
 
 	return router, bg

@@ -10,23 +10,25 @@ import (
 
 // MirrorConfiguration represents a configuration for mirroring providers from an upstream registry
 type MirrorConfiguration struct {
-	ID                  uuid.UUID  `json:"id" db:"id"`
-	Name                string     `json:"name" db:"name"`
-	Description         *string    `json:"description,omitempty" db:"description"`
-	UpstreamRegistryURL string     `json:"upstream_registry_url" db:"upstream_registry_url"`
-	OrganizationID      *uuid.UUID `json:"organization_id,omitempty" db:"organization_id"`   // Organization for mirrored providers
-	NamespaceFilter     *string    `json:"namespace_filter,omitempty" db:"namespace_filter"` // JSON array
-	ProviderFilter      *string    `json:"provider_filter,omitempty" db:"provider_filter"`   // JSON array
-	VersionFilter       *string    `json:"version_filter,omitempty" db:"version_filter"`     // Version filter: "3.", "latest:5", ">=3.0.0", or comma-separated
-	PlatformFilter      *string    `json:"platform_filter,omitempty" db:"platform_filter"`   // JSON array of "os/arch" strings
-	Enabled             bool       `json:"enabled" db:"enabled"`
-	SyncIntervalHours   int        `json:"sync_interval_hours" db:"sync_interval_hours"`
-	LastSyncAt          *time.Time `json:"last_sync_at,omitempty" db:"last_sync_at"`
-	LastSyncStatus      *string    `json:"last_sync_status,omitempty" db:"last_sync_status"` // success, failed, in_progress
-	LastSyncError       *string    `json:"last_sync_error,omitempty" db:"last_sync_error"`
-	CreatedAt           time.Time  `json:"created_at" db:"created_at"`
-	UpdatedAt           time.Time  `json:"updated_at" db:"updated_at"`
-	CreatedBy           *uuid.UUID `json:"created_by,omitempty" db:"created_by"`
+	ID                       uuid.UUID  `json:"id" db:"id"`
+	Name                     string     `json:"name" db:"name"`
+	Description              *string    `json:"description,omitempty" db:"description"`
+	UpstreamRegistryURL      string     `json:"upstream_registry_url" db:"upstream_registry_url"`
+	OrganizationID           *uuid.UUID `json:"organization_id,omitempty" db:"organization_id"`   // Organization for mirrored providers
+	NamespaceFilter          *string    `json:"namespace_filter,omitempty" db:"namespace_filter"` // JSON array
+	ProviderFilter           *string    `json:"provider_filter,omitempty" db:"provider_filter"`   // JSON array
+	VersionFilter            *string    `json:"version_filter,omitempty" db:"version_filter"`     // Version filter: "3.", "latest:5", ">=3.0.0", or comma-separated
+	PlatformFilter           *string    `json:"platform_filter,omitempty" db:"platform_filter"`   // JSON array of "os/arch" strings
+	Enabled                  bool       `json:"enabled" db:"enabled"`
+	SyncIntervalHours        int        `json:"sync_interval_hours" db:"sync_interval_hours"`
+	PullThroughEnabled       bool       `json:"pull_through_enabled" db:"pull_through_enabled"`
+	PullThroughCacheTTLHours int        `json:"pull_through_cache_ttl_hours" db:"pull_through_cache_ttl_hours"`
+	LastSyncAt               *time.Time `json:"last_sync_at,omitempty" db:"last_sync_at"`
+	LastSyncStatus           *string    `json:"last_sync_status,omitempty" db:"last_sync_status"` // success, failed, in_progress
+	LastSyncError            *string    `json:"last_sync_error,omitempty" db:"last_sync_error"`
+	CreatedAt                time.Time  `json:"created_at" db:"created_at"`
+	UpdatedAt                time.Time  `json:"updated_at" db:"updated_at"`
+	CreatedBy                *uuid.UUID `json:"created_by,omitempty" db:"created_by"`
 }
 
 // MirroredProvider tracks which providers were mirrored from which configuration
@@ -68,30 +70,34 @@ type MirrorSyncHistory struct {
 
 // CreateMirrorConfigRequest represents the request to create a new mirror configuration
 type CreateMirrorConfigRequest struct {
-	Name                string   `json:"name" binding:"required,min=1,max=255"`
-	Description         *string  `json:"description,omitempty"`
-	UpstreamRegistryURL string   `json:"upstream_registry_url" binding:"required,url"`
-	OrganizationID      *string  `json:"organization_id,omitempty"`                               // Organization for mirrored providers
-	NamespaceFilter     []string `json:"namespace_filter,omitempty"`                              // List of namespaces to mirror
-	ProviderFilter      []string `json:"provider_filter,omitempty"`                               // List of provider names to mirror
-	VersionFilter       *string  `json:"version_filter,omitempty"`                                // Version filter: "3.", "latest:5", ">=3.0.0", or comma-separated
-	PlatformFilter      []string `json:"platform_filter,omitempty"`                               // List of "os/arch" strings (e.g. ["linux/amd64", "windows/amd64"])
-	Enabled             *bool    `json:"enabled,omitempty"`                                       // Default: true
-	SyncIntervalHours   *int     `json:"sync_interval_hours,omitempty" binding:"omitempty,min=1"` // Default: 24
+	Name                     string   `json:"name" binding:"required,min=1,max=255"`
+	Description              *string  `json:"description,omitempty"`
+	UpstreamRegistryURL      string   `json:"upstream_registry_url" binding:"required,url"`
+	OrganizationID           *string  `json:"organization_id,omitempty"`                                        // Organization for mirrored providers
+	NamespaceFilter          []string `json:"namespace_filter,omitempty"`                                       // List of namespaces to mirror
+	ProviderFilter           []string `json:"provider_filter,omitempty"`                                        // List of provider names to mirror
+	VersionFilter            *string  `json:"version_filter,omitempty"`                                         // Version filter: "3.", "latest:5", ">=3.0.0", or comma-separated
+	PlatformFilter           []string `json:"platform_filter,omitempty"`                                        // List of "os/arch" strings (e.g. ["linux/amd64", "windows/amd64"])
+	Enabled                  *bool    `json:"enabled,omitempty"`                                                // Default: true
+	SyncIntervalHours        *int     `json:"sync_interval_hours,omitempty" binding:"omitempty,min=1"`          // Default: 24
+	PullThroughEnabled       *bool    `json:"pull_through_enabled,omitempty"`                                   // Default: false
+	PullThroughCacheTTLHours *int     `json:"pull_through_cache_ttl_hours,omitempty" binding:"omitempty,min=1"` // Default: 24
 }
 
 // UpdateMirrorConfigRequest represents the request to update a mirror configuration
 type UpdateMirrorConfigRequest struct {
-	Name                *string  `json:"name,omitempty" binding:"omitempty,min=1,max=255"`
-	Description         *string  `json:"description,omitempty"`
-	UpstreamRegistryURL *string  `json:"upstream_registry_url,omitempty" binding:"omitempty,url"`
-	OrganizationID      *string  `json:"organization_id,omitempty"` // Organization for mirrored providers
-	NamespaceFilter     []string `json:"namespace_filter,omitempty"`
-	ProviderFilter      []string `json:"provider_filter,omitempty"`
-	VersionFilter       *string  `json:"version_filter,omitempty"`  // Version filter: "3.", "latest:5", ">=3.0.0", or comma-separated
-	PlatformFilter      []string `json:"platform_filter,omitempty"` // List of "os/arch" strings (e.g. ["linux/amd64", "windows/amd64"])
-	Enabled             *bool    `json:"enabled,omitempty"`
-	SyncIntervalHours   *int     `json:"sync_interval_hours,omitempty" binding:"omitempty,min=1"`
+	Name                     *string  `json:"name,omitempty" binding:"omitempty,min=1,max=255"`
+	Description              *string  `json:"description,omitempty"`
+	UpstreamRegistryURL      *string  `json:"upstream_registry_url,omitempty" binding:"omitempty,url"`
+	OrganizationID           *string  `json:"organization_id,omitempty"` // Organization for mirrored providers
+	NamespaceFilter          []string `json:"namespace_filter,omitempty"`
+	ProviderFilter           []string `json:"provider_filter,omitempty"`
+	VersionFilter            *string  `json:"version_filter,omitempty"`  // Version filter: "3.", "latest:5", ">=3.0.0", or comma-separated
+	PlatformFilter           []string `json:"platform_filter,omitempty"` // List of "os/arch" strings (e.g. ["linux/amd64", "windows/amd64"])
+	Enabled                  *bool    `json:"enabled,omitempty"`
+	SyncIntervalHours        *int     `json:"sync_interval_hours,omitempty" binding:"omitempty,min=1"`
+	PullThroughEnabled       *bool    `json:"pull_through_enabled,omitempty"`
+	PullThroughCacheTTLHours *int     `json:"pull_through_cache_ttl_hours,omitempty" binding:"omitempty,min=1"`
 }
 
 // TriggerSyncRequest represents the request to trigger a manual sync
