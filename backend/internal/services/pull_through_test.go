@@ -61,14 +61,11 @@ func TestParseSHASUMContent_MalformedLines(t *testing.T) {
 func TestParseSHASUMContent_TrailingWhitespace(t *testing.T) {
 	content := "abc123  file.zip   \n"
 	result := parseSHASUMContent(content)
-	// The whole line is TrimSpaced; the split gives parts[0]=hash, parts[1]=filename_with_trailing_spaces
-	// parseSHASUMContent does not TrimSpace per-part — just stores as-is after split
-	if _, ok := result["file.zip   "]; ok {
-		// trailing spaces preserved in key — acceptable behavior
-		return
-	}
-	if _, ok := result["file.zip"]; ok {
-		return // if implementation trims, also acceptable
+	// Accept either trimmed or untrimmed key — both are valid implementations.
+	_, trimmed := result["file.zip"]
+	_, untrimmed := result["file.zip   "]
+	if !trimmed && !untrimmed {
+		t.Errorf("parseSHASUMContent(%q): expected key 'file.zip' (trimmed or untrimmed), got keys: %v", content, result)
 	}
 }
 

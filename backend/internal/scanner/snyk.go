@@ -27,7 +27,7 @@ func newSnykScanner(binaryPath string, timeout time.Duration) Scanner {
 func (s *snykScanner) Name() string { return "snyk" }
 
 func (s *snykScanner) Version(ctx context.Context) (string, error) {
-	out, err := exec.CommandContext(ctx, s.binaryPath, "--version").Output()
+	out, err := exec.CommandContext(ctx, s.binaryPath, "--version").Output() // #nosec G204 -- binaryPath is operator-configured, not user input
 	if err != nil {
 		return "", fmt.Errorf("snyk version: %w", err)
 	}

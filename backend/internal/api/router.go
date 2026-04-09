@@ -87,7 +87,7 @@ func (bg *BackgroundServices) Shutdown() {
 		bg.expiryNotifier.Stop()
 	}
 	if bg.moduleScannerJob != nil {
-		bg.moduleScannerJob.Stop()
+		_ = bg.moduleScannerJob.Stop()
 	}
 	for _, rl := range bg.rateLimiters {
 		rl.Stop()

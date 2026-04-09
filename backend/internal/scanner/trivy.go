@@ -27,10 +27,10 @@ func newTrivyScanner(binaryPath string, timeout time.Duration) Scanner {
 func (s *trivyScanner) Name() string { return "trivy" }
 
 func (s *trivyScanner) Version(ctx context.Context) (string, error) {
-	out, err := exec.CommandContext(ctx, s.binaryPath, "version", "--format", "json").Output()
+	out, err := exec.CommandContext(ctx, s.binaryPath, "version", "--format", "json").Output() // #nosec G204 -- binaryPath is operator-configured, not user input
 	if err != nil {
 		// Fall back to plain version output
-		out, err = exec.CommandContext(ctx, s.binaryPath, "--version").Output()
+		out, err = exec.CommandContext(ctx, s.binaryPath, "--version").Output() // #nosec G204 -- binaryPath is operator-configured, not user input
 		if err != nil {
 			return "", fmt.Errorf("trivy version: %w", err)
 		}

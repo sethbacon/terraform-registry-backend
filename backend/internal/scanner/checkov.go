@@ -30,7 +30,7 @@ func newCheckovScanner(binaryPath string, timeout time.Duration) Scanner {
 func (s *checkovScanner) Name() string { return "checkov" }
 
 func (s *checkovScanner) Version(ctx context.Context) (string, error) {
-	out, err := exec.CommandContext(ctx, s.binaryPath, "--version").Output()
+	out, err := exec.CommandContext(ctx, s.binaryPath, "--version").Output() // #nosec G204 -- binaryPath is operator-configured, not user input
 	if err != nil {
 		return "", fmt.Errorf("checkov version: %w", err)
 	}
