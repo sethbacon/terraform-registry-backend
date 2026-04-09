@@ -53,7 +53,7 @@ func ExtractTarGz(reader io.Reader, destDir string) error {
 				return fmt.Errorf("mkdir parent: %w", err)
 			}
 			// #nosec G304 -- target is validated above to be within destDir
-			f, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR, os.FileMode(header.Mode&0777)) //nolint:gosec // G115: mask to permission bits only
+			f, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR, os.FileMode(header.Mode&0777)) // #nosec G115 -- masking to lower 9 bits prevents integer overflow
 			if err != nil {
 				return fmt.Errorf("create file %s: %w", target, err)
 			}
