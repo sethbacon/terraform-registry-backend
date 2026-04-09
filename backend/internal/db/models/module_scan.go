@@ -22,7 +22,7 @@ type ModuleScan struct {
 	HighCount       int             `db:"high_count"        json:"high_count"`
 	MediumCount     int             `db:"medium_count"      json:"medium_count"`
 	LowCount        int             `db:"low_count"         json:"low_count"`
-	RawResults      json.RawMessage `db:"raw_results"       json:"raw_results,omitempty"`
+	RawResults      json.RawMessage `db:"raw_results"       json:"raw_results,omitempty" swaggertype:"object"` //nolint:tagliatelle
 	ErrorMessage    *string         `db:"error_message"     json:"error_message,omitempty"`
 	CreatedAt       time.Time       `db:"created_at"        json:"created_at"`
 	UpdatedAt       time.Time       `db:"updated_at"        json:"updated_at"`
