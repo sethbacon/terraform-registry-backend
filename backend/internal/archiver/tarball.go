@@ -52,8 +52,7 @@ func ExtractTarGz(reader io.Reader, destDir string) error {
 			if err := os.MkdirAll(filepath.Dir(target), 0750); err != nil {
 				return fmt.Errorf("mkdir parent: %w", err)
 			}
-			// #nosec G304 -- target is validated above to be within destDir
-			f, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR, os.FileMode(header.Mode&0777)) // #nosec G115 -- masking to lower 9 bits prevents integer overflow
+			f, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR, os.FileMode(header.Mode&0777)) // G304: target validated above; G115: mode & 0777 fits in uint32
 			if err != nil {
 				return fmt.Errorf("create file %s: %w", target, err)
 			}

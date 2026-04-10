@@ -548,7 +548,7 @@ func (p *SCMPublisher) publishModuleVersion(
 
 	// Extract and store terraform-docs metadata (non-fatal).
 	if p.moduleDocsRepo != nil {
-		if f, err := os.Open(archivePath); err == nil { // #nosec G304 -- archivePath is a temp file created by this process
+		if f, err := os.Open(archivePath); err == nil { // G304: archivePath is a temp file created by this process
 			defer f.Close()
 			if doc, err := analyzer.AnalyzeArchive(f); err != nil {
 				slog.Warn("scm-publisher: terraform-docs: failed to analyze archive",
