@@ -48,6 +48,22 @@ func New(cfg *config.LocalStorageConfig, serverBaseURL string) (*LocalStorage, e
 	}, nil
 }
 
+// safeJoin constructs an absolute path by joining basePath and the caller-supplied
+// relative path, then verifies that the result is still inside basePath. This is a
+// defence-in-depth check: the primary traversal rejection lives in serve.go, but
+// this ensures the storage layer cannot be exploited even if a future code path
+// skips that check.
+func (s *LocalStorage) safeJoin(path string) (string, error) {
+	full := filepath.Join(s.basePath, filepath.FromSlash(path))
+	// filepath.Clean normalises the joined path (resolves any remaining ".." segments).
+	// We require the result to remain inside basePath by verifying the prefix.
+	base := filepath.Clean(s.basePath) + string(os.PathSeparator)
+	if !strings.HasPrefix(filepath.Clean(full)+string(os.PathSeparator), base) {
+		return "", fmt.Errorf("path escapes storage root: %s", path)
+	}
+	return full, nil
+}
+
 // Upload stores a file in the local filesystem
 func (s *LocalStorage) Upload(ctx context.Context, path string, reader io.Reader, size int64) (*storage.UploadResult, error) {
 	// Create full path
@@ -93,9 +109,12 @@ func (s *LocalStorage) Upload(ctx context.Context, path string, reader io.Reader
 
 // Download retrieves a file from the local filesystem
 func (s *LocalStorage) Download(ctx context.Context, path string) (io.ReadCloser, error) {
-	fullPath := filepath.Join(s.basePath, filepath.FromSlash(path))
+	fullPath, err := s.safeJoin(path)
+	if err != nil {
+		return nil, err
+	}
 
-	file, err := os.Open(fullPath) // #nosec G304 -- path is constructed from validated namespace/name/version components; path traversal is prevented at the API and archive-extraction layers
+	file, err := os.Open(fullPath) // #nosec G304 -- fullPath has been validated by safeJoin to remain within basePath
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("file not found: %s", path)
@@ -152,15 +171,21 @@ func (s *LocalStorage) GetURL(ctx context.Context, path string, ttl time.Duratio
 	}
 
 	// Return file:// URL for local access
-	fullPath := filepath.Join(s.basePath, filepath.FromSlash(path))
+	fullPath, err := s.safeJoin(path)
+	if err != nil {
+		return "", err
+	}
 	return fmt.Sprintf("file://%s", fullPath), nil
 }
 
 // Exists checks if a file exists at the specified path
 func (s *LocalStorage) Exists(ctx context.Context, path string) (bool, error) {
-	fullPath := filepath.Join(s.basePath, filepath.FromSlash(path))
+	fullPath, err := s.safeJoin(path)
+	if err != nil {
+		return false, err
+	}
 
-	_, err := os.Stat(fullPath)
+	_, err = os.Stat(fullPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
@@ -173,7 +198,10 @@ func (s *LocalStorage) Exists(ctx context.Context, path string) (bool, error) {
 
 // GetMetadata retrieves file metadata without downloading the file
 func (s *LocalStorage) GetMetadata(ctx context.Context, path string) (*storage.FileMetadata, error) {
-	fullPath := filepath.Join(s.basePath, filepath.FromSlash(path))
+	fullPath, err := s.safeJoin(path)
+	if err != nil {
+		return nil, err
+	}
 
 	stat, err := os.Stat(fullPath)
 	if err != nil {
