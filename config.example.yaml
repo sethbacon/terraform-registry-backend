@@ -112,3 +112,29 @@ telemetry:
   profiling:
     enabled: false
     port: 6060
+
+# Module security scanning — automatically scans uploaded module archives for
+# IaC misconfigurations and vulnerabilities. Disabled by default; requires a
+# supported scanner binary to be installed on the server.
+# See docs/module-scanning.md for full setup instructions.
+scanning:
+  enabled: false
+  # tool selects the scanner backend: trivy | checkov | terrascan | snyk | custom
+  tool: trivy
+  # binary_path is the absolute path to the scanner executable
+  binary_path: /usr/local/bin/trivy
+  # expected_version pins the binary version for supply-chain protection.
+  # The job refuses to run if the installed binary reports a different version.
+  # Leave blank to disable pinning.
+  expected_version: ""
+  # severity_threshold is a comma-separated list of severities to record.
+  # Leave blank to record all findings (CRITICAL, HIGH, MEDIUM, LOW).
+  severity_threshold: ""
+  timeout: 5m
+  worker_count: 2
+  scan_interval_mins: 5
+  # version_args and scan_args are only used when tool is "custom".
+  # version_args: ["--version"]
+  # scan_args: ["scan", "--format", "json"]
+  # output_format is only used when tool is "custom": "sarif" or "json"
+  # output_format: sarif
