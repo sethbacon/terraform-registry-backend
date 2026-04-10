@@ -403,3 +403,37 @@ Dev mode enables:
 
 **Never set `TFR_DEV_MODE=true` in production.** The dev login endpoint allows anyone
 to authenticate as any user without credentials.
+
+---
+
+## Module Security Scanning
+
+The registry can automatically scan every uploaded module version for IaC misconfigurations and vulnerabilities. Scanning is disabled by default and requires a supported scanner binary installed on the server.
+
+For full installation instructions per scanner tool, see [Module Security Scanning](module-scanning.md).
+
+```yaml
+scanning:
+  enabled: false          # set true to activate
+  tool: trivy             # trivy | checkov | terrascan | snyk | custom
+  binary_path: /usr/local/bin/trivy
+  expected_version: ""    # optional version pin (supply-chain protection)
+  severity_threshold: ""  # blank = record all; e.g. "CRITICAL,HIGH" to filter
+  timeout: 5m
+  worker_count: 2
+  scan_interval_mins: 5
+```
+
+| Variable | Type | Default | Description |
+| --- | --- | --- | --- |
+| `TFR_SCANNING_ENABLED` | bool | `false` | Master toggle for the scanning feature. |
+| `TFR_SCANNING_TOOL` | string | — | Scanner backend: `trivy`, `checkov`, `terrascan`, `snyk`, or `custom`. |
+| `TFR_SCANNING_BINARY_PATH` | string | — | Absolute path to the scanner binary on the server. |
+| `TFR_SCANNING_EXPECTED_VERSION` | string | — | Exact version string the binary must report. The job refuses to start if it doesn't match. Leave blank to disable pinning. |
+| `TFR_SCANNING_SEVERITY_THRESHOLD` | string | (all) | Comma-separated severities to record: `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`. Blank records all. |
+| `TFR_SCANNING_TIMEOUT` | duration | `5m` | Maximum time a single scan may run. |
+| `TFR_SCANNING_WORKER_COUNT` | int | `2` | Concurrent scan workers. |
+| `TFR_SCANNING_SCAN_INTERVAL_MINS` | int | `5` | How often the job polls for pending scans. |
+| `TFR_SCANNING_VERSION_ARGS` | string[] | — | **`custom` tool only.** Arguments to print the binary version. |
+| `TFR_SCANNING_SCAN_ARGS` | string[] | — | **`custom` tool only.** Arguments passed before the target directory. |
+| `TFR_SCANNING_OUTPUT_FORMAT` | string | — | **`custom` tool only.** Output parser: `sarif` or `json`. |

@@ -7,71 +7,38 @@ A fully-featured, enterprise-grade Terraform registry implementing all three Has
 [![Go Version](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go)](https://go.dev/)
 [![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/sethbacon/59239e8575b4f784f875647e2b344b41/raw/coverage.json)](https://github.com/sethbacon/terraform-registry-backend/actions/workflows/ci.yml)
 
-- [Enterprise Terraform Registry — Backend](#enterprise-terraform-registry-%E2%80%94-backend)
-  - [Features](#features)
-    - [Terraform Protocol Support](#terraform-protocol-support)
-    - [Authentication \& Authorization](#authentication-%26-authorization)
-    - [Multi-Tenancy](#multi-tenancy)
-    - [Module Source Control (SCM) Integration](#module-source-control-(scm)-integration)
-    - [Storage Backends](#storage-backends)
-    - [Deployment Options](#deployment-options)
-    - [Terraform Binary Mirror](#terraform-binary-mirror)
-    - [Observability \& CI/CD](#observability-%26-ci%2Fcd)
-  - [Architecture](#architecture)
-  - [Installation](#installation)
-    - [Prerequisites](#prerequisites)
-    - [Quick Start with Docker Compose](#quick-start-with-docker-compose)
-    - [First-Run Setup](#first-run-setup)
-    - [Manual Setup](#manual-setup)
-  - [Configuration](#configuration)
-  - [Monitoring \& Observability](#monitoring-%26-observability)
-    - [Prometheus + Grafana Stack](#prometheus-%2B-grafana-stack)
-  - [Usage with Terraform](#usage-with-terraform)
-    - [Publishing Modules](#publishing-modules)
-    - [Publishing Providers](#publishing-providers)
-  - [Development](#development)
-    - [Running Tests](#running-tests)
-    - [Building](#building)
-  - [Documentation](#documentation)
-  - [References](#references)
-  - [Contributing](#contributing)
-  - [License](#license)
-  - [Disclaimer](#disclaimer)
-  - [Acknowledgments](#acknowledgments)
-    - [Trademark Notice](#trademark-notice)
-
-- [Enterprise Terraform Registry — Backend](#enterprise-terraform-registry-%E2%80%94-backend)
-  - [Features](#features)
-    - [Terraform Protocol Support](#terraform-protocol-support)
-    - [Authentication \& Authorization](#authentication-%26-authorization)
-    - [Multi-Tenancy](#multi-tenancy)
-    - [Module Source Control (SCM) Integration](#module-source-control-(scm)-integration)
-    - [Storage Backends](#storage-backends)
-    - [Deployment Options](#deployment-options)
-    - [Terraform Binary Mirror](#terraform-binary-mirror)
-    - [Observability \& CI/CD](#observability-%26-ci%2Fcd)
-  - [Architecture](#architecture)
-  - [Installation](#installation)
-    - [Prerequisites](#prerequisites)
-    - [Quick Start with Docker Compose](#quick-start-with-docker-compose)
-    - [First-Run Setup](#first-run-setup)
-    - [Manual Setup](#manual-setup)
-  - [Configuration](#configuration)
-  - [Monitoring \& Observability](#monitoring-%26-observability)
-    - [Prometheus + Grafana Stack](#prometheus-%2B-grafana-stack)
-  - [Usage with Terraform](#usage-with-terraform)
-    - [Publishing Modules](#publishing-modules)
-    - [Publishing Providers](#publishing-providers)
-  - [Development](#development)
-    - [Running Tests](#running-tests)
-    - [Building](#building)
-  - [Documentation](#documentation)
-  - [References](#references)
-  - [Contributing](#contributing)
-  - [License](#license)
-  - [Disclaimer](#disclaimer)
-  - [Acknowledgments](#acknowledgments)
-    - [Trademark Notice](#trademark-notice)
+- [Features](#features)
+  - [Terraform Protocol Support](#terraform-protocol-support)
+  - [Authentication & Authorization](#authentication--authorization)
+  - [Multi-Tenancy](#multi-tenancy)
+  - [Module Source Control (SCM) Integration](#module-source-control-scm-integration)
+  - [Storage Backends](#storage-backends)
+  - [Deployment Options](#deployment-options)
+  - [Terraform Binary Mirror](#terraform-binary-mirror)
+  - [Module Security Scanning](#module-security-scanning)
+  - [Observability & CI/CD](#observability--cicd)
+- [Architecture](#architecture)
+- [Installation](#installation)
+  - [Prerequisites](#prerequisites)
+  - [Quick Start with Docker Compose](#quick-start-with-docker-compose)
+  - [First-Run Setup](#first-run-setup)
+  - [Manual Setup](#manual-setup)
+- [Configuration](#configuration)
+- [Monitoring & Observability](#monitoring--observability)
+  - [Prometheus + Grafana Stack](#prometheus--grafana-stack)
+- [Usage with Terraform](#usage-with-terraform)
+  - [Publishing Modules](#publishing-modules)
+  - [Publishing Providers](#publishing-providers)
+- [Development](#development)
+  - [Running Tests](#running-tests)
+  - [Building](#building)
+- [Documentation](#documentation)
+- [References](#references)
+- [Contributing](#contributing)
+- [License](#license)
+- [Disclaimer](#disclaimer)
+- [Acknowledgments](#acknowledgments)
+  - [Trademark Notice](#trademark-notice)
 
 ## Features
 
@@ -130,6 +97,14 @@ A fully-featured, enterprise-grade Terraform registry implementing all three Has
 - **Platform Filtering** — Optionally restrict which `os/arch` combinations are downloaded and served
 - **Public Download API** — Unauthenticated endpoints at `/terraform/binaries/:name/versions/…` compatible with Terraform's [network mirror protocol](https://developer.hashicorp.com/terraform/internals/provider-network-mirror-protocol)
 - **Prometheus Metric** — `terraform_binary_downloads_total` counter with `{version, os, arch}` labels
+
+### Module Security Scanning
+
+- **Automatic Scanning** - Every uploaded module version is automatically queued for a security scan
+- **Multiple Scanner Backends** - Trivy (recommended), Checkov, Terrascan, Snyk, or a custom binary
+- **Structured Results** - Severity counts (Critical/High/Medium/Low) and raw output stored per version
+- **Supply-Chain Protection** - Optional binary version pinning rejects mismatched scanner executables
+- **Module Documentation Extraction** - Inputs, outputs, provider requirements, and Terraform version constraints automatically extracted from uploaded modules at upload time — no `terraform-docs` binary required
 
 ### Observability & CI/CD
 
@@ -342,6 +317,8 @@ go build -o terraform-registry cmd/server/main.go
 - [API Reference](docs/api-reference.md) - API documentation guide
 - [Observability Reference](docs/observability.md) - Prometheus metrics catalogue
 - [Configuration Reference](docs/configuration.md) - All `TFR_*` environment variables
+- [Module Security Scanning](docs/module-scanning.md) - Scanner setup (Trivy, Checkov, Terrascan, Snyk, custom)
+- [Module Documentation Extraction](docs/module-documentation.md) - Automatic extraction of inputs, outputs, and provider requirements
 - [Deployment Guide](docs/deployment.md) - Production deployment for all platforms
 - [Troubleshooting](docs/troubleshooting.md) - Common issues and diagnostic tools
 - [Development Guide](docs/development.md) - Local development setup
