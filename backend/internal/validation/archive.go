@@ -57,6 +57,14 @@ func ValidateArchive(reader io.Reader, maxSize int64) error {
 			return fmt.Errorf("invalid file path in archive: %w", err)
 		}
 
+		// Reject symlinks and hard links. Server-side extraction ignores them, but
+		// an archive containing malicious symlinks (e.g. pointing to /etc/passwd)
+		// would be stored and later extracted by Terraform clients — creating a
+		// supply-chain vector. Reject at upload time so such archives never reach storage.
+		if header.Typeflag == tar.TypeSymlink || header.Typeflag == tar.TypeLink {
+			return fmt.Errorf("symlinks and hard links are not allowed in module archives: %s", header.Name)
+		}
+
 		// Count actual decompressed bytes instead of trusting header.Size
 		// (header.Size is attacker-controlled and can be set to 0 while the
 		// entry contains arbitrary data).
