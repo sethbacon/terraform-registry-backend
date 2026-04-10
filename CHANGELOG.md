@@ -11,6 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.0] - 2026-04-10
+
+### Added
+
+- feat: pull-through provider caching on mirror cache miss — serves provider metadata immediately from upstream on cache miss while triggering background binary download, eliminating 404s during `terraform init` for unsynced providers
+- feat: pluggable module security scanning (Trivy, Terrascan, Snyk, Checkov, custom SARIF) — async scan of every uploaded module archive; stores vulnerability counts and raw results surfaced via admin API
+- feat: terraform-docs auto-generation from .tf files at module upload time — extracts and indexes module variables, outputs, and provider requirements using `hashicorp/terraform-config-inspect` (no binary dependency)
+
+### Changed
+
+- test: raise CI coverage floor from 74% to 76.2% via interface-based S3/GCS storage mocks and systematic branch coverage across validation, analyzer, auth/oidc, mirror, and admin packages
+
+---
+
 ## [0.2.32] - 2026-04-07
 
 ### Security
