@@ -85,6 +85,32 @@ func TestNewOIDCProvider_MissingClientSecret(t *testing.T) {
 	}
 }
 
+func TestNewOIDCProvider_HTTPIssuerRejected(t *testing.T) {
+	// An HTTP (non-TLS) issuer URL must be rejected: OIDC discovery and JWKS key
+	// material would be fetched over plaintext, enabling MITM to forge tokens.
+	httpIssuers := []string{
+		"http://example.com",
+		"http://localhost:8080",
+		"http://idp.internal/realms/myrealm",
+	}
+	for _, issuer := range httpIssuers {
+		t.Run(issuer, func(t *testing.T) {
+			_, err := NewOIDCProvider(&config.OIDCConfig{
+				Enabled:      true,
+				IssuerURL:    issuer,
+				ClientID:     "client",
+				ClientSecret: "secret",
+			})
+			if err == nil {
+				t.Errorf("NewOIDCProvider(%q) expected error for HTTP issuer, got nil", issuer)
+			}
+			if err != nil && !strings.Contains(err.Error(), "HTTPS") {
+				t.Errorf("error = %q, want to mention HTTPS", err.Error())
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // GetAuthURL
 // ---------------------------------------------------------------------------

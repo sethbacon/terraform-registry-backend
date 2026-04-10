@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/terraform-registry/terraform-registry/internal/config"
@@ -43,6 +44,13 @@ func NewOIDCProviderWithContext(ctx context.Context, cfg *config.OIDCConfig) (*O
 
 	if cfg.ClientSecret == "" {
 		return nil, fmt.Errorf("OIDC client secret is required")
+	}
+
+	// Require HTTPS for the issuer URL. An HTTP issuer means discovery and JWKS
+	// key material are fetched over plaintext, allowing a MITM to substitute
+	// signing keys and forge valid ID tokens.
+	if !strings.HasPrefix(cfg.IssuerURL, "https://") {
+		return nil, fmt.Errorf("OIDC issuer URL must use HTTPS, got: %q", cfg.IssuerURL)
 	}
 
 	// Initialize OIDC provider
