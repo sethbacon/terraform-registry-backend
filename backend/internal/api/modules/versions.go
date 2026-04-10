@@ -98,6 +98,7 @@ func ListVersionsHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 				"published_at":   v.CreatedAt.Format(time.RFC3339),
 				"download_count": v.DownloadCount,
 				"deprecated":     v.Deprecated,
+				"has_docs":       v.HasDocs,
 			}
 
 			// Include deprecation info if deprecated

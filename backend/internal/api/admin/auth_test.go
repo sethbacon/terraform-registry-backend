@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,7 +11,10 @@ import (
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/jmoiron/sqlx"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
 
 // ---------------------------------------------------------------------------
@@ -933,6 +937,203 @@ func TestApplyGroupMappings_OrgNotFound_Skipped(t *testing.T) {
 
 	// Skips gracefully — no error, no membership changes
 	err := h.applyGroupMappings(context.Background(), "user-1", []string{"devs"})
+	if err != nil {
+		t.Errorf("applyGroupMappings: unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// resolveGroupClaimName / resolveGroupMappingConfig — with DB-backed oidcConfigRepo
+// ---------------------------------------------------------------------------
+
+// newOIDCConfigRepo creates an OIDCConfigRepository backed by a fresh sqlmock.
+func newOIDCConfigRepo(t *testing.T) (*repositories.OIDCConfigRepository, sqlmock.Sqlmock) {
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return repositories.NewOIDCConfigRepository(sqlx.NewDb(db, "sqlmock")), mock
+}
+
+func TestResolveGroupClaimName_WithDB_ReturnsDBValue(t *testing.T) {
+	mainDB, _, _ := sqlmock.New()
+	defer mainDB.Close()
+
+	oidcRepo, oidcMock := newOIDCConfigRepo(t)
+
+	extraCfg, _ := json.Marshal(map[string]interface{}{
+		"group_claim_name": "db_groups",
+	})
+	oidcMock.ExpectQuery("SELECT .* FROM oidc_config WHERE is_active").
+		WillReturnRows(sqlmock.NewRows(oidcConfigCols).AddRow(
+			uuid.New(), "test", "generic_oidc", "https://example.com",
+			"client-id", "secret-enc", "https://example.com/cb",
+			[]byte(`["openid"]`), true,
+			extraCfg, time.Now(), time.Now(), nil, nil,
+		))
+
+	h, err := NewAuthHandlers(&config.Config{}, mainDB, oidcRepo, nil)
+	if err != nil {
+		t.Fatalf("NewAuthHandlers: %v", err)
+	}
+
+	got := h.resolveGroupClaimName(context.Background())
+	if got != "db_groups" {
+		t.Errorf("resolveGroupClaimName = %q, want %q", got, "db_groups")
+	}
+}
+
+func TestResolveGroupClaimName_WithDB_EmptyClaimFallsBackToCfg(t *testing.T) {
+	// DB config has no group_claim_name → fall back to static config value.
+	mainDB, _, _ := sqlmock.New()
+	defer mainDB.Close()
+
+	oidcRepo, oidcMock := newOIDCConfigRepo(t)
+
+	oidcMock.ExpectQuery("SELECT .* FROM oidc_config WHERE is_active").
+		WillReturnRows(sqlmock.NewRows(oidcConfigCols).AddRow(
+			uuid.New(), "test", "generic_oidc", "https://example.com",
+			"client-id", "secret-enc", "https://example.com/cb",
+			[]byte(`["openid"]`), true,
+			[]byte(`{}`), time.Now(), time.Now(), nil, nil,
+		))
+
+	cfg := &config.Config{}
+	cfg.Auth.OIDC.GroupClaimName = "static_groups"
+
+	h, err := NewAuthHandlers(cfg, mainDB, oidcRepo, nil)
+	if err != nil {
+		t.Fatalf("NewAuthHandlers: %v", err)
+	}
+
+	got := h.resolveGroupClaimName(context.Background())
+	if got != "static_groups" {
+		t.Errorf("resolveGroupClaimName = %q, want %q", got, "static_groups")
+	}
+}
+
+func TestResolveGroupMappingConfig_WithDB_ReturnsMappings(t *testing.T) {
+	mainDB, _, _ := sqlmock.New()
+	defer mainDB.Close()
+
+	oidcRepo, oidcMock := newOIDCConfigRepo(t)
+
+	extraCfg, _ := json.Marshal(map[string]interface{}{
+		"group_claim_name": "grps",
+		"default_role":     "viewer",
+		"group_mappings": []map[string]string{
+			{"group": "admins", "organization": "acme", "role": "admin"},
+		},
+	})
+	oidcMock.ExpectQuery("SELECT .* FROM oidc_config WHERE is_active").
+		WillReturnRows(sqlmock.NewRows(oidcConfigCols).AddRow(
+			uuid.New(), "test", "generic_oidc", "https://example.com",
+			"client-id", "secret-enc", "https://example.com/cb",
+			[]byte(`["openid"]`), true,
+			extraCfg, time.Now(), time.Now(), nil, nil,
+		))
+
+	h, err := NewAuthHandlers(&config.Config{}, mainDB, oidcRepo, nil)
+	if err != nil {
+		t.Fatalf("NewAuthHandlers: %v", err)
+	}
+
+	cn, mappings, dr := h.resolveGroupMappingConfig(context.Background())
+	if cn != "grps" {
+		t.Errorf("claimName = %q, want grps", cn)
+	}
+	if dr != "viewer" {
+		t.Errorf("defaultRole = %q, want viewer", dr)
+	}
+	if len(mappings) != 1 || mappings[0].Group != "admins" || mappings[0].Role != "admin" {
+		t.Errorf("mappings = %v, want [{admins acme admin}]", mappings)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// applyGroupMappings — error paths
+// ---------------------------------------------------------------------------
+
+func TestApplyGroupMappings_CheckMembershipError(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
+		{Group: "admins", Organization: "acme", Role: "admin"},
+	}
+	h, _ := NewAuthHandlers(cfg, db, nil, nil)
+
+	// GetByName("acme") → found
+	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
+		WithArgs("acme").
+		WillReturnRows(sqlmock.NewRows(authOrgCols).
+			AddRow("org-1", "acme", "Acme Corp", time.Now(), time.Now()))
+
+	// CheckMembership → DB error
+	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
+		WillReturnError(errDB)
+
+	err := h.applyGroupMappings(context.Background(), "user-1", []string{"admins"})
+	if err == nil {
+		t.Error("expected error from CheckMembership failure, got nil")
+	}
+}
+
+func TestApplyGroupMappings_DefaultRole_OrgNotFound(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.OIDC.DefaultRole = "viewer"
+	// No mappings → no match → goes to default role path
+	h, _ := NewAuthHandlers(cfg, db, nil, nil)
+
+	// GetDefaultOrganization → GetByName("default") → DB error
+	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
+		WillReturnError(errDB)
+
+	err := h.applyGroupMappings(context.Background(), "user-1", []string{"other"})
+	if err == nil {
+		t.Error("expected error when default org not found, got nil")
+	}
+}
+
+func TestApplyGroupMappings_DefaultRole_UpdateMember(t *testing.T) {
+	// Existing member → UpdateMemberRole path in default-role fallback
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.OIDC.DefaultRole = "editor"
+	h, _ := NewAuthHandlers(cfg, db, nil, nil)
+
+	// GetDefaultOrganization → found
+	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
+		WithArgs("default").
+		WillReturnRows(sqlmock.NewRows(authOrgCols).
+			AddRow("org-default", "default", "Default", time.Now(), time.Now()))
+
+	// CheckMembership → is member (returns a row)
+	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
+		WillReturnRows(sqlmock.NewRows(authMemberCols).
+			AddRow("org-default", "user-1", "rt-1", time.Now()))
+
+	// UpdateMemberRole → role template lookup
+	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
+		WithArgs("editor").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-editor"))
+
+	// UpdateMemberRole → UPDATE
+	mock.ExpectExec("UPDATE organization_members").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	err := h.applyGroupMappings(context.Background(), "user-1", []string{"other"})
 	if err != nil {
 		t.Errorf("applyGroupMappings: unexpected error: %v", err)
 	}

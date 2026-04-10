@@ -26,9 +26,9 @@
 			},
 			"rule_id": "G115",
 			"details": "integer overflow conversion int64 -\u003e uint32",
-			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\services\\scm_publisher.go",
-			"code": "220: \t\t\t}\n221: \t\t\tf, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR, os.FileMode(header.Mode)) // #nosec G304 -- path is constructed from validated namespace/name/version components; path traversal is prevented at the API and archive-extraction layers\n222: \t\t\tif err != nil {\n",
-			"line": "221",
+			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\archiver\\tarball.go",
+			"code": "54: \t\t\t}\n55: \t\t\tf, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR, os.FileMode(header.Mode\u00260777)) // G304: target validated above; G115: mode \u0026 0777 fits in uint32\n56: \t\t\tif err != nil {\n",
+			"line": "55",
 			"column": "68",
 			"nosec": false,
 			"suppressions": null
@@ -75,8 +75,8 @@
 			"rule_id": "G201",
 			"details": "SQL string formatting",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\db\\repositories\\module_repository.go",
-			"code": "497: \t// Count total results\n498: \tcountQuery := fmt.Sprintf(\"SELECT COUNT(*) FROM modules %s\", whereClause)\n499: \tvar total int\n",
-			"line": "498",
+			"code": "503: \t// Count total results\n504: \tcountQuery := fmt.Sprintf(\"SELECT COUNT(*) FROM modules %s\", whereClause)\n505: \tvar total int\n",
+			"line": "504",
 			"column": "16",
 			"nosec": false,
 			"suppressions": null
@@ -105,14 +105,15 @@
 				"id": "22",
 				"url": "https://cwe.mitre.org/data/definitions/22.html"
 			},
-			"rule_id": "G305",
-			"details": "File traversal when extracting zip/tar archive",
+			"rule_id": "G304",
+			"details": "Potential file inclusion via variable",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\services\\scm_publisher.go",
-			"code": "206: \t\t// Prevent path traversal\n207: \t\ttarget := filepath.Join(dest, header.Name)\n208: \t\tif !strings.HasPrefix(target, filepath.Clean(dest)+string(os.PathSeparator)) {\n",
-			"line": "207",
-			"column": "13",
+			"code": "550: \tif p.moduleDocsRepo != nil {\n551: \t\tif f, err := os.Open(archivePath); err == nil { // G304: archivePath is a temp file created by this process\n552: \t\t\tdefer f.Close()\n",
+			"line": "551",
+			"column": "16",
 			"nosec": false,
-			"suppressions": null
+			"suppressions": null,
+			"autofix": "Consider using os.Root to scope file access under a fixed root (Go \u003e=1.24). Prefer root.Open/root.Stat over os.Open/os.Stat to prevent directory traversal."
 		},
 		{
 			"severity": "LOW",
@@ -332,8 +333,8 @@
 			"rule_id": "G104",
 			"details": "Errors unhandled",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\jobs\\mirror_sync.go",
-			"code": "1034: \twritten, err := io.Copy(tmpFile, io.TeeReader(stream.Body, hasher))\n1035: \tstream.Body.Close()\n1036: \tif err != nil {\n",
-			"line": "1035",
+			"code": "855: \twritten, err := io.Copy(tmpFile, io.TeeReader(stream.Body, hasher))\n856: \tstream.Body.Close()\n857: \tif err != nil {\n",
+			"line": "856",
 			"column": "2",
 			"nosec": false,
 			"suppressions": null
@@ -348,8 +349,8 @@
 			"rule_id": "G104",
 			"details": "Errors unhandled",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\jobs\\mirror_sync.go",
-			"code": "1028: \t\ttmpFile.Close()\n1029: \t\tos.Remove(tmpFile.Name())\n1030: \t}()\n",
-			"line": "1029",
+			"code": "849: \t\ttmpFile.Close()\n850: \t\tos.Remove(tmpFile.Name())\n851: \t}()\n",
+			"line": "850",
 			"column": "3",
 			"nosec": false,
 			"suppressions": null
@@ -364,8 +365,8 @@
 			"rule_id": "G104",
 			"details": "Errors unhandled",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\jobs\\mirror_sync.go",
-			"code": "1027: \tdefer func() {\n1028: \t\ttmpFile.Close()\n1029: \t\tos.Remove(tmpFile.Name())\n",
-			"line": "1028",
+			"code": "848: \tdefer func() {\n849: \t\ttmpFile.Close()\n850: \t\tos.Remove(tmpFile.Name())\n",
+			"line": "849",
 			"column": "3",
 			"nosec": false,
 			"suppressions": null
@@ -380,17 +381,17 @@
 			"rule_id": "G104",
 			"details": "Errors unhandled",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\jobs\\mirror_sync.go",
-			"code": "1023: \tif err != nil {\n1024: \t\tstream.Body.Close()\n1025: \t\treturn fmt.Errorf(\"failed to create temp file: %w\", err)\n",
-			"line": "1024",
+			"code": "844: \tif err != nil {\n845: \t\tstream.Body.Close()\n846: \t\treturn fmt.Errorf(\"failed to create temp file: %w\", err)\n",
+			"line": "845",
 			"column": "3",
 			"nosec": false,
 			"suppressions": null
 		}
 	],
 	"Stats": {
-		"files": 126,
-		"lines": 38346,
-		"nosec": 95,
+		"files": 143,
+		"lines": 40467,
+		"nosec": 106,
 		"found": 24
 	},
 	"GosecVersion": "dev"

@@ -51,4 +51,5 @@ type ModuleVersion struct {
 	SCMRepoID *string `json:"scm_repo_id,omitempty"` // FK to module_scm_repos.id
 	// Joined fields (not stored in module_versions table)
 	PublishedByName *string `json:"published_by_name,omitempty"` // User name who published this version (joined from users table)
+	HasDocs         bool    `json:"has_docs"`                    // Whether terraform-docs metadata exists (joined from module_version_docs)
 }

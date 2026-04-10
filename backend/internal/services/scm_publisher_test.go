@@ -545,3 +545,23 @@ func TestDownloadAndPackage_DownloadError(t *testing.T) {
 		t.Fatal("expected error for download failure, got nil")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// WithScanQueue / WithModuleDocs builder methods
+// ---------------------------------------------------------------------------
+
+func TestWithScanQueue_ReturnsPublisher(t *testing.T) {
+	p := NewSCMPublisher(nil, nil, nil, nil)
+	got := p.WithScanQueue(nil, nil)
+	if got != p {
+		t.Error("WithScanQueue should return the same *SCMPublisher")
+	}
+}
+
+func TestWithModuleDocs_ReturnsPublisher(t *testing.T) {
+	p := NewSCMPublisher(nil, nil, nil, nil)
+	got := p.WithModuleDocs(nil)
+	if got != p {
+		t.Error("WithModuleDocs should return the same *SCMPublisher")
+	}
+}

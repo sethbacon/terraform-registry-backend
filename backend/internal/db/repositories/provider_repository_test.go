@@ -1301,3 +1301,100 @@ func TestListProviderVersionShasums_DBError(t *testing.T) {
 		t.Error("expected error, got nil")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// UpsertProvider
+// ---------------------------------------------------------------------------
+
+func TestUpsertProvider_ExistingProvider(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	// GetProvider returns existing — no INSERT
+	mock.ExpectQuery("SELECT.*FROM providers").
+		WithArgs("org-1", "hashicorp", "aws").
+		WillReturnRows(sampleProviderRow())
+
+	p, err := repo.UpsertProvider(context.Background(), "org-1", "hashicorp", "aws")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p == nil {
+		t.Fatal("expected non-nil provider")
+	}
+}
+
+func TestUpsertProvider_CreatesNew(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	// GetProvider returns nothing — then CreateProvider (uses RETURNING → Query)
+	mock.ExpectQuery("SELECT.*FROM providers").
+		WithArgs("org-1", "hashicorp", "aws").
+		WillReturnRows(emptyProviderRow())
+	mock.ExpectQuery("INSERT INTO providers").
+		WillReturnRows(sqlmock.NewRows(provCreateCols).AddRow("prov-new", time.Now(), time.Now()))
+
+	p, err := repo.UpsertProvider(context.Background(), "org-1", "hashicorp", "aws")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p == nil {
+		t.Fatal("expected non-nil provider")
+	}
+}
+
+func TestUpsertProvider_LookupError(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	mock.ExpectQuery("SELECT.*FROM providers").
+		WillReturnError(errDB)
+
+	_, err := repo.UpsertProvider(context.Background(), "org-1", "hashicorp", "aws")
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// UpsertVersion
+// ---------------------------------------------------------------------------
+
+func TestUpsertVersion_ExistingVersion(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	mock.ExpectQuery("SELECT.*FROM provider_versions WHERE provider_id").
+		WithArgs("prov-1", "5.0.0").
+		WillReturnRows(sampleProvVersionRow())
+
+	v, err := repo.UpsertVersion(context.Background(), "prov-1", "5.0.0", nil, "", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if v == nil {
+		t.Fatal("expected non-nil version")
+	}
+}
+
+func TestUpsertVersion_CreatesNew(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	mock.ExpectQuery("SELECT.*FROM provider_versions WHERE provider_id").
+		WithArgs("prov-1", "5.0.0").
+		WillReturnRows(emptyProvVersionRow())
+	// CreateVersion uses RETURNING → Query
+	mock.ExpectQuery("INSERT INTO provider_versions").
+		WillReturnRows(sqlmock.NewRows(provVersionCreateCols).AddRow("ver-new", time.Now()))
+
+	v, err := repo.UpsertVersion(context.Background(), "prov-1", "5.0.0", []string{"6.0"}, "", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if v == nil {
+		t.Fatal("expected non-nil version")
+	}
+}
+
+func TestUpsertVersion_LookupError(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	mock.ExpectQuery("SELECT.*FROM provider_versions WHERE provider_id").
+		WillReturnError(errDB)
+
+	_, err := repo.UpsertVersion(context.Background(), "prov-1", "5.0.0", nil, "", "", "")
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}

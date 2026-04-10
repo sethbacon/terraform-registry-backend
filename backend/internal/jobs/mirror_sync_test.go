@@ -51,32 +51,7 @@ func TestSafeString_NonNil(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// parseSemverParts
-// ---------------------------------------------------------------------------
-
-func TestParseSemverParts(t *testing.T) {
-	tests := []struct {
-		version string
-		want    [3]int
-	}{
-		{"1.2.3", [3]int{1, 2, 3}},
-		{"10.20.30", [3]int{10, 20, 30}},
-		{"1.2.3-beta.1", [3]int{1, 2, 3}}, // pre-release stripped
-		{"1.2.3+build", [3]int{1, 2, 0}},  // build meta: '+' not stripped, so "3+build" fails Atoi → 0
-		{"1.2", [3]int{1, 2, 0}},          // missing patch → 0
-		{"1", [3]int{1, 0, 0}},            // only major
-		{"abc", [3]int{0, 0, 0}},          // non-numeric
-	}
-	for _, tt := range tests {
-		got := parseSemverParts(tt.version)
-		if got != tt.want {
-			t.Errorf("parseSemverParts(%q) = %v, want %v", tt.version, got, tt.want)
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// compareSemver
+// mirror.CompareSemver (covers parseSemverParts behaviour indirectly)
 // ---------------------------------------------------------------------------
 
 func TestCompareSemver(t *testing.T) {
@@ -91,11 +66,16 @@ func TestCompareSemver(t *testing.T) {
 		{"1.1.0", "1.0.9", 1},
 		{"1.0.0-alpha", "1.0.0", 0}, // pre-release stripped → equal
 		{"3.74.0", "3.73.0", 1},
+		// parseSemverParts edge cases exercised here:
+		{"1.2.3", "1.2.3", 0},
+		{"1.2", "1.2.0", 0}, // missing patch treated as 0
+		{"1", "1.0.0", 0},   // only major
+		{"abc", "0.0.0", 0}, // non-numeric → 0
 	}
 	for _, tt := range tests {
-		got := compareSemver(tt.a, tt.b)
+		got := mirror.CompareSemver(tt.a, tt.b)
 		if got != tt.want {
-			t.Errorf("compareSemver(%q, %q) = %d, want %d", tt.a, tt.b, got, tt.want)
+			t.Errorf("mirror.CompareSemver(%q, %q) = %d, want %d", tt.a, tt.b, got, tt.want)
 		}
 	}
 }
@@ -145,13 +125,12 @@ func TestParseSHASUMFile_EmptyLines(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// filterVersionsByPrefix
+// mirror.FilterVersions — exercises prefix, list, semver, latest sub-filters
 // ---------------------------------------------------------------------------
 
 func TestFilterVersionsByPrefix(t *testing.T) {
 	versions := makeVersions("3.74.0", "3.73.0", "2.0.0", "4.0.0")
-
-	got := filterVersionsByPrefix(versions, "3.")
+	got := mirror.FilterVersions(versions, strPtr("3."))
 	if len(got) != 2 {
 		t.Errorf("expected 2 versions with prefix 3., got %d: %v", len(got), versionNames(got))
 	}
@@ -159,19 +138,15 @@ func TestFilterVersionsByPrefix(t *testing.T) {
 
 func TestFilterVersionsByPrefix_NoMatch(t *testing.T) {
 	versions := makeVersions("3.74.0", "3.73.0")
-	got := filterVersionsByPrefix(versions, "5.")
+	got := mirror.FilterVersions(versions, strPtr("5."))
 	if len(got) != 0 {
 		t.Errorf("expected empty, got %d", len(got))
 	}
 }
 
-// ---------------------------------------------------------------------------
-// filterVersionsByList
-// ---------------------------------------------------------------------------
-
 func TestFilterVersionsByList(t *testing.T) {
 	versions := makeVersions("3.74.0", "3.73.0", "2.0.0", "4.0.0")
-	got := filterVersionsByList(versions, "3.74.0,2.0.0")
+	got := mirror.FilterVersions(versions, strPtr("3.74.0,2.0.0"))
 	if len(got) != 2 {
 		t.Errorf("expected 2, got %d: %v", len(got), versionNames(got))
 	}
@@ -179,7 +154,7 @@ func TestFilterVersionsByList(t *testing.T) {
 
 func TestFilterVersionsByList_WithSpaces(t *testing.T) {
 	versions := makeVersions("1.0.0", "2.0.0")
-	got := filterVersionsByList(versions, " 1.0.0 , 2.0.0 ")
+	got := mirror.FilterVersions(versions, strPtr(" 1.0.0 , 2.0.0 "))
 	if len(got) != 2 {
 		t.Errorf("expected 2, got %d", len(got))
 	}
@@ -187,63 +162,52 @@ func TestFilterVersionsByList_WithSpaces(t *testing.T) {
 
 func TestFilterVersionsByList_NoMatch(t *testing.T) {
 	versions := makeVersions("1.0.0", "2.0.0")
-	got := filterVersionsByList(versions, "9.9.9")
+	got := mirror.FilterVersions(versions, strPtr("9.9.9"))
 	if len(got) != 0 {
 		t.Errorf("expected empty, got %d", len(got))
 	}
 }
 
-// ---------------------------------------------------------------------------
-// filterVersionsBySemverConstraint
-// ---------------------------------------------------------------------------
-
 func TestFilterVersionsBySemverConstraint(t *testing.T) {
 	versions := makeVersions("1.0.0", "2.0.0", "3.0.0", "4.0.0")
-
 	tests := []struct {
 		constraint string
 		wantCount  int
 	}{
-		{">=3.0.0", 2}, // 3.0.0 and 4.0.0
-		{">3.0.0", 1},  // only 4.0.0
-		{"<=2.0.0", 2}, // 1.0.0 and 2.0.0
-		{"<2.0.0", 1},  // only 1.0.0
+		{">=3.0.0", 2},
+		{">3.0.0", 1},
+		{"<=2.0.0", 2},
+		{"<2.0.0", 1},
 	}
-
 	for _, tt := range tests {
-		got := filterVersionsBySemverConstraint(versions, tt.constraint)
+		got := mirror.FilterVersions(versions, strPtr(tt.constraint))
 		if len(got) != tt.wantCount {
-			t.Errorf("filterVersionsBySemverConstraint(%q) = %v (len %d), want len %d",
-				tt.constraint, versionNames(got), len(got), tt.wantCount)
+			t.Errorf("FilterVersions(%q) = len %d, want %d", tt.constraint, len(got), tt.wantCount)
 		}
 	}
 }
 
 func TestFilterVersionsBySemverConstraint_NoOp(t *testing.T) {
-	// Without a recognized operator prefix, returns all
+	// "~>1.0" is not a recognized operator prefix, prefix suffix, list, or semver constraint.
+	// FilterVersions falls through to exact-list matching, finds no match, returns empty.
 	versions := makeVersions("1.0.0", "2.0.0")
-	got := filterVersionsBySemverConstraint(versions, "~>1.0")
-	if len(got) != len(versions) {
-		t.Errorf("expected all versions returned for unrecognized constraint")
+	got := mirror.FilterVersions(versions, strPtr("~>1.0"))
+	if len(got) != 0 {
+		t.Errorf("unrecognized constraint: expected 0 results, got %d", len(got))
 	}
 }
 
-// ---------------------------------------------------------------------------
-// filterLatestVersions
-// ---------------------------------------------------------------------------
-
 func TestFilterLatestVersions_FewerThanCount(t *testing.T) {
 	versions := makeVersions("1.0.0", "2.0.0")
-	got := filterLatestVersions(versions, 5)
+	got := mirror.FilterVersions(versions, strPtr("latest:5"))
 	if len(got) != 2 {
 		t.Errorf("expected 2 (all), got %d", len(got))
 	}
 }
 
 func TestFilterLatestVersions_MoreThanCount(t *testing.T) {
-	// Sorted descending, take top 2 → 4.0.0, 3.0.0
 	versions := makeVersions("1.0.0", "2.0.0", "3.0.0", "4.0.0")
-	got := filterLatestVersions(versions, 2)
+	got := mirror.FilterVersions(versions, strPtr("latest:2"))
 	if len(got) != 2 {
 		t.Fatalf("expected 2, got %d", len(got))
 	}
@@ -257,19 +221,19 @@ func TestFilterLatestVersions_MoreThanCount(t *testing.T) {
 
 func TestFilterLatestVersions_ExactCount(t *testing.T) {
 	versions := makeVersions("1.0.0", "2.0.0", "3.0.0")
-	got := filterLatestVersions(versions, 3)
+	got := mirror.FilterVersions(versions, strPtr("latest:3"))
 	if len(got) != 3 {
 		t.Errorf("expected 3, got %d", len(got))
 	}
 }
 
 // ---------------------------------------------------------------------------
-// filterVersions (integration of all formats)
+// mirror.FilterVersions (integration of all formats)
 // ---------------------------------------------------------------------------
 
 func TestFilterVersions_NilFilter(t *testing.T) {
 	versions := makeVersions("1.0.0", "2.0.0")
-	got := filterVersions(versions, nil)
+	got := mirror.FilterVersions(versions, nil)
 	if len(got) != 2 {
 		t.Errorf("nil filter should return all versions, got %d", len(got))
 	}
@@ -277,7 +241,7 @@ func TestFilterVersions_NilFilter(t *testing.T) {
 
 func TestFilterVersions_EmptyFilter(t *testing.T) {
 	versions := makeVersions("1.0.0", "2.0.0")
-	got := filterVersions(versions, strPtr(""))
+	got := mirror.FilterVersions(versions, strPtr(""))
 	if len(got) != 2 {
 		t.Errorf("empty filter should return all versions, got %d", len(got))
 	}
@@ -285,7 +249,7 @@ func TestFilterVersions_EmptyFilter(t *testing.T) {
 
 func TestFilterVersions_LatestN(t *testing.T) {
 	versions := makeVersions("1.0.0", "2.0.0", "3.0.0", "4.0.0", "5.0.0")
-	got := filterVersions(versions, strPtr("latest:3"))
+	got := mirror.FilterVersions(versions, strPtr("latest:3"))
 	if len(got) != 3 {
 		t.Errorf("latest:3 filter returned %d, want 3", len(got))
 	}
@@ -293,8 +257,7 @@ func TestFilterVersions_LatestN(t *testing.T) {
 
 func TestFilterVersions_LatestN_InvalidCount(t *testing.T) {
 	versions := makeVersions("1.0.0", "2.0.0")
-	// latest:0 → invalid count → return all
-	got := filterVersions(versions, strPtr("latest:0"))
+	got := mirror.FilterVersions(versions, strPtr("latest:0"))
 	if len(got) != 2 {
 		t.Errorf("latest:0 (invalid) should return all, got %d", len(got))
 	}
@@ -302,7 +265,7 @@ func TestFilterVersions_LatestN_InvalidCount(t *testing.T) {
 
 func TestFilterVersions_LatestN_NonNumeric(t *testing.T) {
 	versions := makeVersions("1.0.0", "2.0.0")
-	got := filterVersions(versions, strPtr("latest:abc"))
+	got := mirror.FilterVersions(versions, strPtr("latest:abc"))
 	if len(got) != 2 {
 		t.Errorf("latest:abc (non-numeric) should return all, got %d", len(got))
 	}
@@ -310,7 +273,7 @@ func TestFilterVersions_LatestN_NonNumeric(t *testing.T) {
 
 func TestFilterVersions_PrefixDot(t *testing.T) {
 	versions := makeVersions("3.74.0", "3.73.0", "2.0.0")
-	got := filterVersions(versions, strPtr("3."))
+	got := mirror.FilterVersions(versions, strPtr("3."))
 	if len(got) != 2 {
 		t.Errorf("3. prefix filter returned %d, want 2", len(got))
 	}
@@ -318,7 +281,7 @@ func TestFilterVersions_PrefixDot(t *testing.T) {
 
 func TestFilterVersions_PrefixX(t *testing.T) {
 	versions := makeVersions("3.74.0", "3.73.0", "2.0.0")
-	got := filterVersions(versions, strPtr("3.x"))
+	got := mirror.FilterVersions(versions, strPtr("3.x"))
 	if len(got) != 2 {
 		t.Errorf("3.x prefix filter returned %d, want 2", len(got))
 	}
@@ -326,7 +289,7 @@ func TestFilterVersions_PrefixX(t *testing.T) {
 
 func TestFilterVersions_SemverGTE(t *testing.T) {
 	versions := makeVersions("1.0.0", "2.0.0", "3.0.0")
-	got := filterVersions(versions, strPtr(">=2.0.0"))
+	got := mirror.FilterVersions(versions, strPtr(">=2.0.0"))
 	if len(got) != 2 {
 		t.Errorf(">=2.0.0 filter returned %d, want 2", len(got))
 	}
@@ -334,7 +297,7 @@ func TestFilterVersions_SemverGTE(t *testing.T) {
 
 func TestFilterVersions_CommaSeparated(t *testing.T) {
 	versions := makeVersions("1.0.0", "2.0.0", "3.0.0")
-	got := filterVersions(versions, strPtr("1.0.0,3.0.0"))
+	got := mirror.FilterVersions(versions, strPtr("1.0.0,3.0.0"))
 	if len(got) != 2 {
 		t.Errorf("comma-separated filter returned %d, want 2", len(got))
 	}
@@ -342,7 +305,7 @@ func TestFilterVersions_CommaSeparated(t *testing.T) {
 
 func TestFilterVersions_SingleVersion(t *testing.T) {
 	versions := makeVersions("1.0.0", "2.0.0", "3.0.0")
-	got := filterVersions(versions, strPtr("2.0.0"))
+	got := mirror.FilterVersions(versions, strPtr("2.0.0"))
 	if len(got) != 1 {
 		t.Errorf("single version filter returned %d, want 1", len(got))
 	}
