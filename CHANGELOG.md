@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.1] - 2026-04-09
+
+### Security
+
+- fix: reject path traversal sequences in `/v1/files/*filepath` handler and add `safeJoin` containment check to local storage backend — prevents arbitrary host file reads via `GET /v1/files/../../etc/passwd` when using local storage with `ServeDirectly: true` (public endpoint, no auth required)
+- fix: reject symlinks and hard links in module archive validation — prevents the registry from storing archives that would create path-escaping symlinks on Terraform client machines during `terraform init`
+- fix: require HTTPS for OIDC issuer URL — rejects `http://` issuers that would allow MITM substitution of JWKS signing keys to forge valid ID tokens
+
+---
+
 ## [0.3.0] - 2026-04-10
 
 ### Added
