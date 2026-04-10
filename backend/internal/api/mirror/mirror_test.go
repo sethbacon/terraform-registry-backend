@@ -66,8 +66,8 @@ func newMirrorAPIRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 
 	cfg := &config.Config{}
 	r := gin.New()
-	r.GET("/providers/:hostname/:namespace/:type/index.json", IndexHandler(db, cfg))
-	r.GET("/providers/:hostname/:namespace/:type/:versionfile", PlatformIndexHandler(db, cfg, nil))
+	r.GET("/providers/:hostname/:namespace/:type/index.json", IndexHandler(db, cfg, nil))
+	r.GET("/providers/:hostname/:namespace/:type/:versionfile", PlatformIndexHandler(db, cfg, nil, nil))
 	return mock, r
 }
 
@@ -363,7 +363,7 @@ func TestPlatformIndex_StorageInitError(t *testing.T) {
 	cfg.Storage.DefaultBackend = "nonexistent-backend"
 
 	r := gin.New()
-	r.GET("/providers/:hostname/:namespace/:type/:versionfile", PlatformIndexHandler(db, cfg, nil))
+	r.GET("/providers/:hostname/:namespace/:type/:versionfile", PlatformIndexHandler(db, cfg, nil, nil))
 
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
 		WillReturnRows(sampleMirrorAPIOrg())
@@ -396,7 +396,7 @@ func TestPlatformIndex_Success_EmptyPlatforms(t *testing.T) {
 	cfg.Server.BaseURL = "http://localhost:8080"
 
 	r := gin.New()
-	r.GET("/providers/:hostname/:namespace/:type/:versionfile", PlatformIndexHandler(db, cfg, nil))
+	r.GET("/providers/:hostname/:namespace/:type/:versionfile", PlatformIndexHandler(db, cfg, nil, nil))
 
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
 		WillReturnRows(sampleMirrorAPIOrg())
@@ -447,7 +447,7 @@ func TestPlatformIndex_Success_WithPlatforms(t *testing.T) {
 	}
 
 	r := gin.New()
-	r.GET("/providers/:hostname/:namespace/:type/:versionfile", PlatformIndexHandler(db, cfg, nil))
+	r.GET("/providers/:hostname/:namespace/:type/:versionfile", PlatformIndexHandler(db, cfg, nil, nil))
 
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
 		WillReturnRows(sampleMirrorAPIOrg())
@@ -499,5 +499,43 @@ func TestPlatformIndex_VersionWithoutJsonSuffix(t *testing.T) {
 	// "abc" is not valid semver → 400
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// parseTerraformPlatform
+// ---------------------------------------------------------------------------
+
+func TestParseTerraformPlatform_ValidTerraform(t *testing.T) {
+	os, arch := parseTerraformPlatform("Terraform/1.5.0 linux_amd64")
+	if os != "linux" {
+		t.Errorf("os = %q, want linux", os)
+	}
+	if arch != "amd64" {
+		t.Errorf("arch = %q, want amd64", arch)
+	}
+}
+
+func TestParseTerraformPlatform_ValidOpenTofu(t *testing.T) {
+	os, arch := parseTerraformPlatform("OpenTofu/1.7.0 darwin_arm64")
+	if os != "darwin" {
+		t.Errorf("os = %q, want darwin", os)
+	}
+	if arch != "arm64" {
+		t.Errorf("arch = %q, want arm64", arch)
+	}
+}
+
+func TestParseTerraformPlatform_NoMatch(t *testing.T) {
+	os, arch := parseTerraformPlatform("curl/7.68.0 (x86_64-ubuntu)")
+	if os != "" || arch != "" {
+		t.Errorf("got (%q,%q), want (\"\",\"\")", os, arch)
+	}
+}
+
+func TestParseTerraformPlatform_Empty(t *testing.T) {
+	os, arch := parseTerraformPlatform("")
+	if os != "" || arch != "" {
+		t.Errorf("got (%q,%q), want (\"\",\"\")", os, arch)
 	}
 }

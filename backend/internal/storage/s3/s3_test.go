@@ -12,6 +12,10 @@ import (
 	"testing"
 	"time"
 
+	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
+	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+
 	appconfig "github.com/terraform-registry/terraform-registry/internal/config"
 )
 
@@ -209,6 +213,15 @@ func newS3TestStorage(t *testing.T) (*S3Storage, *s3MockStore, func()) {
 					return
 				}
 				if r.Method == http.MethodPost && strings.Contains(r.URL.RawQuery, "delete") {
+					body, _ := io.ReadAll(r.Body)
+					ms.mu.Lock()
+					for k := range ms.objects {
+						if strings.Contains(string(body), "<Key>"+k+"</Key>") {
+							delete(ms.objects, k)
+							delete(ms.meta, k)
+						}
+					}
+					ms.mu.Unlock()
 					w.Header().Set("Content-Type", "application/xml")
 					w.WriteHeader(http.StatusOK)
 					fmt.Fprintf(w, `<?xml version="1.0"?><DeleteResult></DeleteResult>`)
@@ -530,3 +543,437 @@ func TestS3_EnsureBucket(t *testing.T) {
 		t.Fatalf("EnsureBucket() error: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// SetObjectStorageClass
+// ---------------------------------------------------------------------------
+
+func TestS3_SetObjectStorageClass(t *testing.T) {
+	s, _, cleanup := newS3TestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	if _, err := s.Upload(ctx, "sc.txt", strings.NewReader("content"), 7); err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+
+	if err := s.SetObjectStorageClass(ctx, "sc.txt", types.StorageClassStandardIa); err != nil {
+		t.Fatalf("SetObjectStorageClass() error: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ListObjects
+// ---------------------------------------------------------------------------
+
+func TestS3_ListObjects_Empty(t *testing.T) {
+	s, _, cleanup := newS3TestStorage(t)
+	defer cleanup()
+
+	keys, err := s.ListObjects(context.Background(), "noprefix/", 10)
+	if err != nil {
+		t.Fatalf("ListObjects() error: %v", err)
+	}
+	if len(keys) != 0 {
+		t.Errorf("ListObjects() = %v, want empty", keys)
+	}
+}
+
+func TestS3_ListObjects_WithObjects(t *testing.T) {
+	s, _, cleanup := newS3TestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	for _, name := range []string{"pfx/a.txt", "pfx/b.txt", "other/c.txt"} {
+		if _, err := s.Upload(ctx, name, strings.NewReader("x"), 1); err != nil {
+			t.Fatalf("Upload %s: %v", name, err)
+		}
+	}
+
+	keys, err := s.ListObjects(ctx, "pfx/", 100)
+	if err != nil {
+		t.Fatalf("ListObjects() error: %v", err)
+	}
+	if len(keys) != 2 {
+		t.Errorf("ListObjects() returned %d keys, want 2: %v", len(keys), keys)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DeletePrefix
+// ---------------------------------------------------------------------------
+
+func TestS3_DeletePrefix_NoObjects(t *testing.T) {
+	s, _, cleanup := newS3TestStorage(t)
+	defer cleanup()
+
+	if err := s.DeletePrefix(context.Background(), "empty/"); err != nil {
+		t.Fatalf("DeletePrefix() error: %v", err)
+	}
+}
+
+func TestS3_DeletePrefix_WithObjects(t *testing.T) {
+	s, _, cleanup := newS3TestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	for _, name := range []string{"del/a.txt", "del/b.txt"} {
+		if _, err := s.Upload(ctx, name, strings.NewReader("x"), 1); err != nil {
+			t.Fatalf("Upload %s: %v", name, err)
+		}
+	}
+
+	if err := s.DeletePrefix(ctx, "del/"); err != nil {
+		t.Fatalf("DeletePrefix() error: %v", err)
+	}
+
+	keys, _ := s.ListObjects(ctx, "del/", 10)
+	if len(keys) != 0 {
+		t.Errorf("after DeletePrefix, expected 0 keys, got %v", keys)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetMetadata — download-for-checksum path (no sha256 in metadata)
+// ---------------------------------------------------------------------------
+
+func TestS3_GetMetadata_NoChecksumInMeta(t *testing.T) {
+	s, ms, cleanup := newS3TestStorage(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	if _, err := s.Upload(ctx, "nometa.txt", strings.NewReader("data"), 4); err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	// Strip sha256 from mock metadata so GetMetadata must download to compute it
+	ms.mu.Lock()
+	ms.meta["nometa.txt"] = map[string]string{}
+	ms.mu.Unlock()
+
+	meta, err := s.GetMetadata(ctx, "nometa.txt")
+	if err != nil {
+		t.Fatalf("GetMetadata() error: %v", err)
+	}
+	if len(meta.Checksum) != 64 {
+		t.Errorf("Checksum = %q, want 64-char SHA256 hex", meta.Checksum)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Interface-based mock — error paths
+// ---------------------------------------------------------------------------
+
+// mockS3Client implements s3ClientAPI. Each field holds an optional error to
+// return; leave nil for success. Fields named *Out hold the success response.
+type mockS3Client struct {
+	putErr        error
+	getOut        *awss3.GetObjectOutput
+	getErr        error
+	deleteErr     error
+	headObjOut    *awss3.HeadObjectOutput
+	headObjErr    error
+	headBktErr    error
+	createBktErr  error
+	copyErr       error
+	listOut       *awss3.ListObjectsV2Output
+	listErr       error
+	delObjsErr    error
+	createMPOut   *awss3.CreateMultipartUploadOutput
+	createMPErr   error
+	uploadPartOut *awss3.UploadPartOutput
+	uploadPartErr error
+	completeMPErr error
+	abortMPErr    error
+}
+
+func (m *mockS3Client) PutObject(_ context.Context, _ *awss3.PutObjectInput, _ ...func(*awss3.Options)) (*awss3.PutObjectOutput, error) {
+	return &awss3.PutObjectOutput{}, m.putErr
+}
+func (m *mockS3Client) GetObject(_ context.Context, _ *awss3.GetObjectInput, _ ...func(*awss3.Options)) (*awss3.GetObjectOutput, error) {
+	if m.getOut != nil {
+		return m.getOut, nil
+	}
+	return nil, m.getErr
+}
+func (m *mockS3Client) DeleteObject(_ context.Context, _ *awss3.DeleteObjectInput, _ ...func(*awss3.Options)) (*awss3.DeleteObjectOutput, error) {
+	return &awss3.DeleteObjectOutput{}, m.deleteErr
+}
+func (m *mockS3Client) HeadObject(_ context.Context, _ *awss3.HeadObjectInput, _ ...func(*awss3.Options)) (*awss3.HeadObjectOutput, error) {
+	if m.headObjOut != nil {
+		return m.headObjOut, nil
+	}
+	return nil, m.headObjErr
+}
+func (m *mockS3Client) HeadBucket(_ context.Context, _ *awss3.HeadBucketInput, _ ...func(*awss3.Options)) (*awss3.HeadBucketOutput, error) {
+	return &awss3.HeadBucketOutput{}, m.headBktErr
+}
+func (m *mockS3Client) CreateBucket(_ context.Context, _ *awss3.CreateBucketInput, _ ...func(*awss3.Options)) (*awss3.CreateBucketOutput, error) {
+	return &awss3.CreateBucketOutput{}, m.createBktErr
+}
+func (m *mockS3Client) CopyObject(_ context.Context, _ *awss3.CopyObjectInput, _ ...func(*awss3.Options)) (*awss3.CopyObjectOutput, error) {
+	return &awss3.CopyObjectOutput{}, m.copyErr
+}
+func (m *mockS3Client) ListObjectsV2(_ context.Context, _ *awss3.ListObjectsV2Input, _ ...func(*awss3.Options)) (*awss3.ListObjectsV2Output, error) {
+	if m.listOut != nil {
+		return m.listOut, nil
+	}
+	return nil, m.listErr
+}
+func (m *mockS3Client) DeleteObjects(_ context.Context, _ *awss3.DeleteObjectsInput, _ ...func(*awss3.Options)) (*awss3.DeleteObjectsOutput, error) {
+	return &awss3.DeleteObjectsOutput{}, m.delObjsErr
+}
+func (m *mockS3Client) CreateMultipartUpload(_ context.Context, _ *awss3.CreateMultipartUploadInput, _ ...func(*awss3.Options)) (*awss3.CreateMultipartUploadOutput, error) {
+	if m.createMPOut != nil {
+		return m.createMPOut, nil
+	}
+	return nil, m.createMPErr
+}
+func (m *mockS3Client) UploadPart(_ context.Context, _ *awss3.UploadPartInput, _ ...func(*awss3.Options)) (*awss3.UploadPartOutput, error) {
+	if m.uploadPartOut != nil {
+		return m.uploadPartOut, nil
+	}
+	return nil, m.uploadPartErr
+}
+func (m *mockS3Client) CompleteMultipartUpload(_ context.Context, _ *awss3.CompleteMultipartUploadInput, _ ...func(*awss3.Options)) (*awss3.CompleteMultipartUploadOutput, error) {
+	return &awss3.CompleteMultipartUploadOutput{}, m.completeMPErr
+}
+func (m *mockS3Client) AbortMultipartUpload(_ context.Context, _ *awss3.AbortMultipartUploadInput, _ ...func(*awss3.Options)) (*awss3.AbortMultipartUploadOutput, error) {
+	return &awss3.AbortMultipartUploadOutput{}, m.abortMPErr
+}
+
+// mockPresignClient implements presignClientAPI.
+type mockPresignClient struct {
+	presignErr error
+	url        string
+}
+
+func (m *mockPresignClient) PresignGetObject(_ context.Context, _ *awss3.GetObjectInput, _ ...func(*awss3.PresignOptions)) (*v4.PresignedHTTPRequest, error) {
+	if m.presignErr != nil {
+		return nil, m.presignErr
+	}
+	return &v4.PresignedHTTPRequest{URL: m.url}, nil
+}
+
+// newMockStorage returns an S3Storage wired with the provided mocks.
+func newMockStorage(client s3ClientAPI, presign presignClientAPI) *S3Storage {
+	return &S3Storage{
+		client:        client,
+		presignClient: presign,
+		bucket:        "test-bucket",
+		region:        "us-east-1",
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Upload — error paths
+// ---------------------------------------------------------------------------
+
+func TestS3_Upload_PutError(t *testing.T) {
+	s := newMockStorage(&mockS3Client{putErr: errS3}, &mockPresignClient{})
+	_, err := s.Upload(context.Background(), "x.txt", strings.NewReader("data"), 4)
+	if err == nil {
+		t.Error("Upload() expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Download — error path
+// ---------------------------------------------------------------------------
+
+func TestS3_Download_GetError(t *testing.T) {
+	s := newMockStorage(&mockS3Client{getErr: errS3}, &mockPresignClient{})
+	_, err := s.Download(context.Background(), "x.txt")
+	if err == nil {
+		t.Error("Download() expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Delete — error path
+// ---------------------------------------------------------------------------
+
+func TestS3_Delete_Error(t *testing.T) {
+	s := newMockStorage(&mockS3Client{deleteErr: errS3}, &mockPresignClient{})
+	if err := s.Delete(context.Background(), "x.txt"); err == nil {
+		t.Error("Delete() expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetURL — error paths
+// ---------------------------------------------------------------------------
+
+func TestS3_GetURL_ExistsError(t *testing.T) {
+	// HeadObject returns error → Exists propagates it
+	s := newMockStorage(&mockS3Client{headObjErr: errS3}, &mockPresignClient{})
+	_, err := s.GetURL(context.Background(), "x.txt", time.Hour)
+	if err == nil {
+		t.Error("GetURL() expected error from Exists, got nil")
+	}
+}
+
+func TestS3_GetURL_PresignError(t *testing.T) {
+	size := int64(1)
+	now := time.Now()
+	s := newMockStorage(
+		&mockS3Client{headObjOut: &awss3.HeadObjectOutput{ContentLength: &size, LastModified: &now}},
+		&mockPresignClient{presignErr: errS3},
+	)
+	_, err := s.GetURL(context.Background(), "x.txt", time.Hour)
+	if err == nil {
+		t.Error("GetURL() expected presign error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetMetadata — error paths
+// ---------------------------------------------------------------------------
+
+func TestS3_GetMetadata_HeadError(t *testing.T) {
+	s := newMockStorage(&mockS3Client{headObjErr: errS3}, &mockPresignClient{})
+	_, err := s.GetMetadata(context.Background(), "x.txt")
+	if err == nil {
+		t.Error("GetMetadata() expected error, got nil")
+	}
+}
+
+func TestS3_GetMetadata_DownloadError(t *testing.T) {
+	// HeadObject succeeds with no metadata → falls through to Download, which fails
+	s := newMockStorage(
+		&mockS3Client{
+			headObjOut: &awss3.HeadObjectOutput{},
+			getErr:     errS3,
+		},
+		&mockPresignClient{},
+	)
+	_, err := s.GetMetadata(context.Background(), "x.txt")
+	if err == nil {
+		t.Error("GetMetadata() expected download error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// EnsureBucket — create path
+// ---------------------------------------------------------------------------
+
+func TestS3_EnsureBucket_Creates(t *testing.T) {
+	// HeadBucket fails → CreateBucket is called and succeeds
+	s := newMockStorage(&mockS3Client{headBktErr: errS3}, &mockPresignClient{})
+	if err := s.EnsureBucket(context.Background()); err != nil {
+		t.Fatalf("EnsureBucket() error: %v", err)
+	}
+}
+
+func TestS3_EnsureBucket_CreateError(t *testing.T) {
+	s := newMockStorage(&mockS3Client{headBktErr: errS3, createBktErr: errS3}, &mockPresignClient{})
+	if err := s.EnsureBucket(context.Background()); err == nil {
+		t.Error("EnsureBucket() expected error from CreateBucket, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SetObjectStorageClass — error path
+// ---------------------------------------------------------------------------
+
+func TestS3_SetObjectStorageClass_Error(t *testing.T) {
+	s := newMockStorage(&mockS3Client{copyErr: errS3}, &mockPresignClient{})
+	if err := s.SetObjectStorageClass(context.Background(), "x.txt", types.StorageClassGlacier); err == nil {
+		t.Error("SetObjectStorageClass() expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ListObjects — error path
+// ---------------------------------------------------------------------------
+
+func TestS3_ListObjects_Error(t *testing.T) {
+	s := newMockStorage(&mockS3Client{listErr: errS3}, &mockPresignClient{})
+	_, err := s.ListObjects(context.Background(), "", 10)
+	if err == nil {
+		t.Error("ListObjects() expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DeletePrefix — error paths
+// ---------------------------------------------------------------------------
+
+func TestS3_DeletePrefix_ListError(t *testing.T) {
+	s := newMockStorage(&mockS3Client{listErr: errS3}, &mockPresignClient{})
+	if err := s.DeletePrefix(context.Background(), "pfx/"); err == nil {
+		t.Error("DeletePrefix() expected list error, got nil")
+	}
+}
+
+func TestS3_DeletePrefix_DeleteError(t *testing.T) {
+	key := "pfx/a.txt"
+	s := newMockStorage(&mockS3Client{
+		listOut: &awss3.ListObjectsV2Output{
+			Contents: []types.Object{{Key: &key}},
+		},
+		delObjsErr: errS3,
+	}, &mockPresignClient{})
+	if err := s.DeletePrefix(context.Background(), "pfx/"); err == nil {
+		t.Error("DeletePrefix() expected delete error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// UploadMultipart
+// ---------------------------------------------------------------------------
+
+func TestS3_UploadMultipart_CreateError(t *testing.T) {
+	s := newMockStorage(&mockS3Client{createMPErr: errS3}, &mockPresignClient{})
+	_, err := s.UploadMultipart(context.Background(), "x.txt", strings.NewReader("data"), 1024*1024)
+	if err == nil {
+		t.Error("UploadMultipart() expected CreateMultipartUpload error, got nil")
+	}
+}
+
+func TestS3_UploadMultipart_UploadPartError(t *testing.T) {
+	uploadID := "test-upload-id"
+	s := newMockStorage(&mockS3Client{
+		createMPOut:   &awss3.CreateMultipartUploadOutput{UploadId: &uploadID},
+		uploadPartErr: errS3,
+	}, &mockPresignClient{})
+	_, err := s.UploadMultipart(context.Background(), "x.txt", strings.NewReader("data"), 1024*1024)
+	if err == nil {
+		t.Error("UploadMultipart() expected UploadPart error, got nil")
+	}
+}
+
+func TestS3_UploadMultipart_Success(t *testing.T) {
+	uploadID := "test-upload-id"
+	etag := "\"test-etag\""
+	s := newMockStorage(&mockS3Client{
+		createMPOut:   &awss3.CreateMultipartUploadOutput{UploadId: &uploadID},
+		uploadPartOut: &awss3.UploadPartOutput{ETag: &etag},
+	}, &mockPresignClient{})
+	result, err := s.UploadMultipart(context.Background(), "x.txt", strings.NewReader("hello multipart"), 1024*1024)
+	if err != nil {
+		t.Fatalf("UploadMultipart() error: %v", err)
+	}
+	if result.Path != "x.txt" {
+		t.Errorf("Path = %q, want x.txt", result.Path)
+	}
+	if len(result.Checksum) != 64 {
+		t.Errorf("Checksum length = %d, want 64", len(result.Checksum))
+	}
+}
+
+func TestS3_UploadMultipart_CompleteError(t *testing.T) {
+	uploadID := "test-upload-id"
+	etag := "\"etag\""
+	s := newMockStorage(&mockS3Client{
+		createMPOut:   &awss3.CreateMultipartUploadOutput{UploadId: &uploadID},
+		uploadPartOut: &awss3.UploadPartOutput{ETag: &etag},
+		completeMPErr: errS3,
+	}, &mockPresignClient{})
+	_, err := s.UploadMultipart(context.Background(), "x.txt", strings.NewReader("data"), 1024*1024)
+	if err == nil {
+		t.Error("UploadMultipart() expected CompleteMultipartUpload error, got nil")
+	}
+}
+
+// errS3 is a sentinel error used across interface-mock tests.
+var errS3 = fmt.Errorf("mock s3 error")

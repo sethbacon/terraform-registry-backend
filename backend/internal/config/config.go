@@ -34,6 +34,38 @@ type Config struct {
 	Telemetry     TelemetryConfig     `mapstructure:"telemetry"`
 	Audit         AuditConfig         `mapstructure:"audit"`
 	Notifications NotificationsConfig `mapstructure:"notifications"`
+	Scanning      ScanningConfig      `mapstructure:"scanning"`
+}
+
+// ScanningConfig controls the optional module security scanning feature.
+// The feature is disabled by default; set enabled=true and configure a binary path to activate it.
+// Supported tools: trivy, terrascan, snyk, checkov, custom.
+type ScanningConfig struct {
+	// Enabled gates the entire feature. When false no scans are queued or run.
+	Enabled bool `mapstructure:"enabled"`
+	// Tool selects the scanning backend: "trivy", "terrascan", "snyk", "checkov", or "custom".
+	Tool string `mapstructure:"tool"`
+	// BinaryPath is the absolute path to the scanner executable.
+	BinaryPath string `mapstructure:"binary_path"`
+	// ExpectedVersion is an optional pinned version string. When set the job refuses to
+	// run if the installed binary reports a different version (supply-chain protection).
+	ExpectedVersion string `mapstructure:"expected_version"`
+	// SeverityThreshold is a comma-separated list of severities to record (default: all).
+	SeverityThreshold string `mapstructure:"severity_threshold"`
+	// Timeout caps how long a single scan may run (default 5m).
+	Timeout time.Duration `mapstructure:"timeout"`
+	// WorkerCount sets the maximum number of concurrent scan workers (default 2).
+	WorkerCount int `mapstructure:"worker_count"`
+	// ScanIntervalMins is how often the scanner job polls for pending scans (default 5).
+	ScanIntervalMins int `mapstructure:"scan_interval_mins"`
+	// VersionArgs is the CLI arguments used to obtain the binary version string.
+	// Required when tool is "custom"; ignored otherwise.
+	VersionArgs []string `mapstructure:"version_args"`
+	// ScanArgs are the CLI arguments prepended before the target directory.
+	// Required when tool is "custom"; ignored otherwise.
+	ScanArgs []string `mapstructure:"scan_args"`
+	// OutputFormat specifies how the custom tool's output is parsed: "sarif" or "json".
+	OutputFormat string `mapstructure:"output_format"`
 }
 
 // ServerConfig holds HTTP server configuration
@@ -466,6 +498,17 @@ func bindEnvVars(v *viper.Viper) error {
 		"notifications.smtp.use_tls",
 		"notifications.api_key_expiry_warning_days",
 		"notifications.api_key_expiry_check_interval_hours",
+		"scanning.enabled",
+		"scanning.tool",
+		"scanning.binary_path",
+		"scanning.expected_version",
+		"scanning.severity_threshold",
+		"scanning.timeout",
+		"scanning.worker_count",
+		"scanning.scan_interval_mins",
+		"scanning.version_args",
+		"scanning.scan_args",
+		"scanning.output_format",
 	}
 	for _, key := range keys {
 		if err := v.BindEnv(key); err != nil {
@@ -606,6 +649,14 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("notifications.smtp.use_tls", true)
 	v.SetDefault("notifications.api_key_expiry_warning_days", 7)
 	v.SetDefault("notifications.api_key_expiry_check_interval_hours", 24)
+
+	// Scanning defaults
+	v.SetDefault("scanning.enabled", false)
+	v.SetDefault("scanning.tool", "trivy")
+	v.SetDefault("scanning.severity_threshold", "CRITICAL,HIGH,MEDIUM,LOW")
+	v.SetDefault("scanning.timeout", 5*time.Minute)
+	v.SetDefault("scanning.worker_count", 2)
+	v.SetDefault("scanning.scan_interval_mins", 5)
 }
 
 // expandEnv expands environment variables in the format ${VAR_NAME}
@@ -717,6 +768,23 @@ func (c *Config) Validate() error {
 	validLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
 	if !validLevels[c.Logging.Level] {
 		return fmt.Errorf("invalid logging level: %s (must be debug, info, warn, or error)", c.Logging.Level)
+	}
+
+	if c.Scanning.Enabled {
+		if c.Scanning.BinaryPath == "" {
+			return fmt.Errorf("scanning.binary_path is required when scanning.enabled=true")
+		}
+		validTools := []string{"trivy", "terrascan", "snyk", "checkov", "custom"}
+		toolValid := false
+		for _, t := range validTools {
+			if c.Scanning.Tool == t {
+				toolValid = true
+				break
+			}
+		}
+		if !toolValid {
+			return fmt.Errorf("scanning.tool must be one of: %s", strings.Join(validTools, ", "))
+		}
 	}
 
 	return nil

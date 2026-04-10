@@ -947,3 +947,57 @@ func parseSemverParts(version string) [3]int {
 	}
 	return result
 }
+
+// UpsertProvider creates or returns an existing provider record for pull-through caching.
+// If the provider already exists (matched by org, namespace, type) it is returned as-is.
+func (r *ProviderRepository) UpsertProvider(ctx context.Context, orgID, namespace, providerType string) (*models.Provider, error) {
+	existing, err := r.GetProvider(ctx, orgID, namespace, providerType)
+	if err != nil {
+		return nil, fmt.Errorf("upsert provider: lookup: %w", err)
+	}
+	if existing != nil {
+		return existing, nil
+	}
+
+	description := "Pull-through cached provider"
+	p := &models.Provider{
+		OrganizationID: orgID,
+		Namespace:      namespace,
+		Type:           providerType,
+		Description:    &description,
+	}
+	if err := r.CreateProvider(ctx, p); err != nil {
+		return nil, fmt.Errorf("upsert provider: create: %w", err)
+	}
+	return p, nil
+}
+
+// UpsertVersion creates or returns an existing provider version record.
+// If the version already exists it is returned as-is without modification.
+func (r *ProviderRepository) UpsertVersion(
+	ctx context.Context,
+	providerID, version string,
+	protocols []string,
+	shasumURL, shasumSigURL, gpgKey string,
+) (*models.ProviderVersion, error) {
+	existing, err := r.GetVersion(ctx, providerID, version)
+	if err != nil {
+		return nil, fmt.Errorf("upsert version: lookup: %w", err)
+	}
+	if existing != nil {
+		return existing, nil
+	}
+
+	v := &models.ProviderVersion{
+		ProviderID:         providerID,
+		Version:            version,
+		Protocols:          protocols,
+		GPGPublicKey:       gpgKey,
+		ShasumURL:          shasumURL,
+		ShasumSignatureURL: shasumSigURL,
+	}
+	if err := r.CreateVersion(ctx, v); err != nil {
+		return nil, fmt.Errorf("upsert version: create: %w", err)
+	}
+	return v, nil
+}

@@ -24,6 +24,7 @@ type ModuleVersionEntry struct {
 	Deprecated         bool    `json:"deprecated"`
 	DeprecatedAt       *string `json:"deprecated_at,omitempty"`
 	DeprecationMessage *string `json:"deprecation_message,omitempty"`
+	HasDocs            bool    `json:"has_docs"`
 }
 
 // ModuleVersionsModuleItem represents a single module source item in the versions list response.

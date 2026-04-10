@@ -8,11 +8,13 @@ package mirror
 import (
 	"database/sql"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/services"
 )
 
 // @Summary      Network mirror provider version index
@@ -29,7 +31,7 @@ import (
 // IndexHandler handles network mirror index requests
 // Implements: GET /terraform/providers/:hostname/:namespace/:type/index.json
 // Returns a simple JSON object with all available versions
-func IndexHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
+func IndexHandler(db *sql.DB, _ *config.Config, pullThrough *services.PullThroughService) gin.HandlerFunc {
 	providerRepo := repositories.NewProviderRepository(db)
 	orgRepo := repositories.NewOrganizationRepository(db)
 
@@ -69,10 +71,29 @@ func IndexHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 		}
 
 		if provider == nil {
-			c.JSON(http.StatusNotFound, gin.H{
-				"errors": []string{"Provider not found"},
-			})
-			return
+			// Cache miss — attempt pull-through if configured
+			if pullThrough != nil {
+				configs, err := pullThrough.GetConfigsForProvider(c.Request.Context(), org.ID, namespace, providerType)
+				if err != nil || len(configs) == 0 {
+					c.Data(http.StatusNotFound, "application/json", []byte(`{"errors":["provider not found"]}`))
+					return
+				}
+				versions, err := pullThrough.FetchProviderMetadata(c.Request.Context(), configs[0], org.ID, namespace, providerType)
+				if err != nil || len(versions) == 0 {
+					slog.Error("pull-through fetch failed", "namespace", namespace, "type", providerType, "error", err)
+					c.Data(http.StatusBadGateway, "application/json", []byte(`{"errors":["upstream fetch failed"]}`))
+					return
+				}
+				// Re-query provider now that metadata has been populated
+				provider, err = providerRepo.GetProvider(c.Request.Context(), org.ID, namespace, providerType)
+				if err != nil || provider == nil {
+					c.Data(http.StatusNotFound, "application/json", []byte(`{"errors":["provider not found after pull-through"]}`))
+					return
+				}
+			} else {
+				c.Data(http.StatusNotFound, "application/json", []byte(`{"errors":["provider not found"]}`))
+				return
+			}
 		}
 
 		// Get all versions for the provider

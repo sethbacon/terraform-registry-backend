@@ -79,6 +79,7 @@ func (p *OIDCProvider) GetAuthURL(state string) string {
 
 // GetEndSessionEndpoint returns the OIDC end_session_endpoint from the discovery document,
 // or an empty string if the provider does not advertise one.
+// coverage:skip:integration-only — requires a live OIDC provider
 func (p *OIDCProvider) GetEndSessionEndpoint() string {
 	var claims struct {
 		EndSessionEndpoint string `json:"end_session_endpoint"`
@@ -99,7 +100,8 @@ func (p *OIDCProvider) ExchangeCode(ctx context.Context, code string) (*oauth2.T
 	return token, nil
 }
 
-// VerifyIDToken verifies and extracts claims from the ID token
+// VerifyIDToken verifies and extracts claims from the ID token.
+// coverage:skip:integration-only — requires a live OIDC provider and signed token
 func (p *OIDCProvider) VerifyIDToken(ctx context.Context, rawIDToken string) (*oidc.IDToken, error) {
 	idToken, err := p.verifier.Verify(ctx, rawIDToken)
 	if err != nil {
@@ -143,7 +145,8 @@ func (p *OIDCProvider) ExtractGroups(idToken *oidc.IDToken, claimName string) []
 	}
 }
 
-// ExtractUserInfo extracts user information from the ID token
+// ExtractUserInfo extracts user information from the ID token.
+// coverage:skip:integration-only — requires a live OIDC provider and signed token
 func (p *OIDCProvider) ExtractUserInfo(idToken *oidc.IDToken) (sub, email, name string, err error) {
 	// Standard claims plus Azure AD / Entra ID extensions:
 	//   preferred_username — v2.0 token UPN, always present for member accounts

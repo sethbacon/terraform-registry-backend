@@ -22,7 +22,7 @@ var modVersionListCols = []string{
 	"id", "module_id", "version", "storage_path", "storage_backend", "size_bytes",
 	"checksum", "readme", "published_by", "published_by_name", "download_count",
 	"deprecated", "deprecated_at", "deprecation_message", "created_at",
-	"commit_sha", "tag_name", "scm_repo_id",
+	"commit_sha", "tag_name", "scm_repo_id", "has_docs",
 }
 
 var modVersionGetCols = []string{
@@ -59,7 +59,7 @@ func sampleModVersionListRowsData() *sqlmock.Rows {
 	return sqlmock.NewRows(modVersionListCols).
 		AddRow("ver-1", "mod-1", "1.0.0", "path/file.tar.gz", "default",
 			int64(1024), "checksum", nil, nil, nil, int64(5), false, nil, nil, time.Now(),
-			nil, nil, nil)
+			nil, nil, nil, false)
 }
 
 func emptyModVersionRow() *sqlmock.Rows {
@@ -1008,5 +1008,54 @@ func TestModuleListVersionsPaginated_Empty(t *testing.T) {
 	}
 	if len(versions) != 0 {
 		t.Errorf("len = %d, want 0", len(versions))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetVersionByID
+// ---------------------------------------------------------------------------
+
+func TestGetVersionByID_Found(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE id").
+		WithArgs("ver-1").
+		WillReturnRows(sampleModVersionRow())
+
+	v, err := repo.GetVersionByID(context.Background(), "ver-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if v == nil {
+		t.Fatal("expected non-nil version")
+	}
+	if v.ID != "ver-1" {
+		t.Errorf("ID = %q, want ver-1", v.ID)
+	}
+}
+
+func TestGetVersionByID_NotFound(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE id").
+		WithArgs("ver-99").
+		WillReturnRows(sqlmock.NewRows(modVersionGetCols))
+
+	v, err := repo.GetVersionByID(context.Background(), "ver-99")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if v != nil {
+		t.Errorf("expected nil version, got %+v", v)
+	}
+}
+
+func TestGetVersionByID_DBError(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE id").
+		WithArgs("ver-1").
+		WillReturnError(errDB)
+
+	_, err := repo.GetVersionByID(context.Background(), "ver-1")
+	if err == nil {
+		t.Error("expected error, got nil")
 	}
 }

@@ -151,21 +151,33 @@ func (h *MirrorHandler) CreateMirrorConfig(c *gin.Context) {
 		platformFilter = &str
 	}
 
+	pullThroughEnabled := false
+	if req.PullThroughEnabled != nil {
+		pullThroughEnabled = *req.PullThroughEnabled
+	}
+
+	pullThroughTTL := 24
+	if req.PullThroughCacheTTLHours != nil {
+		pullThroughTTL = *req.PullThroughCacheTTLHours
+	}
+
 	config := &models.MirrorConfiguration{
-		ID:                  uuid.New(),
-		Name:                req.Name,
-		Description:         req.Description,
-		UpstreamRegistryURL: req.UpstreamRegistryURL,
-		OrganizationID:      orgID,
-		NamespaceFilter:     namespaceFilter,
-		ProviderFilter:      providerFilter,
-		VersionFilter:       req.VersionFilter,
-		PlatformFilter:      platformFilter,
-		Enabled:             enabled,
-		SyncIntervalHours:   syncInterval,
-		CreatedAt:           time.Now(),
-		UpdatedAt:           time.Now(),
-		CreatedBy:           createdBy,
+		ID:                       uuid.New(),
+		Name:                     req.Name,
+		Description:              req.Description,
+		UpstreamRegistryURL:      req.UpstreamRegistryURL,
+		OrganizationID:           orgID,
+		NamespaceFilter:          namespaceFilter,
+		ProviderFilter:           providerFilter,
+		VersionFilter:            req.VersionFilter,
+		PlatformFilter:           platformFilter,
+		Enabled:                  enabled,
+		SyncIntervalHours:        syncInterval,
+		PullThroughEnabled:       pullThroughEnabled,
+		PullThroughCacheTTLHours: pullThroughTTL,
+		CreatedAt:                time.Now(),
+		UpdatedAt:                time.Now(),
+		CreatedBy:                createdBy,
 	}
 
 	if err := h.mirrorRepo.Create(c.Request.Context(), config); err != nil {
@@ -376,6 +388,14 @@ func (h *MirrorHandler) UpdateMirrorConfig(c *gin.Context) {
 
 	if req.SyncIntervalHours != nil {
 		config.SyncIntervalHours = *req.SyncIntervalHours
+	}
+
+	if req.PullThroughEnabled != nil {
+		config.PullThroughEnabled = *req.PullThroughEnabled
+	}
+
+	if req.PullThroughCacheTTLHours != nil {
+		config.PullThroughCacheTTLHours = *req.PullThroughCacheTTLHours
 	}
 
 	if err := h.mirrorRepo.Update(c.Request.Context(), config); err != nil {

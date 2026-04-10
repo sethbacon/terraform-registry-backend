@@ -25,7 +25,7 @@ var modVersionListCols = []string{
 	"id", "module_id", "version", "storage_path", "storage_backend", "size_bytes",
 	"checksum", "readme", "published_by", "published_by_name", "download_count",
 	"deprecated", "deprecated_at", "deprecation_message", "created_at",
-	"commit_sha", "tag_name", "scm_repo_id",
+	"commit_sha", "tag_name", "scm_repo_id", "has_docs",
 }
 
 var modVersionGetCols = []string{
@@ -54,7 +54,7 @@ func sampleModVersionListRow() *sqlmock.Rows {
 	return sqlmock.NewRows(modVersionListCols).
 		AddRow("ver-1", "mod-1", "1.0.0", "modules/hashicorp/vpc/aws/vpc-1.0.0.tar.gz", "default",
 			int64(1024), "abc123", nil, nil, nil, int64(5), false, nil, nil, time.Now(),
-			nil, nil, nil)
+			nil, nil, nil, false)
 }
 
 func emptyModVersionListRows() *sqlmock.Rows {

@@ -7,6 +7,20 @@ import (
 	"testing"
 )
 
+// makeGzipOf wraps raw bytes in a gzip stream (not a valid tar).
+func makeGzipOf(t *testing.T, data []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	if _, err := gw.Write(data); err != nil {
+		t.Fatalf("gzip Write: %v", err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatalf("gzip Close: %v", err)
+	}
+	return buf.Bytes()
+}
+
 // makeTarGz creates an in-memory tar.gz archive from a map of filename → content.
 func makeTarGz(t *testing.T, files map[string]string) []byte {
 	t.Helper()
@@ -89,6 +103,16 @@ func TestValidateArchive(t *testing.T) {
 			data:    makeTarGz(t, map[string]string{"main.tf": "content"}),
 			maxSize: 0, // should use MaxArchiveSize default
 			wantErr: false,
+		},
+		{
+			name:    "empty tar has no entries",
+			data:    makeTarGz(t, map[string]string{}),
+			wantErr: true, // fileCount == 0 → "archive is empty"
+		},
+		{
+			name:    "invalid tar content inside valid gzip",
+			data:    makeGzipOf(t, []byte("not-tar-not-tar-not-tar-not-tar-not-tar-not-tar-not-tar-not-tar")),
+			wantErr: true,
 		},
 	}
 

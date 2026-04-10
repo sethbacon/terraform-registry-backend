@@ -12,8 +12,6 @@ import (
 	"io"
 	"log"
 	"os"
-	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -28,183 +26,6 @@ import (
 
 	"github.com/google/uuid"
 )
-
-// filterVersions filters a list of provider versions based on the version filter string
-// Supported filter formats:
-//   - "3." or "3.x" - all versions starting with "3."
-//   - "latest:5" - the latest 5 versions (sorted by semver)
-//   - "3.74.0,3.73.0" - specific comma-separated versions
-//   - ">=3.0.0" - versions >= 3.0.0 (semver comparison)
-//   - "" or nil - all versions
-func filterVersions(versions []mirror.ProviderVersion, filter *string) []mirror.ProviderVersion {
-	if filter == nil || *filter == "" {
-		return versions
-	}
-
-	filterStr := strings.TrimSpace(*filter)
-
-	// Handle "latest:N" format
-	if strings.HasPrefix(filterStr, "latest:") {
-		countStr := strings.TrimPrefix(filterStr, "latest:")
-		count, err := strconv.Atoi(countStr)
-		if err != nil || count <= 0 {
-			log.Printf("Invalid latest:N filter format: %s, using all versions", filterStr)
-			return versions
-		}
-		return filterLatestVersions(versions, count)
-	}
-
-	// Handle prefix matching (e.g., "3." or "3.x" or "3.7")
-	if strings.HasSuffix(filterStr, ".") || strings.HasSuffix(filterStr, ".x") {
-		prefix := strings.TrimSuffix(filterStr, "x")
-		return filterVersionsByPrefix(versions, prefix)
-	}
-
-	// Handle semver constraints (>=, >, <=, <)
-	if strings.HasPrefix(filterStr, ">=") || strings.HasPrefix(filterStr, ">") ||
-		strings.HasPrefix(filterStr, "<=") || strings.HasPrefix(filterStr, "<") {
-		return filterVersionsBySemverConstraint(versions, filterStr)
-	}
-
-	// Handle comma-separated specific versions
-	if strings.Contains(filterStr, ",") {
-		return filterVersionsByList(versions, filterStr)
-	}
-
-	// Single version or prefix without trailing dot
-	// Try as prefix first
-	filtered := filterVersionsByPrefix(versions, filterStr+".")
-	if len(filtered) > 0 {
-		return filtered
-	}
-
-	// Try as exact version
-	return filterVersionsByList(versions, filterStr)
-}
-
-// filterLatestVersions returns the N most recent versions sorted by semver
-func filterLatestVersions(versions []mirror.ProviderVersion, count int) []mirror.ProviderVersion {
-	if len(versions) <= count {
-		return versions
-	}
-
-	// Sort by semver descending
-	sorted := make([]mirror.ProviderVersion, len(versions))
-	copy(sorted, versions)
-	sort.Slice(sorted, func(i, j int) bool {
-		return compareSemver(sorted[i].Version, sorted[j].Version) > 0
-	})
-
-	return sorted[:count]
-}
-
-// filterVersionsByPrefix returns versions that start with the given prefix
-func filterVersionsByPrefix(versions []mirror.ProviderVersion, prefix string) []mirror.ProviderVersion {
-	var filtered []mirror.ProviderVersion
-	for _, v := range versions {
-		if strings.HasPrefix(v.Version, prefix) {
-			filtered = append(filtered, v)
-		}
-	}
-	return filtered
-}
-
-// filterVersionsByList returns versions that match any in the comma-separated list
-func filterVersionsByList(versions []mirror.ProviderVersion, list string) []mirror.ProviderVersion {
-	wantedVersions := make(map[string]bool)
-	for _, v := range strings.Split(list, ",") {
-		wantedVersions[strings.TrimSpace(v)] = true
-	}
-
-	var filtered []mirror.ProviderVersion
-	for _, v := range versions {
-		if wantedVersions[v.Version] {
-			filtered = append(filtered, v)
-		}
-	}
-	return filtered
-}
-
-// filterVersionsBySemverConstraint returns versions matching the semver constraint
-func filterVersionsBySemverConstraint(versions []mirror.ProviderVersion, constraint string) []mirror.ProviderVersion {
-	var op string
-	var targetVersion string
-
-	if strings.HasPrefix(constraint, ">=") {
-		op = ">="
-		targetVersion = strings.TrimPrefix(constraint, ">=")
-	} else if strings.HasPrefix(constraint, "<=") {
-		op = "<="
-		targetVersion = strings.TrimPrefix(constraint, "<=")
-	} else if strings.HasPrefix(constraint, ">") {
-		op = ">"
-		targetVersion = strings.TrimPrefix(constraint, ">")
-	} else if strings.HasPrefix(constraint, "<") {
-		op = "<"
-		targetVersion = strings.TrimPrefix(constraint, "<")
-	} else {
-		return versions
-	}
-
-	targetVersion = strings.TrimSpace(targetVersion)
-
-	var filtered []mirror.ProviderVersion
-	for _, v := range versions {
-		cmp := compareSemver(v.Version, targetVersion)
-		switch op {
-		case ">=":
-			if cmp >= 0 {
-				filtered = append(filtered, v)
-			}
-		case ">":
-			if cmp > 0 {
-				filtered = append(filtered, v)
-			}
-		case "<=":
-			if cmp <= 0 {
-				filtered = append(filtered, v)
-			}
-		case "<":
-			if cmp < 0 {
-				filtered = append(filtered, v)
-			}
-		}
-	}
-	return filtered
-}
-
-// compareSemver compares two semver strings
-// Returns: -1 if a < b, 0 if a == b, 1 if a > b
-func compareSemver(a, b string) int {
-	aParts := parseSemverParts(a)
-	bParts := parseSemverParts(b)
-
-	for i := 0; i < 3; i++ {
-		if aParts[i] < bParts[i] {
-			return -1
-		}
-		if aParts[i] > bParts[i] {
-			return 1
-		}
-	}
-	return 0
-}
-
-// parseSemverParts extracts major, minor, patch from a version string
-func parseSemverParts(version string) [3]int {
-	// Remove any pre-release suffix (e.g., -alpha, -beta)
-	if idx := strings.Index(version, "-"); idx != -1 {
-		version = version[:idx]
-	}
-
-	parts := strings.Split(version, ".")
-	var result [3]int
-	for i := 0; i < 3 && i < len(parts); i++ {
-		val, _ := strconv.Atoi(parts[i])
-		result[i] = val
-	}
-	return result
-}
 
 // safeString returns the string value or "(none)" if nil
 func safeString(s *string) string {
@@ -554,7 +375,7 @@ func (j *MirrorSyncJob) syncProvider(ctx context.Context, upstreamClient *mirror
 	}
 
 	// Apply version filter
-	versions := filterVersions(allVersions, config.VersionFilter)
+	versions := mirror.FilterVersions(allVersions, config.VersionFilter)
 	if len(versions) == 0 {
 		return nil, fmt.Errorf("no versions match filter %q (found %d total versions)", *config.VersionFilter, len(allVersions))
 	}
@@ -808,7 +629,7 @@ func (j *MirrorSyncJob) syncProvider(ctx context.Context, upstreamClient *mirror
 		if len(versions) > 0 {
 			highest := versions[0].Version
 			for _, v := range versions[1:] {
-				if compareSemver(v.Version, highest) > 0 {
+				if mirror.CompareSemver(v.Version, highest) > 0 {
 					highest = v.Version
 				}
 			}

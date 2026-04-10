@@ -10,6 +10,7 @@ import (
 	"os"
 
 	"github.com/gin-gonic/gin"
+	"github.com/terraform-registry/terraform-registry/internal/analyzer"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
@@ -39,7 +40,7 @@ import (
 // UploadHandler handles module upload requests
 // Implements: POST /api/v1/modules
 // Accepts multipart form with: namespace, name, system, version, description (optional), file
-func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Config) gin.HandlerFunc {
+func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Config, scanRepo *repositories.ModuleScanRepository, moduleDocsRepo *repositories.ModuleDocsRepository) gin.HandlerFunc {
 	moduleRepo := repositories.NewModuleRepository(db)
 	orgRepo := repositories.NewOrganizationRepository(db)
 
@@ -254,6 +255,35 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 				"error": "Failed to create version record",
 			})
 			return
+		}
+
+		// Queue a security scan for the newly uploaded version (non-fatal).
+		if scanRepo != nil && cfg.Scanning.Enabled && cfg.Scanning.BinaryPath != "" {
+			if err := scanRepo.CreatePendingScan(c.Request.Context(), moduleVersion.ID); err != nil {
+				slog.Warn("failed to queue security scan",
+					"version_id", moduleVersion.ID, "error", err)
+			}
+		}
+
+		// Extract terraform-docs metadata from the archive (non-fatal — a module
+		// without variables is perfectly valid).
+		if moduleDocsRepo != nil {
+			if _, err := tmpFile.Seek(0, io.SeekStart); err == nil {
+				doc, err := analyzer.AnalyzeArchive(tmpFile)
+				if err != nil {
+					slog.Warn("terraform-docs: failed to analyze archive",
+						"namespace", namespace, "name", name, "version", version, "error", err)
+				} else if doc != nil {
+					if err := moduleDocsRepo.UpsertModuleDocs(c.Request.Context(), moduleVersion.ID, doc); err != nil {
+						slog.Warn("terraform-docs: failed to store docs",
+							"version_id", moduleVersion.ID, "error", err)
+					} else {
+						slog.Debug("terraform-docs: stored",
+							"version_id", moduleVersion.ID,
+							"inputs", len(doc.Inputs), "outputs", len(doc.Outputs))
+					}
+				}
+			}
 		}
 
 		// Return success response with module metadata

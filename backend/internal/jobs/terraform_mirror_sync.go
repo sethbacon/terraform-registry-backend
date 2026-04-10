@@ -823,7 +823,7 @@ func filterTFLatest(versions []mirror.TerraformVersionInfo, count int) []mirror.
 	sorted := make([]mirror.TerraformVersionInfo, len(versions))
 	copy(sorted, versions)
 	sort.Slice(sorted, func(i, j int) bool {
-		return compareSemver(sorted[i].Version, sorted[j].Version) > 0
+		return mirror.CompareSemver(sorted[i].Version, sorted[j].Version) > 0
 	})
 	return sorted[:count]
 }
@@ -898,7 +898,7 @@ func filterTFBySemver(versions []mirror.TerraformVersionInfo, constraint string)
 	}
 	var out []mirror.TerraformVersionInfo
 	for _, v := range versions {
-		cmp := compareSemver(v.Version, target)
+		cmp := mirror.CompareSemver(v.Version, target)
 		include := false
 		switch op {
 		case ">=":

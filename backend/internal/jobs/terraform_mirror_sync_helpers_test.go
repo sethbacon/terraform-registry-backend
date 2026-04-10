@@ -2,6 +2,8 @@ package jobs
 
 import (
 	"testing"
+
+	"github.com/terraform-registry/terraform-registry/internal/db/models"
 )
 
 // ---------------------------------------------------------------------------
@@ -167,5 +169,88 @@ func TestCompareTerraformSemver_MajorDifference(t *testing.T) {
 func TestCompareTerraformSemver_PatchDifference(t *testing.T) {
 	if got := compareTerraformSemver("1.5.2", "1.5.3"); got != -1 {
 		t.Errorf("expected -1, got %d", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// githubBinaryPrefix
+// ---------------------------------------------------------------------------
+
+func TestGithubBinaryPrefix_Terraform(t *testing.T) {
+	if got := githubBinaryPrefix("terraform"); got != "terraform" {
+		t.Errorf("got %q, want terraform", got)
+	}
+}
+
+func TestGithubBinaryPrefix_OpenTofu(t *testing.T) {
+	if got := githubBinaryPrefix("opentofu"); got != "tofu" {
+		t.Errorf("got %q, want tofu", got)
+	}
+}
+
+func TestGithubBinaryPrefix_OpenTofuUpperCase(t *testing.T) {
+	if got := githubBinaryPrefix("OpenTofu"); got != "tofu" {
+		t.Errorf("got %q, want tofu", got)
+	}
+}
+
+func TestGithubBinaryPrefix_Other(t *testing.T) {
+	if got := githubBinaryPrefix("custom-tool"); got != "custom-tool" {
+		t.Errorf("got %q, want custom-tool", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// gpgKeyForConfig
+// ---------------------------------------------------------------------------
+
+func TestGPGKeyForConfig_SkipGPGVerify(t *testing.T) {
+	cfg := &models.TerraformMirrorConfig{
+		Tool:          "terraform",
+		SkipGPGVerify: true,
+	}
+	if got := gpgKeyForConfig(cfg); got != "" {
+		t.Errorf("expected empty key when SkipGPGVerify=true, got %q", got)
+	}
+}
+
+func TestGPGKeyForConfig_CustomGPGKey(t *testing.T) {
+	customKey := "my-custom-gpg-key"
+	cfg := &models.TerraformMirrorConfig{
+		Tool:         "terraform",
+		CustomGPGKey: &customKey,
+	}
+	if got := gpgKeyForConfig(cfg); got != customKey {
+		t.Errorf("got %q, want %q", got, customKey)
+	}
+}
+
+func TestGPGKeyForConfig_EmptyCustomKey_FallsBackToBuiltIn(t *testing.T) {
+	empty := ""
+	cfg := &models.TerraformMirrorConfig{
+		Tool:         "terraform",
+		CustomGPGKey: &empty,
+	}
+	key := gpgKeyForConfig(cfg)
+	if key == "" {
+		t.Error("expected built-in terraform GPG key when custom key is empty string")
+	}
+}
+
+func TestGPGKeyForConfig_NilCustomKey_FallsBackToBuiltIn(t *testing.T) {
+	cfg := &models.TerraformMirrorConfig{
+		Tool:         "terraform",
+		CustomGPGKey: nil,
+	}
+	key := gpgKeyForConfig(cfg)
+	if key == "" {
+		t.Error("expected built-in terraform GPG key when CustomGPGKey is nil")
+	}
+}
+
+func TestGPGKeyForConfig_UnknownTool(t *testing.T) {
+	cfg := &models.TerraformMirrorConfig{Tool: "unknown"}
+	if got := gpgKeyForConfig(cfg); got != "" {
+		t.Errorf("expected empty key for unknown tool, got %q", got)
 	}
 }

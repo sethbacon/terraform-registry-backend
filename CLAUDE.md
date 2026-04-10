@@ -40,7 +40,9 @@ git remote prune origin                          # prune stale remote-tracking r
    go fmt ./...
    go vet ./...
 
-   # Tests with coverage (must stay ≥ 75%)
+   # Tests with coverage (must stay ≥ 75%) When looking for additional functions to test, skip functions with "// coverage:skip:{REASON}"
+   # If you find functions with out coverage that cannot be easily tested, add the comment above. This will help you focus on functions that
+   # can easily be tested.
    go test ./... -coverprofile=coverage.out -covermode=atomic
    go tool cover -func=coverage.out | grep "^total:"
 

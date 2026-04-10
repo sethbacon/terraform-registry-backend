@@ -2,6 +2,7 @@ package validation
 
 import (
 	"bytes"
+	"compress/gzip"
 	"strings"
 	"testing"
 )
@@ -77,14 +78,26 @@ func TestExtractReadme(t *testing.T) {
 			files:   nil, // special-cased below
 			wantErr: true,
 		},
+		{
+			name:    "valid gzip wrapping invalid tar returns error",
+			files:   nil, // special-cased below
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var reader *bytes.Reader
-			if tt.name == "not gzip data returns error" {
+			switch tt.name {
+			case "not gzip data returns error":
 				reader = bytes.NewReader([]byte("not gzip data"))
-			} else {
+			case "valid gzip wrapping invalid tar returns error":
+				var buf bytes.Buffer
+				gw := gzip.NewWriter(&buf)
+				_, _ = gw.Write([]byte("not-valid-tar-content-padding-padding-padding"))
+				_ = gw.Close()
+				reader = bytes.NewReader(buf.Bytes())
+			default:
 				data := makeTarGz(t, tt.files)
 				reader = bytes.NewReader(data)
 			}
