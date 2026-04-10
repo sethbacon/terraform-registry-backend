@@ -374,6 +374,55 @@ func TestGetMetadata_NoSidecar(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// safeJoin / path traversal
+// ---------------------------------------------------------------------------
+
+func TestSafeJoin_TraversalRejected(t *testing.T) {
+	s := newTestStorage(t, false, "")
+	ctx := context.Background()
+
+	traversalPaths := []string{
+		"../../etc/passwd",
+		"modules/../../../etc/shadow",
+		"a/b/c/../../../../secret",
+	}
+	for _, p := range traversalPaths {
+		t.Run(p, func(t *testing.T) {
+			_, err := s.Download(ctx, p)
+			if err == nil {
+				t.Errorf("Download(%q) expected error for traversal path, got nil", p)
+			}
+			_, err = s.Exists(ctx, p)
+			if err == nil {
+				t.Errorf("Exists(%q) expected error for traversal path, got nil", p)
+			}
+			_, err = s.GetMetadata(ctx, p)
+			if err == nil {
+				t.Errorf("GetMetadata(%q) expected error for traversal path, got nil", p)
+			}
+		})
+	}
+}
+
+func TestSafeJoin_NormalPathAllowed(t *testing.T) {
+	s := newTestStorage(t, false, "")
+	ctx := context.Background()
+
+	content := "hello"
+	if _, err := s.Upload(ctx, "modules/foo/1.0.0/archive.tar.gz", strings.NewReader(content), int64(len(content))); err != nil {
+		t.Fatal("Upload:", err)
+	}
+
+	ok, err := s.Exists(ctx, "modules/foo/1.0.0/archive.tar.gz")
+	if err != nil {
+		t.Fatalf("Exists() error: %v", err)
+	}
+	if !ok {
+		t.Error("Exists() = false for normal nested path, want true")
+	}
+}
+
 // TestNew_NewDirectory verifies New succeeds when the base path does not yet exist.
 func TestNew_NewDirectory(t *testing.T) {
 	parent, err := os.MkdirTemp("", "new-dir-test-*")

@@ -55,6 +55,16 @@ func ServeFileHandler(storageBackend storage.Storage, cfg *config.Config, db *sq
 			filePath = filePath[1:]
 		}
 
+		// Reject path traversal sequences. The local storage backend uses
+		// filepath.Join which resolves ".." — block them here before any backend
+		// call so that GET /v1/files/../../etc/passwd cannot escape the storage root.
+		if strings.Contains(filePath, "..") || strings.Contains(filePath, "//") {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "Invalid file path",
+			})
+			return
+		}
+
 		// Check if file exists
 		exists, err := storageBackend.Exists(c.Request.Context(), filePath)
 		if err != nil {
