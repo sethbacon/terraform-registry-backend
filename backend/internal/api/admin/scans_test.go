@@ -38,7 +38,7 @@ func newScanAdminRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	}
 	t.Cleanup(func() { db.Close() })
 	r := gin.New()
-	r.GET("/admin/modules/:namespace/:name/:system/versions/:version/scan",
+	r.GET("/modules/:namespace/:name/:system/versions/:version/scan",
 		GetModuleScanHandler(db))
 	return mock, r
 }
@@ -94,7 +94,7 @@ func TestGetModuleScan_Success(t *testing.T) {
 		WithArgs("ver-1").
 		WillReturnRows(sampleScanResultRow())
 
-	w := doScanGET(r, "/admin/modules/hashicorp/vpc/aws/versions/1.0.0/scan")
+	w := doScanGET(r, "/modules/hashicorp/vpc/aws/versions/1.0.0/scan")
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200; body: %s", w.Code, w.Body.String())
 	}
@@ -105,7 +105,7 @@ func TestGetModuleScan_OrgError(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
 		WillReturnError(errors.New("db error"))
 
-	w := doScanGET(r, "/admin/modules/hashicorp/vpc/aws/versions/1.0.0/scan")
+	w := doScanGET(r, "/modules/hashicorp/vpc/aws/versions/1.0.0/scan")
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
@@ -116,7 +116,7 @@ func TestGetModuleScan_OrgNotFound(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
 		WillReturnRows(sqlmock.NewRows(orgColsScan))
 
-	w := doScanGET(r, "/admin/modules/hashicorp/vpc/aws/versions/1.0.0/scan")
+	w := doScanGET(r, "/modules/hashicorp/vpc/aws/versions/1.0.0/scan")
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
@@ -127,7 +127,7 @@ func TestGetModuleScan_ModuleDBError(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRowScan())
 	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnError(errors.New("db error"))
 
-	w := doScanGET(r, "/admin/modules/hashicorp/vpc/aws/versions/1.0.0/scan")
+	w := doScanGET(r, "/modules/hashicorp/vpc/aws/versions/1.0.0/scan")
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
@@ -139,7 +139,7 @@ func TestGetModuleScan_ModuleNotFound(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").
 		WillReturnRows(sqlmock.NewRows(moduleColsScan))
 
-	w := doScanGET(r, "/admin/modules/hashicorp/vpc/aws/versions/1.0.0/scan")
+	w := doScanGET(r, "/modules/hashicorp/vpc/aws/versions/1.0.0/scan")
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", w.Code)
 	}
@@ -152,7 +152,7 @@ func TestGetModuleScan_VersionDBError(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").
 		WillReturnError(errors.New("db error"))
 
-	w := doScanGET(r, "/admin/modules/hashicorp/vpc/aws/versions/1.0.0/scan")
+	w := doScanGET(r, "/modules/hashicorp/vpc/aws/versions/1.0.0/scan")
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
@@ -165,7 +165,7 @@ func TestGetModuleScan_VersionNotFound(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").
 		WillReturnRows(sqlmock.NewRows(modVersionGetColsScan))
 
-	w := doScanGET(r, "/admin/modules/hashicorp/vpc/aws/versions/9.9.9/scan")
+	w := doScanGET(r, "/modules/hashicorp/vpc/aws/versions/9.9.9/scan")
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", w.Code)
 	}
@@ -180,7 +180,7 @@ func TestGetModuleScan_ScanDBError(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM module_version_scans.*WHERE module_version_id").
 		WillReturnError(errors.New("db error"))
 
-	w := doScanGET(r, "/admin/modules/hashicorp/vpc/aws/versions/1.0.0/scan")
+	w := doScanGET(r, "/modules/hashicorp/vpc/aws/versions/1.0.0/scan")
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
@@ -195,7 +195,7 @@ func TestGetModuleScan_ScanNotFound(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM module_version_scans.*WHERE module_version_id").
 		WillReturnRows(sqlmock.NewRows(scanAdminCols))
 
-	w := doScanGET(r, "/admin/modules/hashicorp/vpc/aws/versions/1.0.0/scan")
+	w := doScanGET(r, "/modules/hashicorp/vpc/aws/versions/1.0.0/scan")
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", w.Code)
 	}
