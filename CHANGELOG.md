@@ -11,6 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.3] - 2026-04-11
+
+### Fixed
+
+- fix: move module scan route from `/admin/modules/` to `/modules/` prefix to resolve gin wildcard panic on startup
+
+### Documentation
+
+- docs: add module security scanning setup guide covering Trivy, Checkov, Terrascan, Snyk, and custom scanner backends
+- docs: add module documentation extraction guide covering terraform-docs auto-extraction API and web UI
+- docs: add `scanning:` section to `config.example.yaml` and `TFR_SCANNING_*` variables to configuration reference
+
+---
+
 ## [0.3.1] - 2026-04-09
 
 ### Security

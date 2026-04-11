@@ -22,7 +22,7 @@ import (
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
 // @Failure      404  {object}  map[string]interface{}  "Module version or scan not found"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
-// @Router       /api/v1/admin/modules/{namespace}/{name}/{system}/versions/{version}/scan [get]
+// @Router       /api/v1/modules/{namespace}/{name}/{system}/versions/{version}/scan [get]
 func GetModuleScanHandler(db *sql.DB) gin.HandlerFunc {
 	moduleRepo := repositories.NewModuleRepository(db)
 	scanRepo := repositories.NewModuleScanRepository(db)
