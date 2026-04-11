@@ -581,7 +581,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 			authenticatedGroup.DELETE("/modules/:namespace/:name/:system/versions/:version/deprecate",
 				middleware.RequireScope(auth.ScopeModulesWrite),
 				moduleAdminHandlers.UndeprecateVersion)
-			authenticatedGroup.GET("/admin/modules/:namespace/:name/:system/versions/:version/scan",
+			authenticatedGroup.GET("/modules/:namespace/:name/:system/versions/:version/scan",
 				middleware.RequireScope(auth.ScopeAdmin),
 				admin.GetModuleScanHandler(db))
 
