@@ -95,6 +95,17 @@ func (bg *BackgroundServices) Shutdown() {
 	slog.Info("all background services stopped")
 }
 
+// collectRateLimiters returns a slice of non-nil rate limiters for shutdown tracking.
+func collectRateLimiters(limiters ...*middleware.RateLimiter) []*middleware.RateLimiter {
+	var out []*middleware.RateLimiter
+	for _, rl := range limiters {
+		if rl != nil {
+			out = append(out, rl)
+		}
+	}
+	return out
+}
+
 // AppVersion and AppBuildDate are set by main before NewRouter is called.
 // They are populated from ldflags injected by GoReleaser at release time.
 var AppVersion = "dev"
@@ -453,10 +464,13 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	// Initialize SCM webhook handler
 	scmWebhookHandler := webhooks.NewSCMWebhookHandler(scmRepo, scmPublisher)
 
-	// Initialize rate limiters
-	authRateLimiter := middleware.NewRateLimiter(middleware.AuthRateLimitConfig())
-	generalRateLimiter := middleware.NewRateLimiter(middleware.DefaultRateLimitConfig())
-	uploadRateLimiter := middleware.NewRateLimiter(middleware.UploadRateLimitConfig())
+	// Initialize rate limiters (conditionally, based on config)
+	var authRateLimiter, generalRateLimiter, uploadRateLimiter *middleware.RateLimiter
+	if cfg.Security.RateLimiting.Enabled {
+		authRateLimiter = middleware.NewRateLimiter(middleware.AuthRateLimitConfig())
+		generalRateLimiter = middleware.NewRateLimiter(middleware.DefaultRateLimitConfig())
+		uploadRateLimiter = middleware.NewRateLimiter(middleware.UploadRateLimitConfig())
+	}
 
 	// Admin API endpoints
 	apiV1 := router.Group("/api/v1")
@@ -806,7 +820,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 		tfMirrorSyncJob:  tfMirrorSyncJob,
 		expiryNotifier:   expiryNotifier,
 		moduleScannerJob: moduleScannerJob,
-		rateLimiters:     []*middleware.RateLimiter{authRateLimiter, generalRateLimiter, uploadRateLimiter},
+		rateLimiters:     collectRateLimiters(authRateLimiter, generalRateLimiter, uploadRateLimiter),
 	}
 
 	return router, bg
