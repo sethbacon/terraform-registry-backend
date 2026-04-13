@@ -3789,6 +3789,36 @@
                 }
             }
         },
+        "/api/v1/auth/exchange-token": {
+            "get": {
+                "description": "Reads the HttpOnly `tfr_auth_token` cookie set during the OIDC callback, validates it, returns the JWT in the response body, and clears the cookie. The frontend calls this endpoint on the /auth/callback page to move the token from the cookie into localStorage.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Authentication"
+                ],
+                "summary": "Exchange auth cookie for JWT",
+                "responses": {
+                    "200": {
+                        "description": "token",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No cookie or invalid token",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/auth/login": {
             "get": {
                 "description": "Redirect user to OAuth provider (OIDC or Azure AD) to begin authentication flow",
@@ -10336,6 +10366,9 @@
         "api.HealthResponse": {
             "type": "object",
             "properties": {
+                "build_date": {
+                    "type": "string"
+                },
                 "error": {
                     "type": "string"
                 },
@@ -10343,6 +10376,9 @@
                     "type": "string"
                 },
                 "time": {
+                    "type": "string"
+                },
+                "version": {
                     "type": "string"
                 }
             }
