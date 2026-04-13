@@ -29,7 +29,7 @@ jobs:
         id: version
         run: |
           TITLE="${{ github.event.pull_request.title }}"
-          VERSION=$(echo "$TITLE" | grep -oP 'v\d+\.\d+\.\d+')
+          VERSION=$(echo "$TITLE" | grep -oP 'v\d+\.\d+\.\d+(-[a-zA-Z0-9.]+)?')
           if [ -z "$VERSION" ]; then
             echo "::error::Could not extract semver from PR title: $TITLE"
             exit 1
