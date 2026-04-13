@@ -173,6 +173,26 @@ When a release is called for:
    The workflow will: run CI → build multi-platform binaries → push Docker image to
    `ghcr.io/sethbacon/terraform-registry-backend:vX.Y.Z` → create a GitHub Release.
 
+8. **Update deployment configs to reference the new version.** The following files contain
+   hardcoded image tags that must be bumped after every release. Backend and frontend
+   versions are independent — update only the component that was released.
+
+   **Helm chart** (in `deployments/helm/`):
+   - `Chart.yaml` — bump `appVersion` to the new backend version (used as default backend image tag)
+   - `values.yaml` — update `frontend.image.tag` when releasing a new frontend version
+   - `values-aks.yaml`, `values-eks.yaml`, `values-gke.yaml` — update `backend.image.tag`
+     and/or `frontend.image.tag` to the new version
+
+   **Kustomize overlays** (in `deployments/kubernetes/overlays/`):
+   - `eks/kustomization.yaml` — update `newTag` for backend and/or frontend
+   - `gke/kustomization.yaml` — update `newTag` for backend and/or frontend
+   - `production/kustomization.yaml` and `aks/kustomization.yaml` use `<IMAGE_TAG>`
+     placeholders filled at deploy time — no update needed
+
+   > **Why not automate this?** These files are example/reference configs with
+   > cloud-specific placeholders (`<ACR_NAME>`, `<ACCOUNT_ID>`, etc.) that users copy and
+   > customise. Automated updates would create noise in diffs for users tracking upstream.
+
 ---
 
 ## Project Overview

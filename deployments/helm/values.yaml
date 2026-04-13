@@ -51,7 +51,7 @@ frontend:
   replicaCount: 2
   image:
     repository: terraform-registry-frontend
-    tag: ""
+    tag: "0.4.2"
     pullPolicy: IfNotPresent
   resources:
     requests:

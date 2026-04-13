@@ -500,6 +500,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 		{
 			authGroup.GET("/login", authHandlers.LoginHandler())
 			authGroup.GET("/callback", authHandlers.CallbackHandler())
+			authGroup.GET("/exchange-token", authHandlers.ExchangeTokenHandler())
 			authGroup.GET("/logout", authHandlers.LogoutHandler())
 		}
 
@@ -846,8 +847,10 @@ func healthCheckHandler(db *sql.DB) gin.HandlerFunc {
 		}
 
 		c.JSON(http.StatusOK, gin.H{
-			"status": "healthy",
-			"time":   time.Now().UTC().Format(time.RFC3339),
+			"status":     "healthy",
+			"time":       time.Now().UTC().Format(time.RFC3339),
+			"version":    AppVersion,
+			"build_date": AppBuildDate,
 		})
 	}
 }

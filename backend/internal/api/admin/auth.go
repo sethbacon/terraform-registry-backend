@@ -361,7 +361,9 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 			return
 		}
 
-		// Set HttpOnly cookie — prevents JS access, logging, and Referer leakage
+		// Set HttpOnly cookie — prevents JS access, logging, and Referer leakage.
+		// SameSite=Lax allows the cookie to survive the top-level redirect from
+		// the identity provider back to the frontend; Strict would block it.
 		http.SetCookie(c.Writer, &http.Cookie{
 			Name:     "tfr_auth_token",
 			Value:    jwtToken,
@@ -369,7 +371,7 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 			MaxAge:   86400, // 24 hours
 			Secure:   true,
 			HttpOnly: true,
-			SameSite: http.SameSiteStrictMode,
+			SameSite: http.SameSiteLaxMode,
 		})
 		redirectTarget := fmt.Sprintf("%s/auth/callback", frontendBase)
 		c.Redirect(http.StatusFound, redirectTarget)
@@ -441,6 +443,44 @@ func (h *AuthHandlers) LogoutHandler() gin.HandlerFunc {
 
 		// No OIDC end_session_endpoint available — redirect to the frontend home page.
 		c.Redirect(http.StatusFound, postLogoutRedirect)
+	}
+}
+
+// @Summary      Exchange auth cookie for JWT
+// @Description  Reads the HttpOnly `tfr_auth_token` cookie set during the OIDC callback, validates it, returns the JWT in the response body, and clears the cookie. The frontend calls this endpoint on the /auth/callback page to move the token from the cookie into localStorage.
+// @Tags         Authentication
+// @Produce      json
+// @Success      200  {object}  map[string]string  "token"
+// @Failure      401  {object}  map[string]interface{}  "No cookie or invalid token"
+// @Router       /api/v1/auth/exchange-token [get]
+// ExchangeTokenHandler returns the JWT from the HttpOnly auth cookie.
+// GET /api/v1/auth/exchange-token
+func (h *AuthHandlers) ExchangeTokenHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		cookie, err := c.Cookie("tfr_auth_token")
+		if err != nil || cookie == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "No authentication cookie found"})
+			return
+		}
+
+		// Validate the JWT to ensure the cookie isn't stale or tampered with
+		if _, err := auth.ValidateJWT(cookie); err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid authentication token"})
+			return
+		}
+
+		// Clear the cookie — the frontend will store the token in localStorage
+		http.SetCookie(c.Writer, &http.Cookie{
+			Name:     "tfr_auth_token",
+			Value:    "",
+			Path:     "/",
+			MaxAge:   -1,
+			Secure:   true,
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+		})
+
+		c.JSON(http.StatusOK, gin.H{"token": cookie})
 	}
 }
 
