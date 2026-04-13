@@ -2,9 +2,11 @@ package api
 
 // HealthResponse is returned by GET /health.
 type HealthResponse struct {
-	Status string `json:"status"`
-	Time   string `json:"time,omitempty"`
-	Error  string `json:"error,omitempty"`
+	Status    string `json:"status"`
+	Time      string `json:"time,omitempty"`
+	Version   string `json:"version,omitempty"`
+	BuildDate string `json:"build_date,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 // ReadinessChecks contains individual subsystem health results.
