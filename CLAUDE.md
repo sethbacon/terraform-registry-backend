@@ -108,28 +108,23 @@ When multiple agents run concurrently, follow these rules to avoid conflicts:
 
 ### Releasing a version
 
-When a release is called for:
+Releases are largely automated via two workflows: `prepare-release.yml` and `auto-tag.yml`.
 
-1. Collect the `## Changelog` sections from all PR bodies merged since the last release.
+#### Automated flow (preferred)
 
-2. Update `CHANGELOG.md` on `development` — promote `[Unreleased]` to the new version with today's date and paste the collected entries:
-
-   ```markdown
-   ## [X.Y.Z] - YYYY-MM-DD
-   ### Fixed
-   - fix: ...
-   ### Added
-   - feat: ...
-   ```
-
-3. Commit directly on `development` and push (**no tag yet**):
+1. **Dispatch `prepare-release.yml`** from the GitHub Actions UI or CLI:
 
    ```bash
-   git commit -m "chore: release vX.Y.Z"
-   git push origin development
+   gh workflow run prepare-release.yml -f version=X.Y.Z
    ```
 
-4. **UAT — local build validation** before merging to `main`:
+   This will:
+   - Collect `## Changelog` entries from merged PR bodies since the last tag
+   - Update `CHANGELOG.md` on `development`
+   - Commit `chore: release vX.Y.Z` on `development` and push
+   - Open a release PR from `development` → `main`
+
+2. **UAT — local build validation** before merging to `main`:
 
    ```bash
    cd deployments
@@ -142,38 +137,20 @@ When a release is called for:
    against a mirrored provider or module) to confirm downloads work. **Do not merge to `main`
    until the local build passes.**
 
-5. Merge `development` → `main` via PR (step 7 above).
+3. **Merge the release PR using a merge commit** (not squash). This preserves shared commit
+   ancestry between `development` and `main`, preventing CHANGELOG merge conflicts.
 
-6. **After the PR is merged**, tag the commit that landed on `main` and push the tag:
+   > **Important:** Release PRs (`development` → `main`) must use merge commits. Feature PRs
+   > (`feature/*` → `development`) continue to use squash merges. GitHub allows both when
+   > "Allow merge commits" and "Allow squash merging" are both enabled.
 
-   ```bash
-   git fetch origin
-   git tag vX.Y.Z origin/main
-   git push origin vX.Y.Z
-   ```
+4. **`auto-tag.yml` fires automatically** after the release PR merges. It extracts the
+   version from the PR title (`chore: release vX.Y.Z`) and creates + pushes the tag.
+   The tag push triggers `release.yml`, which: runs CI → builds multi-platform binaries →
+   pushes Docker image to `ghcr.io/sethbacon/terraform-registry-backend:vX.Y.Z` → creates
+   a GitHub Release with SLSA provenance attestation.
 
-   > **Why tag after the merge?** The release PR produces a new merge commit SHA on `main`.
-   > Tagging on `development` before the merge leaves the tag pointing at the wrong commit —
-   > it will never appear in `main`'s history as a tagged release.
-
-7. **Trigger the release workflow.** The `push` tag trigger can silently fail if the tag was
-   previously pushed pointing to a different commit. Always verify the workflow fired within
-   ~60 seconds by checking:
-
-   ```bash
-   gh run list --workflow=release.yml --limit=3
-   ```
-
-   If no new run appears, trigger it manually:
-
-   ```bash
-   gh workflow run release.yml --ref vX.Y.Z
-   ```
-
-   The workflow will: run CI → build multi-platform binaries → push Docker image to
-   `ghcr.io/sethbacon/terraform-registry-backend:vX.Y.Z` → create a GitHub Release.
-
-8. **Update deployment configs to reference the new version.** The following files contain
+5. **Update deployment configs to reference the new version.** The following files contain
    hardcoded image tags that must be bumped after every release. Backend and frontend
    versions are independent — update only the component that was released.
 
@@ -192,6 +169,15 @@ When a release is called for:
    > **Why not automate this?** These files are example/reference configs with
    > cloud-specific placeholders (`<ACR_NAME>`, `<ACCOUNT_ID>`, etc.) that users copy and
    > customise. Automated updates would create noise in diffs for users tracking upstream.
+
+#### Manual fallback
+
+If the automated workflow fails, you can perform the steps manually:
+
+1. Run `.github/scripts/collect-changelog.sh` to gather entries.
+2. Update `CHANGELOG.md` on `development`.
+3. Commit `chore: release vX.Y.Z`, push, and open the release PR to `main`.
+4. After merge, tag manually: `git tag vX.Y.Z origin/main && git push origin vX.Y.Z`.
 
 ---
 
@@ -529,7 +515,6 @@ func (h *Handler) MethodName(c *gin.Context) {
 - Required status checks (strict — branch must be up-to-date): `Backend Tests & Quality`, `Security Scan (gosec)`, `Docker Build Smoke Test`, `Deployment Config Validation`
 - Required pull request reviews: 1 approving review, dismiss stale reviews, require code owner review
 - Enforce admins: no (admin/owner can bypass review requirements as sole maintainer)
-- Required linear history: yes (squash/rebase only, no merge commits)
 - Required conversation resolution: yes
 - Force pushes: blocked
 - Branch deletion: blocked
@@ -544,10 +529,15 @@ func (h *Handler) MethodName(c *gin.Context) {
 
 ### Merge Strategy
 
-- **Squash merge only** — merge commits and rebase merges are disabled
+- **Squash merge** — default for feature/fix branches → `development`
+- **Merge commits** — used for release PRs (`development` → `main`) to preserve commit ancestry and prevent CHANGELOG conflicts
+- **Rebase merges** — disabled
 - **Delete branch on merge** — enabled; feature/fix branches are cleaned up automatically
 - **Allow update branch** — enabled; PRs can pull in base branch changes via GitHub UI
 - **Web commit signoff required** — enabled; all web-based commits require DCO signoff
+
+> **GitHub repo settings required:** Both "Allow merge commits" and "Allow squash merging"
+> must be enabled. "Allow rebase merging" remains disabled.
 
 ### Dependency Management
 
@@ -568,6 +558,8 @@ func (h *Handler) MethodName(c *gin.Context) {
 - `go vet` and race-detector-enabled tests in CI
 - All GitHub Actions pinned to full commit SHAs
 - Scheduled weekly builds with auto-issue on failure
+- **SLSA provenance attestation** on Docker images and GoReleaser binaries via `actions/attest-build-provenance`
+- **Cosign keyless signing** on Docker images via Sigstore (verify with `cosign verify`)
 
 ### Repository Topics
 
