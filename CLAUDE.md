@@ -115,14 +115,14 @@ Releases are largely automated via two workflows: `prepare-release.yml` and `aut
 1. **Dispatch `prepare-release.yml`** from the GitHub Actions UI or CLI:
 
    ```bash
-   gh workflow run prepare-release.yml -f version=X.Y.Z
+   gh workflow run prepare-release.yml -f version=X.Y.Z --ref development
    ```
 
    This will:
    - Collect `## Changelog` entries from merged PR bodies since the last tag
-   - Update `CHANGELOG.md` on `development`
-   - Commit `chore: release vX.Y.Z` on `development` and push
-   - Open a release PR from `development` → `main`
+   - Update `CHANGELOG.md`
+   - Create a `release/vX.Y.Z` branch, commit, and push
+   - Open a release PR (`release/vX.Y.Z` → `main`) titled `chore: release vX.Y.Z`
 
 2. **UAT — local build validation** before merging to `main`:
 
@@ -146,11 +146,22 @@ Releases are largely automated via two workflows: `prepare-release.yml` and `aut
 
 4. **`auto-tag.yml` fires automatically** after the release PR merges. It extracts the
    version from the PR title (`chore: release vX.Y.Z`) and creates + pushes the tag.
-   The tag push triggers `release.yml`, which: runs CI → builds multi-platform binaries →
-   pushes Docker image to `ghcr.io/sethbacon/terraform-registry-backend:vX.Y.Z` → creates
-   a GitHub Release with SLSA provenance attestation.
 
-5. **Update deployment configs to reference the new version.** The following files contain
+5. **Manually dispatch `release.yml`** to build and publish release artifacts:
+
+   ```bash
+   gh workflow run release.yml --ref vX.Y.Z
+   ```
+
+   > **Why manual?** Tags pushed by `GITHUB_TOKEN` (from `auto-tag.yml`) cannot trigger
+   > downstream workflows — this is a GitHub security limitation to prevent infinite loops.
+   > A GitHub App token or PAT with `workflow` scope would allow fully automatic triggering.
+
+   `release.yml` runs CI, builds Go binaries via GoReleaser, pushes Docker image to ghcr.io,
+   attests SLSA provenance on both binaries and image, signs the image with cosign, and
+   creates the GitHub Release.
+
+6. **Update deployment configs to reference the new version.** The following files contain
    hardcoded image tags that must be bumped after every release. Backend and frontend
    versions are independent — update only the component that was released.
 
@@ -177,7 +188,8 @@ If the automated workflow fails, you can perform the steps manually:
 1. Run `.github/scripts/collect-changelog.sh` to gather entries.
 2. Update `CHANGELOG.md` on `development`.
 3. Commit `chore: release vX.Y.Z`, push, and open the release PR to `main`.
-4. After merge, tag manually: `git tag vX.Y.Z origin/main && git push origin vX.Y.Z`.
+4. After merge, tag manually: `git tag -a vX.Y.Z origin/main -m "Release vX.Y.Z" && git push origin vX.Y.Z`.
+5. Dispatch release: `gh workflow run release.yml --ref vX.Y.Z`.
 
 ---
 
