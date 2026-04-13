@@ -34,7 +34,7 @@ jobs:
       - name: Validate version format
         run: |
           VERSION="${{ inputs.version }}"
-          if ! echo "$VERSION" | grep -qP '^\d+\.\d+\.\d+$'; then
+          if ! echo "$VERSION" | grep -qP '^\d+\.\d+\.\d+(-[a-zA-Z0-9.]+)?$'; then
             echo "::error::Invalid version format: $VERSION (expected X.Y.Z)"
             exit 1
           fi
