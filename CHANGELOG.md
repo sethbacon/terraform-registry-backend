@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.4] - 2026-04-13
+
+### Fixed
+
+- fix: respect `security.rate_limiting.enabled` config — all rate limiters (auth, general, upload) were unconditionally applied, ignoring the config flag
+
+---
+
 ## [0.3.3] - 2026-04-11
 
 ### Fixed

@@ -163,9 +163,16 @@ func (rl *RateLimiter) RemainingTokens(key string) int {
 	return int(currentTokens)
 }
 
-// RateLimitMiddleware creates a Gin middleware that rate limits requests
+// RateLimitMiddleware creates a Gin middleware that rate limits requests.
+// If limiter is nil (rate limiting disabled), requests pass through unchanged.
 func RateLimitMiddleware(limiter *RateLimiter) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// When rate limiting is disabled, pass through
+		if limiter == nil {
+			c.Next()
+			return
+		}
+
 		// Determine the rate limit key
 		key := getRateLimitKey(c)
 
