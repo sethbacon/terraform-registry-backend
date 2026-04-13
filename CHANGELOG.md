@@ -11,6 +11,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.5] - 2026-04-13
+
+### Fixed
+
+- fix: add `/auth/exchange-token` endpoint so the frontend can securely receive the SSO JWT from the HttpOnly cookie instead of URL query params
+- fix: change SSO callback cookie SameSite from Strict to Lax for cross-site redirect compatibility with identity providers
+
+### Added
+
+- feat: include `version` and `build_date` in `/health` response for deployment verification
+
+### Chore
+
+- chore: update deployment configs to v0.3.4/v0.4.2 and document release update steps in CLAUDE.md
+
+---
+
 ## [0.3.4] - 2026-04-13
 
 ### Fixed
