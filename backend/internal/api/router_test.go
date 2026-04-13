@@ -82,6 +82,12 @@ func TestHealthCheckHandler_Healthy(t *testing.T) {
 	if body["status"] != "healthy" {
 		t.Errorf("status = %v, want healthy", body["status"])
 	}
+	if body["version"] == nil {
+		t.Error("version field missing from healthy response")
+	}
+	if body["build_date"] == nil {
+		t.Error("build_date field missing from healthy response")
+	}
 }
 
 func TestHealthCheckHandler_Unhealthy(t *testing.T) {
