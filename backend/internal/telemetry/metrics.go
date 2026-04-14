@@ -202,6 +202,50 @@ var RateLimitRejectionsTotal = promauto.NewCounterVec(
 	[]string{"tier", "key_type"},
 )
 
+// AppInfo is a GaugeVec that exposes build information as Prometheus labels.
+// Set once at startup with value 1 so the info is available via the /metrics endpoint.
+//
+// Example PromQL queries:
+//   - Build info:  terraform_registry_info
+var AppInfo = promauto.NewGaugeVec(
+	prometheus.GaugeOpts{
+		Name: "terraform_registry_info",
+		Help: "Application build information",
+	},
+	[]string{"version", "go_version", "build_date"},
+)
+
+// ModuleScanQueueDepth tracks how many modules are awaiting a security scan.
+// Updated by the scanning subsystem whenever a module is enqueued or dequeued.
+var ModuleScanQueueDepth = promauto.NewGauge(
+	prometheus.GaugeOpts{
+		Name: "terraform_registry_scan_queue_depth",
+		Help: "Number of modules awaiting security scan",
+	},
+)
+
+// ModuleScanDuration is a HistogramVec recording the time taken for each security scan,
+// labelled by scanner tool and result status.
+//
+// Example PromQL queries:
+//   - p95 scan duration:  histogram_quantile(0.95, rate(terraform_registry_scan_duration_seconds_bucket[1h]))
+var ModuleScanDuration = promauto.NewHistogramVec(
+	prometheus.HistogramOpts{
+		Name:    "terraform_registry_scan_duration_seconds",
+		Help:    "Duration of module security scans",
+		Buckets: prometheus.DefBuckets,
+	},
+	[]string{"tool", "status"},
+)
+
+// JWTRevokedTokensCleanedTotal counts expired revoked JWT tokens removed during cleanup.
+var JWTRevokedTokensCleanedTotal = promauto.NewCounter(
+	prometheus.CounterOpts{
+		Name: "terraform_registry_jwt_revoked_tokens_cleaned_total",
+		Help: "Total number of expired revoked JWT tokens cleaned up",
+	},
+)
+
 // DBOpenConnections is a Gauge that tracks the number of open connections currently
 // held by the sql.DB connection pool.  It is sampled every 30 seconds by
 // StartDBStatsCollector rather than per-request to avoid the overhead of sql.DB.Stats().
@@ -216,75 +260,8 @@ var DBOpenConnections = promauto.NewGauge(
 	},
 )
 
-// AppInfo is a GaugeVec that exports build information as Prometheus labels.
-// It is set to 1 once at startup in main.go. The metric is useful for fleet
-// inventory queries (e.g., "which version is deployed in production?").
-//
-// Example PromQL queries:
-//   - Deployed version:  terraform_registry_info
-//   - Version count:     count by (version) (terraform_registry_info)
-var AppInfo = promauto.NewGaugeVec(
-	prometheus.GaugeOpts{
-		Name: "terraform_registry_info",
-		Help: "Application build information.",
-	},
-	[]string{"version", "go_version", "build_date"},
-)
-
-// Scanner job metrics — recorded by the module scanner background job.
-//
-// ModuleScanQueueDepth is a Gauge that tracks the approximate number of pending
-// module security scans waiting to be processed. Updated each scan cycle.
-//
-// Example PromQL queries:
-//   - Current queue depth:  module_scan_queue_depth
-//   - Alert on backlog:     module_scan_queue_depth > 50
-//
-// ModuleScanDuration is a HistogramVec with label {tool} recording how long each
-// individual module scan takes. Useful for capacity planning and scanner performance.
-//
-// Example PromQL queries:
-//   - p95 scan duration:  histogram_quantile(0.95, rate(module_scan_duration_seconds_bucket[1h]))
-//   - Average scan time:  rate(module_scan_duration_seconds_sum[1h]) / rate(module_scan_duration_seconds_count[1h])
-var (
-	ModuleScanQueueDepth = promauto.NewGauge(
-		prometheus.GaugeOpts{
-			Name: "module_scan_queue_depth",
-			Help: "Approximate number of module scans waiting to be processed.",
-		},
-	)
-
-	ModuleScanDuration = promauto.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Name:    "module_scan_duration_seconds",
-			Help:    "Duration of a single module security scan.",
-			Buckets: []float64{1, 5, 10, 30, 60, 120, 300, 600},
-		},
-		[]string{"tool"},
-	)
-)
-
-// JWTRevokedTokensCleanedTotal is a Counter incremented each time the daily
-// cleanup job removes expired entries from the jwt_revoked_tokens table.
-// A stalled counter may indicate the cleanup goroutine has stopped.
-//
-// Example PromQL queries:
-//   - Cleanup rate:  rate(jwt_revoked_tokens_cleaned_total[24h])
-var JWTRevokedTokensCleanedTotal = promauto.NewCounter(
-	prometheus.CounterOpts{
-		Name: "jwt_revoked_tokens_cleaned_total",
-		Help: "Total number of expired JWT revocation entries cleaned up.",
-	},
-)
-
 // StartDBStatsCollector launches a background goroutine that samples sql.DB connection
 // pool statistics every 30 seconds and updates the DBOpenConnections gauge.
-// The goroutine exits cleanly when the database becomes unreachable (db.Ping fails),
-// which happens automatically when the application shuts down and defers db.Close().
-//
-// Call this once, immediately after db.Connect() succeeds in main.go:
-//
-//	telemetry.StartDBStatsCollector(database)
 func StartDBStatsCollector(db *sql.DB) {
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
