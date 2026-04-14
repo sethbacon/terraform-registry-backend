@@ -1,0 +1,97 @@
+{{- if .Values.backup.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "terraform-registry.fullname" . }}-backup
+  labels:
+    {{- include "terraform-registry.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  successfulJobsHistoryLimit: {{ .Values.backup.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.backup.failedJobsHistoryLimit }}
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            {{- include "terraform-registry.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: backup
+        spec:
+          {{- with .Values.global.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          serviceAccountName: {{ include "terraform-registry.serviceAccountName" . }}
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            runAsNonRoot: true
+          restartPolicy: OnFailure
+          containers:
+            - name: backup
+              image: {{ printf "%s:%s" .Values.backup.image.repository .Values.backup.image.tag }}
+              imagePullPolicy: {{ .Values.backup.image.pullPolicy }}
+              securityContext:
+                readOnlyRootFilesystem: true
+                allowPrivilegeEscalation: false
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+                  TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+                  BACKUP_FILE="/tmp/terraform_registry_${TIMESTAMP}.dump"
+                  echo "Starting backup at ${TIMESTAMP}..."
+                  pg_dump \
+                    --host="${PGHOST}" \
+                    --port="${PGPORT}" \
+                    --username="${PGUSER}" \
+                    --dbname="${PGDATABASE}" \
+                    --format=custom \
+                    --compress=9 \
+                    --file="${BACKUP_FILE}"
+                  echo "Backup created: ${BACKUP_FILE} ($(du -h ${BACKUP_FILE} | cut -f1))"
+                  {{- if eq .Values.backup.destination "s3" }}
+                  echo "Uploading to S3..."
+                  aws s3 cp "${BACKUP_FILE}" \
+                    "s3://{{ .Values.backup.bucket }}/{{ .Values.backup.prefix }}/terraform_registry_${TIMESTAMP}.dump"
+                  {{- else if eq .Values.backup.destination "azure" }}
+                  echo "Uploading to Azure Blob Storage..."
+                  az storage blob upload \
+                    --container-name "{{ .Values.backup.bucket }}" \
+                    --name "{{ .Values.backup.prefix }}/terraform_registry_${TIMESTAMP}.dump" \
+                    --file "${BACKUP_FILE}"
+                  {{- else if eq .Values.backup.destination "gcs" }}
+                  echo "Uploading to GCS..."
+                  gsutil cp "${BACKUP_FILE}" \
+                    "gs://{{ .Values.backup.bucket }}/{{ .Values.backup.prefix }}/terraform_registry_${TIMESTAMP}.dump"
+                  {{- end }}
+                  echo "Backup completed successfully."
+              env:
+                - name: PGHOST
+                  value: {{ .Values.externalDatabase.host | quote }}
+                - name: PGPORT
+                  value: {{ .Values.externalDatabase.port | quote }}
+                - name: PGDATABASE
+                  value: {{ .Values.externalDatabase.name | quote }}
+                - name: PGUSER
+                  value: {{ .Values.externalDatabase.user | quote }}
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "terraform-registry.databaseSecretName" . }}
+                      key: TFR_DATABASE_PASSWORD
+                - name: PGSSLMODE
+                  value: {{ .Values.externalDatabase.sslMode | quote }}
+              resources:
+                {{- toYaml .Values.backup.resources | nindent 16 }}
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: tmp
+              emptyDir:
+                sizeLimit: 5Gi
+{{- end }}
