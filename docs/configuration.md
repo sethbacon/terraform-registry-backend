@@ -48,6 +48,59 @@ For example, `database.host` in YAML becomes `TFR_DATABASE_HOST` as an env var.
 | `TFR_LOGGING_FORMAT` | string | `json` | No | `json`, `text` |
 | `TFR_TELEMETRY_ENABLED` | bool | `true` | No | Enable telemetry subsystem |
 | `TFR_TELEMETRY_METRICS_PROMETHEUS_PORT` | int | `9090` | No | Prometheus metrics port |
+| `TFR_REDIS_HOST` | string | — | No | Redis host (enables HA rate limiting and OIDC sessions) |
+| `TFR_REDIS_PORT` | int | `6379` | No | Redis port |
+| `TFR_REDIS_PASSWORD` | string | — | No | Redis password |
+| `TFR_REDIS_DB` | int | `0` | No | Redis database number |
+| `TFR_REDIS_TLS` | bool | `false` | No | Enable TLS for Redis connection |
+| `TFR_REDIS_POOL_SIZE` | int | `10` | No | Redis connection pool size |
+| `TFR_REDIS_DIAL_TIMEOUT` | duration | `5s` | No | Redis connection timeout |
+| `TFR_JWT_SECRET_FILE` | string | — | No | Path to file containing JWT secret (enables hot-reload) |
+| `ENCRYPTION_KEY_PREVIOUS` | string | — | No | Previous encryption key for zero-downtime rotation |
+| `TFR_SECURITY_RATE_LIMITING_ORG_REQUESTS_PER_MINUTE` | int | `0` | No | Per-org aggregate rate limit (0 = disabled) |
+| `TFR_SECURITY_RATE_LIMITING_ORG_BURST` | int | `0` | No | Per-org burst allowance |
+
+---
+
+## Redis (Optional)
+
+Redis enables high-availability features that require shared state across multiple backend
+pods: distributed rate limiting (GCRA algorithm) and OIDC session state. When `redis.host`
+is not set, the backend falls back to in-memory stores which work correctly for single-instance
+deployments but cause issues behind a load balancer.
+
+```yaml
+redis:
+  host: redis.example.com     # leave empty to use in-memory fallback
+  port: 6379
+  password: ${REDIS_PASSWORD}  # omit or leave blank if Redis has no auth
+  db: 0
+  tls: false                   # set true if Redis requires TLS (e.g., Azure Cache for Redis)
+  pool_size: 10                # connection pool size per backend instance
+  dial_timeout: 5s             # timeout for new connections
+```
+
+| Variable | Type | Default | Description |
+| --- | --- | --- | --- |
+| `TFR_REDIS_HOST` | string | — | Redis server hostname or IP. When empty, HA features use in-memory fallback. |
+| `TFR_REDIS_PORT` | int | `6379` | Redis server port. |
+| `TFR_REDIS_PASSWORD` | string | — | Redis AUTH password. Leave blank for unauthenticated connections. |
+| `TFR_REDIS_DB` | int | `0` | Redis database number (0-15). |
+| `TFR_REDIS_TLS` | bool | `false` | Enable TLS. Required for Azure Cache for Redis and AWS ElastiCache with in-transit encryption. |
+| `TFR_REDIS_POOL_SIZE` | int | `10` | Maximum number of connections per backend instance. |
+| `TFR_REDIS_DIAL_TIMEOUT` | duration | `5s` | Timeout for establishing new connections. |
+
+### Redis in Kubernetes
+
+For Kubernetes deployments, you can use:
+
+- **Azure Cache for Redis**: Set `tls: true`, use a Private Endpoint for network isolation.
+- **AWS ElastiCache**: Set `tls: true` if in-transit encryption is enabled.
+- **Bitnami Redis Helm Chart**: Deploy Redis alongside the registry in the same namespace.
+
+The backend gracefully falls back to in-memory stores if Redis becomes unreachable at startup.
+If Redis becomes unreachable after startup, rate limiting and OIDC operations will return
+errors until the connection recovers.
 
 ---
 
@@ -254,8 +307,23 @@ export TFR_JWT_SECRET=$(openssl rand -hex 32)
 The JWT secret signs authentication tokens. In production:
 
 - Minimum 32 characters. The server refuses to start without a sufficient secret when `TFR_DEV_MODE` is not set.
-- Rotate by replacing the secret and restarting. All existing sessions will be invalidated — users will need to log in again.
 - Store in a secrets manager (Azure Key Vault, AWS Secrets Manager, HashiCorp Vault), not in environment files checked into source control.
+
+#### File-Based Hot-Reload (Zero-Downtime Rotation)
+
+Instead of setting `TFR_JWT_SECRET` as an environment variable, you can point the backend
+at a file containing the secret:
+
+```bash
+export TFR_JWT_SECRET_FILE=/etc/secrets/jwt-secret
+```
+
+When the file is modified, the backend detects the change via `fsnotify` and atomically
+swaps the signing key. New tokens are signed with the new key, while tokens signed with the
+previous key remain valid for an overlap period (default: 5 minutes). This enables
+zero-downtime secret rotation in Kubernetes by updating the backing Secret object.
+
+See [Secrets Rotation Guide](secrets-rotation.md) for detailed procedures.
 
 ### Encryption Key
 
@@ -263,10 +331,26 @@ The JWT secret signs authentication tokens. In production:
 export ENCRYPTION_KEY=$(openssl rand -hex 16)   # produces 32 hex characters = 32 bytes (required for AES-256)
 ```
 
-The encryption key protects SCM OAuth tokens stored in the database (AES-256). It is separate
+The encryption key protects SCM OAuth tokens stored in the database (AES-256-GCM). It is separate
 from the JWT secret because OAuth tokens have different sensitivity and lifetime characteristics.
-If this key is lost, all SCM connections will need to be re-authorized — the encrypted tokens
+If this key is lost, all SCM connections will need to be re-authorized -- the encrypted tokens
 cannot be recovered.
+
+#### Zero-Downtime Key Rotation
+
+To rotate the encryption key without invalidating existing encrypted tokens, set the previous
+key alongside the new one:
+
+```bash
+export ENCRYPTION_KEY=<new-key>
+export ENCRYPTION_KEY_PREVIOUS=<old-key>
+```
+
+The backend encrypts new data with `ENCRYPTION_KEY` and decrypts using both keys (current
+first, then previous as fallback). Once all tokens have been re-encrypted with the new key,
+you can remove `ENCRYPTION_KEY_PREVIOUS`.
+
+See [Secrets Rotation Guide](secrets-rotation.md) for the full step-by-step procedure.
 
 ### CORS
 
@@ -289,10 +373,35 @@ security:
     enabled: true
     requests_per_minute: 60   # per-IP limit for most endpoints
     burst: 10                  # allow short bursts above the per-minute limit
+    org_requests_per_minute: 0 # per-organization aggregate limit (0 = disabled)
+    org_burst: 0               # org-level burst allowance
 ```
 
-Rate limiting applies per client IP. Increase `requests_per_minute` if you have
-many Terraform agents running concurrently from the same IP (e.g., behind a NAT gateway).
+Rate limiting applies per client IP (or per user/API key when authenticated). Increase
+`requests_per_minute` if you have many Terraform agents running concurrently from the
+same IP (e.g., behind a NAT gateway).
+
+When Redis is configured (`redis.host` is set), rate limiting uses the GCRA (Generic Cell
+Rate Algorithm) in Redis, which correctly enforces limits across all backend pods. Without
+Redis, each pod maintains an independent in-memory token bucket -- clients can bypass limits
+by rotating across pods.
+
+#### Per-Organization Rate Limiting
+
+When `org_requests_per_minute` is set to a value greater than 0 and multi-tenancy is enabled,
+an additional aggregate rate limit is enforced per organization. Both the individual limit
+and the organization limit must pass for a request to proceed.
+
+This prevents a single organization from consuming all capacity on a shared registry, even
+if each individual user stays within their personal limit.
+
+| Variable | Type | Default | Description |
+| --- | --- | --- | --- |
+| `TFR_SECURITY_RATE_LIMITING_ENABLED` | bool | `true` | Master toggle for rate limiting. |
+| `TFR_SECURITY_RATE_LIMITING_REQUESTS_PER_MINUTE` | int | `60` | Per-client rate limit. |
+| `TFR_SECURITY_RATE_LIMITING_BURST` | int | `10` | Burst allowance above per-minute limit. |
+| `TFR_SECURITY_RATE_LIMITING_ORG_REQUESTS_PER_MINUTE` | int | `0` | Per-organization aggregate limit. 0 disables. |
+| `TFR_SECURITY_RATE_LIMITING_ORG_BURST` | int | `0` | Organization-level burst allowance. |
 
 ### TLS
 

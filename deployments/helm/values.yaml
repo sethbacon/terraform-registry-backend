@@ -36,6 +36,15 @@ backend:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+  # -- Topology spread constraints for pod scheduling across zones/nodes
+  topologySpreadConstraints: []
+  # Example:
+  #   - maxSkew: 1
+  #     topologyKey: topology.kubernetes.io/zone
+  #     whenUnsatisfiable: DoNotSchedule
+  #     labelSelector:
+  #       matchLabels:
+  #         app.kubernetes.io/component: backend
   # -- Additional environment variables
   extraEnv: []
   # -- Additional volume mounts
@@ -154,8 +163,17 @@ multiTenancy:
 security:
   # -- JWT secret (required, min 32 chars). Ignored if existingSecret is set.
   jwtSecret: ""
+  # -- Path to a file containing the JWT secret. When set, the backend watches
+  # the file for changes and hot-reloads the signing key without restart.
+  # In Kubernetes, mount a Secret as a volume and set this to the mount path.
+  # Example: /etc/secrets/jwt-secret
+  jwtSecretFile: ""
   # -- Encryption key for sensitive data (32 bytes). Ignored if existingSecret is set.
   encryptionKey: ""
+  # -- Previous encryption key for zero-downtime rotation. When set, the backend
+  # tries the current key first for decryption, then falls back to this key.
+  # Remove after all encrypted data has been re-encrypted with the new key.
+  encryptionKeyPrevious: ""
   # -- Use an existing secret containing TFR_JWT_SECRET and ENCRYPTION_KEY keys.
   # This is the recommended approach for production — it avoids storing secrets
   # in Helm release history. Create the Secret before installing the chart:
@@ -163,16 +181,44 @@ security:
   #     --from-literal=TFR_JWT_SECRET="$(openssl rand -hex 32)" \
   #     --from-literal=ENCRYPTION_KEY="$(openssl rand -hex 16)" \
   #     -n terraform-registry
+  # Optionally also include ENCRYPTION_KEY_PREVIOUS for key rotation.
   existingSecret: ""
   rateLimiting:
     enabled: true
     requestsPerMinute: 60
     burst: 10
+    # -- Per-organization aggregate rate limit (requires multi-tenancy).
+    # Set to 0 to disable org-level limiting.
+    orgRequestsPerMinute: 0
+    orgBurst: 0
   cors:
     # -- Allowed CORS origins. Set to your registry's public URL in production.
     # Defaults to empty (no cross-origin requests allowed). Example:
     #   allowedOrigins: ["https://registry.example.com"]
     allowedOrigins: []
+
+# -- Redis configuration (optional, enables HA features)
+# When redis.host is set, rate limiting uses distributed GCRA in Redis and
+# OIDC session state is stored in Redis -- both required for correct behavior
+# behind a load balancer with multiple pods.
+# When redis.host is empty, the backend falls back to in-memory stores.
+redis:
+  # -- Redis host (leave empty to use in-memory fallback)
+  host: ""
+  # -- Redis port
+  port: 6379
+  # -- Redis password (ignored if existingSecret is set)
+  password: ""
+  # -- Redis database number
+  db: 0
+  # -- Enable TLS for Redis connection (required for Azure Cache for Redis)
+  tls: false
+  # -- Connection pool size per backend instance
+  poolSize: 10
+  # -- Connection timeout
+  dialTimeout: "5s"
+  # -- Use an existing secret containing REDIS_PASSWORD key
+  existingSecret: ""
 
 # -- Logging
 logging:
@@ -235,6 +281,89 @@ serviceMonitor:
   enabled: false
   interval: 30s
   labels: {}
+
+# -- PrometheusRule for alerting (if using prometheus-operator)
+prometheusRule:
+  enabled: false
+  labels: {}
+
+# -- Module security scanning configuration
+scanning:
+  # -- Enable module security scanning
+  enabled: false
+  # -- Scanner tool: trivy, terrascan, snyk, checkov, custom
+  tool: "trivy"
+  # -- Absolute path to scanner binary inside the container
+  binaryPath: "/usr/local/bin/trivy"
+  # -- Pin expected binary version (supply-chain protection; leave empty to skip check)
+  expectedVersion: ""
+  # -- Scan timeout duration
+  timeout: "5m"
+  # -- Number of concurrent scan workers
+  workerCount: 2
+  # -- How often (minutes) the scanner polls for pending scans
+  scanIntervalMins: 5
+
+# -- Audit logging configuration
+audit:
+  # -- Enable audit logging
+  enabled: true
+  # -- Log read (GET) operations
+  logReadOperations: false
+  # -- Log failed requests (4xx/5xx)
+  logFailedRequests: true
+  # -- External audit log shippers
+  shippers: []
+  # Example:
+  #   - enabled: true
+  #     type: webhook
+  #     webhook:
+  #       url: "https://siem.example.com/audit"
+  #       headers:
+  #         Authorization: "Bearer token"
+  #       timeoutSecs: 10
+  #       batchSize: 100
+  #       flushIntervalSecs: 30
+
+# -- Backup configuration (optional pg_dump CronJob)
+backup:
+  # -- Enable the backup CronJob
+  enabled: false
+  # -- Cron schedule expression (default: daily at 02:00 UTC)
+  schedule: "0 2 * * *"
+  # -- Destination for backup uploads: s3, azure, gcs, or local (PVC)
+  destination: "s3"
+  # -- S3/Azure/GCS bucket or container name for backup storage
+  bucket: ""
+  # -- S3/GCS region
+  region: ""
+  # -- Path prefix inside the bucket
+  prefix: "backups/terraform-registry"
+  # -- Image used for the backup job (must include pg_dump and cloud CLI)
+  image:
+    repository: postgres
+    tag: "16-alpine"
+    pullPolicy: IfNotPresent
+  # -- Resource requests and limits for backup pods
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  # -- Number of successful job runs to retain
+  successfulJobsHistoryLimit: 3
+  # -- Number of failed job runs to retain
+  failedJobsHistoryLimit: 3
+
+# -- Grafana dashboard ConfigMap (auto-provisioned when using the Grafana sidecar)
+grafanaDashboard:
+  enabled: false
+  labels: {}
+  # Example: if using the Grafana Helm chart sidecar, set the label it watches:
+  #   labels:
+  #     grafana_dashboard: "1"
 
 # -- Kubernetes Gateway API
 # Supports AKS (Application Gateway for Containers), AWS EKS (ALB Controller),
