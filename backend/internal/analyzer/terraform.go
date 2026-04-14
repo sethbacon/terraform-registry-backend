@@ -66,7 +66,11 @@ func AnalyzeDir(moduleDir string) (*ModuleDoc, error) {
 			"dir", moduleDir, "diags", diags.Error())
 	}
 
-	doc := &ModuleDoc{}
+	doc := &ModuleDoc{
+		Inputs:    []InputVar{},
+		Outputs:   []OutputVal{},
+		Providers: []ProviderReq{},
+	}
 
 	for name, v := range module.Variables {
 		doc.Inputs = append(doc.Inputs, InputVar{
