@@ -7,18 +7,24 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
+	"github.com/terraform-registry/terraform-registry/internal/config"
 )
 
 // StatsHandler handles stats-related API requests
 type StatsHandler struct {
-	db *sqlx.DB
+	db       *sqlx.DB
+	scanning *config.ScanningConfig
 }
 
 // NewStatsHandler creates a new stats handler
-func NewStatsHandler(database *sqlx.DB) *StatsHandler {
-	return &StatsHandler{
+func NewStatsHandler(database *sqlx.DB, scanning ...*config.ScanningConfig) *StatsHandler {
+	h := &StatsHandler{
 		db: database,
 	}
+	if len(scanning) > 0 {
+		h.scanning = scanning[0]
+	}
+	return h
 }
 
 // DashboardStats represents the response for dashboard statistics
@@ -31,7 +37,18 @@ type DashboardStats struct {
 	SCMProviders    int64               `json:"scm_providers"`
 	BinaryMirrors   BinaryMirrorStats   `json:"binary_mirrors"`
 	ProviderMirrors ProviderMirrorStats `json:"provider_mirrors"`
+	Scanning        DashboardScanning   `json:"scanning"`
 	RecentSyncs     []RecentSyncEntry   `json:"recent_syncs"`
+}
+
+// DashboardScanning summarises security scanning health for the dashboard.
+type DashboardScanning struct {
+	Enabled  bool  `json:"enabled"`
+	Total    int64 `json:"total"`
+	Pending  int64 `json:"pending"`
+	Clean    int64 `json:"clean"`
+	Findings int64 `json:"findings"`
+	Error    int64 `json:"error"`
 }
 
 // ModuleSystemCount is a count of modules for a single system (provider).
@@ -224,6 +241,26 @@ func (h *StatsHandler) GetDashboardStats(c *gin.Context) {
 		&stats.ProviderMirrors.Total,
 		&stats.ProviderMirrors.Healthy,
 		&stats.ProviderMirrors.Failed,
+	)
+
+	// Security scanning summary.
+	if h.scanning != nil {
+		stats.Scanning.Enabled = h.scanning.Enabled
+	}
+	_ = h.db.QueryRowContext(ctx, `
+		SELECT
+			COUNT(*) AS total,
+			COUNT(*) FILTER (WHERE status = 'pending') AS pending,
+			COUNT(*) FILTER (WHERE status = 'clean') AS clean,
+			COUNT(*) FILTER (WHERE status = 'findings') AS findings,
+			COUNT(*) FILTER (WHERE status = 'error') AS error_count
+		FROM module_version_scans
+	`).Scan(
+		&stats.Scanning.Total,
+		&stats.Scanning.Pending,
+		&stats.Scanning.Clean,
+		&stats.Scanning.Findings,
+		&stats.Scanning.Error,
 	)
 
 	// Recent sync activity — last 8 entries unified across both mirror types.
