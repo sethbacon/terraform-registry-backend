@@ -598,7 +598,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 				middleware.RequireScope(auth.ScopeModulesWrite),
 				moduleAdminHandlers.UndeprecateVersion)
 			authenticatedGroup.GET("/modules/:namespace/:name/:system/versions/:version/scan",
-				middleware.RequireScope(auth.ScopeAdmin),
+				middleware.RequireScope(auth.ScopeScanningRead),
 				admin.GetModuleScanHandler(db))
 
 			// Security scanning admin endpoints
@@ -606,7 +606,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 				middleware.RequireScope(auth.ScopeAdmin),
 				admin.GetScanningConfigHandler(&cfg.Scanning))
 			authenticatedGroup.GET("/admin/scanning/stats",
-				middleware.RequireScope(auth.ScopeAdmin),
+				middleware.RequireScope(auth.ScopeScanningRead),
 				admin.GetScanningStatsHandler(sqlxDB))
 
 			// API Keys management - self-service for own keys
