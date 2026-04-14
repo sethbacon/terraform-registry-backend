@@ -2559,6 +2559,77 @@
                 }
             }
         },
+        "/api/v1/admin/scanning/config": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Returns the current security scanning configuration (read-only). Sensitive fields like binary_path are excluded. Requires admin scope.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Security Scanning"
+                ],
+                "summary": "Get scanning configuration",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/admin.ScanningConfigResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/admin/scanning/stats": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Returns aggregate scan counts by status and a list of recent scans. Requires admin scope.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Security Scanning"
+                ],
+                "summary": "Get scanning statistics",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/admin.ScanningStatsResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/admin/stats/dashboard": {
             "get": {
                 "security": [
@@ -4574,7 +4645,7 @@
                     "application/json"
                 ],
                 "tags": [
-                    "System"
+                    "Security Scanning"
                 ],
                 "summary": "Get module version scan result",
                 "parameters": [
@@ -9443,6 +9514,29 @@
                 }
             }
         },
+        "admin.DashboardScanning": {
+            "type": "object",
+            "properties": {
+                "clean": {
+                    "type": "integer"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "error": {
+                    "type": "integer"
+                },
+                "findings": {
+                    "type": "integer"
+                },
+                "pending": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
         "admin.DashboardStats": {
             "type": "object",
             "properties": {
@@ -9469,6 +9563,9 @@
                     "items": {
                         "$ref": "#/definitions/admin.RecentSyncEntry"
                     }
+                },
+                "scanning": {
+                    "$ref": "#/definitions/admin.DashboardScanning"
                 },
                 "scm_providers": {
                     "type": "integer"
@@ -10036,6 +10133,50 @@
                 }
             }
         },
+        "admin.RecentScanEntry": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "critical_count": {
+                    "type": "integer"
+                },
+                "high_count": {
+                    "type": "integer"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "low_count": {
+                    "type": "integer"
+                },
+                "medium_count": {
+                    "type": "integer"
+                },
+                "module_name": {
+                    "type": "string"
+                },
+                "module_version": {
+                    "type": "string"
+                },
+                "namespace": {
+                    "type": "string"
+                },
+                "scanned_at": {
+                    "type": "string"
+                },
+                "scanner": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "system": {
+                    "type": "string"
+                }
+            }
+        },
         "admin.RecentSyncEntry": {
             "type": "object",
             "properties": {
@@ -10130,6 +10271,61 @@
                 },
                 "token_type": {
                     "type": "string"
+                }
+            }
+        },
+        "admin.ScanningConfigResponse": {
+            "type": "object",
+            "properties": {
+                "enabled": {
+                    "type": "boolean"
+                },
+                "expected_version": {
+                    "type": "string"
+                },
+                "scan_interval_mins": {
+                    "type": "integer"
+                },
+                "severity_threshold": {
+                    "type": "string"
+                },
+                "timeout": {
+                    "type": "string"
+                },
+                "tool": {
+                    "type": "string"
+                },
+                "worker_count": {
+                    "type": "integer"
+                }
+            }
+        },
+        "admin.ScanningStatsResponse": {
+            "type": "object",
+            "properties": {
+                "clean": {
+                    "type": "integer"
+                },
+                "error": {
+                    "type": "integer"
+                },
+                "findings": {
+                    "type": "integer"
+                },
+                "pending": {
+                    "type": "integer"
+                },
+                "recent_scans": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/admin.RecentScanEntry"
+                    }
+                },
+                "scanning": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
                 }
             }
         },
