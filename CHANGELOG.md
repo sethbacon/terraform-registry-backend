@@ -11,6 +11,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.4.3] - 2026-04-14
 
+### Added
+
+- feat: add scanning:read RBAC scope granting devops and auditor roles access to scan results and stats
+
+## [0.4.2] - 2026-04-14
+
+### Added
+
+- feat: add security scanning config and stats API endpoints
+- feat: add Security Scanning swagger tag with full annotations
+- feat: sort swagger UI tags alphabetically
+- feat: extend dashboard stats with scanning health data
+
+## [0.4.1] - 2026-04-14
+
+### Fixed
+
+- fix: initialise `ModuleDoc` `Inputs`/`Outputs`/`Providers` to empty slices — prevents null JSON arrays in module analysis API response for modules with no inputs, outputs, or provider requirements
+
+## [0.4.0-rc.2] - 2026-04-13
+
 ## [0.4.0-rc.1] - 2026-04-13
 
 ---
