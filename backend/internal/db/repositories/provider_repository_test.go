@@ -695,10 +695,24 @@ var providerSearchWithStatsCols = []string{
 	"latest_version", "total_downloads",
 }
 
+// providerSearchWithStatsColsFTS includes the rank column returned when FTS is used.
+var providerSearchWithStatsColsFTS = []string{
+	"id", "organization_id", "namespace", "type", "description", "source",
+	"created_by", "created_by_name", "created_at", "updated_at",
+	"latest_version", "total_downloads",
+	"rank",
+}
+
 func sampleProviderSearchWithStatsRow() *sqlmock.Rows {
 	latestVer := "2.1.0"
 	return sqlmock.NewRows(providerSearchWithStatsCols).
 		AddRow("prov-1", "org-1", "hashicorp", "aws", nil, nil, nil, nil, time.Now(), time.Now(), &latestVer, int64(100))
+}
+
+func sampleProviderSearchWithStatsRowFTS() *sqlmock.Rows {
+	latestVer := "2.1.0"
+	return sqlmock.NewRows(providerSearchWithStatsColsFTS).
+		AddRow("prov-1", "org-1", "hashicorp", "aws", nil, nil, nil, nil, time.Now(), time.Now(), &latestVer, int64(100), float64(0.5))
 }
 
 func TestSearchProvidersWithStats_Success(t *testing.T) {
@@ -706,9 +720,9 @@ func TestSearchProvidersWithStats_Success(t *testing.T) {
 	mock.ExpectQuery("SELECT COUNT").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectQuery("SELECT.*FROM providers.*LEFT JOIN LATERAL").
-		WillReturnRows(sampleProviderSearchWithStatsRow())
+		WillReturnRows(sampleProviderSearchWithStatsRowFTS())
 
-	results, total, err := repo.SearchProvidersWithStats(context.Background(), "org-1", "aws", "hashicorp", 10, 0)
+	results, total, err := repo.SearchProvidersWithStats(context.Background(), "org-1", "aws", "hashicorp", 10, 0, "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -739,7 +753,7 @@ func TestSearchProvidersWithStats_Empty(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM providers.*LEFT JOIN LATERAL").
 		WillReturnRows(sqlmock.NewRows(providerSearchWithStatsCols))
 
-	results, total, err := repo.SearchProvidersWithStats(context.Background(), "", "", "", 10, 0)
+	results, total, err := repo.SearchProvidersWithStats(context.Background(), "", "", "", 10, 0, "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -753,7 +767,7 @@ func TestSearchProvidersWithStats_CountError(t *testing.T) {
 	mock.ExpectQuery("SELECT COUNT").
 		WillReturnError(errDB)
 
-	_, _, err := repo.SearchProvidersWithStats(context.Background(), "", "aws", "", 10, 0)
+	_, _, err := repo.SearchProvidersWithStats(context.Background(), "", "aws", "", 10, 0, "", "")
 	if err == nil {
 		t.Error("expected error on count query failure")
 	}
@@ -766,7 +780,7 @@ func TestSearchProvidersWithStats_QueryError(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM providers.*LEFT JOIN LATERAL").
 		WillReturnError(errDB)
 
-	_, _, err := repo.SearchProvidersWithStats(context.Background(), "", "aws", "", 10, 0)
+	_, _, err := repo.SearchProvidersWithStats(context.Background(), "", "aws", "", 10, 0, "", "")
 	if err == nil {
 		t.Error("expected error on search query failure")
 	}
@@ -777,9 +791,9 @@ func TestSearchProvidersWithStats_NoOrgFilter(t *testing.T) {
 	mock.ExpectQuery("SELECT COUNT").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectQuery("SELECT.*FROM providers.*LEFT JOIN LATERAL").
-		WillReturnRows(sampleProviderSearchWithStatsRow())
+		WillReturnRows(sampleProviderSearchWithStatsRowFTS())
 
-	results, total, err := repo.SearchProvidersWithStats(context.Background(), "", "aws", "", 10, 0)
+	results, total, err := repo.SearchProvidersWithStats(context.Background(), "", "aws", "", 10, 0, "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -796,7 +810,7 @@ func TestSearchProvidersWithStats_NullLatestVersion(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(providerSearchWithStatsCols).
 			AddRow("prov-2", nil, "hashicorp", "gcp", nil, nil, nil, nil, time.Now(), time.Now(), nil, int64(0)))
 
-	results, total, err := repo.SearchProvidersWithStats(context.Background(), "", "", "", 10, 0)
+	results, total, err := repo.SearchProvidersWithStats(context.Background(), "", "", "", 10, 0, "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

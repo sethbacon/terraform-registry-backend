@@ -173,3 +173,15 @@ notifications:
 
   # How often to run the expiry check (hours, default: 24)
   api_key_expiry_check_interval_hours: 24
+
+# Audit log retention
+audit_retention:
+  retention_days: 90        # Days to keep audit logs (0 = keep forever)
+  cleanup_batch_size: 1000  # Number of records to delete per batch
+
+# Webhook retry configuration
+# When a webhook-triggered publish fails, the event can be retried automatically
+# with exponential backoff. Set max_retries to 0 to disable retries.
+webhooks:
+  max_retries: 3            # Maximum number of retry attempts (0 = disabled)
+  retry_interval_mins: 2    # How often the retry job polls for retryable events

@@ -37,8 +37,8 @@ var (
 // encryption always uses the current (primary) key, while decryption
 // tries the primary key first, then falls back to the previous key.
 type TokenCipher struct {
-	masterKey    []byte
-	previousKey  []byte // optional, used for decryption fallback during key rotation
+	masterKey   []byte
+	previousKey []byte // optional, used for decryption fallback during key rotation
 }
 
 // NewTokenCipher creates a cipher with a 32-byte master key

@@ -96,6 +96,14 @@ var moduleSearchCols = []string{
 	"latest_version", "total_downloads",
 }
 
+// moduleSearchColsFTS adds the rank column for FTS queries (searchQuery >= 3 chars).
+var moduleSearchColsFTS = []string{
+	"id", "organization_id", "namespace", "name", "system", "description", "source",
+	"created_by", "created_by_name", "created_at", "updated_at",
+	"latest_version", "total_downloads",
+	"rank",
+}
+
 // ---------------------------------------------------------------------------
 // Row builders
 // ---------------------------------------------------------------------------
@@ -130,6 +138,13 @@ func sampleModuleSearchRow() *sqlmock.Rows {
 		AddRow("mod-1", "org-1", "hashicorp", "consul", "aws",
 			nil, "hashicorp/consul/aws", nil, nil, time.Now(), time.Now(),
 			nil, int64(0))
+}
+
+func sampleModuleSearchRowFTS() *sqlmock.Rows {
+	return sqlmock.NewRows(moduleSearchColsFTS).
+		AddRow("mod-1", "org-1", "hashicorp", "consul", "aws",
+			nil, "hashicorp/consul/aws", nil, nil, time.Now(), time.Now(),
+			nil, int64(0), float64(0.5))
 }
 
 // ---------------------------------------------------------------------------
@@ -263,8 +278,9 @@ func TestSearchHandler_Success_SingleTenant(t *testing.T) {
 
 	// No org query in single-tenant mode; SearchModulesWithStats emits 2 queries:
 	// 1. COUNT, 2. LATERAL join search (no separate module_versions query)
+	// "consul" is >= 3 chars so FTS mode adds rank column
 	mock.ExpectQuery("SELECT COUNT.*FROM modules").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
-	mock.ExpectQuery("SELECT.*FROM modules.*ORDER BY").WillReturnRows(sampleModuleSearchRow())
+	mock.ExpectQuery("SELECT.*FROM modules.*ORDER BY").WillReturnRows(sampleModuleSearchRowFTS())
 
 	w := doGET(r, "/v1/modules/search?q=consul")
 	if w.Code != http.StatusOK {

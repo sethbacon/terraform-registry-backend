@@ -721,6 +721,15 @@ var moduleSearchWithStatsCols = []string{
 	"latest_version", "total_downloads",
 }
 
+// moduleSearchWithStatsColsFTS includes the rank column returned when FTS is used.
+var moduleSearchWithStatsColsFTS = []string{
+	"id", "organization_id", "namespace", "name", "system",
+	"description", "source", "created_by", "created_by_name",
+	"created_at", "updated_at",
+	"latest_version", "total_downloads",
+	"rank",
+}
+
 func sampleModuleSearchWithStatsRow() *sqlmock.Rows {
 	latestVersion := "1.0.0"
 	return sqlmock.NewRows(moduleSearchWithStatsCols).
@@ -728,14 +737,21 @@ func sampleModuleSearchWithStatsRow() *sqlmock.Rows {
 			time.Now(), time.Now(), &latestVersion, int64(42))
 }
 
+func sampleModuleSearchWithStatsRowFTS() *sqlmock.Rows {
+	latestVersion := "1.0.0"
+	return sqlmock.NewRows(moduleSearchWithStatsColsFTS).
+		AddRow("mod-1", "org-1", "hashicorp", "vpc", "aws", nil, nil, nil, nil,
+			time.Now(), time.Now(), &latestVersion, int64(42), float64(0.5))
+}
+
 func TestSearchModulesWithStats_Success(t *testing.T) {
 	repo, mock := newModuleRepo(t)
 	mock.ExpectQuery("SELECT COUNT").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectQuery("SELECT.*FROM modules.*LEFT JOIN LATERAL").
-		WillReturnRows(sampleModuleSearchWithStatsRow())
+		WillReturnRows(sampleModuleSearchWithStatsRowFTS())
 
-	results, total, err := repo.SearchModulesWithStats(context.Background(), "org-1", "vpc", "", "", 10, 0)
+	results, total, err := repo.SearchModulesWithStats(context.Background(), "org-1", "vpc", "", "", 10, 0, "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -760,7 +776,7 @@ func TestSearchModulesWithStats_Empty(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM modules.*LEFT JOIN LATERAL").
 		WillReturnRows(sqlmock.NewRows(moduleSearchWithStatsCols))
 
-	results, total, err := repo.SearchModulesWithStats(context.Background(), "", "", "", "", 10, 0)
+	results, total, err := repo.SearchModulesWithStats(context.Background(), "", "", "", "", 10, 0, "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -777,7 +793,7 @@ func TestSearchModulesWithStats_CountError(t *testing.T) {
 	mock.ExpectQuery("SELECT COUNT").
 		WillReturnError(errDB)
 
-	_, _, err := repo.SearchModulesWithStats(context.Background(), "org-1", "vpc", "", "", 10, 0)
+	_, _, err := repo.SearchModulesWithStats(context.Background(), "org-1", "vpc", "", "", 10, 0, "", "")
 	if err == nil {
 		t.Error("expected error on count query failure")
 	}
@@ -790,7 +806,7 @@ func TestSearchModulesWithStats_QueryError(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM modules.*LEFT JOIN LATERAL").
 		WillReturnError(errDB)
 
-	_, _, err := repo.SearchModulesWithStats(context.Background(), "org-1", "vpc", "", "", 10, 0)
+	_, _, err := repo.SearchModulesWithStats(context.Background(), "org-1", "vpc", "", "", 10, 0, "", "")
 	if err == nil {
 		t.Error("expected error on search query failure")
 	}
@@ -801,9 +817,9 @@ func TestSearchModulesWithStats_WithAllFilters(t *testing.T) {
 	mock.ExpectQuery("SELECT COUNT").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectQuery("SELECT.*FROM modules.*LEFT JOIN LATERAL").
-		WillReturnRows(sampleModuleSearchWithStatsRow())
+		WillReturnRows(sampleModuleSearchWithStatsRowFTS())
 
-	results, total, err := repo.SearchModulesWithStats(context.Background(), "org-1", "vpc", "hashicorp", "aws", 10, 0)
+	results, total, err := repo.SearchModulesWithStats(context.Background(), "org-1", "vpc", "hashicorp", "aws", 10, 0, "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -824,7 +840,7 @@ func TestSearchModulesWithStats_ScanError(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM modules.*LEFT JOIN LATERAL").
 		WillReturnRows(badRows)
 
-	_, _, err := repo.SearchModulesWithStats(context.Background(), "org-1", "", "", "", 10, 0)
+	_, _, err := repo.SearchModulesWithStats(context.Background(), "org-1", "", "", "", 10, 0, "", "")
 	if err == nil {
 		t.Error("expected scan error, got nil")
 	}

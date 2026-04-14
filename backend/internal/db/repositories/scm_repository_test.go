@@ -611,3 +611,161 @@ func TestSCMAcknowledgeAlert_Success(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// GetModuleSourceRepoByID (Phase 2 — Webhook Retry Support)
+// ---------------------------------------------------------------------------
+
+func TestSCMGetModuleSourceRepoByID_Found(t *testing.T) {
+	repo, mock := newSCMRepo(t)
+	mock.ExpectQuery("SELECT.*FROM module_scm_repos.*WHERE id").
+		WillReturnRows(sampleSCMModuleRepoRow())
+
+	link, err := repo.GetModuleSourceRepoByID(context.Background(), uuid.New())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if link == nil {
+		t.Fatal("expected link, got nil")
+	}
+	if link.RepositoryOwner != "hashicorp" {
+		t.Errorf("RepositoryOwner = %q, want hashicorp", link.RepositoryOwner)
+	}
+}
+
+func TestSCMGetModuleSourceRepoByID_NotFound(t *testing.T) {
+	repo, mock := newSCMRepo(t)
+	mock.ExpectQuery("SELECT.*FROM module_scm_repos.*WHERE id").
+		WillReturnRows(sqlmock.NewRows(scmModuleRepoCols))
+
+	link, err := repo.GetModuleSourceRepoByID(context.Background(), uuid.New())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if link != nil {
+		t.Errorf("expected nil, got %v", link)
+	}
+}
+
+func TestSCMGetModuleSourceRepoByID_DBError(t *testing.T) {
+	repo, mock := newSCMRepo(t)
+	mock.ExpectQuery("SELECT.*FROM module_scm_repos.*WHERE id").
+		WillReturnError(errDB)
+
+	_, err := repo.GetModuleSourceRepoByID(context.Background(), uuid.New())
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetRetryableWebhookEvents (Phase 2 — Webhook Retry Support)
+// ---------------------------------------------------------------------------
+
+var scmWebhookEventCols = []string{
+	"id", "module_scm_repo_id", "event_type",
+	"processed", "retry_count", "max_retries",
+	"next_retry_at", "created_at",
+}
+
+func sampleRetryableWebhookRows() *sqlmock.Rows {
+	nextRetry := time.Now().Add(-1 * time.Minute) // in the past, eligible for retry
+	return sqlmock.NewRows(scmWebhookEventCols).
+		AddRow(uuid.New(), uuid.New(), "push",
+			false, 1, 5,
+			nextRetry, time.Now()).
+		AddRow(uuid.New(), uuid.New(), "tag",
+			false, 0, 3,
+			nextRetry, time.Now())
+}
+
+func TestSCMGetRetryableWebhookEvents_Success(t *testing.T) {
+	repo, mock := newSCMRepo(t)
+	mock.ExpectQuery("SELECT.*FROM scm_webhook_events.*WHERE processed = false").
+		WillReturnRows(sampleRetryableWebhookRows())
+
+	events, err := repo.GetRetryableWebhookEvents(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(events) != 2 {
+		t.Errorf("len = %d, want 2", len(events))
+	}
+}
+
+func TestSCMGetRetryableWebhookEvents_Empty(t *testing.T) {
+	repo, mock := newSCMRepo(t)
+	mock.ExpectQuery("SELECT.*FROM scm_webhook_events.*WHERE processed = false").
+		WillReturnRows(sqlmock.NewRows(scmWebhookEventCols))
+
+	events, err := repo.GetRetryableWebhookEvents(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(events) != 0 {
+		t.Errorf("len = %d, want 0", len(events))
+	}
+}
+
+func TestSCMGetRetryableWebhookEvents_DBError(t *testing.T) {
+	repo, mock := newSCMRepo(t)
+	mock.ExpectQuery("SELECT.*FROM scm_webhook_events.*WHERE processed = false").
+		WillReturnError(errDB)
+
+	_, err := repo.GetRetryableWebhookEvents(context.Background(), 10)
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SetWebhookRetryState (Phase 2 — Webhook Retry Support)
+// ---------------------------------------------------------------------------
+
+func TestSCMSetWebhookRetryState_Success(t *testing.T) {
+	repo, mock := newSCMRepo(t)
+	mock.ExpectExec("UPDATE scm_webhook_events SET.*retry_count").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	nextRetry := time.Now().Add(5 * time.Minute)
+	if err := repo.SetWebhookRetryState(context.Background(), uuid.New(), 2, "timeout", nextRetry); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSCMSetWebhookRetryState_DBError(t *testing.T) {
+	repo, mock := newSCMRepo(t)
+	mock.ExpectExec("UPDATE scm_webhook_events SET.*retry_count").
+		WillReturnError(errDB)
+
+	nextRetry := time.Now().Add(5 * time.Minute)
+	if err := repo.SetWebhookRetryState(context.Background(), uuid.New(), 1, "error", nextRetry); err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MarkWebhookForRetry (Phase 2 — Webhook Retry Support)
+// ---------------------------------------------------------------------------
+
+func TestSCMMarkWebhookForRetry_Success(t *testing.T) {
+	repo, mock := newSCMRepo(t)
+	mock.ExpectExec("UPDATE scm_webhook_events SET.*processed = false.*next_retry_at").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	nextRetry := time.Now().Add(10 * time.Minute)
+	if err := repo.MarkWebhookForRetry(context.Background(), uuid.New(), nextRetry); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSCMMarkWebhookForRetry_DBError(t *testing.T) {
+	repo, mock := newSCMRepo(t)
+	mock.ExpectExec("UPDATE scm_webhook_events SET.*processed = false.*next_retry_at").
+		WillReturnError(errDB)
+
+	nextRetry := time.Now().Add(10 * time.Minute)
+	if err := repo.MarkWebhookForRetry(context.Background(), uuid.New(), nextRetry); err == nil {
+		t.Error("expected error, got nil")
+	}
+}

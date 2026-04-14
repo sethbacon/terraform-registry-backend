@@ -69,6 +69,8 @@ type BackgroundServices struct {
 	tfMirrorSyncJob  *jobs.TerraformMirrorSyncJob
 	expiryNotifier   *jobs.APIKeyExpiryNotifier
 	moduleScannerJob *jobs.ModuleScannerJob
+	auditCleanupJob  *jobs.AuditCleanupJob
+	webhookRetryJob  *jobs.WebhookRetryJob
 	rateLimiters     []middleware.RateLimiterBackend
 }
 
@@ -88,6 +90,12 @@ func (bg *BackgroundServices) Shutdown() {
 	}
 	if bg.moduleScannerJob != nil {
 		_ = bg.moduleScannerJob.Stop()
+	}
+	if bg.auditCleanupJob != nil {
+		_ = bg.auditCleanupJob.Stop()
+	}
+	if bg.webhookRetryJob != nil {
+		bg.webhookRetryJob.Stop()
 	}
 	for _, rl := range bg.rateLimiters {
 		if rl != nil {
@@ -169,10 +177,24 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	log.Println("API key expiry notifier started")
 
 	// Initialize and start the module security scanner job (no-op when scanning is disabled)
+	// If scanning is not enabled via config file, check the database for setup wizard config
+	if !cfg.Scanning.Enabled {
+		if scanConfigJSON, err := oidcConfigRepo.GetScanningConfig(context.Background()); err == nil && scanConfigJSON != nil {
+			var dbScanCfg config.ScanningConfig
+			if json.Unmarshal(scanConfigJSON, &dbScanCfg) == nil && dbScanCfg.Enabled {
+				cfg.Scanning = dbScanCfg
+			}
+		}
+	}
 	moduleScannerJob := jobs.NewModuleScannerJob(&cfg.Scanning, scanRepo, moduleRepo, storageBackend)
 	if err := moduleScannerJob.Start(context.Background()); err != nil {
 		log.Printf("module scanner job failed to start: %v", err)
 	}
+
+	// Initialize and start the audit log cleanup job (no-op when retention_days=0)
+	auditCleanupJob := jobs.NewAuditCleanupJob(&cfg.AuditRetention, auditRepo)
+	go auditCleanupJob.Start(context.Background())
+	log.Println("Audit log cleanup job started")
 
 	// Get encryption key from environment for OAuth token encryption
 	encryptionKey := os.Getenv("ENCRYPTION_KEY")
@@ -474,6 +496,11 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 		WithScanQueue(scanRepo, &cfg.Scanning).
 		WithModuleDocs(moduleDocsRepo)
 
+	// Initialize and start the webhook retry job (no-op when max_retries=0)
+	webhookRetryJob := jobs.NewWebhookRetryJob(&cfg.Webhooks, scmRepo, moduleRepo, scmPublisher, tokenCipher)
+	go webhookRetryJob.Start(context.Background())
+	log.Println("Webhook retry job started")
+
 	// Initialize SCM handlers with the already-created repositories and token cipher
 	scmProviderHandlers := admin.NewSCMProviderHandlers(cfg, scmRepo, orgRepo, tokenCipher)
 	scmOAuthHandlers := admin.NewSCMOAuthHandlers(cfg, scmRepo, userRepo, tokenCipher)
@@ -583,6 +610,8 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 			setupGroup.POST("/storage/test", setupHandlers.TestStorageConfig)
 			setupGroup.POST("/storage", setupHandlers.SaveStorageConfig)
 			setupGroup.POST("/admin", setupHandlers.ConfigureAdmin)
+			setupGroup.POST("/scanning/test", setupHandlers.TestScanningConfig)
+			setupGroup.POST("/scanning", setupHandlers.SaveScanningConfig)
 			setupGroup.POST("/complete", setupHandlers.CompleteSetup)
 		}
 
@@ -881,6 +910,23 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 				storageGroup.POST("/configs/test", storageHandlers.TestStorageConfig)
 			}
 
+			// Storage Migration management (requires admin scope)
+			storageMigrationRepo := repositories.NewStorageMigrationRepository(sqlxDB)
+			storageMigrationService := services.NewStorageMigrationService(
+				storageMigrationRepo, storageConfigRepo, moduleRepo, providerRepo, tokenCipher, cfg,
+			)
+			storageMigrationHandler := admin.NewStorageMigrationHandler(storageMigrationService)
+
+			migrationGroup := authenticatedGroup.Group("/admin/storage/migrations")
+			migrationGroup.Use(middleware.RequireScope(auth.ScopeAdmin))
+			{
+				migrationGroup.POST("/plan", storageMigrationHandler.PlanMigration)
+				migrationGroup.POST("", storageMigrationHandler.StartMigration)
+				migrationGroup.GET("", storageMigrationHandler.ListMigrations)
+				migrationGroup.GET("/:id", storageMigrationHandler.GetMigrationStatus)
+				migrationGroup.POST("/:id/cancel", storageMigrationHandler.CancelMigration)
+			}
+
 			// OIDC admin configuration management (requires admin scope)
 			oidcAdminGroup := authenticatedGroup.Group("/admin/oidc")
 			oidcAdminGroup.Use(middleware.RequireScope(auth.ScopeAdmin))
@@ -893,6 +939,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 			auditLogsGroup := authenticatedGroup.Group("/admin/audit-logs")
 			{
 				auditLogsGroup.GET("", middleware.RequireScope(auth.ScopeAuditRead), auditLogHandlers.ListAuditLogsHandler())
+				auditLogsGroup.GET("/export", middleware.RequireScope(auth.ScopeAuditRead), admin.ExportAuditLogs(auditRepo))
 				auditLogsGroup.GET("/:id", middleware.RequireScope(auth.ScopeAuditRead), auditLogHandlers.GetAuditLogHandler())
 			}
 		}
@@ -921,6 +968,8 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 		tfMirrorSyncJob:  tfMirrorSyncJob,
 		expiryNotifier:   expiryNotifier,
 		moduleScannerJob: moduleScannerJob,
+		auditCleanupJob:  auditCleanupJob,
+		webhookRetryJob:  webhookRetryJob,
 		rateLimiters:     collectRateLimiterBackends(authRateLimiter, generalRateLimiter, uploadRateLimiter, orgRateLimiter),
 	}
 

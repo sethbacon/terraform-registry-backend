@@ -556,13 +556,37 @@ func (r *ModuleRepository) SearchModules(ctx context.Context, orgID, query, name
 	return modules, total, nil
 }
 
+// allowedModuleSortFields defines valid sort fields for module search.
+var allowedModuleSortFields = map[string]bool{
+	"":          true,
+	"relevance": true,
+	"name":      true,
+	"downloads": true,
+	"created":   true,
+	"updated":   true,
+}
+
 // SearchModulesWithStats returns modules matching the search criteria along with
 // their latest version and total download count in a single query, eliminating
 // the N+1 query pattern from the original SearchModules + per-module ListVersions.
-func (r *ModuleRepository) SearchModulesWithStats(ctx context.Context, orgID, searchQuery, namespace, system string, limit, offset int) ([]*models.ModuleSearchResult, int, error) {
+// sortField controls result ordering: "relevance" (FTS rank), "name", "downloads",
+// "created", "updated", or "" (default: relevance when FTS is used, else created_at).
+// sortOrder is "asc" or "desc" (default "desc").
+func (r *ModuleRepository) SearchModulesWithStats(ctx context.Context, orgID, searchQuery, namespace, system string, limit, offset int, sortField, sortOrder string) ([]*models.ModuleSearchResult, int, error) {
+	// Validate and normalise sort parameters.
+	if !allowedModuleSortFields[sortField] {
+		sortField = ""
+	}
+	if sortOrder != "asc" && sortOrder != "desc" {
+		sortOrder = "desc"
+	}
+
 	var whereClauses []string
 	var args []interface{}
 	argCount := 0
+
+	// useFTS is true when the query is long enough for PostgreSQL full-text search.
+	useFTS := len(searchQuery) >= 3
 
 	if orgID != "" {
 		argCount++
@@ -571,8 +595,16 @@ func (r *ModuleRepository) SearchModulesWithStats(ctx context.Context, orgID, se
 	}
 	if searchQuery != "" {
 		argCount++
-		whereClauses = append(whereClauses, fmt.Sprintf("(m.namespace ILIKE $%d OR m.name ILIKE $%d OR m.description ILIKE $%d)", argCount, argCount, argCount))
-		args = append(args, "%"+searchQuery+"%")
+		if useFTS {
+			whereClauses = append(whereClauses, fmt.Sprintf("m.search_vector @@ plainto_tsquery('english', $%d)", argCount))
+		} else {
+			whereClauses = append(whereClauses, fmt.Sprintf("(m.namespace ILIKE $%d OR m.name ILIKE $%d OR m.description ILIKE $%d)", argCount, argCount, argCount))
+		}
+		if useFTS {
+			args = append(args, searchQuery)
+		} else {
+			args = append(args, searchQuery+"%")
+		}
 	}
 	if namespace != "" {
 		argCount++
@@ -597,6 +629,48 @@ func (r *ModuleRepository) SearchModulesWithStats(ctx context.Context, orgID, se
 		return nil, 0, fmt.Errorf("failed to count modules: %w", err)
 	}
 
+	// Build the optional ts_rank SELECT expression and determine the ORDER BY clause.
+	rankExpr := "" // extra column in SELECT
+	var orderByClause string
+
+	if useFTS && searchQuery != "" {
+		// Re-use the same parameter index that holds the search query for ts_rank.
+		// The searchQuery arg was added at a specific argCount; find it.
+		searchArgIdx := 0
+		for idx, a := range args {
+			if s, ok := a.(string); ok && s == searchQuery {
+				searchArgIdx = idx + 1 // 1-based
+				break
+			}
+		}
+		if searchArgIdx > 0 {
+			rankExpr = fmt.Sprintf(", ts_rank(m.search_vector, plainto_tsquery('english', $%d)) AS rank", searchArgIdx)
+		}
+	}
+
+	switch sortField {
+	case "relevance":
+		if rankExpr != "" {
+			orderByClause = fmt.Sprintf("ORDER BY rank %s", sortOrder)
+		} else {
+			orderByClause = fmt.Sprintf("ORDER BY m.created_at %s", sortOrder)
+		}
+	case "name":
+		orderByClause = fmt.Sprintf("ORDER BY m.name %s", sortOrder)
+	case "downloads":
+		orderByClause = fmt.Sprintf("ORDER BY total_downloads %s", sortOrder)
+	case "created":
+		orderByClause = fmt.Sprintf("ORDER BY m.created_at %s", sortOrder)
+	case "updated":
+		orderByClause = fmt.Sprintf("ORDER BY m.updated_at %s", sortOrder)
+	default:
+		if rankExpr != "" {
+			orderByClause = fmt.Sprintf("ORDER BY rank %s", sortOrder)
+		} else {
+			orderByClause = fmt.Sprintf("ORDER BY m.created_at %s", sortOrder)
+		}
+	}
+
 	// Single query: modules + latest version + total downloads via lateral join.
 	// The lateral subquery fetches the latest version (by created_at) and sums
 	// download counts across ALL versions — replacing the per-module ListVersions loop.
@@ -605,6 +679,7 @@ func (r *ModuleRepository) SearchModulesWithStats(ctx context.Context, orgID, se
 		SELECT m.id, m.organization_id, m.namespace, m.name, m.system, m.description, m.source,
 		       m.created_by, u.name AS created_by_name, m.created_at, m.updated_at,
 		       agg.latest_version, COALESCE(agg.total_downloads, 0) AS total_downloads
+		       %s
 		FROM modules m
 		LEFT JOIN users u ON m.created_by = u.id
 		LEFT JOIN LATERAL (
@@ -620,9 +695,9 @@ func (r *ModuleRepository) SearchModulesWithStats(ctx context.Context, orgID, se
 			WHERE mv.module_id = m.id
 		) agg ON true
 		%s
-		ORDER BY m.created_at DESC
+		%s
 		LIMIT $%d OFFSET $%d
-	`, whereClause, argCount+1, argCount+2)
+	`, rankExpr, whereClause, orderByClause, argCount+1, argCount+2)
 
 	args = append(args, limit, offset)
 
@@ -635,12 +710,23 @@ func (r *ModuleRepository) SearchModulesWithStats(ctx context.Context, orgID, se
 	var results []*models.ModuleSearchResult
 	for rows.Next() {
 		res := &models.ModuleSearchResult{}
-		err := rows.Scan(
-			&res.ID, &res.OrganizationID, &res.Namespace, &res.Name, &res.System,
-			&res.Description, &res.Source, &res.CreatedBy, &res.CreatedByName,
-			&res.CreatedAt, &res.UpdatedAt,
-			&res.LatestVersion, &res.TotalDownloads,
-		)
+		if rankExpr != "" {
+			var rank float64
+			err = rows.Scan(
+				&res.ID, &res.OrganizationID, &res.Namespace, &res.Name, &res.System,
+				&res.Description, &res.Source, &res.CreatedBy, &res.CreatedByName,
+				&res.CreatedAt, &res.UpdatedAt,
+				&res.LatestVersion, &res.TotalDownloads,
+				&rank,
+			)
+		} else {
+			err = rows.Scan(
+				&res.ID, &res.OrganizationID, &res.Namespace, &res.Name, &res.System,
+				&res.Description, &res.Source, &res.CreatedBy, &res.CreatedByName,
+				&res.CreatedAt, &res.UpdatedAt,
+				&res.LatestVersion, &res.TotalDownloads,
+			)
+		}
 		if err != nil {
 			return nil, 0, fmt.Errorf("failed to scan module search result: %w", err)
 		}

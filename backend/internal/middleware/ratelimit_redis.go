@@ -11,8 +11,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"github.com/go-redis/redis_rate/v10"
+	"github.com/redis/go-redis/v9"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 )
 

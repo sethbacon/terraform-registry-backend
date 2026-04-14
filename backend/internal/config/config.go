@@ -28,14 +28,30 @@ type Config struct {
 	Storage  StorageConfig  `mapstructure:"storage"`
 	Auth     AuthConfig     `mapstructure:"auth"`
 	// ApiDocs holds OpenAPI/Swagger metadata that can be overridden at deploy-time
-	ApiDocs       ApiDocsConfig       `mapstructure:"api_docs"`
-	MultiTenancy  MultiTenancyConfig  `mapstructure:"multi_tenancy"`
-	Security      SecurityConfig      `mapstructure:"security"`
-	Logging       LoggingConfig       `mapstructure:"logging"`
-	Telemetry     TelemetryConfig     `mapstructure:"telemetry"`
-	Audit         AuditConfig         `mapstructure:"audit"`
-	Notifications NotificationsConfig `mapstructure:"notifications"`
-	Scanning      ScanningConfig      `mapstructure:"scanning"`
+	ApiDocs        ApiDocsConfig        `mapstructure:"api_docs"`
+	MultiTenancy   MultiTenancyConfig   `mapstructure:"multi_tenancy"`
+	Security       SecurityConfig       `mapstructure:"security"`
+	Logging        LoggingConfig        `mapstructure:"logging"`
+	Telemetry      TelemetryConfig      `mapstructure:"telemetry"`
+	Audit          AuditConfig          `mapstructure:"audit"`
+	Notifications  NotificationsConfig  `mapstructure:"notifications"`
+	Scanning       ScanningConfig       `mapstructure:"scanning"`
+	AuditRetention AuditRetentionConfig `mapstructure:"audit_retention"`
+	Webhooks       WebhooksConfig       `mapstructure:"webhooks"`
+}
+
+// AuditRetentionConfig controls the background audit log cleanup job.
+// When RetentionDays is 0 the job is disabled and logs are kept forever.
+type AuditRetentionConfig struct {
+	RetentionDays    int `mapstructure:"retention_days"`
+	CleanupBatchSize int `mapstructure:"cleanup_batch_size"`
+}
+
+// WebhooksConfig controls webhook retry behaviour.
+// When MaxRetries is 0 (the default), failed webhooks are not retried.
+type WebhooksConfig struct {
+	MaxRetries        int `mapstructure:"max_retries"`
+	RetryIntervalMins int `mapstructure:"retry_interval_mins"`
 }
 
 // RedisConfig holds optional Redis connection settings.
@@ -547,6 +563,14 @@ func bindEnvVars(v *viper.Viper) error {
 		"scanning.version_args",
 		"scanning.scan_args",
 		"scanning.output_format",
+
+		// Audit retention
+		"audit_retention.retention_days",
+		"audit_retention.cleanup_batch_size",
+
+		// Webhooks
+		"webhooks.max_retries",
+		"webhooks.retry_interval_mins",
 	}
 	for _, key := range keys {
 		if err := v.BindEnv(key); err != nil {
@@ -707,6 +731,14 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("scanning.timeout", 5*time.Minute)
 	v.SetDefault("scanning.worker_count", 2)
 	v.SetDefault("scanning.scan_interval_mins", 5)
+
+	// Audit retention defaults
+	v.SetDefault("audit_retention.retention_days", 90)
+	v.SetDefault("audit_retention.cleanup_batch_size", 1000)
+
+	// Webhooks defaults
+	v.SetDefault("webhooks.max_retries", 3)
+	v.SetDefault("webhooks.retry_interval_mins", 2)
 }
 
 // expandEnv expands environment variables in the format ${VAR_NAME}

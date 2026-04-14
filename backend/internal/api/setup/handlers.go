@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/scanner"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 )
 
@@ -73,12 +75,15 @@ func (h *Handlers) GetSetupStatus(c *gin.Context) {
 		return
 	}
 
+	scanningConfigured, _ := h.oidcConfigRepo.GetScanningConfigured(ctx)
+
 	response := gin.H{
-		"setup_completed":    status.SetupCompleted,
-		"storage_configured": status.StorageConfigured,
-		"oidc_configured":    status.OIDCConfigured,
-		"admin_configured":   status.AdminConfigured,
-		"setup_required":     status.SetupRequired,
+		"setup_completed":     status.SetupCompleted,
+		"storage_configured":  status.StorageConfigured,
+		"oidc_configured":     status.OIDCConfigured,
+		"admin_configured":    status.AdminConfigured,
+		"setup_required":      status.SetupRequired,
+		"scanning_configured": scanningConfigured,
 	}
 
 	if status.StorageConfiguredAt != nil {
@@ -514,6 +519,153 @@ func (h *Handlers) CompleteSetup(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"message":         "Setup completed successfully. You can now log in via OIDC.",
 		"setup_completed": true,
+	})
+}
+
+// === Scanning Configuration ===
+
+// TestScanningConfigInput is the request body for testing a scanning configuration.
+type TestScanningConfigInput struct {
+	Tool            string `json:"tool" binding:"required"`
+	BinaryPath      string `json:"binary_path" binding:"required"`
+	ExpectedVersion string `json:"expected_version"`
+}
+
+// @Summary      Test scanning configuration
+// @Description  Tests a security scanner configuration by verifying the binary exists and checking its version. Does NOT save anything.
+// @Tags         Setup
+// @Security     SetupToken
+// @Accept       json
+// @Produce      json
+// @Param        body  body  TestScanningConfigInput  true  "Scanning configuration to test"
+// @Success      200  {object}  setup.TestScanningConfigResponse
+// @Failure      400  {object}  map[string]interface{}  "Invalid configuration"
+// @Failure      401  {object}  map[string]interface{}  "Invalid setup token"
+// @Failure      403  {object}  map[string]interface{}  "Setup already completed"
+// @Router       /api/v1/setup/scanning/test [post]
+func (h *Handlers) TestScanningConfig(c *gin.Context) {
+	var input TestScanningConfigInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Validate tool is one of the supported scanners
+	validTools := map[string]bool{
+		"trivy": true, "terrascan": true, "snyk": true, "checkov": true, "custom": true,
+	}
+	if !validTools[input.Tool] {
+		c.JSON(http.StatusOK, TestScanningConfigResponse{
+			Success: false,
+			Error:   fmt.Sprintf("unsupported tool %q; must be one of: trivy, terrascan, snyk, checkov, custom", input.Tool),
+		})
+		return
+	}
+
+	// Check binary exists
+	if _, err := os.Stat(input.BinaryPath); err != nil {
+		c.JSON(http.StatusOK, TestScanningConfigResponse{
+			Success: false,
+			Error:   fmt.Sprintf("binary not found at %q: %v", input.BinaryPath, err),
+		})
+		return
+	}
+
+	// Build a temporary ScanningConfig and create a scanner
+	scanCfg := config.ScanningConfig{
+		Tool:       input.Tool,
+		BinaryPath: input.BinaryPath,
+		Timeout:    30 * time.Second,
+	}
+	s, err := scanner.New(&scanCfg)
+	if err != nil {
+		c.JSON(http.StatusOK, TestScanningConfigResponse{
+			Success: false,
+			Error:   fmt.Sprintf("failed to initialize scanner: %v", err),
+		})
+		return
+	}
+
+	// Get version with a timeout
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+
+	version, err := s.Version(ctx)
+	if err != nil {
+		c.JSON(http.StatusOK, TestScanningConfigResponse{
+			Success: false,
+			Error:   fmt.Sprintf("failed to get scanner version: %v", err),
+		})
+		return
+	}
+
+	// Compare expected version if set
+	if input.ExpectedVersion != "" && version != input.ExpectedVersion {
+		c.JSON(http.StatusOK, TestScanningConfigResponse{
+			Success:         false,
+			DetectedVersion: version,
+			Error:           fmt.Sprintf("version mismatch: expected %q but got %q", input.ExpectedVersion, version),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, TestScanningConfigResponse{
+		Success:         true,
+		DetectedVersion: version,
+	})
+}
+
+// SaveScanningConfigInput is the request body for saving a scanning configuration.
+type SaveScanningConfigInput struct {
+	Enabled         bool   `json:"enabled"`
+	Tool            string `json:"tool" binding:"required"`
+	BinaryPath      string `json:"binary_path" binding:"required"`
+	ExpectedVersion string `json:"expected_version"`
+	TimeoutSecs     int    `json:"timeout_secs"`
+	WorkerCount     int    `json:"worker_count"`
+}
+
+// @Summary      Save scanning configuration
+// @Description  Saves security scanning configuration to the database and marks scanning as configured.
+// @Tags         Setup
+// @Security     SetupToken
+// @Accept       json
+// @Produce      json
+// @Param        body  body  SaveScanningConfigInput  true  "Scanning configuration to save"
+// @Success      200  {object}  setup.SaveScanningConfigResponse
+// @Failure      400  {object}  map[string]interface{}  "Invalid configuration"
+// @Failure      401  {object}  map[string]interface{}  "Invalid setup token"
+// @Failure      403  {object}  map[string]interface{}  "Setup already completed"
+// @Failure      500  {object}  map[string]interface{}  "Internal server error"
+// @Router       /api/v1/setup/scanning [post]
+func (h *Handlers) SaveScanningConfig(c *gin.Context) {
+	var input SaveScanningConfigInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx := c.Request.Context()
+
+	// Serialize the input to JSON for storage
+	jsonBytes, err := json.Marshal(input)
+	if err != nil {
+		slog.Error("setup: failed to serialize scanning config", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to serialize scanning configuration"})
+		return
+	}
+
+	// Save to database
+	if err := h.oidcConfigRepo.SetScanningConfig(ctx, jsonBytes); err != nil {
+		slog.Error("setup: failed to save scanning config", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save scanning configuration"})
+		return
+	}
+
+	slog.Info("setup: scanning configuration saved", "tool", input.Tool, "enabled", input.Enabled)
+
+	c.JSON(http.StatusOK, SaveScanningConfigResponse{
+		Message: "Scanning configuration saved",
 	})
 }
 

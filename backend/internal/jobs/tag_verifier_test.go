@@ -2,8 +2,12 @@ package jobs
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
+
+	sqlmock "github.com/DATA-DOG/go-sqlmock"
+	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
 
 // ---------------------------------------------------------------------------
@@ -133,4 +137,59 @@ func TestTagVerifier_RunVerification(t *testing.T) {
 	tv := NewTagVerifier(nil, nil, nil, 24)
 	// Should not panic or error
 	tv.runVerification(context.Background())
+}
+
+// ---------------------------------------------------------------------------
+// runVerification — with mocked repos returning empty/error
+// ---------------------------------------------------------------------------
+
+func TestRunVerification_EmptyVersions(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	moduleRepo := repositories.NewModuleRepository(db)
+	scmRepo := repositories.NewSCMRepository(nil) // not called when versions are empty
+
+	tv := NewTagVerifier(scmRepo, moduleRepo, nil, 24)
+
+	// GetAllWithSourceCommit returns empty list
+	mock.ExpectQuery("SELECT id, module_id").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "module_id", "version", "storage_path", "storage_backend",
+			"size_bytes", "checksum", "readme", "published_by", "download_count",
+			"deprecated", "deprecated_at", "deprecation_message", "created_at",
+			"commit_sha", "tag_name", "scm_repo_id",
+		}))
+
+	tv.runVerification(context.Background())
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled expectations: %v", err)
+	}
+}
+
+func TestRunVerification_QueryError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	moduleRepo := repositories.NewModuleRepository(db)
+	scmRepo := repositories.NewSCMRepository(nil)
+
+	tv := NewTagVerifier(scmRepo, moduleRepo, nil, 24)
+
+	mock.ExpectQuery("SELECT id, module_id").
+		WillReturnError(fmt.Errorf("connection failed"))
+
+	// Should not panic — logs and returns
+	tv.runVerification(context.Background())
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled expectations: %v", err)
+	}
 }

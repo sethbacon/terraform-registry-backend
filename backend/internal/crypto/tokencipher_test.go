@@ -400,4 +400,3 @@ func TestDualKeyDecryption_NoPreviousKeyFallback(t *testing.T) {
 		t.Errorf("Open() without previous key error = %v, want %v", err, ErrDecryptionFailed)
 	}
 }
-

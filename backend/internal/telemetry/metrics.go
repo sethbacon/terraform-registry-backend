@@ -246,6 +246,31 @@ var JWTRevokedTokensCleanedTotal = promauto.NewCounter(
 	},
 )
 
+// AuditLogsCleanedTotal counts expired audit log entries removed by the cleanup job.
+//
+// Example PromQL queries:
+//   - Rows cleaned per day: increase(terraform_registry_audit_logs_cleaned_total[24h])
+var AuditLogsCleanedTotal = promauto.NewCounter(
+	prometheus.CounterOpts{
+		Name: "terraform_registry_audit_logs_cleaned_total",
+		Help: "Total number of expired audit log entries deleted by the cleanup job.",
+	},
+)
+
+// WebhookRetriesTotal is a CounterVec with label {outcome} tracking webhook retry
+// attempts. Possible outcome values: "success", "failure", "exhausted".
+//
+// Example PromQL queries:
+//   - Retry success rate:  rate(terraform_registry_webhook_retries_total{outcome="success"}[1h])
+//   - Exhausted retries:   increase(terraform_registry_webhook_retries_total{outcome="exhausted"}[24h])
+var WebhookRetriesTotal = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "terraform_registry_webhook_retries_total",
+		Help: "Total webhook retry attempts by outcome.",
+	},
+	[]string{"outcome"},
+)
+
 // DBOpenConnections is a Gauge that tracks the number of open connections currently
 // held by the sql.DB connection pool.  It is sampled every 30 seconds by
 // StartDBStatsCollector rather than per-request to avoid the overhead of sql.DB.Stats().

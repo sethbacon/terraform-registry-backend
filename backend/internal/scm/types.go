@@ -220,6 +220,10 @@ type SCMWebhookEvent struct {
 	ProcessedAt         *time.Time             `json:"processed_at,omitempty" db:"processed_at"`
 	ResultVersionID     *uuid.UUID             `json:"result_version_id,omitempty" db:"result_version_id"`
 	Error               *string                `json:"error,omitempty" db:"error"`
+	RetryCount          int                    `json:"retry_count" db:"retry_count"`
+	MaxRetries          int                    `json:"max_retries" db:"max_retries"`
+	NextRetryAt         *time.Time             `json:"next_retry_at,omitempty" db:"next_retry_at"`
+	LastError           *string                `json:"last_error,omitempty" db:"last_error"`
 	CreatedAt           time.Time              `json:"created_at" db:"created_at"`
 }
 

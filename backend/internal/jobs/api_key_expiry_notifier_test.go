@@ -304,3 +304,62 @@ func TestExpiryNotifier_RunCheck_EmptyUserEmail_Skipped(t *testing.T) {
 
 	n.runCheck(context.Background())
 }
+
+// ---------------------------------------------------------------------------
+// Start — full loop paths (enabled + SMTP host set, exercising ticker/stop)
+// ---------------------------------------------------------------------------
+
+func TestExpiryNotifier_Start_ContextCancel(t *testing.T) {
+	apiKeyRepo, apiKeyMock := newAPIKeyRepoForNotifier(t)
+	cfg := newNotifierConfig(true, "smtp.example.com")
+
+	n := NewAPIKeyExpiryNotifier(apiKeyRepo, nil, cfg)
+
+	// The immediate runCheck call — return empty
+	apiKeyMock.ExpectQuery("SELECT.*FROM api_keys").
+		WillReturnRows(sqlmock.NewRows(findExpiringKeysCols))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		n.Start(ctx)
+		close(done)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+		// good
+	case <-time.After(3 * time.Second):
+		t.Fatal("Start did not return after context cancellation")
+	}
+}
+
+func TestExpiryNotifier_Start_StopChan(t *testing.T) {
+	apiKeyRepo, apiKeyMock := newAPIKeyRepoForNotifier(t)
+	cfg := newNotifierConfig(true, "smtp.example.com")
+
+	n := NewAPIKeyExpiryNotifier(apiKeyRepo, nil, cfg)
+
+	apiKeyMock.ExpectQuery("SELECT.*FROM api_keys").
+		WillReturnRows(sqlmock.NewRows(findExpiringKeysCols))
+
+	ctx := context.Background()
+	done := make(chan struct{})
+	go func() {
+		n.Start(ctx)
+		close(done)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	n.Stop()
+
+	select {
+	case <-done:
+		// good
+	case <-time.After(3 * time.Second):
+		t.Fatal("Start did not return after Stop()")
+	}
+}
