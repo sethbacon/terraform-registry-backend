@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-04-14
+
+### Added
+
+- feat: add scanning:read RBAC scope granting devops and auditor roles access to scan results and stats
+
 ## [0.4.2] - 2026-04-14
 
 ### Added

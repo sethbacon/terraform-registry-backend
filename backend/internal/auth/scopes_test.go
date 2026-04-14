@@ -63,6 +63,10 @@ func TestHasScope(t *testing.T) {
 		{"read does not imply write", []string{"modules:read"}, ScopeModulesWrite, false},
 		// Multiple scopes, one matches
 		{"one of many matches", []string{"providers:read", "modules:read"}, ScopeModulesRead, true},
+		// Scanning scope
+		{"exact match scanning:read", []string{"scanning:read"}, ScopeScanningRead, true},
+		{"admin grants scanning:read", []string{"admin"}, ScopeScanningRead, true},
+		{"scanning:read does not grant admin", []string{"scanning:read"}, ScopeAdmin, false},
 	}
 
 	for _, tt := range tests {
