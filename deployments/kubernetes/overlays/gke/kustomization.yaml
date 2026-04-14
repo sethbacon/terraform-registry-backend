@@ -77,7 +77,7 @@ patches:
 images:
   - name: terraform-registry-backend
     newName: <REGION>-docker.pkg.dev/<PROJECT_ID>/<AR_REPO>/terraform-registry-backend
-    newTag: v0.4.2
+    newTag: v0.4.3
   - name: terraform-registry-frontend
     newName: <REGION>-docker.pkg.dev/<PROJECT_ID>/<AR_REPO>/terraform-registry-frontend
     newTag: v0.5.4
