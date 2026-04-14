@@ -325,3 +325,78 @@ networkPolicy:
   # -- Namespace label value where Prometheus / metrics scraper runs.
   # Used to allow scraping backend port 9090. Set to match your monitoring namespace.
   prometheusNamespace: "monitoring"
+
+# -- Topology spread constraints for backend pods
+topologySpreadConstraints: []
+
+# -- Module security scanning
+scanning:
+  # -- Enable module security scanning
+  enabled: false
+  # -- Scanning tool to use (e.g. "trivy", "checkov")
+  tool: "trivy"
+  # -- Path to scanner binary inside the container
+  binaryPath: "/usr/local/bin/trivy"
+  # -- Expected scanner version (used for compatibility checks)
+  expectedVersion: ""
+  # -- Timeout for a single scan operation
+  timeout: "5m"
+  # -- Number of concurrent scan workers
+  workerCount: 2
+  # -- Interval between periodic scan sweeps (minutes)
+  scanIntervalMins: 60
+
+# -- Audit logging
+audit:
+  # -- Enable audit log capture
+  enabled: false
+  # -- Number of days to retain audit records
+  retentionDays: 90
+  # -- Audit log shipper configuration
+  shipper:
+    # -- Shipper type: "webhook" or "file"
+    type: "webhook"
+    # -- Webhook URL for audit events (used when type=webhook)
+    webhookURL: ""
+    # -- File path for audit log output (used when type=file)
+    filePath: "/var/log/terraform-registry/audit.log"
+
+# -- Backup configuration
+backup:
+  # -- Enable scheduled backups
+  enabled: false
+  # -- Cron schedule for backups
+  schedule: "0 2 * * *"
+  # -- Backup storage configuration
+  storage:
+    # -- Storage type: "s3", "azure", "gcs"
+    type: "s3"
+    # -- Bucket name
+    bucket: ""
+    # -- Storage endpoint (for S3-compatible)
+    endpoint: ""
+    # -- Object key prefix
+    prefix: "backups/"
+  # -- Resource requests/limits for backup jobs
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# -- PrometheusRule for alerting (requires prometheus-operator CRD)
+prometheusRule:
+  # -- Enable PrometheusRule resource
+  enabled: false
+  # -- Alert rules list (standard prometheus-operator rule format)
+  rules: []
+
+# -- Grafana dashboard ConfigMap (auto-discovered by Grafana sidecar)
+grafanaDashboard:
+  # -- Enable Grafana dashboard ConfigMap
+  enabled: false
+  # -- Labels applied to the ConfigMap for Grafana sidecar discovery
+  labels:
+    grafana_dashboard: "1"
