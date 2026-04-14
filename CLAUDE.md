@@ -483,8 +483,8 @@ The backend generates OpenAPI 2.0 (Swagger) documentation using [swaggo/swag](ht
 - Use `{param}` in `@Router` paths (swag style), not `:param` (Gin style).
 - All `@Tags` values must be title-cased and drawn from the established vocabulary:
   `Authentication`, `API Keys`, `Users`, `Organizations`, `Modules`, `Providers`,
-  `Storage`, `SCM Providers`, `SCM OAuth`, `SCM Linking`, `Mirror`, `Mirror Protocol`,
-  `RBAC`, `Stats`, `System`, `Webhooks`
+  `Security Scanning`, `Storage`, `SCM Providers`, `SCM OAuth`, `SCM Linking`,
+  `Mirror`, `Mirror Protocol`, `RBAC`, `Stats`, `System`, `Webhooks`
 - After adding or changing any annotation, run `swag init` and update `docs/SWAGGER_ANNOTATION_CHECKLIST.md`.
 
 **Annotation template:**

@@ -269,7 +269,8 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 					SwaggerUIBundle.plugins.DownloadUrl
 				],
 				layout: "BaseLayout",
-				docExpansion: "list"
+				docExpansion: "list",
+				tagsSorter: "alpha"
 			})
 			window.ui = ui
 		}
@@ -423,7 +424,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	apiKeyHandlers := admin.NewAPIKeyHandlers(cfg, db)
 	userHandlers := admin.NewUserHandlers(cfg, db)
 	orgHandlers := admin.NewOrganizationHandlers(cfg, db)
-	statsHandlers := admin.NewStatsHandler(sqlxDB)
+	statsHandlers := admin.NewStatsHandler(sqlxDB, &cfg.Scanning)
 	mirrorHandlers := admin.NewMirrorHandler(mirrorRepo, orgRepo, providerRepo)
 	mirrorHandlers.SetSyncJob(mirrorSyncJob) // Connect sync job for manual triggers
 
@@ -599,6 +600,14 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 			authenticatedGroup.GET("/modules/:namespace/:name/:system/versions/:version/scan",
 				middleware.RequireScope(auth.ScopeAdmin),
 				admin.GetModuleScanHandler(db))
+
+			// Security scanning admin endpoints
+			authenticatedGroup.GET("/admin/scanning/config",
+				middleware.RequireScope(auth.ScopeAdmin),
+				admin.GetScanningConfigHandler(&cfg.Scanning))
+			authenticatedGroup.GET("/admin/scanning/stats",
+				middleware.RequireScope(auth.ScopeAdmin),
+				admin.GetScanningStatsHandler(sqlxDB))
 
 			// API Keys management - self-service for own keys
 			// Users can manage their own API keys without api_keys:manage scope

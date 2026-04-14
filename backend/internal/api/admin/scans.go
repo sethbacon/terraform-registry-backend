@@ -11,7 +11,7 @@ import (
 
 // @Summary      Get module version scan result
 // @Description  Returns the latest security scan for a module version, including tool name, version, severity counts, and raw output. Requires admin scope.
-// @Tags         System
+// @Tags         Security Scanning
 // @Security     Bearer
 // @Produce      json
 // @Param        namespace  path  string  true  "Module namespace"
