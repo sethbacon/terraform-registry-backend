@@ -3,12 +3,15 @@
 package middleware
 
 import (
+	"context"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/terraform-registry/terraform-registry/internal/telemetry"
 )
 
 // RateLimitConfig holds configuration for rate limiting
@@ -48,27 +51,48 @@ func UploadRateLimitConfig() RateLimitConfig {
 	}
 }
 
+// RateLimiterBackend is the interface that rate limiter backends must satisfy.
+// Implementations include the in-memory token bucket (MemoryRateLimiter) and
+// the Redis-backed GCRA limiter (RedisRateLimiter).
+type RateLimiterBackend interface {
+	// Allow reports whether a request identified by key should be allowed.
+	Allow(ctx context.Context, key string) (bool, error)
+	// RemainingTokens returns the approximate number of tokens left for key.
+	RemainingTokens(ctx context.Context, key string) (int, error)
+	// Close releases resources held by the backend (e.g. stop goroutines, close connections).
+	Close() error
+}
+
+// OrgRateLimiterConfig holds configuration for per-organization rate limiting.
+type OrgRateLimiterConfig struct {
+	RequestsPerMinute int
+	BurstSize         int
+}
+
 // rateLimitEntry tracks request counts for a single client
 type rateLimitEntry struct {
 	tokens     float64
 	lastUpdate time.Time
 }
 
-// RateLimiter implements a per-key token bucket rate limiter using in-process memory.
+// MemoryRateLimiter implements RateLimiterBackend using in-process memory.
 // IMPORTANT: This is not suitable for horizontally scaled deployments — each instance
 // maintains independent state, allowing clients to exceed limits by rotating across
-// instances. For production HA deployments, replace with a Redis-backed implementation
-// (e.g., go-redis/redis_rate using the GCRA algorithm).
-type RateLimiter struct {
+// instances. For production HA deployments, use the Redis-backed implementation.
+type MemoryRateLimiter struct {
 	config  RateLimitConfig
 	entries map[string]*rateLimitEntry
 	mu      sync.RWMutex
 	stopCh  chan struct{}
 }
 
-// NewRateLimiter creates a new rate limiter with the given config
-func NewRateLimiter(config RateLimitConfig) *RateLimiter {
-	rl := &RateLimiter{
+// RateLimiter is an alias for MemoryRateLimiter kept for backward compatibility with
+// code that references the original concrete type (e.g. BackgroundServices.Shutdown).
+type RateLimiter = MemoryRateLimiter
+
+// NewRateLimiter creates a new in-memory rate limiter with the given config
+func NewRateLimiter(config RateLimitConfig) *MemoryRateLimiter {
+	rl := &MemoryRateLimiter{
 		config:  config,
 		entries: make(map[string]*rateLimitEntry),
 		stopCh:  make(chan struct{}),
@@ -81,7 +105,7 @@ func NewRateLimiter(config RateLimitConfig) *RateLimiter {
 }
 
 // cleanup periodically removes expired entries
-func (rl *RateLimiter) cleanup() {
+func (rl *MemoryRateLimiter) cleanup() {
 	ticker := time.NewTicker(rl.config.CleanupInterval)
 	defer ticker.Stop()
 
@@ -104,12 +128,20 @@ func (rl *RateLimiter) cleanup() {
 }
 
 // Stop stops the cleanup goroutine
-func (rl *RateLimiter) Stop() {
+func (rl *MemoryRateLimiter) Stop() {
 	close(rl.stopCh)
 }
 
-// Allow checks if a request from the given key should be allowed
-func (rl *RateLimiter) Allow(key string) bool {
+// Close implements RateLimiterBackend.
+func (rl *MemoryRateLimiter) Close() error {
+	rl.Stop()
+	return nil
+}
+
+// Allow checks if a request from the given key should be allowed.
+// The context parameter satisfies the RateLimiterBackend interface; the
+// in-memory implementation does not use it.
+func (rl *MemoryRateLimiter) Allow(_ context.Context, key string) (bool, error) {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
@@ -122,7 +154,7 @@ func (rl *RateLimiter) Allow(key string) bool {
 			tokens:     float64(rl.config.BurstSize) - 1,
 			lastUpdate: now,
 		}
-		return true
+		return true, nil
 	}
 
 	// Calculate tokens to add based on time elapsed
@@ -137,20 +169,20 @@ func (rl *RateLimiter) Allow(key string) bool {
 	// Check if we have tokens available
 	if entry.tokens >= 1 {
 		entry.tokens--
-		return true
+		return true, nil
 	}
 
-	return false
+	return false, nil
 }
 
-// RemainingTokens returns how many tokens are left for a key
-func (rl *RateLimiter) RemainingTokens(key string) int {
+// RemainingTokens returns how many tokens are left for a key.
+func (rl *MemoryRateLimiter) RemainingTokens(_ context.Context, key string) (int, error) {
 	rl.mu.RLock()
 	defer rl.mu.RUnlock()
 
 	entry, exists := rl.entries[key]
 	if !exists {
-		return rl.config.BurstSize
+		return rl.config.BurstSize, nil
 	}
 
 	// Calculate current tokens
@@ -160,15 +192,16 @@ func (rl *RateLimiter) RemainingTokens(key string) int {
 	tokensToAdd := elapsed.Seconds() * tokensPerSecond
 	currentTokens := min(float64(rl.config.BurstSize), entry.tokens+tokensToAdd)
 
-	return int(currentTokens)
+	return int(currentTokens), nil
 }
 
 // RateLimitMiddleware creates a Gin middleware that rate limits requests.
-// If limiter is nil (rate limiting disabled), requests pass through unchanged.
-func RateLimitMiddleware(limiter *RateLimiter) gin.HandlerFunc {
+// If backend is nil (rate limiting disabled), requests pass through unchanged.
+// It supports both the legacy *MemoryRateLimiter pointer and any RateLimiterBackend.
+func RateLimitMiddleware(backend RateLimiterBackend) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// When rate limiting is disabled, pass through
-		if limiter == nil {
+		if backend == nil {
 			c.Next()
 			return
 		}
@@ -176,10 +209,18 @@ func RateLimitMiddleware(limiter *RateLimiter) gin.HandlerFunc {
 		// Determine the rate limit key
 		key := getRateLimitKey(c)
 
-		if !limiter.Allow(key) {
-			remaining := limiter.RemainingTokens(key)
+		allowed, err := backend.Allow(c.Request.Context(), key)
+		if err != nil {
+			slog.Warn("rate limiter backend error, allowing request", "error", err, "key", key)
+			c.Next()
+			return
+		}
+
+		if !allowed {
+			remaining, _ := backend.RemainingTokens(c.Request.Context(), key)
 			c.Header("X-RateLimit-Remaining", strconv.Itoa(remaining))
 			c.Header("Retry-After", "60")
+			telemetry.RateLimitRejectionsTotal.WithLabelValues(tierFromKey(key), keyTypeFromKey(key)).Inc()
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
 				"error":       "Rate limit exceeded",
 				"retry_after": 60,
@@ -188,8 +229,72 @@ func RateLimitMiddleware(limiter *RateLimiter) gin.HandlerFunc {
 		}
 
 		// Add rate limit headers
-		remaining := limiter.RemainingTokens(key)
-		c.Header("X-RateLimit-Limit", strconv.Itoa(limiter.config.RequestsPerMinute))
+		remaining, _ := backend.RemainingTokens(c.Request.Context(), key)
+		c.Header("X-RateLimit-Remaining", strconv.Itoa(remaining))
+
+		c.Next()
+	}
+}
+
+// OrgRateLimitMiddleware wraps an existing RateLimiterBackend and additionally
+// enforces a per-organization aggregate limit. If the individual check passes
+// but the organization aggregate limit is exceeded, the request is rejected.
+// If orgBackend is nil or no org ID is present in the context, only the
+// individual limit applies.
+func OrgRateLimitMiddleware(individual RateLimiterBackend, orgBackend RateLimiterBackend) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if individual == nil {
+			c.Next()
+			return
+		}
+
+		key := getRateLimitKey(c)
+
+		// Individual check
+		allowed, err := individual.Allow(c.Request.Context(), key)
+		if err != nil {
+			slog.Warn("rate limiter backend error, allowing request", "error", err, "key", key)
+			c.Next()
+			return
+		}
+
+		if !allowed {
+			remaining, _ := individual.RemainingTokens(c.Request.Context(), key)
+			c.Header("X-RateLimit-Remaining", strconv.Itoa(remaining))
+			c.Header("Retry-After", "60")
+			telemetry.RateLimitRejectionsTotal.WithLabelValues("individual", keyTypeFromKey(key)).Inc()
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
+				"error":       "Rate limit exceeded",
+				"retry_after": 60,
+			})
+			return
+		}
+
+		// Per-org check (only when orgBackend is configured and org ID is present)
+		if orgBackend != nil {
+			if orgID, exists := c.Get("organization_id"); exists {
+				if id, ok := orgID.(string); ok && id != "" {
+					orgKey := "org:" + id
+
+					orgAllowed, orgErr := orgBackend.Allow(c.Request.Context(), orgKey)
+					if orgErr != nil {
+						slog.Warn("org rate limiter backend error, allowing request", "error", orgErr, "org_key", orgKey)
+					} else if !orgAllowed {
+						remaining, _ := orgBackend.RemainingTokens(c.Request.Context(), orgKey)
+						c.Header("X-RateLimit-Remaining", strconv.Itoa(remaining))
+						c.Header("Retry-After", "60")
+						telemetry.RateLimitRejectionsTotal.WithLabelValues("organization", "org").Inc()
+						c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
+							"error":       "Organization rate limit exceeded",
+							"retry_after": 60,
+						})
+						return
+					}
+				}
+			}
+		}
+
+		remaining, _ := individual.RemainingTokens(c.Request.Context(), key)
 		c.Header("X-RateLimit-Remaining", strconv.Itoa(remaining))
 
 		c.Next()
@@ -219,4 +324,22 @@ func getRateLimitKey(c *gin.Context) string {
 		ip = c.Request.RemoteAddr
 	}
 	return "ip:" + ip
+}
+
+// tierFromKey extracts a tier label for metrics from a rate limit key.
+func tierFromKey(key string) string {
+	if len(key) > 4 && key[:4] == "org:" {
+		return "organization"
+	}
+	return "individual"
+}
+
+// keyTypeFromKey extracts a key_type label for metrics from a rate limit key.
+func keyTypeFromKey(key string) string {
+	for i, ch := range key {
+		if ch == ':' {
+			return key[:i]
+		}
+	}
+	return "unknown"
 }

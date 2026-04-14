@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -48,10 +49,10 @@ func TestUploadRateLimitConfig(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// RateLimiter.Allow
+// MemoryRateLimiter.Allow (via RateLimiterBackend interface)
 // ---------------------------------------------------------------------------
 
-func newTestLimiter(rpm, burst int) *RateLimiter {
+func newTestLimiter(rpm, burst int) *MemoryRateLimiter {
 	cfg := RateLimitConfig{
 		RequestsPerMinute: rpm,
 		BurstSize:         burst,
@@ -66,7 +67,11 @@ func TestRateLimiter_NewClientGetsFullBurst(t *testing.T) {
 	defer rl.Stop()
 
 	// First request from a new client always allowed
-	if !rl.Allow("client-a") {
+	allowed, err := rl.Allow(context.Background(), "client-a")
+	if err != nil {
+		t.Fatalf("Allow() unexpected error: %v", err)
+	}
+	if !allowed {
 		t.Error("Allow() = false for new client, want true")
 	}
 }
@@ -77,11 +82,11 @@ func TestRateLimiter_AllowsUpToBurstSize(t *testing.T) {
 	defer rl.Stop()
 
 	key := "burst-test"
-	// The first request starts with burst-1 tokens, and we consume one per Allow call.
-	// So we can make `burst` requests total.
+	ctx := context.Background()
 	allowed := 0
 	for i := 0; i < burst+2; i++ {
-		if rl.Allow(key) {
+		ok, _ := rl.Allow(ctx, key)
+		if ok {
 			allowed++
 		}
 	}
@@ -91,19 +96,25 @@ func TestRateLimiter_AllowsUpToBurstSize(t *testing.T) {
 }
 
 func TestRateLimiter_TokensRefillOverTime(t *testing.T) {
-	// Use a high RPM so tokens refill quickly
 	rl := newTestLimiter(600, 2) // 10 tokens/sec
 	defer rl.Stop()
 
 	key := "refill-test"
-	// Exhaust tokens
-	for rl.Allow(key) {
+	ctx := context.Background()
+	for {
+		ok, _ := rl.Allow(ctx, key)
+		if !ok {
+			break
+		}
 	}
 
-	// Wait for 1 token to refill (should take ~100ms at 10/sec)
 	time.Sleep(120 * time.Millisecond)
 
-	if !rl.Allow(key) {
+	ok, err := rl.Allow(ctx, key)
+	if err != nil {
+		t.Fatalf("Allow() error: %v", err)
+	}
+	if !ok {
 		t.Error("Allow() = false after token refill wait, want true")
 	}
 }
@@ -112,12 +123,16 @@ func TestRateLimiter_DifferentKeysAreIndependent(t *testing.T) {
 	rl := newTestLimiter(60, 2)
 	defer rl.Stop()
 
-	// Exhaust key-a
-	for rl.Allow("key-a") {
+	ctx := context.Background()
+	for {
+		ok, _ := rl.Allow(ctx, "key-a")
+		if !ok {
+			break
+		}
 	}
 
-	// key-b should still be allowed
-	if !rl.Allow("key-b") {
+	ok, _ := rl.Allow(ctx, "key-b")
+	if !ok {
 		t.Error("Allow() = false for independent key-b after exhausting key-a")
 	}
 }
@@ -128,8 +143,15 @@ func TestRateLimiter_Stop(t *testing.T) {
 	rl.Stop()
 }
 
+func TestRateLimiter_Close(t *testing.T) {
+	rl := newTestLimiter(60, 5)
+	if err := rl.Close(); err != nil {
+		t.Errorf("Close() error: %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
-// RateLimiter.RemainingTokens
+// MemoryRateLimiter.RemainingTokens
 // ---------------------------------------------------------------------------
 
 func TestRateLimiter_RemainingTokens_NewKey(t *testing.T) {
@@ -137,8 +159,10 @@ func TestRateLimiter_RemainingTokens_NewKey(t *testing.T) {
 	rl := newTestLimiter(60, burst)
 	defer rl.Stop()
 
-	// Unknown key returns the burst size
-	remaining := rl.RemainingTokens("unknown-key")
+	remaining, err := rl.RemainingTokens(context.Background(), "unknown-key")
+	if err != nil {
+		t.Fatalf("RemainingTokens() error: %v", err)
+	}
 	if remaining != burst {
 		t.Errorf("RemainingTokens(unknown) = %d, want %d", remaining, burst)
 	}
@@ -150,11 +174,10 @@ func TestRateLimiter_RemainingTokens_AfterRequests(t *testing.T) {
 	defer rl.Stop()
 
 	key := "remain-test"
-	rl.Allow(key) // consume one token
+	ctx := context.Background()
+	rl.Allow(ctx, key)
 
-	remaining := rl.RemainingTokens(key)
-	// After one request, burst-1 tokens started = burst-2 remaining (Allow consumed one)
-	// Actually: starts with burst-1 tokens, Allow consumes one more → burst-2
+	remaining, _ := rl.RemainingTokens(ctx, key)
 	if remaining < 0 || remaining > burst {
 		t.Errorf("RemainingTokens = %d, want 0..%d", remaining, burst)
 	}
@@ -222,7 +245,6 @@ func TestGetRateLimitKey_IPFallback(t *testing.T) {
 	if key == "" {
 		t.Error("getRateLimitKey() returned empty key when falling back to IP")
 	}
-	// Should start with "ip:"
 	if len(key) < 3 || key[:3] != "ip:" {
 		t.Errorf("key = %q, want ip:... prefix for IP fallback", key)
 	}
@@ -235,8 +257,8 @@ func TestGetRateLimitKey_EmptyUserID(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "10.0.0.1:9999"
 	c.Request = req
-	c.Set("user_id", "")    // empty, should skip to IP
-	c.Set("api_key_id", "") // empty, should skip to IP
+	c.Set("user_id", "")
+	c.Set("api_key_id", "")
 
 	key := getRateLimitKey(c)
 	if len(key) < 3 || key[:3] != "ip:" {
@@ -245,10 +267,10 @@ func TestGetRateLimitKey_EmptyUserID(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// RateLimitMiddleware
+// RateLimitMiddleware (uses RateLimiterBackend interface)
 // ---------------------------------------------------------------------------
 
-func newRateLimitRouter(limiter *RateLimiter) *gin.Engine {
+func newRateLimitRouter(limiter RateLimiterBackend) *gin.Engine {
 	r := gin.New()
 	r.Use(RateLimitMiddleware(limiter))
 	r.GET("/", func(c *gin.Context) {
@@ -270,16 +292,12 @@ func TestRateLimitMiddleware_Allowed(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200", w.Code)
 	}
-	if w.Header().Get("X-RateLimit-Limit") == "" {
-		t.Error("X-RateLimit-Limit header missing on allowed request")
-	}
 	if w.Header().Get("X-RateLimit-Remaining") == "" {
 		t.Error("X-RateLimit-Remaining header missing on allowed request")
 	}
 }
 
 func TestRateLimitMiddleware_Blocked(t *testing.T) {
-	// Burst of 1 so second request is blocked
 	rl := newTestLimiter(1, 1)
 	defer rl.Stop()
 
@@ -310,7 +328,6 @@ func TestRateLimitMiddleware_BlockedHeaders(t *testing.T) {
 
 	r := newRateLimitRouter(rl)
 
-	// Exhaust the burst
 	{
 		w := httptest.NewRecorder()
 		req, _ := http.NewRequest(http.MethodGet, "/", nil)
@@ -318,7 +335,6 @@ func TestRateLimitMiddleware_BlockedHeaders(t *testing.T) {
 		r.ServeHTTP(w, req)
 	}
 
-	// Second request should be rate limited
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "10.0.0.3:1234"
@@ -336,25 +352,159 @@ func TestRateLimitMiddleware_BlockedHeaders(t *testing.T) {
 	}
 }
 
-func TestRateLimitMiddleware_LimitHeaderMatchesConfig(t *testing.T) {
-	rpm := 120
-	rl := newTestLimiter(rpm, 20)
-	defer rl.Stop()
+func TestRateLimitMiddleware_NilBackend(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(RateLimitMiddleware(nil))
+	r.GET("/", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
 
-	r := newRateLimitRouter(rl)
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest(http.MethodGet, "/", nil)
-	req.RemoteAddr = "10.0.0.4:1234"
 	r.ServeHTTP(w, req)
 
-	limit := w.Header().Get("X-RateLimit-Limit")
-	if limit != strconv.Itoa(rpm) {
-		t.Errorf("X-RateLimit-Limit = %q, want %d", limit, rpm)
+	if w.Code != http.StatusOK {
+		t.Errorf("nil backend: status = %d, want 200", w.Code)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// RateLimiter.cleanup — ticker branch
+// OrgRateLimitMiddleware
+// ---------------------------------------------------------------------------
+
+func TestOrgRateLimitMiddleware_IndividualOnly(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rl := newTestLimiter(600, 10)
+	defer rl.Stop()
+
+	r := gin.New()
+	r.Use(OrgRateLimitMiddleware(rl, nil))
+	r.GET("/", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.0.0.5:1234"
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
+
+func TestOrgRateLimitMiddleware_OrgLimitExceeded(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	individual := newTestLimiter(600, 10)
+	defer individual.Stop()
+	orgLimiter := newTestLimiter(1, 1) // Very strict org limit
+	defer orgLimiter.Stop()
+
+	r := gin.New()
+	// Simulate auth middleware setting organization_id
+	r.Use(func(c *gin.Context) {
+		c.Set("organization_id", "org-123")
+		c.Next()
+	})
+	r.Use(OrgRateLimitMiddleware(individual, orgLimiter))
+	r.GET("/", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	send := func() int {
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest(http.MethodGet, "/", nil)
+		req.RemoteAddr = "10.0.0.6:1234"
+		r.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	// First request should pass
+	if code := send(); code != http.StatusOK {
+		t.Errorf("first request status = %d, want 200", code)
+	}
+
+	// Second request should be org-limited
+	if code := send(); code != http.StatusTooManyRequests {
+		t.Errorf("second request status = %d, want 429 (org limit)", code)
+	}
+}
+
+func TestOrgRateLimitMiddleware_NoOrgContext(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	individual := newTestLimiter(600, 10)
+	defer individual.Stop()
+	orgLimiter := newTestLimiter(1, 1)
+	defer orgLimiter.Stop()
+
+	r := gin.New()
+	// No organization_id set — org limiter should be skipped
+	r.Use(OrgRateLimitMiddleware(individual, orgLimiter))
+	r.GET("/", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	for i := 0; i < 5; i++ {
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest(http.MethodGet, "/", nil)
+		req.RemoteAddr = "10.0.0.7:1234"
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("request %d status = %d, want 200 (no org context)", i, w.Code)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// tierFromKey / keyTypeFromKey helpers
+// ---------------------------------------------------------------------------
+
+func TestTierFromKey(t *testing.T) {
+	tests := []struct {
+		key  string
+		want string
+	}{
+		{"org:abc", "organization"},
+		{"user:123", "individual"},
+		{"apikey:x", "individual"},
+		{"ip:1.2.3.4", "individual"},
+	}
+	for _, tt := range tests {
+		if got := tierFromKey(tt.key); got != tt.want {
+			t.Errorf("tierFromKey(%q) = %q, want %q", tt.key, got, tt.want)
+		}
+	}
+}
+
+func TestKeyTypeFromKey(t *testing.T) {
+	tests := []struct {
+		key  string
+		want string
+	}{
+		{"user:123", "user"},
+		{"apikey:x", "apikey"},
+		{"ip:1.2.3.4", "ip"},
+		{"org:abc", "org"},
+		{"noprefix", "unknown"},
+	}
+	for _, tt := range tests {
+		if got := keyTypeFromKey(tt.key); got != tt.want {
+			t.Errorf("keyTypeFromKey(%q) = %q, want %q", tt.key, got, tt.want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RateLimiterBackend interface compliance
+// ---------------------------------------------------------------------------
+
+func TestMemoryRateLimiter_ImplementsBackendInterface(t *testing.T) {
+	var _ RateLimiterBackend = (*MemoryRateLimiter)(nil)
+}
+
+// ---------------------------------------------------------------------------
+// MemoryRateLimiter.cleanup — ticker branch
 // ---------------------------------------------------------------------------
 
 func TestRateLimiter_CleanupRemovesStaleEntries(t *testing.T) {
@@ -366,21 +516,16 @@ func TestRateLimiter_CleanupRemovesStaleEntries(t *testing.T) {
 	rl := NewRateLimiter(cfg)
 	defer rl.Stop()
 
-	// Create an entry via Allow so it exists in the map.
-	rl.Allow("stale-client")
+	rl.Allow(context.Background(), "stale-client")
 
-	// Back-date the entry's lastUpdate so the cleanup goroutine will evict it.
 	rl.mu.Lock()
 	if entry, ok := rl.entries["stale-client"]; ok {
 		entry.lastUpdate = time.Now().Add(-11 * time.Minute)
 	}
 	rl.mu.Unlock()
 
-	// Allow a few cleanup ticks to fire.
 	time.Sleep(60 * time.Millisecond)
 
-	// After cleanup the entry should have been removed; RemainingTokens returns
-	// the full burst again (as if the key was never seen).
 	rl.mu.RLock()
 	_, stillPresent := rl.entries["stale-client"]
 	rl.mu.RUnlock()

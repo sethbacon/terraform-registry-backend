@@ -24,6 +24,7 @@ import (
 type Config struct {
 	Server   ServerConfig   `mapstructure:"server"`
 	Database DatabaseConfig `mapstructure:"database"`
+	Redis    RedisConfig    `mapstructure:"redis"`
 	Storage  StorageConfig  `mapstructure:"storage"`
 	Auth     AuthConfig     `mapstructure:"auth"`
 	// ApiDocs holds OpenAPI/Swagger metadata that can be overridden at deploy-time
@@ -35,6 +36,27 @@ type Config struct {
 	Audit         AuditConfig         `mapstructure:"audit"`
 	Notifications NotificationsConfig `mapstructure:"notifications"`
 	Scanning      ScanningConfig      `mapstructure:"scanning"`
+}
+
+// RedisConfig holds optional Redis connection settings.
+// When Host is non-empty, Redis-backed implementations are used for rate
+// limiting and OIDC session state, enabling correct behaviour in
+// horizontally-scaled (multi-pod) deployments.
+type RedisConfig struct {
+	// Host is the Redis server hostname or IP. Leave empty to use in-memory fallbacks.
+	Host string `mapstructure:"host"`
+	// Port is the Redis server port (default 6379).
+	Port int `mapstructure:"port"`
+	// Password for Redis AUTH. Leave empty if Redis has no password.
+	Password string `mapstructure:"password"`
+	// DB selects the Redis database number (default 0).
+	DB int `mapstructure:"db"`
+	// TLS enables TLS connections to Redis.
+	TLS bool `mapstructure:"tls"`
+	// PoolSize sets the maximum number of connections in the pool (default 10).
+	PoolSize int `mapstructure:"pool_size"`
+	// DialTimeout is the timeout for establishing new connections (default 5s).
+	DialTimeout time.Duration `mapstructure:"dial_timeout"`
 }
 
 // ScanningConfig controls the optional module security scanning feature.
@@ -256,6 +278,11 @@ type RateLimitingConfig struct {
 	Enabled           bool `mapstructure:"enabled"`
 	RequestsPerMinute int  `mapstructure:"requests_per_minute"`
 	Burst             int  `mapstructure:"burst"`
+	// OrgRequestsPerMinute is the aggregate rate limit for all users in an
+	// organization. Zero means no per-org limiting is applied.
+	OrgRequestsPerMinute int `mapstructure:"org_requests_per_minute"`
+	// OrgBurst is the burst allowance for the per-org rate limiter.
+	OrgBurst int `mapstructure:"org_burst"`
 }
 
 // TLSConfig holds TLS/HTTPS configuration
@@ -391,6 +418,15 @@ type SMTPConfig struct {
 // hardcoded string, any error indicates a programming bug and is surfaced to the caller.
 func bindEnvVars(v *viper.Viper) error {
 	keys := []string{
+		// Redis
+		"redis.host",
+		"redis.port",
+		"redis.password",
+		"redis.db",
+		"redis.tls",
+		"redis.pool_size",
+		"redis.dial_timeout",
+
 		// Database
 		"database.host",
 		"database.port",
@@ -463,6 +499,8 @@ func bindEnvVars(v *viper.Viper) error {
 		"security.rate_limiting.enabled",
 		"security.rate_limiting.requests_per_minute",
 		"security.rate_limiting.burst",
+		"security.rate_limiting.org_requests_per_minute",
+		"security.rate_limiting.org_burst",
 		"security.tls.enabled",
 		"security.tls.cert_file",
 		"security.tls.key_file",
@@ -564,6 +602,7 @@ func Load(configPath string) (*Config, error) {
 
 	// Expand environment variables in sensitive fields
 	cfg.Database.Password = expandEnv(cfg.Database.Password)
+	cfg.Redis.Password = expandEnv(cfg.Redis.Password)
 	cfg.Storage.Azure.AccountKey = expandEnv(cfg.Storage.Azure.AccountKey)
 	cfg.Storage.S3.AccessKeyID = expandEnv(cfg.Storage.S3.AccessKeyID)
 	cfg.Storage.S3.SecretAccessKey = expandEnv(cfg.Storage.S3.SecretAccessKey)
@@ -588,6 +627,15 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.public_url", "")
 	v.SetDefault("server.read_timeout", "30s")
 	v.SetDefault("server.write_timeout", "30s")
+
+	// Redis defaults (empty host = disabled, in-memory fallback used)
+	v.SetDefault("redis.host", "")
+	v.SetDefault("redis.port", 6379)
+	v.SetDefault("redis.password", "")
+	v.SetDefault("redis.db", 0)
+	v.SetDefault("redis.tls", false)
+	v.SetDefault("redis.pool_size", 10)
+	v.SetDefault("redis.dial_timeout", "5s")
 
 	// Database defaults
 	v.SetDefault("database.host", "localhost")
@@ -621,6 +669,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("security.rate_limiting.enabled", true)
 	v.SetDefault("security.rate_limiting.requests_per_minute", 60)
 	v.SetDefault("security.rate_limiting.burst", 10)
+	v.SetDefault("security.rate_limiting.org_requests_per_minute", 0)
+	v.SetDefault("security.rate_limiting.org_burst", 0)
 	v.SetDefault("security.tls.enabled", false)
 
 	// Logging defaults
