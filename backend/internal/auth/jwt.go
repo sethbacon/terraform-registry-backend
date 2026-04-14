@@ -3,6 +3,7 @@
 package auth
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -171,8 +172,14 @@ func StartJWTSecretFileWatch(secretFilePath string, overlapDuration time.Duratio
 						continue
 					}
 
-					// Save current as previous for the overlap period
+					// Skip if the new secret is identical to the current one
+					// (fsnotify may fire multiple events for a single write)
 					current := jwtSecretPtr.Load()
+					if current != nil && bytes.Equal(*current, newSecret) {
+						continue
+					}
+
+					// Save current as previous for the overlap period
 					if current != nil {
 						jwtPreviousSecretPtr.Store(current)
 						// Schedule clearing the previous secret after the overlap

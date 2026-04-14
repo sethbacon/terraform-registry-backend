@@ -23,6 +23,7 @@ type RedisStateStore struct {
 }
 
 // NewRedisStateStore creates a Redis-backed state store.
+// coverage:skip:requires-redis-connection
 func NewRedisStateStore(cfg *config.RedisConfig) (*RedisStateStore, error) {
 	opts := &redis.Options{
 		Addr:        fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
@@ -50,6 +51,7 @@ func NewRedisStateStore(cfg *config.RedisConfig) (*RedisStateStore, error) {
 }
 
 // Save stores session state as JSON in Redis with the given TTL.
+// coverage:skip:requires-redis-connection
 func (s *RedisStateStore) Save(ctx context.Context, state string, data *SessionState, ttl time.Duration) error {
 	payload, err := json.Marshal(data)
 	if err != nil {
@@ -69,6 +71,7 @@ return val
 
 // Load retrieves and atomically deletes the session state (single-use token).
 // Returns nil, nil when the key does not exist.
+// coverage:skip:requires-redis-connection
 func (s *RedisStateStore) Load(ctx context.Context, state string) (*SessionState, error) {
 	key := stateKeyPrefix + state
 	result, err := getAndDeleteScript.Run(ctx, s.client, []string{key}).Result()
@@ -87,11 +90,13 @@ func (s *RedisStateStore) Load(ctx context.Context, state string) (*SessionState
 }
 
 // Delete removes a session state entry from Redis.
+// coverage:skip:requires-redis-connection
 func (s *RedisStateStore) Delete(ctx context.Context, state string) error {
 	return s.client.Del(ctx, stateKeyPrefix+state).Err()
 }
 
 // Close shuts down the Redis connection.
+// coverage:skip:requires-redis-connection
 func (s *RedisStateStore) Close() error {
 	return s.client.Close()
 }
