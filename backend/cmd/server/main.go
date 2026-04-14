@@ -15,6 +15,9 @@
 // @tag.name         System
 // @tag.description  Health, readiness, and service-discovery endpoints.
 //
+// @tag.name         Security Scanning
+// @tag.description  Module security scanning configuration, status, and scan results.
+//
 // @tag.name         Observability
 // @tag.description  Prometheus metrics and profiling are served on a dedicated side-channel port (default: 9090) that is separate from the main API server. This keeps the scrape path off the public ingress and avoids rate-limiting middleware. Configure the port with TFR_TELEMETRY_METRICS_PROMETHEUS_PORT. The endpoint path is always GET /metrics. pprof (if enabled via TFR_TELEMETRY_PROFILING_ENABLED=true) is served on TFR_TELEMETRY_PROFILING_PORT (default: 6060) at the standard /debug/pprof/ paths. Neither endpoint is part of the OpenAPI spec because they are not served by the Gin router.
 
@@ -40,6 +43,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -105,6 +109,10 @@ func serve(cfg *config.Config) error {
 	// Initialise structured logger as early as possible so all subsequent log output
 	// uses the configured format (json / text) and level.
 	telemetry.SetupLogger(cfg.Logging.Format, cfg.Logging.Level)
+
+	// Export build information as a Prometheus metric so fleet inventory queries
+	// can determine which version is deployed where.
+	telemetry.AppInfo.WithLabelValues(Version, runtime.Version(), BuildDate).Set(1)
 
 	// Set Gin mode
 	// Note: gin.SetMode sets the GIN_MODE env var as a side effect. Ensure

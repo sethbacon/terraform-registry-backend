@@ -41,6 +41,9 @@ const (
 	// Audit log scopes
 	ScopeAuditRead Scope = "audit:read"
 
+	// Security scanning scopes
+	ScopeScanningRead Scope = "scanning:read" // View scan results, config, and stats
+
 	// Admin scope (wildcard - all permissions)
 	ScopeAdmin Scope = "admin"
 )
@@ -62,6 +65,7 @@ func AllScopes() []Scope {
 		ScopeSCMManage,
 		ScopeAPIKeysManage,
 		ScopeAuditRead,
+		ScopeScanningRead,
 		ScopeAdmin,
 	}
 }

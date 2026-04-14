@@ -69,7 +69,7 @@ type BackgroundServices struct {
 	tfMirrorSyncJob  *jobs.TerraformMirrorSyncJob
 	expiryNotifier   *jobs.APIKeyExpiryNotifier
 	moduleScannerJob *jobs.ModuleScannerJob
-	rateLimiters     []*middleware.RateLimiter
+	rateLimiters     []middleware.RateLimiterBackend
 }
 
 // Shutdown stops all background goroutines. It should be called after the HTTP
@@ -90,17 +90,19 @@ func (bg *BackgroundServices) Shutdown() {
 		_ = bg.moduleScannerJob.Stop()
 	}
 	for _, rl := range bg.rateLimiters {
-		rl.Stop()
+		if rl != nil {
+			_ = rl.Close()
+		}
 	}
 	slog.Info("all background services stopped")
 }
 
-// collectRateLimiters returns a slice of non-nil rate limiters for shutdown tracking.
-func collectRateLimiters(limiters ...*middleware.RateLimiter) []*middleware.RateLimiter {
-	var out []*middleware.RateLimiter
-	for _, rl := range limiters {
-		if rl != nil {
-			out = append(out, rl)
+// collectRateLimiterBackends returns a slice of non-nil rate limiter backends for shutdown tracking.
+func collectRateLimiterBackends(backends ...middleware.RateLimiterBackend) []middleware.RateLimiterBackend {
+	var out []middleware.RateLimiterBackend
+	for _, b := range backends {
+		if b != nil {
+			out = append(out, b)
 		}
 	}
 	return out
@@ -177,11 +179,23 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	if encryptionKey == "" {
 		log.Fatal("ENCRYPTION_KEY environment variable must be set for SCM integration")
 	}
+	encryptionKeyPrevious := os.Getenv("ENCRYPTION_KEY_PREVIOUS")
 
-	// Initialize token cipher for encrypting OAuth tokens
-	tokenCipher, err := crypto.NewTokenCipher([]byte(encryptionKey))
-	if err != nil {
-		log.Fatalf("Failed to initialize token cipher: %v", err)
+	// Initialize token cipher for encrypting OAuth tokens.
+	// When ENCRYPTION_KEY_PREVIOUS is set, the cipher supports dual-key
+	// decryption for zero-downtime key rotation.
+	var tokenCipher *crypto.TokenCipher
+	if encryptionKeyPrevious != "" {
+		tokenCipher, err = crypto.NewTokenCipherWithPrevious([]byte(encryptionKey), []byte(encryptionKeyPrevious))
+		if err != nil {
+			log.Fatalf("Failed to initialize dual-key token cipher: %v", err)
+		}
+		slog.Info("token cipher initialized with previous key for rotation support")
+	} else {
+		tokenCipher, err = crypto.NewTokenCipher([]byte(encryptionKey))
+		if err != nil {
+			log.Fatalf("Failed to initialize token cipher: %v", err)
+		}
 	}
 
 	// Add middleware
@@ -269,7 +283,8 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 					SwaggerUIBundle.plugins.DownloadUrl
 				],
 				layout: "BaseLayout",
-				docExpansion: "list"
+				docExpansion: "list",
+				tagsSorter: "alpha"
 			})
 			window.ui = ui
 		}
@@ -387,8 +402,22 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	}
 
 	// Initialize admin handlers
+	// Select OIDC state store backend: Redis for HA, in-memory for single-instance.
+	var oidcStateStore auth.StateStore
+	if cfg.Redis.Host != "" {
+		redisStore, storeErr := auth.NewRedisStateStore(&cfg.Redis)
+		if storeErr != nil {
+			slog.Warn("failed to create Redis OIDC state store, falling back to in-memory", "error", storeErr)
+			oidcStateStore = auth.NewMemoryStateStore(5 * time.Minute)
+		} else {
+			oidcStateStore = redisStore
+		}
+	} else {
+		oidcStateStore = auth.NewMemoryStateStore(5 * time.Minute)
+	}
+
 	var authHandlers *admin.AuthHandlers
-	authHandlers, err = admin.NewAuthHandlers(cfg, db, oidcConfigRepo, tokenRepo)
+	authHandlers, err = admin.NewAuthHandlers(cfg, db, oidcConfigRepo, tokenRepo, oidcStateStore)
 	if err != nil {
 		log.Fatalf("Failed to initialize auth handlers: %v", err)
 	}
@@ -423,7 +452,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	apiKeyHandlers := admin.NewAPIKeyHandlers(cfg, db)
 	userHandlers := admin.NewUserHandlers(cfg, db)
 	orgHandlers := admin.NewOrganizationHandlers(cfg, db)
-	statsHandlers := admin.NewStatsHandler(sqlxDB)
+	statsHandlers := admin.NewStatsHandler(sqlxDB, &cfg.Scanning)
 	mirrorHandlers := admin.NewMirrorHandler(mirrorRepo, orgRepo, providerRepo)
 	mirrorHandlers.SetSyncJob(mirrorSyncJob) // Connect sync job for manual triggers
 
@@ -465,11 +494,74 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	scmWebhookHandler := webhooks.NewSCMWebhookHandler(scmRepo, scmPublisher)
 
 	// Initialize rate limiters (conditionally, based on config)
-	var authRateLimiter, generalRateLimiter, uploadRateLimiter *middleware.RateLimiter
+	var authRateLimiter, generalRateLimiter, uploadRateLimiter middleware.RateLimiterBackend
+	var orgRateLimiter middleware.RateLimiterBackend
 	if cfg.Security.RateLimiting.Enabled {
-		authRateLimiter = middleware.NewRateLimiter(middleware.AuthRateLimitConfig())
-		generalRateLimiter = middleware.NewRateLimiter(middleware.DefaultRateLimitConfig())
-		uploadRateLimiter = middleware.NewRateLimiter(middleware.UploadRateLimitConfig())
+		// Build effective configs: use config values when set, otherwise fall back to presets
+		generalCfg := middleware.DefaultRateLimitConfig()
+		if cfg.Security.RateLimiting.RequestsPerMinute > 0 {
+			generalCfg.RequestsPerMinute = cfg.Security.RateLimiting.RequestsPerMinute
+		}
+		if cfg.Security.RateLimiting.Burst > 0 {
+			generalCfg.BurstSize = cfg.Security.RateLimiting.Burst
+		}
+		authCfg := middleware.AuthRateLimitConfig()
+		uploadCfg := middleware.UploadRateLimitConfig()
+
+		if cfg.Redis.Host != "" {
+			// Redis-backed rate limiters for HA deployments
+			var redisErr error
+			generalRateLimiter, redisErr = middleware.NewRedisRateLimiter(&cfg.Redis, generalCfg)
+			if redisErr != nil {
+				slog.Warn("failed to create Redis rate limiter for general, falling back to in-memory", "error", redisErr)
+				generalRateLimiter = middleware.NewRateLimiter(generalCfg)
+			}
+			authRateLimiter, redisErr = middleware.NewRedisRateLimiter(&cfg.Redis, authCfg)
+			if redisErr != nil {
+				slog.Warn("failed to create Redis rate limiter for auth, falling back to in-memory", "error", redisErr)
+				authRateLimiter = middleware.NewRateLimiter(authCfg)
+			}
+			uploadRateLimiter, redisErr = middleware.NewRedisRateLimiter(&cfg.Redis, uploadCfg)
+			if redisErr != nil {
+				slog.Warn("failed to create Redis rate limiter for upload, falling back to in-memory", "error", redisErr)
+				uploadRateLimiter = middleware.NewRateLimiter(uploadCfg)
+			}
+			// Per-organization rate limiter (only when configured)
+			if cfg.Security.RateLimiting.OrgRequestsPerMinute > 0 {
+				orgCfg := middleware.RateLimitConfig{
+					RequestsPerMinute: cfg.Security.RateLimiting.OrgRequestsPerMinute,
+					BurstSize:         cfg.Security.RateLimiting.OrgBurst,
+					CleanupInterval:   5 * time.Minute,
+				}
+				if orgCfg.BurstSize == 0 {
+					orgCfg.BurstSize = orgCfg.RequestsPerMinute / 4
+				}
+				orgRateLimiter, redisErr = middleware.NewRedisRateLimiter(&cfg.Redis, orgCfg)
+				if redisErr != nil {
+					slog.Warn("failed to create Redis org rate limiter, falling back to in-memory", "error", redisErr)
+					orgRateLimiter = middleware.NewRateLimiter(orgCfg)
+				}
+			}
+			log.Println("Rate limiting enabled with Redis backend")
+		} else {
+			// In-memory rate limiters (single-instance only)
+			slog.Warn("redis.host not configured: rate limiting will use in-memory backend (not suitable for multi-pod HA)")
+			generalRateLimiter = middleware.NewRateLimiter(generalCfg)
+			authRateLimiter = middleware.NewRateLimiter(authCfg)
+			uploadRateLimiter = middleware.NewRateLimiter(uploadCfg)
+			// Per-organization rate limiter
+			if cfg.Security.RateLimiting.OrgRequestsPerMinute > 0 {
+				orgCfg := middleware.RateLimitConfig{
+					RequestsPerMinute: cfg.Security.RateLimiting.OrgRequestsPerMinute,
+					BurstSize:         cfg.Security.RateLimiting.OrgBurst,
+					CleanupInterval:   5 * time.Minute,
+				}
+				if orgCfg.BurstSize == 0 {
+					orgCfg.BurstSize = orgCfg.RequestsPerMinute / 4
+				}
+				orgRateLimiter = middleware.NewRateLimiter(orgCfg)
+			}
+		}
 	}
 
 	// Admin API endpoints
@@ -529,7 +621,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 		// Authenticated-only endpoints
 		authenticatedGroup := apiV1.Group("")
 		authenticatedGroup.Use(middleware.AuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo))
-		authenticatedGroup.Use(middleware.RateLimitMiddleware(generalRateLimiter))
+		authenticatedGroup.Use(middleware.OrgRateLimitMiddleware(generalRateLimiter, orgRateLimiter))
 		authenticatedGroup.Use(middleware.AuditMiddleware(auditRepo)) // Audit all authenticated actions
 		{
 			// Auth endpoints (require auth)
@@ -597,8 +689,16 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 				middleware.RequireScope(auth.ScopeModulesWrite),
 				moduleAdminHandlers.UndeprecateVersion)
 			authenticatedGroup.GET("/modules/:namespace/:name/:system/versions/:version/scan",
-				middleware.RequireScope(auth.ScopeAdmin),
+				middleware.RequireScope(auth.ScopeScanningRead),
 				admin.GetModuleScanHandler(db))
+
+			// Security scanning admin endpoints
+			authenticatedGroup.GET("/admin/scanning/config",
+				middleware.RequireScope(auth.ScopeAdmin),
+				admin.GetScanningConfigHandler(&cfg.Scanning))
+			authenticatedGroup.GET("/admin/scanning/stats",
+				middleware.RequireScope(auth.ScopeScanningRead),
+				admin.GetScanningStatsHandler(sqlxDB))
 
 			// API Keys management - self-service for own keys
 			// Users can manage their own API keys without api_keys:manage scope
@@ -821,7 +921,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 		tfMirrorSyncJob:  tfMirrorSyncJob,
 		expiryNotifier:   expiryNotifier,
 		moduleScannerJob: moduleScannerJob,
-		rateLimiters:     collectRateLimiters(authRateLimiter, generalRateLimiter, uploadRateLimiter),
+		rateLimiters:     collectRateLimiterBackends(authRateLimiter, generalRateLimiter, uploadRateLimiter, orgRateLimiter),
 	}
 
 	return router, bg

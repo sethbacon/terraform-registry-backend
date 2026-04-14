@@ -72,6 +72,23 @@ data:
   TFR_SECURITY_RATE_LIMITING_ENABLED: {{ .Values.security.rateLimiting.enabled | quote }}
   TFR_SECURITY_RATE_LIMITING_REQUESTS_PER_MINUTE: {{ .Values.security.rateLimiting.requestsPerMinute | quote }}
   TFR_SECURITY_RATE_LIMITING_BURST: {{ .Values.security.rateLimiting.burst | quote }}
+  {{- if .Values.security.rateLimiting.orgRequestsPerMinute }}
+  TFR_SECURITY_RATE_LIMITING_ORG_REQUESTS_PER_MINUTE: {{ .Values.security.rateLimiting.orgRequestsPerMinute | quote }}
+  TFR_SECURITY_RATE_LIMITING_ORG_BURST: {{ .Values.security.rateLimiting.orgBurst | quote }}
+  {{- end }}
+  {{- if .Values.security.jwtSecretFile }}
+  TFR_JWT_SECRET_FILE: {{ .Values.security.jwtSecretFile | quote }}
+  {{- end }}
+
+  # Redis (optional, enables HA rate limiting and session store)
+  {{- if .Values.redis.host }}
+  TFR_REDIS_HOST: {{ .Values.redis.host | quote }}
+  TFR_REDIS_PORT: {{ .Values.redis.port | quote }}
+  TFR_REDIS_DB: {{ .Values.redis.db | quote }}
+  TFR_REDIS_TLS: {{ .Values.redis.tls | quote }}
+  TFR_REDIS_POOL_SIZE: {{ .Values.redis.poolSize | quote }}
+  TFR_REDIS_DIAL_TIMEOUT: {{ .Values.redis.dialTimeout | quote }}
+  {{- end }}
 
   # Logging
   TFR_LOGGING_LEVEL: {{ .Values.logging.level | quote }}
