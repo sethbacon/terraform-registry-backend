@@ -152,12 +152,13 @@ var (
 //   - Error rate by mirror:  rate(mirror_sync_errors_total[1h])
 //   - Alert expression:      increase(mirror_sync_errors_total[30m]) > 3
 var (
-	MirrorSyncDuration = promauto.NewHistogram(
+	MirrorSyncDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "mirror_sync_duration_seconds",
 			Help:    "Duration of a single provider mirror sync operation.",
 			Buckets: prometheus.DefBuckets,
 		},
+		[]string{"mirror_id", "mirror_type"},
 	)
 
 	MirrorSyncErrorsTotal = promauto.NewCounterVec(
@@ -180,6 +181,50 @@ var APIKeyExpiryNotificationsSentTotal = promauto.NewCounter(
 	prometheus.CounterOpts{
 		Name: "apikey_expiry_notifications_sent_total",
 		Help: "Total number of API key expiry warning emails successfully sent.",
+	},
+)
+
+// AppInfo is a GaugeVec that exposes build information as Prometheus labels.
+// Set once at startup with value 1 so the info is available via the /metrics endpoint.
+//
+// Example PromQL queries:
+//   - Build info:  terraform_registry_info
+var AppInfo = promauto.NewGaugeVec(
+	prometheus.GaugeOpts{
+		Name: "terraform_registry_info",
+		Help: "Application build information",
+	},
+	[]string{"version", "go_version", "build_date"},
+)
+
+// ModuleScanQueueDepth tracks how many modules are awaiting a security scan.
+// Updated by the scanning subsystem whenever a module is enqueued or dequeued.
+var ModuleScanQueueDepth = promauto.NewGauge(
+	prometheus.GaugeOpts{
+		Name: "terraform_registry_scan_queue_depth",
+		Help: "Number of modules awaiting security scan",
+	},
+)
+
+// ModuleScanDuration is a HistogramVec recording the time taken for each security scan,
+// labelled by scanner tool and result status.
+//
+// Example PromQL queries:
+//   - p95 scan duration:  histogram_quantile(0.95, rate(terraform_registry_scan_duration_seconds_bucket[1h]))
+var ModuleScanDuration = promauto.NewHistogramVec(
+	prometheus.HistogramOpts{
+		Name:    "terraform_registry_scan_duration_seconds",
+		Help:    "Duration of module security scans",
+		Buckets: prometheus.DefBuckets,
+	},
+	[]string{"tool", "status"},
+)
+
+// JWTRevokedTokensCleanedTotal counts expired revoked JWT tokens removed during cleanup.
+var JWTRevokedTokensCleanedTotal = promauto.NewCounter(
+	prometheus.CounterOpts{
+		Name: "terraform_registry_jwt_revoked_tokens_cleaned_total",
+		Help: "Total number of expired revoked JWT tokens cleaned up",
 	},
 )
 
