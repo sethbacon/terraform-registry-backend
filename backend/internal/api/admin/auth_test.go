@@ -13,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
@@ -32,7 +33,7 @@ func newAuthRouter(t *testing.T) (*AuthHandlers, sqlmock.Sqlmock, *gin.Engine) {
 	cfg := &config.Config{}
 	// OIDC and AzureAD disabled (zero values)
 
-	h, err := NewAuthHandlers(cfg, db, nil, nil)
+	h, err := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 	if err != nil {
 		t.Fatalf("NewAuthHandlers: %v", err)
 	}
@@ -58,7 +59,7 @@ func TestNewAuthHandlers_NilProviders(t *testing.T) {
 	defer db.Close()
 
 	cfg := &config.Config{} // OIDC and AzureAD disabled
-	h, err := NewAuthHandlers(cfg, db, nil, nil)
+	h, err := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 	if err != nil {
 		t.Fatalf("NewAuthHandlers error: %v", err)
 	}
@@ -174,7 +175,7 @@ func TestRefreshHandler_UserNotFound(t *testing.T) {
 	defer db.Close()
 
 	cfg := &config.Config{}
-	h, _ := NewAuthHandlers(cfg, db, nil, nil)
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
 		c.Set("user_id", "user-1")
@@ -223,7 +224,7 @@ func TestMeHandler_UserNotFound(t *testing.T) {
 	defer db.Close()
 
 	cfg := &config.Config{}
-	h, _ := NewAuthHandlers(cfg, db, nil, nil)
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
 		c.Set("user_id", "user-1")
@@ -278,17 +279,17 @@ func TestCallbackHandler_ExpiredSession(t *testing.T) {
 	defer db.Close()
 
 	cfg := &config.Config{}
-	h, _ := NewAuthHandlers(cfg, db, nil, nil)
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 	r := gin.New()
 	r.GET("/auth/callback", h.CallbackHandler())
 
 	// Manually inject an expired session into the store
 	expiredState := "test-expired-state"
-	h.sessionStore[expiredState] = &SessionState{
+	h.stateStore.Save(context.Background(), expiredState, &auth.SessionState{
 		State:        expiredState,
 		CreatedAt:    time.Now().Add(-20 * time.Minute), // 20 minutes old
 		ProviderType: "oidc",
-	}
+	}, time.Hour)
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet,
@@ -315,7 +316,7 @@ func TestMeHandler_Success_NoMemberships(t *testing.T) {
 	defer db.Close()
 
 	cfg := &config.Config{}
-	h, _ := NewAuthHandlers(cfg, db, nil, nil)
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
 		c.Set("user_id", "user-1")
@@ -348,7 +349,7 @@ func TestMeHandler_DBError(t *testing.T) {
 	defer db.Close()
 
 	cfg := &config.Config{}
-	h, _ := NewAuthHandlers(cfg, db, nil, nil)
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
 		c.Set("user_id", "user-1")
@@ -377,7 +378,7 @@ func TestRefreshHandler_Success(t *testing.T) {
 	defer db.Close()
 
 	cfg := &config.Config{}
-	h, _ := NewAuthHandlers(cfg, db, nil, nil)
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
 		c.Set("user_id", "user-1")
@@ -458,7 +459,7 @@ func TestSetOIDCProvider_Nil(t *testing.T) {
 	db, _, _ := sqlmock.New()
 	defer db.Close()
 
-	h, _ := NewAuthHandlers(&config.Config{}, db, nil, nil)
+	h, _ := NewAuthHandlers(&config.Config{}, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 	h.SetOIDCProvider(nil)
 
 	if got := h.oidcProvider.Load(); got != nil {
@@ -476,7 +477,7 @@ func TestResolveGroupClaimName_NilRepo_UsesConfig(t *testing.T) {
 
 	cfg := &config.Config{}
 	cfg.Auth.OIDC.GroupClaimName = "groups"
-	h, _ := NewAuthHandlers(cfg, db, nil, nil)
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 
 	got := h.resolveGroupClaimName(context.Background())
 	if got != "groups" {
@@ -488,7 +489,7 @@ func TestResolveGroupClaimName_NilRepo_Empty(t *testing.T) {
 	db, _, _ := sqlmock.New()
 	defer db.Close()
 
-	h, _ := NewAuthHandlers(&config.Config{}, db, nil, nil)
+	h, _ := NewAuthHandlers(&config.Config{}, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 	got := h.resolveGroupClaimName(context.Background())
 	if got != "" {
 		t.Errorf("resolveGroupClaimName = %q, want empty", got)
@@ -509,7 +510,7 @@ func TestResolveGroupMappingConfig_NilRepo(t *testing.T) {
 	cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
 		{Group: "admins", Organization: "acme", Role: "admin"},
 	}
-	h, _ := NewAuthHandlers(cfg, db, nil, nil)
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 
 	cn, mappings, dr := h.resolveGroupMappingConfig(context.Background())
 	if cn != "grps" {
@@ -527,7 +528,7 @@ func TestResolveGroupMappingConfig_NilRepo_Empty(t *testing.T) {
 	db, _, _ := sqlmock.New()
 	defer db.Close()
 
-	h, _ := NewAuthHandlers(&config.Config{}, db, nil, nil)
+	h, _ := NewAuthHandlers(&config.Config{}, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 	cn, mappings, dr := h.resolveGroupMappingConfig(context.Background())
 	if cn != "" || dr != "" || len(mappings) != 0 {
 		t.Errorf("expected empty values, got cn=%q dr=%q mappings=%v", cn, dr, mappings)
@@ -542,7 +543,7 @@ func TestApplyGroupMappings_NoMappingsNoDefaultRole(t *testing.T) {
 	db, _, _ := sqlmock.New()
 	defer db.Close()
 
-	h, _ := NewAuthHandlers(&config.Config{}, db, nil, nil)
+	h, _ := NewAuthHandlers(&config.Config{}, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 	err := h.applyGroupMappings(context.Background(), "user-1", []string{"admins"})
 	if err != nil {
 		t.Errorf("applyGroupMappings: expected nil error, got %v", err)
@@ -558,7 +559,7 @@ func TestApplyGroupMappings_EmptyGroupsNoDefault(t *testing.T) {
 		{Group: "admins", Organization: "acme", Role: "admin"},
 	}
 	// DefaultRole is empty, so unmatched users are not assigned to any org
-	h, _ := NewAuthHandlers(cfg, db, nil, nil)
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 	err := h.applyGroupMappings(context.Background(), "user-1", []string{})
 	if err != nil {
 		t.Errorf("applyGroupMappings: expected nil error, got %v", err)
@@ -575,7 +576,7 @@ func TestLogoutHandler_NoOIDC_RedirectsToHome(t *testing.T) {
 
 	cfg := &config.Config{}
 	cfg.Server.PublicURL = "https://app.example.com"
-	h, _ := NewAuthHandlers(cfg, db, nil, nil)
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 
 	r := gin.New()
 	r.GET("/auth/logout", h.LogoutHandler())
@@ -598,7 +599,7 @@ func TestLogoutHandler_BaseURL_Fallback(t *testing.T) {
 
 	cfg := &config.Config{}
 	cfg.Server.BaseURL = "http://localhost:8080"
-	h, _ := NewAuthHandlers(cfg, db, nil, nil)
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 
 	r := gin.New()
 	r.GET("/auth/logout", h.LogoutHandler())
@@ -624,7 +625,7 @@ func TestMeHandler_SuccessWithMemberships(t *testing.T) {
 	defer db.Close()
 
 	cfg := &config.Config{}
-	h, _ := NewAuthHandlers(cfg, db, nil, nil)
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
 		c.Set("user_id", "user-1")
@@ -674,16 +675,16 @@ func TestCallbackHandler_UnknownProviderType(t *testing.T) {
 	defer db.Close()
 
 	cfg := &config.Config{}
-	h, _ := NewAuthHandlers(cfg, db, nil, nil)
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 	r := gin.New()
 	r.GET("/auth/callback", h.CallbackHandler())
 
 	// Inject a session with unknown provider type
-	h.sessionStore["test-state"] = &SessionState{
+	h.stateStore.Save(context.Background(), "test-state", &auth.SessionState{
 		State:        "test-state",
 		CreatedAt:    time.Now(),
 		ProviderType: "unknown",
-	}
+	}, time.Hour)
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet,
@@ -704,15 +705,15 @@ func TestCallbackHandler_OIDCProviderNotConfigured(t *testing.T) {
 	defer db.Close()
 
 	cfg := &config.Config{}
-	h, _ := NewAuthHandlers(cfg, db, nil, nil)
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 	r := gin.New()
 	r.GET("/auth/callback", h.CallbackHandler())
 
-	h.sessionStore["oidc-state"] = &SessionState{
+	h.stateStore.Save(context.Background(), "oidc-state", &auth.SessionState{
 		State:        "oidc-state",
 		CreatedAt:    time.Now(),
 		ProviderType: "oidc",
-	}
+	}, time.Hour)
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet,
@@ -732,15 +733,15 @@ func TestCallbackHandler_AzureADProviderNotConfigured(t *testing.T) {
 	defer db.Close()
 
 	cfg := &config.Config{}
-	h, _ := NewAuthHandlers(cfg, db, nil, nil)
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 	r := gin.New()
 	r.GET("/auth/callback", h.CallbackHandler())
 
-	h.sessionStore["azure-state"] = &SessionState{
+	h.stateStore.Save(context.Background(), "azure-state", &auth.SessionState{
 		State:        "azure-state",
 		CreatedAt:    time.Now(),
 		ProviderType: "azuread",
-	}
+	}, time.Hour)
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet,
@@ -761,7 +762,7 @@ func TestCallbackHandler_ErrorRedirectsToFrontend(t *testing.T) {
 
 	cfg := &config.Config{}
 	cfg.Server.PublicURL = "https://app.example.com"
-	h, _ := NewAuthHandlers(cfg, db, nil, nil)
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 	r := gin.New()
 	r.GET("/auth/callback", h.CallbackHandler())
 
@@ -797,7 +798,7 @@ func TestApplyGroupMappings_MatchingGroup_AddMember(t *testing.T) {
 	cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
 		{Group: "developers", Organization: "acme", Role: "editor"},
 	}
-	h, _ := NewAuthHandlers(cfg, db, nil, nil)
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 
 	// GetByName("acme") → found
 	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
@@ -839,7 +840,7 @@ func TestApplyGroupMappings_MatchingGroup_UpdateMember(t *testing.T) {
 	cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
 		{Group: "admins", Organization: "acme", Role: "admin"},
 	}
-	h, _ := NewAuthHandlers(cfg, db, nil, nil)
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 
 	// GetByName("acme") → found
 	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
@@ -884,7 +885,7 @@ func TestApplyGroupMappings_DefaultRoleFallback(t *testing.T) {
 		{Group: "admins", Organization: "acme", Role: "admin"},
 	}
 	cfg.Auth.OIDC.DefaultRole = "viewer"
-	h, _ := NewAuthHandlers(cfg, db, nil, nil)
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 
 	// No group matches → falls through to default role
 
@@ -928,7 +929,7 @@ func TestApplyGroupMappings_OrgNotFound_Skipped(t *testing.T) {
 	cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
 		{Group: "devs", Organization: "nonexistent", Role: "editor"},
 	}
-	h, _ := NewAuthHandlers(cfg, db, nil, nil)
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 
 	// GetByName("nonexistent") → not found (no rows)
 	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
@@ -977,7 +978,7 @@ func TestResolveGroupClaimName_WithDB_ReturnsDBValue(t *testing.T) {
 			extraCfg, time.Now(), time.Now(), nil, nil,
 		))
 
-	h, err := NewAuthHandlers(&config.Config{}, mainDB, oidcRepo, nil)
+	h, err := NewAuthHandlers(&config.Config{}, mainDB, oidcRepo, nil, auth.NewMemoryStateStore(time.Hour))
 	if err != nil {
 		t.Fatalf("NewAuthHandlers: %v", err)
 	}
@@ -1006,7 +1007,7 @@ func TestResolveGroupClaimName_WithDB_EmptyClaimFallsBackToCfg(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Auth.OIDC.GroupClaimName = "static_groups"
 
-	h, err := NewAuthHandlers(cfg, mainDB, oidcRepo, nil)
+	h, err := NewAuthHandlers(cfg, mainDB, oidcRepo, nil, auth.NewMemoryStateStore(time.Hour))
 	if err != nil {
 		t.Fatalf("NewAuthHandlers: %v", err)
 	}
@@ -1038,7 +1039,7 @@ func TestResolveGroupMappingConfig_WithDB_ReturnsMappings(t *testing.T) {
 			extraCfg, time.Now(), time.Now(), nil, nil,
 		))
 
-	h, err := NewAuthHandlers(&config.Config{}, mainDB, oidcRepo, nil)
+	h, err := NewAuthHandlers(&config.Config{}, mainDB, oidcRepo, nil, auth.NewMemoryStateStore(time.Hour))
 	if err != nil {
 		t.Fatalf("NewAuthHandlers: %v", err)
 	}
@@ -1067,7 +1068,7 @@ func TestApplyGroupMappings_CheckMembershipError(t *testing.T) {
 	cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
 		{Group: "admins", Organization: "acme", Role: "admin"},
 	}
-	h, _ := NewAuthHandlers(cfg, db, nil, nil)
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 
 	// GetByName("acme") → found
 	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
@@ -1092,7 +1093,7 @@ func TestApplyGroupMappings_DefaultRole_OrgNotFound(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Auth.OIDC.DefaultRole = "viewer"
 	// No mappings → no match → goes to default role path
-	h, _ := NewAuthHandlers(cfg, db, nil, nil)
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 
 	// GetDefaultOrganization → GetByName("default") → DB error
 	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
@@ -1111,7 +1112,7 @@ func TestApplyGroupMappings_DefaultRole_UpdateMember(t *testing.T) {
 
 	cfg := &config.Config{}
 	cfg.Auth.OIDC.DefaultRole = "editor"
-	h, _ := NewAuthHandlers(cfg, db, nil, nil)
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 
 	// GetDefaultOrganization → found
 	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").

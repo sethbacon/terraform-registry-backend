@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -33,23 +32,15 @@ type AuthHandlers struct {
 	tokenRepo       *repositories.TokenRepository
 	oidcProvider    atomic.Pointer[oidc.OIDCProvider]
 	azureADProvider *azuread.AzureADProvider
-	// sessionStore holds OIDC CSRF state tokens. In-memory only — not shared across
-	// instances. In a multi-instance deployment, OIDC logins will fail when the callback
-	// hits a different instance than the authorization request. Replace with Redis for HA.
-	sessionStore map[string]*SessionState
-	sessionMu    sync.Mutex
+	// stateStore persists OIDC CSRF state tokens. When Redis is configured the
+	// store is shared across instances; otherwise an in-memory store is used.
+	stateStore auth.StateStore
 }
 
-// SessionState represents OAuth state during authentication flow
-type SessionState struct {
-	State        string
-	CreatedAt    time.Time
-	RedirectURL  string
-	ProviderType string // "oidc" or "azuread"
-}
-
-// NewAuthHandlers creates a new AuthHandlers instance
-func NewAuthHandlers(cfg *config.Config, db *sql.DB, oidcConfigRepo *repositories.OIDCConfigRepository, tokenRepo *repositories.TokenRepository) (*AuthHandlers, error) {
+// NewAuthHandlers creates a new AuthHandlers instance.
+// stateStore must be non-nil; the caller selects the implementation
+// (MemoryStateStore for single-instance, RedisStateStore for HA).
+func NewAuthHandlers(cfg *config.Config, db *sql.DB, oidcConfigRepo *repositories.OIDCConfigRepository, tokenRepo *repositories.TokenRepository, stateStore auth.StateStore) (*AuthHandlers, error) {
 	h := &AuthHandlers{
 		cfg:            cfg,
 		db:             db,
@@ -57,7 +48,7 @@ func NewAuthHandlers(cfg *config.Config, db *sql.DB, oidcConfigRepo *repositorie
 		orgRepo:        repositories.NewOrganizationRepository(db),
 		oidcConfigRepo: oidcConfigRepo,
 		tokenRepo:      tokenRepo,
-		sessionStore:   make(map[string]*SessionState),
+		stateStore:     stateStore,
 	}
 
 	// Initialize OIDC provider if enabled
@@ -77,22 +68,6 @@ func NewAuthHandlers(cfg *config.Config, db *sql.DB, oidcConfigRepo *repositorie
 		}
 		h.azureADProvider = azProv
 	}
-
-	// Periodically clean up expired session states to prevent memory leaks
-	go func() {
-		ticker := time.NewTicker(5 * time.Minute)
-		defer ticker.Stop()
-		for range ticker.C {
-			cutoff := time.Now().Add(-10 * time.Minute)
-			h.sessionMu.Lock()
-			for k, v := range h.sessionStore {
-				if v.CreatedAt.Before(cutoff) {
-					delete(h.sessionStore, k)
-				}
-			}
-			h.sessionMu.Unlock()
-		}
-	}()
 
 	return h, nil
 }
@@ -142,14 +117,19 @@ func (h *AuthHandlers) LoginHandler() gin.HandlerFunc {
 			return
 		}
 
-		// Store state in session (in-memory for MVP)
-		h.sessionMu.Lock()
-		h.sessionStore[state] = &SessionState{
+		// Store state in session store with 10-minute TTL
+		sessionState := &auth.SessionState{
 			State:        state,
 			CreatedAt:    time.Now(),
 			ProviderType: provider,
 		}
-		h.sessionMu.Unlock()
+		if err := h.stateStore.Save(c.Request.Context(), state, sessionState, 10*time.Minute); err != nil {
+			slog.Error("failed to save OIDC state", "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to save session state",
+			})
+			return
+		}
 
 		// Get authorization URL based on provider
 		var authURL string
@@ -225,25 +205,27 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 		state := c.Query("state")
 
 		// Validate state
-		h.sessionMu.Lock()
-		sessionState, exists := h.sessionStore[state]
-		if !exists {
-			h.sessionMu.Unlock()
+		sessionState, loadErr := h.stateStore.Load(c.Request.Context(), state)
+		if loadErr != nil {
+			slog.Error("failed to load OIDC state from store", "error", loadErr)
+			callbackError("state_error", "Failed to validate session state. Please try logging in again.")
+			return
+		}
+		if sessionState == nil {
 			callbackError("invalid_state", "Invalid state parameter. Please try logging in again.")
 			return
 		}
 
 		// Check state expiration (5 minutes)
 		if time.Since(sessionState.CreatedAt) > 5*time.Minute {
-			delete(h.sessionStore, state)
-			h.sessionMu.Unlock()
+			// State was already consumed by Load (single-use in Redis) but check TTL anyway
 			callbackError("state_expired", "Login session expired. Please try logging in again.")
 			return
 		}
 
-		// Delete state to prevent reuse
-		delete(h.sessionStore, state)
-		h.sessionMu.Unlock()
+		// State was already atomically consumed by Load (Redis) or needs explicit delete (memory).
+		// Explicit delete is a no-op for Redis since Load already removed it.
+		_ = h.stateStore.Delete(c.Request.Context(), state)
 
 		ctx := context.Background()
 
