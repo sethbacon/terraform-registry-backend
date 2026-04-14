@@ -251,7 +251,7 @@ terraform-registry-backend/
 | Language       | Go 1.24.0                                                          |
 | HTTP Framework | Gin                                                                |
 | Database       | PostgreSQL 14+ via sqlx                                            |
-| Migrations     | golang-migrate (14 migrations (000001–000014))                     |
+| Migrations     | golang-migrate (18 migrations (000001–000018))                     |
 | Auth           | JWT (golang-jwt/jwt v5), API keys, OIDC (coreos/go-oidc), Azure AD |
 | Config         | Viper (`TFR_` env prefix overrides YAML)                           |
 | Storage        | Local filesystem, Azure Blob, S3-compatible, GCS                   |
@@ -384,7 +384,7 @@ HTTP Handler (api/)
 
 ### Database
 
-- 14 migrations (000001–000014) in `backend/internal/db/migrations/`.
+- 18 migrations (000001–000018) in `backend/internal/db/migrations/`.
 - Migrations run automatically at startup; use `migrate up/down` for manual control.
 - Always add a new migration file rather than editing existing ones.
 
