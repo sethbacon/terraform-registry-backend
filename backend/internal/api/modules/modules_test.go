@@ -135,14 +135,6 @@ func sampleModuleVersionGetRow() *sqlmock.Rows {
 			nil, nil, nil)
 }
 
-func sampleModuleSearchRow() *sqlmock.Rows {
-	return sqlmock.NewRows(moduleSearchCols).
-		AddRow("mod-1", "org-1", "hashicorp", "consul", "aws",
-			nil, "hashicorp/consul/aws", nil, nil, time.Now(), time.Now(),
-			false, nil, nil, nil,
-			nil, int64(0))
-}
-
 func sampleModuleSearchRowFTS() *sqlmock.Rows {
 	return sqlmock.NewRows(moduleSearchColsFTS).
 		AddRow("mod-1", "org-1", "hashicorp", "consul", "aws",
