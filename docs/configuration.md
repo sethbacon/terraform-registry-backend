@@ -59,6 +59,13 @@ For example, `database.host` in YAML becomes `TFR_DATABASE_HOST` as an env var.
 | `ENCRYPTION_KEY_PREVIOUS` | string | — | No | Previous encryption key for zero-downtime rotation |
 | `TFR_SECURITY_RATE_LIMITING_ORG_REQUESTS_PER_MINUTE` | int | `0` | No | Per-org aggregate rate limit (0 = disabled) |
 | `TFR_SECURITY_RATE_LIMITING_ORG_BURST` | int | `0` | No | Per-org burst allowance |
+| `TFR_SCANNING_ENABLED` | bool | `false` | No | Enable module security scanning |
+| `TFR_SCANNING_TOOL` | string | `trivy` | No | Scanner backend (`trivy`, `checkov`, `terrascan`, `snyk`, `custom`) |
+| `TFR_AUDIT_RETENTION_RETENTION_DAYS` | int | `90` | No | Delete audit logs older than N days (0 = keep forever) |
+| `TFR_AUDIT_RETENTION_CLEANUP_BATCH_SIZE` | int | `1000` | No | Rows per cleanup batch |
+| `TFR_WEBHOOKS_MAX_RETRIES` | int | `3` | No | Webhook delivery retry attempts (0 = no retries) |
+| `TFR_WEBHOOKS_RETRY_INTERVAL_MINS` | int | `2` | No | Minutes between webhook retries |
+| `TFR_NOTIFICATIONS_ENABLED` | bool | `false` | No | Enable outbound email notifications |
 
 ---
 
@@ -546,3 +553,97 @@ scanning:
 | `TFR_SCANNING_VERSION_ARGS` | string[] | — | **`custom` tool only.** Arguments to print the binary version. |
 | `TFR_SCANNING_SCAN_ARGS` | string[] | — | **`custom` tool only.** Arguments passed before the target directory. |
 | `TFR_SCANNING_OUTPUT_FORMAT` | string | — | **`custom` tool only.** Output parser: `sarif` or `json`. |
+
+The scanning feature can also be configured through the web-based setup wizard, which
+stores the configuration encrypted in the database. DB-stored config takes precedence
+over config file values and supports runtime changes without restart.
+
+---
+
+## Audit Log Retention
+
+The backend can automatically delete audit log entries older than a configurable
+threshold. This prevents unbounded table growth in long-running deployments. When
+`retention_days` is `0` the cleanup job is disabled and logs are kept indefinitely.
+
+```yaml
+audit_retention:
+  retention_days: 90        # delete entries older than 90 days; 0 = keep forever
+  cleanup_batch_size: 1000  # rows deleted per batch to avoid long-running transactions
+```
+
+| Variable | Type | Default | Description |
+| --- | --- | --- | --- |
+| `TFR_AUDIT_RETENTION_RETENTION_DAYS` | int | `90` | Entries older than this many days are deleted. Set to `0` to disable cleanup. |
+| `TFR_AUDIT_RETENTION_CLEANUP_BATCH_SIZE` | int | `1000` | Maximum rows deleted per cleanup iteration. Smaller values reduce lock contention on busy databases. |
+
+The cleanup job runs periodically in the background and emits the
+`terraform_registry_audit_logs_cleaned_total` Prometheus counter. See
+[Observability Reference](observability.md) for monitoring details.
+
+---
+
+## Webhooks
+
+Webhook delivery retries can be configured to automatically re-attempt failed
+deliveries. When `max_retries` is `0`, failed webhook deliveries are not retried.
+
+```yaml
+webhooks:
+  max_retries: 3            # number of retry attempts after initial failure
+  retry_interval_mins: 2    # minutes between retry attempts
+```
+
+| Variable | Type | Default | Description |
+| --- | --- | --- | --- |
+| `TFR_WEBHOOKS_MAX_RETRIES` | int | `3` | Maximum number of retry attempts for failed webhook deliveries. Set to `0` to disable retries. |
+| `TFR_WEBHOOKS_RETRY_INTERVAL_MINS` | int | `2` | Interval in minutes between retry attempts. |
+
+The retry processor emits the `terraform_registry_webhook_retries_total` Prometheus
+counter with an `outcome` label (`success`, `failure`, `exhausted`). See
+[Observability Reference](observability.md) for alerting recommendations.
+
+---
+
+## Notifications
+
+```yaml
+notifications:
+  enabled: false
+  smtp:
+    host: smtp.sendgrid.net
+    port: 587
+    username: ${SMTP_USERNAME}
+    password: ${SMTP_PASSWORD}
+    from: registry@example.com
+    use_tls: true
+  api_key_expiry_warning_days: 7
+  api_key_expiry_check_interval_hours: 24
+```
+
+| Variable | Type | Default | Description |
+| --- | --- | --- | --- |
+| `TFR_NOTIFICATIONS_ENABLED` | bool | `false` | Master toggle for outbound email notifications. |
+| `TFR_NOTIFICATIONS_SMTP_HOST` | string | — | SMTP server hostname. |
+| `TFR_NOTIFICATIONS_SMTP_PORT` | int | `587` | SMTP server port (587 for STARTTLS, 465 for implicit TLS). |
+| `TFR_NOTIFICATIONS_SMTP_USERNAME` | string | — | SMTP authentication username. |
+| `TFR_NOTIFICATIONS_SMTP_PASSWORD` | string | — | SMTP authentication password. |
+| `TFR_NOTIFICATIONS_SMTP_FROM` | string | — | Sender address for notification emails. |
+| `TFR_NOTIFICATIONS_SMTP_USE_TLS` | bool | `true` | Enable TLS for SMTP connection. |
+| `TFR_NOTIFICATIONS_API_KEY_EXPIRY_WARNING_DAYS` | int | `7` | Days before API key expiry to send the first warning email. |
+| `TFR_NOTIFICATIONS_API_KEY_EXPIRY_CHECK_INTERVAL_HOURS` | int | `24` | How often the expiry check job runs (in hours). |
+
+---
+
+## Storage Migration
+
+The backend supports live migration between storage backends. When you change
+`storage.default_backend`, new uploads go to the new backend while existing artifacts
+remain in the old backend. The admin API provides migration endpoints to move existing
+artifacts:
+
+- `POST /api/v1/admin/storage/migrate` -- Start a background migration
+- `GET /api/v1/admin/storage/migrate/status` -- Check migration progress
+
+During migration, reads transparently fall back to the old backend for artifacts that
+have not yet been copied. No downtime is required.

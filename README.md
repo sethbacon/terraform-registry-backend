@@ -311,15 +311,20 @@ go build -o terraform-registry cmd/server/main.go
 
 ## Documentation
 
+- [Getting Started](docs/getting-started.md) - Quick-start tutorial for new users
 - [Changelog](CHANGELOG.md) - Version history and changes
 - [Contributing](CONTRIBUTING.md) - How to contribute to this project
 - [Architecture](docs/architecture.md) - System design and component interactions
+- [Architecture Decision Records](docs/adr/) - Key design decisions and rationale
 - [API Reference](docs/api-reference.md) - API documentation guide
+- [API Migration Guide](docs/api-migration-guide.md) - Breaking changes and migration steps across releases
 - [Observability Reference](docs/observability.md) - Prometheus metrics catalogue
 - [Configuration Reference](docs/configuration.md) - All `TFR_*` environment variables
 - [Module Security Scanning](docs/module-scanning.md) - Scanner setup (Trivy, Checkov, Terrascan, Snyk, custom)
 - [Module Documentation Extraction](docs/module-documentation.md) - Automatic extraction of inputs, outputs, and provider requirements
 - [Deployment Guide](docs/deployment.md) - Production deployment for all platforms
+- [Capacity Planning](docs/capacity-planning.md) - Sizing guidance for production deployments
+- [Disaster Recovery](docs/disaster-recovery.md) - DR runbook and backup/restore procedures
 - [Troubleshooting](docs/troubleshooting.md) - Common issues and diagnostic tools
 - [Development Guide](docs/development.md) - Local development setup
 - [OIDC Configuration](docs/OIDC_CONFIGURATION.md) - SSO provider setup
