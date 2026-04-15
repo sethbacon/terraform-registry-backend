@@ -16,6 +16,7 @@ import (
 var moduleCols = []string{
 	"id", "organization_id", "namespace", "name", "system",
 	"description", "source", "created_by", "created_at", "updated_at", "created_by_name",
+	"deprecated", "deprecated_at", "deprecation_message", "successor_module_id",
 }
 
 var modVersionListCols = []string{
@@ -41,7 +42,7 @@ var modVersionCreateCols = []string{"id", "created_at"}
 
 func sampleModuleRow() *sqlmock.Rows {
 	return sqlmock.NewRows(moduleCols).
-		AddRow("mod-1", "org-1", "hashicorp", "vpc", "aws", nil, nil, nil, time.Now(), time.Now(), nil)
+		AddRow("mod-1", "org-1", "hashicorp", "vpc", "aws", nil, nil, nil, time.Now(), time.Now(), nil, false, nil, nil, nil)
 }
 
 func emptyModuleRow() *sqlmock.Rows {
@@ -375,11 +376,12 @@ func TestUpdateModule_Success(t *testing.T) {
 var moduleSearchCols = []string{
 	"id", "organization_id", "namespace", "name", "system",
 	"description", "source", "created_by", "created_by_name", "created_at", "updated_at",
+	"deprecated", "deprecated_at", "deprecation_message", "successor_module_id",
 }
 
 func sampleModuleSearchRow() *sqlmock.Rows {
 	return sqlmock.NewRows(moduleSearchCols).
-		AddRow("mod-1", "org-1", "hashicorp", "vpc", "aws", nil, nil, nil, nil, time.Now(), time.Now())
+		AddRow("mod-1", "org-1", "hashicorp", "vpc", "aws", nil, nil, nil, nil, time.Now(), time.Now(), false, nil, nil, nil)
 }
 
 // ---------------------------------------------------------------------------
@@ -718,6 +720,7 @@ var moduleSearchWithStatsCols = []string{
 	"id", "organization_id", "namespace", "name", "system",
 	"description", "source", "created_by", "created_by_name",
 	"created_at", "updated_at",
+	"deprecated", "deprecated_at", "deprecation_message", "successor_module_id",
 	"latest_version", "total_downloads",
 }
 
@@ -726,6 +729,7 @@ var moduleSearchWithStatsColsFTS = []string{
 	"id", "organization_id", "namespace", "name", "system",
 	"description", "source", "created_by", "created_by_name",
 	"created_at", "updated_at",
+	"deprecated", "deprecated_at", "deprecation_message", "successor_module_id",
 	"latest_version", "total_downloads",
 	"rank",
 }
@@ -734,14 +738,14 @@ func sampleModuleSearchWithStatsRow() *sqlmock.Rows {
 	latestVersion := "1.0.0"
 	return sqlmock.NewRows(moduleSearchWithStatsCols).
 		AddRow("mod-1", "org-1", "hashicorp", "vpc", "aws", nil, nil, nil, nil,
-			time.Now(), time.Now(), &latestVersion, int64(42))
+			time.Now(), time.Now(), false, nil, nil, nil, &latestVersion, int64(42))
 }
 
 func sampleModuleSearchWithStatsRowFTS() *sqlmock.Rows {
 	latestVersion := "1.0.0"
 	return sqlmock.NewRows(moduleSearchWithStatsColsFTS).
 		AddRow("mod-1", "org-1", "hashicorp", "vpc", "aws", nil, nil, nil, nil,
-			time.Now(), time.Now(), &latestVersion, int64(42), float64(0.5))
+			time.Now(), time.Now(), false, nil, nil, nil, &latestVersion, int64(42), float64(0.5))
 }
 
 func TestSearchModulesWithStats_Success(t *testing.T) {

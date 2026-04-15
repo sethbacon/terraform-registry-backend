@@ -60,16 +60,18 @@ func sampleModuleSourceRepoRowLink() *sqlmock.Rows {
 	)
 }
 
-// moduleSCMCols matches the 11 columns selected by GetModuleByID.
+// moduleSCMCols matches the 15 columns selected by GetModuleByID.
 var moduleSCMCols = []string{
 	"id", "organization_id", "namespace", "name", "system",
 	"description", "source", "created_by", "created_at", "updated_at", "created_by_name",
+	"deprecated", "deprecated_at", "deprecation_message", "successor_module_id",
 }
 
 func sampleModuleForSCMRow(id string) *sqlmock.Rows {
 	return sqlmock.NewRows(moduleSCMCols).AddRow(
 		id, uuid.Nil.String(), "hashicorp", "vpc", "aws",
 		nil, nil, nil, time.Now(), time.Now(), nil,
+		false, nil, nil, nil,
 	)
 }
 

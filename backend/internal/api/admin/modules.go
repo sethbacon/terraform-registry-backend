@@ -173,19 +173,23 @@ func (h *ModuleAdminHandlers) GetModule(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"id":              module.ID,
-		"organization_id": module.OrganizationID,
-		"namespace":       module.Namespace,
-		"name":            module.Name,
-		"system":          module.System,
-		"description":     module.Description,
-		"source":          module.Source,
-		"created_by":      module.CreatedBy,
-		"created_by_name": module.CreatedByName,
-		"download_count":  totalDownloads,
-		"versions":        versionsList,
-		"created_at":      module.CreatedAt,
-		"updated_at":      module.UpdatedAt,
+		"id":                  module.ID,
+		"organization_id":     module.OrganizationID,
+		"namespace":           module.Namespace,
+		"name":                module.Name,
+		"system":              module.System,
+		"description":         module.Description,
+		"source":              module.Source,
+		"created_by":          module.CreatedBy,
+		"created_by_name":     module.CreatedByName,
+		"download_count":      totalDownloads,
+		"deprecated":          module.Deprecated,
+		"deprecated_at":       module.DeprecatedAt,
+		"deprecation_message": module.DeprecationMessage,
+		"successor_module_id": module.SuccessorModuleID,
+		"versions":            versionsList,
+		"created_at":          module.CreatedAt,
+		"updated_at":          module.UpdatedAt,
 	})
 }
 
@@ -584,6 +588,141 @@ func (h *ModuleAdminHandlers) GetModuleByIDRecord(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "module not found"})
 		return
 	}
-
 	c.JSON(http.StatusOK, module)
+}
+
+// DeprecateModuleRequest represents a request to deprecate an entire module.
+// Message is optional; SuccessorModuleID optionally points to a replacement module.
+type DeprecateModuleRequest struct {
+	Message           string  `json:"message,omitempty"`
+	SuccessorModuleID *string `json:"successor_module_id,omitempty"`
+}
+
+// @Summary      Deprecate module
+// @Description  Mark an entire module as deprecated with an optional message and successor module reference. Requires modules:write scope.
+// @Tags         Modules
+// @Security     Bearer
+// @Accept       json
+// @Produce      json
+// @Param        namespace  path  string                  true   "Module namespace"
+// @Param        name       path  string                  true   "Module name"
+// @Param        system     path  string                  true   "Target system (e.g. aws, azurerm)"
+// @Param        body       body  DeprecateModuleRequest  false  "Optional deprecation message and successor module ID"
+// @Success      200  {object}  admin.MessageResponse
+// @Failure      401  {object}  map[string]interface{}  "Unauthorized"
+// @Failure      404  {object}  map[string]interface{}  "Module not found"
+// @Failure      500  {object}  map[string]interface{}  "Internal server error"
+// @Router       /api/v1/modules/{namespace}/{name}/{system}/deprecate [post]
+// DeprecateModule marks an entire module as deprecated
+// POST /api/v1/modules/:namespace/:name/:system/deprecate
+func (h *ModuleAdminHandlers) DeprecateModule(c *gin.Context) {
+	namespace := c.Param("namespace")
+	name := c.Param("name")
+	system := c.Param("system")
+
+	var req DeprecateModuleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		// Empty body is OK - message is optional
+		req = DeprecateModuleRequest{}
+	}
+
+	// Get organization context
+	org, err := h.orgRepo.GetDefaultOrganization(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get organization context"})
+		return
+	}
+
+	var orgID string
+	if org != nil {
+		orgID = org.ID
+	}
+
+	// Get module
+	module, err := h.moduleRepo.GetModule(c.Request.Context(), orgID, namespace, name, system)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get module"})
+		return
+	}
+
+	if module == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Module not found"})
+		return
+	}
+
+	// Deprecate the module
+	var message *string
+	if req.Message != "" {
+		message = &req.Message
+	}
+
+	if err := h.moduleRepo.DeprecateModule(c.Request.Context(), module.ID, message, req.SuccessorModuleID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to deprecate module: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":   "Module deprecated successfully",
+		"namespace": namespace,
+		"name":      name,
+		"system":    system,
+	})
+}
+
+// @Summary      Undeprecate module
+// @Description  Remove the deprecated status from a module. Requires modules:write scope.
+// @Tags         Modules
+// @Security     Bearer
+// @Produce      json
+// @Param        namespace  path  string  true  "Module namespace"
+// @Param        name       path  string  true  "Module name"
+// @Param        system     path  string  true  "Target system (e.g. aws, azurerm)"
+// @Success      200  {object}  admin.MessageResponse
+// @Failure      401  {object}  map[string]interface{}  "Unauthorized"
+// @Failure      404  {object}  map[string]interface{}  "Module not found"
+// @Failure      500  {object}  map[string]interface{}  "Internal server error"
+// @Router       /api/v1/modules/{namespace}/{name}/{system}/deprecate [delete]
+// UndeprecateModule removes the deprecated status from a module
+// DELETE /api/v1/modules/:namespace/:name/:system/deprecate
+func (h *ModuleAdminHandlers) UndeprecateModule(c *gin.Context) {
+	namespace := c.Param("namespace")
+	name := c.Param("name")
+	system := c.Param("system")
+
+	// Get organization context
+	org, err := h.orgRepo.GetDefaultOrganization(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get organization context"})
+		return
+	}
+
+	var orgID string
+	if org != nil {
+		orgID = org.ID
+	}
+
+	// Get module
+	module, err := h.moduleRepo.GetModule(c.Request.Context(), orgID, namespace, name, system)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get module"})
+		return
+	}
+
+	if module == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Module not found"})
+		return
+	}
+
+	// Undeprecate the module
+	if err := h.moduleRepo.UndeprecateModule(c.Request.Context(), module.ID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to undeprecate module: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":   "Module deprecation removed successfully",
+		"namespace": namespace,
+		"name":      name,
+		"system":    system,
+	})
 }

@@ -82,7 +82,8 @@ func (r *ModuleRepository) UpsertModule(ctx context.Context, module *models.Modu
 func (r *ModuleRepository) GetModule(ctx context.Context, orgID, namespace, name, system string) (*models.Module, error) {
 	query := `
 		SELECT m.id, m.organization_id, m.namespace, m.name, m.system, m.description, m.source,
-		       m.created_by, m.created_at, m.updated_at, u.name as created_by_name
+		       m.created_by, m.created_at, m.updated_at, u.name as created_by_name,
+		       m.deprecated, m.deprecated_at, m.deprecation_message, m.successor_module_id
 		FROM modules m
 		LEFT JOIN users u ON m.created_by = u.id
 		WHERE m.organization_id = $1 AND m.namespace = $2 AND m.name = $3 AND m.system = $4
@@ -101,6 +102,10 @@ func (r *ModuleRepository) GetModule(ctx context.Context, orgID, namespace, name
 		&module.CreatedAt,
 		&module.UpdatedAt,
 		&module.CreatedByName,
+		&module.Deprecated,
+		&module.DeprecatedAt,
+		&module.DeprecationMessage,
+		&module.SuccessorModuleID,
 	)
 
 	if err != nil {
@@ -117,7 +122,8 @@ func (r *ModuleRepository) GetModule(ctx context.Context, orgID, namespace, name
 func (r *ModuleRepository) GetModuleByID(ctx context.Context, id string) (*models.Module, error) {
 	query := `
 		SELECT m.id, m.organization_id, m.namespace, m.name, m.system, m.description, m.source,
-		       m.created_by, m.created_at, m.updated_at, u.name as created_by_name
+		       m.created_by, m.created_at, m.updated_at, u.name as created_by_name,
+		       m.deprecated, m.deprecated_at, m.deprecation_message, m.successor_module_id
 		FROM modules m
 		LEFT JOIN users u ON m.created_by = u.id
 		WHERE m.id = $1
@@ -136,6 +142,10 @@ func (r *ModuleRepository) GetModuleByID(ctx context.Context, id string) (*model
 		&module.CreatedAt,
 		&module.UpdatedAt,
 		&module.CreatedByName,
+		&module.Deprecated,
+		&module.DeprecatedAt,
+		&module.DeprecationMessage,
+		&module.SuccessorModuleID,
 	)
 
 	if err != nil {
@@ -511,11 +521,12 @@ func (r *ModuleRepository) SearchModules(ctx context.Context, orgID, query, name
 	// Query with pagination and JOIN for created_by_name
 	query = fmt.Sprintf(`
 		SELECT m.id, m.organization_id, m.namespace, m.name, m.system, m.description, m.source,
-		       m.created_by, u.name as created_by_name, m.created_at, m.updated_at
+		       m.created_by, u.name as created_by_name, m.created_at, m.updated_at,
+		       m.deprecated, m.deprecated_at, m.deprecation_message, m.successor_module_id
 		FROM modules m
 		LEFT JOIN users u ON m.created_by = u.id
 		%s
-		ORDER BY m.created_at DESC
+		ORDER BY m.deprecated ASC, m.created_at DESC
 		LIMIT $%d OFFSET $%d
 	`, whereClause, argCount+1, argCount+2)
 
@@ -542,6 +553,10 @@ func (r *ModuleRepository) SearchModules(ctx context.Context, orgID, query, name
 			&m.CreatedByName,
 			&m.CreatedAt,
 			&m.UpdatedAt,
+			&m.Deprecated,
+			&m.DeprecatedAt,
+			&m.DeprecationMessage,
+			&m.SuccessorModuleID,
 		)
 		if err != nil {
 			return nil, 0, fmt.Errorf("failed to scan module: %w", err)
@@ -651,23 +666,23 @@ func (r *ModuleRepository) SearchModulesWithStats(ctx context.Context, orgID, se
 	switch sortField {
 	case "relevance":
 		if rankExpr != "" {
-			orderByClause = fmt.Sprintf("ORDER BY rank %s", sortOrder)
+			orderByClause = fmt.Sprintf("ORDER BY m.deprecated ASC, rank %s", sortOrder)
 		} else {
-			orderByClause = fmt.Sprintf("ORDER BY m.created_at %s", sortOrder)
+			orderByClause = fmt.Sprintf("ORDER BY m.deprecated ASC, m.created_at %s", sortOrder)
 		}
 	case "name":
-		orderByClause = fmt.Sprintf("ORDER BY m.name %s", sortOrder)
+		orderByClause = fmt.Sprintf("ORDER BY m.deprecated ASC, m.name %s", sortOrder)
 	case "downloads":
-		orderByClause = fmt.Sprintf("ORDER BY total_downloads %s", sortOrder)
+		orderByClause = fmt.Sprintf("ORDER BY m.deprecated ASC, total_downloads %s", sortOrder)
 	case "created":
-		orderByClause = fmt.Sprintf("ORDER BY m.created_at %s", sortOrder)
+		orderByClause = fmt.Sprintf("ORDER BY m.deprecated ASC, m.created_at %s", sortOrder)
 	case "updated":
-		orderByClause = fmt.Sprintf("ORDER BY m.updated_at %s", sortOrder)
+		orderByClause = fmt.Sprintf("ORDER BY m.deprecated ASC, m.updated_at %s", sortOrder)
 	default:
 		if rankExpr != "" {
-			orderByClause = fmt.Sprintf("ORDER BY rank %s", sortOrder)
+			orderByClause = fmt.Sprintf("ORDER BY m.deprecated ASC, rank %s", sortOrder)
 		} else {
-			orderByClause = fmt.Sprintf("ORDER BY m.created_at %s", sortOrder)
+			orderByClause = fmt.Sprintf("ORDER BY m.deprecated ASC, m.created_at %s", sortOrder)
 		}
 	}
 
@@ -678,6 +693,7 @@ func (r *ModuleRepository) SearchModulesWithStats(ctx context.Context, orgID, se
 	searchSQL := fmt.Sprintf(`
 		SELECT m.id, m.organization_id, m.namespace, m.name, m.system, m.description, m.source,
 		       m.created_by, u.name AS created_by_name, m.created_at, m.updated_at,
+		       m.deprecated, m.deprecated_at, m.deprecation_message, m.successor_module_id,
 		       agg.latest_version, COALESCE(agg.total_downloads, 0) AS total_downloads
 		       %s
 		FROM modules m
@@ -716,6 +732,7 @@ func (r *ModuleRepository) SearchModulesWithStats(ctx context.Context, orgID, se
 				&res.ID, &res.OrganizationID, &res.Namespace, &res.Name, &res.System,
 				&res.Description, &res.Source, &res.CreatedBy, &res.CreatedByName,
 				&res.CreatedAt, &res.UpdatedAt,
+				&res.Deprecated, &res.DeprecatedAt, &res.DeprecationMessage, &res.SuccessorModuleID,
 				&res.LatestVersion, &res.TotalDownloads,
 				&rank,
 			)
@@ -724,6 +741,7 @@ func (r *ModuleRepository) SearchModulesWithStats(ctx context.Context, orgID, se
 				&res.ID, &res.OrganizationID, &res.Namespace, &res.Name, &res.System,
 				&res.Description, &res.Source, &res.CreatedBy, &res.CreatedByName,
 				&res.CreatedAt, &res.UpdatedAt,
+				&res.Deprecated, &res.DeprecatedAt, &res.DeprecationMessage, &res.SuccessorModuleID,
 				&res.LatestVersion, &res.TotalDownloads,
 			)
 		}
@@ -854,4 +872,54 @@ func (r *ModuleRepository) GetVersionByID(ctx context.Context, id string) (*mode
 		return nil, fmt.Errorf("get module version by ID: %w", err)
 	}
 	return v, nil
+}
+
+// DeprecateModule marks an entire module as deprecated with an optional message and successor module ID
+func (r *ModuleRepository) DeprecateModule(ctx context.Context, moduleID string, message *string, successorModuleID *string) error {
+	query := `
+		UPDATE modules
+		SET deprecated = true, deprecated_at = NOW(), deprecation_message = $2, successor_module_id = $3
+		WHERE id = $1
+	`
+
+	result, err := r.db.ExecContext(ctx, query, moduleID, message, successorModuleID)
+	if err != nil {
+		return fmt.Errorf("failed to deprecate module: %w", err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rows == 0 {
+		return fmt.Errorf("module not found")
+	}
+
+	return nil
+}
+
+// UndeprecateModule removes the deprecated status from a module
+func (r *ModuleRepository) UndeprecateModule(ctx context.Context, moduleID string) error {
+	query := `
+		UPDATE modules
+		SET deprecated = false, deprecated_at = NULL, deprecation_message = NULL, successor_module_id = NULL
+		WHERE id = $1
+	`
+
+	result, err := r.db.ExecContext(ctx, query, moduleID)
+	if err != nil {
+		return fmt.Errorf("failed to undeprecate module: %w", err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rows == 0 {
+		return fmt.Errorf("module not found")
+	}
+
+	return nil
 }

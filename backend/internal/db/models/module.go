@@ -6,16 +6,20 @@ import "time"
 
 // Module represents a Terraform module in the registry
 type Module struct {
-	ID             string    `json:"id"`
-	OrganizationID string    `json:"organization_id"`
-	Namespace      string    `json:"namespace"`
-	Name           string    `json:"name"`
-	System         string    `json:"system"`
-	Description    *string   `json:"description,omitempty"`
-	Source         *string   `json:"source,omitempty"`
-	CreatedBy      *string   `json:"created_by,omitempty"` // User ID who created this module
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID                 string     `json:"id"`
+	OrganizationID     string     `json:"organization_id"`
+	Namespace          string     `json:"namespace"`
+	Name               string     `json:"name"`
+	System             string     `json:"system"`
+	Description        *string    `json:"description,omitempty"`
+	Source             *string    `json:"source,omitempty"`
+	CreatedBy          *string    `json:"created_by,omitempty"` // User ID who created this module
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	Deprecated         bool       `json:"deprecated" db:"deprecated"`
+	DeprecatedAt       *time.Time `json:"deprecated_at,omitempty" db:"deprecated_at"`
+	DeprecationMessage *string    `json:"deprecation_message,omitempty" db:"deprecation_message"`
+	SuccessorModuleID  *string    `json:"successor_module_id,omitempty" db:"successor_module_id"`
 	// Joined fields (not stored in modules table)
 	CreatedByName *string `json:"created_by_name,omitempty"` // User name who created this module (joined from users table)
 }

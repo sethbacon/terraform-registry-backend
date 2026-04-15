@@ -55,13 +55,17 @@ type SearchMetadata struct {
 
 // ModuleSearchItem represents a single module result in search responses.
 type ModuleSearchItem struct {
-	ID            string    `json:"id"`
-	Namespace     string    `json:"namespace"`
-	Name          string    `json:"name"`
-	System        string    `json:"system"`
-	Description   string    `json:"description,omitempty"`
-	DownloadCount int64     `json:"download_count"`
-	CreatedAt     time.Time `json:"created_at"`
+	ID                 string     `json:"id"`
+	Namespace          string     `json:"namespace"`
+	Name               string     `json:"name"`
+	System             string     `json:"system"`
+	Description        string     `json:"description,omitempty"`
+	DownloadCount      int64      `json:"download_count"`
+	Deprecated         bool       `json:"deprecated"`
+	DeprecatedAt       *time.Time `json:"deprecated_at,omitempty"`
+	DeprecationMessage *string    `json:"deprecation_message,omitempty"`
+	SuccessorModuleID  *string    `json:"successor_module_id,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
 }
 
 // ModuleSearchResponse is returned by GET /api/v1/modules/search.
