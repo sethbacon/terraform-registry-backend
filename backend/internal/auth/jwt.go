@@ -134,7 +134,7 @@ func StartJWTSecretFileWatch(secretFilePath string, overlapDuration time.Duratio
 	}
 
 	// Read the initial secret
-	data, err := os.ReadFile(secretFilePath)
+	data, err := os.ReadFile(secretFilePath) // #nosec G304 -- path comes from server config, not user input
 	if err != nil {
 		return nil, fmt.Errorf("failed to read JWT secret file %q: %w", secretFilePath, err)
 	}
@@ -147,7 +147,7 @@ func StartJWTSecretFileWatch(secretFilePath string, overlapDuration time.Duratio
 		return nil, fmt.Errorf("failed to create fsnotify watcher: %w", err)
 	}
 	if err := watcher.Add(secretFilePath); err != nil {
-		watcher.Close()
+		watcher.Close() // #nosec G104 -- cleanup during error return; main error is returned below
 		return nil, fmt.Errorf("failed to watch JWT secret file %q: %w", secretFilePath, err)
 	}
 
@@ -161,7 +161,7 @@ func StartJWTSecretFileWatch(secretFilePath string, overlapDuration time.Duratio
 					return
 				}
 				if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) {
-					newData, readErr := os.ReadFile(secretFilePath)
+					newData, readErr := os.ReadFile(secretFilePath) // #nosec G304 -- path comes from server config, not user input
 					if readErr != nil {
 						slog.Error("failed to read updated JWT secret file", "path", secretFilePath, "error", readErr)
 						continue
@@ -198,7 +198,7 @@ func StartJWTSecretFileWatch(secretFilePath string, overlapDuration time.Duratio
 				}
 				slog.Error("JWT secret file watcher error", "error", watchErr)
 			case <-stopCh:
-				watcher.Close()
+				watcher.Close() // #nosec G104 -- best-effort cleanup on shutdown
 				return
 			}
 		}

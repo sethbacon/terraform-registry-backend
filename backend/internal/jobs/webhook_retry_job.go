@@ -223,5 +223,5 @@ func (j *WebhookRetryJob) failRetry(ctx context.Context, event *scm.SCMWebhookLo
 // calculateBackoff returns the backoff duration for the given retry count.
 // The formula is 2^retryCount minutes: 1m, 2m, 4m, 8m, ...
 func calculateBackoff(retryCount int) time.Duration {
-	return time.Minute * time.Duration(1<<uint(retryCount))
+	return time.Minute * time.Duration(1<<uint(retryCount)) // #nosec G115 -- retryCount is bounded by maxRetries (5)
 }

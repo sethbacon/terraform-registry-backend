@@ -172,7 +172,7 @@ func TestExportAuditLogs_Success(t *testing.T) {
 
 	// Body should contain valid JSON line(s)
 	var entry map[string]interface{}
-	if err := json.Unmarshal([]byte(w.Body.String()), &entry); err != nil {
+	if err := json.Unmarshal(w.Body.Bytes(), &entry); err != nil {
 		t.Fatalf("failed to parse NDJSON line: %v\nbody: %s", err, w.Body.String())
 	}
 	if entry["id"] != "entry-1" {
@@ -203,7 +203,7 @@ func TestExportAuditLogs_WithMetadata(t *testing.T) {
 	}
 
 	var entry map[string]interface{}
-	if err := json.Unmarshal([]byte(w.Body.String()), &entry); err != nil {
+	if err := json.Unmarshal(w.Body.Bytes(), &entry); err != nil {
 		t.Fatalf("failed to parse NDJSON line: %v", err)
 	}
 	meta, ok := entry["metadata"].(map[string]interface{})
