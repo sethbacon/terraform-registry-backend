@@ -703,12 +703,6 @@ var providerSearchWithStatsColsFTS = []string{
 	"rank",
 }
 
-func sampleProviderSearchWithStatsRow() *sqlmock.Rows {
-	latestVer := "2.1.0"
-	return sqlmock.NewRows(providerSearchWithStatsCols).
-		AddRow("prov-1", "org-1", "hashicorp", "aws", nil, nil, nil, nil, time.Now(), time.Now(), &latestVer, int64(100))
-}
-
 func sampleProviderSearchWithStatsRowFTS() *sqlmock.Rows {
 	latestVer := "2.1.0"
 	return sqlmock.NewRows(providerSearchWithStatsColsFTS).

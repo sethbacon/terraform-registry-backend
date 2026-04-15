@@ -193,7 +193,11 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 
 	// Initialize and start the audit log cleanup job (no-op when retention_days=0)
 	auditCleanupJob := jobs.NewAuditCleanupJob(&cfg.AuditRetention, auditRepo)
-	go auditCleanupJob.Start(context.Background())
+	go func() {
+		if err := auditCleanupJob.Start(context.Background()); err != nil {
+			log.Printf("Audit cleanup job failed: %v", err)
+		}
+	}()
 	log.Println("Audit log cleanup job started")
 
 	// Get encryption key from environment for OAuth token encryption
