@@ -11,19 +11,32 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
 
+// validProviderSortFields defines the allowed values for the sort query parameter.
+var validProviderSortFields = map[string]bool{
+	"":          true,
+	"relevance": true,
+	"name":      true,
+	"downloads": true,
+	"created":   true,
+	"updated":   true,
+}
+
 // @Summary      Search providers
-// @Description  Search for providers by name or namespace with pagination.
+// @Description  Search for providers by name or namespace with pagination and sorting.
 // @Tags         Providers
 // @Produce      json
 // @Param        q          query  string  false  "Search query"
 // @Param        namespace  query  string  false  "Filter by namespace"
+// @Param        sort       query  string  false  "Sort field: relevance, name, downloads, created, updated"
+// @Param        order      query  string  false  "Sort order: asc or desc (default desc)"
 // @Param        limit      query  int     false  "Maximum results to return (default 20, max 100)"
 // @Param        offset     query  int     false  "Offset for pagination (default 0)"
 // @Success      200  {object}  providers.ProviderSearchResponse
+// @Failure      400  {object}  map[string]interface{}  "Invalid sort parameter"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/providers/search [get]
 // SearchHandler handles provider search requests
-// Implements: GET /api/v1/providers/search?q=<query>&namespace=<namespace>&limit=<limit>&offset=<offset>
+// Implements: GET /api/v1/providers/search?q=<query>&namespace=<namespace>&sort=<sort>&order=<order>&limit=<limit>&offset=<offset>
 func SearchHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 	providerRepo := repositories.NewProviderRepository(db)
 	orgRepo := repositories.NewOrganizationRepository(db)
@@ -32,6 +45,17 @@ func SearchHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 		// Get query parameters
 		query := c.Query("q")
 		namespace := c.Query("namespace")
+
+		// Sort parameters
+		sortField := c.DefaultQuery("sort", "")
+		sortOrder := c.DefaultQuery("order", "")
+
+		if !validProviderSortFields[sortField] {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "Invalid sort parameter. Allowed values: relevance, name, downloads, created, updated",
+			})
+			return
+		}
 
 		// Pagination parameters
 		limitStr := c.DefaultQuery("limit", "20")
@@ -75,6 +99,8 @@ func SearchHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 			namespace,
 			limit,
 			offset,
+			sortField,
+			sortOrder,
 		)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{

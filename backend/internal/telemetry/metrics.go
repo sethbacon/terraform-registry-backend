@@ -137,12 +137,15 @@ var (
 
 // Mirror sync metrics — recorded by the mirror sync background job.
 //
-// MirrorSyncDuration is a Histogram using the default Prometheus buckets (5 ms–10 s).
+// MirrorSyncDuration is a HistogramVec with labels {mirror_id, mirror_type}.
 // Each observation represents one complete sync cycle for a single mirror configuration.
+// The mirror_id label is the UUID of the mirror configuration record and mirror_type
+// is either "provider" or "terraform" to distinguish provider mirrors from binary mirrors.
 //
 // Example PromQL queries:
 //   - p95 sync duration:  histogram_quantile(0.95, rate(mirror_sync_duration_seconds_bucket[1h]))
 //   - Average sync time:  rate(mirror_sync_duration_seconds_sum[1h]) / rate(mirror_sync_duration_seconds_count[1h])
+//   - Duration by type:   histogram_quantile(0.95, sum by (mirror_type, le) (rate(mirror_sync_duration_seconds_bucket[1h])))
 //
 // MirrorSyncErrorsTotal is a CounterVec with label {mirror_id} (UUID of the mirror
 // configuration record).  An alert on rate(mirror_sync_errors_total[1h]) > 0 is
@@ -152,12 +155,13 @@ var (
 //   - Error rate by mirror:  rate(mirror_sync_errors_total[1h])
 //   - Alert expression:      increase(mirror_sync_errors_total[30m]) > 3
 var (
-	MirrorSyncDuration = promauto.NewHistogram(
+	MirrorSyncDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "mirror_sync_duration_seconds",
 			Help:    "Duration of a single provider mirror sync operation.",
 			Buckets: prometheus.DefBuckets,
 		},
+		[]string{"mirror_id", "mirror_type"},
 	)
 
 	MirrorSyncErrorsTotal = promauto.NewCounterVec(
@@ -183,6 +187,90 @@ var APIKeyExpiryNotificationsSentTotal = promauto.NewCounter(
 	},
 )
 
+// RateLimitRejectionsTotal is a CounterVec with labels {tier, key_type} incremented
+// each time a request is rejected (HTTP 429) by the rate limiting middleware.
+// tier is "individual" or "organization"; key_type is "user", "apikey", "ip", or "org".
+//
+// Example PromQL queries:
+//   - Rejection rate by tier:     sum by (tier) (rate(rate_limit_rejections_total[5m]))
+//   - Alert on high org rejections: rate(rate_limit_rejections_total{tier="organization"}[5m]) > 10
+var RateLimitRejectionsTotal = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "rate_limit_rejections_total",
+		Help: "Total number of requests rejected by rate limiting, by tier and key type.",
+	},
+	[]string{"tier", "key_type"},
+)
+
+// AppInfo is a GaugeVec that exposes build information as Prometheus labels.
+// Set once at startup with value 1 so the info is available via the /metrics endpoint.
+//
+// Example PromQL queries:
+//   - Build info:  terraform_registry_info
+var AppInfo = promauto.NewGaugeVec(
+	prometheus.GaugeOpts{
+		Name: "terraform_registry_info",
+		Help: "Application build information",
+	},
+	[]string{"version", "go_version", "build_date"},
+)
+
+// ModuleScanQueueDepth tracks how many modules are awaiting a security scan.
+// Updated by the scanning subsystem whenever a module is enqueued or dequeued.
+var ModuleScanQueueDepth = promauto.NewGauge(
+	prometheus.GaugeOpts{
+		Name: "terraform_registry_scan_queue_depth",
+		Help: "Number of modules awaiting security scan",
+	},
+)
+
+// ModuleScanDuration is a HistogramVec recording the time taken for each security scan,
+// labelled by scanner tool and result status.
+//
+// Example PromQL queries:
+//   - p95 scan duration:  histogram_quantile(0.95, rate(terraform_registry_scan_duration_seconds_bucket[1h]))
+var ModuleScanDuration = promauto.NewHistogramVec(
+	prometheus.HistogramOpts{
+		Name:    "terraform_registry_scan_duration_seconds",
+		Help:    "Duration of module security scans",
+		Buckets: prometheus.DefBuckets,
+	},
+	[]string{"tool", "status"},
+)
+
+// JWTRevokedTokensCleanedTotal counts expired revoked JWT tokens removed during cleanup.
+var JWTRevokedTokensCleanedTotal = promauto.NewCounter(
+	prometheus.CounterOpts{
+		Name: "terraform_registry_jwt_revoked_tokens_cleaned_total",
+		Help: "Total number of expired revoked JWT tokens cleaned up",
+	},
+)
+
+// AuditLogsCleanedTotal counts expired audit log entries removed by the cleanup job.
+//
+// Example PromQL queries:
+//   - Rows cleaned per day: increase(terraform_registry_audit_logs_cleaned_total[24h])
+var AuditLogsCleanedTotal = promauto.NewCounter(
+	prometheus.CounterOpts{
+		Name: "terraform_registry_audit_logs_cleaned_total",
+		Help: "Total number of expired audit log entries deleted by the cleanup job.",
+	},
+)
+
+// WebhookRetriesTotal is a CounterVec with label {outcome} tracking webhook retry
+// attempts. Possible outcome values: "success", "failure", "exhausted".
+//
+// Example PromQL queries:
+//   - Retry success rate:  rate(terraform_registry_webhook_retries_total{outcome="success"}[1h])
+//   - Exhausted retries:   increase(terraform_registry_webhook_retries_total{outcome="exhausted"}[24h])
+var WebhookRetriesTotal = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "terraform_registry_webhook_retries_total",
+		Help: "Total webhook retry attempts by outcome.",
+	},
+	[]string{"outcome"},
+)
+
 // DBOpenConnections is a Gauge that tracks the number of open connections currently
 // held by the sql.DB connection pool.  It is sampled every 30 seconds by
 // StartDBStatsCollector rather than per-request to avoid the overhead of sql.DB.Stats().
@@ -199,12 +287,6 @@ var DBOpenConnections = promauto.NewGauge(
 
 // StartDBStatsCollector launches a background goroutine that samples sql.DB connection
 // pool statistics every 30 seconds and updates the DBOpenConnections gauge.
-// The goroutine exits cleanly when the database becomes unreachable (db.Ping fails),
-// which happens automatically when the application shuts down and defers db.Close().
-//
-// Call this once, immediately after db.Connect() succeeds in main.go:
-//
-//	telemetry.StartDBStatsCollector(database)
 func StartDBStatsCollector(db *sql.DB) {
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)

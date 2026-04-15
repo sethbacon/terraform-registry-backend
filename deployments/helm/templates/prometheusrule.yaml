@@ -1,0 +1,70 @@
+{{- if .Values.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "terraform-registry.fullname" . }}
+  labels:
+    {{- include "terraform-registry.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: terraform-registry.rules
+      rules:
+        - alert: TerraformRegistryHighErrorRate
+          expr: >
+            sum(rate(http_requests_total{status=~"5.."}[5m]))
+            / sum(rate(http_requests_total[5m])) > 0.05
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Terraform Registry high error rate"
+            description: "More than 5% of HTTP requests are returning 5xx errors over the last 5 minutes."
+        - alert: TerraformRegistryRateLimiterExhaustion
+          expr: >
+            sum(rate(rate_limit_rejections_total[5m])) > 10
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Terraform Registry rate limiter rejections elevated"
+            description: "Rate limiter is rejecting more than 10 requests per second over the last 5 minutes."
+        - alert: TerraformRegistryMirrorSyncFailure
+          expr: >
+            increase(mirror_sync_errors_total[30m]) > 3
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Terraform Registry mirror sync failures"
+            description: "Mirror sync has failed more than 3 times in the last 30 minutes."
+        - alert: TerraformRegistryScanFailure
+          expr: >
+            increase(module_scan_errors_total[1h]) > 5
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Terraform Registry module scan failures"
+            description: "Module security scans have failed more than 5 times in the last hour."
+        - alert: TerraformRegistryDBConnectionPoolNearExhaustion
+          expr: >
+            db_open_connections > ({{ .Values.externalDatabase.maxConnections }} * 0.8)
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Terraform Registry DB connection pool near exhaustion"
+            description: "Database connection pool utilisation is above 80%."
+        - alert: TerraformRegistryHighP99Latency
+          expr: >
+            histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket[5m]))) > 5
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Terraform Registry p99 latency above 5s"
+            description: "The 99th percentile request latency has been above 5 seconds for 10 minutes."
+{{- end }}

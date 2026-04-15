@@ -38,3 +38,15 @@ type CompleteSetupResponse struct {
 	Message        string `json:"message"`
 	SetupCompleted bool   `json:"setup_completed"`
 }
+
+// TestScanningConfigResponse is returned by POST /api/v1/setup/scanning/test.
+type TestScanningConfigResponse struct {
+	Success         bool   `json:"success"`
+	DetectedVersion string `json:"detected_version,omitempty"`
+	Error           string `json:"error,omitempty"`
+}
+
+// SaveScanningConfigResponse is returned by POST /api/v1/setup/scanning.
+type SaveScanningConfigResponse struct {
+	Message string `json:"message"`
+}

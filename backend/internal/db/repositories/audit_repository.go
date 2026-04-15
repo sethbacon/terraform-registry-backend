@@ -232,3 +232,34 @@ func (r *AuditRepository) GetAuditLog(ctx context.Context, logID string) (*model
 
 	return log, nil
 }
+
+// DeleteAuditLogsBefore deletes audit logs older than cutoff in one batch.
+// Returns the number of rows deleted.
+func (r *AuditRepository) DeleteAuditLogsBefore(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
+	query := `
+		DELETE FROM audit_logs
+		WHERE id IN (
+			SELECT id FROM audit_logs WHERE created_at < $1 ORDER BY created_at ASC LIMIT $2
+		)
+	`
+	result, err := r.db.ExecContext(ctx, query, cutoff, batchSize)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+// StreamAuditLogs returns rows for the given date range for efficient streaming.
+// The caller is responsible for closing the returned *sql.Rows.
+func (r *AuditRepository) StreamAuditLogs(ctx context.Context, startDate, endDate time.Time) (*sql.Rows, error) {
+	query := `
+		SELECT al.id, al.user_id, al.organization_id, al.action, al.resource_type, al.resource_id,
+		       al.metadata, al.ip_address, al.created_at,
+		       u.email AS user_email, u.name AS user_name
+		FROM audit_logs al
+		LEFT JOIN users u ON al.user_id = u.id
+		WHERE al.created_at >= $1 AND al.created_at <= $2
+		ORDER BY al.created_at ASC
+	`
+	return r.db.QueryContext(ctx, query, startDate, endDate)
+}

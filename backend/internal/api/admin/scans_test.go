@@ -22,6 +22,7 @@ var orgColsScan = []string{"id", "name", "display_name", "created_at", "updated_
 var moduleColsScan = []string{
 	"id", "organization_id", "namespace", "name", "system",
 	"description", "source", "created_by", "created_at", "updated_at", "created_by_name",
+	"deprecated", "deprecated_at", "deprecation_message", "successor_module_id",
 }
 var modVersionGetColsScan = []string{
 	"id", "module_id", "version", "storage_path", "storage_backend", "size_bytes",
@@ -58,7 +59,7 @@ func sampleOrgRowScan() *sqlmock.Rows {
 func sampleModuleRowScan() *sqlmock.Rows {
 	return sqlmock.NewRows(moduleColsScan).
 		AddRow("mod-1", "org-1", "hashicorp", "vpc", "aws",
-			nil, nil, nil, time.Now(), time.Now(), nil)
+			nil, nil, nil, time.Now(), time.Now(), nil, false, nil, nil, nil)
 }
 
 func sampleVersionRowScan() *sqlmock.Rows {

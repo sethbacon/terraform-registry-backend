@@ -33,6 +33,20 @@ api_docs:
   # Example: MIT
   license: ""
 
+# Redis configuration (optional, enables HA features)
+# When configured, rate limiting and OIDC session state are stored in Redis
+# instead of in-memory, enabling correct behavior across multiple pods.
+# If redis.host is empty or unset, the backend falls back to in-memory stores
+# (suitable for single-instance deployments only).
+redis:
+  host: ""                         # e.g. redis.example.com or 10.0.0.5
+  port: 6379
+  password: ${REDIS_PASSWORD}      # leave blank if Redis has no auth
+  db: 0                            # Redis database number
+  tls: false                       # enable TLS for Redis connection
+  pool_size: 10                    # connection pool size
+  dial_timeout: 5s                 # timeout for establishing new connections
+
 database:
   host: localhost
   port: 5432
@@ -109,6 +123,12 @@ security:
     enabled: true
     requests_per_minute: 60
     burst: 10
+    # Per-organization aggregate rate limiting (requires multi-tenancy).
+    # When set, each organization is limited to this aggregate rate across
+    # all its users. Individual per-user limits still apply within the org.
+    # Set to 0 to disable org-level limiting.
+    org_requests_per_minute: 0
+    org_burst: 0
 
   tls:
     enabled: false
@@ -153,3 +173,15 @@ notifications:
 
   # How often to run the expiry check (hours, default: 24)
   api_key_expiry_check_interval_hours: 24
+
+# Audit log retention
+audit_retention:
+  retention_days: 90        # Days to keep audit logs (0 = keep forever)
+  cleanup_batch_size: 1000  # Number of records to delete per batch
+
+# Webhook retry configuration
+# When a webhook-triggered publish fails, the event can be retried automatically
+# with exponential backoff. Set max_retries to 0 to disable retries.
+webhooks:
+  max_retries: 3            # Maximum number of retry attempts (0 = disabled)
+  retry_interval_mins: 2    # How often the retry job polls for retryable events

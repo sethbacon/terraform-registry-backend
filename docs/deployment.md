@@ -192,6 +192,102 @@ Key values in `values.yaml` to override:
 
 See `deployments/helm/values.yaml` for the full annotated values file.
 
+### Helm: Prometheus ServiceMonitor
+
+If you use the [Prometheus Operator](https://github.com/prometheus-operator/prometheus-operator)
+(kube-prometheus-stack), the Helm chart can create a ServiceMonitor that automatically
+configures Prometheus to scrape the registry's metrics endpoint.
+
+```yaml
+# values.yaml
+serviceMonitor:
+  enabled: true
+  interval: 30s      # scrape interval (default 30s)
+  labels: {}          # add labels if your Prometheus uses a serviceMonitorSelector
+```
+
+This creates a ServiceMonitor resource (`deployments/helm/templates/servicemonitor.yaml`)
+that targets the `metrics` port (9090) on the backend service. Verify Prometheus is
+scraping the target:
+
+```bash
+# Check the Prometheus targets page
+kubectl port-forward svc/prometheus-kube-prometheus-prometheus 9090:9090 -n monitoring
+# Open http://localhost:9090/targets — look for terraform-registry
+```
+
+### Helm: PrometheusRule Alerts
+
+The chart includes a PrometheusRule with pre-configured alert rules:
+
+```yaml
+# values.yaml
+prometheusRule:
+  enabled: true
+  labels: {}   # add labels matching your Prometheus ruleSelector
+```
+
+See [Observability Reference](observability.md#recommended-alert-rules) for the full
+list of included alerts and recommended additions.
+
+### Helm: Grafana Dashboard
+
+The chart ships a Grafana dashboard as a ConfigMap that the Grafana sidecar auto-imports:
+
+```yaml
+# values.yaml
+grafanaDashboard:
+  enabled: true
+  labels:
+    grafana_dashboard: "1"   # must match grafana.sidecar.dashboards.label
+```
+
+See [Observability Reference](observability.md#grafana-dashboard-setup) for manual
+import instructions and a description of the included panels.
+
+### Helm: Database Backup CronJob
+
+The chart includes an optional CronJob (`deployments/helm/templates/cronjob-backup.yaml`)
+that runs `pg_dump` on a schedule and uploads the dump to cloud storage.
+
+```yaml
+# values.yaml
+backup:
+  enabled: true
+  schedule: "0 2 * * *"        # daily at 02:00 UTC
+  destination: s3              # s3 | azure | gcs
+  bucket: my-backup-bucket
+  region: us-east-1            # for S3/GCS
+  prefix: backups/terraform-registry
+  image:
+    repository: postgres
+    tag: "16-alpine"
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+```
+
+The backup job connects to the external database using the same credentials configured
+in `externalDatabase.*`. For cloud upload destinations, ensure the backup pod's
+ServiceAccount has the appropriate IAM permissions (S3 PutObject, Azure Blob upload,
+or GCS object create).
+
+| Value | Description |
+| --- | --- |
+| `backup.enabled` | Enable the backup CronJob |
+| `backup.schedule` | Cron expression (default: daily at 02:00 UTC) |
+| `backup.destination` | Upload target: `s3`, `azure`, or `gcs` |
+| `backup.bucket` | Bucket or container name for backup files |
+| `backup.prefix` | Path prefix inside the bucket |
+| `backup.image.repository` | Backup container image (must include `pg_dump` and cloud CLI) |
+| `backup.image.tag` | Image tag |
+
 ---
 
 ## Azure Container Apps

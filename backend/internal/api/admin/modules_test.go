@@ -19,6 +19,7 @@ import (
 var moduleCols = []string{
 	"id", "organization_id", "namespace", "name", "system",
 	"description", "source", "created_by", "created_at", "updated_at", "created_by_name",
+	"deprecated", "deprecated_at", "deprecation_message", "successor_module_id",
 }
 
 var modVersionListCols = []string{
@@ -43,7 +44,7 @@ var modCreateCols = []string{"id", "created_at", "updated_at"}
 
 func sampleModuleRow() *sqlmock.Rows {
 	return sqlmock.NewRows(moduleCols).
-		AddRow("mod-1", "org-1", "hashicorp", "vpc", "aws", nil, nil, nil, time.Now(), time.Now(), nil)
+		AddRow("mod-1", "org-1", "hashicorp", "vpc", "aws", nil, nil, nil, time.Now(), time.Now(), nil, false, nil, nil, nil)
 }
 
 func emptyModuleRow() *sqlmock.Rows {

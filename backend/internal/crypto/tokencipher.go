@@ -32,9 +32,13 @@ var (
 	ErrSaltTooShort = errors.New("crypto: salt must be at least 16 bytes")
 )
 
-// TokenCipher encrypts and decrypts sensitive token data
+// TokenCipher encrypts and decrypts sensitive token data.
+// It supports dual-key decryption for zero-downtime key rotation:
+// encryption always uses the current (primary) key, while decryption
+// tries the primary key first, then falls back to the previous key.
 type TokenCipher struct {
-	masterKey []byte
+	masterKey   []byte
+	previousKey []byte // optional, used for decryption fallback during key rotation
 }
 
 // NewTokenCipher creates a cipher with a 32-byte master key
@@ -45,6 +49,29 @@ func NewTokenCipher(masterKey []byte) (*TokenCipher, error) {
 	keyCopy := make([]byte, 32)
 	copy(keyCopy, masterKey)
 	return &TokenCipher{masterKey: keyCopy}, nil
+}
+
+// NewTokenCipherWithPrevious creates a cipher that supports dual-key decryption.
+// The current key is used for all encryption. Decryption first tries the current
+// key; if that fails with an authentication error, it retries with previousKey.
+// This enables zero-downtime rotation: set the new key as current, the old key
+// as previous, restart pods, then re-encrypt all tokens in a background job.
+func NewTokenCipherWithPrevious(currentKey, previousKey []byte) (*TokenCipher, error) {
+	if len(currentKey) != 32 {
+		return nil, ErrKeyLengthInvalid
+	}
+	if len(previousKey) != 0 && len(previousKey) != 32 {
+		return nil, ErrKeyLengthInvalid
+	}
+	curCopy := make([]byte, 32)
+	copy(curCopy, currentKey)
+	tc := &TokenCipher{masterKey: curCopy}
+	if len(previousKey) == 32 {
+		prevCopy := make([]byte, 32)
+		copy(prevCopy, previousKey)
+		tc.previousKey = prevCopy
+	}
+	return tc, nil
 }
 
 // DeriveTokenCipher creates a cipher by deriving a key from a passphrase
@@ -84,7 +111,10 @@ func (tc *TokenCipher) Seal(plaintext string) (string, error) {
 	return base64.URLEncoding.EncodeToString(sealed), nil
 }
 
-// Open decrypts a base64-encoded ciphertext and returns the plaintext
+// Open decrypts a base64-encoded ciphertext and returns the plaintext.
+// When a previous key is configured, Open tries the current key first;
+// if GCM authentication fails it retries with the previous key before
+// returning an error.
 func (tc *TokenCipher) Open(encodedCiphertext string) (string, error) {
 	if encodedCiphertext == "" {
 		return "", nil
@@ -95,7 +125,27 @@ func (tc *TokenCipher) Open(encodedCiphertext string) (string, error) {
 		return "", ErrCiphertextCorrupted
 	}
 
-	blockCipher, err := aes.NewCipher(tc.masterKey)
+	// Try current key first
+	plaintext, err := tc.decryptWithKey(tc.masterKey, ciphertext)
+	if err == nil {
+		return plaintext, nil
+	}
+
+	// If we have a previous key and the error was an authentication failure,
+	// try the previous key (the ciphertext may have been encrypted before rotation).
+	if tc.previousKey != nil && errors.Is(err, ErrDecryptionFailed) {
+		plaintext, prevErr := tc.decryptWithKey(tc.previousKey, ciphertext)
+		if prevErr == nil {
+			return plaintext, nil
+		}
+	}
+
+	return "", err
+}
+
+// decryptWithKey performs AES-256-GCM decryption with the given key.
+func (tc *TokenCipher) decryptWithKey(key, ciphertext []byte) (string, error) {
+	blockCipher, err := aes.NewCipher(key)
 	if err != nil {
 		return "", err
 	}

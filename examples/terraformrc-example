@@ -1,0 +1,39 @@
+# Example .terraformrc / terraform.rc configuration for a private Terraform Registry
+#
+# Place this file at:
+#   Linux / macOS:  ~/.terraformrc
+#   Windows:        %APPDATA%/terraform.rc
+#
+# This configures Terraform to authenticate with your private registry
+# and optionally use it as a provider network mirror.
+
+# --- Credentials ---
+# Authenticate with the private registry using an API key.
+# Replace "registry.example.com" with your registry's hostname.
+# Replace the token value with your API key (starts with "tfr_").
+credentials "registry.example.com" {
+  token = "tfr_your-api-key-here"
+}
+
+# For local development (Docker Compose), use localhost:
+# credentials "localhost" {
+#   token = "tfr_your-api-key-here"
+# }
+
+# --- Provider Network Mirror (optional) ---
+# When configured, Terraform downloads providers from your private registry
+# instead of the public Terraform Registry. This enables air-gapped deployments
+# and faster provider downloads.
+#
+# Uncomment the block below to enable the network mirror:
+
+# provider_installation {
+#   network_mirror {
+#     url = "https://registry.example.com/terraform/providers/"
+#   }
+#
+#   # Fallback to direct installation for providers not in the mirror
+#   direct {
+#     exclude = ["registry.terraform.io/hashicorp/*"]
+#   }
+# }

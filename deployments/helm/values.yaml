@@ -1,3 +1,4 @@
+---
 # Default values for terraform-registry Helm chart
 
 # -- Global settings
@@ -36,6 +37,15 @@ backend:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+  # -- Topology spread constraints for pod scheduling across zones/nodes
+  topologySpreadConstraints: []
+  # Example:
+  #   - maxSkew: 1
+  #     topologyKey: topology.kubernetes.io/zone
+  #     whenUnsatisfiable: DoNotSchedule
+  #     labelSelector:
+  #       matchLabels:
+  #         app.kubernetes.io/component: backend
   # -- Additional environment variables
   extraEnv: []
   # -- Additional volume mounts
@@ -51,7 +61,7 @@ frontend:
   replicaCount: 2
   image:
     repository: terraform-registry-frontend
-    tag: "0.5.4"
+    tag: "0.5.6"
     pullPolicy: IfNotPresent
   resources:
     requests:
@@ -154,8 +164,18 @@ multiTenancy:
 security:
   # -- JWT secret (required, min 32 chars). Ignored if existingSecret is set.
   jwtSecret: ""
-  # -- Encryption key for sensitive data (32 bytes). Ignored if existingSecret is set.
+  # -- Path to a file containing the JWT secret. When set, the backend watches
+  # the file for changes and hot-reloads the signing key without restart.
+  # In Kubernetes, mount a Secret as a volume and set this to the mount path.
+  # Example: /etc/secrets/jwt-secret
+  jwtSecretFile: ""
+  # -- Encryption key for sensitive data (32 bytes).
+  # Ignored if existingSecret is set.
   encryptionKey: ""
+  # -- Previous encryption key for zero-downtime rotation. When set, the backend
+  # tries the current key first for decryption, then falls back to this key.
+  # Remove after all encrypted data has been re-encrypted with the new key.
+  encryptionKeyPrevious: ""
   # -- Use an existing secret containing TFR_JWT_SECRET and ENCRYPTION_KEY keys.
   # This is the recommended approach for production — it avoids storing secrets
   # in Helm release history. Create the Secret before installing the chart:
@@ -163,16 +183,44 @@ security:
   #     --from-literal=TFR_JWT_SECRET="$(openssl rand -hex 32)" \
   #     --from-literal=ENCRYPTION_KEY="$(openssl rand -hex 16)" \
   #     -n terraform-registry
+  # Optionally also include ENCRYPTION_KEY_PREVIOUS for key rotation.
   existingSecret: ""
   rateLimiting:
     enabled: true
     requestsPerMinute: 60
     burst: 10
+    # -- Per-organization aggregate rate limit (requires multi-tenancy).
+    # Set to 0 to disable org-level limiting.
+    orgRequestsPerMinute: 0
+    orgBurst: 0
   cors:
     # -- Allowed CORS origins. Set to your registry's public URL in production.
     # Defaults to empty (no cross-origin requests allowed). Example:
     #   allowedOrigins: ["https://registry.example.com"]
     allowedOrigins: []
+
+# -- Redis configuration (optional, enables HA features)
+# When redis.host is set, rate limiting uses distributed GCRA in Redis and
+# OIDC session state is stored in Redis -- both required for correct behavior
+# behind a load balancer with multiple pods.
+# When redis.host is empty, the backend falls back to in-memory stores.
+redis:
+  # -- Redis host (leave empty to use in-memory fallback)
+  host: ""
+  # -- Redis port
+  port: 6379
+  # -- Redis password (ignored if existingSecret is set)
+  password: ""
+  # -- Redis database number
+  db: 0
+  # -- Enable TLS for Redis connection (required for Azure Cache for Redis)
+  tls: false
+  # -- Connection pool size per backend instance
+  poolSize: 10
+  # -- Connection timeout
+  dialTimeout: "5s"
+  # -- Use an existing secret containing REDIS_PASSWORD key
+  existingSecret: ""
 
 # -- Logging
 logging:
@@ -236,47 +284,150 @@ serviceMonitor:
   interval: 30s
   labels: {}
 
+# -- PrometheusRule for alerting (if using prometheus-operator)
+prometheusRule:
+  enabled: false
+  labels: {}
+
+# -- Module security scanning configuration
+scanning:
+  # -- Enable module security scanning
+  enabled: false
+  # -- Scanner tool: trivy, terrascan, snyk, checkov, custom
+  tool: "trivy"
+  # -- Absolute path to scanner binary inside the container
+  binaryPath: "/usr/local/bin/trivy"
+  # -- Pin expected binary version
+  # (supply-chain protection; leave empty to skip check)
+  expectedVersion: ""
+  # -- Scan timeout duration
+  timeout: "5m"
+  # -- Number of concurrent scan workers
+  workerCount: 2
+  # -- How often (minutes) the scanner polls for pending scans
+  scanIntervalMins: 5
+
+# -- Audit logging configuration
+audit:
+  # -- Enable audit logging
+  enabled: true
+  # -- Log read (GET) operations
+  logReadOperations: false
+  # -- Log failed requests (4xx/5xx)
+  logFailedRequests: true
+  # -- External audit log shippers
+  shippers: []
+  # Example:
+  #   - enabled: true
+  #     type: webhook
+  #     webhook:
+  #       url: "https://siem.example.com/audit"
+  #       headers:
+  #         Authorization: "Bearer token"
+  #       timeoutSecs: 10
+  #       batchSize: 100
+  #       flushIntervalSecs: 30
+
+# -- Backup configuration (optional pg_dump CronJob)
+backup:
+  # -- Enable the backup CronJob
+  enabled: false
+  # -- Cron schedule expression (default: daily at 02:00 UTC)
+  schedule: "0 2 * * *"
+  # -- Destination for backup uploads: s3, azure, gcs, or local (PVC)
+  destination: "s3"
+  # -- S3/Azure/GCS bucket or container name for backup storage
+  bucket: ""
+  # -- S3/GCS region
+  region: ""
+  # -- Path prefix inside the bucket
+  prefix: "backups/terraform-registry"
+  # -- Image used for the backup job (must include pg_dump and cloud CLI)
+  image:
+    repository: postgres
+    tag: "16-alpine"
+    pullPolicy: IfNotPresent
+  # -- Resource requests and limits for backup pods
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  # -- Number of successful job runs to retain
+  successfulJobsHistoryLimit: 3
+  # -- Number of failed job runs to retain
+  failedJobsHistoryLimit: 3
+
+# -- Grafana dashboard ConfigMap
+# (auto-provisioned when using the Grafana sidecar)
+grafanaDashboard:
+  enabled: false
+  labels: {}
+  # Example: if using the Grafana Helm chart sidecar, set the label it watches:
+  #   labels:
+  #     grafana_dashboard: "1"
+
 # -- Kubernetes Gateway API
 # Supports AKS (Application Gateway for Containers), AWS EKS (ALB Controller),
 # GKE (built-in Gateway), and any other Gateway API-compliant implementation.
 # When gatewayAPI.enabled=true, set ingress.enabled=false to avoid deploying
 # the legacy nginx Ingress resource alongside Gateway API resources.
 gatewayAPI:
-  # -- Enable Gateway API resources (GatewayClass, Gateway, HTTPRoute, ClusterIssuers, Certificate)
+  # -- Enable Gateway API resources
+  # (GatewayClass, Gateway, HTTPRoute, ClusterIssuers, Certificate)
   enabled: false
-  # -- Create a GatewayClass resource. Set false for GKE, which pre-provisions
-  # GatewayClasses (gke-l7-global-external-managed, etc.) — no user GatewayClass needed.
-  # Set true for AKS (AGfC) and EKS (AWS LBC) which require a user-created GatewayClass.
+  # -- Create a GatewayClass resource. Set false for GKE,
+  # which pre-provisions GatewayClasses
+  # (gke-l7-global-external-managed, etc.) —
+  # no user GatewayClass needed.
+  # Set true for AKS (AGfC) and EKS (AWS LBC)
+  # which require a user-created GatewayClass.
   createGatewayClass: true
   # -- GatewayClass name.
-  # AKS/AGfC:     azure-alb-external (or azure-alb-internal for private)
-  # EKS/AWS LBC:  aws-alb-external   (or any name you choose)
-  # GKE:          gke-l7-global-external-managed (pre-provisioned, no createGatewayClass needed)
+  # AKS/AGfC:    azure-alb-external
+  #              (or azure-alb-internal for private)
+  # EKS/AWS LBC: aws-alb-external
+  #              (or any name you choose)
+  # GKE:         gke-l7-global-external-managed
+  #              (pre-provisioned, no createGatewayClass)
   gatewayClassName: azure-alb-external
-  # -- GatewayClass controller name. Only used when createGatewayClass: true.
-  # AKS/AGfC:  alb.networking.azure.io/alb-controller
+  # -- GatewayClass controller name.
+  # Only used when createGatewayClass: true.
+  # AKS/AGfC: alb.networking.azure.io/alb-controller
   # EKS/AWS:   gateway.k8s.aws/alb
-  # GKE:       (not needed — set createGatewayClass: false)
+  # GKE:      (not needed — set createGatewayClass: false)
   controllerName: "alb.networking.azure.io/alb-controller"
-  # -- AKS/AGfC only: ARM resource ID of the Application Gateway for Containers resource.
+  # -- AKS/AGfC only: ARM resource ID of the
+  # Application Gateway for Containers resource.
   # Format: /subscriptions/<SUB>/resourceGroups/<RG>/providers/
   #         Microsoft.ServiceNetworking/trafficControllers/<AGFC_NAME>
   # Leave empty for EKS and GKE.
   albId: ""
-  # -- Additional annotations to merge onto the Gateway resource.
-  # Use for provider-specific annotations not covered by albId above.
-  # Example for EKS:  service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
-  # Example for GKE:  networking.gke.io/certmap: my-cert-map  (optional)
+  # -- Additional annotations to merge onto the
+  # Gateway resource.
+  # Use for provider-specific annotations not
+  # covered by albId above.
+  # Example for EKS:
+  #   service.beta.kubernetes.io/
+  #   aws-load-balancer-scheme: internet-facing
+  # Example for GKE:
+  #   networking.gke.io/certmap: my-cert-map
   gatewayAnnotations: {}
-  # -- Public hostname for the registry (must match your DNS record and TLS certificate)
+  # -- Public hostname for the registry
+  # (must match your DNS record and TLS certificate)
   hostname: "registry.example.com"
-  # -- cert-manager ClusterIssuer name for automatic TLS provisioning.
-  # Use letsencrypt-staging during testing; switch to letsencrypt-prod for production.
+  # -- cert-manager ClusterIssuer name for
+  # automatic TLS provisioning.
+  # Use letsencrypt-staging during testing;
+  # switch to letsencrypt-prod for production.
   certManagerIssuer: "letsencrypt-staging"
   # -- Name of the TLS Secret created by cert-manager.
   # Must match the Gateway listener's certificateRefs[].name.
   tlsSecretName: "terraform-registry-tls"
-  # -- Email address for Let's Encrypt certificate expiry notifications (required)
+  # -- Email address for Let's Encrypt
+  # certificate expiry notifications (required)
   email: ""
 
 # -- Azure Key Vault + Secrets Store CSI Driver (AKS-specific)
@@ -291,12 +442,15 @@ gatewayAPI:
 keyVault:
   # -- Enable Azure Key Vault CSI Driver integration
   enabled: false
-  # -- Azure Key Vault resource name (not full URI — just the vault name)
+  # -- Azure Key Vault resource name
+  # (not full URI — just the vault name)
   name: ""
   # -- Azure AD Tenant ID (UUID)
   tenantId: ""
-  # -- Client ID of the User-Assigned Managed Identity used for Key Vault access.
-  # Must match workloadIdentity.clientId if workloadIdentity is also enabled.
+  # -- Client ID of the User-Assigned Managed
+  # Identity used for Key Vault access.
+  # Must match workloadIdentity.clientId
+  # if workloadIdentity is also enabled.
   clientId: ""
 
 # -- Azure Workload Identity (AKS-specific)
@@ -305,8 +459,10 @@ keyVault:
 # A federated credential must be configured on the managed identity pointing to
 # this ServiceAccount (see docs/deployment/aks-prerequisites.md).
 #
-# For AWS EKS:  use serviceAccount.annotations with eks.amazonaws.com/role-arn
-# For GCP GKE:  use serviceAccount.annotations with iam.gke.io/gcp-service-account
+# For AWS EKS:  use serviceAccount.annotations
+#   with eks.amazonaws.com/role-arn
+# For GCP GKE:  use serviceAccount.annotations
+#   with iam.gke.io/gcp-service-account
 workloadIdentity:
   # -- Enable Azure Workload Identity annotation on ServiceAccount
   enabled: false
@@ -322,6 +478,8 @@ workloadIdentity:
 networkPolicy:
   # -- Enable NetworkPolicy resources (recommended for production)
   enabled: true
-  # -- Namespace label value where Prometheus / metrics scraper runs.
-  # Used to allow scraping backend port 9090. Set to match your monitoring namespace.
+  # -- Namespace label value where Prometheus /
+  # metrics scraper runs. Used to allow scraping
+  # backend port 9090. Set to match your
+  # monitoring namespace.
   prometheusNamespace: "monitoring"

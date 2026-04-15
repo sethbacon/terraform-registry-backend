@@ -1,0 +1,195 @@
+{{- if .Values.grafanaDashboard.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "terraform-registry.fullname" . }}-grafana-dashboard
+  labels:
+    {{- include "terraform-registry.labels" . | nindent 4 }}
+    grafana_dashboard: "1"
+    {{- with .Values.grafanaDashboard.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+data:
+  terraform-registry.json: |
+    {
+      "annotations": { "list": [] },
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 1,
+      "id": null,
+      "links": [],
+      "panels": [
+        {
+          "title": "Request Rate (req/s)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "targets": [
+            {
+              "expr": "sum(rate(http_requests_total[5m]))",
+              "legendFormat": "Total"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps"
+            },
+            "overrides": []
+          }
+        },
+        {
+          "title": "Error Rate (%)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "targets": [
+            {
+              "expr": "sum(rate(http_requests_total{status=~\"5..\"}[5m])) / sum(rate(http_requests_total[5m])) * 100",
+              "legendFormat": "5xx %"
+            },
+            {
+              "expr": "sum(rate(http_requests_total{status=~\"4..\"}[5m])) / sum(rate(http_requests_total[5m])) * 100",
+              "legendFormat": "4xx %"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "max": 100
+            },
+            "overrides": []
+          }
+        },
+        {
+          "title": "P99 Latency by Route",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.99, sum by (path, le) (rate(http_request_duration_seconds_bucket[5m])))",
+              "legendFormat": "{{`{{path}}`}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s"
+            },
+            "overrides": []
+          }
+        },
+        {
+          "title": "Mirror Sync Health",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, rate(mirror_sync_duration_seconds_bucket[1h]))",
+              "legendFormat": "p95 sync duration"
+            },
+            {
+              "expr": "sum(rate(mirror_sync_errors_total[1h]))",
+              "legendFormat": "sync errors/hr"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s"
+            },
+            "overrides": []
+          }
+        },
+        {
+          "title": "Module Scan Queue Depth",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 6, "x": 0, "y": 16 },
+          "targets": [
+            {
+              "expr": "module_scan_queue_depth",
+              "legendFormat": "Pending Scans"
+            }
+          ]
+        },
+        {
+          "title": "Rate Limiter Rejections",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 6, "x": 6, "y": 16 },
+          "targets": [
+            {
+              "expr": "sum by (tier) (rate(rate_limit_rejections_total[5m]))",
+              "legendFormat": "{{`{{tier}}`}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps"
+            },
+            "overrides": []
+          }
+        },
+        {
+          "title": "DB Connection Pool",
+          "type": "gauge",
+          "gridPos": { "h": 4, "w": 6, "x": 12, "y": 16 },
+          "targets": [
+            {
+              "expr": "db_open_connections",
+              "legendFormat": "Open Connections"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "max": {{ .Values.externalDatabase.maxConnections }},
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": {{ div (mul .Values.externalDatabase.maxConnections 60) 100 }} },
+                  { "color": "red", "value": {{ div (mul .Values.externalDatabase.maxConnections 80) 100 }} }
+                ]
+              }
+            },
+            "overrides": []
+          }
+        },
+        {
+          "title": "Module Downloads",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 6, "x": 18, "y": 16 },
+          "targets": [
+            {
+              "expr": "sum by (namespace) (rate(module_downloads_total[1h]))",
+              "legendFormat": "{{`{{namespace}}`}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps"
+            },
+            "overrides": []
+          }
+        },
+        {
+          "title": "Build Info",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 6, "x": 0, "y": 20 },
+          "targets": [
+            {
+              "expr": "terraform_registry_info",
+              "legendFormat": "v{{`{{version}}`}} ({{`{{go_version}}`}})"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [
+                { "type": "value", "options": { "1": { "text": "Running" } } }
+              ]
+            },
+            "overrides": []
+          }
+        }
+      ],
+      "schemaVersion": 39,
+      "tags": ["terraform-registry"],
+      "templating": { "list": [] },
+      "time": { "from": "now-1h", "to": "now" },
+      "title": "Terraform Registry",
+      "uid": "terraform-registry"
+    }
+{{- end }}

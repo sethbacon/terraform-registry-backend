@@ -5,8 +5,12 @@ package jobs
 import (
 	"context"
 	"testing"
+	"time"
 
+	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/google/uuid"
+	"github.com/jmoiron/sqlx"
+	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
 
 // newTestTerraformSyncJob returns a job with nil dependencies — sufficient for
@@ -50,4 +54,54 @@ func TestTriggerSync_QueueFull(t *testing.T) {
 	if err := job.TriggerSync(context.Background(), uuid.New()); err == nil {
 		t.Error("expected error when queue is full, got nil")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Start / Stop — full loop with sqlmock
+// ---------------------------------------------------------------------------
+
+func TestTerraformMirrorSyncJob_StartStop(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	sqlxDB := sqlx.NewDb(db, "sqlmock")
+	repo := repositories.NewTerraformMirrorRepository(sqlxDB)
+	job := NewTerraformMirrorSyncJob(repo, nil, "local")
+
+	// runScheduledSyncs calls GetConfigsNeedingSync — return empty
+	mock.ExpectQuery("SELECT").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+
+	ctx := context.Background()
+	job.Start(ctx, 60)
+
+	time.Sleep(50 * time.Millisecond)
+	job.Stop()
+}
+
+func TestTerraformMirrorSyncJob_StartContextCancel(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	sqlxDB := sqlx.NewDb(db, "sqlmock")
+	repo := repositories.NewTerraformMirrorRepository(sqlxDB)
+	job := NewTerraformMirrorSyncJob(repo, nil, "local")
+
+	mock.ExpectQuery("SELECT").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	job.Start(ctx, 60)
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	// Wait for goroutine to exit
+	time.Sleep(100 * time.Millisecond)
 }

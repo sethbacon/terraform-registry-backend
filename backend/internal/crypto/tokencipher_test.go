@@ -276,3 +276,127 @@ func TestGenerateSalt(t *testing.T) {
 		t.Error("GenerateSalt() produced identical salts on consecutive calls")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Dual-key (key rotation) tests
+// ---------------------------------------------------------------------------
+
+func TestNewTokenCipherWithPrevious(t *testing.T) {
+	current := bytes.Repeat([]byte("c"), 32)
+	previous := bytes.Repeat([]byte("p"), 32)
+
+	t.Run("valid current and previous keys", func(t *testing.T) {
+		tc, err := NewTokenCipherWithPrevious(current, previous)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if tc == nil {
+			t.Fatal("returned nil cipher")
+		}
+	})
+
+	t.Run("valid current, no previous", func(t *testing.T) {
+		tc, err := NewTokenCipherWithPrevious(current, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if tc == nil {
+			t.Fatal("returned nil cipher")
+		}
+	})
+
+	t.Run("invalid current key", func(t *testing.T) {
+		_, err := NewTokenCipherWithPrevious([]byte("short"), previous)
+		if err != ErrKeyLengthInvalid {
+			t.Errorf("error = %v, want %v", err, ErrKeyLengthInvalid)
+		}
+	})
+
+	t.Run("invalid previous key", func(t *testing.T) {
+		_, err := NewTokenCipherWithPrevious(current, []byte("short"))
+		if err != ErrKeyLengthInvalid {
+			t.Errorf("error = %v, want %v", err, ErrKeyLengthInvalid)
+		}
+	})
+}
+
+func TestDualKeyDecryption_CurrentKey(t *testing.T) {
+	current := bytes.Repeat([]byte("c"), 32)
+	previous := bytes.Repeat([]byte("p"), 32)
+
+	tc, _ := NewTokenCipherWithPrevious(current, previous)
+
+	// Encrypt with the dual-key cipher (uses current key)
+	sealed, err := tc.Seal("test-secret")
+	if err != nil {
+		t.Fatalf("Seal() error: %v", err)
+	}
+
+	// Decrypt should work with current key
+	opened, err := tc.Open(sealed)
+	if err != nil {
+		t.Fatalf("Open() error: %v", err)
+	}
+	if opened != "test-secret" {
+		t.Errorf("Open() = %q, want %q", opened, "test-secret")
+	}
+}
+
+func TestDualKeyDecryption_PreviousKey(t *testing.T) {
+	oldKey := bytes.Repeat([]byte("o"), 32)
+	newKey := bytes.Repeat([]byte("n"), 32)
+
+	// Encrypt with the old key (before rotation)
+	oldCipher, _ := NewTokenCipher(oldKey)
+	sealed, err := oldCipher.Seal("rotated-secret")
+	if err != nil {
+		t.Fatalf("Seal() error: %v", err)
+	}
+
+	// Create a dual-key cipher with new=current, old=previous
+	dualCipher, _ := NewTokenCipherWithPrevious(newKey, oldKey)
+
+	// Decrypt should fall back to old key
+	opened, err := dualCipher.Open(sealed)
+	if err != nil {
+		t.Fatalf("Open() with previous key error: %v", err)
+	}
+	if opened != "rotated-secret" {
+		t.Errorf("Open() = %q, want %q", opened, "rotated-secret")
+	}
+}
+
+func TestDualKeyDecryption_BothKeysFail(t *testing.T) {
+	keyA := bytes.Repeat([]byte("a"), 32)
+	keyB := bytes.Repeat([]byte("b"), 32)
+	keyC := bytes.Repeat([]byte("c"), 32)
+
+	// Encrypt with keyC (neither current nor previous)
+	cipherC, _ := NewTokenCipher(keyC)
+	sealed, _ := cipherC.Seal("unreachable")
+
+	// Dual cipher with A=current, B=previous
+	dual, _ := NewTokenCipherWithPrevious(keyA, keyB)
+
+	_, err := dual.Open(sealed)
+	if err != ErrDecryptionFailed {
+		t.Errorf("Open() error = %v, want %v", err, ErrDecryptionFailed)
+	}
+}
+
+func TestDualKeyDecryption_NoPreviousKeyFallback(t *testing.T) {
+	oldKey := bytes.Repeat([]byte("o"), 32)
+	newKey := bytes.Repeat([]byte("n"), 32)
+
+	// Encrypt with old key
+	oldCipher, _ := NewTokenCipher(oldKey)
+	sealed, _ := oldCipher.Seal("needs-old-key")
+
+	// Dual cipher with no previous key set
+	noPrevCipher, _ := NewTokenCipherWithPrevious(newKey, nil)
+
+	_, err := noPrevCipher.Open(sealed)
+	if err != ErrDecryptionFailed {
+		t.Errorf("Open() without previous key error = %v, want %v", err, ErrDecryptionFailed)
+	}
+}

@@ -167,6 +167,44 @@ func (r *OIDCConfigRepository) GetEnhancedSetupStatus(ctx context.Context) (*mod
 	return status, nil
 }
 
+// GetScanningConfigured checks if scanning has been configured via the setup wizard
+func (r *OIDCConfigRepository) GetScanningConfigured(ctx context.Context) (bool, error) {
+	var configured bool
+	query := `SELECT scanning_configured FROM system_settings WHERE id = 1`
+	err := r.db.GetContext(ctx, &configured, query)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return configured, err
+}
+
+// SetScanningConfig stores the scanning configuration JSON and marks scanning as configured
+func (r *OIDCConfigRepository) SetScanningConfig(ctx context.Context, configJSON []byte) error {
+	query := `
+		UPDATE system_settings SET
+			scanning_configured = true,
+			scanning_configured_at = NOW(),
+			scanning_config = $1,
+			updated_at = $2
+		WHERE id = 1`
+	_, err := r.db.ExecContext(ctx, query, configJSON, time.Now())
+	return err
+}
+
+// GetScanningConfig retrieves the scanning configuration JSON from system settings
+func (r *OIDCConfigRepository) GetScanningConfig(ctx context.Context) ([]byte, error) {
+	var configJSON []byte
+	query := `SELECT scanning_config FROM system_settings WHERE id = 1`
+	err := r.db.GetContext(ctx, &configJSON, query)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return configJSON, nil
+}
+
 // === OIDC Configuration CRUD ===
 
 // CreateOIDCConfig creates a new OIDC configuration

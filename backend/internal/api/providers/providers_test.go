@@ -100,6 +100,14 @@ var providerSearchCols = []string{
 	"latest_version", "total_downloads",
 }
 
+// providerSearchColsFTS adds the rank column for FTS queries (searchQuery >= 3 chars).
+var providerSearchColsFTS = []string{
+	"id", "organization_id", "namespace", "type", "description", "source",
+	"created_by", "created_by_name", "created_at", "updated_at",
+	"latest_version", "total_downloads",
+	"rank",
+}
+
 var sampleProtocolsJSON = []byte(`["6.0"]`)
 
 // ---------------------------------------------------------------------------
@@ -145,6 +153,14 @@ func sampleProviderSearchRow() *sqlmock.Rows {
 			nil, "hashicorp/provider-aws",
 			nil, nil, time.Now(), time.Now(),
 			nil, int64(0))
+}
+
+func sampleProviderSearchRowFTS() *sqlmock.Rows {
+	return sqlmock.NewRows(providerSearchColsFTS).
+		AddRow("prov-1", nil, "hashicorp", "aws",
+			nil, "hashicorp/provider-aws",
+			nil, nil, time.Now(), time.Now(),
+			nil, int64(0), float64(0.5))
 }
 
 // ---------------------------------------------------------------------------
@@ -274,8 +290,9 @@ func TestSearchHandler_Success_SingleTenant(t *testing.T) {
 	mock, r := newSearchRouter(t, &config.Config{})
 
 	// No org query in single-tenant mode
+	// "aws" is >= 3 chars so FTS mode adds rank column
 	mock.ExpectQuery("SELECT COUNT.*FROM providers").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
-	mock.ExpectQuery("SELECT.*FROM providers.*ORDER BY").WillReturnRows(sampleProviderSearchRow())
+	mock.ExpectQuery("SELECT.*FROM providers.*ORDER BY").WillReturnRows(sampleProviderSearchRowFTS())
 
 	w := doGET(r, "/v1/providers/search?q=aws")
 	if w.Code != http.StatusOK {

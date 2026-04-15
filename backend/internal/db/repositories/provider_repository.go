@@ -748,13 +748,37 @@ func (r *ProviderRepository) SearchProviders(ctx context.Context, orgID, query, 
 	return providers, total, nil
 }
 
+// allowedProviderSortFields defines valid sort fields for provider search.
+var allowedProviderSortFields = map[string]bool{
+	"":          true,
+	"relevance": true,
+	"name":      true,
+	"downloads": true,
+	"created":   true,
+	"updated":   true,
+}
+
 // SearchProvidersWithStats returns providers matching the search criteria along with
 // their latest version and total download count in a single query, eliminating the
 // N+1 query pattern from SearchProviders + per-provider ListVersions/GetTotalDownloadCount.
-func (r *ProviderRepository) SearchProvidersWithStats(ctx context.Context, orgID, searchQuery, namespace string, limit, offset int) ([]*models.ProviderSearchResult, int, error) {
+// sortField controls result ordering: "relevance" (FTS rank), "name", "downloads",
+// "created", "updated", or "" (default: relevance when FTS is used, else created_at).
+// sortOrder is "asc" or "desc" (default "desc").
+func (r *ProviderRepository) SearchProvidersWithStats(ctx context.Context, orgID, searchQuery, namespace string, limit, offset int, sortField, sortOrder string) ([]*models.ProviderSearchResult, int, error) {
+	// Validate and normalise sort parameters.
+	if !allowedProviderSortFields[sortField] {
+		sortField = ""
+	}
+	if sortOrder != "asc" && sortOrder != "desc" {
+		sortOrder = "desc"
+	}
+
 	var whereClauses []string
 	var args []interface{}
 	argCount := 0
+
+	// useFTS is true when the query is long enough for PostgreSQL full-text search.
+	useFTS := len(searchQuery) >= 3
 
 	if orgID != "" {
 		argCount++
@@ -763,8 +787,16 @@ func (r *ProviderRepository) SearchProvidersWithStats(ctx context.Context, orgID
 	}
 	if searchQuery != "" {
 		argCount++
-		whereClauses = append(whereClauses, fmt.Sprintf("(p.namespace ILIKE $%d OR p.type ILIKE $%d OR p.description ILIKE $%d)", argCount, argCount, argCount))
-		args = append(args, "%"+searchQuery+"%")
+		if useFTS {
+			whereClauses = append(whereClauses, fmt.Sprintf("p.search_vector @@ plainto_tsquery('english', $%d)", argCount))
+		} else {
+			whereClauses = append(whereClauses, fmt.Sprintf("(p.namespace ILIKE $%d OR p.type ILIKE $%d OR p.description ILIKE $%d)", argCount, argCount, argCount))
+		}
+		if useFTS {
+			args = append(args, searchQuery)
+		} else {
+			args = append(args, searchQuery+"%")
+		}
 	}
 	if namespace != "" {
 		argCount++
@@ -784,12 +816,54 @@ func (r *ProviderRepository) SearchProvidersWithStats(ctx context.Context, orgID
 		return nil, 0, fmt.Errorf("failed to count providers: %w", err)
 	}
 
+	// Build the optional ts_rank SELECT expression and determine the ORDER BY clause.
+	rankExpr := "" // extra column in SELECT
+	var orderByClause string
+
+	if useFTS && searchQuery != "" {
+		// Re-use the same parameter index that holds the search query for ts_rank.
+		searchArgIdx := 0
+		for idx, a := range args {
+			if s, ok := a.(string); ok && s == searchQuery {
+				searchArgIdx = idx + 1 // 1-based
+				break
+			}
+		}
+		if searchArgIdx > 0 {
+			rankExpr = fmt.Sprintf(", ts_rank(p.search_vector, plainto_tsquery('english', $%d)) AS rank", searchArgIdx)
+		}
+	}
+
+	switch sortField {
+	case "relevance":
+		if rankExpr != "" {
+			orderByClause = fmt.Sprintf("ORDER BY rank %s", sortOrder)
+		} else {
+			orderByClause = fmt.Sprintf("ORDER BY p.created_at %s", sortOrder)
+		}
+	case "name":
+		orderByClause = fmt.Sprintf("ORDER BY p.type %s", sortOrder)
+	case "downloads":
+		orderByClause = fmt.Sprintf("ORDER BY total_downloads %s", sortOrder)
+	case "created":
+		orderByClause = fmt.Sprintf("ORDER BY p.created_at %s", sortOrder)
+	case "updated":
+		orderByClause = fmt.Sprintf("ORDER BY p.updated_at %s", sortOrder)
+	default:
+		if rankExpr != "" {
+			orderByClause = fmt.Sprintf("ORDER BY rank %s", sortOrder)
+		} else {
+			orderByClause = fmt.Sprintf("ORDER BY p.created_at %s", sortOrder)
+		}
+	}
+
 	// Single query: providers + latest version + total platform downloads via lateral join
 	// #nosec G201 -- whereClause contains only parameterized SQL structural conditions; user values are passed via args
 	searchSQL := fmt.Sprintf(`
 		SELECT p.id, p.organization_id, p.namespace, p.type, p.description, p.source,
 		       p.created_by, u.name AS created_by_name, p.created_at, p.updated_at,
 		       agg.latest_version, COALESCE(agg.total_downloads, 0) AS total_downloads
+		       %s
 		FROM providers p
 		LEFT JOIN users u ON p.created_by = u.id
 		LEFT JOIN LATERAL (
@@ -805,9 +879,9 @@ func (r *ProviderRepository) SearchProvidersWithStats(ctx context.Context, orgID
 				 WHERE pv3.provider_id = p.id) AS total_downloads
 		) agg ON true
 		%s
-		ORDER BY p.created_at DESC
+		%s
 		LIMIT $%d OFFSET $%d
-	`, whereClause, argCount+1, argCount+2)
+	`, rankExpr, whereClause, orderByClause, argCount+1, argCount+2)
 
 	args = append(args, limit, offset)
 
@@ -821,12 +895,23 @@ func (r *ProviderRepository) SearchProvidersWithStats(ctx context.Context, orgID
 	for rows.Next() {
 		res := &models.ProviderSearchResult{}
 		var scannedOrgID sql.NullString
-		err := rows.Scan(
-			&res.ID, &scannedOrgID, &res.Namespace, &res.Type,
-			&res.Description, &res.Source, &res.CreatedBy, &res.CreatedByName,
-			&res.CreatedAt, &res.UpdatedAt,
-			&res.LatestVersion, &res.TotalDownloads,
-		)
+		if rankExpr != "" {
+			var rank float64
+			err = rows.Scan(
+				&res.ID, &scannedOrgID, &res.Namespace, &res.Type,
+				&res.Description, &res.Source, &res.CreatedBy, &res.CreatedByName,
+				&res.CreatedAt, &res.UpdatedAt,
+				&res.LatestVersion, &res.TotalDownloads,
+				&rank,
+			)
+		} else {
+			err = rows.Scan(
+				&res.ID, &scannedOrgID, &res.Namespace, &res.Type,
+				&res.Description, &res.Source, &res.CreatedBy, &res.CreatedByName,
+				&res.CreatedAt, &res.UpdatedAt,
+				&res.LatestVersion, &res.TotalDownloads,
+			)
+		}
 		if err != nil {
 			return nil, 0, fmt.Errorf("failed to scan provider search result: %w", err)
 		}

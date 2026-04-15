@@ -305,3 +305,53 @@ func (r *SCMRepository) AcknowledgeAlert(ctx context.Context, id, userID uuid.UU
 	_, err := r.db.ExecContext(ctx, query, id, now, userID, note)
 	return err
 }
+
+// Webhook Retry Support
+
+// GetModuleSourceRepoByID retrieves a module source repository link by its own ID
+// (as opposed to GetModuleSourceRepo which looks up by module_id).
+func (r *SCMRepository) GetModuleSourceRepoByID(ctx context.Context, id uuid.UUID) (*scm.ModuleSourceRepoRecord, error) {
+	var link scm.ModuleSourceRepoRecord
+	query := `SELECT * FROM module_scm_repos WHERE id = $1`
+	err := r.db.GetContext(ctx, &link, query, id)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return &link, err
+}
+
+// GetRetryableWebhookEvents returns webhook events that are eligible for retry.
+func (r *SCMRepository) GetRetryableWebhookEvents(ctx context.Context, limit int) ([]*scm.SCMWebhookLogRecord, error) {
+	var events []*scm.SCMWebhookLogRecord
+	query := `
+		SELECT * FROM scm_webhook_events
+		WHERE processed = false
+		  AND next_retry_at IS NOT NULL
+		  AND next_retry_at <= NOW()
+		  AND retry_count < max_retries
+		ORDER BY next_retry_at
+		LIMIT $1`
+	err := r.db.SelectContext(ctx, &events, query, limit)
+	return events, err
+}
+
+// SetWebhookRetryState updates the retry metadata on a webhook event.
+func (r *SCMRepository) SetWebhookRetryState(ctx context.Context, id uuid.UUID, retryCount int, lastError string, nextRetryAt time.Time) error {
+	query := `
+		UPDATE scm_webhook_events SET
+			retry_count = $2, last_error = $3, next_retry_at = $4
+		WHERE id = $1`
+	_, err := r.db.ExecContext(ctx, query, id, retryCount, lastError, nextRetryAt)
+	return err
+}
+
+// MarkWebhookForRetry marks a webhook event for retry by resetting processed to false
+// and setting the next_retry_at timestamp.
+func (r *SCMRepository) MarkWebhookForRetry(ctx context.Context, id uuid.UUID, nextRetryAt time.Time) error {
+	query := `
+		UPDATE scm_webhook_events SET
+			processed = false, next_retry_at = $2
+		WHERE id = $1`
+	_, err := r.db.ExecContext(ctx, query, id, nextRetryAt)
+	return err
+}

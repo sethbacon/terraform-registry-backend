@@ -17,6 +17,11 @@ up the bundled Prometheus + Grafana stack.
    - [Mirror Sync Metrics](#mirror-sync-metrics)
    - [Terraform Binary Mirror Metrics](#terraform-binary-mirror-metrics)
    - [API Key Notification Metrics](#api-key-notification-metrics)
+   - [Rate Limiting Metrics](#rate-limiting-metrics)
+   - [Application Info Metrics](#application-info-metrics)
+   - [Security Scanning Metrics](#security-scanning-metrics)
+   - [Webhook Metrics](#webhook-metrics)
+   - [Cleanup Job Metrics](#cleanup-job-metrics)
    - [Database Metrics](#database-metrics)
 4. [PromQL Examples](#promql-examples)
 5. [Recommended Alert Rules](#recommended-alert-rules)
@@ -188,10 +193,13 @@ understanding which platforms are actively used and for planning build matrix co
 | Property | Value |
 | --- | --- |
 | Type | Histogram |
-| Labels | None |
+| Labels | `mirror_id` (UUID of the mirror configuration row), `mirror_type` (`provider` or `terraform`) |
 | Buckets | Prometheus default: 5 ms to 10 s |
 | Source | `internal/jobs/` mirror sync job |
-| Updated | Once per completed sync cycle (all mirrors) |
+| Updated | Once per completed sync cycle for each mirror configuration |
+
+The `mirror_type` label distinguishes provider mirrors from Terraform binary mirrors,
+enabling separate duration tracking per mirror kind.
 
 ---
 
@@ -256,7 +264,168 @@ increase being zero during the expected notification window.
 
 ---
 
-### Database Metrics
+### Rate Limiting Metrics
+
+#### `rate_limit_rejections_total`
+
+| Property | Value |
+| --- | --- |
+| Type | Counter (CounterVec) |
+| Labels | `tier` (`individual` or `organization`), `key_type` (`user`, `apikey`, `ip`, or `org`) |
+| Source | `internal/middleware/ratelimit.go` |
+| Updated | Each time a request is rejected with HTTP 429 |
+
+Tracks every request rejected by the rate limiting middleware. The `tier` label
+distinguishes individual (per-user/IP) rejections from organization-level rejections.
+Use `key_type` to identify whether rejections are hitting anonymous IP-based clients
+or authenticated users/API keys.
+
+Example queries:
+
+```promql
+# Rejection rate by tier
+sum by (tier) (rate(rate_limit_rejections_total[5m]))
+
+# Alert on high org-level rejections
+rate(rate_limit_rejections_total{tier="organization"}[5m]) > 10
+```
+
+---
+
+### Application Info Metrics
+
+#### `terraform_registry_info`
+
+| Property | Value |
+| --- | --- |
+| Type | Gauge (GaugeVec) |
+| Labels | `version` (application semver), `go_version` (Go runtime version), `build_date` |
+| Source | `internal/telemetry/metrics.go` → set at startup |
+| Updated | Once at startup; value is always `1` |
+
+Exposes build metadata as Prometheus labels. The gauge value is always `1`; the useful
+information is in the label values. Use this to verify which version is running across
+replicas and to correlate deployments with metric changes.
+
+Example queries:
+
+```promql
+# Show build info
+terraform_registry_info
+
+# Count replicas per version (useful during rolling updates)
+count by (version) (terraform_registry_info)
+```
+
+---
+
+### Security Scanning Metrics
+
+#### `terraform_registry_scan_queue_depth`
+
+| Property | Value |
+| --- | --- |
+| Type | Gauge |
+| Labels | None |
+| Source | Scanning subsystem |
+| Updated | Whenever a module is enqueued or dequeued for scanning |
+
+Tracks how many modules are waiting for a security scan. A persistently rising value
+indicates the scan workers cannot keep up with upload volume. Consider increasing
+`scanning.worker_count`.
+
+---
+
+#### `terraform_registry_scan_duration_seconds`
+
+| Property | Value |
+| --- | --- |
+| Type | Histogram (HistogramVec) |
+| Labels | `tool` (scanner backend name, e.g. `trivy`), `status` (scan result status) |
+| Buckets | Prometheus default: 5 ms to 10 s |
+| Source | Scanning subsystem |
+| Updated | After each completed scan |
+
+Records the wall-clock time of each module security scan. Use `tool` and `status`
+labels to identify slow or failing scanner backends.
+
+Example queries:
+
+```promql
+# p95 scan duration
+histogram_quantile(0.95, rate(terraform_registry_scan_duration_seconds_bucket[1h]))
+
+# Scan duration by tool
+histogram_quantile(0.95, sum by (tool, le) (rate(terraform_registry_scan_duration_seconds_bucket[1h])))
+```
+
+---
+
+### Webhook Metrics
+
+#### `terraform_registry_webhook_retries_total`
+
+| Property | Value |
+| --- | --- |
+| Type | Counter (CounterVec) |
+| Labels | `outcome` (`success`, `failure`, `exhausted`) |
+| Source | Webhook retry processor |
+| Updated | On each retry attempt |
+
+Tracks webhook delivery retry attempts. `success` means the retry delivered
+successfully, `failure` means it failed but will be retried again, and `exhausted`
+means all retries have been used with no success. A rising `exhausted` count indicates
+unreachable webhook endpoints that need investigation.
+
+Example queries:
+
+```promql
+# Retry success rate over the last hour
+rate(terraform_registry_webhook_retries_total{outcome="success"}[1h])
+
+# Exhausted retries in the last day (webhooks permanently failing)
+increase(terraform_registry_webhook_retries_total{outcome="exhausted"}[24h])
+```
+
+---
+
+### Cleanup Job Metrics
+
+#### `terraform_registry_jwt_revoked_tokens_cleaned_total`
+
+| Property | Value |
+| --- | --- |
+| Type | Counter |
+| Labels | None |
+| Source | JWT revoked token cleanup job |
+| Updated | Each time expired revoked tokens are removed from the database |
+
+Counts the number of expired revoked JWT tokens that have been cleaned from the
+`revoked_tokens` table. A healthy system will show a steady increase. If this counter
+stops growing while new tokens are being revoked, the cleanup job may have stalled.
+
+---
+
+#### `terraform_registry_audit_logs_cleaned_total`
+
+| Property | Value |
+| --- | --- |
+| Type | Counter |
+| Labels | None |
+| Source | Audit log retention cleanup job |
+| Updated | Each time expired audit log entries are deleted |
+
+Counts the number of audit log entries removed by the retention cleanup job. The job
+runs periodically and deletes entries older than `audit_retention.retention_days`.
+
+Example queries:
+
+```promql
+# Rows cleaned per day
+increase(terraform_registry_audit_logs_cleaned_total[24h])
+```
+
+---
 
 #### `db_open_connections`
 
@@ -362,12 +531,77 @@ db_open_connections{job="terraform-registry"}
 db_open_connections{job="terraform-registry"} / 25 * 100
 ```
 
+### Rate Limiting
+
+```promql
+# Rejection rate by tier (individual vs org)
+sum by (tier) (rate(rate_limit_rejections_total{job="terraform-registry"}[5m]))
+
+# Rejection rate by key type
+sum by (key_type) (rate(rate_limit_rejections_total{job="terraform-registry"}[5m]))
+```
+
+### Security Scanning
+
+```promql
+# Current scan queue depth
+terraform_registry_scan_queue_depth{job="terraform-registry"}
+
+# p95 scan duration by tool
+histogram_quantile(0.95,
+  sum by (tool, le) (rate(terraform_registry_scan_duration_seconds_bucket{job="terraform-registry"}[1h]))
+)
+```
+
+### Webhook Retries
+
+```promql
+# Retries by outcome over the last hour
+sum by (outcome) (rate(terraform_registry_webhook_retries_total{job="terraform-registry"}[1h]))
+
+# Permanently failed webhooks (all retries exhausted)
+increase(terraform_registry_webhook_retries_total{outcome="exhausted",job="terraform-registry"}[24h])
+```
+
+### Cleanup Jobs
+
+```promql
+# Revoked JWT tokens cleaned per day
+increase(terraform_registry_jwt_revoked_tokens_cleaned_total{job="terraform-registry"}[24h])
+
+# Audit logs cleaned per day
+increase(terraform_registry_audit_logs_cleaned_total{job="terraform-registry"}[24h])
+```
+
 ---
 
 ## Recommended Alert Rules
 
-Copy these into `deployments/prometheus.yml` (or a separate alerts file) as a starting
-point.  Tune thresholds to match your traffic patterns.
+The Helm chart ships a ready-to-use PrometheusRule resource at
+`deployments/helm/templates/prometheusrule.yaml`. Enable it with:
+
+```yaml
+# values.yaml
+prometheusRule:
+  enabled: true
+  labels: {}   # add labels if your Prometheus Operator uses a ruleSelector
+```
+
+The PrometheusRule includes these alerts out of the box:
+
+| Alert | Expression (summary) | Severity |
+| --- | --- | --- |
+| `TerraformRegistryHighErrorRate` | 5xx rate > 5% for 5 min | critical |
+| `TerraformRegistryRateLimiterExhaustion` | Rate limiter rejections > 10 req/s for 5 min | warning |
+| `TerraformRegistryMirrorSyncFailure` | > 3 mirror sync errors in 30 min | warning |
+| `TerraformRegistryScanFailure` | > 5 scan errors in 1 hr | warning |
+| `TerraformRegistryDBConnectionPoolNearExhaustion` | DB connections > 80% of max for 5 min | warning |
+| `TerraformRegistryHighP99Latency` | p99 latency > 5 s for 10 min | warning |
+
+### Additional Recommended Alert Rules
+
+Copy these into your Prometheus alert rules configuration or add them to the
+PrometheusRule as a starting point. Tune thresholds to match your traffic patterns.
 
 ```yaml
 groups:
@@ -465,6 +699,50 @@ groups:
 
 ## Grafana Dashboard Setup
 
+### With Helm Chart (Recommended for Kubernetes)
+
+The Helm chart ships a Grafana dashboard as a ConfigMap at
+`deployments/helm/templates/grafana-dashboard.yaml`. When enabled, the ConfigMap
+is labelled `grafana_dashboard: "1"` so the Grafana sidecar (from the
+[Grafana Helm chart](https://github.com/grafana/helm-charts/tree/main/charts/grafana))
+automatically discovers and imports it.
+
+```yaml
+# values.yaml
+grafanaDashboard:
+  enabled: true
+  labels:
+    grafana_dashboard: "1"   # must match grafana.sidecar.dashboards.label
+```
+
+The bundled dashboard includes panels for:
+
+| Panel | Metric |
+| --- | --- |
+| Request Rate (req/s) | `http_requests_total` |
+| Error Rate (%) | `http_requests_total{status=~"5.."}` / `http_requests_total` |
+| P99 Latency by Route | `http_request_duration_seconds_bucket` |
+| Mirror Sync Health | `mirror_sync_duration_seconds_bucket` + `mirror_sync_errors_total` |
+| Module Scan Queue Depth | `terraform_registry_scan_queue_depth` |
+| Rate Limiter Rejections | `rate_limit_rejections_total` |
+| DB Connection Pool | `db_open_connections` |
+| Module Downloads | `module_downloads_total` |
+| Build Info | `terraform_registry_info` |
+
+#### Manual import from ConfigMap
+
+If you are not using the Grafana sidecar, extract the dashboard JSON and import manually:
+
+```bash
+# Extract the dashboard JSON from the rendered ConfigMap
+helm template terraform-registry deployments/helm/ \
+  --set grafanaDashboard.enabled=true \
+  | yq eval 'select(.metadata.name == "*grafana-dashboard") | .data["terraform-registry.json"]' - \
+  > terraform-registry-dashboard.json
+
+# Then import via Grafana UI: Dashboards -> Import -> Upload JSON file
+```
+
 ### With Docker Compose
 
 ```bash
@@ -496,8 +774,14 @@ Prometheus is automatically added as a data source (URL: `http://prometheus:9090
 | DB connections | `db_open_connections` |
 | Module downloads / hr | `sum(increase(module_downloads_total[1h]))` |
 | Provider downloads / hr | `sum(increase(provider_downloads_total[1h]))` |
+| Binary mirror downloads / hr | `sum(increase(terraform_binary_downloads_total[1h]))` |
 | Mirror sync errors | `sum(rate(mirror_sync_errors_total[1h]))` |
 | Mirror sync p95 duration | `histogram_quantile(0.95, sum by(le) (rate(mirror_sync_duration_seconds_bucket[1h])))` |
+| Rate limiter rejections | `sum by (tier) (rate(rate_limit_rejections_total[5m]))` |
+| Scan queue depth | `terraform_registry_scan_queue_depth` |
+| Scan duration p95 | `histogram_quantile(0.95, rate(terraform_registry_scan_duration_seconds_bucket[1h]))` |
+| Webhook retry exhaustions | `increase(terraform_registry_webhook_retries_total{outcome="exhausted"}[24h])` |
+| Build info | `terraform_registry_info` |
 
 ### Without Docker Compose
 

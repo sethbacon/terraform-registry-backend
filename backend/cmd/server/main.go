@@ -43,6 +43,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -108,6 +109,10 @@ func serve(cfg *config.Config) error {
 	// Initialise structured logger as early as possible so all subsequent log output
 	// uses the configured format (json / text) and level.
 	telemetry.SetupLogger(cfg.Logging.Format, cfg.Logging.Level)
+
+	// Export build information as a Prometheus metric so fleet inventory queries
+	// can determine which version is deployed where.
+	telemetry.AppInfo.WithLabelValues(Version, runtime.Version(), BuildDate).Set(1)
 
 	// Set Gin mode
 	// Note: gin.SetMode sets the GIN_MODE env var as a side effect. Ensure

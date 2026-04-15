@@ -69,8 +69,8 @@ var errDB2 = errors.New("db error")
 // GetByName / GetDefaultOrganization: id, name, display_name, created_at, updated_at
 var orgCols2 = []string{"id", "name", "display_name", "created_at", "updated_at"}
 
-// GetModule: id, org_id, namespace, name, system, description, source, created_by, created_at, updated_at, created_by_name
-var moduleCols2 = []string{"id", "organization_id", "namespace", "name", "system", "description", "source", "created_by", "created_at", "updated_at", "created_by_name"}
+// GetModule: id, org_id, namespace, name, system, description, source, created_by, created_at, updated_at, created_by_name, deprecated, deprecated_at, deprecation_message, successor_module_id
+var moduleCols2 = []string{"id", "organization_id", "namespace", "name", "system", "description", "source", "created_by", "created_at", "updated_at", "created_by_name", "deprecated", "deprecated_at", "deprecation_message", "successor_module_id"}
 
 // ListVersions: 18 cols (includes commit_sha, tag_name, scm_repo_id)
 var moduleVersionListCols2 = []string{
@@ -89,11 +89,21 @@ var moduleVersionGetCols2 = []string{
 }
 
 // SearchModulesWithStats result: id, org_id, namespace, name, system, description, source,
-// created_by, created_by_name, created_at, updated_at, latest_version, total_downloads
+// created_by, created_by_name, created_at, updated_at, deprecated, deprecated_at, deprecation_message, successor_module_id, latest_version, total_downloads
 var moduleSearchCols = []string{
 	"id", "organization_id", "namespace", "name", "system", "description", "source",
 	"created_by", "created_by_name", "created_at", "updated_at",
+	"deprecated", "deprecated_at", "deprecation_message", "successor_module_id",
 	"latest_version", "total_downloads",
+}
+
+// moduleSearchColsFTS adds the rank column for FTS queries (searchQuery >= 3 chars).
+var moduleSearchColsFTS = []string{
+	"id", "organization_id", "namespace", "name", "system", "description", "source",
+	"created_by", "created_by_name", "created_at", "updated_at",
+	"deprecated", "deprecated_at", "deprecation_message", "successor_module_id",
+	"latest_version", "total_downloads",
+	"rank",
 }
 
 // ---------------------------------------------------------------------------
@@ -108,7 +118,7 @@ func sampleOrgRow2() *sqlmock.Rows {
 func sampleModuleRow2() *sqlmock.Rows {
 	return sqlmock.NewRows(moduleCols2).
 		AddRow("mod-1", "org-1", "hashicorp", "consul", "aws",
-			nil, "hashicorp/consul/aws", nil, time.Now(), time.Now(), nil)
+			nil, "hashicorp/consul/aws", nil, time.Now(), time.Now(), nil, false, nil, nil, nil)
 }
 
 func sampleModuleVersionsRows() *sqlmock.Rows {
@@ -129,7 +139,16 @@ func sampleModuleSearchRow() *sqlmock.Rows {
 	return sqlmock.NewRows(moduleSearchCols).
 		AddRow("mod-1", "org-1", "hashicorp", "consul", "aws",
 			nil, "hashicorp/consul/aws", nil, nil, time.Now(), time.Now(),
+			false, nil, nil, nil,
 			nil, int64(0))
+}
+
+func sampleModuleSearchRowFTS() *sqlmock.Rows {
+	return sqlmock.NewRows(moduleSearchColsFTS).
+		AddRow("mod-1", "org-1", "hashicorp", "consul", "aws",
+			nil, "hashicorp/consul/aws", nil, nil, time.Now(), time.Now(),
+			false, nil, nil, nil,
+			nil, int64(0), float64(0.5))
 }
 
 // ---------------------------------------------------------------------------
@@ -263,8 +282,9 @@ func TestSearchHandler_Success_SingleTenant(t *testing.T) {
 
 	// No org query in single-tenant mode; SearchModulesWithStats emits 2 queries:
 	// 1. COUNT, 2. LATERAL join search (no separate module_versions query)
+	// "consul" is >= 3 chars so FTS mode adds rank column
 	mock.ExpectQuery("SELECT COUNT.*FROM modules").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
-	mock.ExpectQuery("SELECT.*FROM modules.*ORDER BY").WillReturnRows(sampleModuleSearchRow())
+	mock.ExpectQuery("SELECT.*FROM modules.*ORDER BY").WillReturnRows(sampleModuleSearchRowFTS())
 
 	w := doGET(r, "/v1/modules/search?q=consul")
 	if w.Code != http.StatusOK {

@@ -11,20 +11,33 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
 
+// validModuleSortFields defines the allowed values for the sort query parameter.
+var validModuleSortFields = map[string]bool{
+	"":          true,
+	"relevance": true,
+	"name":      true,
+	"downloads": true,
+	"created":   true,
+	"updated":   true,
+}
+
 // @Summary      Search modules
-// @Description  Search for modules by name, namespace, or provider system with pagination.
+// @Description  Search for modules by name, namespace, or provider system with pagination and sorting.
 // @Tags         Modules
 // @Produce      json
 // @Param        q          query  string  false  "Search query"
 // @Param        namespace  query  string  false  "Filter by namespace"
 // @Param        system     query  string  false  "Filter by target system"
+// @Param        sort       query  string  false  "Sort field: relevance, name, downloads, created, updated"
+// @Param        order      query  string  false  "Sort order: asc or desc (default desc)"
 // @Param        limit      query  int     false  "Maximum results to return (default 20, max 100)"
 // @Param        offset     query  int     false  "Offset for pagination (default 0)"
 // @Success      200  {object}  modules.ModuleSearchResponse
+// @Failure      400  {object}  map[string]interface{}  "Invalid sort parameter"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/modules/search [get]
 // SearchHandler handles module search requests
-// Implements: GET /api/v1/modules/search?q=<query>&namespace=<namespace>&system=<system>&limit=<limit>&offset=<offset>
+// Implements: GET /api/v1/modules/search?q=<query>&namespace=<namespace>&system=<system>&sort=<sort>&order=<order>&limit=<limit>&offset=<offset>
 func SearchHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 	moduleRepo := repositories.NewModuleRepository(db)
 	orgRepo := repositories.NewOrganizationRepository(db)
@@ -34,6 +47,17 @@ func SearchHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 		query := c.Query("q")
 		namespace := c.Query("namespace")
 		system := c.Query("system")
+
+		// Sort parameters
+		sortField := c.DefaultQuery("sort", "")
+		sortOrder := c.DefaultQuery("order", "")
+
+		if !validModuleSortFields[sortField] {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "Invalid sort parameter. Allowed values: relevance, name, downloads, created, updated",
+			})
+			return
+		}
 
 		// Pagination parameters
 		limitStr := c.DefaultQuery("limit", "20")
@@ -77,6 +101,8 @@ func SearchHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 			system,
 			limit,
 			offset,
+			sortField,
+			sortOrder,
 		)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
@@ -94,18 +120,22 @@ func SearchHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 			}
 
 			results[i] = gin.H{
-				"id":              m.ID,
-				"namespace":       m.Namespace,
-				"name":            m.Name,
-				"system":          m.System,
-				"description":     m.Description,
-				"source":          m.Source,
-				"latest_version":  latestVersion,
-				"download_count":  m.TotalDownloads,
-				"created_by":      m.CreatedBy,
-				"created_by_name": m.CreatedByName,
-				"created_at":      m.CreatedAt,
-				"updated_at":      m.UpdatedAt,
+				"id":                  m.ID,
+				"namespace":           m.Namespace,
+				"name":                m.Name,
+				"system":              m.System,
+				"description":         m.Description,
+				"source":              m.Source,
+				"latest_version":      latestVersion,
+				"download_count":      m.TotalDownloads,
+				"created_by":          m.CreatedBy,
+				"created_by_name":     m.CreatedByName,
+				"deprecated":          m.Deprecated,
+				"deprecated_at":       m.DeprecatedAt,
+				"deprecation_message": m.DeprecationMessage,
+				"successor_module_id": m.SuccessorModuleID,
+				"created_at":          m.CreatedAt,
+				"updated_at":          m.UpdatedAt,
 			}
 		}
 

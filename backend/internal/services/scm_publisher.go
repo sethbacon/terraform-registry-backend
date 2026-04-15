@@ -80,6 +80,7 @@ func (p *SCMPublisher) ProcessTagPush(ctx context.Context, logID uuid.UUID, modu
 	if version == "" {
 		errMsg := "could not extract version from tag"
 		_ = p.scmRepo.UpdateWebhookLogState(ctx, logID, "failed", &errMsg, nil)
+		_ = p.scmRepo.MarkWebhookForRetry(ctx, logID, time.Now().Add(time.Minute))
 		return
 	}
 
@@ -88,6 +89,7 @@ func (p *SCMPublisher) ProcessTagPush(ctx context.Context, logID uuid.UUID, modu
 	if err != nil {
 		errMsg := fmt.Sprintf("failed to check for existing version: %v", err)
 		_ = p.scmRepo.UpdateWebhookLogState(ctx, logID, "failed", &errMsg, nil)
+		_ = p.scmRepo.MarkWebhookForRetry(ctx, logID, time.Now().Add(time.Minute))
 		return
 	}
 	if existingVersion != nil {
@@ -101,11 +103,13 @@ func (p *SCMPublisher) ProcessTagPush(ctx context.Context, logID uuid.UUID, modu
 	if err != nil {
 		errMsg := fmt.Sprintf("failed to look up module: %v", err)
 		_ = p.scmRepo.UpdateWebhookLogState(ctx, logID, "failed", &errMsg, nil)
+		_ = p.scmRepo.MarkWebhookForRetry(ctx, logID, time.Now().Add(time.Minute))
 		return
 	}
 	if module == nil {
 		errMsg := "module not found"
 		_ = p.scmRepo.UpdateWebhookLogState(ctx, logID, "failed", &errMsg, nil)
+		_ = p.scmRepo.MarkWebhookForRetry(ctx, logID, time.Now().Add(time.Minute))
 		return
 	}
 
@@ -131,6 +135,7 @@ func (p *SCMPublisher) ProcessTagPush(ctx context.Context, logID uuid.UUID, modu
 	if err != nil {
 		errMsg := fmt.Sprintf("failed to publish version: %v", err)
 		_ = p.scmRepo.UpdateWebhookLogState(ctx, logID, "failed", &errMsg, nil)
+		_ = p.scmRepo.MarkWebhookForRetry(ctx, logID, time.Now().Add(time.Minute))
 		return
 	}
 
