@@ -63,6 +63,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # On tag refs (release builds) skip swagger validation — it was already
+          # checked when the release PR CI ran.  Tags are immutable so we cannot
+          # auto-commit anyway.
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "Running on tag ${{ github.ref_name }} — skipping swagger auto-commit check"
+            exit 0
+          fi
+
           swag init -g cmd/server/main.go --outputTypes json
           if ! git diff --exit-code docs/swagger.json; then
             echo "swagger.json changed — committing updated docs"
