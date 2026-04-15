@@ -147,14 +147,6 @@ func samplePlatformRow() *sqlmock.Rows {
 			"local", int64(1024000), "sha256abc", nil, int64(0))
 }
 
-func sampleProviderSearchRow() *sqlmock.Rows {
-	return sqlmock.NewRows(providerSearchCols).
-		AddRow("prov-1", nil, "hashicorp", "aws",
-			nil, "hashicorp/provider-aws",
-			nil, nil, time.Now(), time.Now(),
-			nil, int64(0))
-}
-
 func sampleProviderSearchRowFTS() *sqlmock.Rows {
 	return sqlmock.NewRows(providerSearchColsFTS).
 		AddRow("prov-1", nil, "hashicorp", "aws",

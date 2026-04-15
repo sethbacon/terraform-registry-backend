@@ -734,13 +734,6 @@ var moduleSearchWithStatsColsFTS = []string{
 	"rank",
 }
 
-func sampleModuleSearchWithStatsRow() *sqlmock.Rows {
-	latestVersion := "1.0.0"
-	return sqlmock.NewRows(moduleSearchWithStatsCols).
-		AddRow("mod-1", "org-1", "hashicorp", "vpc", "aws", nil, nil, nil, nil,
-			time.Now(), time.Now(), false, nil, nil, nil, &latestVersion, int64(42))
-}
-
 func sampleModuleSearchWithStatsRowFTS() *sqlmock.Rows {
 	latestVersion := "1.0.0"
 	return sqlmock.NewRows(moduleSearchWithStatsColsFTS).
