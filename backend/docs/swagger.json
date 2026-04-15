@@ -395,6 +395,73 @@
                 }
             }
         },
+        "/api/v1/admin/audit-logs/export": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Streams audit log entries as newline-delimited JSON (NDJSON) for archival.",
+                "produces": [
+                    "application/x-ndjson"
+                ],
+                "tags": [
+                    "Audit"
+                ],
+                "summary": "Export audit logs as NDJSON",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Start date in RFC3339 format (default: 30 days ago)",
+                        "name": "start_date",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "End date in RFC3339 format (default: now)",
+                        "name": "end_date",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "NDJSON stream of audit log entries",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid date parameters",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden — audit:read scope required",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/admin/audit-logs/{id}": {
             "get": {
                 "security": [
@@ -2669,6 +2736,302 @@
                 }
             }
         },
+        "/api/v1/admin/storage/migrations": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Returns a paginated list of storage migration jobs. Requires admin scope.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Storage Migration"
+                ],
+                "summary": "List storage migrations",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Max results (default 20)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Offset for pagination (default 0)",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "migrations array and pagination",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Creates a new migration job and begins copying artifacts from the source to the target storage backend in the background. Requires admin scope.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Storage Migration"
+                ],
+                "summary": "Start storage migration",
+                "parameters": [
+                    {
+                        "description": "Source and target storage config IDs",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/admin.startMigrationRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "Accepted",
+                        "schema": {
+                            "$ref": "#/definitions/models.StorageMigration"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/admin/storage/migrations/plan": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Counts artifacts that would be migrated between two storage configurations. Does not start a migration. Requires admin scope.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Storage Migration"
+                ],
+                "summary": "Plan storage migration",
+                "parameters": [
+                    {
+                        "description": "Source and target storage config IDs",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/admin.planRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.MigrationPlan"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/admin/storage/migrations/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Returns the current progress and status of a specific migration job. Requires admin scope.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Storage Migration"
+                ],
+                "summary": "Get storage migration status",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Migration ID (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.StorageMigration"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid migration ID",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Migration not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/admin/storage/migrations/{id}/cancel": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Cancels a running or pending migration. Artifacts already migrated are not rolled back. Requires admin scope.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Storage Migration"
+                ],
+                "summary": "Cancel storage migration",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Migration ID (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/admin.MessageResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid ID or migration not cancellable",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Migration not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/admin/terraform-mirrors": {
             "get": {
                 "security": [
@@ -4059,7 +4422,7 @@
         },
         "/api/v1/modules/search": {
             "get": {
-                "description": "Search for modules by name, namespace, or provider system with pagination.",
+                "description": "Search for modules by name, namespace, or provider system with pagination and sorting.",
                 "produces": [
                     "application/json"
                 ],
@@ -4087,6 +4450,18 @@
                         "in": "query"
                     },
                     {
+                        "type": "string",
+                        "description": "Sort field: relevance, name, downloads, created, updated",
+                        "name": "sort",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Sort order: asc or desc (default desc)",
+                        "name": "order",
+                        "in": "query"
+                    },
+                    {
                         "type": "integer",
                         "description": "Maximum results to return (default 20, max 100)",
                         "name": "limit",
@@ -4104,6 +4479,13 @@
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/modules.ModuleSearchResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid sort parameter",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
                         }
                     },
                     "500": {
@@ -4342,6 +4724,153 @@
                     "Modules"
                 ],
                 "summary": "Delete module",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Module namespace",
+                        "name": "namespace",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Module name",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Target system (e.g. aws, azurerm)",
+                        "name": "system",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/admin.MessageResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Module not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/modules/{namespace}/{name}/{system}/deprecate": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Mark an entire module as deprecated with an optional message and successor module reference. Requires modules:write scope.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Modules"
+                ],
+                "summary": "Deprecate module",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Module namespace",
+                        "name": "namespace",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Module name",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Target system (e.g. aws, azurerm)",
+                        "name": "system",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Optional deprecation message and successor module ID",
+                        "name": "body",
+                        "in": "body",
+                        "schema": {
+                            "$ref": "#/definitions/admin.DeprecateModuleRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/admin.MessageResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Module not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Remove the deprecated status from a module. Requires modules:write scope.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Modules"
+                ],
+                "summary": "Undeprecate module",
                 "parameters": [
                     {
                         "type": "string",
@@ -5408,7 +5937,7 @@
         },
         "/api/v1/providers/search": {
             "get": {
-                "description": "Search for providers by name or namespace with pagination.",
+                "description": "Search for providers by name or namespace with pagination and sorting.",
                 "produces": [
                     "application/json"
                 ],
@@ -5430,6 +5959,18 @@
                         "in": "query"
                     },
                     {
+                        "type": "string",
+                        "description": "Sort field: relevance, name, downloads, created, updated",
+                        "name": "sort",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Sort order: asc or desc (default desc)",
+                        "name": "order",
+                        "in": "query"
+                    },
+                    {
                         "type": "integer",
                         "description": "Maximum results to return (default 20, max 100)",
                         "name": "limit",
@@ -5447,6 +5988,13 @@
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/providers.ProviderSearchResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid sort parameter",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
                         }
                     },
                     "500": {
@@ -7161,6 +7709,133 @@
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/setup.TestOIDCConfigResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid configuration",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid setup token",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Setup already completed",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/setup/scanning": {
+            "post": {
+                "security": [
+                    {
+                        "SetupToken": []
+                    }
+                ],
+                "description": "Saves security scanning configuration to the database and marks scanning as configured.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Setup"
+                ],
+                "summary": "Save scanning configuration",
+                "parameters": [
+                    {
+                        "description": "Scanning configuration to save",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/setup.SaveScanningConfigInput"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/setup.SaveScanningConfigResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid configuration",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid setup token",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Setup already completed",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/setup/scanning/test": {
+            "post": {
+                "security": [
+                    {
+                        "SetupToken": []
+                    }
+                ],
+                "description": "Tests a security scanner configuration by verifying the binary exists and checking its version. Does NOT save anything.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Setup"
+                ],
+                "summary": "Test scanning configuration",
+                "parameters": [
+                    {
+                        "description": "Scanning configuration to test",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/setup.TestScanningConfigInput"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/setup.TestScanningConfigResponse"
                         }
                     },
                     "400": {
@@ -9600,6 +10275,17 @@
                 }
             }
         },
+        "admin.DeprecateModuleRequest": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string"
+                },
+                "successor_module_id": {
+                    "type": "string"
+                }
+            }
+        },
         "admin.DeprecateModuleVersionRequest": {
             "type": "object",
             "properties": {
@@ -10479,6 +11165,36 @@
                 "events": {}
             }
         },
+        "admin.planRequest": {
+            "type": "object",
+            "required": [
+                "source_config_id",
+                "target_config_id"
+            ],
+            "properties": {
+                "source_config_id": {
+                    "type": "string"
+                },
+                "target_config_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "admin.startMigrationRequest": {
+            "type": "object",
+            "required": [
+                "source_config_id",
+                "target_config_id"
+            ],
+            "properties": {
+                "source_config_id": {
+                    "type": "string"
+                },
+                "target_config_id": {
+                    "type": "string"
+                }
+            }
+        },
         "analyzer.InputVar": {
             "type": "object",
             "properties": {
@@ -10814,6 +11530,26 @@
                 }
             }
         },
+        "models.MigrationPlan": {
+            "type": "object",
+            "properties": {
+                "module_count": {
+                    "type": "integer"
+                },
+                "provider_count": {
+                    "type": "integer"
+                },
+                "source_config_id": {
+                    "type": "string"
+                },
+                "target_config_id": {
+                    "type": "string"
+                },
+                "total_artifacts": {
+                    "type": "integer"
+                }
+            }
+        },
         "models.MirrorApprovalRequest": {
             "type": "object",
             "properties": {
@@ -11079,6 +11815,15 @@
                     "description": "Joined fields (not stored in modules table)",
                     "type": "string"
                 },
+                "deprecated": {
+                    "type": "boolean"
+                },
+                "deprecated_at": {
+                    "type": "string"
+                },
+                "deprecation_message": {
+                    "type": "string"
+                },
                 "description": {
                     "type": "string"
                 },
@@ -11095,6 +11840,9 @@
                     "type": "string"
                 },
                 "source": {
+                    "type": "string"
+                },
+                "successor_module_id": {
                     "type": "string"
                 },
                 "system": {
@@ -11598,6 +12346,50 @@
                 }
             }
         },
+        "models.StorageMigration": {
+            "type": "object",
+            "properties": {
+                "completed_at": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "error_message": {
+                    "type": "string"
+                },
+                "failed_artifacts": {
+                    "type": "integer"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "migrated_artifacts": {
+                    "type": "integer"
+                },
+                "skipped_artifacts": {
+                    "type": "integer"
+                },
+                "source_config_id": {
+                    "type": "string"
+                },
+                "started_at": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "target_config_id": {
+                    "type": "string"
+                },
+                "total_artifacts": {
+                    "type": "integer"
+                }
+            }
+        },
         "models.TerraformBinaryDownloadResponse": {
             "type": "object",
             "properties": {
@@ -12060,6 +12852,15 @@
                 "created_at": {
                     "type": "string"
                 },
+                "deprecated": {
+                    "type": "boolean"
+                },
+                "deprecated_at": {
+                    "type": "string"
+                },
+                "deprecation_message": {
+                    "type": "string"
+                },
                 "description": {
                     "type": "string"
                 },
@@ -12073,6 +12874,9 @@
                     "type": "string"
                 },
                 "namespace": {
+                    "type": "string"
+                },
+                "successor_module_id": {
                     "type": "string"
                 },
                 "system": {
@@ -12555,6 +13359,41 @@
                 }
             }
         },
+        "setup.SaveScanningConfigInput": {
+            "type": "object",
+            "required": [
+                "binary_path",
+                "tool"
+            ],
+            "properties": {
+                "binary_path": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "expected_version": {
+                    "type": "string"
+                },
+                "timeout_secs": {
+                    "type": "integer"
+                },
+                "tool": {
+                    "type": "string"
+                },
+                "worker_count": {
+                    "type": "integer"
+                }
+            }
+        },
+        "setup.SaveScanningConfigResponse": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string"
+                }
+            }
+        },
         "setup.SaveStorageConfigResponse": {
             "type": "object",
             "properties": {
@@ -12571,6 +13410,38 @@
                     "type": "string"
                 },
                 "message": {
+                    "type": "string"
+                },
+                "success": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "setup.TestScanningConfigInput": {
+            "type": "object",
+            "required": [
+                "binary_path",
+                "tool"
+            ],
+            "properties": {
+                "binary_path": {
+                    "type": "string"
+                },
+                "expected_version": {
+                    "type": "string"
+                },
+                "tool": {
+                    "type": "string"
+                }
+            }
+        },
+        "setup.TestScanningConfigResponse": {
+            "type": "object",
+            "properties": {
+                "detected_version": {
+                    "type": "string"
+                },
+                "error": {
                     "type": "string"
                 },
                 "success": {
