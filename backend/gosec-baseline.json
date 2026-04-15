@@ -75,8 +75,8 @@
 			"rule_id": "G201",
 			"details": "SQL string formatting",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\db\\repositories\\module_repository.go",
-			"code": "503: \t// Count total results\n504: \tcountQuery := fmt.Sprintf(\"SELECT COUNT(*) FROM modules %s\", whereClause)\n505: \tvar total int\n",
-			"line": "504",
+			"code": "513: \t// Count total results\n514: \tcountQuery := fmt.Sprintf(\"SELECT COUNT(*) FROM modules %s\", whereClause)\n515: \tvar total int\n",
+			"line": "514",
 			"column": "16",
 			"nosec": false,
 			"suppressions": null
@@ -91,8 +91,8 @@
 			"rule_id": "G304",
 			"details": "Potential file inclusion via variable",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\storage\\local\\local.go",
-			"code": "186: \tsidecarPath := fullPath + \".sha256\"\n187: \tif data, err := os.ReadFile(sidecarPath); err == nil { //nolint:gosec -- G304: sidecarPath derived from validated internal storage path, not user input\n188: \t\tchecksum := strings.TrimSpace(string(data))\n",
-			"line": "187",
+			"code": "214: \tsidecarPath := fullPath + \".sha256\"\n215: \tif data, err := os.ReadFile(sidecarPath); err == nil { //nolint:gosec -- G304: sidecarPath derived from validated internal storage path, not user input\n216: \t\tchecksum := strings.TrimSpace(string(data))\n",
+			"line": "215",
 			"column": "18",
 			"nosec": false,
 			"suppressions": null,
@@ -108,8 +108,8 @@
 			"rule_id": "G304",
 			"details": "Potential file inclusion via variable",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\services\\scm_publisher.go",
-			"code": "550: \tif p.moduleDocsRepo != nil {\n551: \t\tif f, err := os.Open(archivePath); err == nil { // G304: archivePath is a temp file created by this process\n552: \t\t\tdefer f.Close()\n",
-			"line": "551",
+			"code": "555: \tif p.moduleDocsRepo != nil {\n556: \t\tif f, err := os.Open(archivePath); err == nil { // G304: archivePath is a temp file created by this process\n557: \t\t\tdefer f.Close()\n",
+			"line": "556",
 			"column": "16",
 			"nosec": false,
 			"suppressions": null,
@@ -389,9 +389,9 @@
 		}
 	],
 	"Stats": {
-		"files": 143,
-		"lines": 40467,
-		"nosec": 106,
+		"files": 155,
+		"lines": 43929,
+		"nosec": 111,
 		"found": 24
 	},
 	"GosecVersion": "dev"
