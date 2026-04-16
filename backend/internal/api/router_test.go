@@ -14,6 +14,7 @@ import (
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/middleware"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 )
 
@@ -354,6 +355,50 @@ func TestCORSMiddleware_PreflightOptions(t *testing.T) {
 	// OPTIONS should be aborted with 204
 	if w.Code != http.StatusNoContent {
 		t.Errorf("status = %d, want 204 for OPTIONS preflight", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// collectRateLimiterBackends
+// ---------------------------------------------------------------------------
+
+type stubRateLimiterBackend struct{}
+
+var _ middleware.RateLimiterBackend = (*stubRateLimiterBackend)(nil)
+
+func (s *stubRateLimiterBackend) Allow(_ context.Context, _ string) (bool, error) { return true, nil }
+func (s *stubRateLimiterBackend) RemainingTokens(_ context.Context, _ string) (int, error) {
+	return 100, nil
+}
+func (s *stubRateLimiterBackend) Close() error { return nil }
+
+func TestCollectRateLimiterBackends_Empty(t *testing.T) {
+	out := collectRateLimiterBackends()
+	if len(out) != 0 {
+		t.Errorf("len = %d, want 0", len(out))
+	}
+}
+
+func TestCollectRateLimiterBackends_AllNil(t *testing.T) {
+	out := collectRateLimiterBackends(nil, nil, nil)
+	if len(out) != 0 {
+		t.Errorf("len = %d, want 0", len(out))
+	}
+}
+
+func TestCollectRateLimiterBackends_AllNonNil(t *testing.T) {
+	a, b := &stubRateLimiterBackend{}, &stubRateLimiterBackend{}
+	out := collectRateLimiterBackends(a, b)
+	if len(out) != 2 {
+		t.Errorf("len = %d, want 2", len(out))
+	}
+}
+
+func TestCollectRateLimiterBackends_Mixed(t *testing.T) {
+	a := &stubRateLimiterBackend{}
+	out := collectRateLimiterBackends(nil, a, nil)
+	if len(out) != 1 {
+		t.Errorf("len = %d, want 1", len(out))
 	}
 }
 

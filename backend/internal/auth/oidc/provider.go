@@ -80,6 +80,13 @@ func NewOIDCProviderWithContext(ctx context.Context, cfg *config.OIDCConfig) (*O
 	}, nil
 }
 
+// NewOIDCProviderForTest constructs an OIDCProvider backed by the given oauth2 config
+// without performing OIDC discovery. Exported for sibling packages (e.g. azuread) that
+// need to unit-test delegation methods without a live identity provider.
+func NewOIDCProviderForTest(cfg *oauth2.Config) *OIDCProvider {
+	return &OIDCProvider{config: cfg}
+}
+
 // GetAuthURL returns the OAuth2 authorization URL
 func (p *OIDCProvider) GetAuthURL(state string) string {
 	return p.config.AuthCodeURL(state)
