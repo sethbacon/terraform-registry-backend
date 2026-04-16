@@ -7,7 +7,7 @@ PACKAGES=(
   "github.com/terraform-registry/terraform-registry/internal/auth"
   "github.com/terraform-registry/terraform-registry/internal/middleware"
 )
-MIN=79
+MIN=80
 for pkg in "${PACKAGES[@]}"; do
   # Test the exact package only (not sub-packages) and discard stdout/stderr.
   go test -coverprofile=/tmp/pkg-coverage.out "${pkg}" >/dev/null 2>&1 || true

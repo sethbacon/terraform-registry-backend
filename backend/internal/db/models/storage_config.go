@@ -19,8 +19,14 @@ type SystemSettings struct {
 	SetupTokenHash      sql.NullString `db:"setup_token_hash" json:"-"` // Never expose
 	OIDCConfigured      bool           `db:"oidc_configured" json:"oidc_configured"`
 	PendingAdminEmail   sql.NullString `db:"pending_admin_email" json:"pending_admin_email,omitempty"`
-	CreatedAt           time.Time      `db:"created_at" json:"created_at"`
-	UpdatedAt           time.Time      `db:"updated_at" json:"updated_at"`
+	// Scanning setup (migration 000021)
+	ScanningConfigured   bool         `db:"scanning_configured" json:"scanning_configured"`
+	ScanningConfiguredAt sql.NullTime `db:"scanning_configured_at" json:"scanning_configured_at,omitempty"`
+	ScanningConfig       []byte       `db:"scanning_config" json:"scanning_config,omitempty"`
+	// Audit retention (migration 000023)
+	AuditRetentionDays int       `db:"audit_retention_days" json:"audit_retention_days"`
+	CreatedAt          time.Time `db:"created_at" json:"created_at"`
+	UpdatedAt          time.Time `db:"updated_at" json:"updated_at"`
 }
 
 // StorageConfig holds storage backend configuration
