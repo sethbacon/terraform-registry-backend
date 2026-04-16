@@ -128,3 +128,46 @@ func TestMemoryStateStore_CleanupRemovesExpired(t *testing.T) {
 		t.Error("expired entry still present after cleanup")
 	}
 }
+
+func TestMemoryStateStore_DefaultCleanupInterval(t *testing.T) {
+	// Zero interval should default to 5 minutes internally
+	store := NewMemoryStateStore(0)
+	defer store.Close()
+	ctx := context.Background()
+
+	data := &SessionState{State: "default-test", ProviderType: "oidc", CreatedAt: time.Now()}
+	if err := store.Save(ctx, "default-test", data, time.Hour); err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+
+	loaded, err := store.Load(ctx, "default-test")
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("Load() returned nil, want non-nil")
+	}
+	if loaded.State != "default-test" {
+		t.Errorf("Load().State = %q, want %q", loaded.State, "default-test")
+	}
+}
+
+func TestMemoryStateStore_NegativeCleanupInterval(t *testing.T) {
+	// Negative interval should also default to 5 minutes
+	store := NewMemoryStateStore(-1 * time.Second)
+	defer store.Close()
+	ctx := context.Background()
+
+	data := &SessionState{State: "neg-test", ProviderType: "azuread", CreatedAt: time.Now()}
+	if err := store.Save(ctx, "neg-test", data, time.Hour); err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+
+	loaded, err := store.Load(ctx, "neg-test")
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("Load() returned nil, want non-nil")
+	}
+}
