@@ -96,6 +96,8 @@ func newModuleRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	r.DELETE("/modules/:namespace/:name/:system/versions/:version/deprecate", h.UndeprecateVersion)
 	r.GET("/modules/id/:id", h.GetModuleByIDRecord)
 	r.PUT("/modules/id/:id", h.UpdateModuleRecord)
+	r.POST("/modules/:namespace/:name/:system/deprecate", h.DeprecateModule)
+	r.DELETE("/modules/:namespace/:name/:system/deprecate", h.UndeprecateModule)
 
 	return mock, r
 }
@@ -866,5 +868,153 @@ func TestUpdateModuleRecord_Success(t *testing.T) {
 		jsonBody(map[string]string{"description": "new desc"})))
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DeprecateModule tests
+// ---------------------------------------------------------------------------
+
+func TestDeprecateModule_OrgDBError(t *testing.T) {
+	mock, r := newModuleRouter(t)
+	mock.ExpectQuery("SELECT.*FROM organizations").
+		WithArgs("default").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/modules/hashicorp/vpc/aws/deprecate",
+		jsonBody(map[string]string{"message": "end of life"})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestDeprecateModule_ModuleNotFound(t *testing.T) {
+	mock, r := newModuleRouter(t)
+	expectNoDefaultOrg(mock)
+	mock.ExpectQuery("SELECT.*FROM modules").
+		WillReturnRows(emptyModuleRow())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/modules/hashicorp/vpc/aws/deprecate",
+		jsonBody(map[string]string{"message": "end of life"})))
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestDeprecateModule_Success(t *testing.T) {
+	mock, r := newModuleRouter(t)
+	expectNoDefaultOrg(mock)
+	mock.ExpectQuery("SELECT.*FROM modules").
+		WillReturnRows(sampleModuleRow())
+	mock.ExpectExec("UPDATE modules SET deprecated").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/modules/hashicorp/vpc/aws/deprecate",
+		jsonBody(map[string]string{"message": "use vpc-v2 instead"})))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestDeprecateModule_EmptyBody(t *testing.T) {
+	mock, r := newModuleRouter(t)
+	expectNoDefaultOrg(mock)
+	mock.ExpectQuery("SELECT.*FROM modules").
+		WillReturnRows(sampleModuleRow())
+	mock.ExpectExec("UPDATE modules SET deprecated").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/modules/hashicorp/vpc/aws/deprecate", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestDeprecateModule_DBError(t *testing.T) {
+	mock, r := newModuleRouter(t)
+	expectNoDefaultOrg(mock)
+	mock.ExpectQuery("SELECT.*FROM modules").
+		WillReturnRows(sampleModuleRow())
+	mock.ExpectExec("UPDATE modules SET deprecated").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/modules/hashicorp/vpc/aws/deprecate",
+		jsonBody(map[string]string{"message": "deprecated"})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// UndeprecateModule tests
+// ---------------------------------------------------------------------------
+
+func TestUndeprecateModule_OrgDBError(t *testing.T) {
+	mock, r := newModuleRouter(t)
+	mock.ExpectQuery("SELECT.*FROM organizations").
+		WithArgs("default").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/modules/hashicorp/vpc/aws/deprecate", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestUndeprecateModule_ModuleNotFound(t *testing.T) {
+	mock, r := newModuleRouter(t)
+	expectNoDefaultOrg(mock)
+	mock.ExpectQuery("SELECT.*FROM modules").
+		WillReturnRows(emptyModuleRow())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/modules/hashicorp/vpc/aws/deprecate", nil))
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestUndeprecateModule_Success(t *testing.T) {
+	mock, r := newModuleRouter(t)
+	expectNoDefaultOrg(mock)
+	mock.ExpectQuery("SELECT.*FROM modules").
+		WillReturnRows(sampleModuleRow())
+	mock.ExpectExec("UPDATE modules SET deprecated").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/modules/hashicorp/vpc/aws/deprecate", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestUndeprecateModule_DBError(t *testing.T) {
+	mock, r := newModuleRouter(t)
+	expectNoDefaultOrg(mock)
+	mock.ExpectQuery("SELECT.*FROM modules").
+		WillReturnRows(sampleModuleRow())
+	mock.ExpectExec("UPDATE modules SET deprecated").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/modules/hashicorp/vpc/aws/deprecate", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
 	}
 }
