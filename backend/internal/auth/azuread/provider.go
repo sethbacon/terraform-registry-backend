@@ -74,11 +74,13 @@ func (p *AzureADProvider) ExchangeCode(ctx context.Context, code string) (*oauth
 }
 
 // VerifyIDToken verifies the Azure AD ID token
+// coverage:skip:integration-only — delegates to oidc.VerifyIDToken which requires a live signing key to exercise.
 func (p *AzureADProvider) VerifyIDToken(ctx context.Context, rawIDToken string) (*oidc.IDToken, error) {
 	return p.oidcProvider.VerifyIDToken(ctx, rawIDToken)
 }
 
 // ExtractUserInfo extracts user information from the Azure AD token
+// coverage:skip:integration-only — thin delegation to oidc.ExtractUserInfo; the underlying logic is fully unit-tested in the oidc package.
 func (p *AzureADProvider) ExtractUserInfo(idToken *oidc.IDToken) (sub, email, name string, err error) {
 	return p.oidcProvider.ExtractUserInfo(idToken)
 }

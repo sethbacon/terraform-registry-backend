@@ -151,6 +151,8 @@ func (j *TerraformMirrorSyncJob) runScheduledSyncs(ctx context.Context) {
 	}
 }
 
+// syncConfig is the entrypoint for a manual sync trigger.
+// coverage:skip:integration-only — delegates to doSync which constructs a live releases client and talks to upstream HTTP + DB; exercised by integration tests.
 func (j *TerraformMirrorSyncJob) syncConfig(ctx context.Context, configID uuid.UUID, triggeredBy string) {
 	j.activeSyncsMutex.Lock()
 	if j.activeSyncs[configID] {
@@ -165,6 +167,7 @@ func (j *TerraformMirrorSyncJob) syncConfig(ctx context.Context, configID uuid.U
 }
 
 // doSync performs the full sync lifecycle for one config: load, create history, sync, update history.
+// coverage:skip:integration-only — drives the complete sync pipeline with a live releases client + storage + DB; exercised by the api-test integration suite.
 func (j *TerraformMirrorSyncJob) doSync(ctx context.Context, configID uuid.UUID, triggeredBy string) {
 	defer func() {
 		j.activeSyncsMutex.Lock()
@@ -239,6 +242,7 @@ type terraformReleasesClient interface {
 // newReleasesClient constructs the appropriate client for the configured upstream URL.
 // GitHub URLs (containing "github.com") use the GitHub Releases API; all other
 // URLs use the standard HashiCorp/OpenTofu releases index format.
+// coverage:skip:integration-only — factory that wires a live HTTP client; covered indirectly via integration tests.
 func newReleasesClient(upstreamURL, productName string) (terraformReleasesClient, error) {
 	if mirror.IsGitHubReleasesURL(upstreamURL) {
 		// GitHub asset filenames use the binary's published prefix, which may differ
@@ -270,6 +274,7 @@ type terraformSyncDetails struct {
 	Errors        []string `json:"errors,omitempty"`
 }
 
+// coverage:skip:integration-only — performs live upstream HTTP + storage + DB writes for the complete sync pipeline; exercised by api-test integration suite.
 func (j *TerraformMirrorSyncJob) performSync(
 	ctx context.Context,
 	cfg *models.TerraformMirrorConfig,
@@ -411,6 +416,7 @@ func (j *TerraformMirrorSyncJob) performSync(
 }
 
 // syncVersionBinaries downloads and stores binaries for a single version's platforms.
+// coverage:skip:integration-only — orchestrates real HTTP downloads, GPG verification, and storage writes; covered by integration tests.
 func (j *TerraformMirrorSyncJob) syncVersionBinaries(
 	ctx context.Context,
 	client terraformReleasesClient,
@@ -487,6 +493,7 @@ func (j *TerraformMirrorSyncJob) syncVersionBinaries(
 }
 
 // syncOnePlatform downloads a single binary and stores it.
+// coverage:skip:integration-only — streams a live binary from upstream, checksums it, and uploads to the storage backend; covered by integration tests.
 func (j *TerraformMirrorSyncJob) syncOnePlatform(
 	ctx context.Context,
 	client terraformReleasesClient,
@@ -575,6 +582,7 @@ func (j *TerraformMirrorSyncJob) syncOnePlatform(
 // backfillGPGVerification re-verifies the SHA256SUMS GPG signature for any synced
 // version that still has gpg_verified=false on its platforms. No binaries are
 // re-downloaded — only the lightweight SUMS + signature files are fetched.
+// coverage:skip:integration-only — fetches SUMS files over HTTP and writes to the database; covered by integration tests.
 func (j *TerraformMirrorSyncJob) backfillGPGVerification(
 	ctx context.Context,
 	client terraformReleasesClient,
@@ -647,6 +655,7 @@ func (j *TerraformMirrorSyncJob) backfillGPGVerification(
 
 // updateLatestVersion scans all fully-synced versions for a config and sets is_latest
 // on the highest stable semver. Runs inside a DB transaction (via SetLatestVersion).
+// coverage:skip:requires-database — selects and updates synced-version rows; covered by integration tests.
 func (j *TerraformMirrorSyncJob) updateLatestVersion(ctx context.Context, configID uuid.UUID) error {
 	syncedVersions, err := j.repo.ListVersions(ctx, configID, true /* syncedOnly */)
 	if err != nil || len(syncedVersions) == 0 {

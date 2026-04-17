@@ -4,6 +4,7 @@ backend/terraform-registry
 backend/dist/
 backend/bin/
 backend/coverage.out
+backend/coverage.filtered.out
 backend/gosec-results.json
 backend/storage/
 backend/certs/
