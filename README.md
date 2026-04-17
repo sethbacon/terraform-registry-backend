@@ -339,6 +339,38 @@ go build -o terraform-registry cmd/server/main.go
 
 **Frontend:** [terraform-registry-frontend](https://github.com/sethbacon/terraform-registry-frontend)
 
+## Supply Chain Security
+
+Every release includes SLSA build provenance attestations, SBOM generation, and Sigstore cosign signatures published to the [Rekor](https://rekor.sigstore.dev) public transparency log.
+
+### Verify a container image
+
+```bash
+# Verify the cosign signature and Sigstore identity
+cosign verify \
+  --certificate-identity-regexp 'https://github\.com/sethbacon/terraform-registry-backend/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ghcr.io/sethbacon/terraform-registry-backend:latest
+
+# Search the Rekor transparency log for entries
+rekor-cli search --sha <image-digest>
+```
+
+### Verify release binaries
+
+```bash
+# Verify the checksum file signature
+cosign verify-blob \
+  --certificate-identity-regexp 'https://github\.com/sethbacon/terraform-registry-backend/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --signature checksums.txt.sig \
+  --certificate checksums.txt.pem \
+  checksums.txt
+
+# Verify SLSA provenance
+gh attestation verify <artifact> --repo sethbacon/terraform-registry-backend
+```
+
 ## Contributing
 
 Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting pull requests. Key requirements:

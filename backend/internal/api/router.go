@@ -8,11 +8,9 @@
 //   - Admin and upload routes (/api/v1/) always require authentication and the
 //     appropriate RBAC scope.
 //
-// The Swagger UI at /api-docs/ uses a nonce-based Content Security Policy rather
-// than hash-based CSP. The CDN-loaded Swagger UI bundle contains inline <script>
-// elements whose hashes would change with every CDN version update. A per-request
-// cryptographic nonce allows those inline scripts to execute while keeping the
-// CSP strict for all other content.
+// The Swagger UI at /api-docs/ is served from embedded static assets (no CDN
+// dependency). A per-request nonce allows the inline initialization script to
+// execute while keeping the CSP strict for all other content.
 package api
 
 import (
@@ -22,6 +20,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log"
 	"log/slog"
 	"net/http"
@@ -116,10 +115,11 @@ func collectRateLimiterBackends(backends ...middleware.RateLimiterBackend) []mid
 	return out
 }
 
-// AppVersion and AppBuildDate are set by main before NewRouter is called.
-// They are populated from ldflags injected by GoReleaser at release time.
+// AppVersion, AppBuildDate, and AppCryptoMode are set by main before NewRouter
+// is called. They are populated from ldflags injected by GoReleaser at release time.
 var AppVersion = "dev"
 var AppBuildDate = "unknown"
+var AppCryptoMode = "standard"
 
 // NewRouter creates and configures the Gin router.
 // coverage:skip:integration-only — wires all repos, jobs, and services together; tested via E2E
@@ -244,7 +244,10 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	// API version
 	router.GET("/version", versionHandler())
 
-	// Swagger UI - serve from CDN
+	// Swagger UI - served from embedded static assets (air-gap safe)
+	swaggerUIFS, _ := fs.Sub(docs.SwaggerUIAssets, "swagger-ui")
+	router.StaticFS("/api-docs/static", http.FS(swaggerUIFS))
+
 	serveSwaggerUI := func(c *gin.Context) {
 		// Generate a per-request nonce for CSP
 		nb := make([]byte, 16)
@@ -257,12 +260,10 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 		// Allow same-origin framing so the frontend React app can embed this page
 		c.Header("X-Frame-Options", "SAMEORIGIN")
 
-		// Set a nonce-based Content Security Policy allowing the generated
-		// nonce for inline scripts and styles. This is safe for serving the
-		// Swagger UI page while keeping the global API CSP strict.
+		// Set a nonce-based Content Security Policy — all assets are self-hosted
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.Header("Content-Security-Policy", fmt.Sprintf(
-			"default-src 'self' https:; script-src 'self' 'nonce-%s' https:; style-src 'self' 'nonce-%s' https:; img-src 'self' data: https:; font-src 'self' https:; connect-src 'self' https:",
+			"default-src 'self'; script-src 'self' 'nonce-%s'; style-src 'self' 'nonce-%s'; img-src 'self' data:; font-src 'self'; connect-src 'self'",
 			nonce, nonce,
 		))
 
@@ -272,7 +273,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 		<title>Swagger UI</title>
 		<meta charset="utf-8"/>
 		<meta name="viewport" content="width=device-width, initial-scale=1">
-		<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/4.15.5/swagger-ui.min.css">
+		<link rel="stylesheet" href="/api-docs/static/swagger-ui.css">
 		<style nonce="%s">
 			html{
 				box-sizing: border-box;
@@ -284,7 +285,8 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 			*:after{
 				box-sizing: inherit;
 			}
-			body {@font-family: sans-serif;
+			body {
+				font-family: sans-serif;
 				color: #fafafa;
 			}
 		</style>
@@ -293,8 +295,8 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	<body>
 		<div id="swagger-ui"></div>
 
-		<script src="https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/4.15.5/swagger-ui-bundle.min.js" crossorigin></script>
-		<script src="https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/4.15.5/swagger-ui-standalone-preset.min.js" crossorigin></script>
+		<script src="/api-docs/static/swagger-ui-bundle.js"></script>
+		<script src="/api-docs/static/swagger-ui-standalone-preset.js"></script>
 		<script nonce="%s">
 		window.onload = function() {
 			const ui = SwaggerUIBundle({
@@ -1094,6 +1096,7 @@ func versionHandler() gin.HandlerFunc {
 			"version":     AppVersion,
 			"build_date":  AppBuildDate,
 			"api_version": "v1",
+			"crypto_mode": AppCryptoMode,
 			"protocols": gin.H{
 				"modules":   "v1",
 				"providers": "v1",

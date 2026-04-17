@@ -60,11 +60,12 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// Version and BuildDate are injected at build time by GoReleaser via ldflags:
+// Version, BuildDate, and CryptoMode are injected at build time by GoReleaser via ldflags:
 //
-//	-X main.Version=x.y.z  -X main.BuildDate=<RFC3339>
+//	-X main.Version=x.y.z  -X main.BuildDate=<RFC3339>  -X main.CryptoMode=fips
 var Version = "dev"
 var BuildDate = "unknown"
+var CryptoMode = "standard"
 
 func main() {
 	if err := run(); err != nil {
@@ -91,6 +92,7 @@ func run() error {
 	case "serve":
 		api.AppVersion = Version
 		api.AppBuildDate = BuildDate
+		api.AppCryptoMode = CryptoMode
 		return serve(cfg)
 	case "migrate":
 		if len(os.Args) < 3 {
@@ -321,8 +323,8 @@ func handleSetupToken(repo *repositories.OIDCConfigRepository) error {
 	}
 	rawToken := "tfr_setup_" + base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(tokenBytes)
 
-	// Bcrypt-hash the token (cost 12) before storing
-	hash, err := bcrypt.GenerateFromPassword([]byte(rawToken), 12)
+	// Bcrypt-hash the token before storing (cost per auth.BcryptCost — see docs/adr/0011)
+	hash, err := bcrypt.GenerateFromPassword([]byte(rawToken), auth.BcryptCost)
 	if err != nil {
 		return fmt.Errorf("failed to hash setup token: %w", err)
 	}
