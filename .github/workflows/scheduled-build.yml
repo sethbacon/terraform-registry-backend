@@ -58,6 +58,47 @@ jobs:
       - name: Docker — build backend image
         run: docker build -t terraform-registry-backend:scheduled backend/
 
+  osv-scan:
+    name: OSV Vulnerability Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Run OSV-Scanner
+        id: osv
+        uses: google/osv-scanner-action/osv-scanner-action@19ec1316531e591c8578d1e05ceb30e5b935e3c5 # v2
+        continue-on-error: true
+        with:
+          scan-args: |-
+            --lockfile=backend/go.sum
+            --format=table
+
+      - name: Create issue on new vulnerabilities
+        if: steps.osv.outcome == 'failure'
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const title = `OSV-Scanner: vulnerabilities found — ${new Date().toISOString().slice(0,10)}`;
+            const body = [
+              '## OSV-Scanner Vulnerability Report',
+              '',
+              `**Workflow run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              '',
+              'OSV-Scanner found known vulnerabilities in `go.sum`. Please review the workflow logs and update affected dependencies.',
+            ].join('\n');
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['security', 'dependencies'],
+            });
+
       # ── Artifacts ────────────────────────────────────────────────────────
 
       - name: Upload Go coverage
