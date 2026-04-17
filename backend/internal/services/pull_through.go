@@ -24,6 +24,11 @@ type PullThroughService struct {
 	providerRepo *repositories.ProviderRepository
 	mirrorRepo   *repositories.MirrorRepository
 	orgRepo      *repositories.OrganizationRepository
+
+	// newUpstream is the factory used to build an UpstreamRegistryClient from a
+	// base URL.  It defaults to mirror.NewUpstreamRegistry; tests may override it
+	// via SetUpstreamFactory to inject a fake client without performing real HTTP.
+	newUpstream func(baseURL string) mirror.UpstreamRegistryClient
 }
 
 // NewPullThroughService constructs a PullThroughService.
@@ -36,7 +41,17 @@ func NewPullThroughService(
 		providerRepo: providerRepo,
 		mirrorRepo:   mirrorRepo,
 		orgRepo:      orgRepo,
+		newUpstream: func(baseURL string) mirror.UpstreamRegistryClient {
+			return mirror.NewUpstreamRegistry(baseURL)
+		},
 	}
+}
+
+// SetUpstreamFactory replaces the upstream-client factory.  Intended for tests
+// that want to substitute a fake mirror.UpstreamRegistryClient; production
+// callers should rely on the default factory installed by NewPullThroughService.
+func (s *PullThroughService) SetUpstreamFactory(f func(baseURL string) mirror.UpstreamRegistryClient) {
+	s.newUpstream = f
 }
 
 // FetchProviderMetadata fetches the version list and SHA256SUMS from upstream for the
@@ -48,7 +63,7 @@ func (s *PullThroughService) FetchProviderMetadata(
 	mirrorCfg *models.MirrorConfiguration,
 	orgID, namespace, providerType string,
 ) ([]string, error) {
-	client := mirror.NewUpstreamRegistry(mirrorCfg.UpstreamRegistryURL)
+	client := s.newUpstream(mirrorCfg.UpstreamRegistryURL)
 
 	allVersions, err := client.ListProviderVersions(ctx, namespace, providerType)
 	if err != nil {
@@ -122,7 +137,7 @@ func (s *PullThroughService) FetchProviderMetadata(
 // filename→sha256 entry via UpsertProviderVersionShasums.
 func (s *PullThroughService) fetchAndStoreShasums(
 	ctx context.Context,
-	client *mirror.UpstreamRegistry,
+	client mirror.UpstreamRegistryClient,
 	providerVersionID, shasumURL string,
 ) error {
 	data, err := client.DownloadFile(ctx, shasumURL)

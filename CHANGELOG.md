@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-04-17
+
+### Added
+
+- test: add `coverfilter` tool honoring `// coverage:skip:*` doc-comment markers and raise CI coverage threshold from 75% to 80%
+- test: add httptest + fake-client unit tests for pull-through metadata fetch (100% of `services/pull_through.go`)
+- test: add delegation tests for `auth/azuread` provider (`ExtractUserInfo`, `VerifyIDToken`)
+- test: add unit test for `jobs.verifyGPGSignature` wrapper
+
+### Changed
+
+- refactor: introduce `mirror.UpstreamRegistryClient` interface and inject via factory in `PullThroughService` + `MirrorSyncJob` to enable unit testing without live HTTP
+
 ## [0.6.2] - 2026-04-16
 
 ## [0.6.1] - 2026-04-16

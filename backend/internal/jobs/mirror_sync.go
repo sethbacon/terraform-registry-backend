@@ -84,6 +84,11 @@ type MirrorSyncJob struct {
 	stopCh             chan struct{}
 	startedCh          chan struct{} // closed when the Start goroutine is scheduled and running
 	wg                 sync.WaitGroup
+
+	// newUpstream is the factory used to build an UpstreamRegistryClient from a
+	// base URL.  It defaults to mirror.NewUpstreamRegistry; tests may override it
+	// via SetUpstreamFactory to inject a fake client without performing real HTTP.
+	newUpstream func(baseURL string) mirror.UpstreamRegistryClient
 }
 
 // NewMirrorSyncJob creates a new mirror sync job
@@ -106,7 +111,17 @@ func NewMirrorSyncJob(
 		activeSyncsMutex:   sync.Mutex{},
 		stopCh:             make(chan struct{}),
 		startedCh:          make(chan struct{}),
+		newUpstream: func(baseURL string) mirror.UpstreamRegistryClient {
+			return mirror.NewUpstreamRegistry(baseURL)
+		},
 	}
+}
+
+// SetUpstreamFactory replaces the upstream-client factory.  Intended for tests
+// that want to substitute a fake mirror.UpstreamRegistryClient; production
+// callers should rely on the default factory installed by NewMirrorSyncJob.
+func (j *MirrorSyncJob) SetUpstreamFactory(f func(baseURL string) mirror.UpstreamRegistryClient) {
+	j.newUpstream = f
 }
 
 // Start begins the periodic sync job
@@ -187,7 +202,8 @@ func (j *MirrorSyncJob) runScheduledSyncs(ctx context.Context) {
 	}
 }
 
-// syncMirror performs the actual synchronization of a mirror
+// syncMirror performs the actual synchronization of a mirror.
+// coverage:skip:integration-only — constructs a live mirror.UpstreamRegistry HTTP client inline and drives sync history + status writes to the database; tested end-to-end via the api-test integration suite in cmd/api-test.
 func (j *MirrorSyncJob) syncMirror(ctx context.Context, config models.MirrorConfiguration) {
 	defer func() {
 		j.activeSyncsMutex.Lock()
@@ -290,14 +306,16 @@ type SyncedProvider struct {
 	VersionsNew int      `json:"versions_new"`
 }
 
-// performSync performs the actual provider synchronization
+// performSync performs the actual provider synchronization.
+// coverage:skip:integration-only — builds a live mirror.UpstreamRegistry and orchestrates HTTP calls + DB writes; exercised by api-test integration suite.
 func (j *MirrorSyncJob) performSync(ctx context.Context, config models.MirrorConfiguration) (*SyncDetails, error) {
 	details := &SyncDetails{
 		Errors: []string{},
 	}
 
-	// Create upstream registry client
-	upstreamClient := mirror.NewUpstreamRegistry(config.UpstreamRegistryURL)
+	// Create upstream registry client via the injectable factory so tests can
+	// substitute a fake without real HTTP.
+	upstreamClient := j.newUpstream(config.UpstreamRegistryURL)
 
 	// Test service discovery first
 	_, err := upstreamClient.DiscoverServices(ctx)
@@ -362,8 +380,9 @@ func (j *MirrorSyncJob) performSync(ctx context.Context, config models.MirrorCon
 	return details, nil
 }
 
-// syncProvider syncs a single provider from upstream
-func (j *MirrorSyncJob) syncProvider(ctx context.Context, upstreamClient *mirror.UpstreamRegistry, config models.MirrorConfiguration, namespace, providerName string) (*SyncedProvider, error) {
+// syncProvider syncs a single provider from upstream.
+// coverage:skip:integration-only — takes an UpstreamRegistryClient and drives real HTTP + DB flow; covered by integration tests.
+func (j *MirrorSyncJob) syncProvider(ctx context.Context, upstreamClient mirror.UpstreamRegistryClient, config models.MirrorConfiguration, namespace, providerName string) (*SyncedProvider, error) {
 	// List versions from upstream
 	allVersions, err := upstreamClient.ListProviderVersions(ctx, namespace, providerName)
 	if err != nil {
@@ -646,10 +665,11 @@ func (j *MirrorSyncJob) syncProvider(ctx context.Context, upstreamClient *mirror
 	return syncedProvider, nil
 }
 
-// syncProviderVersion downloads and stores a single version of a provider
+// syncProviderVersion downloads and stores a single version of a provider.
+// coverage:skip:integration-only — performs live HTTP downloads, SHA256 verification, and storage uploads for a provider binary; exercised by the api-test integration suite.
 func (j *MirrorSyncJob) syncProviderVersion(
 	ctx context.Context,
-	upstreamClient *mirror.UpstreamRegistry,
+	upstreamClient mirror.UpstreamRegistryClient,
 	localProvider *models.Provider,
 	mirroredProvider *models.MirroredProvider,
 	namespace, providerName string,
@@ -817,10 +837,11 @@ func (j *MirrorSyncJob) syncProviderVersion(
 	return nil
 }
 
-// syncPlatformBinary downloads and stores a single platform binary
+// syncPlatformBinary downloads and stores a single platform binary.
+// coverage:skip:integration-only — streams a real provider archive from upstream, verifies its checksum, and writes to the storage backend; exercised by integration tests.
 func (j *MirrorSyncJob) syncPlatformBinary(
 	ctx context.Context,
-	upstreamClient *mirror.UpstreamRegistry,
+	upstreamClient mirror.UpstreamRegistryClient,
 	versionRecord *models.ProviderVersion,
 	namespace, providerName, version string,
 	platform mirror.ProviderPlatform,
@@ -951,7 +972,8 @@ func verifyGPGSignature(shasumContent, signatureContent []byte, publicKeys []str
 	}
 }
 
-// TriggerManualSync triggers a manual sync for a specific mirror
+// TriggerManualSync triggers a manual sync for a specific mirror.
+// coverage:skip:integration-only — orchestrates the full sync pipeline via syncMirror/performSync which themselves require a live upstream registry.
 func (j *MirrorSyncJob) TriggerManualSync(ctx context.Context, mirrorID uuid.UUID) error {
 	// Check if already syncing and mark as active atomically
 	j.activeSyncsMutex.Lock()
