@@ -33,11 +33,14 @@ func DefaultRateLimitConfig() RateLimitConfig {
 	}
 }
 
-// AuthRateLimitConfig returns stricter limits for auth endpoints
+// AuthRateLimitConfig returns stricter limits for auth endpoints.
+// The burst must be large enough to accommodate a full OIDC login cycle
+// (provider probe + redirect + callback + exchange-token = 4 minimum,
+// plus headroom for multi-provider probes and retries).
 func AuthRateLimitConfig() RateLimitConfig {
 	return RateLimitConfig{
-		RequestsPerMinute: 10, // 10 login attempts per minute
-		BurstSize:         5,
+		RequestsPerMinute: 20, // 20 auth requests per minute
+		BurstSize:         15,
 		CleanupInterval:   5 * time.Minute,
 	}
 }
