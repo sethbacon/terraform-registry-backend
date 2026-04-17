@@ -52,7 +52,7 @@ frontend:
   enabled: true
   image:
     repository: <ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/terraform-registry-frontend
-    tag: "v0.6.2"
+    tag: "v0.6.3"
     pullPolicy: IfNotPresent
   replicaCount: 2
 
