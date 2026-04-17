@@ -30,11 +30,11 @@ func TestDefaultRateLimitConfig(t *testing.T) {
 
 func TestAuthRateLimitConfig(t *testing.T) {
 	cfg := AuthRateLimitConfig()
-	if cfg.RequestsPerMinute != 10 {
-		t.Errorf("RequestsPerMinute = %d, want 10", cfg.RequestsPerMinute)
+	if cfg.RequestsPerMinute != 20 {
+		t.Errorf("RequestsPerMinute = %d, want 20", cfg.RequestsPerMinute)
 	}
-	if cfg.BurstSize != 5 {
-		t.Errorf("BurstSize = %d, want 5", cfg.BurstSize)
+	if cfg.BurstSize != 15 {
+		t.Errorf("BurstSize = %d, want 15", cfg.BurstSize)
 	}
 }
 
