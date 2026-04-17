@@ -91,6 +91,14 @@ jobs:
             fi
           fi
 
+      - name: Bump Helm chart appVersion
+        run: |
+          VERSION="${{ inputs.version }}"
+          # Update appVersion in Chart.yaml to match the release version.
+          # Also bump the chart version patch component so Helm detects a change.
+          sed -i "s/^appVersion:.*/appVersion: \"${VERSION}\"/" deployments/helm/Chart.yaml
+          echo "Updated deployments/helm/Chart.yaml appVersion to ${VERSION}"
+
       - name: Create release branch, commit, and push
         run: |
           VERSION="${{ inputs.version }}"
@@ -98,9 +106,13 @@ jobs:
           git checkout -b "$BRANCH"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add CHANGELOG.md
-          git diff --cached --quiet && echo "No CHANGELOG changes to commit" && exit 0
+          git add CHANGELOG.md deployments/helm/Chart.yaml
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
           git commit -m "chore: release v${VERSION}"
+          # Rebase onto latest main to avoid merge conflicts from concurrent
+          # feature merges landing between branch creation and PR merge.
+          git fetch origin main
+          git rebase origin/main
           git push origin "$BRANCH"
 
       - name: Open release PR
@@ -120,6 +132,7 @@ jobs:
 
           ### Checklist
           - [ ] CHANGELOG.md updated with collected entries
+          - [ ] Helm \`Chart.yaml\` appVersion matches \`${VERSION}\`
           - [ ] CI passes
           - [ ] UAT: local Docker Compose build validated
 
