@@ -211,7 +211,7 @@ Frontend UI lives in a separate repository: [terraform-registry-frontend](https:
 
 ```txt
 terraform-registry-backend/
-├── backend/                  # Go 1.24 backend service
+├── backend/                  # Go 1.26 backend service
 │   ├── cmd/                  # Entry points (server, check-db, fix-migration, hash, test-api)
 │   ├── internal/
 │   │   ├── api/              # Gin HTTP handlers (modules, providers, mirror, admin, webhooks)
@@ -229,7 +229,7 @@ terraform-registry-backend/
 │   │   └── audit/            # Audit logging
 │   ├── pkg/checksum/         # Public checksum utilities
 │   ├── Dockerfile            # Multi-stage Go build
-│   ├── go.mod                # Go 1.24.0
+│   ├── go.mod                # Go 1.26.1
 │   └── config.example.yaml   # Configuration template
 ├── deployments/              # Docker Compose, Kubernetes, Helm, Bicep, CloudFormation, Terraform IaC
 ├── docs/                     # API quick reference, authentication guide, architecture, etc.
@@ -248,10 +248,10 @@ terraform-registry-backend/
 
 | Concern        | Technology                                                         |
 | -------------- | ------------------------------------------------------------------ |
-| Language       | Go 1.24.0                                                          |
+| Language       | Go 1.26.1                                                          |
 | HTTP Framework | Gin                                                                |
 | Database       | PostgreSQL 14+ via sqlx                                            |
-| Migrations     | golang-migrate (18 migrations (000001–000018))                     |
+| Migrations     | golang-migrate (24 migrations (000001–000024))                     |
 | Auth           | JWT (golang-jwt/jwt v5), API keys, OIDC (coreos/go-oidc), Azure AD |
 | Config         | Viper (`TFR_` env prefix overrides YAML)                           |
 | Storage        | Local filesystem, Azure Blob, S3-compatible, GCS                   |
@@ -384,7 +384,7 @@ HTTP Handler (api/)
 
 ### Database
 
-- 18 migrations (000001–000018) in `backend/internal/db/migrations/`.
+- 24 migrations (000001–000024) in `backend/internal/db/migrations/`.
 - Migrations run automatically at startup; use `migrate up/down` for manual control.
 - Always add a new migration file rather than editing existing ones.
 
@@ -571,7 +571,8 @@ func (h *Handler) MethodName(c *gin.Context) {
 - All GitHub Actions pinned to full commit SHAs
 - Scheduled weekly builds with auto-issue on failure
 - **SLSA provenance attestation** on Docker images and GoReleaser binaries via `actions/attest-build-provenance`
-- **Cosign keyless signing** on Docker images via Sigstore (verify with `cosign verify`)
+- **SBOM generation** via syft in GoReleaser (`sboms:` block)
+- **Cosign keyless signing** on Docker images and checksum files via Sigstore (verify with `cosign verify`)
 
 ### Repository Topics
 
@@ -579,7 +580,6 @@ func (h *Handler) MethodName(c *gin.Context) {
 
 ### Remaining Recommendations (not yet applied)
 
-- **Add SECURITY.md** — currently only referenced in CONTRIBUTING.md; a dedicated file enables GitHub's security advisory features
 - **Enable secret scanning non-provider patterns and validity checks** for broader secret detection
 - **Add a tag protection rule** to prevent deletion of release tags (`v*.*.*`)
 - **Consider CodeQL code scanning** for Go static analysis beyond gosec

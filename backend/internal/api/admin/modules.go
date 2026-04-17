@@ -2,10 +2,13 @@
 package admin
 
 import (
+	"bytes"
 	"database/sql"
+	"log/slog"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/terraform-registry/terraform-registry/internal/analyzer"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
@@ -18,6 +21,8 @@ type ModuleAdminHandlers struct {
 	orgRepo        *repositories.OrganizationRepository
 	storageBackend storage.Storage
 	cfg            *config.Config
+	moduleDocsRepo *repositories.ModuleDocsRepository
+	scanRepo       *repositories.ModuleScanRepository
 }
 
 // NewModuleAdminHandlers creates a new module admin handlers instance
@@ -28,6 +33,18 @@ func NewModuleAdminHandlers(db *sql.DB, storageBackend storage.Storage, cfg *con
 		storageBackend: storageBackend,
 		cfg:            cfg,
 	}
+}
+
+// WithModuleDocs sets the module docs repository for re-analysis support.
+func (h *ModuleAdminHandlers) WithModuleDocs(repo *repositories.ModuleDocsRepository) *ModuleAdminHandlers {
+	h.moduleDocsRepo = repo
+	return h
+}
+
+// WithScanQueue sets the scan repository for re-scan support.
+func (h *ModuleAdminHandlers) WithScanQueue(repo *repositories.ModuleScanRepository) *ModuleAdminHandlers {
+	h.scanRepo = repo
+	return h
 }
 
 // @Summary      Create module record
@@ -725,4 +742,126 @@ func (h *ModuleAdminHandlers) UndeprecateModule(c *gin.Context) {
 		"name":      name,
 		"system":    system,
 	})
+}
+
+// @Summary      Re-analyze module version
+// @Description  Re-download the module archive from storage and re-run the HCL analyzer to refresh terraform-docs metadata. Optionally re-queues a security scan. Requires modules:publish scope.
+// @Tags         Modules
+// @Security     Bearer
+// @Produce      json
+// @Param        namespace  path  string  true  "Module namespace"
+// @Param        name       path  string  true  "Module name"
+// @Param        system     path  string  true  "Target system (e.g. aws, azurerm)"
+// @Param        version    path  string  true  "Semantic version (e.g. 1.2.3)"
+// @Success      200  {object}  map[string]interface{}
+// @Failure      404  {object}  map[string]interface{}  "Module or version not found"
+// @Failure      500  {object}  map[string]interface{}  "Internal server error"
+// @Router       /api/v1/modules/{namespace}/{name}/{system}/versions/{version}/reanalyze [post]
+// ReanalyzeVersion re-runs the HCL analyzer on an existing module version's archive.
+func (h *ModuleAdminHandlers) ReanalyzeVersion(c *gin.Context) {
+	namespace := c.Param("namespace")
+	name := c.Param("name")
+	system := c.Param("system")
+	version := c.Param("version")
+
+	// Get organization context
+	org, err := h.orgRepo.GetDefaultOrganization(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get organization context"})
+		return
+	}
+
+	var orgID string
+	if org != nil {
+		orgID = org.ID
+	}
+
+	// Get module
+	module, err := h.moduleRepo.GetModule(c.Request.Context(), orgID, namespace, name, system)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get module"})
+		return
+	}
+	if module == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Module not found"})
+		return
+	}
+
+	// Get the specific version
+	versionRecord, err := h.moduleRepo.GetVersion(c.Request.Context(), module.ID, version)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get version"})
+		return
+	}
+	if versionRecord == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Version not found"})
+		return
+	}
+
+	if versionRecord.StoragePath == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Version has no stored archive"})
+		return
+	}
+
+	result := gin.H{
+		"namespace": namespace,
+		"name":      name,
+		"system":    system,
+		"version":   version,
+	}
+
+	// Re-run HCL analyzer if docs repo is configured
+	if h.moduleDocsRepo != nil {
+		reader, err := h.storageBackend.Download(c.Request.Context(), versionRecord.StoragePath)
+		if err != nil {
+			slog.Error("reanalyze: failed to download archive from storage",
+				"version_id", versionRecord.ID, "path", versionRecord.StoragePath, "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to download archive from storage"})
+			return
+		}
+		defer reader.Close()
+
+		var buf bytes.Buffer
+		if _, err := buf.ReadFrom(reader); err != nil {
+			slog.Error("reanalyze: failed to read archive",
+				"version_id", versionRecord.ID, "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read archive"})
+			return
+		}
+
+		doc, err := analyzer.AnalyzeArchive(bytes.NewReader(buf.Bytes()))
+		if err != nil {
+			slog.Warn("reanalyze: HCL analysis failed",
+				"version_id", versionRecord.ID, "error", err)
+			result["docs"] = "analysis_failed"
+		} else if doc != nil {
+			if err := h.moduleDocsRepo.UpsertModuleDocs(c.Request.Context(), versionRecord.ID, doc); err != nil {
+				slog.Warn("reanalyze: failed to store docs",
+					"version_id", versionRecord.ID, "error", err)
+				result["docs"] = "store_failed"
+			} else {
+				result["docs"] = "updated"
+				result["inputs"] = len(doc.Inputs)
+				result["outputs"] = len(doc.Outputs)
+			}
+		} else {
+			result["docs"] = "no_terraform_files"
+		}
+	} else {
+		result["docs"] = "skipped_no_docs_repo"
+	}
+
+	// Re-queue security scan if configured
+	if h.scanRepo != nil && h.cfg.Scanning.Enabled && h.cfg.Scanning.BinaryPath != "" {
+		if err := h.scanRepo.CreatePendingScan(c.Request.Context(), versionRecord.ID); err != nil {
+			slog.Warn("reanalyze: failed to queue security scan",
+				"version_id", versionRecord.ID, "error", err)
+			result["scan"] = "queue_failed"
+		} else {
+			result["scan"] = "queued"
+		}
+	}
+
+	result["message"] = "Re-analysis complete"
+	c.JSON(http.StatusOK, result)
 }

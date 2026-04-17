@@ -15,6 +15,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
+	"github.com/terraform-registry/terraform-registry/internal/telemetry"
 	"github.com/terraform-registry/terraform-registry/internal/validation"
 )
 
@@ -285,6 +286,9 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 				}
 			}
 		}
+
+		// Emit publish metric
+		telemetry.ModulePublishesTotal.WithLabelValues(namespace, system).Inc()
 
 		// Return success response with module metadata
 		c.JSON(http.StatusCreated, gin.H{

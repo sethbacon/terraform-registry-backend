@@ -1,7 +1,7 @@
 # Multi-stage Dockerfile for Terraform Registry Backend
 
 # Stage 1: Build the Go application
-FROM golang:alpine AS builder
+FROM golang:alpine@sha256:f85330846cde1e57ca9ec309382da3b8e6ae3ab943d2739500e08c86393a21b1 AS builder
 
 # Install build dependencies
 RUN apk add --no-cache git ca-certificates tzdata
@@ -34,7 +34,7 @@ RUN CLEAN_VERSION="${VERSION#v}" && \
     ./cmd/server
 
 # Stage 2: Create minimal production image
-FROM alpine:3.21
+FROM alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
 
 # Install runtime dependencies
 RUN apk add --no-cache ca-certificates tzdata
