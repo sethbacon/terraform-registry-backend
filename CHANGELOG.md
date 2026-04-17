@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - refactor: introduce `mirror.UpstreamRegistryClient` interface and inject via factory in `PullThroughService` + `MirrorSyncJob` to enable unit testing without live HTTP
 
+## [0.6.2] - 2026-04-16
+
+## [0.6.1] - 2026-04-16
+
+## [0.6.0] - 2026-04-15
+
 ## [0.4.3] - 2026-04-14
 
 ### Added
