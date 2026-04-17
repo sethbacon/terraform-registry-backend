@@ -486,7 +486,9 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	tfMirrorAdminHandler := admin.NewTerraformMirrorHandler(tfMirrorRepo)
 	tfMirrorAdminHandler.SetSyncJob(tfMirrorSyncJob)
 	providerAdminHandlers := admin.NewProviderAdminHandlers(db, storageBackend, cfg)
-	moduleAdminHandlers := admin.NewModuleAdminHandlers(db, storageBackend, cfg)
+	moduleAdminHandlers := admin.NewModuleAdminHandlers(db, storageBackend, cfg).
+		WithModuleDocs(moduleDocsRepo).
+		WithScanQueue(scanRepo)
 
 	// Initialize RBAC handlers
 	rbacRepo := repositories.NewRBACRepository(sqlxDB)
@@ -721,6 +723,9 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 			authenticatedGroup.DELETE("/modules/:namespace/:name/:system/versions/:version/deprecate",
 				middleware.RequireScope(auth.ScopeModulesWrite),
 				moduleAdminHandlers.UndeprecateVersion)
+			authenticatedGroup.POST("/modules/:namespace/:name/:system/versions/:version/reanalyze",
+				middleware.RequireScope(auth.ScopeModulesWrite),
+				moduleAdminHandlers.ReanalyzeVersion)
 
 			// Module-level deprecation
 			authenticatedGroup.POST("/modules/:namespace/:name/:system/deprecate",

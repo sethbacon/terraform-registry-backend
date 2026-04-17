@@ -26,7 +26,7 @@ builds:
 
 archives:
   - id: terraform-registry-binaries
-    formats: [binary]
+    formats: [ binary ]
     name_template: "terraform-registry-{{ .Os }}-{{ .Arch }}"
 
 checksum:
@@ -45,6 +45,27 @@ release:
     ```
     docker pull ghcr.io/sethbacon/terraform-registry-backend:{{ .Tag }}
     ```
+
+sboms:
+  - artifacts: archive
+    cmd: syft
+
+signs:
+  - cmd: cosign
+    artifacts: checksum
+    args:
+      - sign-blob
+      - --yes
+      - --output-signature=${signature}
+      - ${artifact}
+
+docker_signs:
+  - cmd: cosign
+    artifacts: all
+    args:
+      - sign
+      - --yes
+      - ${artifact}
 
 changelog:
   use: github-native

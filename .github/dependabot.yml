@@ -26,9 +26,27 @@ updates:
     # Ignore major-version bumps for infrastructure libs that require manual review.
     ignore:
       - dependency-name: "github.com/gin-gonic/gin"
-        update-types: ["version-update:semver-major"]
+        update-types: [ "version-update:semver-major" ]
       - dependency-name: "github.com/golang-migrate/migrate/v4"
-        update-types: ["version-update:semver-major"]
+        update-types: [ "version-update:semver-major" ]
+
+  # ---------------------------------------------------------------------------
+  # Docker (backend/)
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: docker
+    directory: /backend
+    schedule:
+      interval: biweekly
+      day: monday
+      time: "09:00"
+      timezone: UTC
+    reviewers:
+      - maintainers
+    labels:
+      - dependencies
+      - docker
+    commit-message:
+      prefix: "chore(deps)"
 
   # ---------------------------------------------------------------------------
   # GitHub Actions
