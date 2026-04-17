@@ -1,0 +1,57 @@
+# FIPS-140-3 compliant Dockerfile for Terraform Registry Backend
+#
+# Uses GOEXPERIMENT=boringcrypto to link against BoringSSL's FIPS-validated
+# crypto module instead of the standard Go crypto library.
+#
+# Build:
+#   docker build -f Dockerfile.fips -t terraform-registry-backend:fips .
+#
+# Verify:
+#   docker run --rm terraform-registry-backend:fips version
+#   # Should show: crypto_mode: fips
+
+# Stage 1: Build the Go application with BoringCrypto
+FROM golang:alpine AS builder
+
+RUN apk add --no-cache git ca-certificates tzdata
+RUN update-ca-certificates || true
+
+WORKDIR /build
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+ARG VERSION=dev
+ARG BUILD_DATE=unknown
+ARG TARGETARCH=amd64
+RUN CLEAN_VERSION="${VERSION#v}" && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} GOEXPERIMENT=boringcrypto go build \
+    -ldflags="-w -s -X main.Version=${CLEAN_VERSION} -X main.BuildDate=${BUILD_DATE} -X main.CryptoMode=fips" \
+    -o terraform-registry \
+    ./cmd/server
+
+# Stage 2: Create minimal production image
+FROM alpine:3.21
+
+RUN apk add --no-cache ca-certificates tzdata
+
+RUN addgroup -g 1000 registry && \
+    adduser -D -u 1000 -G registry registry
+
+WORKDIR /app
+
+COPY --from=builder /build/terraform-registry /app/terraform-registry
+COPY config.example.yaml /app/config.example.yaml
+COPY --from=builder /build/docs /app/docs
+
+RUN mkdir -p /app/storage && \
+    chown -R registry:registry /app
+
+USER registry
+
+EXPOSE 8080 9090
+
+ENTRYPOINT ["/app/terraform-registry"]
+CMD ["serve"]
