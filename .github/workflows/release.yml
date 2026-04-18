@@ -83,6 +83,9 @@ jobs:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
 
+      - name: Install cosign
+        uses: sigstore/cosign-installer@3454372f43399081ed03b604cb2d021dabca52bb # v3.8.2
+
       - name: Package deployment configs
         run: tar -czf "/tmp/deployment-configs-${GITHUB_REF_NAME}.tar.gz" deployments/
 
