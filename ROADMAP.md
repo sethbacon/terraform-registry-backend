@@ -37,27 +37,27 @@ The following items require coordinated work with `terraform-registry-frontend`:
 
 ## Phase 0 — Quick wins (all parallel; target: 1 sprint)
 
-### A0.1 · Add `SECURITY.md` at repo root · [P0/S]
+### A0.1 · Add `SECURITY.md` at repo root · [P0/S] ✅
 
 - Disclosure policy, supported-versions matrix, PGP contact, CVE acknowledgment SLAs (48h / 7d / 30d).
 - Template: mirror frontend `SECURITY.md` structure.
 - **Files:** `SECURITY.md`, `README.md` (add link), `.github/SECURITY_CONTACTS`
 - **AC:** File present; linked from README; referenced in `.github/SECURITY_CONTACTS`.
 
-### A0.2 · Add `CODE_OF_CONDUCT.md` · [P0/S]
+### A0.2 · Add `CODE_OF_CONDUCT.md` · [P0/S] ✅
 
 - Contributor Covenant 2.1.
 - **Files:** `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md` (add link)
 - **AC:** File present; linked from CONTRIBUTING.md.
 
-### A0.3 · Pin Docker base-image digests · [P0/S]
+### A0.3 · Pin Docker base-image digests · [P0/S] ✅
 
 - `backend/Dockerfile`: replace `golang:1.26-alpine` and `alpine:3.19` tags with `@sha256:<digest>`.
 - Add Dependabot entry for `docker` ecosystem.
 - **Files:** `backend/Dockerfile`, `.github/dependabot.yml`
 - **AC:** Digests pinned; Dependabot config updated.
 
-### A0.4 · Add SBOM generation to GoReleaser · [P0/S]
+### A0.4 · Add SBOM generation to GoReleaser · [P0/S] ✅
 
 - `.goreleaser.yml`: add `sboms:` block using `syft`.
 - Generate CycloneDX + SPDX JSON per artifact.
@@ -65,7 +65,7 @@ The following items require coordinated work with `terraform-registry-frontend`:
 - **Files:** `.goreleaser.yml`, `.github/workflows/release.yml`
 - **AC:** `make release` dry-run produces `*.sbom.cdx.json` and `*.sbom.spdx.json`.
 
-### A0.5 · Add cosign keyless signing · [P0/S]
+### A0.5 · Add cosign keyless signing · [P0/S] ✅
 
 - `.goreleaser.yml`: add `signs:` block using `cosign sign-blob --yes` with GitHub OIDC.
 - Sign container images in `.github/workflows/release.yml` via `cosign sign --yes <image>@<digest>`.
@@ -73,20 +73,20 @@ The following items require coordinated work with `terraform-registry-frontend`:
 - **Files:** `.goreleaser.yml`, `.github/workflows/release.yml`, `README.md`
 - **AC:** `cosign verify-blob` + `cosign verify` succeed for a tagged release.
 
-### C0.1 · Document Go minimum toolchain · [P1/S]
+### C0.1 · Document Go minimum toolchain · [P1/S] ✅
 
 - Add to README: "Minimum Go: 1.26. Tested against 1.26.1."
 - Add `go` directive in `go.mod` pinning minor version.
 - **Files:** `README.md`, `backend/go.mod`
 - **AC:** README + go.mod aligned.
 
-### D0.1 · Remove `continue-on-error: true` on E2E job · [P1/S]
+### D0.1 · Remove `continue-on-error: true` on E2E job · [P1/S] ✅
 
 - `.github/workflows/ci.yml`: make E2E a required gate on `main`; schedule nightly full matrix separately.
 - **Files:** `.github/workflows/ci.yml`
 - **AC:** `main` branch protection includes E2E job.
 
-### H0.1 · Publish gosec baseline drift gate · [P1/S]
+### H0.1 · Publish gosec baseline drift gate · [P1/S] ✅
 
 - Add PR check comparing `gosec-results.json` vs `gosec-baseline.json`.
 - Fail PR if new findings exceed baseline.
@@ -94,7 +94,7 @@ The following items require coordinated work with `terraform-registry-frontend`:
 - **Files:** `.github/workflows/ci.yml`, `.github/workflows/pr-checks.yml`
 - **AC:** PR comments show diff; CI fails on net-new HIGH findings.
 
-### E0.1 · Fix audit log "unknown" resource type · [P1/S]
+### E0.1 · Fix audit log "unknown" resource type · [P1/S] ✅
 
 - `backend/internal/middleware/audit.go` `getResourceType()` returns `"unknown"` for endpoints not matching known prefixes (`/api/v1/storage/*`, `/api/v1/setup/*`, admin endpoints).
 - Add mappings for all current API route prefixes: `storage`, `setup`, `roles`, `scm-providers`, `webhooks`, `scanning`, `approvals`, `terraform-mirrors`, `binary-mirrors`.
@@ -103,7 +103,7 @@ The following items require coordinated work with `terraform-registry-frontend`:
 - **AC:** No audit log entry produced with `resource_type = "unknown"` for any documented API route; regression test covers all route prefixes.
 - **Source:** UAT
 
-### E0.2 · Module resync must re-run HCL analyzer · [P1/M]
+### E0.2 · Module resync must re-run HCL analyzer · [P1/M] ✅
 
 - Currently, module resync only re-downloads the archive but does **not** re-run the HCL analyzer. Modules uploaded before the analyzer was improved (or with analyzer bugs) are stuck with stale/missing inputs/outputs metadata.
 - On resync (or a new "re-analyze" action), re-extract inputs, outputs, provider requirements, and version constraints from the module archive using `backend/internal/analyzer/`.
@@ -114,7 +114,7 @@ The following items require coordinated work with `terraform-registry-frontend`:
 - **Source:** UAT
 - **↔ Frontend:** existing ModuleDetailPage already renders inputs/outputs — no frontend change needed if API contract unchanged.
 
-### H0.2 · Streamline release workflow · [P1/M]
+### H0.2 · Streamline release workflow · [P1/M] ✅
 
 - **Problem (from UAT):** Current `CLAUDE.md` release process has high friction — merge conflicts between `prepare-release.yml` output and concurrent feature merges, redundant CI runs (full CI on release branch + again on tag), manual `release.yml` dispatch due to `GITHUB_TOKEN` limitations, and manual Helm/Kustomize image-tag bumps across multiple files (`values-aks.yaml`, `values-eks.yaml`, `values-gke.yaml`, `eks/kustomization.yaml`, `gke/kustomization.yaml`).
 - Evaluate and implement best-practice improvements:
@@ -128,7 +128,7 @@ The following items require coordinated work with `terraform-registry-frontend`:
 - **Source:** UAT
 - **↔ Frontend H0.3:** Coordinate release cadence and shared deployment-manifest updates.
 
-### F0.1 · Emit business-event Prometheus metrics · [P2/S]
+### F0.1 · Emit business-event Prometheus metrics · [P2/S] ✅
 
 - Add counters: `registry_module_publishes_total{org}`, `registry_provider_publishes_total{org}`, `registry_storage_bytes{org,kind}`, `registry_downloads_total{org,kind}`.
 - Wire into existing handlers in `backend/internal/api/`.
@@ -142,7 +142,7 @@ The following items require coordinated work with `terraform-registry-frontend`:
 
 ### Track A — Supply chain
 
-#### A1.1 · Rekor transparency log integration · [P0/M]
+#### A1.1 · Rekor transparency log integration · [P0/M] ✅
 
 - Ensure cosign signatures pushed to public Rekor.
 - Document `cosign verify --certificate-identity-regexp` pattern.
@@ -156,7 +156,7 @@ The following items require coordinated work with `terraform-registry-frontend`:
 - **Files:** `.github/workflows/release.yml`
 - **AC:** `slsa-verifier verify-artifact` passes.
 
-#### A1.3 · Vendor ReDoc + Swagger UI locally · [P1/M]
+#### A1.3 · Vendor ReDoc + Swagger UI locally · [P1/M] ✅
 
 - Remove CDN dependency (`cdn.jsdelivr.net`) that leaks into air-gapped installs.
 - Bundle assets into `backend/docs/embed.go`.
@@ -165,7 +165,7 @@ The following items require coordinated work with `terraform-registry-frontend`:
 
 ### Track C — Crypto / FIPS
 
-#### C1.1 · FIPS-140-3 build variant · [P0/L]
+#### C1.1 · FIPS-140-3 build variant · [P0/L] ✅
 
 - Add `make build-fips` target using Go `GOEXPERIMENT=boringcrypto` (or go-fips toolchain).
 - Publish separate `*-fips` binaries and `fips` container tag.
@@ -173,7 +173,7 @@ The following items require coordinated work with `terraform-registry-frontend`:
 - **Files:** `Makefile`, `backend/Dockerfile.fips`, `.goreleaser.yml`, `backend/cmd/server/main.go`
 - **AC:** `goversion -m bin/registry-fips` shows boringcrypto; FIPS image tagged and signed.
 
-#### C1.2 · Rotate bcrypt cost + document rationale · [P1/M]
+#### C1.2 · Rotate bcrypt cost + document rationale · [P1/M] ✅
 
 - Confirm bcrypt cost ≥ 12; add ADR `docs/adr/0011-password-hashing.md`.
 - Add migration path for upgrading existing hashes on next login.
@@ -182,14 +182,14 @@ The following items require coordinated work with `terraform-registry-frontend`:
 
 ### Track H — CI hardening
 
-#### H1.1 · Dependency review action + OSV scan on PR · [P1/M]
+#### H1.1 · Dependency review action + OSV scan on PR · [P1/M] ✅
 
 - Add `actions/dependency-review-action` on PRs.
 - Add `osv-scanner` nightly scan of `go.sum`.
 - **Files:** `.github/workflows/pr-checks.yml`, `.github/workflows/scheduled-build.yml`
 - **AC:** Alerts file new GitHub issues automatically.
 
-#### H1.2 · Add `trivy fs` scan of final image in CI · [P2/S]
+#### H1.2 · Add `trivy fs` scan of final image in CI · [P2/S] ✅
 
 - Scan SBOM for CVE >= HIGH; fail build.
 - **Files:** `.github/workflows/ci.yml`
