@@ -4,7 +4,7 @@
 A fully-featured, enterprise-grade Terraform registry implementing all three HashiCorp protocols with multi-tenancy support.
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Go Version](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go)](https://go.dev/)
+[![Go Version](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go)](https://go.dev/)
 [![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/sethbacon/59239e8575b4f784f875647e2b344b41/raw/coverage.json)](https://github.com/sethbacon/terraform-registry-backend/actions/workflows/ci.yml)
 
 - [Features](#features)
@@ -108,7 +108,7 @@ A fully-featured, enterprise-grade Terraform registry implementing all three Has
 
 ### Observability & CI/CD
 
-- **Prometheus Metrics** - Nine named application metrics on a dedicated scrape port (default 9090)
+- **Prometheus Metrics** - Eleven named application metrics on a dedicated scrape port (default 9090)
 - **Structured Logging** - stdlib `slog` with JSON (production) and text (development) formats
 - **pprof Profiling** - Opt-in profiling server on a configurable port
 - **GitHub Actions CI/CD** - Build, vet, race-detector tests, gosec security scan, Docker build, multi-platform releases
@@ -123,7 +123,7 @@ A fully-featured, enterprise-grade Terraform registry implementing all three Has
 └──────────────────┬─────────────────────────────────┘
                    │ REST API / Protocol Endpoints
 ┌──────────────────▼─────────────────────────────────┐
-│              Go 1.24 Backend (Gin)                 │
+│              Go 1.26 Backend (Gin)                 │
 │  Modules API │ Providers API │ Mirror │ Admin      │
 │  Terraform Binary Mirror                           │
 │  Auth: JWT │ API Keys │ OIDC │ Azure AD │ RBAC     │
@@ -140,7 +140,7 @@ A fully-featured, enterprise-grade Terraform registry implementing all three Has
 
 ### Prerequisites
 
-- Go 1.24 or later
+- Go 1.26 or later
 - PostgreSQL 14+
 - Docker & Docker Compose (for containerized deployment)
 
@@ -338,6 +338,38 @@ go build -o terraform-registry cmd/server/main.go
 - [Provider Network Mirror Protocol](https://developer.hashicorp.com/terraform/internals/provider-network-mirror-protocol)
 
 **Frontend:** [terraform-registry-frontend](https://github.com/sethbacon/terraform-registry-frontend)
+
+## Supply Chain Security
+
+Every release includes SLSA build provenance attestations, SBOM generation, and Sigstore cosign signatures published to the [Rekor](https://rekor.sigstore.dev) public transparency log.
+
+### Verify a container image
+
+```bash
+# Verify the cosign signature and Sigstore identity
+cosign verify \
+  --certificate-identity-regexp 'https://github\.com/sethbacon/terraform-registry-backend/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ghcr.io/sethbacon/terraform-registry-backend:latest
+
+# Search the Rekor transparency log for entries
+rekor-cli search --sha <image-digest>
+```
+
+### Verify release binaries
+
+```bash
+# Verify the checksum file signature
+cosign verify-blob \
+  --certificate-identity-regexp 'https://github\.com/sethbacon/terraform-registry-backend/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --signature checksums.txt.sig \
+  --certificate checksums.txt.pem \
+  checksums.txt
+
+# Verify SLSA provenance
+gh attestation verify <artifact> --repo sethbacon/terraform-registry-backend
+```
 
 ## Contributing
 

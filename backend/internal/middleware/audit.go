@@ -172,6 +172,30 @@ func getResourceType(c *gin.Context) string {
 		return "api_key"
 	case strings.HasPrefix(fullPath, "/api/v1/admin/organizations"):
 		return "organization"
+	case strings.HasPrefix(fullPath, "/api/v1/admin/storage"):
+		return "storage"
+	case strings.HasPrefix(fullPath, "/api/v1/admin/roles"):
+		return "role"
+	case strings.HasPrefix(fullPath, "/api/v1/admin/scm-providers"):
+		return "scm_provider"
+	case strings.HasPrefix(fullPath, "/api/v1/admin/webhooks"):
+		return "webhook"
+	case strings.HasPrefix(fullPath, "/api/v1/admin/scanning"),
+		strings.HasPrefix(fullPath, "/api/v1/admin/security-scanning"):
+		return "scanning"
+	case strings.HasPrefix(fullPath, "/api/v1/admin/approvals"):
+		return "approval"
+	case strings.HasPrefix(fullPath, "/api/v1/admin/terraform-mirror"):
+		return "terraform_mirror"
+	case strings.HasPrefix(fullPath, "/api/v1/admin/binary-mirror"):
+		return "binary_mirror"
+	case strings.HasPrefix(fullPath, "/api/v1/admin/policies"):
+		return "policy"
+	case strings.HasPrefix(fullPath, "/api/v1/admin/setup"),
+		strings.HasPrefix(fullPath, "/api/v1/setup"):
+		return "setup"
+	case strings.HasPrefix(fullPath, "/api/v1/auth"):
+		return "auth"
 	default:
 		return "unknown"
 	}

@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-04-18
+
+### Added
+
+- feat: Phase 0 quick wins — SECURITY.md, CODE_OF_CONDUCT.md, pinned Docker base-image digests, SBOM generation, cosign keyless signing, Prometheus metrics, gosec baseline drift gate (#197)
+- feat: Phase 1 security hardening — Rekor transparency log, Swagger UI vendored locally, FIPS-140-3 build variant, bcrypt cost rotation, dependency review + OSV scan, Trivy fs scan in CI (#198)
+- feat: upgrade to SLSA Level 3 build provenance via `slsa-framework/slsa-github-generator` (#201)
+
+### Fixed
+
+- fix: correct trivy-action SHA in CI workflow (#199)
+
+### Changed
+
+- docs: update ROADMAP with Phase 0 and Phase 1 completion checkmarks (#200)
+
 ## [0.7.1] - 2026-04-17
 
 ## [0.7.0] - 2026-04-17

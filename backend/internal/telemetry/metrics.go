@@ -137,6 +137,37 @@ var (
 
 // Mirror sync metrics — recorded by the mirror sync background job.
 //
+// Business-event publish metrics — incremented by upload handlers on successful publish.
+//
+// ModulePublishesTotal is a CounterVec with labels {namespace, system} incremented
+// when a new module version is successfully published (uploaded or ingested via SCM).
+//
+// ProviderPublishesTotal is a CounterVec with labels {namespace, type} incremented
+// when a new provider version is published.
+//
+// Example PromQL queries:
+//   - Publish rate by namespace:  sum by (namespace) (rate(registry_module_publishes_total[1h]))
+//   - Provider publishes/day:     increase(registry_provider_publishes_total[24h])
+var (
+	ModulePublishesTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "registry_module_publishes_total",
+			Help: "Total number of module versions published, by namespace and system.",
+		},
+		[]string{"namespace", "system"},
+	)
+
+	ProviderPublishesTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "registry_provider_publishes_total",
+			Help: "Total number of provider versions published, by namespace and type.",
+		},
+		[]string{"namespace", "type"},
+	)
+)
+
+// Mirror sync metrics — recorded by the mirror sync background job.
+//
 // MirrorSyncDuration is a HistogramVec with labels {mirror_id, mirror_type}.
 // Each observation represents one complete sync cycle for a single mirror configuration.
 // The mirror_id label is the UUID of the mirror configuration record and mirror_type

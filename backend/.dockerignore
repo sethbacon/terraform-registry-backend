@@ -9,6 +9,7 @@
 docs/
 !docs/embed.go
 !docs/swagger.json
+!docs/swagger-ui/
 
 # Development files
 .vscode/

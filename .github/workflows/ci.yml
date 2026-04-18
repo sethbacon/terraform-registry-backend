@@ -268,6 +268,15 @@ jobs:
       - name: Build backend Docker image
         run: docker build -t terraform-registry-backend:ci backend/
 
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          scan-type: fs
+          scan-ref: backend/
+          severity: HIGH,CRITICAL
+          exit-code: 1
+          format: table
+
       - name: Verify image starts (health check smoke test)
         run: |
           # Start the container with DEV_MODE so it doesn't require a live database for the health probe.
