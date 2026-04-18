@@ -149,7 +149,7 @@ The following items require coordinated work with `terraform-registry-frontend`:
 - **Files:** `.github/workflows/release.yml`, `docs/deployment.md`
 - **AC:** Rekor entry URL printed in release notes.
 
-#### A1.2 · SLSA Level 3 build provenance · [P1/M]
+#### A1.2 · SLSA Level 3 build provenance · [P1/M] ✅
 
 - Upgrade from basic attestation to SLSA L3 via `slsa-framework/slsa-github-generator`.
 - Isolated builder, non-falsifiable provenance, signed.
