@@ -39,12 +39,12 @@ aws ecr get-login-password --region <AWS_REGION> | \
   --password-stdin <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com
 
 docker tag terraform-registry-backend:latest \
-  <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/terraform-registry-backend:v1.0.0
-docker push <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/terraform-registry-backend:v1.0.0
+  <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/terraform-registry-backend:v0.8.1
+docker push <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/terraform-registry-backend:v0.8.1
 
 docker tag terraform-registry-frontend:latest \
-  <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/terraform-registry-frontend:v1.0.0
-docker push <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/terraform-registry-frontend:v1.0.0
+  <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/terraform-registry-frontend:v0.8.1
+docker push <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/terraform-registry-frontend:v0.8.1
 ```
 
 ### 2b. Amazon RDS for PostgreSQL

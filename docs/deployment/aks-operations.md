@@ -16,8 +16,8 @@ git pull
 helm upgrade terraform-registry ./deployments/helm \
   --namespace terraform-registry \
   --reuse-values \
-  --set backend.image.tag=v1.1.0 \
-  --set frontend.image.tag=v1.1.0
+  --set backend.image.tag=v0.8.1 \
+  --set frontend.image.tag=v0.8.1
 
 # Monitor rollout
 kubectl rollout status deployment/terraform-registry-backend -n terraform-registry

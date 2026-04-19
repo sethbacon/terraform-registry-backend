@@ -52,6 +52,26 @@ data:
   TFR_SECURITY_TLS_ENABLED: "false"
   TFR_SECURITY_RATE_LIMITING_ENABLED: "true"
 
+  # Redis (optional — enables HA rate limiting and session store).
+  # Leave TFR_REDIS_HOST empty to disable. When set, Redis must be reachable
+  # from the backend pod (e.g. an in-cluster service FQDN or managed endpoint).
+  TFR_REDIS_HOST: ""
+  TFR_REDIS_PORT: "6379"
+  TFR_REDIS_DB: "0"
+  TFR_REDIS_TLS: "false"
+  TFR_REDIS_POOL_SIZE: "10"
+
+  # Module security scanning (optional).
+  # Set TFR_SCANNING_ENABLED=true and override TFR_SCANNING_BINARY_PATH to
+  # a scanner binary present in the container image. Supported tools:
+  # trivy | terrascan | snyk | checkov | custom.
+  TFR_SCANNING_ENABLED: "false"
+  TFR_SCANNING_TOOL: "trivy"
+  TFR_SCANNING_BINARY_PATH: "/usr/local/bin/trivy"
+  TFR_SCANNING_TIMEOUT: "5m"
+  TFR_SCANNING_WORKER_COUNT: "2"
+  TFR_SCANNING_SCAN_INTERVAL_MINS: "5"
+
   # Logging
   TFR_LOGGING_LEVEL: "info"
   TFR_LOGGING_FORMAT: "json"
