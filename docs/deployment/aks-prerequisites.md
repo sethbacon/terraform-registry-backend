@@ -35,8 +35,8 @@ az acr create \
 
 # Push images (see build instructions in the backend and frontend repos)
 az acr login --name <ACR_NAME>
-docker push <ACR_NAME>.azurecr.io/terraform-registry-backend:v1.0.0
-docker push <ACR_NAME>.azurecr.io/terraform-registry-frontend:v1.0.0
+docker push <ACR_NAME>.azurecr.io/terraform-registry-backend:v0.8.0
+docker push <ACR_NAME>.azurecr.io/terraform-registry-frontend:v0.8.0
 ```
 
 ### 3. Azure Database for PostgreSQL Flexible Server
