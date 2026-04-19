@@ -395,12 +395,16 @@ func (p *SCMPublisher) TriggerManualSync(ctx context.Context, moduleSourceRepo *
 
 		slog.Debug("tag matches pattern", "tag", tag.TagName, "version", version)
 
-		// Check if this version already exists — skip if so
+		// Check if this version already exists.
+		// Existing versions are not re-published from SCM, but if their HCL docs
+		// (inputs/outputs/providers) are missing, we re-run the analyzer on the
+		// already-stored archive so users see refreshed metadata after sync.
 		existing, err := p.moduleRepo.GetVersion(ctx, moduleSourceRepo.ModuleID.String(), version)
 		if err != nil {
 			slog.Warn("failed to check existing version", "version", version, "error", err)
 		} else if existing != nil {
-			slog.Debug("version already exists, skipping", "version", version)
+			slog.Debug("version already exists; checking for missing docs", "version", version)
+			go p.reanalyzeExistingVersion(ctx, moduleSourceRepo.ModuleID.String(), existing)
 			continue
 		}
 
@@ -456,6 +460,84 @@ func (p *SCMPublisher) processTagForManualSync(ctx context.Context, moduleSource
 	}
 
 	slog.Debug("successfully published version", "version", version, "version_id", versionID, "module_id", moduleSourceRepo.ModuleID)
+}
+
+// reanalyzeExistingVersion re-runs the HCL analyzer on a module version that
+// already exists in the registry but has missing terraform-docs metadata
+// (inputs/outputs/providers). Uses the already-stored archive — no SCM download
+// required. No-op if docs are already present, or if no docs repo / storage is wired up.
+// coverage:skip:integration-only — requires live DB, storage, and analyzer.
+func (p *SCMPublisher) reanalyzeExistingVersion(ctx context.Context, moduleID string, version *models.ModuleVersion) {
+	if p.moduleDocsRepo == nil || p.storageBackend == nil {
+		return
+	}
+	if version == nil || version.StoragePath == "" {
+		return
+	}
+
+	hasDocs, err := p.moduleDocsRepo.HasDocs(ctx, version.ID)
+	if err != nil {
+		slog.Warn("scm-publisher: reanalyze: failed to check docs presence",
+			"version_id", version.ID, "error", err)
+		return
+	}
+	if hasDocs {
+		slog.Debug("scm-publisher: reanalyze: docs already present, skipping",
+			"version_id", version.ID)
+		return
+	}
+
+	slog.Info("scm-publisher: reanalyze: docs missing, re-running analyzer",
+		"module_id", moduleID, "version_id", version.ID, "version", version.Version)
+
+	reader, err := p.storageBackend.Download(ctx, version.StoragePath)
+	if err != nil {
+		slog.Warn("scm-publisher: reanalyze: failed to download archive",
+			"version_id", version.ID, "path", version.StoragePath, "error", err)
+		return
+	}
+	defer reader.Close()
+
+	tmp, err := os.CreateTemp(p.tempDir, "reanalyze-*.tar.gz")
+	if err != nil {
+		slog.Warn("scm-publisher: reanalyze: failed to create temp file",
+			"version_id", version.ID, "error", err)
+		return
+	}
+	defer os.Remove(tmp.Name())
+	defer tmp.Close()
+
+	if _, err := io.Copy(tmp, reader); err != nil {
+		slog.Warn("scm-publisher: reanalyze: failed to copy archive to temp",
+			"version_id", version.ID, "error", err)
+		return
+	}
+	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+		slog.Warn("scm-publisher: reanalyze: failed to seek temp",
+			"version_id", version.ID, "error", err)
+		return
+	}
+
+	doc, err := analyzer.AnalyzeArchive(tmp)
+	if err != nil {
+		slog.Warn("scm-publisher: reanalyze: analyzer failed",
+			"version_id", version.ID, "error", err)
+		return
+	}
+	if doc == nil {
+		slog.Debug("scm-publisher: reanalyze: archive contained no terraform files",
+			"version_id", version.ID)
+		return
+	}
+
+	if err := p.moduleDocsRepo.UpsertModuleDocs(ctx, version.ID, doc); err != nil {
+		slog.Warn("scm-publisher: reanalyze: failed to store docs",
+			"version_id", version.ID, "error", err)
+		return
+	}
+
+	slog.Info("scm-publisher: reanalyze: docs refreshed",
+		"version_id", version.ID, "inputs", len(doc.Inputs), "outputs", len(doc.Outputs))
 }
 
 // publishModuleVersion contains the shared logic for publishing a module version

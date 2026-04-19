@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-04-19
+
+### Fixed
+
+- fix(scm): re-run HCL analyzer on Sync now when module docs are missing so previously-imported modules without extracted variables/outputs are backfilled
+- fix(release): defer GitHub Release publication until after SLSA L3 binary-provenance upload so `multiple.intoto.jsonl` can be attached before the release becomes immutable
+
+### Changed
+
+- chore: bump Helm chart `appVersion`, cloud values files (`values-aks`, `values-eks`, `values-gke`), and Kustomize overlay tags (`eks`, `gke`) to `v0.8.2`
+
 ## [0.8.1] - 2026-04-19
 
 ### Fixed

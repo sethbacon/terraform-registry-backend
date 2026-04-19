@@ -69,7 +69,7 @@ patches:
 images:
   - name: terraform-registry-backend
     newName: <ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/terraform-registry-backend
-    newTag: v0.8.1
+    newTag: v0.8.2
   - name: terraform-registry-frontend
     newName: <ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/terraform-registry-frontend
-    newTag: v0.8.1
+    newTag: v0.8.2
