@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-04-19
+
+### Fixed
+
+- fix(release): create GitHub Release atomically with all assets (binaries, checksums, sigs, SBOMs, deployment configs, and SLSA L3 binary provenance) in a single `gh release create` call to satisfy GitHub's Immutable Releases security feature (#208)
+
+### Changed
+
+- chore: bump Helm chart `appVersion` to `0.8.3`
+
 ## [0.8.2] - 2026-04-19
 
 ### Fixed
