@@ -201,7 +201,7 @@ An enterprise-grade private Terraform Registry implementing all three HashiCorp 
 - **Provider Registry Protocol** (`/v1/providers/`)
 - **Provider Network Mirror Protocol** (`/v1/mirror/`)
 
-Current version: **v0.8.0**. All phases 1–6 complete; Phase 7 (testing & documentation) in progress.
+Current version: **v0.8.1**. All phases 1–6 complete; Phase 7 (testing & documentation) in progress.
 
 Frontend UI lives in a separate repository: [terraform-registry-frontend](https://github.com/sethbacon/terraform-registry-frontend)
 

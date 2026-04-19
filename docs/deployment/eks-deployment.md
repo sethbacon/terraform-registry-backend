@@ -17,7 +17,7 @@ Collect the values you captured during prerequisites:
 | `<IRSA_ROLE_NAME>` | `terraform-registry-irsa`                                                                                                              |
 | `<HOSTNAME>`       | Your public DNS name                                                                                                                   |
 | `<EMAIL>`          | Your ops email                                                                                                                         |
-| `<IMAGE_TAG>`      | `v0.8.0`                                                                                                                               |
+| `<IMAGE_TAG>`      | `v0.8.1`                                                                                                                               |
 
 ---
 

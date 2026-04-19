@@ -47,7 +47,7 @@ ALB_IDENTITY_NAME="alb-controller-identity"
 # Application
 HOSTNAME="registry.company.com"          # Replace with your domain
 OPS_EMAIL="ops@company.com"
-IMAGE_TAG="v0.8.0"
+IMAGE_TAG="v0.8.1"
 ```
 
 ---
