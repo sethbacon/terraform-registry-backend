@@ -89,7 +89,7 @@ jobs:
       - name: Package deployment configs
         run: tar -czf "/tmp/deployment-configs-${GITHUB_REF_NAME}.tar.gz" deployments/
 
-      - name: Run GoReleaser
+      - name: Run GoReleaser (build only — release creation deferred)
         id: goreleaser
         uses: goreleaser/goreleaser-action@ec59f474b9834571250b370d4735c50f8e2d1e29 # v7
         with:
@@ -99,11 +99,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload deployment configs to release
-        run: gh release upload "${GITHUB_REF_NAME}"
-          "/tmp/deployment-configs-${GITHUB_REF_NAME}.tar.gz"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Stage deployment configs into dist/
+        run: cp "/tmp/deployment-configs-${GITHUB_REF_NAME}.tar.gz" dist/
 
       - name: Generate subject hashes for SLSA provenance
         id: hash
@@ -111,6 +108,14 @@ jobs:
           cd dist
           # base64-encode the checksums file for the SLSA provenance generator
           echo "hashes=$(cat checksums.txt | base64 -w0)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-artifacts
+          path: dist/
+          retention-days: 1
+          if-no-files-found: error
 
   # ── Build + push Docker image ────────────────────────────────────────────
   docker:
@@ -201,7 +206,12 @@ jobs:
     uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
     with:
       base64-subjects: "${{ needs.goreleaser.outputs.hashes }}"
-      upload-assets: true
+      # Do NOT upload to the GitHub Release here. The repository has GitHub's
+      # Immutable Releases feature enabled, which freezes a release (including
+      # drafts) the moment it is created. The publish-release job below creates
+      # the release atomically with all binaries + this provenance attached.
+      upload-assets: false
+      provenance-name: multiple.intoto.jsonl
 
   # ── SLSA Level 3 provenance — container image ───────────────────────────
   container-provenance:
@@ -219,18 +229,51 @@ jobs:
       registry-username: ${{ github.actor }}
       registry-password: ${{ secrets.GITHUB_TOKEN }}
 
-  # ── Publish the draft release ────────────────────────────────────────────
-  # Must run AFTER binary-provenance uploads multiple.intoto.jsonl. Publishing
-  # flips the release from draft → published, at which point GitHub treats it
-  # as immutable and rejects further asset uploads.
+  # ── Create the GitHub Release atomically ─────────────────────────────────
+  # The repository enforces GitHub's Immutable Releases security feature: a
+  # release (including drafts) is frozen at creation time and cannot accept
+  # additional asset uploads later. We therefore wait until all artifacts
+  # (binaries, checksums, signatures, SBOMs, deployment configs, and SLSA L3
+  # binary provenance) are available, then create the release once with
+  # everything attached.
   publish-release:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
-    needs: [binary-provenance, container-provenance]
+    needs: [goreleaser, binary-provenance, container-provenance]
     permissions:
       contents: write
     steps:
-      - name: Flip draft → published
-        run: gh release edit "${GITHUB_REF_NAME}" --draft=false --repo "${GITHUB_REPOSITORY}"
+      - name: Download release artifacts (binaries, checksums, sigs, SBOMs, deployment configs)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-artifacts
+          path: dist/
+
+      - name: Download SLSA L3 binary provenance
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.binary-provenance.outputs.provenance-name }}
+          path: dist/
+
+      - name: List release assets
+        run: ls -la dist/
+
+      - name: Create GitHub Release with all assets
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "Release ${GITHUB_REF_NAME}" \
+            --notes "## Docker Image
+
+          \`\`\`
+          docker pull ghcr.io/${GITHUB_REPOSITORY_OWNER}/terraform-registry-backend:${GITHUB_REF_NAME}
+          \`\`\`
+
+          ## Supply-chain attestations
+
+          - Binaries: SLSA Level 3 provenance (\`multiple.intoto.jsonl\`) attached.
+          - Container image: SLSA Level 3 provenance attached as an OCI artifact at \`ghcr.io/${GITHUB_REPOSITORY_OWNER}/terraform-registry-backend:${GITHUB_REF_NAME}\`.
+          - Checksums signed with cosign keyless signing (Sigstore + Rekor)." \
+            dist/*
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
