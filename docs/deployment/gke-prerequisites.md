@@ -50,12 +50,12 @@ gcloud artifacts repositories create terraform-registry \
 gcloud auth configure-docker <REGION>-docker.pkg.dev
 
 docker tag terraform-registry-backend:latest \
-  <REGION>-docker.pkg.dev/<PROJECT_ID>/terraform-registry/terraform-registry-backend:v0.8.0
-docker push <REGION>-docker.pkg.dev/<PROJECT_ID>/terraform-registry/terraform-registry-backend:v0.8.0
+  <REGION>-docker.pkg.dev/<PROJECT_ID>/terraform-registry/terraform-registry-backend:v0.8.2
+docker push <REGION>-docker.pkg.dev/<PROJECT_ID>/terraform-registry/terraform-registry-backend:v0.8.2
 
 docker tag terraform-registry-frontend:latest \
-  <REGION>-docker.pkg.dev/<PROJECT_ID>/terraform-registry/terraform-registry-frontend:v0.8.0
-docker push <REGION>-docker.pkg.dev/<PROJECT_ID>/terraform-registry/terraform-registry-frontend:v0.8.0
+  <REGION>-docker.pkg.dev/<PROJECT_ID>/terraform-registry/terraform-registry-frontend:v0.8.2
+docker push <REGION>-docker.pkg.dev/<PROJECT_ID>/terraform-registry/terraform-registry-frontend:v0.8.2
 ```
 
 ### 3b. Cloud SQL for PostgreSQL

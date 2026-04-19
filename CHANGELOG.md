@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-04-19
+
+### Fixed
+
+- fix(scm): re-run HCL analyzer on Sync now when module docs are missing so previously-imported modules without extracted variables/outputs are backfilled
+- fix(release): defer GitHub Release publication until after SLSA L3 binary-provenance upload so `multiple.intoto.jsonl` can be attached before the release becomes immutable
+
+### Changed
+
+- chore: bump Helm chart `appVersion`, cloud values files (`values-aks`, `values-eks`, `values-gke`), and Kustomize overlay tags (`eks`, `gke`) to `v0.8.2`
+
+## [0.8.1] - 2026-04-19
+
+### Fixed
+
+- fix: bump deployment configs from v0.7.1 to v0.8.0 in Helm values, Kustomize overlays, and deployment docs (#203)
+- fix: wire `TFR_SCANNING_*` env vars into Helm configmap so `scanning.enabled` actually takes effect (#203)
+- fix: add `TFR_SCANNING_*` and `TFR_REDIS_*` stubs to Kustomize base configmap (#203)
+- fix: store `collect-changelog.sh` as executable so `prepare-release.yml` rebase step no longer fails on an unstaged mode change (#204)
+
 ## [0.8.0] - 2026-04-18
 
 ### Added

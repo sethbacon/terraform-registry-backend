@@ -570,19 +570,19 @@ Complete Infrastructure-as-Code configurations are provided for AWS, Azure, and 
 # AWS
 cd deployments/terraform/aws
 terraform init
-terraform plan -var="domain=registry.example.com" -var="image_tag=0.8.0"
+terraform plan -var="domain=registry.example.com" -var="image_tag=0.8.2"
 terraform apply
 
 # Azure
 cd deployments/terraform/azure
 terraform init
-terraform plan -var="location=eastus" -var="image_tag=0.8.0"
+terraform plan -var="location=eastus" -var="image_tag=0.8.2"
 terraform apply
 
 # GCP
 cd deployments/terraform/gcp
 terraform init
-terraform plan -var="project_id=my-project" -var="image_tag=0.8.0"
+terraform plan -var="project_id=my-project" -var="image_tag=0.8.2"
 terraform apply
 ```
 

@@ -66,7 +66,7 @@ patches:
 | `<HOSTNAME>`        | Your public DNS name                        |
 | `<EMAIL>`           | Your ops email                              |
 | `<INSTANCE_NAME>`   | `terraform-registry-db`                     |
-| `<IMAGE_TAG>`       | `v0.8.0`                                    |
+| `<IMAGE_TAG>`       | `v0.8.2`                                    |
 
 ---
 
