@@ -33,18 +33,14 @@ checksum:
   name_template: checksums.txt
   algorithm: sha256
 
+# Release creation is disabled here because the repository has GitHub's
+# Immutable Releases feature enabled, which freezes a release (including
+# drafts) at the moment of creation. We need SLSA L3 binary provenance
+# (multiple.intoto.jsonl) attached at the same time as the binaries, so the
+# release is created atomically by the publish-release job in release.yml
+# AFTER all artifacts and provenance files are produced.
 release:
-  draft: true
-  github:
-    owner: sethbacon
-    name: terraform-registry-backend
-  name_template: "Release {{ .Tag }}"
-  footer: |
-    ## Docker Image
-
-    ```
-    docker pull ghcr.io/sethbacon/terraform-registry-backend:{{ .Tag }}
-    ```
+  disable: true
 
 sboms:
   - artifacts: archive
