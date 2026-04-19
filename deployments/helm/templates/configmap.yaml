@@ -80,6 +80,19 @@ data:
   TFR_JWT_SECRET_FILE: {{ .Values.security.jwtSecretFile | quote }}
   {{- end }}
 
+  # Module security scanning
+  TFR_SCANNING_ENABLED: {{ .Values.scanning.enabled | quote }}
+  {{- if .Values.scanning.enabled }}
+  TFR_SCANNING_TOOL: {{ .Values.scanning.tool | quote }}
+  TFR_SCANNING_BINARY_PATH: {{ .Values.scanning.binaryPath | quote }}
+  {{- if .Values.scanning.expectedVersion }}
+  TFR_SCANNING_EXPECTED_VERSION: {{ .Values.scanning.expectedVersion | quote }}
+  {{- end }}
+  TFR_SCANNING_TIMEOUT: {{ .Values.scanning.timeout | quote }}
+  TFR_SCANNING_WORKER_COUNT: {{ .Values.scanning.workerCount | quote }}
+  TFR_SCANNING_SCAN_INTERVAL_MINS: {{ .Values.scanning.scanIntervalMins | quote }}
+  {{- end }}
+
   # Redis (optional, enables HA rate limiting and session store)
   {{- if .Values.redis.host }}
   TFR_REDIS_HOST: {{ .Values.redis.host | quote }}
