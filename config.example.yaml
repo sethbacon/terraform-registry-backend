@@ -65,6 +65,48 @@ auth:
     client_secret: ${AZURE_CLIENT_SECRET}
     redirect_url: http://localhost:8080/auth/azure/callback
 
+  # SAML 2.0 configuration
+  saml:
+    enabled: false
+    entity_id: https://registry.example.com
+    acs_url: https://registry.example.com/api/v1/auth/saml/acs
+    # cert_file: /etc/certs/saml-sp.crt
+    # key_file: /etc/certs/saml-sp.key
+    idps:
+      - name: okta
+        metadata_url: https://your-org.okta.com/app/XXXXXXXX/sso/saml/metadata
+        # metadata_xml: |
+        #   <EntityDescriptor ...>...</EntityDescriptor>
+    group_attribute_name: memberOf
+    group_mappings: []
+    #  - group: registry-admins
+    #    organization: default
+    #    role: admin
+    default_role: ""
+
+  # LDAP / Active Directory configuration
+  ldap:
+    enabled: false
+    host: ldap.example.com
+    port: 389
+    use_tls: false
+    start_tls: true
+    insecure_skip_verify: false
+    bind_dn: cn=svc-registry,ou=service-accounts,dc=example,dc=com
+    bind_password: ${LDAP_BIND_PASSWORD}
+    base_dn: dc=example,dc=com
+    user_filter: "(sAMAccountName=%s)"
+    user_attr_email: mail
+    user_attr_name: displayName
+    group_base_dn: ou=groups,dc=example,dc=com
+    group_filter: ""
+    group_member_attr: member
+    group_mappings: []
+    #  - group_dn: cn=registry-admins,ou=groups,dc=example,dc=com
+    #    organization: default
+    #    role: admin
+    default_role: ""
+
 multi_tenancy:
   enabled: false  # Set to true for multi-organization support
   default_organization: default

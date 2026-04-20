@@ -44,7 +44,7 @@ func (h *TerraformMirrorHandler) SetSyncJob(syncJob TerraformMirrorSyncJobInterf
 
 // @Summary      Create Terraform mirror configuration
 // @Description  Creates a new named Terraform binary mirror configuration. Requires mirrors:manage scope.
-// @Tags         TerraformMirror
+// @Tags         Terraform Mirror
 // @Security     Bearer
 // @Accept       json
 // @Produce      json
@@ -120,7 +120,7 @@ func (h *TerraformMirrorHandler) CreateConfig(c *gin.Context) {
 
 // @Summary      List Terraform mirror configurations
 // @Description  Returns all Terraform binary mirror configurations. Requires mirrors:read scope.
-// @Tags         TerraformMirror
+// @Tags         Terraform Mirror
 // @Security     Bearer
 // @Produce      json
 // @Success      200  {object}  models.TerraformMirrorConfigListResponse
@@ -144,7 +144,7 @@ func (h *TerraformMirrorHandler) ListConfigs(c *gin.Context) {
 
 // @Summary      Get Terraform mirror configuration
 // @Description  Returns a specific Terraform binary mirror configuration. Requires mirrors:read scope.
-// @Tags         TerraformMirror
+// @Tags         Terraform Mirror
 // @Security     Bearer
 // @Produce      json
 // @Param        id   path  string  true  "Mirror config UUID"
@@ -176,7 +176,7 @@ func (h *TerraformMirrorHandler) GetConfig(c *gin.Context) {
 
 // @Summary      Get Terraform mirror status
 // @Description  Returns the status and summary stats for a specific mirror config. Requires mirrors:read scope.
-// @Tags         TerraformMirror
+// @Tags         Terraform Mirror
 // @Security     Bearer
 // @Produce      json
 // @Param        id   path  string  true  "Mirror config UUID"
@@ -225,7 +225,7 @@ func (h *TerraformMirrorHandler) GetStatus(c *gin.Context) {
 
 // @Summary      Update Terraform mirror configuration
 // @Description  Updates a Terraform binary mirror configuration. Requires mirrors:manage scope.
-// @Tags         TerraformMirror
+// @Tags         Terraform Mirror
 // @Security     Bearer
 // @Accept       json
 // @Produce      json
@@ -319,7 +319,7 @@ func (h *TerraformMirrorHandler) UpdateConfig(c *gin.Context) {
 
 // @Summary      Delete Terraform mirror configuration
 // @Description  Deletes a Terraform binary mirror config and all its associated versions/history. Requires mirrors:manage scope.
-// @Tags         TerraformMirror
+// @Tags         Terraform Mirror
 // @Security     Bearer
 // @Produce      json
 // @Param        id  path  string  true  "Mirror config UUID"
@@ -356,7 +356,7 @@ func (h *TerraformMirrorHandler) DeleteConfig(c *gin.Context) {
 
 // @Summary      Trigger Terraform mirror sync
 // @Description  Enqueues a manual sync for the specified mirror config. Requires mirrors:manage scope.
-// @Tags         TerraformMirror
+// @Tags         Terraform Mirror
 // @Security     Bearer
 // @Produce      json
 // @Param        id  path  string  true  "Mirror config UUID"
@@ -403,7 +403,7 @@ func (h *TerraformMirrorHandler) TriggerSync(c *gin.Context) {
 
 // @Summary      List mirrored Terraform versions
 // @Description  Returns all Terraform versions known to the specified mirror config. Requires mirrors:read scope.
-// @Tags         TerraformMirror
+// @Tags         Terraform Mirror
 // @Security     Bearer
 // @Produce      json
 // @Param        id         path   string  true   "Mirror config UUID"
@@ -470,7 +470,7 @@ func (h *TerraformMirrorHandler) ListVersions(c *gin.Context) {
 
 // @Summary      Get a specific mirrored Terraform version
 // @Description  Returns metadata and per-platform sync status for a single version. Requires mirrors:read scope.
-// @Tags         TerraformMirror
+// @Tags         Terraform Mirror
 // @Security     Bearer
 // @Produce      json
 // @Param        id       path  string  true  "Mirror config UUID"
@@ -512,7 +512,7 @@ func (h *TerraformMirrorHandler) GetVersion(c *gin.Context) {
 
 // @Summary      Delete a mirrored Terraform version
 // @Description  Removes a version and its platform records. Stored binaries are not deleted from storage. Requires mirrors:manage scope.
-// @Tags         TerraformMirror
+// @Tags         Terraform Mirror
 // @Security     Bearer
 // @Produce      json
 // @Param        id       path  string  true  "Mirror config UUID"
@@ -552,7 +552,7 @@ func (h *TerraformMirrorHandler) DeleteVersion(c *gin.Context) {
 
 // @Summary      Get Terraform mirror sync history
 // @Description  Returns the most recent sync run records for the specified config. Requires mirrors:read scope.
-// @Tags         TerraformMirror
+// @Tags         Terraform Mirror
 // @Security     Bearer
 // @Produce      json
 // @Param        id     path   string  true   "Mirror config UUID"
@@ -595,7 +595,7 @@ func (h *TerraformMirrorHandler) GetSyncHistory(c *gin.Context) {
 
 // @Summary      List platforms for a Terraform version
 // @Description  Returns per-platform sync details for a specific version. Requires mirrors:read scope.
-// @Tags         TerraformMirror
+// @Tags         Terraform Mirror
 // @Security     Bearer
 // @Produce      json
 // @Param        id       path  string  true  "Mirror config UUID"

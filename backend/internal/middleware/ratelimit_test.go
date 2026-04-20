@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/terraform-registry/terraform-registry/internal/config"
 )
 
 // ---------------------------------------------------------------------------
@@ -532,5 +533,123 @@ func TestRateLimiter_CleanupRemovesStaleEntries(t *testing.T) {
 
 	if stillPresent {
 		t.Error("expected stale-client entry to be evicted by cleanup goroutine, but it is still present")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Per-principal override rate limiting
+// ---------------------------------------------------------------------------
+
+func TestPrincipalOverrideLimiters_OverrideUsed(t *testing.T) {
+	overrides := map[string]config.PrincipalRateLimitOverride{
+		"user:high-volume": {RequestsPerMinute: 600, Burst: 100},
+		"apikey:ci-key":    {RequestsPerMinute: 10, Burst: 2},
+	}
+	pol := NewPrincipalOverrideLimiters(overrides)
+	defer pol.Close()
+
+	if len(pol.overrides) != 2 {
+		t.Fatalf("expected 2 override entries, got %d", len(pol.overrides))
+	}
+
+	// high-volume user should be allowed many requests
+	for i := 0; i < 100; i++ {
+		ok, err := pol.overrides["user:high-volume"].Allow(context.Background(), "user:high-volume")
+		if err != nil {
+			t.Fatalf("Allow error: %v", err)
+		}
+		if !ok {
+			t.Fatalf("expected allow at request %d for high-volume user", i)
+		}
+	}
+
+	// low-volume API key should be throttled quickly
+	for i := 0; i < 2; i++ {
+		ok, _ := pol.overrides["apikey:ci-key"].Allow(context.Background(), "apikey:ci-key")
+		if !ok {
+			t.Fatalf("expected allow at request %d for ci-key", i)
+		}
+	}
+	ok, _ := pol.overrides["apikey:ci-key"].Allow(context.Background(), "apikey:ci-key")
+	if ok {
+		t.Error("expected ci-key to be rate limited after burst")
+	}
+}
+
+func TestPrincipalRateLimitMiddleware_UsesOverride(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	defaultRL := NewRateLimiter(RateLimitConfig{RequestsPerMinute: 10, BurstSize: 2, CleanupInterval: time.Minute})
+	defer defaultRL.Close()
+
+	overrides := NewPrincipalOverrideLimiters(map[string]config.PrincipalRateLimitOverride{
+		"user:vip-user": {RequestsPerMinute: 600, Burst: 100},
+	})
+	defer overrides.Close()
+
+	mw := PrincipalRateLimitMiddleware(defaultRL, overrides)
+
+	// VIP user should get 100 burst, not the default 2
+	for i := 0; i < 50; i++ {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request, _ = http.NewRequest("GET", "/test", nil)
+		c.Set("user_id", "vip-user")
+		mw(c)
+		if w.Code == http.StatusTooManyRequests {
+			t.Fatalf("VIP user rate limited at request %d, expected to pass", i)
+		}
+	}
+
+	// Non-override user should hit default limit quickly
+	for i := 0; i < 2; i++ {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request, _ = http.NewRequest("GET", "/test", nil)
+		c.Set("user_id", "regular-user")
+		mw(c)
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("GET", "/test", nil)
+	c.Set("user_id", "regular-user")
+	mw(c)
+	if w.Code != http.StatusTooManyRequests {
+		t.Errorf("regular user should be rate limited, got status %d", w.Code)
+	}
+}
+
+func TestPrincipalRateLimitMiddleware_NilOverrides(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	defaultRL := NewRateLimiter(RateLimitConfig{RequestsPerMinute: 60, BurstSize: 5, CleanupInterval: time.Minute})
+	defer defaultRL.Close()
+
+	mw := PrincipalRateLimitMiddleware(defaultRL, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("GET", "/test", nil)
+	c.Set("user_id", "some-user")
+	mw(c)
+
+	if w.Code == http.StatusTooManyRequests {
+		t.Error("should not be rate limited on first request")
+	}
+}
+
+func TestPrincipalRateLimitMiddleware_NilDefault(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	mw := PrincipalRateLimitMiddleware(nil, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("GET", "/test", nil)
+	mw(c)
+
+	// Should pass through when default is nil
+	if w.Code == http.StatusTooManyRequests {
+		t.Error("should pass through when default backend is nil")
 	}
 }

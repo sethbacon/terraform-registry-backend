@@ -25,33 +25,42 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
 
-// AuthMiddleware validates authentication (JWT or API key)
+// AuthMiddleware validates authentication (JWT or API key).
+//
+// Token resolution order:
+//  1. Authorization: Bearer <token> header — tried as JWT first, then API key.
+//  2. tfr_auth_token HttpOnly cookie — tried as JWT only. When the token
+//     originates from a cookie the auth_method is set to "jwt_cookie" so that
+//     downstream middleware (CSRFMiddleware) can distinguish browser-initiated
+//     requests from programmatic ones.
 func AuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, apiKeyRepo *repositories.APIKeyRepository, orgRepo *repositories.OrganizationRepository, tokenRepo *repositories.TokenRepository) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Check for Authorization header
+		var token string
+		var fromCookie bool
+
+		// Check for Authorization header first
 		authHeader := c.GetHeader("Authorization")
-		if authHeader == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"error": "Missing authorization header",
-			})
-			return
+		if authHeader != "" {
+			if !strings.HasPrefix(authHeader, "Bearer ") {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+					"error": "Authorization header must start with 'Bearer '",
+				})
+				return
+			}
+			token = strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
 		}
 
-		// Check if it starts with "Bearer "
-		if !strings.HasPrefix(authHeader, "Bearer ") {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"error": "Authorization header must start with 'Bearer '",
-			})
-			return
+		// Fall back to HttpOnly auth cookie if no header token
+		if token == "" {
+			if cookieVal, err := c.Cookie("tfr_auth_token"); err == nil && cookieVal != "" {
+				token = cookieVal
+				fromCookie = true
+			}
 		}
-
-		// Extract token
-		token := strings.TrimPrefix(authHeader, "Bearer ")
-		token = strings.TrimSpace(token)
 
 		if token == "" {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"error": "Authorization token is empty",
+				"error": "Missing authorization credentials",
 			})
 			return
 		}
@@ -92,7 +101,11 @@ func AuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, a
 			// Set context values
 			c.Set("user", user)
 			c.Set("user_id", user.ID)
-			c.Set("auth_method", "jwt")
+			if fromCookie {
+				c.Set("auth_method", "jwt_cookie")
+			} else {
+				c.Set("auth_method", "jwt")
+			}
 			c.Set("jwt_claims", claims)
 
 			// Use scopes embedded in JWT claims (avoids DB query per request)
@@ -110,6 +123,15 @@ func AuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, a
 		// requires only a cryptographic check against the JWT secret with no database
 		// round-trip. API key validation always requires a DB query (prefix lookup +
 		// bcrypt comparison), so JWT is the lower-latency path for browser sessions.
+
+		// If the token came from a cookie, it can only be a JWT (API keys are never
+		// stored in cookies). Don't try API key auth for cookie tokens.
+		if fromCookie {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"error": "Invalid authentication cookie",
+			})
+			return
+		}
 
 		// Try API key.
 		// We never store the raw key — only its bcrypt hash. The 10-character prefix
@@ -180,27 +202,25 @@ func AuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, a
 // OptionalAuthMiddleware - same as AuthMiddleware but doesn't abort if no auth
 func OptionalAuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, apiKeyRepo *repositories.APIKeyRepository, orgRepo *repositories.OrganizationRepository) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		var token string
+		var fromCookie bool
+
 		// Check for Authorization header
 		authHeader := c.GetHeader("Authorization")
-		if authHeader == "" {
-			// No auth provided, continue without setting user context
-			c.Next()
-			return
+		if authHeader != "" && strings.HasPrefix(authHeader, "Bearer ") {
+			token = strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
 		}
 
-		// Check if it starts with "Bearer "
-		if !strings.HasPrefix(authHeader, "Bearer ") {
-			// Invalid format, continue without auth
-			c.Next()
-			return
+		// Fall back to HttpOnly auth cookie
+		if token == "" {
+			if cookieVal, err := c.Cookie("tfr_auth_token"); err == nil && cookieVal != "" {
+				token = cookieVal
+				fromCookie = true
+			}
 		}
-
-		// Extract token
-		token := strings.TrimPrefix(authHeader, "Bearer ")
-		token = strings.TrimSpace(token)
 
 		if token == "" {
-			// Empty token, continue without auth
+			// No auth provided, continue without setting user context
 			c.Next()
 			return
 		}
@@ -212,7 +232,11 @@ func OptionalAuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepos
 			if err == nil && user != nil {
 				c.Set("user", user)
 				c.Set("user_id", user.ID)
-				c.Set("auth_method", "jwt")
+				if fromCookie {
+					c.Set("auth_method", "jwt_cookie")
+				} else {
+					c.Set("auth_method", "jwt")
+				}
 				// Use scopes embedded in JWT claims (avoids DB query per request)
 				scopes := claims.Scopes
 				if scopes == nil {
@@ -220,6 +244,12 @@ func OptionalAuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepos
 				}
 				c.Set("scopes", scopes)
 			}
+			c.Next()
+			return
+		}
+
+		// Cookie tokens can only be JWTs — skip API key auth for cookies.
+		if fromCookie {
 			c.Next()
 			return
 		}

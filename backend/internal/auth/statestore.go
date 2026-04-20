@@ -13,7 +13,7 @@ type SessionState struct {
 	State        string    `json:"state"`
 	CreatedAt    time.Time `json:"created_at"`
 	RedirectURL  string    `json:"redirect_url"`
-	ProviderType string    `json:"provider_type"` // "oidc" or "azuread"
+	ProviderType string    `json:"provider_type"` // "oidc", "azuread", or "saml"
 }
 
 // StateStore is the interface for OIDC session state persistence.

@@ -153,7 +153,7 @@ func TestMirrorCreate_Success(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(mirrorCfgCols))
 	// GetDefaultOrganization (soft-fail lookup; return no rows = nil org, code continues)
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "created_at", "updated_at"}))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}))
 	// INSERT
 	mock.ExpectExec("INSERT INTO mirror_configurations").
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -176,7 +176,7 @@ func TestMirrorCreate_InsertDBError(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(mirrorCfgCols))
 	// GetDefaultOrganization (soft-fail lookup)
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "created_at", "updated_at"}))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}))
 	mock.ExpectExec("INSERT INTO mirror_configurations").
 		WillReturnError(errDB)
 
@@ -683,7 +683,7 @@ func TestMirrorCreate_WithUserIDContext(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(mirrorCfgCols))
 	// GetDefaultOrganization (soft-fail lookup)
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "created_at", "updated_at"}))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}))
 	mock.ExpectExec("INSERT INTO mirror_configurations").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 

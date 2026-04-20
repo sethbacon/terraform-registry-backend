@@ -13,7 +13,7 @@ import (
 // Column definitions
 // ---------------------------------------------------------------------------
 
-var orgCols = []string{"id", "name", "display_name", "created_at", "updated_at"}
+var orgCols = []string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}
 var orgMemberCols = []string{"organization_id", "user_id", "role_template_id", "created_at"}
 var orgMembersWithUserCols = []string{
 	"organization_id", "user_id", "role_template_id", "created_at",
@@ -28,7 +28,7 @@ var orgCreateCols = []string{"id", "created_at", "updated_at"}
 
 func sampleOrgRow() *sqlmock.Rows {
 	return sqlmock.NewRows(orgCols).
-		AddRow("org-1", "default", "Default Org", time.Now(), time.Now())
+		AddRow("org-1", "default", "Default Org", nil, nil, time.Now(), time.Now())
 }
 
 func emptyOrgRow() *sqlmock.Rows {
@@ -586,12 +586,12 @@ func TestCheckMembership_IsMember(t *testing.T) {
 // ListUserOrganizations (alias for GetUserOrganizations)
 // ---------------------------------------------------------------------------
 
-var userOrgCols = []string{"id", "name", "display_name", "created_at", "updated_at"}
+var userOrgCols = []string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}
 
 func TestListUserOrganizations_Success(t *testing.T) {
 	repo, mock := newOrgRepo(t)
 	mock.ExpectQuery("SELECT.*FROM organizations.*organization_members").
-		WillReturnRows(sqlmock.NewRows(userOrgCols).AddRow("org-1", "default", "Default Org", time.Now(), time.Now()))
+		WillReturnRows(sqlmock.NewRows(userOrgCols).AddRow("org-1", "default", "Default Org", nil, nil, time.Now(), time.Now()))
 
 	orgs, err := repo.ListUserOrganizations(context.Background(), "user-1")
 	if err != nil {
