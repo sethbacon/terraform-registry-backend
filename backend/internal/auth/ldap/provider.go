@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync"
 
 	goldap "github.com/go-ldap/ldap/v3"
 	"github.com/terraform-registry/terraform-registry/internal/config"
@@ -16,9 +15,7 @@ import (
 
 // Provider manages LDAP connections and authentication operations.
 type Provider struct {
-	cfg  *config.LDAPConfig
-	mu   sync.Mutex
-	pool chan *goldap.Conn
+	cfg *config.LDAPConfig
 }
 
 // UserInfo holds the attributes extracted from LDAP for an authenticated user.
@@ -133,7 +130,7 @@ func (p *Provider) dial() (*goldap.Conn, error) {
 
 	if p.cfg.UseTLS {
 		// LDAPS: TLS from the start
-		conn, err := goldap.DialTLS("tcp", addr, tlsConfig)
+		conn, err := goldap.DialURL(fmt.Sprintf("ldaps://%s", addr), goldap.DialWithTLSConfig(tlsConfig))
 		if err != nil {
 			return nil, fmt.Errorf("ldaps dial failed: %w", err)
 		}
@@ -141,7 +138,7 @@ func (p *Provider) dial() (*goldap.Conn, error) {
 	}
 
 	// Plain LDAP (optionally upgrading to StartTLS)
-	conn, err := goldap.Dial("tcp", addr)
+	conn, err := goldap.DialURL(fmt.Sprintf("ldap://%s", addr))
 	if err != nil {
 		return nil, fmt.Errorf("ldap dial failed: %w", err)
 	}
