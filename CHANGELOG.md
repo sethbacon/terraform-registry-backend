@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-04-20
+
+### Fixed
+
+- fix(release): stage curated release assets in `release.yml` so the publish step uploads only renamed binaries (`terraform-registry-<os>-<arch>`), `checksums.txt`, `checksums.txt.sig`, the deployment-configs tarball, and `multiple.intoto.jsonl` — avoiding HTTP 400 Bad Content-Length on GoReleaser's empty `digests.txt` and skipping internal files (`artifacts.json`, `metadata.json`, `config.yaml`, per-target build subdirs) (#210)
+
+### Changed
+
+- chore: bump Helm chart `appVersion`, cloud values files (`values-aks`, `values-eks`, `values-gke`), and Kustomize overlay tags (`eks`, `gke`) to `v0.8.4`
+
 ## [0.8.3] - 2026-04-19
 
 ### Fixed
@@ -18,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - chore: bump Helm chart `appVersion` to `0.8.3`
+
+> Note: v0.8.3 had a partial release — the container image `ghcr.io/sethbacon/terraform-registry-backend:0.8.3` was published with cosign signature and SLSA attestation, but the GitHub Release was never created due to a workflow bug (HTTP 400 on empty `digests.txt`). The fix shipped in v0.8.4.
 
 ## [0.8.2] - 2026-04-19
 
