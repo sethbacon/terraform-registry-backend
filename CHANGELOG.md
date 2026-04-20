@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-04-20
+
 ### Fixed
 
 - fix(coverfilter): make `pathSuffixMatches` normalize backslashes to forward slashes explicitly so the Windows-path test input passes on Linux runners — `filepath.ToSlash` is a no-op on Linux and left `\`-separated paths unchanged, causing `TestPathSuffixMatches` to fail in the weekly scheduled build (#211)
