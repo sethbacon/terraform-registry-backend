@@ -9,9 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-04-20
+
 ### Fixed
 
-- fix(release): stage curated release assets in `release.yml` so the publish step uploads only renamed binaries (`terraform-registry-<os>-<arch>`), `checksums.txt`, `checksums.txt.sig`, the deployment-configs tarball, and `multiple.intoto.jsonl` — avoiding HTTP 400 Bad Content-Length on GoReleaser's empty `digests.txt` and skipping internal files (`artifacts.json`, `metadata.json`, `config.yaml`, per-target build subdirs)
+- fix(release): stage curated release assets in `release.yml` so the publish step uploads only renamed binaries (`terraform-registry-<os>-<arch>`), `checksums.txt`, `checksums.txt.sig`, the deployment-configs tarball, and `multiple.intoto.jsonl` — avoiding HTTP 400 Bad Content-Length on GoReleaser's empty `digests.txt` and skipping internal files (`artifacts.json`, `metadata.json`, `config.yaml`, per-target build subdirs) (#210)
+
+### Changed
+
+- chore: bump Helm chart `appVersion`, cloud values files (`values-aks`, `values-eks`, `values-gke`), and Kustomize overlay tags (`eks`, `gke`) to `v0.8.4`
 
 ## [0.8.3] - 2026-04-19
 
