@@ -42,7 +42,7 @@ func (m *mockStorage) GetMetadata(_ context.Context, _ string) (*storage.FileMet
 // Column definitions for provider SQL mocks
 // ---------------------------------------------------------------------------
 
-var orgCols = []string{"id", "name", "display_name", "created_at", "updated_at"}
+var orgCols = []string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}
 
 var providerCols = []string{
 	"id", "organization_id", "namespace", "type",
@@ -70,7 +70,7 @@ var versionGetCols = []string{
 
 func sampleOrgRow() *sqlmock.Rows {
 	return sqlmock.NewRows(orgCols).
-		AddRow("org-1", "default", "Default Org", time.Now(), time.Now())
+		AddRow("org-1", "default", "Default Org", nil, nil, time.Now(), time.Now())
 }
 
 func emptyOrgRow() *sqlmock.Rows {

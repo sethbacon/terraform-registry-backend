@@ -22,7 +22,7 @@ var mirrorErrDB = errors.New("db error")
 // Column definitions  (positional scans from the repositories)
 // ---------------------------------------------------------------------------
 
-var mirrorOrgCols = []string{"id", "name", "display_name", "created_at", "updated_at"}
+var mirrorOrgCols = []string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}
 
 // 10 columns from GetProvider positional scan
 var mirrorProvCols = []string{
@@ -44,7 +44,7 @@ var mirrorVersionCols = []string{
 
 func sampleMirrorAPIOrg() *sqlmock.Rows {
 	return sqlmock.NewRows(mirrorOrgCols).
-		AddRow("org-1", "default", "Default Org", time.Now(), time.Now())
+		AddRow("org-1", "default", "Default Org", nil, nil, time.Now(), time.Now())
 }
 
 func sampleMirrorAPIProvider() *sqlmock.Rows {

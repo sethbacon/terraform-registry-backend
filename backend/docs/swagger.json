@@ -524,6 +524,46 @@
                 }
             }
         },
+        "/api/v1/admin/identity/group-mappings": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Returns read-only SAML and LDAP group-to-role mapping configuration. OIDC mappings are managed separately via the OIDC admin endpoints.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Authentication"
+                ],
+                "summary": "Identity group mappings",
+                "responses": {
+                    "200": {
+                        "description": "SAML and LDAP group mapping config",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden — requires admin scope",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/admin/mirrors": {
             "get": {
                 "security": [
@@ -1628,6 +1668,46 @@
                     },
                     "500": {
                         "description": "Internal server error (connector build, token decryption, etc.)",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/admin/mtls/config": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Returns the mTLS certificate-subject to scope mappings from the server configuration (read-only). Shows whether mTLS is enabled and lists all configured subject-to-scope bindings.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Authentication"
+                ],
+                "summary": "mTLS configuration",
+                "responses": {
+                    "200": {
+                        "description": "mTLS config with enabled flag, CA file path, and mappings",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden — requires admin scope",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -3044,7 +3124,7 @@
                     "application/json"
                 ],
                 "tags": [
-                    "TerraformMirror"
+                    "Terraform Mirror"
                 ],
                 "summary": "List Terraform mirror configurations",
                 "responses": {
@@ -3084,7 +3164,7 @@
                     "application/json"
                 ],
                 "tags": [
-                    "TerraformMirror"
+                    "Terraform Mirror"
                 ],
                 "summary": "Create Terraform mirror configuration",
                 "parameters": [
@@ -3148,7 +3228,7 @@
                     "application/json"
                 ],
                 "tags": [
-                    "TerraformMirror"
+                    "Terraform Mirror"
                 ],
                 "summary": "Get Terraform mirror configuration",
                 "parameters": [
@@ -3204,7 +3284,7 @@
                     "application/json"
                 ],
                 "tags": [
-                    "TerraformMirror"
+                    "Terraform Mirror"
                 ],
                 "summary": "Update Terraform mirror configuration",
                 "parameters": [
@@ -3280,7 +3360,7 @@
                     "application/json"
                 ],
                 "tags": [
-                    "TerraformMirror"
+                    "Terraform Mirror"
                 ],
                 "summary": "Delete Terraform mirror configuration",
                 "parameters": [
@@ -3335,7 +3415,7 @@
                     "application/json"
                 ],
                 "tags": [
-                    "TerraformMirror"
+                    "Terraform Mirror"
                 ],
                 "summary": "Get Terraform mirror sync history",
                 "parameters": [
@@ -3396,7 +3476,7 @@
                     "application/json"
                 ],
                 "tags": [
-                    "TerraformMirror"
+                    "Terraform Mirror"
                 ],
                 "summary": "Get Terraform mirror status",
                 "parameters": [
@@ -3451,7 +3531,7 @@
                     "application/json"
                 ],
                 "tags": [
-                    "TerraformMirror"
+                    "Terraform Mirror"
                 ],
                 "summary": "Trigger Terraform mirror sync",
                 "parameters": [
@@ -3506,7 +3586,7 @@
                     "application/json"
                 ],
                 "tags": [
-                    "TerraformMirror"
+                    "Terraform Mirror"
                 ],
                 "summary": "List mirrored Terraform versions",
                 "parameters": [
@@ -3585,7 +3665,7 @@
                     "application/json"
                 ],
                 "tags": [
-                    "TerraformMirror"
+                    "Terraform Mirror"
                 ],
                 "summary": "Get a specific mirrored Terraform version",
                 "parameters": [
@@ -3645,7 +3725,7 @@
                     "application/json"
                 ],
                 "tags": [
-                    "TerraformMirror"
+                    "Terraform Mirror"
                 ],
                 "summary": "Delete a mirrored Terraform version",
                 "parameters": [
@@ -3707,7 +3787,7 @@
                     "application/json"
                 ],
                 "tags": [
-                    "TerraformMirror"
+                    "Terraform Mirror"
                 ],
                 "summary": "List platforms for a Terraform version",
                 "parameters": [
@@ -4253,9 +4333,73 @@
                 }
             }
         },
+        "/api/v1/auth/ldap/login": {
+            "post": {
+                "description": "Authenticates a user via LDAP with username and password. On success, issues a JWT and sets an httpOnly auth cookie.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Authentication"
+                ],
+                "summary": "LDAP login",
+                "parameters": [
+                    {
+                        "description": "LDAP credentials",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "password": {
+                                    "type": "string"
+                                },
+                                "username": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "JWT token and user info",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Missing credentials or LDAP not configured",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid username or password",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/auth/login": {
             "get": {
-                "description": "Redirect user to OAuth provider (OIDC or Azure AD) to begin authentication flow",
+                "description": "Redirect user to an identity provider to begin authentication. Supports OIDC, Azure AD, SAML, and LDAP (LDAP uses a separate POST endpoint). For SAML, set provider=saml:\u003cidp-name\u003e.",
                 "consumes": [
                     "application/json"
                 ],
@@ -4269,14 +4413,14 @@
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "OAuth provider: oidc or azuread (default: oidc)",
+                        "description": "Auth provider: oidc, azuread, saml, or saml:\u003cidp-name\u003e (default: oidc)",
                         "name": "provider",
                         "in": "query"
                     }
                 ],
                 "responses": {
                     "302": {
-                        "description": "Redirects to OAuth provider authorization URL",
+                        "description": "Redirects to IdP authorization URL",
                         "schema": {
                             "type": "string"
                         }
@@ -4324,6 +4468,20 @@
                         "description": "Redirects to OIDC end_session_endpoint or frontend /login",
                         "schema": {
                             "type": "string"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized — no valid session",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
                         }
                     }
                 }
@@ -4378,6 +4536,27 @@
                 }
             }
         },
+        "/api/v1/auth/providers": {
+            "get": {
+                "description": "Returns the list of available authentication providers (OIDC, Azure AD, SAML IdPs, LDAP) for the login page provider picker.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Authentication"
+                ],
+                "summary": "List authentication providers",
+                "responses": {
+                    "200": {
+                        "description": "List of available providers",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/auth/refresh": {
             "post": {
                 "security": [
@@ -4412,6 +4591,100 @@
                     },
                     "500": {
                         "description": "Internal error during token generation",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/auth/saml/acs": {
+            "post": {
+                "description": "Receives SAML responses from the IdP (SP-initiated or IdP-initiated), validates the assertion, creates or updates the user, issues a JWT, and redirects to the frontend callback.",
+                "consumes": [
+                    "application/x-www-form-urlencoded"
+                ],
+                "produces": [
+                    "text/html"
+                ],
+                "tags": [
+                    "Authentication"
+                ],
+                "summary": "SAML Assertion Consumer Service",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Base64-encoded SAML response",
+                        "name": "SAMLResponse",
+                        "in": "formData",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Relay state (contains session key)",
+                        "name": "RelayState",
+                        "in": "formData"
+                    }
+                ],
+                "responses": {
+                    "302": {
+                        "description": "Redirects to frontend /auth/callback with token",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid SAML response or assertion",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/auth/saml/metadata": {
+            "get": {
+                "description": "Returns the SAML Service Provider metadata XML for the specified (or first configured) IdP. Used by SAML identity providers during federation setup.",
+                "produces": [
+                    "text/xml"
+                ],
+                "tags": [
+                    "Authentication"
+                ],
+                "summary": "SAML SP metadata",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "SAML IdP name (defaults to first configured)",
+                        "name": "idp",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "SAML SP metadata XML",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "404": {
+                        "description": "No SAML provider configured",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Failed to marshal metadata",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -5617,7 +5890,7 @@
                         "Bearer": []
                     }
                 ],
-                "description": "Update an existing organization's display name.",
+                "description": "Update an existing organization's display name and optional IdP binding (idp_type + idp_name). Set idp_type to \"oidc\", \"saml\", or \"ldap\" to restrict login; set to empty string to clear.",
                 "consumes": [
                     "application/json"
                 ],
@@ -9108,6 +9381,394 @@
                 }
             }
         },
+        "/scim/v2/Groups": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Returns all organizations as SCIM 2.0 Group resources (up to 200).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "SCIM"
+                ],
+                "summary": "List SCIM groups",
+                "responses": {
+                    "200": {
+                        "description": "SCIM list response",
+                        "schema": {
+                            "$ref": "#/definitions/scim.SCIMListResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "$ref": "#/definitions/scim.SCIMError"
+                        }
+                    }
+                }
+            }
+        },
+        "/scim/v2/Groups/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Returns a single organization as a SCIM 2.0 Group resource by ID.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "SCIM"
+                ],
+                "summary": "Get SCIM group",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Group (organization) ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "SCIM group resource",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Group not found",
+                        "schema": {
+                            "$ref": "#/definitions/scim.SCIMError"
+                        }
+                    }
+                }
+            }
+        },
+        "/scim/v2/Users": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Returns a paginated list of users in SCIM 2.0 format. Supports optional filter parameter (e.g., userName eq \"alice@example.com\").",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "SCIM"
+                ],
+                "summary": "List SCIM users",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "default": 1,
+                        "description": "1-based start index",
+                        "name": "startIndex",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 100,
+                        "description": "Page size (max 200)",
+                        "name": "count",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "SCIM filter expression",
+                        "name": "filter",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "SCIM list response",
+                        "schema": {
+                            "$ref": "#/definitions/scim.SCIMListResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/scim.SCIMError"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "$ref": "#/definitions/scim.SCIMError"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Provisions a new user via SCIM 2.0. Requires userName or emails[0].value. Uses externalId as the identity link.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "SCIM"
+                ],
+                "summary": "Create SCIM user",
+                "parameters": [
+                    {
+                        "description": "SCIM user resource",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/scim.SCIMUser"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created SCIM user",
+                        "schema": {
+                            "$ref": "#/definitions/scim.SCIMUser"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid payload",
+                        "schema": {
+                            "$ref": "#/definitions/scim.SCIMError"
+                        }
+                    },
+                    "409": {
+                        "description": "User already exists",
+                        "schema": {
+                            "$ref": "#/definitions/scim.SCIMError"
+                        }
+                    }
+                }
+            }
+        },
+        "/scim/v2/Users/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Returns a single user in SCIM 2.0 format by ID.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "SCIM"
+                ],
+                "summary": "Get SCIM user",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "SCIM user resource",
+                        "schema": {
+                            "$ref": "#/definitions/scim.SCIMUser"
+                        }
+                    },
+                    "404": {
+                        "description": "User not found",
+                        "schema": {
+                            "$ref": "#/definitions/scim.SCIMError"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "$ref": "#/definitions/scim.SCIMError"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Full replacement of a user resource via SCIM 2.0 PUT. Setting active=false deactivates the user and removes all organization memberships.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "SCIM"
+                ],
+                "summary": "Replace SCIM user",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Full SCIM user resource",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/scim.SCIMUser"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Updated SCIM user",
+                        "schema": {
+                            "$ref": "#/definitions/scim.SCIMUser"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid payload",
+                        "schema": {
+                            "$ref": "#/definitions/scim.SCIMError"
+                        }
+                    },
+                    "404": {
+                        "description": "User not found",
+                        "schema": {
+                            "$ref": "#/definitions/scim.SCIMError"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "$ref": "#/definitions/scim.SCIMError"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Soft-deletes (deactivates) a user by removing all organization memberships. The user record is preserved.",
+                "tags": [
+                    "SCIM"
+                ],
+                "summary": "Delete SCIM user",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "User deactivated"
+                    },
+                    "404": {
+                        "description": "User not found",
+                        "schema": {
+                            "$ref": "#/definitions/scim.SCIMError"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "$ref": "#/definitions/scim.SCIMError"
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Partially updates a user via SCIM 2.0 PATCH operations. Supports 'replace' op for active, userName, name.formatted, and displayName.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "SCIM"
+                ],
+                "summary": "Patch SCIM user",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "SCIM PATCH request",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/scim.SCIMPatchOp"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Updated SCIM user",
+                        "schema": {
+                            "$ref": "#/definitions/scim.SCIMUser"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid PATCH payload",
+                        "schema": {
+                            "$ref": "#/definitions/scim.SCIMError"
+                        }
+                    },
+                    "404": {
+                        "description": "User not found",
+                        "schema": {
+                            "$ref": "#/definitions/scim.SCIMError"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "$ref": "#/definitions/scim.SCIMError"
+                        }
+                    }
+                }
+            }
+        },
         "/terraform/binaries": {
             "get": {
                 "description": "Returns the name, tool type, and description for all enabled mirror configurations. Requires no authentication.",
@@ -9115,7 +9776,7 @@
                     "application/json"
                 ],
                 "tags": [
-                    "TerraformBinaries"
+                    "Terraform Binaries"
                 ],
                 "summary": "List enabled Terraform binary mirror configs",
                 "responses": {
@@ -9145,7 +9806,7 @@
                     "application/json"
                 ],
                 "tags": [
-                    "TerraformBinaries"
+                    "Terraform Binaries"
                 ],
                 "summary": "List mirrored Terraform versions",
                 "parameters": [
@@ -9188,7 +9849,7 @@
                     "application/json"
                 ],
                 "tags": [
-                    "TerraformBinaries"
+                    "Terraform Binaries"
                 ],
                 "summary": "Get latest mirrored Terraform version",
                 "parameters": [
@@ -9231,7 +9892,7 @@
                     "application/json"
                 ],
                 "tags": [
-                    "TerraformBinaries"
+                    "Terraform Binaries"
                 ],
                 "summary": "Get specific mirrored Terraform version",
                 "parameters": [
@@ -9288,7 +9949,7 @@
                     "application/json"
                 ],
                 "tags": [
-                    "TerraformBinaries"
+                    "Terraform Binaries"
                 ],
                 "summary": "Download Terraform binary",
                 "parameters": [
@@ -11134,6 +11795,14 @@
             "type": "object",
             "properties": {
                 "display_name": {
+                    "type": "string"
+                },
+                "idp_name": {
+                    "description": "IdP name within type, or null to clear",
+                    "type": "string"
+                },
+                "idp_type": {
+                    "description": "\"oidc\", \"saml\", \"ldap\", or null to clear",
                     "type": "string"
                 }
             }
@@ -13273,6 +13942,156 @@
                     "items": {
                         "$ref": "#/definitions/providers.ProviderVersionEntry"
                     }
+                }
+            }
+        },
+        "scim.SCIMEmail": {
+            "type": "object",
+            "properties": {
+                "primary": {
+                    "type": "boolean"
+                },
+                "type": {
+                    "type": "string"
+                },
+                "value": {
+                    "type": "string"
+                }
+            }
+        },
+        "scim.SCIMError": {
+            "type": "object",
+            "properties": {
+                "detail": {
+                    "type": "string"
+                },
+                "schemas": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "scimType": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
+        "scim.SCIMListResponse": {
+            "type": "object",
+            "properties": {
+                "Resources": {},
+                "itemsPerPage": {
+                    "type": "integer"
+                },
+                "schemas": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "startIndex": {
+                    "type": "integer"
+                },
+                "totalResults": {
+                    "type": "integer"
+                }
+            }
+        },
+        "scim.SCIMMeta": {
+            "type": "object",
+            "properties": {
+                "created": {
+                    "type": "string"
+                },
+                "lastModified": {
+                    "type": "string"
+                },
+                "location": {
+                    "type": "string"
+                },
+                "resourceType": {
+                    "type": "string"
+                }
+            }
+        },
+        "scim.SCIMName": {
+            "type": "object",
+            "properties": {
+                "familyName": {
+                    "type": "string"
+                },
+                "formatted": {
+                    "type": "string"
+                },
+                "givenName": {
+                    "type": "string"
+                }
+            }
+        },
+        "scim.SCIMOperation": {
+            "type": "object",
+            "properties": {
+                "op": {
+                    "type": "string"
+                },
+                "path": {
+                    "type": "string"
+                },
+                "value": {}
+            }
+        },
+        "scim.SCIMPatchOp": {
+            "type": "object",
+            "properties": {
+                "Operations": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/scim.SCIMOperation"
+                    }
+                },
+                "schemas": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "scim.SCIMUser": {
+            "type": "object",
+            "properties": {
+                "active": {
+                    "type": "boolean"
+                },
+                "emails": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/scim.SCIMEmail"
+                    }
+                },
+                "externalId": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "meta": {
+                    "$ref": "#/definitions/scim.SCIMMeta"
+                },
+                "name": {
+                    "$ref": "#/definitions/scim.SCIMName"
+                },
+                "schemas": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "userName": {
+                    "type": "string"
                 }
             }
         },

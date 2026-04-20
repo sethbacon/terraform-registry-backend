@@ -34,6 +34,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/api/mirror"
 	"github.com/terraform-registry/terraform-registry/internal/api/modules"
 	"github.com/terraform-registry/terraform-registry/internal/api/providers"
+	"github.com/terraform-registry/terraform-registry/internal/api/scim"
 	"github.com/terraform-registry/terraform-registry/internal/api/setup"
 	terraform_binaries "github.com/terraform-registry/terraform-registry/internal/api/terraform_binaries"
 	"github.com/terraform-registry/terraform-registry/internal/api/webhooks"
@@ -64,13 +65,14 @@ import (
 // be stopped during graceful shutdown. The caller (cmd/server) is responsible for
 // calling Shutdown() when the process receives a termination signal.
 type BackgroundServices struct {
-	mirrorSyncJob    *jobs.MirrorSyncJob
-	tfMirrorSyncJob  *jobs.TerraformMirrorSyncJob
-	expiryNotifier   *jobs.APIKeyExpiryNotifier
-	moduleScannerJob *jobs.ModuleScannerJob
-	auditCleanupJob  *jobs.AuditCleanupJob
-	webhookRetryJob  *jobs.WebhookRetryJob
-	rateLimiters     []middleware.RateLimiterBackend
+	mirrorSyncJob      *jobs.MirrorSyncJob
+	tfMirrorSyncJob    *jobs.TerraformMirrorSyncJob
+	expiryNotifier     *jobs.APIKeyExpiryNotifier
+	moduleScannerJob   *jobs.ModuleScannerJob
+	auditCleanupJob    *jobs.AuditCleanupJob
+	webhookRetryJob    *jobs.WebhookRetryJob
+	rateLimiters       []middleware.RateLimiterBackend
+	principalOverrides *middleware.PrincipalOverrideLimiters
 }
 
 // Shutdown stops all background goroutines. It should be called after the HTTP
@@ -100,6 +102,9 @@ func (bg *BackgroundServices) Shutdown() {
 		if rl != nil {
 			_ = rl.Close()
 		}
+	}
+	if bg.principalOverrides != nil {
+		_ = bg.principalOverrides.Close()
 	}
 	slog.Info("all background services stopped")
 }
@@ -599,6 +604,13 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 		}
 	}
 
+	// Build per-principal override rate limiters (if configured)
+	var principalOverrides *middleware.PrincipalOverrideLimiters
+	if len(cfg.Security.RateLimiting.PrincipalOverrides) > 0 {
+		principalOverrides = middleware.NewPrincipalOverrideLimiters(cfg.Security.RateLimiting.PrincipalOverrides)
+		slog.Info("per-principal rate limit overrides configured", "count", len(cfg.Security.RateLimiting.PrincipalOverrides))
+	}
+
 	// Admin API endpoints
 	apiV1 := router.Group("/api/v1")
 	{
@@ -631,6 +643,14 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 			authGroup.GET("/callback", authHandlers.CallbackHandler())
 			authGroup.GET("/exchange-token", authHandlers.ExchangeTokenHandler())
 			authGroup.GET("/logout", authHandlers.LogoutHandler())
+			authGroup.GET("/providers", authHandlers.ProvidersHandler())
+
+			// SAML endpoints
+			authGroup.GET("/saml/metadata", authHandlers.SAMLMetadataHandler())
+			authGroup.POST("/saml/acs", authHandlers.SAMLACSHandler())
+
+			// LDAP endpoint
+			authGroup.POST("/ldap/login", authHandlers.LDAPLoginHandler())
 		}
 
 		// Public search endpoints (no auth required, but rate limited)
@@ -658,6 +678,8 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 		// Authenticated-only endpoints
 		authenticatedGroup := apiV1.Group("")
 		authenticatedGroup.Use(middleware.AuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo))
+		authenticatedGroup.Use(middleware.CSRFMiddleware()) // double-submit cookie CSRF protection
+		authenticatedGroup.Use(middleware.PrincipalRateLimitMiddleware(generalRateLimiter, principalOverrides))
 		authenticatedGroup.Use(middleware.OrgRateLimitMiddleware(generalRateLimiter, orgRateLimiter))
 		authenticatedGroup.Use(middleware.AuditMiddleware(auditRepo)) // Audit all authenticated actions
 		{
@@ -955,6 +977,16 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 				oidcAdminGroup.PUT("/group-mapping", oidcAdminHandlers.UpdateGroupMapping)
 			}
 
+			// Identity group mappings (SAML + LDAP, read-only from config)
+			authenticatedGroup.GET("/admin/identity/group-mappings",
+				middleware.RequireScope(auth.ScopeAdmin),
+				authHandlers.IdentityGroupMappingsHandler())
+
+			// mTLS config (read-only from server config)
+			authenticatedGroup.GET("/admin/mtls/config",
+				middleware.RequireScope(auth.ScopeAdmin),
+				authHandlers.MTLSConfigHandler())
+
 			// Audit log read access (requires audit:read scope; admins implicitly have it)
 			auditLogsGroup := authenticatedGroup.Group("/admin/audit-logs")
 			{
@@ -962,6 +994,23 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 				auditLogsGroup.GET("/export", middleware.RequireScope(auth.ScopeAuditRead), admin.ExportAuditLogs(auditRepo))
 				auditLogsGroup.GET("/:id", middleware.RequireScope(auth.ScopeAuditRead), auditLogHandlers.GetAuditLogHandler())
 			}
+		}
+
+		// SCIM 2.0 provisioning endpoints — bearer token auth only (no CSRF, no cookie auth).
+		// Require admin or scim:provision scope.
+		scimGroup := router.Group("/scim/v2")
+		scimGroup.Use(middleware.AuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo))
+		scimGroup.Use(middleware.RequireScope(auth.ScopeSCIMProvision))
+		{
+			scimHandlers := scim.NewHandlers(cfg, db)
+			scimGroup.GET("/Users", scimHandlers.ListUsers())
+			scimGroup.GET("/Users/:id", scimHandlers.GetUser())
+			scimGroup.POST("/Users", scimHandlers.CreateUser())
+			scimGroup.PUT("/Users/:id", scimHandlers.PutUser())
+			scimGroup.PATCH("/Users/:id", scimHandlers.PatchUser())
+			scimGroup.DELETE("/Users/:id", scimHandlers.DeleteUser())
+			scimGroup.GET("/Groups", scimHandlers.ListGroups())
+			scimGroup.GET("/Groups/:id", scimHandlers.GetGroup())
 		}
 
 		// Development-only endpoints (guarded by DevModeMiddleware)
@@ -984,13 +1033,14 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	router.POST("/webhooks/scm/:module_source_repo_id/:secret", scmWebhookHandler.HandleWebhook)
 
 	bg := &BackgroundServices{
-		mirrorSyncJob:    mirrorSyncJob,
-		tfMirrorSyncJob:  tfMirrorSyncJob,
-		expiryNotifier:   expiryNotifier,
-		moduleScannerJob: moduleScannerJob,
-		auditCleanupJob:  auditCleanupJob,
-		webhookRetryJob:  webhookRetryJob,
-		rateLimiters:     collectRateLimiterBackends(authRateLimiter, generalRateLimiter, uploadRateLimiter, orgRateLimiter),
+		mirrorSyncJob:      mirrorSyncJob,
+		tfMirrorSyncJob:    tfMirrorSyncJob,
+		expiryNotifier:     expiryNotifier,
+		moduleScannerJob:   moduleScannerJob,
+		auditCleanupJob:    auditCleanupJob,
+		webhookRetryJob:    webhookRetryJob,
+		rateLimiters:       collectRateLimiterBackends(authRateLimiter, generalRateLimiter, uploadRateLimiter, orgRateLimiter),
+		principalOverrides: principalOverrides,
 	}
 
 	return router, bg

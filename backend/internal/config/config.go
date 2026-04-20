@@ -223,6 +223,8 @@ type AuthConfig struct {
 	APIKeys APIKeyConfig  `mapstructure:"api_keys"`
 	OIDC    OIDCConfig    `mapstructure:"oidc"`
 	AzureAD AzureADConfig `mapstructure:"azure_ad"`
+	SAML    SAMLConfig    `mapstructure:"saml"`
+	LDAP    LDAPConfig    `mapstructure:"ldap"`
 }
 
 // APIKeyConfig holds API key authentication configuration
@@ -269,6 +271,75 @@ type AzureADConfig struct {
 	RedirectURL  string `mapstructure:"redirect_url"`
 }
 
+// SAMLIdPConfig describes a single SAML Identity Provider.
+type SAMLIdPConfig struct {
+	Name        string `mapstructure:"name"`
+	MetadataURL string `mapstructure:"metadata_url"`
+	// MetadataXML is raw XML metadata when a URL is not available.
+	MetadataXML string `mapstructure:"metadata_xml"`
+}
+
+// SAMLGroupMapping maps a SAML group attribute value to an organization and role.
+type SAMLGroupMapping struct {
+	Group        string `mapstructure:"group"`
+	Organization string `mapstructure:"organization"`
+	Role         string `mapstructure:"role"`
+}
+
+// SAMLConfig holds SAML 2.0 Service Provider configuration.
+type SAMLConfig struct {
+	Enabled  bool   `mapstructure:"enabled"`
+	EntityID string `mapstructure:"entity_id"`
+	ACSURL   string `mapstructure:"acs_url"`
+	CertFile string `mapstructure:"cert_file"`
+	KeyFile  string `mapstructure:"key_file"`
+
+	// IdPs lists one or more SAML Identity Providers.
+	IdPs []SAMLIdPConfig `mapstructure:"idps"`
+
+	// Group mapping (same model as OIDC)
+	GroupAttributeName string             `mapstructure:"group_attribute_name"`
+	GroupMappings      []SAMLGroupMapping `mapstructure:"group_mappings"`
+	DefaultRole        string             `mapstructure:"default_role"`
+}
+
+// LDAPGroupMapping maps an LDAP group DN to an organization and role.
+type LDAPGroupMapping struct {
+	GroupDN      string `mapstructure:"group_dn"`
+	Organization string `mapstructure:"organization"`
+	Role         string `mapstructure:"role"`
+}
+
+// LDAPConfig holds LDAP / Active Directory authentication configuration.
+type LDAPConfig struct {
+	Enabled  bool   `mapstructure:"enabled"`
+	Host     string `mapstructure:"host"`
+	Port     int    `mapstructure:"port"`
+	UseTLS   bool   `mapstructure:"use_tls"`
+	StartTLS bool   `mapstructure:"start_tls"`
+	// InsecureSkipVerify disables TLS certificate verification (NOT recommended for production).
+	InsecureSkipVerify bool `mapstructure:"insecure_skip_verify"`
+
+	// BindDN and BindPassword are the service account credentials for search operations.
+	BindDN       string `mapstructure:"bind_dn"`
+	BindPassword string `mapstructure:"bind_password"`
+
+	// User search
+	BaseDN     string `mapstructure:"base_dn"`
+	UserFilter string `mapstructure:"user_filter"`
+	// UserAttrEmail is the LDAP attribute that holds the user's email address.
+	UserAttrEmail string `mapstructure:"user_attr_email"`
+	// UserAttrName is the LDAP attribute that holds the user's display name.
+	UserAttrName string `mapstructure:"user_attr_name"`
+
+	// Group lookup
+	GroupBaseDN     string             `mapstructure:"group_base_dn"`
+	GroupFilter     string             `mapstructure:"group_filter"`
+	GroupMemberAttr string             `mapstructure:"group_member_attr"`
+	GroupMappings   []LDAPGroupMapping `mapstructure:"group_mappings"`
+	DefaultRole     string             `mapstructure:"default_role"`
+}
+
 // MultiTenancyConfig holds multi-tenancy configuration
 type MultiTenancyConfig struct {
 	Enabled             bool   `mapstructure:"enabled"`
@@ -281,12 +352,26 @@ type SecurityConfig struct {
 	CORS         CORSConfig         `mapstructure:"cors"`
 	RateLimiting RateLimitingConfig `mapstructure:"rate_limiting"`
 	TLS          TLSConfig          `mapstructure:"tls"`
+	MTLS         MTLSConfig         `mapstructure:"mtls"`
 }
 
 // CORSConfig holds CORS configuration
 type CORSConfig struct {
 	AllowedOrigins []string `mapstructure:"allowed_origins"`
 	AllowedMethods []string `mapstructure:"allowed_methods"`
+}
+
+// MTLSConfig holds mutual TLS client authentication configuration.
+type MTLSConfig struct {
+	Enabled      bool                 `mapstructure:"enabled"`
+	ClientCAFile string               `mapstructure:"client_ca_file"`
+	Mappings     []MTLSSubjectMapping `mapstructure:"mappings"`
+}
+
+// MTLSSubjectMapping maps a client certificate subject (CN or full DN) to scopes.
+type MTLSSubjectMapping struct {
+	Subject string   `mapstructure:"subject"`
+	Scopes  []string `mapstructure:"scopes"`
 }
 
 // RateLimitingConfig holds rate limiting configuration
@@ -299,6 +384,15 @@ type RateLimitingConfig struct {
 	OrgRequestsPerMinute int `mapstructure:"org_requests_per_minute"`
 	// OrgBurst is the burst allowance for the per-org rate limiter.
 	OrgBurst int `mapstructure:"org_burst"`
+	// PrincipalOverrides allows per-user or per-API-key rate limit overrides.
+	// Keys are "user:<id>" or "apikey:<id>". Values specify custom limits.
+	PrincipalOverrides map[string]PrincipalRateLimitOverride `mapstructure:"principal_overrides"`
+}
+
+// PrincipalRateLimitOverride defines custom rate limits for a specific principal.
+type PrincipalRateLimitOverride struct {
+	RequestsPerMinute int `mapstructure:"requests_per_minute"`
+	Burst             int `mapstructure:"burst"`
 }
 
 // TLSConfig holds TLS/HTTPS configuration

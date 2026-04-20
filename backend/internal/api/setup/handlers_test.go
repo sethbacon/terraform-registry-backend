@@ -635,7 +635,7 @@ func TestConfigureAdmin_OrgNotFound(t *testing.T) {
 	// GetDefaultOrganization returns nil (not found)
 	env.orgMock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
 		WithArgs("default").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "created_at", "updated_at"}))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}))
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/admin", body))
@@ -654,10 +654,10 @@ func TestConfigureAdmin_Success(t *testing.T) {
 	body := jsonBody(map[string]string{"email": "admin@example.com"})
 
 	now := time.Now()
-	orgCols := []string{"id", "name", "display_name", "created_at", "updated_at"}
+	orgCols := []string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}
 	env.orgMock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
 		WithArgs("default").
-		WillReturnRows(sqlmock.NewRows(orgCols).AddRow("org-1", "default", "Default Org", now, now))
+		WillReturnRows(sqlmock.NewRows(orgCols).AddRow("org-1", "default", "Default Org", nil, nil, now, now))
 
 	// CreateUser
 	env.userMock.ExpectExec("INSERT INTO users").
@@ -695,10 +695,10 @@ func TestConfigureAdmin_ExistingUserFallback(t *testing.T) {
 	body := jsonBody(map[string]string{"email": "admin@example.com"})
 
 	now := time.Now()
-	orgCols := []string{"id", "name", "display_name", "created_at", "updated_at"}
+	orgCols := []string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}
 	env.orgMock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
 		WithArgs("default").
-		WillReturnRows(sqlmock.NewRows(orgCols).AddRow("org-1", "default", "Default Org", now, now))
+		WillReturnRows(sqlmock.NewRows(orgCols).AddRow("org-1", "default", "Default Org", nil, nil, now, now))
 
 	// CreateUser fails (e.g. duplicate key)
 	env.userMock.ExpectExec("INSERT INTO users").
@@ -744,10 +744,10 @@ func TestConfigureAdmin_CreateAndFindBothFail(t *testing.T) {
 	body := jsonBody(map[string]string{"email": "admin@example.com"})
 
 	now := time.Now()
-	orgCols := []string{"id", "name", "display_name", "created_at", "updated_at"}
+	orgCols := []string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}
 	env.orgMock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
 		WithArgs("default").
-		WillReturnRows(sqlmock.NewRows(orgCols).AddRow("org-1", "default", "Default Org", now, now))
+		WillReturnRows(sqlmock.NewRows(orgCols).AddRow("org-1", "default", "Default Org", nil, nil, now, now))
 
 	// CreateUser fails
 	env.userMock.ExpectExec("INSERT INTO users").
@@ -775,10 +775,10 @@ func TestConfigureAdmin_AddMemberFails_UpdateRoleSucceeds(t *testing.T) {
 	body := jsonBody(map[string]string{"email": "admin@example.com"})
 
 	now := time.Now()
-	orgCols := []string{"id", "name", "display_name", "created_at", "updated_at"}
+	orgCols := []string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}
 	env.orgMock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
 		WithArgs("default").
-		WillReturnRows(sqlmock.NewRows(orgCols).AddRow("org-1", "default", "Default Org", now, now))
+		WillReturnRows(sqlmock.NewRows(orgCols).AddRow("org-1", "default", "Default Org", nil, nil, now, now))
 
 	// CreateUser succeeds
 	env.userMock.ExpectExec("INSERT INTO users").
@@ -822,10 +822,10 @@ func TestConfigureAdmin_AddMemberFails_UpdateRoleFails(t *testing.T) {
 	body := jsonBody(map[string]string{"email": "admin@example.com"})
 
 	now := time.Now()
-	orgCols := []string{"id", "name", "display_name", "created_at", "updated_at"}
+	orgCols := []string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}
 	env.orgMock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
 		WithArgs("default").
-		WillReturnRows(sqlmock.NewRows(orgCols).AddRow("org-1", "default", "Default Org", now, now))
+		WillReturnRows(sqlmock.NewRows(orgCols).AddRow("org-1", "default", "Default Org", nil, nil, now, now))
 
 	// CreateUser succeeds
 	env.userMock.ExpectExec("INSERT INTO users").
@@ -858,10 +858,10 @@ func TestConfigureAdmin_PendingAdminEmailFails(t *testing.T) {
 	body := jsonBody(map[string]string{"email": "admin@example.com"})
 
 	now := time.Now()
-	orgCols := []string{"id", "name", "display_name", "created_at", "updated_at"}
+	orgCols := []string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}
 	env.orgMock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
 		WithArgs("default").
-		WillReturnRows(sqlmock.NewRows(orgCols).AddRow("org-1", "default", "Default Org", now, now))
+		WillReturnRows(sqlmock.NewRows(orgCols).AddRow("org-1", "default", "Default Org", nil, nil, now, now))
 
 	// CreateUser succeeds
 	env.userMock.ExpectExec("INSERT INTO users").

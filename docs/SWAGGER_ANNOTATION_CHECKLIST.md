@@ -6,7 +6,7 @@ This checklist tracks Swagger/OpenAPI annotation progress for all API endpoints 
 
 **Target**: 100% API coverage with Swagger annotations
 
-**Current Status**: ✅ 111/111 annotated (100%) — All Gin-router endpoints complete
+**Current Status**: ✅ 125/125 annotated (100%) — All Gin-router endpoints complete
 
 See the **Out-of-Band Endpoints** section at the bottom for observability endpoints that live
 on dedicated ports and are deliberately excluded from the OpenAPI spec.
@@ -21,9 +21,17 @@ on dedicated ports and are deliberately excluded from the OpenAPI spec.
 - [x] `GET /api/v1/auth/callback` - OAuth callback handler
 - [x] `POST /api/v1/auth/refresh` - Refresh JWT token
 - [x] `GET /api/v1/auth/me` - Get current user
+- [x] `GET /api/v1/auth/logout` - OIDC logout
+- [x] `POST /api/v1/auth/token/exchange` - Exchange token
+- [x] `GET /api/v1/auth/saml/metadata` - SAML SP metadata
+- [x] `POST /api/v1/auth/saml/acs` - SAML Assertion Consumer Service
+- [x] `GET /api/v1/auth/providers` - List authentication providers
+- [x] `POST /api/v1/auth/ldap/login` - LDAP login
+- [x] `GET /api/v1/admin/identity/group-mappings` - Identity group mappings (SAML + LDAP)
+- [x] `GET /api/v1/admin/mtls/config` - mTLS configuration
 
 **File**: `backend/internal/api/admin/auth.go`
-**Progress**: 4/4 annotated ✅
+**Progress**: 12/12 annotated ✅
 
 ### API Key Management
 
@@ -70,6 +78,20 @@ on dedicated ports and are deliberately excluded from the OpenAPI spec.
 
 **File**: `backend/internal/api/admin/organizations.go`
 **Progress**: 10/10 annotated ✅
+
+### SCIM 2.0 Provisioning
+
+- [x] `GET /scim/v2/Users` - List SCIM users
+- [x] `GET /scim/v2/Users/:id` - Get SCIM user
+- [x] `POST /scim/v2/Users` - Create SCIM user
+- [x] `PATCH /scim/v2/Users/:id` - Patch SCIM user
+- [x] `PUT /scim/v2/Users/:id` - Replace SCIM user
+- [x] `DELETE /scim/v2/Users/:id` - Delete (deactivate) SCIM user
+- [x] `GET /scim/v2/Groups` - List SCIM groups
+- [x] `GET /scim/v2/Groups/:id` - Get SCIM group
+
+**File**: `backend/internal/api/scim/handlers.go`
+**Progress**: 8/8 annotated ✅
 
 ---
 
@@ -286,8 +308,8 @@ complete operational coverage.
 ---
 
 ```txt
-Total Gin-router Endpoints: 111
-Annotated: 111
+Total Gin-router Endpoints: 125
+Annotated: 125
 Remaining: 0
 Completion: 100% ✅
 
@@ -296,8 +318,8 @@ Out-of-Band Endpoints (not in OpenAPI spec):
   GET /debug/pprof/*    (port 6060, pprof, disabled by default)
 
 Phase Breakdown:
-  Phase 1 (Auth & API Keys):      10/10 (100%) ✅
-  Phase 2 (Users & Orgs):         18/18 (100%) ✅
+  Phase 1 (Auth & API Keys):      18/18 (100%) ✅
+  Phase 2 (Users & Orgs + SCIM):  26/26 (100%) ✅
   Phase 3 (Modules & Providers):  24/24 (100%) ✅
   Phase 4 (Storage):               9/9  (100%) ✅
   Phase 5 (SCM):                  18/18 (100%) ✅
@@ -307,7 +329,7 @@ Phase Breakdown:
   Phase 9 (Utilities):             6/6  (100%) ✅
 
 @Tags used (all title-cased):
-  Authentication, API Keys, Users, Organizations,
+  Authentication, API Keys, Users, Organizations, SCIM,
   Modules, Providers, Security Scanning, Storage,
   SCM Providers, SCM OAuth, SCM Linking, Mirror,
   Mirror Protocol, RBAC, Stats, System, Observability,
@@ -327,5 +349,5 @@ Then visit `https://localhost/api-docs` to verify in the Swagger UI.
 
 ---
 
-**Last Updated**: 2026-04-14
-**Status**: ✅ All 111 Gin-router endpoints annotated — 100% complete; out-of-band observability endpoints documented in-checklist
+**Last Updated**: 2026-04-20
+**Status**: ✅ All 125 Gin-router endpoints annotated — 100% complete; out-of-band observability endpoints documented in-checklist

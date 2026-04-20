@@ -65,7 +65,7 @@ func (r *OrganizationRepository) InvalidateDefaultOrgCache() {
 // GetByName retrieves an organization by its name
 func (r *OrganizationRepository) GetByName(ctx context.Context, name string) (*models.Organization, error) {
 	query := `
-		SELECT id, name, display_name, created_at, updated_at
+		SELECT id, name, display_name, idp_type, idp_name, created_at, updated_at
 		FROM organizations
 		WHERE name = $1
 	`
@@ -75,6 +75,8 @@ func (r *OrganizationRepository) GetByName(ctx context.Context, name string) (*m
 		&org.ID,
 		&org.Name,
 		&org.DisplayName,
+		&org.IdpType,
+		&org.IdpName,
 		&org.CreatedAt,
 		&org.UpdatedAt,
 	)
@@ -92,7 +94,7 @@ func (r *OrganizationRepository) GetByName(ctx context.Context, name string) (*m
 // GetByID retrieves an organization by ID
 func (r *OrganizationRepository) GetByID(ctx context.Context, id string) (*models.Organization, error) {
 	query := `
-		SELECT id, name, display_name, created_at, updated_at
+		SELECT id, name, display_name, idp_type, idp_name, created_at, updated_at
 		FROM organizations
 		WHERE id = $1
 	`
@@ -102,6 +104,8 @@ func (r *OrganizationRepository) GetByID(ctx context.Context, id string) (*model
 		&org.ID,
 		&org.Name,
 		&org.DisplayName,
+		&org.IdpType,
+		&org.IdpName,
 		&org.CreatedAt,
 		&org.UpdatedAt,
 	)
@@ -279,7 +283,7 @@ func (r *OrganizationRepository) ListMembers(ctx context.Context, orgID string) 
 // GetUserOrganizations retrieves all organizations a user belongs to
 func (r *OrganizationRepository) GetUserOrganizations(ctx context.Context, userID string) ([]*models.Organization, error) {
 	query := `
-		SELECT o.id, o.name, o.display_name, o.created_at, o.updated_at
+		SELECT o.id, o.name, o.display_name, o.idp_type, o.idp_name, o.created_at, o.updated_at
 		FROM organizations o
 		INNER JOIN organization_members om ON o.id = om.organization_id
 		WHERE om.user_id = $1
@@ -299,6 +303,8 @@ func (r *OrganizationRepository) GetUserOrganizations(ctx context.Context, userI
 			&org.ID,
 			&org.Name,
 			&org.DisplayName,
+			&org.IdpType,
+			&org.IdpName,
 			&org.CreatedAt,
 			&org.UpdatedAt,
 		)
@@ -379,11 +385,11 @@ func (r *OrganizationRepository) Create(ctx context.Context, org *models.Organiz
 func (r *OrganizationRepository) Update(ctx context.Context, org *models.Organization) error {
 	query := `
 		UPDATE organizations
-		SET display_name = $2, updated_at = NOW()
+		SET display_name = $2, idp_type = $3, idp_name = $4, updated_at = NOW()
 		WHERE id = $1
 	`
 
-	_, err := r.db.ExecContext(ctx, query, org.ID, org.DisplayName)
+	_, err := r.db.ExecContext(ctx, query, org.ID, org.DisplayName, org.IdpType, org.IdpName)
 	if err != nil {
 		return fmt.Errorf("failed to update organization: %w", err)
 	}
@@ -407,7 +413,7 @@ func (r *OrganizationRepository) Delete(ctx context.Context, orgID string) error
 // List retrieves a paginated list of organizations
 func (r *OrganizationRepository) List(ctx context.Context, limit, offset int) ([]*models.Organization, error) {
 	query := `
-		SELECT id, name, display_name, created_at, updated_at
+		SELECT id, name, display_name, idp_type, idp_name, created_at, updated_at
 		FROM organizations
 		ORDER BY created_at DESC
 		LIMIT $1 OFFSET $2
@@ -426,6 +432,8 @@ func (r *OrganizationRepository) List(ctx context.Context, limit, offset int) ([
 			&org.ID,
 			&org.Name,
 			&org.DisplayName,
+			&org.IdpType,
+			&org.IdpName,
 			&org.CreatedAt,
 			&org.UpdatedAt,
 		)
@@ -453,7 +461,7 @@ func (r *OrganizationRepository) Count(ctx context.Context) (int, error) {
 // Search searches for organizations by name or display name
 func (r *OrganizationRepository) Search(ctx context.Context, query string, limit, offset int) ([]*models.Organization, error) {
 	searchQuery := `
-		SELECT id, name, display_name, created_at, updated_at
+		SELECT id, name, display_name, idp_type, idp_name, created_at, updated_at
 		FROM organizations
 		WHERE name ILIKE $1 OR display_name ILIKE $1
 		ORDER BY created_at DESC
@@ -474,6 +482,8 @@ func (r *OrganizationRepository) Search(ctx context.Context, query string, limit
 			&org.ID,
 			&org.Name,
 			&org.DisplayName,
+			&org.IdpType,
+			&org.IdpName,
 			&org.CreatedAt,
 			&org.UpdatedAt,
 		)
@@ -637,4 +647,15 @@ func (r *OrganizationRepository) GetUserCombinedScopes(ctx context.Context, user
 	}
 
 	return scopes, nil
+}
+
+// RemoveAllMembershipsForUser removes a user from all organizations.
+// Used by SCIM deprovisioning to soft-delete/deactivate a user.
+func (r *OrganizationRepository) RemoveAllMembershipsForUser(ctx context.Context, userID string) error {
+	query := `DELETE FROM organization_members WHERE user_id = $1`
+	_, err := r.db.ExecContext(ctx, query, userID)
+	if err != nil {
+		return fmt.Errorf("failed to remove all memberships for user %s: %w", userID, err)
+	}
+	return nil
 }

@@ -102,6 +102,40 @@ auth:
     client_secret: ${AZURE_CLIENT_SECRET}
     redirect_url: http://localhost:8080/auth/azure/callback
 
+  # SAML 2.0 configuration
+  saml:
+    enabled: false
+    entity_id: https://registry.example.com
+    acs_url: https://registry.example.com/api/v1/auth/saml/acs
+    # cert_file: /etc/certs/saml-sp.crt
+    # key_file: /etc/certs/saml-sp.key
+    idps:
+      - name: okta
+        metadata_url: https://your-org.okta.com/app/XXXXXXXX/sso/saml/metadata
+    group_attribute_name: memberOf
+    group_mappings: []
+    default_role: ""
+
+  # LDAP / Active Directory configuration
+  ldap:
+    enabled: false
+    host: ldap.example.com
+    port: 389
+    use_tls: false
+    start_tls: true
+    insecure_skip_verify: false
+    bind_dn: cn=svc-registry,ou=service-accounts,dc=example,dc=com
+    bind_password: ${LDAP_BIND_PASSWORD}
+    base_dn: dc=example,dc=com
+    user_filter: "(sAMAccountName=%s)"
+    user_attr_email: mail
+    user_attr_name: displayName
+    group_base_dn: ou=groups,dc=example,dc=com
+    group_filter: ""
+    group_member_attr: member
+    group_mappings: []
+    default_role: ""
+
 multi_tenancy:
   enabled: false  # Set to true for multi-organization support
   default_organization: default
@@ -129,11 +163,32 @@ security:
     # Set to 0 to disable org-level limiting.
     org_requests_per_minute: 0
     org_burst: 0
+    # Per-principal rate limit overrides (keyed by "user:<id>" or "apikey:<id>").
+    # Allows admins to grant higher or lower limits to specific principals.
+    # principal_overrides:
+    #   "user:high-volume-service-account-id":
+    #     requests_per_minute: 600
+    #     burst: 100
+    #   "apikey:ci-pipeline-key-id":
+    #     requests_per_minute: 300
+    #     burst: 50
 
   tls:
     enabled: false
     cert_file: /etc/certs/tls.crt
     key_file: /etc/certs/tls.key
+
+  # Mutual TLS (mTLS) client certificate authentication for machine-to-machine callers.
+  # When enabled, clients presenting a valid certificate signed by the configured CA
+  # are authenticated and assigned scopes based on the certificate subject mapping.
+  mtls:
+    enabled: false
+    client_ca_file: /etc/certs/client-ca.crt
+    # mappings:
+    #   - subject: "CN=terraform-ci"
+    #     scopes: ["modules:read", "providers:read"]
+    #   - subject: "CN=release-pipeline"
+    #     scopes: ["modules:write", "providers:write"]
 
 logging:
   level: info  # Options: debug, info, warn, error

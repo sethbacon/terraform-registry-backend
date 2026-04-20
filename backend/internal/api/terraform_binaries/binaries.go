@@ -75,7 +75,7 @@ type PublicMirrorSummary struct {
 
 // @Summary      List enabled Terraform binary mirror configs
 // @Description  Returns the name, tool type, and description for all enabled mirror configurations. Requires no authentication.
-// @Tags         TerraformBinaries
+// @Tags         Terraform Binaries
 // @Produce      json
 // @Success      200  {array}   terraform_binaries.PublicMirrorSummary
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
@@ -103,7 +103,7 @@ func (h *Handler) ListConfigs(c *gin.Context) {
 
 // @Summary      List mirrored Terraform versions
 // @Description  Returns all Terraform/OpenTofu versions that have been fully or partially synced by the named binary mirror.
-// @Tags         TerraformBinaries
+// @Tags         Terraform Binaries
 // @Produce      json
 // @Param        name  path  string  true  "Mirror configuration name"
 // @Success      200  {object}  models.TerraformVersionListResponse
@@ -133,7 +133,7 @@ func (h *Handler) ListVersions(c *gin.Context) {
 
 // @Summary      Get latest mirrored Terraform version
 // @Description  Returns the latest stable Terraform/OpenTofu version available in the named binary mirror.
-// @Tags         TerraformBinaries
+// @Tags         Terraform Binaries
 // @Produce      json
 // @Param        name  path  string  true  "Mirror configuration name"
 // @Success      200  {object}  models.TerraformVersion
@@ -170,7 +170,7 @@ func (h *Handler) GetLatestVersion(c *gin.Context) {
 
 // @Summary      Get specific mirrored Terraform version
 // @Description  Returns metadata and platform list for a specific version in the named binary mirror.
-// @Tags         TerraformBinaries
+// @Tags         Terraform Binaries
 // @Produce      json
 // @Param        name     path  string  true  "Mirror configuration name"
 // @Param        version  path  string  true  "Terraform version (e.g. 1.9.0)"
@@ -221,7 +221,7 @@ func (h *Handler) GetVersion(c *gin.Context) {
 
 // @Summary      Download Terraform binary
 // @Description  Returns a signed download URL for the requested Terraform binary. The URL is valid for 15 minutes. Increments the terraform_binary_downloads_total Prometheus counter.
-// @Tags         TerraformBinaries
+// @Tags         Terraform Binaries
 // @Produce      json
 // @Param        name     path  string  true  "Mirror configuration name"
 // @Param        version  path  string  true  "Terraform version (e.g. 1.9.0)"
