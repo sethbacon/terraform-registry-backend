@@ -213,7 +213,12 @@ func parseLine(s string) (int, error) {
 // false positives when two packages contain files with the same name
 // (e.g. both "internal/api/router.go" and "internal/mirror/router.go").
 func pathSuffixMatches(absPath, modPath string) bool {
-	abs := filepath.ToSlash(absPath)
+	// Normalize backslashes to forward slashes regardless of host OS.
+	// filepath.ToSlash is a no-op on Linux (separator is '/'), but we may
+	// receive Windows-style absolute paths (e.g. when this binary processes
+	// a coverage profile recorded on a Windows developer's machine), so we
+	// replace backslashes explicitly.
+	abs := strings.ReplaceAll(absPath, "\\", "/")
 	parts := strings.Split(modPath, "/")
 	// Require at least 2 trailing segments (package dir + file) so bare
 	// filenames can't cause cross-package false matches.
