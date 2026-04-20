@@ -109,11 +109,34 @@ jobs:
           # base64-encode the checksums file for the SLSA provenance generator
           echo "hashes=$(cat checksums.txt | base64 -w0)" >> "$GITHUB_OUTPUT"
 
+      - name: Stage curated release assets
+        # GoReleaser's `format: binary` archive entries don't actually create a
+        # renamed file on disk — the artifacts.json entry just points back at
+        # the binary inside the per-target build dir (e.g.
+        # dist/terraform-registry_linux_amd64_v1/terraform-registry). We must
+        # copy each binary to its published name explicitly. We also exclude
+        # GoReleaser internals (artifacts.json, metadata.json, config.yaml,
+        # digests.txt, CHANGELOG.md, the per-target build subdirs) so they
+        # don't end up as release assets and so empty files don't trip the
+        # release-create upload (HTTP 400 on Content-Length: 0).
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          # Copy renamed binaries by reading the goreleaser artifacts manifest.
+          jq -r '.[] | select(.type=="Binary" and .extra.Format=="binary") | "\(.path)\t\(.name)"' \
+            dist/artifacts.json | while IFS=$'\t' read -r src name; do
+              cp "$src" "release/$name"
+          done
+          cp dist/checksums.txt release/
+          cp dist/checksums.txt.sig release/
+          cp "dist/deployment-configs-${GITHUB_REF_NAME}.tar.gz" release/
+          ls -la release/
+
       - name: Upload release artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-artifacts
-          path: dist/
+          path: release/
           retention-days: 1
           if-no-files-found: error
 
@@ -243,20 +266,20 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download release artifacts (binaries, checksums, sigs, SBOMs, deployment configs)
+      - name: Download release artifacts (binaries, checksums, sigs, deployment configs)
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: release-artifacts
-          path: dist/
+          path: release/
 
       - name: Download SLSA L3 binary provenance
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: ${{ needs.binary-provenance.outputs.provenance-name }}
-          path: dist/
+          path: release/
 
       - name: List release assets
-        run: ls -la dist/
+        run: ls -la release/
 
       - name: Create GitHub Release with all assets
         run: |
@@ -274,6 +297,6 @@ jobs:
           - Binaries: SLSA Level 3 provenance (\`multiple.intoto.jsonl\`) attached.
           - Container image: SLSA Level 3 provenance attached as an OCI artifact at \`ghcr.io/${GITHUB_REPOSITORY_OWNER}/terraform-registry-backend:${GITHUB_REF_NAME}\`.
           - Checksums signed with cosign keyless signing (Sigstore + Rekor)." \
-            dist/*
+            release/*
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

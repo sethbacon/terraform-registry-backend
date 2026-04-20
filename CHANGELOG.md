@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- fix(release): stage curated release assets in `release.yml` so the publish step uploads only renamed binaries (`terraform-registry-<os>-<arch>`), `checksums.txt`, `checksums.txt.sig`, the deployment-configs tarball, and `multiple.intoto.jsonl` — avoiding HTTP 400 Bad Content-Length on GoReleaser's empty `digests.txt` and skipping internal files (`artifacts.json`, `metadata.json`, `config.yaml`, per-target build subdirs)
+
 ## [0.8.2] - 2026-04-19
 
 ### Fixed
