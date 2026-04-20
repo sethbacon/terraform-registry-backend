@@ -96,7 +96,7 @@ func doAuthRequest(r *gin.Engine, authHeader string) int {
 // AuthMiddleware — early-exit paths (no repository calls needed)
 // ---------------------------------------------------------------------------
 
-func TestAuthMiddleware_MissingHeader(t *testing.T) {
+func TestAuthMiddleware_MissingHeaderAndCookie(t *testing.T) {
 	if code := doAuthRequest(newAuthRouter(), ""); code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", code)
 	}
@@ -109,9 +109,96 @@ func TestAuthMiddleware_NonBearerPrefix(t *testing.T) {
 }
 
 func TestAuthMiddleware_EmptyToken(t *testing.T) {
-	// "Bearer " with only whitespace → trimmed to empty → 401
+	// "Bearer " with only whitespace → trimmed to empty → falls through to cookie
+	// No cookie set either → 401
 	if code := doAuthRequest(newAuthRouter(), "Bearer   "); code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// AuthMiddleware — cookie-based authentication
+// ---------------------------------------------------------------------------
+
+func TestAuthMiddleware_CookieAuth_InvalidJWT(t *testing.T) {
+	r := newAuthRouter()
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: "tfr_auth_token", Value: "not-a-valid-jwt"})
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("cookie with invalid JWT: status = %d, want 401", w.Code)
+	}
+}
+
+func TestAuthMiddleware_CookieAuth_ValidJWT(t *testing.T) {
+	userRepo, userMock := newUserRepo(t)
+	orgRepo, _ := newOrgRepo(t)
+
+	r := gin.New()
+	var capturedAuthMethod string
+	r.Use(AuthMiddleware(nil, userRepo, nil, orgRepo, nil))
+	r.GET("/", func(c *gin.Context) {
+		if am, ok := c.Get("auth_method"); ok {
+			capturedAuthMethod = am.(string)
+		}
+		c.Status(http.StatusOK)
+	})
+
+	// Ensure JWT secret is initialized
+	_ = auth.ValidateJWTSecret()
+	token := generateTestJWT(t, "user-123")
+
+	userMock.ExpectQuery("SELECT.*FROM users WHERE id").
+		WillReturnRows(sqlmock.NewRows(jwtUserCols).
+			AddRow("user-123", "test@example.com", "Test", "sub-123", time.Now(), time.Now()))
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: "tfr_auth_token", Value: token})
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("cookie with valid JWT: status = %d, want 200", w.Code)
+	}
+	if capturedAuthMethod != "jwt_cookie" {
+		t.Errorf("auth_method = %q, want %q", capturedAuthMethod, "jwt_cookie")
+	}
+}
+
+func TestAuthMiddleware_HeaderTakesPrecedenceOverCookie(t *testing.T) {
+	userRepo, userMock := newUserRepo(t)
+	orgRepo, _ := newOrgRepo(t)
+
+	r := gin.New()
+	var capturedAuthMethod string
+	r.Use(AuthMiddleware(nil, userRepo, nil, orgRepo, nil))
+	r.GET("/", func(c *gin.Context) {
+		if am, ok := c.Get("auth_method"); ok {
+			capturedAuthMethod = am.(string)
+		}
+		c.Status(http.StatusOK)
+	})
+
+	_ = auth.ValidateJWTSecret()
+	token := generateTestJWT(t, "user-456")
+
+	userMock.ExpectQuery("SELECT.*FROM users WHERE id").
+		WillReturnRows(sqlmock.NewRows(jwtUserCols).
+			AddRow("user-456", "test@example.com", "Test", "sub-456", time.Now(), time.Now()))
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.AddCookie(&http.Cookie{Name: "tfr_auth_token", Value: "different-cookie-value"})
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+	if capturedAuthMethod != "jwt" {
+		t.Errorf("auth_method = %q, want %q (header should take precedence)", capturedAuthMethod, "jwt")
 	}
 }
 

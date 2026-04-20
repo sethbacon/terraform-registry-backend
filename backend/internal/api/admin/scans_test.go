@@ -18,7 +18,7 @@ var scanAdminCols = []string{
 	"raw_results", "error_message", "created_at", "updated_at",
 }
 
-var orgColsScan = []string{"id", "name", "display_name", "created_at", "updated_at"}
+var orgColsScan = []string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}
 var moduleColsScan = []string{
 	"id", "organization_id", "namespace", "name", "system",
 	"description", "source", "created_by", "created_at", "updated_at", "created_by_name",
@@ -53,7 +53,7 @@ func doScanGET(r *gin.Engine, path string) *httptest.ResponseRecorder {
 
 func sampleOrgRowScan() *sqlmock.Rows {
 	return sqlmock.NewRows(orgColsScan).
-		AddRow("org-1", "default", "Default Org", time.Now(), time.Now())
+		AddRow("org-1", "default", "Default Org", nil, nil, time.Now(), time.Now())
 }
 
 func sampleModuleRowScan() *sqlmock.Rows {

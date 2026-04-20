@@ -25,7 +25,7 @@ func init() {
 var userSQLCols = []string{"id", "email", "name", "oidc_sub", "created_at", "updated_at"}
 
 // orgSQLCols are the columns returned by organization SELECT queries.
-var orgSQLCols = []string{"id", "name", "display_name", "created_at", "updated_at"}
+var orgSQLCols = []string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}
 
 // membershipSQLCols are the columns returned by GetUserMemberships.
 var membershipSQLCols = []string{

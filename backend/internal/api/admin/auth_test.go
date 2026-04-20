@@ -14,6 +14,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
+	ldappkg "github.com/terraform-registry/terraform-registry/internal/auth/ldap"
+	samlpkg "github.com/terraform-registry/terraform-registry/internal/auth/saml"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
@@ -787,7 +789,7 @@ func TestCallbackHandler_ErrorRedirectsToFrontend(t *testing.T) {
 // applyGroupMappings — group matches, adds new member
 // ---------------------------------------------------------------------------
 
-var authOrgCols = []string{"id", "name", "display_name", "created_at", "updated_at"}
+var authOrgCols = []string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}
 var authMemberCols = []string{"organization_id", "user_id", "role_template_id", "created_at"}
 
 func TestApplyGroupMappings_MatchingGroup_AddMember(t *testing.T) {
@@ -804,7 +806,7 @@ func TestApplyGroupMappings_MatchingGroup_AddMember(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
 		WithArgs("acme").
 		WillReturnRows(sqlmock.NewRows(authOrgCols).
-			AddRow("org-1", "acme", "Acme Corp", time.Now(), time.Now()))
+			AddRow("org-1", "acme", "Acme Corp", nil, nil, time.Now(), time.Now()))
 
 	// CheckMembership → GetMember → not found (no rows)
 	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
@@ -846,7 +848,7 @@ func TestApplyGroupMappings_MatchingGroup_UpdateMember(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
 		WithArgs("acme").
 		WillReturnRows(sqlmock.NewRows(authOrgCols).
-			AddRow("org-1", "acme", "Acme Corp", time.Now(), time.Now()))
+			AddRow("org-1", "acme", "Acme Corp", nil, nil, time.Now(), time.Now()))
 
 	// CheckMembership → GetMember → found (is already a member)
 	roleID := "rt-old"
@@ -893,7 +895,7 @@ func TestApplyGroupMappings_DefaultRoleFallback(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
 		WithArgs("default").
 		WillReturnRows(sqlmock.NewRows(authOrgCols).
-			AddRow("org-default", "default", "Default Org", time.Now(), time.Now()))
+			AddRow("org-default", "default", "Default Org", nil, nil, time.Now(), time.Now()))
 
 	// CheckMembership → GetMember → not found
 	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
@@ -1074,7 +1076,7 @@ func TestApplyGroupMappings_CheckMembershipError(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
 		WithArgs("acme").
 		WillReturnRows(sqlmock.NewRows(authOrgCols).
-			AddRow("org-1", "acme", "Acme Corp", time.Now(), time.Now()))
+			AddRow("org-1", "acme", "Acme Corp", nil, nil, time.Now(), time.Now()))
 
 	// CheckMembership → DB error
 	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
@@ -1118,7 +1120,7 @@ func TestApplyGroupMappings_DefaultRole_UpdateMember(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
 		WithArgs("default").
 		WillReturnRows(sqlmock.NewRows(authOrgCols).
-			AddRow("org-default", "default", "Default", time.Now(), time.Now()))
+			AddRow("org-default", "default", "Default", nil, nil, time.Now(), time.Now()))
 
 	// CheckMembership → is member (returns a row)
 	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
@@ -1140,5 +1142,381 @@ func TestApplyGroupMappings_DefaultRole_UpdateMember(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ProvidersHandler — Phase 2 enterprise identity
+// ---------------------------------------------------------------------------
+
+func TestProvidersHandler_NoProviders(t *testing.T) {
+	_, _, r := newAuthRouter(t)
+	r.GET("/auth/providers", func(c *gin.Context) {
+		// Already registered below
+	})
+
+	// Use a fresh handler with no providers
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+	cfg := &config.Config{}
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
+
+	rr := gin.New()
+	rr.GET("/auth/providers", h.ProvidersHandler())
+
+	w := httptest.NewRecorder()
+	rr.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/auth/providers", nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	resp := getJSON(w)
+	providers, ok := resp["providers"].([]interface{})
+	if !ok {
+		t.Fatalf("providers is not a list: %v", resp["providers"])
+	}
+	if len(providers) != 0 {
+		t.Errorf("expected 0 providers, got %d", len(providers))
+	}
+}
+
+func TestProvidersHandler_WithSAMLAndLDAP(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+	cfg := &config.Config{}
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
+
+	// Inject SAML and LDAP providers directly (bypassing real construction)
+	h.samlProviders = map[string]*samlpkg.Provider{
+		"okta":  {},
+		"azure": {},
+	}
+	h.ldapProvider = &ldappkg.Provider{}
+
+	r := gin.New()
+	r.GET("/auth/providers", h.ProvidersHandler())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/auth/providers", nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	resp := getJSON(w)
+	providers := resp["providers"].([]interface{})
+	// Expect 2 SAML + 1 LDAP = 3 providers
+	if len(providers) != 3 {
+		t.Fatalf("expected 3 providers, got %d: %v", len(providers), providers)
+	}
+
+	typeCount := map[string]int{}
+	for _, p := range providers {
+		pm := p.(map[string]interface{})
+		typeCount[pm["type"].(string)]++
+	}
+	if typeCount["saml"] != 2 {
+		t.Errorf("expected 2 saml providers, got %d", typeCount["saml"])
+	}
+	if typeCount["ldap"] != 1 {
+		t.Errorf("expected 1 ldap provider, got %d", typeCount["ldap"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// IdentityGroupMappingsHandler — Phase 2 enterprise identity
+// ---------------------------------------------------------------------------
+
+func TestIdentityGroupMappingsHandler_NoProviders(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+	cfg := &config.Config{}
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
+
+	r := gin.New()
+	r.GET("/admin/identity/group-mappings", h.IdentityGroupMappingsHandler())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/admin/identity/group-mappings", nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	resp := getJSON(w)
+	// Neither SAML nor LDAP enabled → empty object
+	if resp["saml"] != nil {
+		t.Errorf("expected no saml key, got %v", resp["saml"])
+	}
+	if resp["ldap"] != nil {
+		t.Errorf("expected no ldap key, got %v", resp["ldap"])
+	}
+}
+
+func TestIdentityGroupMappingsHandler_WithSAMLAndLDAP(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+	cfg := &config.Config{}
+	cfg.Auth.SAML.Enabled = true
+	cfg.Auth.SAML.GroupAttributeName = "memberOf"
+	cfg.Auth.SAML.DefaultRole = "viewer"
+	cfg.Auth.SAML.GroupMappings = []config.SAMLGroupMapping{
+		{Group: "admins", Organization: "acme", Role: "admin"},
+		{Group: "devs", Organization: "acme", Role: "editor"},
+	}
+	cfg.Auth.LDAP.Enabled = true
+	cfg.Auth.LDAP.DefaultRole = "reader"
+	cfg.Auth.LDAP.GroupMappings = []config.LDAPGroupMapping{
+		{GroupDN: "cn=ops,dc=example,dc=com", Organization: "ops-team", Role: "operator"},
+	}
+	// Manually construct handler to avoid SAML/LDAP provider initialization
+	h := &AuthHandlers{
+		cfg:        cfg,
+		db:         db,
+		stateStore: auth.NewMemoryStateStore(time.Hour),
+	}
+
+	r := gin.New()
+	r.GET("/admin/identity/group-mappings", h.IdentityGroupMappingsHandler())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/admin/identity/group-mappings", nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	resp := getJSON(w)
+
+	// Verify SAML section
+	samlSection, ok := resp["saml"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("saml section missing or wrong type: %v", resp["saml"])
+	}
+	if samlSection["group_attribute_name"] != "memberOf" {
+		t.Errorf("saml group_attribute_name = %v, want memberOf", samlSection["group_attribute_name"])
+	}
+	if samlSection["default_role"] != "viewer" {
+		t.Errorf("saml default_role = %v, want viewer", samlSection["default_role"])
+	}
+	samlMappings := samlSection["group_mappings"].([]interface{})
+	if len(samlMappings) != 2 {
+		t.Errorf("expected 2 SAML mappings, got %d", len(samlMappings))
+	}
+
+	// Verify LDAP section
+	ldapSection, ok := resp["ldap"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("ldap section missing or wrong type: %v", resp["ldap"])
+	}
+	if ldapSection["default_role"] != "reader" {
+		t.Errorf("ldap default_role = %v, want reader", ldapSection["default_role"])
+	}
+	ldapMappings := ldapSection["group_mappings"].([]interface{})
+	if len(ldapMappings) != 1 {
+		t.Errorf("expected 1 LDAP mapping, got %d", len(ldapMappings))
+	}
+	firstLDAP := ldapMappings[0].(map[string]interface{})
+	if firstLDAP["group_dn"] != "cn=ops,dc=example,dc=com" {
+		t.Errorf("ldap group_dn = %v", firstLDAP["group_dn"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MTLSConfigHandler — Phase 2 enterprise identity
+// ---------------------------------------------------------------------------
+
+func TestMTLSConfigHandler_Disabled(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+	cfg := &config.Config{} // MTLS not enabled (zero value)
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
+
+	r := gin.New()
+	r.GET("/admin/mtls/config", h.MTLSConfigHandler())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/admin/mtls/config", nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	resp := getJSON(w)
+	if resp["enabled"] != false {
+		t.Errorf("enabled = %v, want false", resp["enabled"])
+	}
+	mappings := resp["mappings"].([]interface{})
+	if len(mappings) != 0 {
+		t.Errorf("expected 0 mappings, got %d", len(mappings))
+	}
+}
+
+func TestMTLSConfigHandler_WithMappings(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+	cfg := &config.Config{}
+	cfg.Security.MTLS.Enabled = true
+	cfg.Security.MTLS.ClientCAFile = "/etc/ssl/client-ca.pem"
+	cfg.Security.MTLS.Mappings = []config.MTLSSubjectMapping{
+		{Subject: "CN=ci-bot", Scopes: []string{"modules:read", "providers:read"}},
+		{Subject: "CN=admin", Scopes: []string{"admin"}},
+	}
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
+
+	r := gin.New()
+	r.GET("/admin/mtls/config", h.MTLSConfigHandler())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/admin/mtls/config", nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	resp := getJSON(w)
+	if resp["enabled"] != true {
+		t.Errorf("enabled = %v, want true", resp["enabled"])
+	}
+	if resp["client_ca_file"] != "/etc/ssl/client-ca.pem" {
+		t.Errorf("client_ca_file = %v", resp["client_ca_file"])
+	}
+	mappings := resp["mappings"].([]interface{})
+	if len(mappings) != 2 {
+		t.Fatalf("expected 2 mappings, got %d", len(mappings))
+	}
+	first := mappings[0].(map[string]interface{})
+	if first["subject"] != "CN=ci-bot" {
+		t.Errorf("first mapping subject = %v", first["subject"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// LDAPLoginHandler — Phase 2 enterprise identity
+// ---------------------------------------------------------------------------
+
+func TestLDAPLoginHandler_MissingCredentials(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+	cfg := &config.Config{}
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
+
+	r := gin.New()
+	r.POST("/auth/ldap/login", h.LDAPLoginHandler())
+
+	// Empty body → binding error
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/auth/ldap/login", strings.NewReader(`{}`)))
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", w.Code, w.Body.String())
+	}
+	resp := getJSON(w)
+	if resp["error"] != "username and password are required" {
+		t.Errorf("error = %v", resp["error"])
+	}
+}
+
+func TestLDAPLoginHandler_NotConfigured(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+	cfg := &config.Config{}
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
+
+	r := gin.New()
+	r.POST("/auth/ldap/login", h.LDAPLoginHandler())
+
+	body := `{"username":"alice","password":"secret"}`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/auth/ldap/login", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", w.Code, w.Body.String())
+	}
+	resp := getJSON(w)
+	if resp["error"] != "LDAP authentication is not configured" {
+		t.Errorf("error = %v", resp["error"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ExchangeTokenHandler — Phase 2 enterprise identity
+// ---------------------------------------------------------------------------
+
+func TestExchangeTokenHandler_NoCookie(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+	cfg := &config.Config{}
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
+
+	r := gin.New()
+	r.POST("/auth/exchange", h.ExchangeTokenHandler())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/auth/exchange", nil))
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", w.Code)
+	}
+	resp := getJSON(w)
+	if resp["error"] != "No authentication cookie found" {
+		t.Errorf("error = %v", resp["error"])
+	}
+}
+
+func TestExchangeTokenHandler_InvalidCookie(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+	cfg := &config.Config{}
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
+
+	r := gin.New()
+	r.POST("/auth/exchange", h.ExchangeTokenHandler())
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/auth/exchange", nil)
+	req.AddCookie(&http.Cookie{Name: "tfr_auth_token", Value: "bad-jwt-token"})
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", w.Code)
+	}
+	resp := getJSON(w)
+	if resp["error"] != "Invalid authentication token" {
+		t.Errorf("error = %v", resp["error"])
+	}
+}
+
+func TestExchangeTokenHandler_ValidCookie(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+	cfg := &config.Config{}
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
+
+	// Generate a real JWT to use as cookie value
+	token, err := auth.GenerateJWT("user-1", "test@example.com", []string{"read"}, time.Hour)
+	if err != nil {
+		t.Fatalf("GenerateJWT: %v", err)
+	}
+
+	r := gin.New()
+	r.POST("/auth/exchange", h.ExchangeTokenHandler())
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/auth/exchange", nil)
+	req.AddCookie(&http.Cookie{Name: "tfr_auth_token", Value: token})
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	resp := getJSON(w)
+	if resp["token"] != token {
+		t.Errorf("token mismatch: got %v", resp["token"])
+	}
+
+	// Verify the cookie was cleared (MaxAge = -1)
+	cookies := w.Result().Cookies()
+	for _, c := range cookies {
+		if c.Name == "tfr_auth_token" && c.MaxAge != -1 {
+			t.Errorf("cookie MaxAge = %d, want -1 (cleared)", c.MaxAge)
+		}
 	}
 }

@@ -64,7 +64,7 @@ var errDB2 = errors.New("db error")
 // ---------------------------------------------------------------------------
 
 // GetByName / GetDefaultOrganization: id, name, display_name, created_at, updated_at
-var orgCols = []string{"id", "name", "display_name", "created_at", "updated_at"}
+var orgCols = []string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}
 
 // GetProvider: id, org_id, namespace, type, description, source, created_by, created_at, updated_at, created_by_name
 var providerCols = []string{
@@ -116,7 +116,7 @@ var sampleProtocolsJSON = []byte(`["6.0"]`)
 
 func sampleOrgRow() *sqlmock.Rows {
 	return sqlmock.NewRows(orgCols).
-		AddRow("org-1", "default", "Default Org", time.Now(), time.Now())
+		AddRow("org-1", "default", "Default Org", nil, nil, time.Now(), time.Now())
 }
 
 func sampleProviderRow() *sqlmock.Rows {

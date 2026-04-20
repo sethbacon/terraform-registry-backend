@@ -143,8 +143,8 @@ func TestSCMCreate_Success(t *testing.T) {
 	mock, r := newSCMProviderRouter(t)
 	// GetDefaultOrganization lookup (required — CreateProvider returns 400 if org not found)
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "created_at", "updated_at"}).
-			AddRow(knownUUID, "default", "Default", time.Now(), time.Now()))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}).
+			AddRow(knownUUID, "default", "Default", nil, nil, time.Now(), time.Now()))
 	mock.ExpectExec("INSERT INTO scm_providers").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -166,8 +166,8 @@ func TestSCMCreate_DBError(t *testing.T) {
 	mock, r := newSCMProviderRouter(t)
 	// GetDefaultOrganization lookup
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "created_at", "updated_at"}).
-			AddRow(knownUUID, "default", "Default", time.Now(), time.Now()))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}).
+			AddRow(knownUUID, "default", "Default", nil, nil, time.Now(), time.Now()))
 	mock.ExpectExec("INSERT INTO scm_providers").
 		WillReturnError(errDB)
 
@@ -229,8 +229,8 @@ func TestSCMCreate_PATBased_Success(t *testing.T) {
 	mock, r := newSCMProviderRouter(t)
 	// Default org lookup
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "created_at", "updated_at"}).
-			AddRow(knownUUID, "default", "Default", time.Now(), time.Now()))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}).
+			AddRow(knownUUID, "default", "Default", nil, nil, time.Now(), time.Now()))
 	mock.ExpectExec("INSERT INTO scm_providers").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -251,7 +251,7 @@ func TestSCMCreate_NoDefaultOrg(t *testing.T) {
 	mock, r := newSCMProviderRouter(t)
 	// Default org lookup returns no rows
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "created_at", "updated_at"}))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}))
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/scm-providers",
@@ -290,8 +290,8 @@ func TestSCMCreate_DefaultOrgInvalidUUID(t *testing.T) {
 	mock, r := newSCMProviderRouter(t)
 	// Default org returns a row with an unparseable UUID
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "created_at", "updated_at"}).
-			AddRow("not-a-uuid", "default", "Default", time.Now(), time.Now()))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}).
+			AddRow("not-a-uuid", "default", "Default", nil, nil, time.Now(), time.Now()))
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/scm-providers",

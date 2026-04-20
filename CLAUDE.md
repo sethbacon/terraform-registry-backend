@@ -40,14 +40,24 @@ git remote prune origin                          # prune stale remote-tracking r
    go fmt ./...
    go vet ./...
 
-   # Tests with coverage (must stay ≥ 75%) When looking for additional functions to test, skip functions with "// coverage:skip:{REASON}"
+   # Tests with coverage (must stay ≥ 80%) When looking for additional functions to test, skip functions with "// coverage:skip:{REASON}"
    # If you find functions with out coverage that cannot be easily tested, add the comment above. This will help you focus on functions that
    # can easily be tested.
-   go test ./... -coverprofile=coverage.out -covermode=atomic
-   go tool cover -func=coverage.out | grep "^total:"
+   go test ./internal/... ./pkg/... -coverprofile=coverage.out -covermode=atomic
+   go run ./scripts/coverfilter -in coverage.out -out coverage.filtered.out -root .
+   go tool cover -func=coverage.filtered.out | grep "^total:"
 
    # Security scan — fix or suppress new findings before pushing
-   gosec ./...
+   # Linux/CI:
+   gosec -fmt=json -out=gosec-results.json ./...
+   # Windows (paths must be quoted):
+   # gosec -fmt=json -out="gosec-results.json" "./..."
+   #
+   # Compare against committed baseline to detect new findings
+   python scripts/gosec-compare.py --results gosec-results.json --baseline gosec-baseline.json --base-dir .
+   # If the baseline needs updating (after fixing or suppressing findings):
+   # Linux: bash scripts/update-gosec-baseline.sh
+   # Windows: gosec -fmt=json -out="gosec-baseline.json" "./..."
    ```
 
    Do not push until all of the above pass locally.
@@ -484,7 +494,7 @@ The backend generates OpenAPI 2.0 (Swagger) documentation using [swaggo/swag](ht
 - All `@Tags` values must be title-cased and drawn from the established vocabulary:
   `Authentication`, `API Keys`, `Users`, `Organizations`, `Modules`, `Providers`,
   `Security Scanning`, `Storage`, `SCM Providers`, `SCM OAuth`, `SCM Linking`,
-  `Mirror`, `Mirror Protocol`, `RBAC`, `Stats`, `System`, `Webhooks`
+  `Mirror`, `Mirror Protocol`, `RBAC`, `Stats`, `System`, `Webhooks`, `SCIM`
 - After adding or changing any annotation, run `swag init` and update `docs/SWAGGER_ANNOTATION_CHECKLIST.md`.
 
 **Annotation template:**

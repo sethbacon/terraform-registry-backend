@@ -44,6 +44,9 @@ const (
 	// Security scanning scopes
 	ScopeScanningRead Scope = "scanning:read" // View scan results, config, and stats
 
+	// SCIM provisioning scopes
+	ScopeSCIMProvision Scope = "scim:provision" // SCIM 2.0 user/group provisioning
+
 	// Admin scope (wildcard - all permissions)
 	ScopeAdmin Scope = "admin"
 )
@@ -66,6 +69,7 @@ func AllScopes() []Scope {
 		ScopeAPIKeysManage,
 		ScopeAuditRead,
 		ScopeScanningRead,
+		ScopeSCIMProvision,
 		ScopeAdmin,
 	}
 }

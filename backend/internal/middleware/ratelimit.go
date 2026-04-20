@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/telemetry"
 )
 
@@ -298,6 +299,89 @@ func OrgRateLimitMiddleware(individual RateLimiterBackend, orgBackend RateLimite
 		}
 
 		remaining, _ := individual.RemainingTokens(c.Request.Context(), key)
+		c.Header("X-RateLimit-Remaining", strconv.Itoa(remaining))
+
+		c.Next()
+	}
+}
+
+// PrincipalOverrideLimiters holds per-principal rate limiter instances for
+// keys that have custom overrides configured in the YAML. Keys that do NOT
+// appear here use the shared default backend.
+type PrincipalOverrideLimiters struct {
+	overrides map[string]RateLimiterBackend
+}
+
+// NewPrincipalOverrideLimiters builds dedicated in-memory rate limiters for
+// each entry in the config overrides map.
+func NewPrincipalOverrideLimiters(overrides map[string]config.PrincipalRateLimitOverride) *PrincipalOverrideLimiters {
+	m := make(map[string]RateLimiterBackend, len(overrides))
+	for key, ov := range overrides {
+		cfg := RateLimitConfig{
+			RequestsPerMinute: ov.RequestsPerMinute,
+			BurstSize:         ov.Burst,
+			CleanupInterval:   5 * time.Minute,
+		}
+		if cfg.BurstSize == 0 {
+			cfg.BurstSize = cfg.RequestsPerMinute / 4
+			if cfg.BurstSize < 1 {
+				cfg.BurstSize = 1
+			}
+		}
+		m[key] = NewRateLimiter(cfg)
+	}
+	return &PrincipalOverrideLimiters{overrides: m}
+}
+
+// Close shuts down all override rate limiters.
+func (p *PrincipalOverrideLimiters) Close() error {
+	for _, rl := range p.overrides {
+		_ = rl.Close()
+	}
+	return nil
+}
+
+// PrincipalRateLimitMiddleware enforces per-principal rate limits with support
+// for admin-configured overrides. If a principal has a custom override, its
+// dedicated rate limiter is used; otherwise the shared defaultBackend applies.
+// If defaultBackend is nil, all requests pass through.
+func PrincipalRateLimitMiddleware(defaultBackend RateLimiterBackend, overrides *PrincipalOverrideLimiters) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if defaultBackend == nil {
+			c.Next()
+			return
+		}
+
+		key := getRateLimitKey(c)
+
+		// Check for per-principal override
+		backend := defaultBackend
+		if overrides != nil {
+			if ov, ok := overrides.overrides[key]; ok {
+				backend = ov
+			}
+		}
+
+		allowed, err := backend.Allow(c.Request.Context(), key)
+		if err != nil {
+			slog.Warn("rate limiter backend error, allowing request", "error", err, "key", key)
+			c.Next()
+			return
+		}
+
+		if !allowed {
+			remaining, _ := backend.RemainingTokens(c.Request.Context(), key)
+			c.Header("X-RateLimit-Remaining", strconv.Itoa(remaining))
+			c.Header("Retry-After", "60")
+			telemetry.RateLimitRejectionsTotal.WithLabelValues("principal", keyTypeFromKey(key)).Inc()
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
+				"error":       "Rate limit exceeded",
+				"retry_after": 60,
+			})
+			return
+		}
+
+		remaining, _ := backend.RemainingTokens(c.Request.Context(), key)
 		c.Header("X-RateLimit-Remaining", strconv.Itoa(remaining))
 
 		c.Next()

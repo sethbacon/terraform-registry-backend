@@ -258,10 +258,12 @@ func (h *OrganizationHandlers) CreateOrganizationHandler() gin.HandlerFunc {
 // UpdateOrganizationRequest represents the request to update an organization
 type UpdateOrganizationRequest struct {
 	DisplayName *string `json:"display_name"`
+	IdpType     *string `json:"idp_type"` // "oidc", "saml", "ldap", or null to clear
+	IdpName     *string `json:"idp_name"` // IdP name within type, or null to clear
 }
 
 // @Summary      Update organization
-// @Description  Update an existing organization's display name.
+// @Description  Update an existing organization's display name and optional IdP binding (idp_type + idp_name). Set idp_type to "oidc", "saml", or "ldap" to restrict login; set to empty string to clear.
 // @Tags         Organizations
 // @Security     Bearer
 // @Accept       json
@@ -307,6 +309,24 @@ func (h *OrganizationHandlers) UpdateOrganizationHandler() gin.HandlerFunc {
 		// Update fields
 		if req.DisplayName != nil {
 			org.DisplayName = *req.DisplayName
+		}
+
+		// Update IdP binding — explicit null clears, present value sets
+		if req.IdpType != nil {
+			if *req.IdpType == "" {
+				org.IdpType = nil
+				org.IdpName = nil
+			} else {
+				valid := map[string]bool{"oidc": true, "saml": true, "ldap": true}
+				if !valid[*req.IdpType] {
+					c.JSON(http.StatusBadRequest, gin.H{
+						"error": "idp_type must be 'oidc', 'saml', 'ldap', or empty to clear",
+					})
+					return
+				}
+				org.IdpType = req.IdpType
+				org.IdpName = req.IdpName
+			}
 		}
 
 		// Update in database

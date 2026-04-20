@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
+	"encoding/xml"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -17,9 +18,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/auth/azuread"
+	ldappkg "github.com/terraform-registry/terraform-registry/internal/auth/ldap"
 	"github.com/terraform-registry/terraform-registry/internal/auth/oidc"
+	samlpkg "github.com/terraform-registry/terraform-registry/internal/auth/saml"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/middleware"
 )
 
 // AuthHandlers handles authentication-related endpoints
@@ -32,7 +36,9 @@ type AuthHandlers struct {
 	tokenRepo       *repositories.TokenRepository
 	oidcProvider    atomic.Pointer[oidc.OIDCProvider]
 	azureADProvider *azuread.AzureADProvider
-	// stateStore persists OIDC CSRF state tokens. When Redis is configured the
+	samlProviders   map[string]*samlpkg.Provider // keyed by IdP name
+	ldapProvider    *ldappkg.Provider
+	// stateStore persists auth CSRF state tokens. When Redis is configured the
 	// store is shared across instances; otherwise an in-memory store is used.
 	stateStore auth.StateStore
 }
@@ -69,6 +75,30 @@ func NewAuthHandlers(cfg *config.Config, db *sql.DB, oidcConfigRepo *repositorie
 		h.azureADProvider = azProv
 	}
 
+	// Initialize SAML providers if enabled
+	if cfg.Auth.SAML.Enabled {
+		h.samlProviders = make(map[string]*samlpkg.Provider, len(cfg.Auth.SAML.IdPs))
+		for i := range cfg.Auth.SAML.IdPs {
+			idpCfg := &cfg.Auth.SAML.IdPs[i]
+			sp, err := samlpkg.NewProvider(&cfg.Auth.SAML, idpCfg)
+			if err != nil {
+				return nil, fmt.Errorf("saml idp %q: %w", idpCfg.Name, err)
+			}
+			h.samlProviders[idpCfg.Name] = sp
+			slog.Info("SAML IdP configured", "name", idpCfg.Name)
+		}
+	}
+
+	// Initialize LDAP provider if enabled
+	if cfg.Auth.LDAP.Enabled {
+		ldapProv, err := ldappkg.NewProvider(&cfg.Auth.LDAP)
+		if err != nil {
+			return nil, fmt.Errorf("ldap: %w", err)
+		}
+		h.ldapProvider = ldapProv
+		slog.Info("LDAP authentication configured", "host", cfg.Auth.LDAP.Host)
+	}
+
 	return h, nil
 }
 
@@ -90,12 +120,12 @@ func generateState() (string, error) {
 }
 
 // @Summary      Initiate OAuth login
-// @Description  Redirect user to OAuth provider (OIDC or Azure AD) to begin authentication flow
+// @Description  Redirect user to an identity provider to begin authentication. Supports OIDC, Azure AD, SAML, and LDAP (LDAP uses a separate POST endpoint). For SAML, set provider=saml:<idp-name>.
 // @Tags         Authentication
 // @Accept       json
 // @Produce      json
-// @Param        provider  query  string  false  "OAuth provider: oidc or azuread (default: oidc)"
-// @Success      302  {object}  string  "Redirects to OAuth provider authorization URL"
+// @Param        provider  query  string  false  "Auth provider: oidc, azuread, saml, or saml:<idp-name> (default: oidc)"
+// @Success      302  {object}  string  "Redirects to IdP authorization URL"
 // @Failure      400  {object}  map[string]interface{}  "Invalid provider or provider not configured"
 // @Failure      500  {object}  map[string]interface{}  "Failed to generate state or internal error"
 // @Router       /api/v1/auth/login [get]
@@ -152,10 +182,43 @@ func (h *AuthHandlers) LoginHandler() gin.HandlerFunc {
 			}
 			authURL = h.azureADProvider.GetAuthURL(state)
 		default:
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "Invalid provider. Must be 'oidc' or 'azuread'",
-			})
-			return
+			// Check for SAML provider: "saml" uses first IdP, "saml:<name>" picks by name.
+			if provider == "saml" || strings.HasPrefix(provider, "saml:") {
+				idpName := ""
+				if provider == "saml" {
+					// Use first configured IdP
+					for name := range h.samlProviders {
+						idpName = name
+						break
+					}
+				} else {
+					idpName = strings.TrimPrefix(provider, "saml:")
+				}
+				sp, ok := h.samlProviders[idpName]
+				if !ok || sp == nil {
+					c.JSON(http.StatusBadRequest, gin.H{
+						"error": fmt.Sprintf("SAML IdP %q not configured", idpName),
+					})
+					return
+				}
+				redirectURL, err := sp.MakeAuthenticationRequest(state)
+				if err != nil {
+					slog.Error("saml: failed to create AuthnRequest", "idp", idpName, "error", err)
+					c.JSON(http.StatusInternalServerError, gin.H{
+						"error": "Failed to initiate SAML login",
+					})
+					return
+				}
+				// Update session state with the specific IdP name for callback routing
+				sessionState.ProviderType = "saml:" + idpName
+				_ = h.stateStore.Save(c.Request.Context(), state, sessionState, 10*time.Minute)
+				authURL = redirectURL.String()
+			} else {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": "Invalid provider. Must be 'oidc', 'azuread', or 'saml'",
+				})
+				return
+			}
 		}
 
 		// Redirect to authorization URL
@@ -312,6 +375,13 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 			}
 
 		default:
+			// Check for SAML provider type ("saml" or "saml:<idp_name>")
+			if sessionState.ProviderType == "saml" || strings.HasPrefix(sessionState.ProviderType, "saml:") {
+				// SAML responses arrive via the ACS endpoint (POST), not here.
+				// If we get here it means something went wrong in routing.
+				callbackError("invalid_flow", "SAML responses should be sent to the ACS endpoint.")
+				return
+			}
 			callbackError("unknown_provider", "Unknown authentication provider.")
 			return
 		}
@@ -355,6 +425,13 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 			HttpOnly: true,
 			SameSite: http.SameSiteLaxMode,
 		})
+
+		// Set CSRF double-submit cookie (non-HttpOnly so the frontend can read it
+		// and echo it back in the X-CSRF-Token header on mutating requests).
+		if _, csrfErr := middleware.SetCSRFCookie(c.Writer, true); csrfErr != nil {
+			slog.Error("failed to set CSRF cookie on callback", "error", csrfErr)
+		}
+
 		redirectTarget := fmt.Sprintf("%s/auth/callback", frontendBase)
 		c.Redirect(http.StatusFound, redirectTarget)
 	}
@@ -367,6 +444,8 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 // @Produce      json
 // @Param        post_logout_redirect_uri  query  string  false  "URL to redirect to after the provider logs out (defaults to frontend /login)"
 // @Success      302  {object}  string  "Redirects to OIDC end_session_endpoint or frontend /login"
+// @Failure      401  {object}  map[string]interface{}  "Unauthorized — no valid session"
+// @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/auth/logout [get]
 // LogoutHandler revokes the current JWT, clears the auth cookie, and terminates
 // the OIDC SSO session by redirecting to the provider's end_session_endpoint.
@@ -393,6 +472,9 @@ func (h *AuthHandlers) LogoutHandler() gin.HandlerFunc {
 			HttpOnly: true,
 			SameSite: http.SameSiteStrictMode,
 		})
+
+		// Clear the CSRF cookie
+		middleware.ClearCSRFCookie(c.Writer)
 
 		frontendBase := deriveFrontendURL(h.cfg)
 		// After the IdP terminates the session, redirect to the frontend home page.
@@ -536,6 +618,16 @@ func (h *AuthHandlers) RefreshHandler() gin.HandlerFunc {
 			scopes = []string{}
 		}
 
+		// Revoke the old JWT so it cannot be replayed after refresh.
+		if claims, exists := c.Get("jwt_claims"); exists {
+			if jwtClaims, ok := claims.(*auth.Claims); ok && jwtClaims.JTI != "" {
+				if jwtClaims.ExpiresAt != nil {
+					_ = h.tokenRepo.RevokeToken(c.Request.Context(),
+						jwtClaims.JTI, jwtClaims.UserID, jwtClaims.ExpiresAt.Time)
+				}
+			}
+		}
+
 		// Generate new JWT token
 		newToken, err := auth.GenerateJWT(user.ID, user.Email, scopes, 24*time.Hour)
 		if err != nil {
@@ -543,6 +635,22 @@ func (h *AuthHandlers) RefreshHandler() gin.HandlerFunc {
 				"error": "Failed to generate new token",
 			})
 			return
+		}
+
+		// Set the refreshed JWT as an HttpOnly cookie.
+		http.SetCookie(c.Writer, &http.Cookie{
+			Name:     "tfr_auth_token",
+			Value:    newToken,
+			Path:     "/",
+			MaxAge:   86400,
+			Secure:   true,
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+		})
+
+		// Refresh the CSRF double-submit cookie.
+		if _, csrfErr := middleware.SetCSRFCookie(c.Writer, true); csrfErr != nil {
+			slog.Error("failed to set CSRF cookie on refresh", "error", csrfErr)
 		}
 
 		c.JSON(http.StatusOK, gin.H{
@@ -775,4 +883,521 @@ func (h *AuthHandlers) applyGroupMappings(ctx context.Context, userID string, gr
 	}
 
 	return nil
+}
+
+// applySAMLGroupMappings applies SAML group-to-role mappings for a user.
+// It mirrors applyGroupMappings but reads from SAMLConfig.
+func (h *AuthHandlers) applySAMLGroupMappings(ctx context.Context, userID string, groups []string) error {
+	mappings := h.cfg.Auth.SAML.GroupMappings
+	defaultRole := h.cfg.Auth.SAML.DefaultRole
+	if len(mappings) == 0 && defaultRole == "" {
+		return nil
+	}
+
+	groupSet := make(map[string]struct{}, len(groups))
+	for _, g := range groups {
+		groupSet[g] = struct{}{}
+	}
+
+	matched := false
+	for _, mapping := range mappings {
+		if _, ok := groupSet[mapping.Group]; !ok {
+			continue
+		}
+		matched = true
+
+		org, err := h.orgRepo.GetByName(ctx, mapping.Organization)
+		if err != nil || org == nil {
+			slog.Warn("SAML group mapping: organization not found", "org", mapping.Organization, "group", mapping.Group)
+			continue
+		}
+
+		isMember, _, err := h.orgRepo.CheckMembership(ctx, org.ID, userID)
+		if err != nil {
+			return fmt.Errorf("check membership org=%s user=%s: %w", org.ID, userID, err)
+		}
+		if isMember {
+			if err := h.orgRepo.UpdateMemberRole(ctx, org.ID, userID, mapping.Role); err != nil {
+				return fmt.Errorf("update member role org=%s user=%s role=%s: %w", org.ID, userID, mapping.Role, err)
+			}
+		} else {
+			if err := h.orgRepo.AddMemberWithParams(ctx, org.ID, userID, mapping.Role); err != nil {
+				return fmt.Errorf("add member org=%s user=%s role=%s: %w", org.ID, userID, mapping.Role, err)
+			}
+		}
+		slog.Info("SAML group mapping applied", "user_id", userID, "group", mapping.Group, "org", mapping.Organization, "role", mapping.Role)
+	}
+
+	if !matched && defaultRole != "" {
+		org, err := h.orgRepo.GetDefaultOrganization(ctx)
+		if err != nil || org == nil {
+			return fmt.Errorf("default organization not found for SAML default_role fallback: %w", err)
+		}
+		isMember, _, err := h.orgRepo.CheckMembership(ctx, org.ID, userID)
+		if err != nil {
+			return fmt.Errorf("check membership default org user=%s: %w", userID, err)
+		}
+		if isMember {
+			if err := h.orgRepo.UpdateMemberRole(ctx, org.ID, userID, defaultRole); err != nil {
+				return fmt.Errorf("update default role user=%s role=%s: %w", userID, defaultRole, err)
+			}
+		} else {
+			if err := h.orgRepo.AddMemberWithParams(ctx, org.ID, userID, defaultRole); err != nil {
+				return fmt.Errorf("add default member user=%s role=%s: %w", userID, defaultRole, err)
+			}
+		}
+		slog.Info("SAML default role applied", "user_id", userID, "role", defaultRole)
+	}
+
+	return nil
+}
+
+// @Summary      SAML SP metadata
+// @Description  Returns the SAML Service Provider metadata XML for the specified (or first configured) IdP. Used by SAML identity providers during federation setup.
+// @Tags         Authentication
+// @Produce      xml
+// @Param        idp  query  string  false  "SAML IdP name (defaults to first configured)"
+// @Success      200  {string}  string  "SAML SP metadata XML"
+// @Failure      404  {object}  map[string]interface{}  "No SAML provider configured"
+// @Failure      500  {object}  map[string]interface{}  "Failed to marshal metadata"
+// @Router       /api/v1/auth/saml/metadata [get]
+// SAMLMetadataHandler returns the SP metadata XML for the first configured IdP.
+// GET /api/v1/auth/saml/metadata
+func (h *AuthHandlers) SAMLMetadataHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		idpName := c.Query("idp")
+		var provider *samlpkg.Provider
+		if idpName != "" {
+			provider = h.samlProviders[idpName]
+		} else {
+			// Return metadata from first configured provider
+			for _, p := range h.samlProviders {
+				provider = p
+				break
+			}
+		}
+		if provider == nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "No SAML provider configured"})
+			return
+		}
+
+		metadata := provider.GetMetadata()
+		data, err := xml.MarshalIndent(metadata, "", "  ")
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to marshal SP metadata"})
+			return
+		}
+		c.Data(http.StatusOK, "application/samlmetadata+xml", data)
+	}
+}
+
+// @Summary      SAML Assertion Consumer Service
+// @Description  Receives SAML responses from the IdP (SP-initiated or IdP-initiated), validates the assertion, creates or updates the user, issues a JWT, and redirects to the frontend callback.
+// @Tags         Authentication
+// @Accept       x-www-form-urlencoded
+// @Produce      html
+// @Param        SAMLResponse  formData  string  true  "Base64-encoded SAML response"
+// @Param        RelayState    formData  string  false "Relay state (contains session key)"
+// @Success      302  {string}  string  "Redirects to frontend /auth/callback with token"
+// @Failure      400  {object}  map[string]interface{}  "Invalid SAML response or assertion"
+// @Failure      500  {object}  map[string]interface{}  "Internal server error"
+// @Router       /api/v1/auth/saml/acs [post]
+// SAMLACSHandler handles the SAML Assertion Consumer Service (ACS) endpoint.
+// It receives SAML responses from the IdP (via POST), validates the assertion,
+// creates/updates the user, issues a JWT, and redirects to the frontend.
+// POST /api/v1/auth/saml/acs
+func (h *AuthHandlers) SAMLACSHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		frontendBase := deriveFrontendURL(h.cfg)
+
+		callbackError := func(errCode, description string) {
+			if frontendBase == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": description})
+				return
+			}
+			target := fmt.Sprintf(
+				"%s/auth/callback?error=%s&error_description=%s",
+				frontendBase,
+				url.QueryEscape(errCode),
+				url.QueryEscape(description),
+			)
+			c.Redirect(http.StatusFound, target)
+		}
+
+		relayState := c.PostForm("RelayState")
+
+		// Determine which IdP to validate against.
+		// The RelayState may contain our session state key which includes the IdP name.
+		var provider *samlpkg.Provider
+		var idpName string
+
+		if relayState != "" {
+			// Try to load session state from relay state (which is our CSRF state token)
+			sessionState, _ := h.stateStore.Load(c.Request.Context(), relayState)
+			if sessionState != nil {
+				_ = h.stateStore.Delete(c.Request.Context(), relayState)
+				if strings.HasPrefix(sessionState.ProviderType, "saml:") {
+					idpName = strings.TrimPrefix(sessionState.ProviderType, "saml:")
+					provider = h.samlProviders[idpName]
+				}
+			}
+		}
+
+		// Fallback: try all providers (IdP-initiated flow has no RelayState)
+		if provider == nil {
+			for name, p := range h.samlProviders {
+				provider = p
+				idpName = name
+				break
+			}
+		}
+
+		if provider == nil {
+			callbackError("provider_not_configured", "No SAML IdP configured.")
+			return
+		}
+
+		// Validate the SAML response
+		// For SP-initiated flows, we should validate against the request ID.
+		// For IdP-initiated flows, we pass empty possible request IDs.
+		possibleRequestIDs := []string{}
+		userInfo, err := provider.ValidateResponse(c.Request, possibleRequestIDs, h.cfg.Auth.SAML.GroupAttributeName)
+		if err != nil {
+			slog.Error("saml: assertion validation failed", "idp", idpName, "error", err)
+			callbackError("assertion_invalid", "SAML assertion validation failed.")
+			return
+		}
+
+		if userInfo.Email == "" && userInfo.NameID == "" {
+			callbackError("user_info_failed", "SAML assertion did not contain an email or NameID.")
+			return
+		}
+
+		// Use NameID as the unique subject identifier
+		sub := fmt.Sprintf("saml:%s:%s", idpName, userInfo.NameID)
+
+		ctx := context.Background()
+
+		// Get or create user (reuse the OIDC path — sub is unique per IdP)
+		user, err := h.userRepo.GetOrCreateUserByOIDC(ctx, sub, userInfo.Email, userInfo.Name)
+		if err != nil {
+			callbackError("user_creation_failed", "Failed to look up or create your account.")
+			return
+		}
+
+		// Apply SAML group mappings
+		if mapErr := h.applySAMLGroupMappings(ctx, user.ID, userInfo.Groups); mapErr != nil {
+			slog.Warn("failed to apply SAML group mappings", "user_id", user.ID, "error", mapErr)
+		}
+
+		// Fetch user scopes to embed in JWT
+		scopes, scopeErr := h.orgRepo.GetUserCombinedScopes(ctx, user.ID)
+		if scopeErr != nil {
+			scopes = []string{}
+		}
+
+		// Generate JWT token
+		jwtToken, err := auth.GenerateJWT(user.ID, user.Email, scopes, 24*time.Hour)
+		if err != nil {
+			callbackError("jwt_failed", "Failed to generate an authentication token.")
+			return
+		}
+
+		// Set HttpOnly cookie
+		http.SetCookie(c.Writer, &http.Cookie{
+			Name:     "tfr_auth_token",
+			Value:    jwtToken,
+			Path:     "/",
+			MaxAge:   86400,
+			Secure:   true,
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+		})
+
+		// Set CSRF double-submit cookie
+		if _, csrfErr := middleware.SetCSRFCookie(c.Writer, true); csrfErr != nil {
+			slog.Error("failed to set CSRF cookie on SAML ACS", "error", csrfErr)
+		}
+
+		redirectTarget := fmt.Sprintf("%s/auth/callback", frontendBase)
+		c.Redirect(http.StatusFound, redirectTarget)
+	}
+}
+
+// @Summary      List authentication providers
+// @Description  Returns the list of available authentication providers (OIDC, Azure AD, SAML IdPs, LDAP) for the login page provider picker.
+// @Tags         Authentication
+// @Produce      json
+// @Success      200  {object}  map[string]interface{}  "List of available providers"
+// @Router       /api/v1/auth/providers [get]
+// ProvidersHandler returns the list of available authentication providers.
+// This is consumed by the frontend to show the login provider picker.
+// GET /api/v1/auth/providers
+func (h *AuthHandlers) ProvidersHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		providers := make([]gin.H, 0)
+
+		if h.oidcProvider.Load() != nil {
+			providers = append(providers, gin.H{
+				"type": "oidc",
+				"name": "OpenID Connect",
+			})
+		}
+
+		if h.azureADProvider != nil {
+			providers = append(providers, gin.H{
+				"type": "azuread",
+				"name": "Azure AD",
+			})
+		}
+
+		for name := range h.samlProviders {
+			providers = append(providers, gin.H{
+				"type": "saml",
+				"name": name,
+				"id":   name,
+			})
+		}
+
+		if h.ldapProvider != nil {
+			providers = append(providers, gin.H{
+				"type": "ldap",
+				"name": "LDAP",
+			})
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"providers": providers,
+		})
+	}
+}
+
+// @Summary      LDAP login
+// @Description  Authenticates a user via LDAP with username and password. On success, issues a JWT and sets an httpOnly auth cookie.
+// @Tags         Authentication
+// @Accept       json
+// @Produce      json
+// @Param        body  body  object{username=string,password=string}  true  "LDAP credentials"
+// @Success      200  {object}  map[string]interface{}  "JWT token and user info"
+// @Failure      400  {object}  map[string]interface{}  "Missing credentials or LDAP not configured"
+// @Failure      401  {object}  map[string]interface{}  "Invalid username or password"
+// @Failure      500  {object}  map[string]interface{}  "Internal server error"
+// @Router       /api/v1/auth/ldap/login [post]
+// LDAPLoginHandler authenticates a user via LDAP with username/password.
+// POST /api/v1/auth/ldap/login
+// Body: {"username": "...", "password": "..."}
+func (h *AuthHandlers) LDAPLoginHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req struct {
+			Username string `json:"username" binding:"required"`
+			Password string `json:"password" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "username and password are required"})
+			return
+		}
+
+		if h.ldapProvider == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "LDAP authentication is not configured"})
+			return
+		}
+
+		userInfo, err := h.ldapProvider.Authenticate(req.Username, req.Password)
+		if err != nil {
+			slog.Warn("LDAP authentication failed", "username", req.Username, "error", err)
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid username or password"})
+			return
+		}
+
+		ctx := c.Request.Context()
+
+		// Use the LDAP DN as the unique subject identifier
+		sub := fmt.Sprintf("ldap:%s", userInfo.DN)
+
+		user, err := h.userRepo.GetOrCreateUserByOIDC(ctx, sub, userInfo.Email, userInfo.Name)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to look up or create your account"})
+			return
+		}
+
+		// Apply LDAP group mappings
+		if mapErr := h.applyLDAPGroupMappings(ctx, user.ID, userInfo.Groups); mapErr != nil {
+			slog.Warn("failed to apply LDAP group mappings", "user_id", user.ID, "error", mapErr)
+		}
+
+		// Fetch user scopes
+		scopes, err := h.orgRepo.GetUserCombinedScopes(ctx, user.ID)
+		if err != nil {
+			scopes = []string{}
+		}
+
+		// Generate JWT
+		jwtToken, err := auth.GenerateJWT(user.ID, user.Email, scopes, 24*time.Hour)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate authentication token"})
+			return
+		}
+
+		// Set HttpOnly cookie
+		http.SetCookie(c.Writer, &http.Cookie{
+			Name:     "tfr_auth_token",
+			Value:    jwtToken,
+			Path:     "/",
+			MaxAge:   86400,
+			Secure:   true,
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+		})
+
+		// Set CSRF cookie
+		if _, csrfErr := middleware.SetCSRFCookie(c.Writer, true); csrfErr != nil {
+			slog.Error("failed to set CSRF cookie on LDAP login", "error", csrfErr)
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"token":      jwtToken,
+			"expires_in": 86400,
+		})
+	}
+}
+
+// applyLDAPGroupMappings applies LDAP group DN-to-role mappings for a user.
+func (h *AuthHandlers) applyLDAPGroupMappings(ctx context.Context, userID string, groupDNs []string) error {
+	matched := ldappkg.MatchGroupMappings(groupDNs, h.cfg.Auth.LDAP.GroupMappings)
+	defaultRole := h.cfg.Auth.LDAP.DefaultRole
+	if len(matched) == 0 && defaultRole == "" {
+		return nil
+	}
+
+	anyMatched := false
+	for _, mapping := range matched {
+		anyMatched = true
+		org, err := h.orgRepo.GetByName(ctx, mapping.Organization)
+		if err != nil || org == nil {
+			slog.Warn("LDAP group mapping: organization not found", "org", mapping.Organization, "group_dn", mapping.GroupDN)
+			continue
+		}
+
+		isMember, _, err := h.orgRepo.CheckMembership(ctx, org.ID, userID)
+		if err != nil {
+			return fmt.Errorf("check membership org=%s user=%s: %w", org.ID, userID, err)
+		}
+		if isMember {
+			if err := h.orgRepo.UpdateMemberRole(ctx, org.ID, userID, mapping.Role); err != nil {
+				return fmt.Errorf("update member role: %w", err)
+			}
+		} else {
+			if err := h.orgRepo.AddMemberWithParams(ctx, org.ID, userID, mapping.Role); err != nil {
+				return fmt.Errorf("add member: %w", err)
+			}
+		}
+		slog.Info("LDAP group mapping applied", "user_id", userID, "group_dn", mapping.GroupDN, "org", mapping.Organization, "role", mapping.Role)
+	}
+
+	if !anyMatched && defaultRole != "" {
+		org, err := h.orgRepo.GetDefaultOrganization(ctx)
+		if err != nil || org == nil {
+			return fmt.Errorf("default organization not found for LDAP default_role fallback: %w", err)
+		}
+		isMember, _, err := h.orgRepo.CheckMembership(ctx, org.ID, userID)
+		if err != nil {
+			return fmt.Errorf("check membership default org user=%s: %w", userID, err)
+		}
+		if isMember {
+			if err := h.orgRepo.UpdateMemberRole(ctx, org.ID, userID, defaultRole); err != nil {
+				return fmt.Errorf("update default role: %w", err)
+			}
+		} else {
+			if err := h.orgRepo.AddMemberWithParams(ctx, org.ID, userID, defaultRole); err != nil {
+				return fmt.Errorf("add default member: %w", err)
+			}
+		}
+		slog.Info("LDAP default role applied", "user_id", userID, "role", defaultRole)
+	}
+
+	return nil
+}
+
+// @Summary      Identity group mappings
+// @Description  Returns read-only SAML and LDAP group-to-role mapping configuration. OIDC mappings are managed separately via the OIDC admin endpoints.
+// @Tags         Authentication
+// @Security     Bearer
+// @Produce      json
+// @Success      200  {object}  map[string]interface{}  "SAML and LDAP group mapping config"
+// @Failure      401  {object}  map[string]interface{}  "Unauthorized"
+// @Failure      403  {object}  map[string]interface{}  "Forbidden — requires admin scope"
+// @Router       /api/v1/admin/identity/group-mappings [get]
+// IdentityGroupMappingsHandler returns read-only group mapping config for all
+// identity providers (SAML + LDAP). OIDC mappings are handled separately via
+// the OIDCConfigAdminHandlers.
+// GET /api/v1/admin/identity/group-mappings
+func (h *AuthHandlers) IdentityGroupMappingsHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		result := gin.H{}
+
+		// SAML group mappings (from config)
+		if h.cfg.Auth.SAML.Enabled {
+			samlMappings := make([]gin.H, 0, len(h.cfg.Auth.SAML.GroupMappings))
+			for _, m := range h.cfg.Auth.SAML.GroupMappings {
+				samlMappings = append(samlMappings, gin.H{
+					"group":        m.Group,
+					"organization": m.Organization,
+					"role":         m.Role,
+				})
+			}
+			result["saml"] = gin.H{
+				"group_attribute_name": h.cfg.Auth.SAML.GroupAttributeName,
+				"default_role":         h.cfg.Auth.SAML.DefaultRole,
+				"group_mappings":       samlMappings,
+			}
+		}
+
+		// LDAP group mappings (from config)
+		if h.cfg.Auth.LDAP.Enabled {
+			ldapMappings := make([]gin.H, 0, len(h.cfg.Auth.LDAP.GroupMappings))
+			for _, m := range h.cfg.Auth.LDAP.GroupMappings {
+				ldapMappings = append(ldapMappings, gin.H{
+					"group_dn":     m.GroupDN,
+					"organization": m.Organization,
+					"role":         m.Role,
+				})
+			}
+			result["ldap"] = gin.H{
+				"default_role":   h.cfg.Auth.LDAP.DefaultRole,
+				"group_mappings": ldapMappings,
+			}
+		}
+
+		c.JSON(http.StatusOK, result)
+	}
+}
+
+// @Summary      mTLS configuration
+// @Description  Returns the mTLS certificate-subject to scope mappings from the server configuration (read-only). Shows whether mTLS is enabled and lists all configured subject-to-scope bindings.
+// @Tags         Authentication
+// @Security     Bearer
+// @Produce      json
+// @Success      200  {object}  map[string]interface{}  "mTLS config with enabled flag, CA file path, and mappings"
+// @Failure      401  {object}  map[string]interface{}  "Unauthorized"
+// @Failure      403  {object}  map[string]interface{}  "Forbidden — requires admin scope"
+// @Router       /api/v1/admin/mtls/config [get]
+// MTLSConfigHandler returns the mTLS certificate-subject → scope mappings
+// from the server configuration (read-only).
+// GET /api/v1/admin/mtls/config
+func (h *AuthHandlers) MTLSConfigHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		mappings := make([]gin.H, 0, len(h.cfg.Security.MTLS.Mappings))
+		for _, m := range h.cfg.Security.MTLS.Mappings {
+			mappings = append(mappings, gin.H{
+				"subject": m.Subject,
+				"scopes":  m.Scopes,
+			})
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"enabled":        h.cfg.Security.MTLS.Enabled,
+			"client_ca_file": h.cfg.Security.MTLS.ClientCAFile,
+			"mappings":       mappings,
+		})
+	}
 }

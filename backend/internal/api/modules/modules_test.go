@@ -67,7 +67,7 @@ var errDB2 = errors.New("db error")
 // ---------------------------------------------------------------------------
 
 // GetByName / GetDefaultOrganization: id, name, display_name, created_at, updated_at
-var orgCols2 = []string{"id", "name", "display_name", "created_at", "updated_at"}
+var orgCols2 = []string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}
 
 // GetModule: id, org_id, namespace, name, system, description, source, created_by, created_at, updated_at, created_by_name, deprecated, deprecated_at, deprecation_message, successor_module_id
 var moduleCols2 = []string{"id", "organization_id", "namespace", "name", "system", "description", "source", "created_by", "created_at", "updated_at", "created_by_name", "deprecated", "deprecated_at", "deprecation_message", "successor_module_id"}
@@ -112,7 +112,7 @@ var moduleSearchColsFTS = []string{
 
 func sampleOrgRow2() *sqlmock.Rows {
 	return sqlmock.NewRows(orgCols2).
-		AddRow("org-1", "default", "Default Org", time.Now(), time.Now())
+		AddRow("org-1", "default", "Default Org", nil, nil, time.Now(), time.Now())
 }
 
 func sampleModuleRow2() *sqlmock.Rows {

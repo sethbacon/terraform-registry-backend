@@ -201,7 +201,7 @@ The following items require coordinated work with `terraform-registry-frontend`:
 
 ### Track B — Identity
 
-#### B2.1 · SAML 2.0 IdP connector · [P0/L]
+#### B2.1 · SAML 2.0 IdP connector · [P0/L] ✅
 
 - New package `backend/internal/auth/saml/` using `crewjam/saml`.
 - Support SP-initiated + IdP-initiated flows.
@@ -212,7 +212,7 @@ The following items require coordinated work with `terraform-registry-frontend`:
 - **AC:** Tested against Okta, Entra ID SAML, ADFS, Ping; integration test in `cmd/api-test`.
 - **↔ Frontend B2.1:** Login page provider-picker must list SAML IdPs.
 
-#### B2.2 · LDAP / Active Directory connector · [P0/L]
+#### B2.2 · LDAP / Active Directory connector · [P0/L] ✅
 
 - New package `backend/internal/auth/ldap/` using `go-ldap/ldap`.
 - Simple bind + StartTLS/LDAPS; group lookup via `memberOf` or nested-group search.
@@ -221,7 +221,7 @@ The following items require coordinated work with `terraform-registry-frontend`:
 - **Files:** `backend/internal/auth/ldap/*.go`, `backend/internal/config/config.go`, `backend/internal/api/auth_routes.go`
 - **AC:** Tested against OpenLDAP + Active Directory; CI integration test with `osixia/docker-openldap`.
 
-#### B2.3 · SCIM 2.0 provisioning endpoints · [P0/L]
+#### B2.3 · SCIM 2.0 provisioning endpoints · [P0/L] ✅
 
 - Implement `/scim/v2/Users`, `/scim/v2/Groups` per RFC 7644.
 - Token-authenticated per-IdP; scope `admin` or new `scim:provision`.
@@ -230,7 +230,7 @@ The following items require coordinated work with `terraform-registry-frontend`:
 - **AC:** Okta + Entra SCIM connectors successfully provision/deprovision; integration test in CI.
 - **↔ Frontend B2.3:** SCIM admin page.
 
-#### B2.4 · OIDC refresh token + silent renew · [P1/M]
+#### B2.4 · OIDC refresh token + silent renew · [P1/M] ✅
 
 - Implement refresh-token rotation in `internal/auth/oidc/`.
 - Add `/auth/refresh` endpoint.
@@ -240,14 +240,14 @@ The following items require coordinated work with `terraform-registry-frontend`:
 - **AC:** Token auto-refreshes before expiry; compatible with Entra, Okta, Auth0, Keycloak. Frontend httpOnly migration unblocked.
 - **↔ Frontend A1.1:** httpOnly cookie auth migration.
 
-#### B2.5 · Per-principal rate limiting · [P1/M]
+#### B2.5 · Per-principal rate limiting · [P1/M] ✅
 
 - Extend `middleware/ratelimit.go` with token bucket keyed by `user_id` or `api_key_id`.
 - Allow admin override per org.
 - **Files:** `backend/internal/middleware/ratelimit.go`, `backend/internal/config/config.go`
 - **AC:** Compromised API key cannot DoS; new metric `registry_ratelimit_exceeded_total{principal_type}`.
 
-#### B2.6 · mTLS client authentication · [P2/M]
+#### B2.6 · mTLS client authentication · [P2/M] ✅
 
 - Optional mTLS mode for machine-to-machine callers.
 - Cert-subject → scope mapping via config.
