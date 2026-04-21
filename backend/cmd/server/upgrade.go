@@ -7,7 +7,6 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -69,12 +68,12 @@ func RunUpgradePreflight(configPath string, verbose bool) int {
 
 	// Get PostgreSQL version
 	var pgVersion string
-	db.QueryRowContext(ctx, "SELECT version()").Scan(&pgVersion)
+	_ = db.QueryRowContext(ctx, "SELECT version()").Scan(&pgVersion)
 	results = append(results, PreflightResult{"Database", "ok", fmt.Sprintf("Connected (%s)", truncate(pgVersion, 60))})
 
 	// Check minimum PostgreSQL version
 	var pgMajor int
-	db.QueryRowContext(ctx, "SHOW server_version_num").Scan(&pgMajor)
+	_ = db.QueryRowContext(ctx, "SHOW server_version_num").Scan(&pgMajor)
 	if pgMajor > 0 && pgMajor < 140000 {
 		results = append(results, PreflightResult{"PostgreSQL version", "fail", fmt.Sprintf("Minimum PostgreSQL 14 required, found %d", pgMajor/10000)})
 	} else if pgMajor > 0 {
@@ -246,28 +245,4 @@ func getEnvIntOrDefault(key string, defaultVal int) int {
 		return defaultVal
 	}
 	return n
-}
-
-// parseUpgradeArgs parses the upgrade subcommand arguments.
-func parseUpgradeArgs(args []string) (subcommand, configPath string, verbose bool) {
-	configPath = "config.yaml"
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "preflight":
-			subcommand = "preflight"
-		case "--config":
-			if i+1 < len(args) {
-				configPath = args[i+1]
-				i++
-			}
-		case "--verbose":
-			verbose = true
-		}
-	}
-	return
-}
-
-func init() {
-	// Register the upgrade subcommand handler
-	_ = strings.TrimSpace // avoid unused import
 }

@@ -117,7 +117,7 @@ func (s *UserService) ExportUserData(ctx context.Context, userID string) (*UserD
 	}
 
 	// 4. Audit entry count (not full entries — they may be voluminous)
-	s.db.QueryRowContext(ctx,
+	_ = s.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM audit_logs WHERE user_id = $1`, userID,
 	).Scan(&export.AuditEntries)
 
@@ -183,7 +183,7 @@ func (s *UserService) EraseUser(ctx context.Context, userID string, erasedBy str
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	// Verify user exists
 	var exists bool

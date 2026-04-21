@@ -241,7 +241,7 @@ func runHealthSoak(ctx context.Context, cfg *Config, results *Results) {
 				latency := time.Since(start)
 
 				if err == nil {
-					io.Copy(io.Discard, resp.Body)
+					_, _ = io.Copy(io.Discard, resp.Body)
 					resp.Body.Close()
 					if resp.StatusCode != 200 {
 						err = fmt.Errorf("health returned %d", resp.StatusCode)
@@ -289,7 +289,7 @@ func runAPISoak(ctx context.Context, cfg *Config, results *Results) {
 				latency := time.Since(start)
 
 				if err == nil {
-					io.Copy(io.Discard, resp.Body)
+					_, _ = io.Copy(io.Discard, resp.Body)
 					resp.Body.Close()
 					if resp.StatusCode >= 500 {
 						err = fmt.Errorf("%s returned %d", endpoint, resp.StatusCode)
@@ -333,7 +333,7 @@ func runConnectionStorm(ctx context.Context, cfg *Config, results *Results) {
 				latency := time.Since(start)
 
 				if err == nil {
-					io.Copy(io.Discard, resp.Body)
+					_, _ = io.Copy(io.Discard, resp.Body)
 					resp.Body.Close()
 					if resp.StatusCode != 200 {
 						err = fmt.Errorf("storm: status %d", resp.StatusCode)
@@ -376,7 +376,7 @@ func runLargePayload(ctx context.Context, cfg *Config, results *Results) {
 				latency := time.Since(start)
 
 				if err == nil {
-					io.Copy(io.Discard, resp.Body)
+					_, _ = io.Copy(io.Discard, resp.Body)
 					resp.Body.Close()
 					// 413 or 401 are expected (payload too large or unauthorized)
 					if resp.StatusCode >= 500 {
