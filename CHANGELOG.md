@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-04-20
+
+### Fixed
+
+- fix(setup): detect unconfigured features added after initial setup and re-trigger the setup wizard — registries that completed setup before scanning was added now correctly show the setup banner and allow configuring scanning without requiring a full re-setup (#215)
+- fix(setup): `SetupTokenMiddleware` now allows setup API requests when `setup_completed` is true but pending features remain unconfigured
+- fix(setup): server startup generates a new setup token when pending feature setup is detected
+- fix(setup): `CompleteSetup` handler supports pending-feature-only completion flow, validating only the unconfigured features
+
 ## [0.9.0] - 2026-04-20
 
 ### Fixed
