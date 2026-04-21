@@ -78,12 +78,13 @@ func (h *Handlers) GetSetupStatus(c *gin.Context) {
 	scanningConfigured, _ := h.oidcConfigRepo.GetScanningConfigured(ctx)
 
 	response := gin.H{
-		"setup_completed":     status.SetupCompleted,
-		"storage_configured":  status.StorageConfigured,
-		"oidc_configured":     status.OIDCConfigured,
-		"admin_configured":    status.AdminConfigured,
-		"setup_required":      status.SetupRequired,
-		"scanning_configured": scanningConfigured,
+		"setup_completed":       status.SetupCompleted,
+		"storage_configured":    status.StorageConfigured,
+		"oidc_configured":       status.OIDCConfigured,
+		"admin_configured":      status.AdminConfigured,
+		"setup_required":        status.SetupRequired,
+		"scanning_configured":   scanningConfigured,
+		"pending_feature_setup": status.PendingFeatureSetup,
 	}
 
 	if status.StorageConfiguredAt != nil {
@@ -484,6 +485,34 @@ func (h *Handlers) CompleteSetup(c *gin.Context) {
 	status, err := h.oidcConfigRepo.GetEnhancedSetupStatus(ctx)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check setup status"})
+		return
+	}
+
+	scanningConfigured, _ := h.oidcConfigRepo.GetScanningConfigured(ctx)
+
+	// If this is a pending-feature completion (initial setup was already done),
+	// only verify the pending features are now configured.
+	if status.PendingFeatureSetup {
+		if !scanningConfigured {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":   "Feature setup is incomplete. The following components must be configured: security scanning",
+				"missing": []string{"security scanning"},
+			})
+			return
+		}
+
+		// Clear the setup token hash to re-disable setup endpoints
+		if err := h.oidcConfigRepo.SetSetupCompleted(ctx); err != nil {
+			slog.Error("setup: failed to complete feature setup", "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete feature setup"})
+			return
+		}
+
+		slog.Info("setup: pending feature setup completed successfully")
+		c.JSON(http.StatusOK, gin.H{
+			"message":         "Feature setup completed successfully.",
+			"setup_completed": true,
+		})
 		return
 	}
 

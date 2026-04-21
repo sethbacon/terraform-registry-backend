@@ -320,6 +320,8 @@ func TestGetEnhancedSetupStatus_Configured(t *testing.T) {
 	settingsCols := []string{
 		"id", "storage_configured", "storage_configured_at", "storage_configured_by",
 		"setup_completed", "setup_token_hash", "oidc_configured", "pending_admin_email",
+		"scanning_configured", "scanning_configured_at", "scanning_config",
+		"audit_retention_days",
 		"created_at", "updated_at",
 	}
 	now := time.Now()
@@ -327,6 +329,8 @@ func TestGetEnhancedSetupStatus_Configured(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(settingsCols).AddRow(
 			1, true, now, nil,
 			true, nil, true, "admin@example.com",
+			true, now, nil,
+			30,
 			now, now,
 		))
 
@@ -349,8 +353,52 @@ func TestGetEnhancedSetupStatus_Configured(t *testing.T) {
 	if status.SetupRequired {
 		t.Error("expected SetupRequired = false")
 	}
+	if !status.ScanningConfigured {
+		t.Error("expected ScanningConfigured = true")
+	}
+	if status.PendingFeatureSetup {
+		t.Error("expected PendingFeatureSetup = false")
+	}
 	if status.StorageConfiguredAt == nil {
 		t.Error("expected StorageConfiguredAt to be set")
+	}
+}
+
+func TestGetEnhancedSetupStatus_PendingFeature(t *testing.T) {
+	repo, mock := newOIDCConfigRepo(t)
+
+	settingsCols := []string{
+		"id", "storage_configured", "storage_configured_at", "storage_configured_by",
+		"setup_completed", "setup_token_hash", "oidc_configured", "pending_admin_email",
+		"scanning_configured", "scanning_configured_at", "scanning_config",
+		"audit_retention_days",
+		"created_at", "updated_at",
+	}
+	now := time.Now()
+	mock.ExpectQuery("SELECT.*FROM system_settings").
+		WillReturnRows(sqlmock.NewRows(settingsCols).AddRow(
+			1, true, now, nil,
+			true, nil, true, "admin@example.com",
+			false, nil, nil, // scanning NOT configured
+			30,
+			now, now,
+		))
+
+	status, err := repo.GetEnhancedSetupStatus(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !status.SetupCompleted {
+		t.Error("expected SetupCompleted = true")
+	}
+	if !status.SetupRequired {
+		t.Error("expected SetupRequired = true (pending features)")
+	}
+	if !status.PendingFeatureSetup {
+		t.Error("expected PendingFeatureSetup = true")
+	}
+	if status.ScanningConfigured {
+		t.Error("expected ScanningConfigured = false")
 	}
 }
 

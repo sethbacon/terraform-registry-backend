@@ -139,24 +139,34 @@ func (r *OIDCConfigRepository) GetEnhancedSetupStatus(ctx context.Context) (*mod
 	if err == sql.ErrNoRows {
 		// Fresh database with no settings row yet
 		return &models.SetupStatus{
-			SetupCompleted:    false,
-			StorageConfigured: false,
-			OIDCConfigured:    false,
-			AdminConfigured:   false,
-			SetupRequired:     true,
+			SetupCompleted:      false,
+			StorageConfigured:   false,
+			OIDCConfigured:      false,
+			AdminConfigured:     false,
+			ScanningConfigured:  false,
+			SetupRequired:       true,
+			PendingFeatureSetup: false,
 		}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
 
+	adminConfigured := settings.PendingAdminEmail.Valid && settings.PendingAdminEmail.String != ""
+
+	// Detect features that were added after initial setup completed but haven't
+	// been configured yet (e.g. scanning added in a newer release).
+	pendingFeatureSetup := settings.SetupCompleted && !settings.ScanningConfigured
+
 	status := &models.SetupStatus{
-		SetupCompleted:    settings.SetupCompleted,
-		StorageConfigured: settings.StorageConfigured,
-		OIDCConfigured:    settings.OIDCConfigured,
-		AdminConfigured:   settings.PendingAdminEmail.Valid && settings.PendingAdminEmail.String != "",
-		SetupRequired:     !settings.SetupCompleted,
-		AdminEmail:        settings.PendingAdminEmail,
+		SetupCompleted:      settings.SetupCompleted,
+		StorageConfigured:   settings.StorageConfigured,
+		OIDCConfigured:      settings.OIDCConfigured,
+		AdminConfigured:     adminConfigured,
+		ScanningConfigured:  settings.ScanningConfigured,
+		SetupRequired:       !settings.SetupCompleted || pendingFeatureSetup,
+		PendingFeatureSetup: pendingFeatureSetup,
+		AdminEmail:          settings.PendingAdminEmail,
 	}
 
 	if settings.StorageConfiguredAt.Valid {
@@ -165,6 +175,18 @@ func (r *OIDCConfigRepository) GetEnhancedSetupStatus(ctx context.Context) (*mod
 	}
 
 	return status, nil
+}
+
+// HasPendingFeatureSetup returns true when initial setup is completed but one
+// or more features added in later releases have not been configured yet.
+func (r *OIDCConfigRepository) HasPendingFeatureSetup(ctx context.Context) (bool, error) {
+	var pending bool
+	query := `SELECT setup_completed AND NOT scanning_configured FROM system_settings WHERE id = 1`
+	err := r.db.GetContext(ctx, &pending, query)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return pending, err
 }
 
 // GetScanningConfigured checks if scanning has been configured via the setup wizard

@@ -75,7 +75,7 @@ func SetupTokenMiddleware(oidcConfigRepo *repositories.OIDCConfigRepository) gin
 	return func(c *gin.Context) {
 		ctx := c.Request.Context()
 
-		// 1. Check if setup is already completed — permanently block all setup endpoints
+		// 1. Check if setup is already completed — block unless there are pending features
 		completed, err := oidcConfigRepo.IsSetupCompleted(ctx)
 		if err != nil {
 			slog.Error("setup middleware: failed to check setup status", "error", err)
@@ -85,10 +85,21 @@ func SetupTokenMiddleware(oidcConfigRepo *repositories.OIDCConfigRepository) gin
 			return
 		}
 		if completed {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"error": "Setup has already been completed. These endpoints are permanently disabled.",
-			})
-			return
+			// Allow through if there are unconfigured features added in later releases
+			hasPending, pendingErr := oidcConfigRepo.HasPendingFeatureSetup(ctx)
+			if pendingErr != nil {
+				slog.Error("setup middleware: failed to check pending features", "error", pendingErr)
+				c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
+					"error": "Failed to check setup status",
+				})
+				return
+			}
+			if !hasPending {
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+					"error": "Setup has already been completed. These endpoints are permanently disabled.",
+				})
+				return
+			}
 		}
 
 		// 2. Rate limit check before doing any bcrypt work
