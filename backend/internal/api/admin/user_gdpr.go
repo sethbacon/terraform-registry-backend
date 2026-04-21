@@ -1,7 +1,6 @@
 // user_gdpr.go implements GDPR data-subject endpoints:
 // - GET  /api/v1/admin/users/:id/export — export all user data as JSON (Article 15/20)
 // - POST /api/v1/admin/users/:id/erase  — tombstone user and anonymize PII (Article 17)
-// coverage:skip:requires-running-server
 package admin
 
 import (

@@ -1,6 +1,5 @@
 // Package services — user_service.go provides GDPR data-subject operations:
 // data export (Article 15/20) and erasure (Article 17 "right to be forgotten").
-// coverage:skip:requires-postgres
 //
 // Data export produces a JSON bundle containing all PII and user-attributed
 // records. Erasure tombstones the user record (preserving the audit trail

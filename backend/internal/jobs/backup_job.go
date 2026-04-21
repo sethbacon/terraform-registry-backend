@@ -1,7 +1,6 @@
 // Package jobs — backup_job.go implements a scheduled database backup job that
 // stores pg_dump output in the configured object storage backend, encrypted
 // with the deployment's KMS key.
-// coverage:skip:requires-postgres-and-object-storage
 //
 // Configuration (config.yaml):
 //
