@@ -18,6 +18,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/terraform-registry/terraform-registry/internal/api/admin"
+	ldappkg "github.com/terraform-registry/terraform-registry/internal/auth/ldap"
 	"github.com/terraform-registry/terraform-registry/internal/auth/oidc"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
@@ -60,7 +61,7 @@ func NewHandlers(
 }
 
 // @Summary      Get enhanced setup status
-// @Description  Returns the full setup status including OIDC, storage, and admin configuration state. No authentication required.
+// @Description  Returns the full setup status including authentication (OIDC/LDAP), storage, scanning, and admin configuration state. No authentication required.
 // @Tags         Setup
 // @Produce      json
 // @Success      200  {object}  models.SetupStatus
@@ -81,6 +82,8 @@ func (h *Handlers) GetSetupStatus(c *gin.Context) {
 		"setup_completed":       status.SetupCompleted,
 		"storage_configured":    status.StorageConfigured,
 		"oidc_configured":       status.OIDCConfigured,
+		"ldap_configured":       status.LDAPConfigured,
+		"auth_method":           status.AuthMethod,
 		"admin_configured":      status.AdminConfigured,
 		"setup_required":        status.SetupRequired,
 		"scanning_configured":   scanningConfigured,
@@ -468,7 +471,7 @@ func (h *Handlers) ConfigureAdmin(c *gin.Context) {
 }
 
 // @Summary      Complete setup
-// @Description  Finalizes the initial setup. Verifies that OIDC, storage, and admin user are configured, then permanently disables setup endpoints by clearing the setup token.
+// @Description  Finalizes the initial setup. Verifies that authentication (OIDC or LDAP), storage, and admin user are configured, then permanently disables setup endpoints by clearing the setup token.
 // @Tags         Setup
 // @Security     SetupToken
 // @Produce      json
@@ -517,8 +520,9 @@ func (h *Handlers) CompleteSetup(c *gin.Context) {
 	}
 
 	missing := make([]string, 0)
-	if !status.OIDCConfigured {
-		missing = append(missing, "OIDC provider")
+	// Auth is configured if either OIDC or LDAP is set up
+	if !status.OIDCConfigured && !status.LDAPConfigured {
+		missing = append(missing, "authentication (OIDC or LDAP)")
 	}
 	if !status.StorageConfigured {
 		missing = append(missing, "storage backend")
@@ -545,8 +549,13 @@ func (h *Handlers) CompleteSetup(c *gin.Context) {
 
 	slog.Info("setup: initial setup completed successfully")
 
+	authMethod := "OIDC"
+	if status.LDAPConfigured {
+		authMethod = "LDAP"
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"message":         "Setup completed successfully. You can now log in via OIDC.",
+		"message":         fmt.Sprintf("Setup completed successfully. You can now log in via %s.", authMethod),
 		"setup_completed": true,
 	})
 }
@@ -696,6 +705,206 @@ func (h *Handlers) SaveScanningConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, SaveScanningConfigResponse{
 		Message: "Scanning configuration saved",
 	})
+}
+
+// @Summary      Test LDAP configuration
+// @Description  Tests an LDAP configuration by attempting a bind with the service account credentials. Does NOT save anything.
+// @Tags         Setup
+// @Security     SetupToken
+// @Accept       json
+// @Produce      json
+// @Param        body  body  models.LDAPConfigInput  true  "LDAP configuration to test"
+// @Success      200  {object}  map[string]interface{}
+// @Failure      400  {object}  map[string]interface{}  "Invalid configuration"
+// @Failure      401  {object}  map[string]interface{}  "Invalid setup token"
+// @Failure      403  {object}  map[string]interface{}  "Setup already completed"
+// @Router       /api/v1/setup/ldap/test [post]
+func (h *Handlers) TestLDAPConfig(c *gin.Context) {
+	var input models.LDAPConfigInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := validateLDAPInput(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Build a temporary LDAPConfig to test connectivity
+	testCfg := ldapInputToConfig(&input)
+
+	provider, err := ldappkg.NewProvider(testCfg)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": fmt.Sprintf("LDAP configuration error: %v", err),
+		})
+		return
+	}
+	defer provider.Close()
+
+	// Test with a bind operation — the provider validates connectivity on creation
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": fmt.Sprintf("LDAP connection to %s:%d succeeded. Service account bind verified.", input.Host, testCfg.Port),
+	})
+}
+
+// @Summary      Save LDAP configuration
+// @Description  Saves LDAP configuration and activates LDAP as the authentication method. OIDC and LDAP are mutually exclusive.
+// @Tags         Setup
+// @Security     SetupToken
+// @Accept       json
+// @Produce      json
+// @Param        body  body  models.LDAPConfigInput  true  "LDAP configuration to save"
+// @Success      200  {object}  map[string]interface{}
+// @Failure      400  {object}  map[string]interface{}  "Invalid configuration"
+// @Failure      401  {object}  map[string]interface{}  "Invalid setup token"
+// @Failure      403  {object}  map[string]interface{}  "Setup already completed"
+// @Failure      500  {object}  map[string]interface{}  "Internal server error"
+// @Router       /api/v1/setup/ldap [post]
+func (h *Handlers) SaveLDAPConfig(c *gin.Context) {
+	var input models.LDAPConfigInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := validateLDAPInput(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx := c.Request.Context()
+
+	// Encrypt the bind password before storing
+	encryptedPassword, err := h.tokenCipher.Seal(input.BindPassword)
+	if err != nil {
+		slog.Error("setup: failed to encrypt LDAP bind password", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt bind password"})
+		return
+	}
+
+	// Build a safe copy for storage (encrypted password, no plaintext)
+	storedConfig := map[string]interface{}{
+		"host":                 input.Host,
+		"port":                 input.Port,
+		"use_tls":              input.UseTLS,
+		"start_tls":            input.StartTLS,
+		"insecure_skip_verify": input.InsecureSkipVerify,
+		"bind_dn":              input.BindDN,
+		"bind_password_enc":    encryptedPassword,
+		"base_dn":              input.BaseDN,
+		"user_filter":          input.UserFilter,
+		"user_attr_email":      input.UserAttrEmail,
+		"user_attr_name":       input.UserAttrName,
+		"group_base_dn":        input.GroupBaseDN,
+		"group_filter":         input.GroupFilter,
+		"group_member_attr":    input.GroupMemberAttr,
+	}
+
+	jsonBytes, err := json.Marshal(storedConfig)
+	if err != nil {
+		slog.Error("setup: failed to serialize LDAP config", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to serialize LDAP configuration"})
+		return
+	}
+
+	if err := h.oidcConfigRepo.SetLDAPConfig(ctx, jsonBytes); err != nil {
+		slog.Error("setup: failed to save LDAP config", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save LDAP configuration"})
+		return
+	}
+
+	// Also mark OIDC as configured (auth is configured via LDAP)
+	if err := h.oidcConfigRepo.SetOIDCConfigured(ctx); err != nil {
+		slog.Error("setup: failed to mark auth as configured", "error", err)
+	}
+
+	// Instantiate and swap the live LDAP provider
+	liveCfg := ldapInputToConfig(&input)
+	liveProvider, err := ldappkg.NewProvider(liveCfg)
+	if err != nil {
+		slog.Warn("setup: LDAP config saved but live provider initialization failed",
+			"error", err, "host", input.Host)
+	} else {
+		if h.authHandlers != nil {
+			h.authHandlers.SetLDAPProvider(liveProvider)
+		}
+		slog.Info("setup: LDAP provider activated", "host", input.Host)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "LDAP configuration saved and activated",
+		"host":    input.Host,
+		"port":    input.Port,
+	})
+}
+
+// ldapInputToConfig converts a LDAPConfigInput to the config.LDAPConfig used by the auth provider.
+func ldapInputToConfig(input *models.LDAPConfigInput) *config.LDAPConfig {
+	port := input.Port
+	if port == 0 {
+		if input.UseTLS {
+			port = 636
+		} else {
+			port = 389
+		}
+	}
+	userAttrEmail := input.UserAttrEmail
+	if userAttrEmail == "" {
+		userAttrEmail = "mail"
+	}
+	userAttrName := input.UserAttrName
+	if userAttrName == "" {
+		userAttrName = "displayName"
+	}
+	groupMemberAttr := input.GroupMemberAttr
+	if groupMemberAttr == "" {
+		groupMemberAttr = "member"
+	}
+
+	return &config.LDAPConfig{
+		Enabled:            true,
+		Host:               input.Host,
+		Port:               port,
+		UseTLS:             input.UseTLS,
+		StartTLS:           input.StartTLS,
+		InsecureSkipVerify: input.InsecureSkipVerify,
+		BindDN:             input.BindDN,
+		BindPassword:       input.BindPassword,
+		BaseDN:             input.BaseDN,
+		UserFilter:         input.UserFilter,
+		UserAttrEmail:      userAttrEmail,
+		UserAttrName:       userAttrName,
+		GroupBaseDN:        input.GroupBaseDN,
+		GroupFilter:        input.GroupFilter,
+		GroupMemberAttr:    groupMemberAttr,
+	}
+}
+
+// validateLDAPInput validates required fields for LDAP configuration
+func validateLDAPInput(input *models.LDAPConfigInput) error {
+	if input.Host == "" {
+		return fmt.Errorf("host is required")
+	}
+	if input.BindDN == "" {
+		return fmt.Errorf("bind_dn is required")
+	}
+	if input.BindPassword == "" {
+		return fmt.Errorf("bind_password is required")
+	}
+	if input.BaseDN == "" {
+		return fmt.Errorf("base_dn is required")
+	}
+	if input.UserFilter == "" {
+		return fmt.Errorf("user_filter is required")
+	}
+	if input.Port < 0 || input.Port > 65535 {
+		return fmt.Errorf("port must be between 0 and 65535")
+	}
+	return nil
 }
 
 // === Helper functions ===

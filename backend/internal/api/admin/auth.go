@@ -110,6 +110,13 @@ func (h *AuthHandlers) SetOIDCProvider(provider *oidc.OIDCProvider) {
 	slog.Info("OIDC provider swapped at runtime")
 }
 
+// SetLDAPProvider swaps the active LDAP provider at runtime. This is used by
+// the setup wizard to activate a newly configured LDAP provider without a restart.
+func (h *AuthHandlers) SetLDAPProvider(provider *ldappkg.Provider) {
+	h.ldapProvider = provider
+	slog.Info("LDAP provider swapped at runtime")
+}
+
 // generateState generates a random state string for OAuth
 func generateState() (string, error) {
 	b := make([]byte, 32)

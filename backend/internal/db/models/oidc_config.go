@@ -48,6 +48,24 @@ type OIDCConfigInput struct {
 	ExtraConfig  map[string]interface{} `json:"extra_config,omitempty"`
 }
 
+// LDAPConfigInput is used for configuring LDAP authentication via the setup wizard.
+type LDAPConfigInput struct {
+	Host               string `json:"host" binding:"required"`
+	Port               int    `json:"port"`
+	UseTLS             bool   `json:"use_tls"`
+	StartTLS           bool   `json:"start_tls"`
+	InsecureSkipVerify bool   `json:"insecure_skip_verify"`
+	BindDN             string `json:"bind_dn" binding:"required"`
+	BindPassword       string `json:"bind_password" binding:"required"`
+	BaseDN             string `json:"base_dn" binding:"required"`
+	UserFilter         string `json:"user_filter" binding:"required"`
+	UserAttrEmail      string `json:"user_attr_email"`
+	UserAttrName       string `json:"user_attr_name"`
+	GroupBaseDN        string `json:"group_base_dn"`
+	GroupFilter        string `json:"group_filter"`
+	GroupMemberAttr    string `json:"group_member_attr"`
+}
+
 // OIDCGroupMappingInput is used for updating only the group mapping configuration.
 // The client_secret is not required for this partial update.
 type OIDCGroupMappingInput struct {
@@ -173,6 +191,8 @@ type SetupStatus struct {
 	OIDCConfigured      bool           `json:"oidc_configured"`
 	AdminConfigured     bool           `json:"admin_configured"`
 	ScanningConfigured  bool           `json:"scanning_configured"`
+	LDAPConfigured      bool           `json:"ldap_configured"`
+	AuthMethod          string         `json:"auth_method"`
 	SetupRequired       bool           `json:"setup_required"`
 	PendingFeatureSetup bool           `json:"pending_feature_setup"`
 	StorageConfiguredAt *time.Time     `json:"storage_configured_at,omitempty"`
