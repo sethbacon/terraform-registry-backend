@@ -172,7 +172,9 @@ type SetupStatus struct {
 	StorageConfigured   bool           `json:"storage_configured"`
 	OIDCConfigured      bool           `json:"oidc_configured"`
 	AdminConfigured     bool           `json:"admin_configured"`
+	ScanningConfigured  bool           `json:"scanning_configured"`
 	SetupRequired       bool           `json:"setup_required"`
+	PendingFeatureSetup bool           `json:"pending_feature_setup"`
 	StorageConfiguredAt *time.Time     `json:"storage_configured_at,omitempty"`
 	AdminEmail          sql.NullString `json:"-"`
 }

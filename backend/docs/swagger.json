@@ -12884,6 +12884,12 @@
                 "oidc_configured": {
                     "type": "boolean"
                 },
+                "pending_feature_setup": {
+                    "type": "boolean"
+                },
+                "scanning_configured": {
+                    "type": "boolean"
+                },
                 "setup_completed": {
                     "type": "boolean"
                 },

@@ -297,7 +297,15 @@ func handleSetupToken(repo *repositories.OIDCConfigRepository) error {
 		return fmt.Errorf("failed to check setup status: %w", err)
 	}
 	if completed {
-		return nil // Setup already done, nothing to do
+		// Check if there are unconfigured features added in later releases
+		hasPending, pendingErr := repo.HasPendingFeatureSetup(ctx)
+		if pendingErr != nil {
+			return fmt.Errorf("failed to check pending feature setup: %w", pendingErr)
+		}
+		if !hasPending {
+			return nil // Setup fully done, nothing to do
+		}
+		log.Println("Detected unconfigured features added after initial setup.")
 	}
 
 	// Check if a token hash already exists (server restarted before setup completed)
