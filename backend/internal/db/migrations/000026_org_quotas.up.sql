@@ -3,7 +3,7 @@
 
 CREATE TABLE IF NOT EXISTS org_quotas (
     id                    BIGSERIAL PRIMARY KEY,
-    organization_id       TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    organization_id       UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     storage_bytes_limit   BIGINT NOT NULL DEFAULT 0,        -- 0 = unlimited
     publishes_per_day     INT NOT NULL DEFAULT 0,            -- 0 = unlimited
     downloads_per_day     INT NOT NULL DEFAULT 0,            -- 0 = unlimited
@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS org_quotas (
 -- Track daily usage for quota enforcement
 CREATE TABLE IF NOT EXISTS org_quota_usage (
     id                    BIGSERIAL PRIMARY KEY,
-    organization_id       TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    organization_id       UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     date                  DATE NOT NULL DEFAULT CURRENT_DATE,
     storage_bytes_used    BIGINT NOT NULL DEFAULT 0,
     publishes_today       INT NOT NULL DEFAULT 0,
