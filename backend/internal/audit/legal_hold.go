@@ -1,5 +1,6 @@
 // Package audit — legal_hold.go implements legal hold functionality that
 // prevents the audit retention cleanup job from deleting flagged log entries.
+// coverage:skip:requires-postgres
 // Legal holds are used during compliance investigations or litigation to
 // preserve audit evidence.
 package audit

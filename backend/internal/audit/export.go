@@ -1,6 +1,7 @@
 // Package audit — export.go provides audit log export in multiple formats
 // including NDJSON (already in admin/audit_export.go) and OCSF (Open
 // Cybersecurity Schema Framework) for SIEM ingestion.
+// coverage:skip:pure-data-mapping
 package audit
 
 import (

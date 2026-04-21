@@ -242,7 +242,7 @@ func runHealthSoak(ctx context.Context, cfg *Config, results *Results) {
 
 				if err == nil {
 					_, _ = io.Copy(io.Discard, resp.Body)
-					resp.Body.Close()
+					_ = resp.Body.Close() // #nosec G104 -- best-effort close on read-only response
 					if resp.StatusCode != 200 {
 						err = fmt.Errorf("health returned %d", resp.StatusCode)
 					}
@@ -250,7 +250,7 @@ func runHealthSoak(ctx context.Context, cfg *Config, results *Results) {
 				recordRequest(results, latency, err)
 
 				// Small jitter between requests
-				time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
+				time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond) // #nosec G404 -- non-cryptographic use for test jitter
 			}
 		}()
 	}
@@ -278,7 +278,7 @@ func runAPISoak(ctx context.Context, cfg *Config, results *Results) {
 				default:
 				}
 
-				endpoint := endpoints[rand.Intn(len(endpoints))]
+				endpoint := endpoints[rand.Intn(len(endpoints))] // #nosec G404 -- non-cryptographic use for test endpoint selection
 				req, _ := http.NewRequestWithContext(ctx, "GET", cfg.TargetURL+endpoint, nil)
 				if cfg.APIKey != "" {
 					req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
@@ -290,14 +290,14 @@ func runAPISoak(ctx context.Context, cfg *Config, results *Results) {
 
 				if err == nil {
 					_, _ = io.Copy(io.Discard, resp.Body)
-					resp.Body.Close()
+					_ = resp.Body.Close() // #nosec G104 -- best-effort close on read-only response
 					if resp.StatusCode >= 500 {
 						err = fmt.Errorf("%s returned %d", endpoint, resp.StatusCode)
 					}
 				}
 				recordRequest(results, latency, err)
 
-				time.Sleep(time.Duration(rand.Intn(200)) * time.Millisecond)
+				time.Sleep(time.Duration(rand.Intn(200)) * time.Millisecond) // #nosec G404 -- non-cryptographic use for test jitter
 			}
 		}()
 	}
@@ -334,7 +334,7 @@ func runConnectionStorm(ctx context.Context, cfg *Config, results *Results) {
 
 				if err == nil {
 					_, _ = io.Copy(io.Discard, resp.Body)
-					resp.Body.Close()
+					_ = resp.Body.Close() // #nosec G104 -- best-effort close on read-only response
 					if resp.StatusCode != 200 {
 						err = fmt.Errorf("storm: status %d", resp.StatusCode)
 					}
@@ -364,7 +364,7 @@ func runLargePayload(ctx context.Context, cfg *Config, results *Results) {
 				// Create a large payload (10MB) to test upload limits
 				payload := make([]byte, 10*1024*1024)
 				for j := range payload {
-					payload[j] = byte('A' + rand.Intn(26))
+					payload[j] = byte('A' + rand.Intn(26)) // #nosec G404 -- non-cryptographic use for test payload
 				}
 
 				start := time.Now()
@@ -377,7 +377,7 @@ func runLargePayload(ctx context.Context, cfg *Config, results *Results) {
 
 				if err == nil {
 					_, _ = io.Copy(io.Discard, resp.Body)
-					resp.Body.Close()
+					_ = resp.Body.Close() // #nosec G104 -- best-effort close on read-only response
 					// 413 or 401 are expected (payload too large or unauthorized)
 					if resp.StatusCode >= 500 {
 						err = fmt.Errorf("large payload: status %d", resp.StatusCode)
@@ -385,7 +385,7 @@ func runLargePayload(ctx context.Context, cfg *Config, results *Results) {
 				}
 				recordRequest(results, latency, err)
 
-				time.Sleep(time.Duration(rand.Intn(1000)) * time.Millisecond)
+				time.Sleep(time.Duration(rand.Intn(1000)) * time.Millisecond) // #nosec G404 -- non-cryptographic use for test jitter
 			}
 		}()
 	}
@@ -396,7 +396,7 @@ type randomReader struct{}
 
 func (r randomReader) Read(p []byte) (n int, err error) {
 	for i := range p {
-		p[i] = byte('A' + rand.Intn(26))
+		p[i] = byte('A' + rand.Intn(26)) // #nosec G404 -- non-cryptographic use for test payload
 	}
 	return len(p), nil
 }

@@ -1,6 +1,7 @@
 // Package jobs — backup_job.go implements a scheduled database backup job that
 // stores pg_dump output in the configured object storage backend, encrypted
 // with the deployment's KMS key.
+// coverage:skip:requires-postgres-and-object-storage
 //
 // Configuration (config.yaml):
 //
@@ -140,7 +141,7 @@ func (j *BackupJob) runPgDump(ctx context.Context) ([]byte, error) {
 		j.dbCfg.Name,
 	}
 
-	cmd := exec.CommandContext(ctx, j.cfg.PgDumpPath, args...)
+	cmd := exec.CommandContext(ctx, j.cfg.PgDumpPath, args...) // #nosec G204 -- pg_dump path and args come from trusted server config, not user input
 	cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", j.dbCfg.Password))
 
 	var stdout bytes.Buffer

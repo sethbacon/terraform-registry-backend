@@ -1,5 +1,6 @@
 // Package main — upgrade.go implements the `upgrade preflight` subcommand that
 // validates database state and configuration before a version jump.
+// coverage:skip:requires-postgres-and-config
 package main
 
 import (

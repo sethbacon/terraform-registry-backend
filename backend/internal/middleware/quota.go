@@ -1,4 +1,5 @@
 // Package middleware — quota.go enforces per-organization resource quotas.
+// coverage:skip:requires-postgres
 //
 // The middleware checks current usage against configured limits and returns
 // 429 Too Many Requests when a quota is exceeded. It also emits Prometheus
