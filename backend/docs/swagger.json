@@ -3840,6 +3840,131 @@
                 }
             }
         },
+        "/api/v1/admin/users/{id}/erase": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Anonymize a user's PII and revoke all access (GDPR Article 17 — right to erasure). Audit log entries are preserved with the anonymized user ID for compliance. Requires admin scope.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Users"
+                ],
+                "summary": "Erase user data (GDPR)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "User data erased",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden — admin scope required",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "User not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/admin/users/{id}/export": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Export all personal data associated with a user as JSON. Implements GDPR Article 15 (right of access) and Article 20 (data portability). Requires admin scope.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Users"
+                ],
+                "summary": "Export user data (GDPR)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/services.UserDataExport"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden — admin scope required",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "User not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/apikeys": {
             "get": {
                 "security": [
@@ -7905,7 +8030,7 @@
                         "SetupToken": []
                     }
                 ],
-                "description": "Finalizes the initial setup. Verifies that OIDC, storage, and admin user are configured, then permanently disables setup endpoints by clearing the setup token.",
+                "description": "Finalizes the initial setup. Verifies that authentication (OIDC or LDAP), storage, and admin user are configured, then permanently disables setup endpoints by clearing the setup token.",
                 "produces": [
                     "application/json"
                 ],
@@ -7943,6 +8068,135 @@
                     },
                     "500": {
                         "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/setup/ldap": {
+            "post": {
+                "security": [
+                    {
+                        "SetupToken": []
+                    }
+                ],
+                "description": "Saves LDAP configuration and activates LDAP as the authentication method. OIDC and LDAP are mutually exclusive.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Setup"
+                ],
+                "summary": "Save LDAP configuration",
+                "parameters": [
+                    {
+                        "description": "LDAP configuration to save",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.LDAPConfigInput"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid configuration",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid setup token",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Setup already completed",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/setup/ldap/test": {
+            "post": {
+                "security": [
+                    {
+                        "SetupToken": []
+                    }
+                ],
+                "description": "Tests an LDAP configuration by attempting a bind with the service account credentials. Does NOT save anything.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Setup"
+                ],
+                "summary": "Test LDAP configuration",
+                "parameters": [
+                    {
+                        "description": "LDAP configuration to test",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.LDAPConfigInput"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid configuration",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid setup token",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Setup already completed",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -8207,7 +8461,7 @@
         },
         "/api/v1/setup/status": {
             "get": {
-                "description": "Returns the full setup status including OIDC, storage, and admin configuration state. No authentication required.",
+                "description": "Returns the full setup status including authentication (OIDC/LDAP), storage, scanning, and admin configuration state. No authentication required.",
                 "produces": [
                     "application/json"
                 ],
@@ -12269,6 +12523,60 @@
                 }
             }
         },
+        "models.LDAPConfigInput": {
+            "type": "object",
+            "required": [
+                "base_dn",
+                "bind_dn",
+                "bind_password",
+                "host",
+                "user_filter"
+            ],
+            "properties": {
+                "base_dn": {
+                    "type": "string"
+                },
+                "bind_dn": {
+                    "type": "string"
+                },
+                "bind_password": {
+                    "type": "string"
+                },
+                "group_base_dn": {
+                    "type": "string"
+                },
+                "group_filter": {
+                    "type": "string"
+                },
+                "group_member_attr": {
+                    "type": "string"
+                },
+                "host": {
+                    "type": "string"
+                },
+                "insecure_skip_verify": {
+                    "type": "boolean"
+                },
+                "port": {
+                    "type": "integer"
+                },
+                "start_tls": {
+                    "type": "boolean"
+                },
+                "use_tls": {
+                    "type": "boolean"
+                },
+                "user_attr_email": {
+                    "type": "string"
+                },
+                "user_attr_name": {
+                    "type": "string"
+                },
+                "user_filter": {
+                    "type": "string"
+                }
+            }
+        },
         "models.MigrationPlan": {
             "type": "object",
             "properties": {
@@ -12879,6 +13187,12 @@
             "type": "object",
             "properties": {
                 "admin_configured": {
+                    "type": "boolean"
+                },
+                "auth_method": {
+                    "type": "string"
+                },
+                "ldap_configured": {
                     "type": "boolean"
                 },
                 "oidc_configured": {
@@ -14208,6 +14522,115 @@
                     "$ref": "#/definitions/scm.ProviderType"
                 },
                 "tenant_id": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                }
+            }
+        },
+        "services.APIKeyRecord": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "expires_at": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "last_used_at": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "services.MembershipRecord": {
+            "type": "object",
+            "properties": {
+                "organization_id": {
+                    "type": "string"
+                },
+                "organization_name": {
+                    "type": "string"
+                },
+                "role_template_name": {
+                    "type": "string"
+                }
+            }
+        },
+        "services.ResourceRecord": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "namespace": {
+                    "type": "string"
+                }
+            }
+        },
+        "services.UserDataExport": {
+            "type": "object",
+            "properties": {
+                "api_keys": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/services.APIKeyRecord"
+                    }
+                },
+                "audit_entry_count": {
+                    "type": "integer"
+                },
+                "exported_at": {
+                    "type": "string"
+                },
+                "memberships": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/services.MembershipRecord"
+                    }
+                },
+                "modules_created": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/services.ResourceRecord"
+                    }
+                },
+                "providers_created": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/services.ResourceRecord"
+                    }
+                },
+                "user": {
+                    "$ref": "#/definitions/services.UserExportRecord"
+                }
+            }
+        },
+        "services.UserExportRecord": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "email": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "oidc_sub": {
                     "type": "string"
                 },
                 "updated_at": {

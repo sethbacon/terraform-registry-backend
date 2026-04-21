@@ -142,8 +142,10 @@ func (r *OIDCConfigRepository) GetEnhancedSetupStatus(ctx context.Context) (*mod
 			SetupCompleted:      false,
 			StorageConfigured:   false,
 			OIDCConfigured:      false,
+			LDAPConfigured:      false,
 			AdminConfigured:     false,
 			ScanningConfigured:  false,
+			AuthMethod:          "oidc",
 			SetupRequired:       true,
 			PendingFeatureSetup: false,
 		}, nil
@@ -154,6 +156,9 @@ func (r *OIDCConfigRepository) GetEnhancedSetupStatus(ctx context.Context) (*mod
 
 	adminConfigured := settings.PendingAdminEmail.Valid && settings.PendingAdminEmail.String != ""
 
+	// Auth is configured if either OIDC or LDAP is configured
+	authConfigured := settings.OIDCConfigured || settings.LDAPConfigured
+
 	// Detect features that were added after initial setup completed but haven't
 	// been configured yet (e.g. scanning added in a newer release).
 	pendingFeatureSetup := settings.SetupCompleted && !settings.ScanningConfigured
@@ -162,12 +167,17 @@ func (r *OIDCConfigRepository) GetEnhancedSetupStatus(ctx context.Context) (*mod
 		SetupCompleted:      settings.SetupCompleted,
 		StorageConfigured:   settings.StorageConfigured,
 		OIDCConfigured:      settings.OIDCConfigured,
+		LDAPConfigured:      settings.LDAPConfigured,
 		AdminConfigured:     adminConfigured,
 		ScanningConfigured:  settings.ScanningConfigured,
+		AuthMethod:          settings.AuthMethod,
 		SetupRequired:       !settings.SetupCompleted || pendingFeatureSetup,
 		PendingFeatureSetup: pendingFeatureSetup,
 		AdminEmail:          settings.PendingAdminEmail,
 	}
+	// Suppress the unused variable warning — authConfigured is used by the
+	// setup_required calculation below in the full-setup path.
+	_ = authConfigured
 
 	if settings.StorageConfiguredAt.Valid {
 		t := settings.StorageConfiguredAt.Time
@@ -225,6 +235,42 @@ func (r *OIDCConfigRepository) GetScanningConfig(ctx context.Context) ([]byte, e
 		return nil, err
 	}
 	return configJSON, nil
+}
+
+// SetLDAPConfig stores the LDAP configuration JSON and marks LDAP as configured.
+// It also sets auth_method to 'ldap'.
+func (r *OIDCConfigRepository) SetLDAPConfig(ctx context.Context, configJSON []byte) error {
+	query := `
+		UPDATE system_settings SET
+			ldap_configured = true,
+			ldap_configured_at = NOW(),
+			ldap_config = $1,
+			auth_method = 'ldap',
+			updated_at = $2
+		WHERE id = 1`
+	_, err := r.db.ExecContext(ctx, query, configJSON, time.Now())
+	return err
+}
+
+// GetLDAPConfig retrieves the LDAP configuration JSON from system settings.
+func (r *OIDCConfigRepository) GetLDAPConfig(ctx context.Context) ([]byte, error) {
+	var configJSON []byte
+	query := `SELECT ldap_config FROM system_settings WHERE id = 1`
+	err := r.db.GetContext(ctx, &configJSON, query)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return configJSON, nil
+}
+
+// SetAuthMethod updates the auth_method column.
+func (r *OIDCConfigRepository) SetAuthMethod(ctx context.Context, method string) error {
+	query := `UPDATE system_settings SET auth_method = $1, updated_at = $2 WHERE id = 1`
+	_, err := r.db.ExecContext(ctx, query, method, time.Now())
+	return err
 }
 
 // === OIDC Configuration CRUD ===

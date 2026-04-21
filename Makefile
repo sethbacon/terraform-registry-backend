@@ -28,6 +28,10 @@ docker-fips:
 	@echo "Building FIPS Docker image..."
 	docker build -f backend/Dockerfile.fips -t terraform-registry-backend:fips backend/
 
+airgap-bundle:
+	@echo "Building air-gap bundle..."
+	./scripts/airgap-bundle.sh --output ./airgap-bundle
+
 test-compose-up:
 	@echo "Starting test compose..."
 	docker compose -f deployments/docker-compose.test.yml up -d --build

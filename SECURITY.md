@@ -43,3 +43,9 @@ We will credit reporters in the release notes unless anonymity is requested.
 - Static analysis via `gosec` runs on every PR with baseline drift detection
 - The application follows OWASP Top 10 mitigations (parameterised queries,
   input validation, CSRF protection, rate limiting, audit logging)
+
+## Threat Model
+
+A comprehensive STRIDE-based threat model is maintained at
+[docs/threat-model.md](docs/threat-model.md). It covers trust boundaries, data
+flow diagrams, per-category threat analysis, assumptions, and residual risks.

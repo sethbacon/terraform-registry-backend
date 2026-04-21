@@ -627,6 +627,8 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 			setupGroup.POST("/validate-token", setupHandlers.ValidateToken)
 			setupGroup.POST("/oidc/test", setupHandlers.TestOIDCConfig)
 			setupGroup.POST("/oidc", setupHandlers.SaveOIDCConfig)
+			setupGroup.POST("/ldap/test", setupHandlers.TestLDAPConfig)
+			setupGroup.POST("/ldap", setupHandlers.SaveLDAPConfig)
 			setupGroup.POST("/storage/test", setupHandlers.TestStorageConfig)
 			setupGroup.POST("/storage", setupHandlers.SaveStorageConfig)
 			setupGroup.POST("/admin", setupHandlers.ConfigureAdmin)
