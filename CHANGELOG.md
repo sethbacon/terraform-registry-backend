@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-04-21
+
+### Fixed
+
+- fix(db): use UUID type for organization_id in org_quotas migration to match organizations table schema
+
+## [0.10.0] - 2026-04-21
+
 ## [0.9.1] - 2026-04-20
 
 ### Fixed
