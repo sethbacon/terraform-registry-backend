@@ -113,6 +113,46 @@ func getJSON(resp *httptest.ResponseRecorder) map[string]interface{} {
 	return m
 }
 
+// allSettingsCols returns the complete list of system_settings columns that
+// sqlx will scan from SELECT *. Whenever the SystemSettings struct gains new
+// fields, this list must be updated.
+func allSettingsCols() []string {
+	return []string{
+		"id", "storage_configured", "storage_configured_at", "storage_configured_by",
+		"setup_completed", "setup_token_hash", "oidc_configured", "pending_admin_email",
+		"scanning_configured", "scanning_configured_at", "scanning_config",
+		"auth_method", "ldap_configured", "ldap_configured_at", "ldap_config",
+		"audit_retention_days", "created_at", "updated_at",
+	}
+}
+
+// settingsRow creates a sqlmock row matching allSettingsCols().
+// Required: storageConfigured, setupCompleted, oidcConfigured, pendingAdminEmail.
+// Optional fields default to sensible zero-values.
+type settingsOpts struct {
+	StorageConfigured  bool
+	SetupCompleted     bool
+	OIDCConfigured     bool
+	LDAPConfigured     bool
+	AuthMethod         string
+	ScanningConfigured bool
+	PendingAdminEmail  interface{} // nil or string
+}
+
+func settingsRow(opts settingsOpts) *sqlmock.Rows {
+	now := time.Now()
+	if opts.AuthMethod == "" {
+		opts.AuthMethod = "oidc"
+	}
+	return sqlmock.NewRows(allSettingsCols()).AddRow(
+		1, opts.StorageConfigured, now, nil,
+		opts.SetupCompleted, nil, opts.OIDCConfigured, opts.PendingAdminEmail,
+		opts.ScanningConfigured, nil, nil,
+		opts.AuthMethod, opts.LDAPConfigured, nil, nil,
+		30, now, now,
+	)
+}
+
 // ---------------------------------------------------------------------------
 // GetSetupStatus
 // ---------------------------------------------------------------------------
@@ -120,18 +160,15 @@ func getJSON(resp *httptest.ResponseRecorder) map[string]interface{} {
 func TestGetSetupStatus_Success(t *testing.T) {
 	env := newTestEnv(t)
 
-	settingsCols := []string{
-		"id", "storage_configured", "storage_configured_at", "storage_configured_by",
-		"setup_completed", "setup_token_hash", "oidc_configured", "pending_admin_email",
-		"created_at", "updated_at",
-	}
-	now := time.Now()
 	env.oidcMock.ExpectQuery("SELECT.*FROM system_settings").
-		WillReturnRows(sqlmock.NewRows(settingsCols).AddRow(
-			1, true, now, nil,
-			false, nil, true, "admin@example.com",
-			now, now,
-		))
+		WillReturnRows(settingsRow(settingsOpts{
+			StorageConfigured: true,
+			OIDCConfigured:    true,
+			PendingAdminEmail: "admin@example.com",
+		}))
+	// GetScanningConfigured is called as a separate query
+	env.oidcMock.ExpectQuery("SELECT scanning_configured FROM system_settings").
+		WillReturnRows(sqlmock.NewRows([]string{"scanning_configured"}).AddRow(false))
 
 	r := gin.New()
 	r.GET("/status", env.h.GetSetupStatus)
@@ -917,19 +954,11 @@ func TestCompleteSetup_Incomplete(t *testing.T) {
 	r := gin.New()
 	r.POST("/complete", env.h.CompleteSetup)
 
-	settingsCols := []string{
-		"id", "storage_configured", "storage_configured_at", "storage_configured_by",
-		"setup_completed", "setup_token_hash", "oidc_configured", "pending_admin_email",
-		"created_at", "updated_at",
-	}
-	now := time.Now()
 	// OIDC not configured, storage not configured, no admin
 	env.oidcMock.ExpectQuery("SELECT.*FROM system_settings").
-		WillReturnRows(sqlmock.NewRows(settingsCols).AddRow(
-			1, false, nil, nil,
-			false, nil, false, nil,
-			now, now,
-		))
+		WillReturnRows(settingsRow(settingsOpts{}))
+	env.oidcMock.ExpectQuery("SELECT scanning_configured FROM system_settings").
+		WillReturnRows(sqlmock.NewRows([]string{"scanning_configured"}).AddRow(false))
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/complete", nil))
@@ -951,19 +980,15 @@ func TestCompleteSetup_Success(t *testing.T) {
 	r := gin.New()
 	r.POST("/complete", env.h.CompleteSetup)
 
-	settingsCols := []string{
-		"id", "storage_configured", "storage_configured_at", "storage_configured_by",
-		"setup_completed", "setup_token_hash", "oidc_configured", "pending_admin_email",
-		"created_at", "updated_at",
-	}
-	now := time.Now()
 	// All configured
 	env.oidcMock.ExpectQuery("SELECT.*FROM system_settings").
-		WillReturnRows(sqlmock.NewRows(settingsCols).AddRow(
-			1, true, now, nil,
-			false, nil, true, "admin@example.com",
-			now, now,
-		))
+		WillReturnRows(settingsRow(settingsOpts{
+			StorageConfigured: true,
+			OIDCConfigured:    true,
+			PendingAdminEmail: "admin@example.com",
+		}))
+	env.oidcMock.ExpectQuery("SELECT scanning_configured FROM system_settings").
+		WillReturnRows(sqlmock.NewRows([]string{"scanning_configured"}).AddRow(false))
 	// SetSetupCompleted
 	env.oidcMock.ExpectExec("UPDATE system_settings SET").
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -987,18 +1012,14 @@ func TestCompleteSetup_SetCompletedError(t *testing.T) {
 	r := gin.New()
 	r.POST("/complete", env.h.CompleteSetup)
 
-	settingsCols := []string{
-		"id", "storage_configured", "storage_configured_at", "storage_configured_by",
-		"setup_completed", "setup_token_hash", "oidc_configured", "pending_admin_email",
-		"created_at", "updated_at",
-	}
-	now := time.Now()
 	env.oidcMock.ExpectQuery("SELECT.*FROM system_settings").
-		WillReturnRows(sqlmock.NewRows(settingsCols).AddRow(
-			1, true, now, nil,
-			false, nil, true, "admin@example.com",
-			now, now,
-		))
+		WillReturnRows(settingsRow(settingsOpts{
+			StorageConfigured: true,
+			OIDCConfigured:    true,
+			PendingAdminEmail: "admin@example.com",
+		}))
+	env.oidcMock.ExpectQuery("SELECT scanning_configured FROM system_settings").
+		WillReturnRows(sqlmock.NewRows([]string{"scanning_configured"}).AddRow(false))
 	// SetSetupCompleted fails
 	env.oidcMock.ExpectExec("UPDATE system_settings SET").
 		WillReturnError(errDB)
@@ -1285,7 +1306,524 @@ func TestBuildEncryptedStorageConfig_GCS(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// TestLDAPConfig
+// ---------------------------------------------------------------------------
+
+func TestTestLDAPConfig_BadJSON(t *testing.T) {
+	env := newTestEnv(t)
+
+	r := gin.New()
+	r.POST("/ldap/test", env.h.TestLDAPConfig)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/ldap/test", bytes.NewBufferString("{invalid")))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestTestLDAPConfig_MissingHost(t *testing.T) {
+	env := newTestEnv(t)
+
+	r := gin.New()
+	r.POST("/ldap/test", env.h.TestLDAPConfig)
+
+	body := jsonBody(models.LDAPConfigInput{
+		BindDN:       "cn=admin,dc=example,dc=com",
+		BindPassword: "secret",
+		BaseDN:       "dc=example,dc=com",
+		UserFilter:   "(uid=%s)",
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/ldap/test", body))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestTestLDAPConfig_MissingBindDN(t *testing.T) {
+	env := newTestEnv(t)
+
+	r := gin.New()
+	r.POST("/ldap/test", env.h.TestLDAPConfig)
+
+	body := jsonBody(models.LDAPConfigInput{
+		Host:         "ldap.example.com",
+		BindPassword: "secret",
+		BaseDN:       "dc=example,dc=com",
+		UserFilter:   "(uid=%s)",
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/ldap/test", body))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestTestLDAPConfig_MissingBindPassword(t *testing.T) {
+	env := newTestEnv(t)
+
+	r := gin.New()
+	r.POST("/ldap/test", env.h.TestLDAPConfig)
+
+	body := jsonBody(models.LDAPConfigInput{
+		Host:       "ldap.example.com",
+		BindDN:     "cn=admin,dc=example,dc=com",
+		BaseDN:     "dc=example,dc=com",
+		UserFilter: "(uid=%s)",
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/ldap/test", body))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestTestLDAPConfig_MissingBaseDN(t *testing.T) {
+	env := newTestEnv(t)
+
+	r := gin.New()
+	r.POST("/ldap/test", env.h.TestLDAPConfig)
+
+	body := jsonBody(models.LDAPConfigInput{
+		Host:         "ldap.example.com",
+		BindDN:       "cn=admin,dc=example,dc=com",
+		BindPassword: "secret",
+		UserFilter:   "(uid=%s)",
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/ldap/test", body))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestTestLDAPConfig_MissingUserFilter(t *testing.T) {
+	env := newTestEnv(t)
+
+	r := gin.New()
+	r.POST("/ldap/test", env.h.TestLDAPConfig)
+
+	body := jsonBody(models.LDAPConfigInput{
+		Host:         "ldap.example.com",
+		BindDN:       "cn=admin,dc=example,dc=com",
+		BindPassword: "secret",
+		BaseDN:       "dc=example,dc=com",
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/ldap/test", body))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestTestLDAPConfig_InvalidPort(t *testing.T) {
+	env := newTestEnv(t)
+
+	r := gin.New()
+	r.POST("/ldap/test", env.h.TestLDAPConfig)
+
+	body := jsonBody(models.LDAPConfigInput{
+		Host:         "ldap.example.com",
+		Port:         99999,
+		BindDN:       "cn=admin,dc=example,dc=com",
+		BindPassword: "secret",
+		BaseDN:       "dc=example,dc=com",
+		UserFilter:   "(uid=%s)",
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/ldap/test", body))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SaveLDAPConfig
+// ---------------------------------------------------------------------------
+
+func TestSaveLDAPConfig_BadJSON(t *testing.T) {
+	env := newTestEnv(t)
+
+	r := gin.New()
+	r.POST("/ldap", env.h.SaveLDAPConfig)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/ldap", bytes.NewBufferString("{invalid")))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestSaveLDAPConfig_ValidationError(t *testing.T) {
+	env := newTestEnv(t)
+
+	r := gin.New()
+	r.POST("/ldap", env.h.SaveLDAPConfig)
+
+	// Missing required host
+	body := jsonBody(models.LDAPConfigInput{
+		BindDN:       "cn=admin,dc=example,dc=com",
+		BindPassword: "secret",
+		BaseDN:       "dc=example,dc=com",
+		UserFilter:   "(uid=%s)",
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/ldap", body))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestSaveLDAPConfig_Success(t *testing.T) {
+	env := newTestEnv(t)
+
+	r := gin.New()
+	r.POST("/ldap", env.h.SaveLDAPConfig)
+
+	// SetLDAPConfig
+	env.oidcMock.ExpectExec("UPDATE system_settings SET").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	// SetOIDCConfigured (marks auth as configured)
+	env.oidcMock.ExpectExec("UPDATE system_settings SET").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	body := jsonBody(models.LDAPConfigInput{
+		Host:         "ldap.example.com",
+		Port:         389,
+		BindDN:       "cn=admin,dc=example,dc=com",
+		BindPassword: "secret",
+		BaseDN:       "dc=example,dc=com",
+		UserFilter:   "(uid=%s)",
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/ldap", body))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", w.Code, w.Body.String())
+	}
+
+	resp := getJSON(w)
+	if resp["host"] != "ldap.example.com" {
+		t.Errorf("host = %v, want ldap.example.com", resp["host"])
+	}
+}
+
+func TestSaveLDAPConfig_DBError(t *testing.T) {
+	env := newTestEnv(t)
+
+	r := gin.New()
+	r.POST("/ldap", env.h.SaveLDAPConfig)
+
+	// SetLDAPConfig fails
+	env.oidcMock.ExpectExec("UPDATE system_settings SET").
+		WillReturnError(errDB)
+
+	body := jsonBody(models.LDAPConfigInput{
+		Host:         "ldap.example.com",
+		BindDN:       "cn=admin,dc=example,dc=com",
+		BindPassword: "secret",
+		BaseDN:       "dc=example,dc=com",
+		UserFilter:   "(uid=%s)",
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/ldap", body))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CompleteSetup — LDAP variant
+// ---------------------------------------------------------------------------
+
+func TestCompleteSetup_LDAPSuccess(t *testing.T) {
+	env := newTestEnv(t)
+
+	r := gin.New()
+	r.POST("/complete", env.h.CompleteSetup)
+
+	// LDAP configured instead of OIDC
+	env.oidcMock.ExpectQuery("SELECT.*FROM system_settings").
+		WillReturnRows(settingsRow(settingsOpts{
+			StorageConfigured: true,
+			LDAPConfigured:    true,
+			AuthMethod:        "ldap",
+			PendingAdminEmail: "admin@example.com",
+		}))
+	env.oidcMock.ExpectQuery("SELECT scanning_configured FROM system_settings").
+		WillReturnRows(sqlmock.NewRows([]string{"scanning_configured"}).AddRow(false))
+	// SetSetupCompleted
+	env.oidcMock.ExpectExec("UPDATE system_settings SET").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/complete", nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", w.Code, w.Body.String())
+	}
+
+	resp := getJSON(w)
+	if resp["setup_completed"] != true {
+		t.Errorf("setup_completed = %v, want true", resp["setup_completed"])
+	}
+	// Message should mention LDAP
+	msg, _ := resp["message"].(string)
+	if msg == "" || !contains(msg, "LDAP") {
+		t.Errorf("message should mention LDAP, got: %q", msg)
+	}
+}
+
+func TestCompleteSetup_NoAuth(t *testing.T) {
+	env := newTestEnv(t)
+
+	r := gin.New()
+	r.POST("/complete", env.h.CompleteSetup)
+
+	// Neither OIDC nor LDAP configured, but storage + admin are
+	env.oidcMock.ExpectQuery("SELECT.*FROM system_settings").
+		WillReturnRows(settingsRow(settingsOpts{
+			StorageConfigured: true,
+			PendingAdminEmail: "admin@example.com",
+		}))
+	env.oidcMock.ExpectQuery("SELECT scanning_configured FROM system_settings").
+		WillReturnRows(sqlmock.NewRows([]string{"scanning_configured"}).AddRow(false))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/complete", nil))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+
+	resp := getJSON(w)
+	missing, ok := resp["missing"].([]interface{})
+	if !ok || len(missing) != 1 {
+		t.Errorf("expected 1 missing item (auth), got %v", resp["missing"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetSetupStatus — LDAP fields
+// ---------------------------------------------------------------------------
+
+func TestGetSetupStatus_LDAPConfigured(t *testing.T) {
+	env := newTestEnv(t)
+
+	env.oidcMock.ExpectQuery("SELECT.*FROM system_settings").
+		WillReturnRows(settingsRow(settingsOpts{
+			StorageConfigured: true,
+			LDAPConfigured:    true,
+			AuthMethod:        "ldap",
+			PendingAdminEmail: "admin@example.com",
+		}))
+	env.oidcMock.ExpectQuery("SELECT scanning_configured FROM system_settings").
+		WillReturnRows(sqlmock.NewRows([]string{"scanning_configured"}).AddRow(false))
+
+	r := gin.New()
+	r.GET("/status", env.h.GetSetupStatus)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/status", nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	body := getJSON(w)
+	if body["ldap_configured"] != true {
+		t.Errorf("ldap_configured = %v, want true", body["ldap_configured"])
+	}
+	if body["auth_method"] != "ldap" {
+		t.Errorf("auth_method = %v, want ldap", body["auth_method"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// validateLDAPInput
+// ---------------------------------------------------------------------------
+
+func TestValidateLDAPInput_AllValid(t *testing.T) {
+	input := &models.LDAPConfigInput{
+		Host:         "ldap.example.com",
+		BindDN:       "cn=admin,dc=example,dc=com",
+		BindPassword: "secret",
+		BaseDN:       "dc=example,dc=com",
+		UserFilter:   "(uid=%s)",
+	}
+	if err := validateLDAPInput(input); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateLDAPInput_EmptyHost(t *testing.T) {
+	input := &models.LDAPConfigInput{
+		BindDN: "cn=admin", BindPassword: "s", BaseDN: "dc=x", UserFilter: "(uid=%s)",
+	}
+	if err := validateLDAPInput(input); err == nil {
+		t.Error("expected error for empty host")
+	}
+}
+
+func TestValidateLDAPInput_EmptyBindDN(t *testing.T) {
+	input := &models.LDAPConfigInput{
+		Host: "ldap", BindPassword: "s", BaseDN: "dc=x", UserFilter: "(uid=%s)",
+	}
+	if err := validateLDAPInput(input); err == nil {
+		t.Error("expected error for empty bind_dn")
+	}
+}
+
+func TestValidateLDAPInput_EmptyBindPassword(t *testing.T) {
+	input := &models.LDAPConfigInput{
+		Host: "ldap", BindDN: "cn=admin", BaseDN: "dc=x", UserFilter: "(uid=%s)",
+	}
+	if err := validateLDAPInput(input); err == nil {
+		t.Error("expected error for empty bind_password")
+	}
+}
+
+func TestValidateLDAPInput_EmptyBaseDN(t *testing.T) {
+	input := &models.LDAPConfigInput{
+		Host: "ldap", BindDN: "cn=admin", BindPassword: "s", UserFilter: "(uid=%s)",
+	}
+	if err := validateLDAPInput(input); err == nil {
+		t.Error("expected error for empty base_dn")
+	}
+}
+
+func TestValidateLDAPInput_EmptyUserFilter(t *testing.T) {
+	input := &models.LDAPConfigInput{
+		Host: "ldap", BindDN: "cn=admin", BindPassword: "s", BaseDN: "dc=x",
+	}
+	if err := validateLDAPInput(input); err == nil {
+		t.Error("expected error for empty user_filter")
+	}
+}
+
+func TestValidateLDAPInput_InvalidPort(t *testing.T) {
+	input := &models.LDAPConfigInput{
+		Host: "ldap", Port: 99999, BindDN: "cn=admin", BindPassword: "s",
+		BaseDN: "dc=x", UserFilter: "(uid=%s)",
+	}
+	if err := validateLDAPInput(input); err == nil {
+		t.Error("expected error for invalid port")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ldapInputToConfig
+// ---------------------------------------------------------------------------
+
+func TestLdapInputToConfig_Defaults(t *testing.T) {
+	input := &models.LDAPConfigInput{
+		Host:         "ldap.example.com",
+		BindDN:       "cn=admin",
+		BindPassword: "secret",
+		BaseDN:       "dc=example,dc=com",
+		UserFilter:   "(uid=%s)",
+	}
+
+	cfg := ldapInputToConfig(input)
+
+	if cfg.Port != 389 {
+		t.Errorf("Port = %d, want 389", cfg.Port)
+	}
+	if cfg.UserAttrEmail != "mail" {
+		t.Errorf("UserAttrEmail = %q, want mail", cfg.UserAttrEmail)
+	}
+	if cfg.UserAttrName != "displayName" {
+		t.Errorf("UserAttrName = %q, want displayName", cfg.UserAttrName)
+	}
+	if cfg.GroupMemberAttr != "member" {
+		t.Errorf("GroupMemberAttr = %q, want member", cfg.GroupMemberAttr)
+	}
+	if !cfg.Enabled {
+		t.Error("Enabled should be true")
+	}
+}
+
+func TestLdapInputToConfig_TLSPort(t *testing.T) {
+	input := &models.LDAPConfigInput{
+		Host:         "ldap.example.com",
+		UseTLS:       true,
+		BindDN:       "cn=admin",
+		BindPassword: "secret",
+		BaseDN:       "dc=example,dc=com",
+		UserFilter:   "(uid=%s)",
+	}
+
+	cfg := ldapInputToConfig(input)
+
+	if cfg.Port != 636 {
+		t.Errorf("Port = %d, want 636 for TLS", cfg.Port)
+	}
+}
+
+func TestLdapInputToConfig_CustomValues(t *testing.T) {
+	input := &models.LDAPConfigInput{
+		Host:            "ldap.example.com",
+		Port:            3269,
+		BindDN:          "cn=admin",
+		BindPassword:    "secret",
+		BaseDN:          "dc=example,dc=com",
+		UserFilter:      "(sAMAccountName=%s)",
+		UserAttrEmail:   "userPrincipalName",
+		UserAttrName:    "cn",
+		GroupMemberAttr: "uniqueMember",
+	}
+
+	cfg := ldapInputToConfig(input)
+
+	if cfg.Port != 3269 {
+		t.Errorf("Port = %d, want 3269", cfg.Port)
+	}
+	if cfg.UserAttrEmail != "userPrincipalName" {
+		t.Errorf("UserAttrEmail = %q, want userPrincipalName", cfg.UserAttrEmail)
+	}
+	if cfg.UserAttrName != "cn" {
+		t.Errorf("UserAttrName = %q, want cn", cfg.UserAttrName)
+	}
+	if cfg.GroupMemberAttr != "uniqueMember" {
+		t.Errorf("GroupMemberAttr = %q, want uniqueMember", cfg.GroupMemberAttr)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // helpers & sentinel
 // ---------------------------------------------------------------------------
+
+func contains(s, sub string) bool {
+	return len(s) >= len(sub) && (s == sub || len(s) > 0 && containsSubstring(s, sub))
+}
+
+func containsSubstring(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
 
 var errDB = errors.New("database error")

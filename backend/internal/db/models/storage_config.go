@@ -23,6 +23,11 @@ type SystemSettings struct {
 	ScanningConfigured   bool         `db:"scanning_configured" json:"scanning_configured"`
 	ScanningConfiguredAt sql.NullTime `db:"scanning_configured_at" json:"scanning_configured_at,omitempty"`
 	ScanningConfig       []byte       `db:"scanning_config" json:"scanning_config,omitempty"`
+	// Auth method & LDAP setup (migration 000027)
+	AuthMethod       string       `db:"auth_method" json:"auth_method"`
+	LDAPConfigured   bool         `db:"ldap_configured" json:"ldap_configured"`
+	LDAPConfiguredAt sql.NullTime `db:"ldap_configured_at" json:"ldap_configured_at,omitempty"`
+	LDAPConfig       []byte       `db:"ldap_config" json:"ldap_config,omitempty"`
 	// Audit retention (migration 000023)
 	AuditRetentionDays int       `db:"audit_retention_days" json:"audit_retention_days"`
 	CreatedAt          time.Time `db:"created_at" json:"created_at"`

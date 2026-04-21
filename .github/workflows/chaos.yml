@@ -1,0 +1,96 @@
+name: Chaos/Soak Tests
+
+on:
+  schedule:
+    # Nightly at 02:00 UTC
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Test duration (e.g., 10m, 1h, 24h)"
+        required: false
+        default: "1h"
+      scenario:
+        description: "Scenario to run (all, health-soak, api-soak, connection-storm,
+          large-payload)"
+        required: false
+        default: "all"
+
+env:
+  GO_VERSION: "1.26"
+
+jobs:
+  chaos-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1500 # 25 hours max for soak tests
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: terraform_registry
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: backend/go.sum
+
+      - name: Build backend
+        working-directory: backend
+        run: |
+          go build -o ../bin/terraform-registry ./cmd/server
+          go build -o ../bin/chaos-test ./cmd/chaos-test
+
+      - name: Start backend
+        env:
+          TFR_DATABASE_HOST: localhost
+          TFR_DATABASE_PORT: 5432
+          TFR_DATABASE_USER: postgres
+          TFR_DATABASE_PASSWORD: postgres
+          TFR_DATABASE_NAME: terraform_registry
+          TFR_SERVER_PORT: 5000
+          ENCRYPTION_KEY: chaos-test-encryption-key-32chars!
+        run: |
+          ./bin/terraform-registry &
+          sleep 5
+          curl -sf http://localhost:5000/health || (echo "Backend failed to start" && exit 1)
+
+      - name: Run chaos/soak tests
+        env:
+          TEST_DURATION: ${{ github.event.inputs.duration || '1h' }}
+          TEST_SCENARIO: ${{ github.event.inputs.scenario || 'all' }}
+        run: |
+          ./bin/chaos-test \
+            --target http://localhost:5000 \
+            --duration "$TEST_DURATION" \
+            --scenario "$TEST_SCENARIO" \
+            --concurrency 20 \
+            2>&1 | tee chaos-results.json
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: chaos-test-results
+          path: chaos-results.json
+          retention-days: 30
+
+      - name: Check pass/fail
+        run: |
+          if grep -q '"pass": false' chaos-results.json; then
+            echo "Chaos test FAILED — success rate below 95%"
+            exit 1
+          fi
+          echo "Chaos test PASSED"
