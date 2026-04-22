@@ -20,13 +20,54 @@ Scanning is **disabled by default**. The scanner binary must be installed on the
 
 ## Supported Scanners
 
-| Tool | `tool` value | License | Notes |
-|---|---|---|---|
-| [Trivy](https://github.com/aquasecurity/trivy) | `trivy` | Apache 2.0 | Recommended. Scans vulnerabilities, secrets, and IaC misconfigurations. |
-| [Checkov](https://github.com/bridgecrewio/checkov) | `checkov` | Apache 2.0 | Broad Terraform policy coverage. Python-based. |
-| [Terrascan](https://github.com/tenable/terrascan) | `terrascan` | Apache 2.0 | Purpose-built for IaC. Single binary. |
-| [Snyk](https://snyk.io/) | `snyk` | Proprietary (free tier available) | Requires authentication (`snyk auth`). |
-| Custom binary | `custom` | — | Any tool that writes SARIF or JSON to stdout. |
+| Tool                                               | `tool` value | License                           | Notes                                                                   |
+| -------------------------------------------------- | ------------ | --------------------------------- | ----------------------------------------------------------------------- |
+| [Trivy](https://github.com/aquasecurity/trivy)     | `trivy`      | Apache 2.0                        | Recommended. Scans vulnerabilities, secrets, and IaC misconfigurations. |
+| [Checkov](https://github.com/bridgecrewio/checkov) | `checkov`    | Apache 2.0                        | Broad Terraform policy coverage. Python-based.                          |
+| [Terrascan](https://github.com/tenable/terrascan)  | `terrascan`  | Apache 2.0                        | Purpose-built for IaC. Single binary.                                   |
+| [Snyk](https://snyk.io/)                           | `snyk`       | Proprietary (free tier available) | Requires authentication (`snyk auth`).                                  |
+| Custom binary                                      | `custom`     | —                                 | Any tool that writes SARIF or JSON to stdout.                           |
+
+---
+
+## Auto-Install via the Setup Wizard or Admin UI
+
+Trivy, Terrascan, and Checkov can be installed automatically by the server. The setup wizard and admin UI expose an **Install** button that downloads the official release for the server's OS/architecture, verifies the archive against the published SHA256 checksums file, and places the binary in the server's scanner directory.
+
+**Supported tools:** `trivy`, `terrascan`, `checkov`. Snyk is proprietary with no published checksums; custom has no catalog entry — both must be installed manually.
+
+### Network prerequisites
+
+The server needs outbound HTTPS access to:
+
+- `api.github.com` — to resolve the latest (or pinned) release metadata
+- `github.com` — to download release assets (archives and checksum files)
+
+Standard proxy environment variables (`HTTPS_PROXY`, `NO_PROXY`) are honoured.
+
+### What verification happens
+
+The installer computes the SHA256 hash of the downloaded archive and compares it against the hash published in the project's checksums file (e.g. `trivy_0.52.2_checksums.txt`). The comparison uses constant-time comparison to prevent timing side-channels.
+
+Cosign signature verification is **not** performed in this version — it is tracked as a follow-up enhancement.
+
+### Where binaries are installed
+
+Binaries are placed in the directory configured by `scanning.install_dir` (default `/app/scanners`). Each version is extracted to a subdirectory (e.g. `trivy-0.52.2/trivy`) and a symlink (`/app/scanners/trivy`) points to the active version. Upgrading to a new version atomically swaps the symlink; the old version directory remains on disk so running scans are not disrupted.
+
+### Air-gapped environments
+
+Operators who cannot provide outbound internet access from the server should pre-install the scanner binary manually and enter its path in the **Advanced → Binary Path** field (setup wizard) or via the `scanning.binary_path` configuration option.
+
+### Troubleshooting
+
+| Error                                                  | Cause                                                             | Fix                                                                 |
+| ------------------------------------------------------ | ----------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `scanner tool not supported for auto-install`          | Tool is `snyk` or `custom`                                        | Install manually and enter the binary path                          |
+| `no matching asset for this OS/arch in the release`    | Release doesn't include an asset for the server's OS/architecture | Install manually or check that the server architecture is supported |
+| `downloaded archive does not match published checksum` | Network corruption or tampered download                           | Retry; if persistent, check proxy/firewall for content rewriting    |
+| `install directory is not writable`                    | Server process lacks write permission to `scanning.install_dir`   | Fix directory permissions or change `install_dir`                   |
+| `refusing to download from non-HTTPS URL`              | Release asset URL is HTTP                                         | Shouldn't happen with official releases; check proxy configuration  |
 
 ---
 
@@ -104,19 +145,19 @@ ERROR module scanner: failed to construct scanner error="scanner binary not acce
 
 All options live under the `scanning:` key in `config.yaml` or use the `TFR_SCANNING_` environment variable prefix.
 
-| YAML key | Environment variable | Type | Default | Description |
-|---|---|---|---|---|
-| `enabled` | `TFR_SCANNING_ENABLED` | bool | `false` | Master toggle. Set to `true` to activate. |
-| `tool` | `TFR_SCANNING_TOOL` | string | — | Scanner backend: `trivy`, `checkov`, `terrascan`, `snyk`, or `custom`. |
-| `binary_path` | `TFR_SCANNING_BINARY_PATH` | string | — | Absolute path to the scanner executable on the server. |
-| `expected_version` | `TFR_SCANNING_EXPECTED_VERSION` | string | — | If set, the job refuses to run if the installed binary reports a different version. Supply-chain protection. |
-| `severity_threshold` | `TFR_SCANNING_SEVERITY_THRESHOLD` | string | (all) | Comma-separated list of severities to record, e.g. `CRITICAL,HIGH`. Findings below the threshold are omitted from counts. |
-| `timeout` | `TFR_SCANNING_TIMEOUT` | duration | `5m` | Maximum time a single scan may run before it is killed. |
-| `worker_count` | `TFR_SCANNING_WORKER_COUNT` | int | `2` | Number of scans to run concurrently. |
-| `scan_interval_mins` | `TFR_SCANNING_SCAN_INTERVAL_MINS` | int | `5` | How often (in minutes) the job polls for pending scans. |
-| `version_args` | `TFR_SCANNING_VERSION_ARGS` | string[] | — | **Custom tool only.** CLI arguments to retrieve the binary version, e.g. `["--version"]`. |
-| `scan_args` | `TFR_SCANNING_SCAN_ARGS` | string[] | — | **Custom tool only.** CLI arguments passed before the target directory, e.g. `["iac", "test", "--json"]`. |
-| `output_format` | `TFR_SCANNING_OUTPUT_FORMAT` | string | — | **Custom tool only.** How to parse the tool's output: `sarif` or `json`. |
+| YAML key             | Environment variable              | Type     | Default | Description                                                                                                               |
+| -------------------- | --------------------------------- | -------- | ------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`            | `TFR_SCANNING_ENABLED`            | bool     | `false` | Master toggle. Set to `true` to activate.                                                                                 |
+| `tool`               | `TFR_SCANNING_TOOL`               | string   | —       | Scanner backend: `trivy`, `checkov`, `terrascan`, `snyk`, or `custom`.                                                    |
+| `binary_path`        | `TFR_SCANNING_BINARY_PATH`        | string   | —       | Absolute path to the scanner executable on the server.                                                                    |
+| `expected_version`   | `TFR_SCANNING_EXPECTED_VERSION`   | string   | —       | If set, the job refuses to run if the installed binary reports a different version. Supply-chain protection.              |
+| `severity_threshold` | `TFR_SCANNING_SEVERITY_THRESHOLD` | string   | (all)   | Comma-separated list of severities to record, e.g. `CRITICAL,HIGH`. Findings below the threshold are omitted from counts. |
+| `timeout`            | `TFR_SCANNING_TIMEOUT`            | duration | `5m`    | Maximum time a single scan may run before it is killed.                                                                   |
+| `worker_count`       | `TFR_SCANNING_WORKER_COUNT`       | int      | `2`     | Number of scans to run concurrently.                                                                                      |
+| `scan_interval_mins` | `TFR_SCANNING_SCAN_INTERVAL_MINS` | int      | `5`     | How often (in minutes) the job polls for pending scans.                                                                   |
+| `version_args`       | `TFR_SCANNING_VERSION_ARGS`       | string[] | —       | **Custom tool only.** CLI arguments to retrieve the binary version, e.g. `["--version"]`.                                 |
+| `scan_args`          | `TFR_SCANNING_SCAN_ARGS`          | string[] | —       | **Custom tool only.** CLI arguments passed before the target directory, e.g. `["iac", "test", "--json"]`.                 |
+| `output_format`      | `TFR_SCANNING_OUTPUT_FORMAT`      | string   | —       | **Custom tool only.** How to parse the tool's output: `sarif` or `json`.                                                  |
 
 ---
 
@@ -385,13 +426,13 @@ Response:
 
 **Status values:**
 
-| Status | Meaning |
-|---|---|
-| `pending` | Scan is queued, not yet started. |
-| `scanning` | Scan is actively running. |
-| `clean` | Scan completed with zero findings. |
-| `findings` | Scan completed with one or more findings. |
-| `error` | Scan failed. Check `error_message` for details. |
+| Status     | Meaning                                         |
+| ---------- | ----------------------------------------------- |
+| `pending`  | Scan is queued, not yet started.                |
+| `scanning` | Scan is actively running.                       |
+| `clean`    | Scan completed with zero findings.              |
+| `findings` | Scan completed with one or more findings.       |
+| `error`    | Scan failed. Check `error_message` for details. |
 
 ---
 

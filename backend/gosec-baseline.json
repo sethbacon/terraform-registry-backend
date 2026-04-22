@@ -108,12 +108,60 @@
 			"rule_id": "G304",
 			"details": "Potential file inclusion via variable",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\services\\scm_publisher.go",
-			"code": "555: \tif p.moduleDocsRepo != nil {\n556: \t\tif f, err := os.Open(archivePath); err == nil { // G304: archivePath is a temp file created by this process\n557: \t\t\tdefer f.Close()\n",
-			"line": "556",
+			"code": "637: \tif p.moduleDocsRepo != nil {\n638: \t\tif f, err := os.Open(archivePath); err == nil { // G304: archivePath is a temp file created by this process\n639: \t\t\tdefer f.Close()\n",
+			"line": "638",
 			"column": "16",
 			"nosec": false,
 			"suppressions": null,
 			"autofix": "Consider using os.Root to scope file access under a fixed root (Go \u003e=1.24). Prefer root.Open/root.Stat over os.Open/os.Stat to prevent directory traversal."
+		},
+		{
+			"severity": "MEDIUM",
+			"confidence": "HIGH",
+			"cwe": {
+				"id": "276",
+				"url": "https://cwe.mitre.org/data/definitions/276.html"
+			},
+			"rule_id": "G302",
+			"details": "Expect file permissions to be 0600 or less",
+			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\scanner\\installer\\installer.go",
+			"code": "177: \t// 9. Make executable.\n178: \tif err := os.Chmod(targetBinary, 0o755); err != nil { // #nosec G302 -- scanner binary must be executable\n179: \t\treturn nil, fmt.Errorf(\"chmod: %w\", err)\n",
+			"line": "178",
+			"column": "12",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "MEDIUM",
+			"confidence": "HIGH",
+			"cwe": {
+				"id": "276",
+				"url": "https://cwe.mitre.org/data/definitions/276.html"
+			},
+			"rule_id": "G301",
+			"details": "Expect directory permissions to be 0750 or less",
+			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\scanner\\installer\\installer.go",
+			"code": "200: \t}\n201: \tif err := os.MkdirAll(dir, 0o755); err != nil { // #nosec G301 -- scanner install directory needs execute permission\n202: \t\treturn fmt.Errorf(\"%w: %v\", ErrInstallDirNotWritable, err)\n",
+			"line": "201",
+			"column": "12",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "MEDIUM",
+			"confidence": "HIGH",
+			"cwe": {
+				"id": "276",
+				"url": "https://cwe.mitre.org/data/definitions/276.html"
+			},
+			"rule_id": "G301",
+			"details": "Expect directory permissions to be 0750 or less",
+			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\scanner\\installer\\installer.go",
+			"code": "158: \tversionDir := filepath.Join(cfg.InstallDir, tool+\"-\"+version)\n159: \tif err := os.MkdirAll(versionDir, 0o755); err != nil { // #nosec G301 -- scanner binary directory needs execute permission\n160: \t\treturn nil, fmt.Errorf(\"create version dir: %w\", err)\n",
+			"line": "159",
+			"column": "12",
+			"nosec": false,
+			"suppressions": null
 		},
 		{
 			"severity": "LOW",
@@ -269,8 +317,8 @@
 			"rule_id": "G104",
 			"details": "Errors unhandled",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\jobs\\terraform_mirror_sync.go",
-			"code": "531: \twritten, copyErr := io.Copy(tmpFile, io.TeeReader(body, hasher))\n532: \tbody.Close()\n533: \tif copyErr != nil {\n",
-			"line": "532",
+			"code": "538: \twritten, copyErr := io.Copy(tmpFile, io.TeeReader(body, hasher))\n539: \tbody.Close()\n540: \tif copyErr != nil {\n",
+			"line": "539",
 			"column": "2",
 			"nosec": false,
 			"suppressions": null
@@ -285,7 +333,39 @@
 			"rule_id": "G104",
 			"details": "Errors unhandled",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\jobs\\terraform_mirror_sync.go",
-			"code": "526: \t\ttmpFile.Close()\n527: \t\tos.Remove(tmpFile.Name())\n528: \t}()\n",
+			"code": "533: \t\ttmpFile.Close()\n534: \t\tos.Remove(tmpFile.Name())\n535: \t}()\n",
+			"line": "534",
+			"column": "3",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "LOW",
+			"confidence": "HIGH",
+			"cwe": {
+				"id": "703",
+				"url": "https://cwe.mitre.org/data/definitions/703.html"
+			},
+			"rule_id": "G104",
+			"details": "Errors unhandled",
+			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\jobs\\terraform_mirror_sync.go",
+			"code": "532: \tdefer func() {\n533: \t\ttmpFile.Close()\n534: \t\tos.Remove(tmpFile.Name())\n",
+			"line": "533",
+			"column": "3",
+			"nosec": false,
+			"suppressions": null
+		},
+		{
+			"severity": "LOW",
+			"confidence": "HIGH",
+			"cwe": {
+				"id": "703",
+				"url": "https://cwe.mitre.org/data/definitions/703.html"
+			},
+			"rule_id": "G104",
+			"details": "Errors unhandled",
+			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\jobs\\terraform_mirror_sync.go",
+			"code": "526: \tif tmpErr != nil {\n527: \t\tbody.Close()\n528: \t\terrStr := fmt.Sprintf(\"failed to create temp file: %v\", tmpErr)\n",
 			"line": "527",
 			"column": "3",
 			"nosec": false,
@@ -300,41 +380,9 @@
 			},
 			"rule_id": "G104",
 			"details": "Errors unhandled",
-			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\jobs\\terraform_mirror_sync.go",
-			"code": "525: \tdefer func() {\n526: \t\ttmpFile.Close()\n527: \t\tos.Remove(tmpFile.Name())\n",
-			"line": "526",
-			"column": "3",
-			"nosec": false,
-			"suppressions": null
-		},
-		{
-			"severity": "LOW",
-			"confidence": "HIGH",
-			"cwe": {
-				"id": "703",
-				"url": "https://cwe.mitre.org/data/definitions/703.html"
-			},
-			"rule_id": "G104",
-			"details": "Errors unhandled",
-			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\jobs\\terraform_mirror_sync.go",
-			"code": "519: \tif tmpErr != nil {\n520: \t\tbody.Close()\n521: \t\terrStr := fmt.Sprintf(\"failed to create temp file: %v\", tmpErr)\n",
-			"line": "520",
-			"column": "3",
-			"nosec": false,
-			"suppressions": null
-		},
-		{
-			"severity": "LOW",
-			"confidence": "HIGH",
-			"cwe": {
-				"id": "703",
-				"url": "https://cwe.mitre.org/data/definitions/703.html"
-			},
-			"rule_id": "G104",
-			"details": "Errors unhandled",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\jobs\\mirror_sync.go",
-			"code": "855: \twritten, err := io.Copy(tmpFile, io.TeeReader(stream.Body, hasher))\n856: \tstream.Body.Close()\n857: \tif err != nil {\n",
-			"line": "856",
+			"code": "876: \twritten, err := io.Copy(tmpFile, io.TeeReader(stream.Body, hasher))\n877: \tstream.Body.Close()\n878: \tif err != nil {\n",
+			"line": "877",
 			"column": "2",
 			"nosec": false,
 			"suppressions": null
@@ -349,8 +397,8 @@
 			"rule_id": "G104",
 			"details": "Errors unhandled",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\jobs\\mirror_sync.go",
-			"code": "849: \t\ttmpFile.Close()\n850: \t\tos.Remove(tmpFile.Name())\n851: \t}()\n",
-			"line": "850",
+			"code": "870: \t\ttmpFile.Close()\n871: \t\tos.Remove(tmpFile.Name())\n872: \t}()\n",
+			"line": "871",
 			"column": "3",
 			"nosec": false,
 			"suppressions": null
@@ -365,8 +413,8 @@
 			"rule_id": "G104",
 			"details": "Errors unhandled",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\jobs\\mirror_sync.go",
-			"code": "848: \tdefer func() {\n849: \t\ttmpFile.Close()\n850: \t\tos.Remove(tmpFile.Name())\n",
-			"line": "849",
+			"code": "869: \tdefer func() {\n870: \t\ttmpFile.Close()\n871: \t\tos.Remove(tmpFile.Name())\n",
+			"line": "870",
 			"column": "3",
 			"nosec": false,
 			"suppressions": null
@@ -381,18 +429,18 @@
 			"rule_id": "G104",
 			"details": "Errors unhandled",
 			"file": "C:\\dev\\gh\\terraform-registry-backend\\backend\\internal\\jobs\\mirror_sync.go",
-			"code": "844: \tif err != nil {\n845: \t\tstream.Body.Close()\n846: \t\treturn fmt.Errorf(\"failed to create temp file: %w\", err)\n",
-			"line": "845",
+			"code": "865: \tif err != nil {\n866: \t\tstream.Body.Close()\n867: \t\treturn fmt.Errorf(\"failed to create temp file: %w\", err)\n",
+			"line": "866",
 			"column": "3",
 			"nosec": false,
 			"suppressions": null
 		}
 	],
 	"Stats": {
-		"files": 155,
-		"lines": 43929,
-		"nosec": 111,
-		"found": 24
+		"files": 177,
+		"lines": 50075,
+		"nosec": 141,
+		"found": 27
 	},
 	"GosecVersion": "dev"
 }

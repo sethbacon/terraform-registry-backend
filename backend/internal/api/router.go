@@ -634,6 +634,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 			setupGroup.POST("/admin", setupHandlers.ConfigureAdmin)
 			setupGroup.POST("/scanning/test", setupHandlers.TestScanningConfig)
 			setupGroup.POST("/scanning", setupHandlers.SaveScanningConfig)
+			setupGroup.POST("/scanning/install", setupHandlers.InstallScanner)
 			setupGroup.POST("/complete", setupHandlers.CompleteSetup)
 		}
 
@@ -772,6 +773,9 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 			authenticatedGroup.GET("/admin/scanning/stats",
 				middleware.RequireScope(auth.ScopeScanningRead),
 				admin.GetScanningStatsHandler(sqlxDB))
+			authenticatedGroup.POST("/admin/scanning/install",
+				middleware.RequireScope(auth.ScopeAdmin),
+				admin.InstallScannerHandler(&cfg.Scanning, nil))
 
 			// API Keys management - self-service for own keys
 			// Users can manage their own API keys without api_keys:manage scope

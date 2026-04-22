@@ -104,6 +104,11 @@ type ScanningConfig struct {
 	ScanArgs []string `mapstructure:"scan_args"`
 	// OutputFormat specifies how the custom tool's output is parsed: "sarif" or "json".
 	OutputFormat string `mapstructure:"output_format"`
+	// InstallDir is the server-managed directory used by the auto-install endpoint
+	// to place downloaded scanner binaries. Must be writable by the server process.
+	// Empty disables the auto-install endpoint; operators who prefer to pre-install
+	// scanners themselves can leave it unset.
+	InstallDir string `mapstructure:"install_dir"`
 }
 
 // ServerConfig holds HTTP server configuration
@@ -825,6 +830,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("scanning.timeout", 5*time.Minute)
 	v.SetDefault("scanning.worker_count", 2)
 	v.SetDefault("scanning.scan_interval_mins", 5)
+	v.SetDefault("scanning.install_dir", "/app/scanners")
 
 	// Audit retention defaults
 	v.SetDefault("audit_retention.retention_days", 90)

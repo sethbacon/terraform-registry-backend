@@ -2738,6 +2738,66 @@
                 }
             }
         },
+        "/api/v1/admin/scanning/install": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Admin-only post-setup action that downloads, verifies, and installs a supported scanner binary. Returns the installed binary path — updating the scanning configuration to use it is a separate admin action. Requires admin scope.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Security Scanning"
+                ],
+                "summary": "Install or upgrade a scanner binary",
+                "parameters": [
+                    {
+                        "description": "Scanner to install",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/admin.InstallScannerAdminInput"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/admin.InstallScannerAdminResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Install directory not configured",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/admin/scanning/stats": {
             "get": {
                 "security": [
@@ -8399,6 +8459,73 @@
                 }
             }
         },
+        "/api/v1/setup/scanning/install": {
+            "post": {
+                "security": [
+                    {
+                        "SetupToken": []
+                    }
+                ],
+                "description": "Downloads the official release of a supported scanner for this server's OS/architecture, verifies its SHA256 against the published checksum file, and installs it to the server's scanner directory. Returns the installed binary path for use in the scanning configuration. Supported tools: trivy, terrascan, checkov. Not supported: snyk (proprietary, no public checksums), custom (no catalog entry).",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Setup"
+                ],
+                "summary": "Install a scanner binary",
+                "parameters": [
+                    {
+                        "description": "Scanner to install",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/setup.InstallScannerInput"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/setup.InstallScannerResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid setup token",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Setup already completed",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Install directory not configured",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/setup/scanning/test": {
             "post": {
                 "security": [
@@ -11302,6 +11429,46 @@
                     "type": "string"
                 },
                 "registry": {
+                    "type": "string"
+                }
+            }
+        },
+        "admin.InstallScannerAdminInput": {
+            "type": "object",
+            "required": [
+                "tool"
+            ],
+            "properties": {
+                "tool": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
+        "admin.InstallScannerAdminResponse": {
+            "type": "object",
+            "properties": {
+                "binary_path": {
+                    "type": "string"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "sha256": {
+                    "type": "string"
+                },
+                "source_url": {
+                    "type": "string"
+                },
+                "success": {
+                    "type": "boolean"
+                },
+                "tool": {
+                    "type": "string"
+                },
+                "version": {
                     "type": "string"
                 }
             }
@@ -14673,6 +14840,47 @@
                     "type": "string"
                 },
                 "role": {
+                    "type": "string"
+                }
+            }
+        },
+        "setup.InstallScannerInput": {
+            "type": "object",
+            "required": [
+                "tool"
+            ],
+            "properties": {
+                "tool": {
+                    "type": "string"
+                },
+                "version": {
+                    "description": "empty = latest",
+                    "type": "string"
+                }
+            }
+        },
+        "setup.InstallScannerResponse": {
+            "type": "object",
+            "properties": {
+                "binary_path": {
+                    "type": "string"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "sha256": {
+                    "type": "string"
+                },
+                "source_url": {
+                    "type": "string"
+                },
+                "success": {
+                    "type": "boolean"
+                },
+                "tool": {
+                    "type": "string"
+                },
+                "version": {
                     "type": "string"
                 }
             }
