@@ -50,3 +50,14 @@ type TestScanningConfigResponse struct {
 type SaveScanningConfigResponse struct {
 	Message string `json:"message"`
 }
+
+// InstallScannerResponse is returned by POST /api/v1/setup/scanning/install.
+type InstallScannerResponse struct {
+	Success    bool   `json:"success"`
+	Tool       string `json:"tool,omitempty"`
+	Version    string `json:"version,omitempty"`
+	BinaryPath string `json:"binary_path,omitempty"`
+	Sha256     string `json:"sha256,omitempty"`
+	SourceURL  string `json:"source_url,omitempty"`
+	Error      string `json:"error,omitempty"`
+}

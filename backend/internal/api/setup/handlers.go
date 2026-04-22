@@ -25,6 +25,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/scanner"
+	"github.com/terraform-registry/terraform-registry/internal/scanner/installer"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 )
 
@@ -37,6 +38,7 @@ type Handlers struct {
 	userRepo          *repositories.UserRepository
 	orgRepo           *repositories.OrganizationRepository
 	authHandlers      *admin.AuthHandlers // to swap OIDC provider at runtime
+	installFunc       installer.InstallFunc
 }
 
 // NewHandlers creates a new setup Handlers instance.

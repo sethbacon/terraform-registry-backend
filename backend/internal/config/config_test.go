@@ -566,3 +566,24 @@ func TestGetPublicURL_BothEmpty(t *testing.T) {
 		t.Errorf("GetPublicURL = %q, want empty", got)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ScanningConfig — InstallDir default
+// ---------------------------------------------------------------------------
+
+func TestScanningConfig_DefaultInstallDir(t *testing.T) {
+	// Clear any env that might override the default.
+	for _, key := range os.Environ() {
+		if strings.HasPrefix(key, "TFR_SCANNING_") {
+			parts := strings.SplitN(key, "=", 2)
+			os.Unsetenv(parts[0])
+		}
+	}
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Scanning.InstallDir != "/app/scanners" {
+		t.Errorf("Scanning.InstallDir = %q, want /app/scanners", cfg.Scanning.InstallDir)
+	}
+}
