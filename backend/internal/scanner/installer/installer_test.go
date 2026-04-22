@@ -2,7 +2,6 @@ package installer
 
 import (
 	"archive/tar"
-	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -48,24 +47,6 @@ func buildTarGz(t *testing.T, entries map[string][]byte) []byte {
 	return buf.Bytes()
 }
 
-// buildZip creates a zip archive in memory with the given entries.
-func buildZip(t *testing.T, entries map[string][]byte) []byte {
-	t.Helper()
-	var buf bytes.Buffer
-	zw := zip.NewWriter(&buf)
-	for name, data := range entries {
-		w, err := zw.Create(name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := w.Write(data); err != nil {
-			t.Fatal(err)
-		}
-	}
-	zw.Close()
-	return buf.Bytes()
-}
-
 // checksumLine returns a "sha256  filename" line for the given data.
 func checksumLine(data []byte, filename string) string {
 	h := sha256.Sum256(data)
@@ -74,24 +55,6 @@ func checksumLine(data []byte, filename string) string {
 
 // stubBinary is a minimal shell script to act as a fake scanner binary.
 var stubBinary = []byte("#!/bin/sh\necho stub-scanner\n")
-
-// newStubRelease returns an HTTP handler that serves a fake GitHub release
-// with the given version and assets map (asset name → URL path on test server).
-func newStubRelease(t *testing.T, version string, assets map[string]string) http.HandlerFunc {
-	t.Helper()
-	release := ghRelease{
-		TagName: "v" + version,
-	}
-	for name, urlPath := range assets {
-		release.Assets = append(release.Assets, ghAsset{
-			Name:               name,
-			BrowserDownloadURL: urlPath, // will be patched to include server URL
-		})
-	}
-	return func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(release)
-	}
-}
 
 // setupTestServer creates an httptest.Server that serves:
 //   - /releases/latest and /releases/tags/vVERSION → release JSON
@@ -513,7 +476,7 @@ func TestInstall_PathTraversal_Absolute(t *testing.T) {
 }
 
 func TestInstall_InstallDirNotWritable(t *testing.T) {
-	_, err := Install(context.Background(), InstallConfig{
+	_, _ = Install(context.Background(), InstallConfig{
 		InstallDir: filepath.Join(t.TempDir(), "readonly", "nested"),
 	}, "trivy", "")
 	// On most systems MkdirAll will succeed for nested paths under TempDir,
@@ -526,7 +489,7 @@ func TestInstall_InstallDirNotWritable(t *testing.T) {
 	os.Chmod(roDir, 0o444)
 	t.Cleanup(func() { os.Chmod(roDir, 0o755) })
 
-	_, err = Install(context.Background(), InstallConfig{
+	_, err := Install(context.Background(), InstallConfig{
 		InstallDir: filepath.Join(roDir, "subdir"),
 	}, "trivy", "")
 	if err == nil || !strings.Contains(err.Error(), "not writable") {
