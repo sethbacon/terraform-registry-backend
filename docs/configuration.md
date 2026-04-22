@@ -538,6 +538,7 @@ scanning:
   timeout: 5m
   worker_count: 2
   scan_interval_mins: 5
+  install_dir: /app/scanners  # auto-install target directory
 ```
 
 | Variable | Type | Default | Description |
@@ -550,6 +551,7 @@ scanning:
 | `TFR_SCANNING_TIMEOUT` | duration | `5m` | Maximum time a single scan may run. |
 | `TFR_SCANNING_WORKER_COUNT` | int | `2` | Concurrent scan workers. |
 | `TFR_SCANNING_SCAN_INTERVAL_MINS` | int | `5` | How often the job polls for pending scans. |
+| `TFR_SCANNING_INSTALL_DIR` | string | `/app/scanners` | Directory where auto-installed scanner binaries are placed. Each version gets a subdirectory; a symlink points to the active version. |
 | `TFR_SCANNING_VERSION_ARGS` | string[] | — | **`custom` tool only.** Arguments to print the binary version. |
 | `TFR_SCANNING_SCAN_ARGS` | string[] | — | **`custom` tool only.** Arguments passed before the target directory. |
 | `TFR_SCANNING_OUTPUT_FORMAT` | string | — | **`custom` tool only.** Output parser: `sarif` or `json`. |

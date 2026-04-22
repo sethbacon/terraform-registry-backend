@@ -91,6 +91,9 @@ data:
   TFR_SCANNING_TIMEOUT: {{ .Values.scanning.timeout | quote }}
   TFR_SCANNING_WORKER_COUNT: {{ .Values.scanning.workerCount | quote }}
   TFR_SCANNING_SCAN_INTERVAL_MINS: {{ .Values.scanning.scanIntervalMins | quote }}
+  {{- if .Values.scanning.installDir }}
+  TFR_SCANNING_INSTALL_DIR: {{ .Values.scanning.installDir | quote }}
+  {{- end }}
   {{- end }}
 
   # Redis (optional, enables HA rate limiting and session store)

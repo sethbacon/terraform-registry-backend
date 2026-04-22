@@ -56,7 +56,7 @@ COPY config.example.yaml /app/config.example.yaml
 COPY --from=builder /build/docs /app/docs
 
 # Create directories
-RUN mkdir -p /app/storage && \
+RUN mkdir -p /app/storage /app/scanners && \
     chown -R registry:registry /app
 
 # Switch to non-root user

@@ -61,7 +61,7 @@ frontend:
   replicaCount: 2
   image:
     repository: terraform-registry-frontend
-    tag: "0.9.0"
+    tag: "0.10.1"
     pullPolicy: IfNotPresent
   resources:
     requests:
@@ -306,6 +306,10 @@ scanning:
   workerCount: 2
   # -- How often (minutes) the scanner polls for pending scans
   scanIntervalMins: 5
+  # -- Directory where the auto-install button places scanner binaries.
+  #    For production, mount a PersistentVolumeClaim at this path so binaries
+  #    survive pod restarts. Leave empty to disable auto-install.
+  installDir: "/app/scanners"
 
 # -- Audit logging configuration
 audit:
@@ -328,7 +332,7 @@ audit:
   #       batchSize: 100
   #       flushIntervalSecs: 30
 
-# -- Backup configuration (optional pg_dump CronJob)
+  # -- Backup configuration (optional pg_dump CronJob)
 backup:
   # -- Enable the backup CronJob
   enabled: false
@@ -369,11 +373,11 @@ grafanaDashboard:
   #   labels:
   #     grafana_dashboard: "1"
 
-# -- Kubernetes Gateway API
-# Supports AKS (Application Gateway for Containers), AWS EKS (ALB Controller),
-# GKE (built-in Gateway), and any other Gateway API-compliant implementation.
-# When gatewayAPI.enabled=true, set ingress.enabled=false to avoid deploying
-# the legacy nginx Ingress resource alongside Gateway API resources.
+  # -- Kubernetes Gateway API
+  # Supports AKS (Application Gateway for Containers), AWS EKS (ALB Controller),
+  # GKE (built-in Gateway), and any other Gateway API-compliant implementation.
+  # When gatewayAPI.enabled=true, set ingress.enabled=false to avoid deploying
+  # the legacy nginx Ingress resource alongside Gateway API resources.
 gatewayAPI:
   # -- Enable Gateway API resources
   # (GatewayClass, Gateway, HTTPRoute, ClusterIssuers, Certificate)

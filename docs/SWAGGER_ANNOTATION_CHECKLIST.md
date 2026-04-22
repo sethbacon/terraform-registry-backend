@@ -6,7 +6,7 @@ This checklist tracks Swagger/OpenAPI annotation progress for all API endpoints 
 
 **Target**: 100% API coverage with Swagger annotations
 
-**Current Status**: ✅ 125/125 annotated (100%) — All Gin-router endpoints complete
+**Current Status**: ✅ 127/127 annotated (100%) — All Gin-router endpoints complete
 
 See the **Out-of-Band Endpoints** section at the bottom for observability endpoints that live
 on dedicated ports and are deliberately excluded from the OpenAPI spec.
@@ -246,9 +246,11 @@ on dedicated ports and are deliberately excluded from the OpenAPI spec.
 
 - [x] `GET /api/v1/admin/scanning/config` - Get scanning configuration
 - [x] `GET /api/v1/admin/scanning/stats` - Get scanning statistics and recent scans
+- [x] `POST /api/v1/admin/scanning/install` - Auto-install a scanner binary (admin)
+- [x] `POST /api/v1/setup/scanning/install` - Auto-install a scanner binary (setup wizard)
 
-**File**: `backend/internal/api/admin/scanning_admin.go`
-**Progress**: 2/2 annotated ✅
+**Files**: `backend/internal/api/admin/scanning_install.go`, `backend/internal/api/setup/install.go`
+**Progress**: 4/4 annotated ✅
 
 ---
 
@@ -308,8 +310,8 @@ complete operational coverage.
 ---
 
 ```txt
-Total Gin-router Endpoints: 125
-Annotated: 125
+Total Gin-router Endpoints: 127
+Annotated: 127
 Remaining: 0
 Completion: 100% ✅
 
@@ -325,12 +327,12 @@ Phase Breakdown:
   Phase 5 (SCM):                  18/18 (100%) ✅
   Phase 6 (Mirror):                9/9  (100%) ✅
   Phase 7 (RBAC):                 15/15 (100%) ✅
-  Phase 8 (Security Scanning):     2/2  (100%) ✅
+  Phase 8 (Security Scanning):     4/4  (100%) ✅
   Phase 9 (Utilities):             6/6  (100%) ✅
 
 @Tags used (all title-cased):
   Authentication, API Keys, Users, Organizations, SCIM,
-  Modules, Providers, Security Scanning, Storage,
+  Modules, Providers, Security Scanning, Setup, Storage,
   SCM Providers, SCM OAuth, SCM Linking, Mirror,
   Mirror Protocol, RBAC, Stats, System, Observability,
   Webhooks
@@ -349,5 +351,5 @@ Then visit `https://localhost/api-docs` to verify in the Swagger UI.
 
 ---
 
-**Last Updated**: 2026-04-20
-**Status**: ✅ All 125 Gin-router endpoints annotated — 100% complete; out-of-band observability endpoints documented in-checklist
+**Last Updated**: 2026-04-22
+**Status**: ✅ All 127 Gin-router endpoints annotated — 100% complete; out-of-band observability endpoints documented in-checklist
