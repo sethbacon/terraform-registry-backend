@@ -119,8 +119,9 @@ export SETUP_TOKEN_FILE=/tmp/setup-token.txt
    - **Step 1: Authenticate** — Paste the setup token
    - **Step 2: OIDC Provider** — Configure your identity provider
    - **Step 3: Storage Backend** — Configure module/provider storage
-   - **Step 4: Admin User** — Set the initial admin email
-   - **Step 5: Complete** — Review and finalize
+   - **Step 4: Security Scanning** *(optional)* — Enable module scanning and auto-install a supported scanner (Trivy, Terrascan, or Checkov). The **Install** button downloads the official release, verifies the SHA256 checksum, and places the binary in the scanner directory. See [Module Security Scanning](module-scanning.md) for details.
+   - **Step 5: Admin User** — Set the initial admin email
+   - **Step 6: Complete** — Review and finalize
 
 ## Using the API (Headless)
 

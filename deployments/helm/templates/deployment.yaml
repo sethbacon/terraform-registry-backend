@@ -90,6 +90,10 @@ spec:
             - name: storage
               mountPath: {{ .Values.storage.local.basePath }}
             {{- end }}
+            {{- if .Values.scanning.installDir }}
+            - name: scanners
+              mountPath: {{ .Values.scanning.installDir }}
+            {{- end }}
             {{- if .Values.keyVault.enabled }}
             # CSI volume mount triggers the Secrets Store CSI Driver to fetch
             # secrets from Azure Key Vault and sync them into the k8s Secret.
@@ -108,6 +112,15 @@ spec:
           {{- if .Values.storage.persistence.enabled }}
           persistentVolumeClaim:
             claimName: {{ .Values.storage.persistence.existingClaim | default (printf "%s-storage" (include "terraform-registry.fullname" .)) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- end }}
+        {{- if .Values.scanning.installDir }}
+        - name: scanners
+          {{- if .Values.scanning.installDirPVC }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.scanning.installDirPVC }}
           {{- else }}
           emptyDir: {}
           {{- end }}
