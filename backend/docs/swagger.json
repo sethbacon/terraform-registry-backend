@@ -402,14 +402,14 @@
                         "Bearer": []
                     }
                 ],
-                "description": "Streams audit log entries as newline-delimited JSON (NDJSON) for archival.",
+                "description": "Streams audit log entries as newline-delimited JSON (NDJSON) or OCSF 1.1 API",
                 "produces": [
                     "application/x-ndjson"
                 ],
                 "tags": [
                     "Audit"
                 ],
-                "summary": "Export audit logs as NDJSON",
+                "summary": "Export audit logs",
                 "parameters": [
                     {
                         "type": "string",
@@ -422,6 +422,16 @@
                         "description": "End date in RFC3339 format (default: now)",
                         "name": "end_date",
                         "in": "query"
+                    },
+                    {
+                        "enum": [
+                            "ndjson",
+                            "ocsf"
+                        ],
+                        "type": "string",
+                        "description": "Output format: ndjson (default) or ocsf",
+                        "name": "format",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -432,7 +442,7 @@
                         }
                     },
                     "400": {
-                        "description": "Invalid date parameters",
+                        "description": "Invalid date or format parameters",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
