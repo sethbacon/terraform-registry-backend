@@ -289,6 +289,75 @@
                 }
             }
         },
+        "/api/v1/admin/approvals/{id}/token": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Generates a single-use HMAC token that can be sent to an approver via email",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "RBAC"
+                ],
+                "summary": "Generate webhook approval token",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Approval request ID (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/admin.ApprovalTokenResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid approval request ID",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden — mirrors:manage scope required",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Approval request not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/admin/audit-logs": {
             "get": {
                 "security": [
@@ -11090,6 +11159,57 @@
                 }
             }
         },
+        "/webhooks/approvals/{token}": {
+            "post": {
+                "description": "Redeems a single-use approval token generated via the admin API. When valid,",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Webhooks"
+                ],
+                "summary": "Redeem approval token",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Single-use approval token",
+                        "name": "token",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Approval request approved",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid token format",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Token not found, already used, or expired",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/webhooks/scm/{module_source_repo_id}/{secret}": {
             "post": {
                 "description": "Receives and processes incoming webhook events from SCM providers (GitHub, GitLab, Azure DevOps, Bitbucket).\nTwo-layer security is applied: the URL-embedded secret (last path segment of the registered callback URL)\nis verified first with a constant-time comparison, and then the provider's HMAC payload signature is\nvalidated against the stored webhook secret. Both checks must pass before the payload is processed.\nAccepted events are logged. Tag-push events trigger asynchronous auto-publish when AutoPublish is enabled.",
@@ -11225,6 +11345,21 @@
                     "type": "string"
                 },
                 "user_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "admin.ApprovalTokenResponse": {
+            "type": "object",
+            "properties": {
+                "approval_url": {
+                    "description": "ApprovalURL is informational — the caller should embed the token in the\nappropriate webhook URL before sending it to an approver.",
+                    "type": "string"
+                },
+                "expires_at": {
+                    "type": "string"
+                },
+                "token": {
                     "type": "string"
                 }
             }
