@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.5] - 2026-04-23
+
+### Fixed
+
+- fix: audit log resource_type now correctly shows "organization" for /api/v1/organizations routes (org CRUD and member management)
+
+## [0.10.4] - 2026-04-23
+
+### Fixed
+
+- fix: audit log resource_type now correctly shows "module", "provider", and "storage" instead of "unknown" for admin module/provider CRUD and storage config routes
+
 ## [0.10.3] - 2026-04-23
 
 ### Added
