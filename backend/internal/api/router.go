@@ -997,7 +997,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 			auditLogsGroup := authenticatedGroup.Group("/admin/audit-logs")
 			{
 				auditLogsGroup.GET("", middleware.RequireScope(auth.ScopeAuditRead), auditLogHandlers.ListAuditLogsHandler())
-				auditLogsGroup.GET("/export", middleware.RequireScope(auth.ScopeAuditRead), admin.ExportAuditLogs(auditRepo))
+				auditLogsGroup.GET("/export", middleware.RequireScope(auth.ScopeAuditRead), admin.ExportAuditLogs(auditRepo, AppVersion))
 				auditLogsGroup.GET("/:id", middleware.RequireScope(auth.ScopeAuditRead), auditLogHandlers.GetAuditLogHandler())
 			}
 		}
