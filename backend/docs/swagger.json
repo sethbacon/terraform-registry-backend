@@ -10816,6 +10816,260 @@
                 }
             }
         },
+        "/v2/": {
+            "get": {
+                "description": "Returns 200 to indicate OCI Distribution Spec v1.1 support.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "System"
+                ],
+                "summary": "OCI API ping",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/v2/{namespace}/{name}/{system}/blobs/{digest}": {
+            "get": {
+                "description": "Streams the module archive (tar.gz) for the given digest.",
+                "produces": [
+                    "application/octet-stream"
+                ],
+                "tags": [
+                    "Modules"
+                ],
+                "summary": "Download module blob",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Module namespace",
+                        "name": "namespace",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Module name",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Provider/system",
+                        "name": "system",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Blob digest (sha256:...)",
+                        "name": "digest",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "head": {
+                "description": "Returns headers for the module archive blob identified by its digest.",
+                "tags": [
+                    "Modules"
+                ],
+                "summary": "Check module blob",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Module namespace",
+                        "name": "namespace",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Module name",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Provider/system",
+                        "name": "system",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Blob digest (sha256:...)",
+                        "name": "digest",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/v2/{namespace}/{name}/{system}/manifests/{reference}": {
+            "get": {
+                "description": "Returns the OCI manifest for a module version.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Modules"
+                ],
+                "summary": "Get module manifest",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Module namespace",
+                        "name": "namespace",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Module name",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Provider/system",
+                        "name": "system",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Version tag or digest",
+                        "name": "reference",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/oci.ociManifest"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "OCI push is not supported; use POST /api/v1/modules to publish modules.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Modules"
+                ],
+                "summary": "Push module manifest (not supported)",
+                "responses": {
+                    "405": {
+                        "description": "Method Not Allowed",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "head": {
+                "description": "Returns headers for the OCI manifest corresponding to a module version.",
+                "tags": [
+                    "Modules"
+                ],
+                "summary": "Check module manifest",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Module namespace",
+                        "name": "namespace",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Module name",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Provider/system",
+                        "name": "system",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Version tag or digest",
+                        "name": "reference",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/version": {
             "get": {
                 "description": "Returns the current API version and supported protocol versions.",
@@ -14202,6 +14456,40 @@
                     "type": "integer"
                 },
                 "total": {
+                    "type": "integer"
+                }
+            }
+        },
+        "oci.ociDescriptor": {
+            "type": "object",
+            "properties": {
+                "digest": {
+                    "type": "string"
+                },
+                "mediaType": {
+                    "type": "string"
+                },
+                "size": {
+                    "type": "integer"
+                }
+            }
+        },
+        "oci.ociManifest": {
+            "type": "object",
+            "properties": {
+                "config": {
+                    "$ref": "#/definitions/oci.ociDescriptor"
+                },
+                "layers": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/oci.ociDescriptor"
+                    }
+                },
+                "mediaType": {
+                    "type": "string"
+                },
+                "schemaVersion": {
                     "type": "integer"
                 }
             }
