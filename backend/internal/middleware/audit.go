@@ -178,6 +178,8 @@ func getResourceType(c *gin.Context) string {
 		return "api_key"
 	case strings.HasPrefix(fullPath, "/api/v1/admin/organizations"):
 		return "organization"
+	case strings.HasPrefix(fullPath, "/api/v1/organizations"):
+		return "organization"
 	case strings.HasPrefix(fullPath, "/api/v1/admin/storage"):
 		return "storage"
 	case strings.HasPrefix(fullPath, "/api/v1/admin/roles"):

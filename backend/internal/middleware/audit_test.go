@@ -173,6 +173,8 @@ func TestAuditMiddleware_ResourceTypeDetection(t *testing.T) {
 		{"/api/v1/admin/users/baz", "user"},
 		{"/api/v1/admin/apikeys/1", "api_key"},
 		{"/api/v1/admin/organizations/x", "organization"},
+		{"/api/v1/organizations/some-id", "organization"},
+		{"/api/v1/organizations/some-id/members", "organization"},
 		{"/api/v1/admin/mirrors/y", "mirror"},
 		{"/other/z", "unknown"},
 	}
