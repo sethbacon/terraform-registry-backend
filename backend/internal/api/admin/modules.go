@@ -364,11 +364,12 @@ func (h *ModuleAdminHandlers) DeleteVersion(c *gin.Context) {
 // DeprecateModuleVersionRequest represents a request to deprecate a module version.
 // Message is optional; if omitted the version is marked deprecated without an explanatory note.
 type DeprecateModuleVersionRequest struct {
-	Message string `json:"message,omitempty"`
+	Message           string  `json:"message,omitempty"`
+	ReplacementSource *string `json:"replacement_source,omitempty"` // Replacement module source address (e.g. "registry.example.com/acme/newmod/aws")
 }
 
 // @Summary      Deprecate module version
-// @Description  Mark a specific module version as deprecated with an optional message. Requires modules:publish scope.
+// @Description  Mark a specific module version as deprecated with an optional message and replacement source. Requires modules:publish scope.
 // @Tags         Modules
 // @Security     Bearer
 // @Accept       json
@@ -377,7 +378,7 @@ type DeprecateModuleVersionRequest struct {
 // @Param        name       path  string                       true   "Module name"
 // @Param        system     path  string                       true   "Target system (e.g. aws, azurerm)"
 // @Param        version    path  string                       true   "Semantic version (e.g. 1.2.3)"
-// @Param        body       body  DeprecateModuleVersionRequest  false  "Optional deprecation message"
+// @Param        body       body  DeprecateModuleVersionRequest  false  "Optional deprecation message and replacement source"
 // @Success      200  {object}  admin.MessageResponse
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
 // @Failure      404  {object}  map[string]interface{}  "Module or version not found"
@@ -439,7 +440,7 @@ func (h *ModuleAdminHandlers) DeprecateVersion(c *gin.Context) {
 		message = &req.Message
 	}
 
-	if err := h.moduleRepo.DeprecateVersion(c.Request.Context(), versionRecord.ID, message); err != nil {
+	if err := h.moduleRepo.DeprecateVersion(c.Request.Context(), versionRecord.ID, message, req.ReplacementSource); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to deprecate version: " + err.Error()})
 		return
 	}

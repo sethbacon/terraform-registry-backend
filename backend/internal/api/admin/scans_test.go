@@ -27,7 +27,7 @@ var moduleColsScan = []string{
 var modVersionGetColsScan = []string{
 	"id", "module_id", "version", "storage_path", "storage_backend", "size_bytes",
 	"checksum", "readme", "published_by", "download_count",
-	"deprecated", "deprecated_at", "deprecation_message", "created_at",
+	"deprecated", "deprecated_at", "deprecation_message", "replacement_source", "created_at",
 	"commit_sha", "tag_name", "scm_repo_id",
 }
 
@@ -65,7 +65,7 @@ func sampleModuleRowScan() *sqlmock.Rows {
 func sampleVersionRowScan() *sqlmock.Rows {
 	return sqlmock.NewRows(modVersionGetColsScan).
 		AddRow("ver-1", "mod-1", "1.0.0", "path/file.tgz", "local",
-			int64(1024), "abc123", nil, nil, int64(0), false, nil, nil, time.Now(),
+			int64(1024), "abc123", nil, nil, int64(0), false, nil, nil, nil, time.Now(),
 			nil, nil, nil)
 }
 

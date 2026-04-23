@@ -108,6 +108,25 @@ func ListVersionsHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 			if v.DeprecationMessage != nil {
 				versionData["deprecation_message"] = *v.DeprecationMessage
 			}
+			if v.ReplacementSource != nil {
+				versionData["replacement_source"] = *v.ReplacementSource
+			}
+
+			// Terraform CLI >=1.10 protocol-compliant deprecation block.
+			// This nested object is what terraform init reads to surface
+			// deprecation warnings to the user.
+			if v.Deprecated {
+				deprecation := map[string]interface{}{}
+				if v.DeprecationMessage != nil {
+					deprecation["reason"] = *v.DeprecationMessage
+				}
+				if v.ReplacementSource != nil {
+					deprecation["link"] = *v.ReplacementSource
+				}
+				if len(deprecation) > 0 {
+					versionData["deprecation"] = deprecation
+				}
+			}
 
 			// Include README if present
 			if v.Readme != nil {

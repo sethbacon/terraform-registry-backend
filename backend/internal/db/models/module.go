@@ -48,6 +48,7 @@ type ModuleVersion struct {
 	Deprecated         bool       `json:"deprecated"`                    // Whether this version is deprecated
 	DeprecatedAt       *time.Time `json:"deprecated_at,omitempty"`       // When the version was deprecated
 	DeprecationMessage *string    `json:"deprecation_message,omitempty"` // Optional message explaining deprecation
+	ReplacementSource  *string    `json:"replacement_source,omitempty"`  // Replacement module source address (Terraform CLI >=1.10 protocol)
 	CreatedAt          time.Time  `json:"created_at"`
 	// SCM source tracking fields (populated for webhook/sync-published versions)
 	CommitSHA *string `json:"commit_sha,omitempty"`  // Git commit SHA at time of publish
