@@ -57,7 +57,7 @@ func TestSetupMiddleware_SetupCompleted(t *testing.T) {
 	mock.ExpectQuery("SELECT setup_completed FROM system_settings").
 		WillReturnRows(sqlmock.NewRows([]string{"setup_completed"}).AddRow(true))
 	// HasPendingFeatureSetup check — no pending features
-	mock.ExpectQuery("SELECT setup_completed AND NOT scanning_configured FROM system_settings").
+	mock.ExpectQuery(`SELECT setup_completed AND \(NOT scanning_configured\) FROM system_settings`).
 		WillReturnRows(sqlmock.NewRows([]string{"pending"}).AddRow(false))
 
 	w := doSetupRequest(r, "SetupToken valid-token")

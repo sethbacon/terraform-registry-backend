@@ -189,9 +189,14 @@ func (r *OIDCConfigRepository) GetEnhancedSetupStatus(ctx context.Context) (*mod
 
 // HasPendingFeatureSetup returns true when initial setup is completed but one
 // or more features added in later releases have not been configured yet.
+//
+// To add a new feature check (e.g. for E4.3 policy engine or E4.4 module testing),
+// extend the boolean expression:
+//
+//	setup_completed AND (NOT scanning_configured OR NOT policy_configured OR NOT testing_configured)
 func (r *OIDCConfigRepository) HasPendingFeatureSetup(ctx context.Context) (bool, error) {
 	var pending bool
-	query := `SELECT setup_completed AND NOT scanning_configured FROM system_settings WHERE id = 1`
+	query := `SELECT setup_completed AND (NOT scanning_configured) FROM system_settings WHERE id = 1`
 	err := r.db.GetContext(ctx, &pending, query)
 	if err == sql.ErrNoRows {
 		return false, nil
