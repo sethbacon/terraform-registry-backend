@@ -80,4 +80,4 @@ images:
     newTag: v0.10.2
   - name: terraform-registry-frontend
     newName: <REGION>-docker.pkg.dev/<PROJECT_ID>/<AR_REPO>/terraform-registry-frontend
-    newTag: v0.10.1
+    newTag: v0.10.2
