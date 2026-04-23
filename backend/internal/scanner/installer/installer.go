@@ -207,8 +207,8 @@ func ensureWritableDir(dir string) error {
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrInstallDirNotWritable, err)
 	}
-	f.Close()               // #nosec G104 -- probe file is immediately removed
-	os.Remove(probe)        // #nosec G104 -- best-effort cleanup of writability probe
+	f.Close()        // #nosec G104 -- probe file is immediately removed
+	os.Remove(probe) // #nosec G104 -- best-effort cleanup of writability probe
 	return nil
 }
 

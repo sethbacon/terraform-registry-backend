@@ -215,7 +215,7 @@ func (r *ModuleRepository) CreateVersion(ctx context.Context, version *models.Mo
 func (r *ModuleRepository) GetVersion(ctx context.Context, moduleID, version string) (*models.ModuleVersion, error) {
 	query := `
 		SELECT id, module_id, version, storage_path, storage_backend, size_bytes, checksum, readme, published_by, download_count,
-		       COALESCE(deprecated, false), deprecated_at, deprecation_message, created_at,
+		       COALESCE(deprecated, false), deprecated_at, deprecation_message, replacement_source, created_at,
 		       commit_sha, tag_name, scm_repo_id::text
 		FROM module_versions
 		WHERE module_id = $1 AND version = $2
@@ -236,6 +236,7 @@ func (r *ModuleRepository) GetVersion(ctx context.Context, moduleID, version str
 		&v.Deprecated,
 		&v.DeprecatedAt,
 		&v.DeprecationMessage,
+		&v.ReplacementSource,
 		&v.CreatedAt,
 		&v.CommitSHA,
 		&v.TagName,
@@ -257,7 +258,7 @@ func (r *ModuleRepository) ListVersions(ctx context.Context, moduleID string) ([
 	query := `
 		SELECT mv.id, mv.module_id, mv.version, mv.storage_path, mv.storage_backend, mv.size_bytes, mv.checksum, mv.readme,
 		       mv.published_by, u.name as published_by_name, mv.download_count,
-		       COALESCE(mv.deprecated, false), mv.deprecated_at, mv.deprecation_message, mv.created_at,
+		       COALESCE(mv.deprecated, false), mv.deprecated_at, mv.deprecation_message, mv.replacement_source, mv.created_at,
 		       mv.commit_sha, mv.tag_name, mv.scm_repo_id::text,
 		       (mvd.module_version_id IS NOT NULL) AS has_docs
 		FROM module_versions mv
@@ -290,6 +291,7 @@ func (r *ModuleRepository) ListVersions(ctx context.Context, moduleID string) ([
 			&v.Deprecated,
 			&v.DeprecatedAt,
 			&v.DeprecationMessage,
+			&v.ReplacementSource,
 			&v.CreatedAt,
 			&v.CommitSHA,
 			&v.TagName,
@@ -326,7 +328,7 @@ func (r *ModuleRepository) ListVersionsPaginated(ctx context.Context, moduleID s
 	query := `
 		SELECT mv.id, mv.module_id, mv.version, mv.storage_path, mv.storage_backend, mv.size_bytes, mv.checksum, mv.readme,
 		       mv.published_by, u.name as published_by_name, mv.download_count,
-		       COALESCE(mv.deprecated, false), mv.deprecated_at, mv.deprecation_message, mv.created_at,
+		       COALESCE(mv.deprecated, false), mv.deprecated_at, mv.deprecation_message, mv.replacement_source, mv.created_at,
 		       mv.commit_sha, mv.tag_name, mv.scm_repo_id::text,
 		       (mvd.module_version_id IS NOT NULL) AS has_docs
 		FROM module_versions mv
@@ -361,6 +363,7 @@ func (r *ModuleRepository) ListVersionsPaginated(ctx context.Context, moduleID s
 			&v.Deprecated,
 			&v.DeprecatedAt,
 			&v.DeprecationMessage,
+			&v.ReplacementSource,
 			&v.CreatedAt,
 			&v.CommitSHA,
 			&v.TagName,
@@ -386,7 +389,7 @@ func (r *ModuleRepository) GetAllWithSourceCommit(ctx context.Context) ([]*model
 	query := `
 		SELECT id, module_id, version, storage_path, storage_backend, size_bytes, checksum, readme,
 		       published_by, download_count,
-		       COALESCE(deprecated, false), deprecated_at, deprecation_message, created_at,
+		       COALESCE(deprecated, false), deprecated_at, deprecation_message, replacement_source, created_at,
 		       commit_sha, tag_name, scm_repo_id::text
 		FROM module_versions
 		WHERE commit_sha IS NOT NULL AND scm_repo_id IS NOT NULL
@@ -416,6 +419,7 @@ func (r *ModuleRepository) GetAllWithSourceCommit(ctx context.Context) ([]*model
 			&v.Deprecated,
 			&v.DeprecatedAt,
 			&v.DeprecationMessage,
+			&v.ReplacementSource,
 			&v.CreatedAt,
 			&v.CommitSHA,
 			&v.TagName,
@@ -801,14 +805,14 @@ func (r *ModuleRepository) DeleteVersion(ctx context.Context, versionID string) 
 }
 
 // DeprecateVersion marks a module version as deprecated
-func (r *ModuleRepository) DeprecateVersion(ctx context.Context, versionID string, message *string) error {
+func (r *ModuleRepository) DeprecateVersion(ctx context.Context, versionID string, message *string, replacementSource *string) error {
 	query := `
 		UPDATE module_versions
-		SET deprecated = true, deprecated_at = NOW(), deprecation_message = $2
+		SET deprecated = true, deprecated_at = NOW(), deprecation_message = $2, replacement_source = $3
 		WHERE id = $1
 	`
 
-	result, err := r.db.ExecContext(ctx, query, versionID, message)
+	result, err := r.db.ExecContext(ctx, query, versionID, message, replacementSource)
 	if err != nil {
 		return fmt.Errorf("failed to deprecate module version: %w", err)
 	}
@@ -829,7 +833,7 @@ func (r *ModuleRepository) DeprecateVersion(ctx context.Context, versionID strin
 func (r *ModuleRepository) UndeprecateVersion(ctx context.Context, versionID string) error {
 	query := `
 		UPDATE module_versions
-		SET deprecated = false, deprecated_at = NULL, deprecation_message = NULL
+		SET deprecated = false, deprecated_at = NULL, deprecation_message = NULL, replacement_source = NULL
 		WHERE id = $1
 	`
 
@@ -854,7 +858,7 @@ func (r *ModuleRepository) UndeprecateVersion(ctx context.Context, versionID str
 func (r *ModuleRepository) GetVersionByID(ctx context.Context, id string) (*models.ModuleVersion, error) {
 	query := `
 		SELECT id, module_id, version, storage_path, storage_backend, size_bytes, checksum, readme, published_by,
-		       download_count, COALESCE(deprecated, false), deprecated_at, deprecation_message, created_at,
+		       download_count, COALESCE(deprecated, false), deprecated_at, deprecation_message, replacement_source, created_at,
 		       commit_sha, tag_name, scm_repo_id::text
 		FROM module_versions
 		WHERE id = $1
@@ -863,7 +867,7 @@ func (r *ModuleRepository) GetVersionByID(ctx context.Context, id string) (*mode
 	err := r.db.QueryRowContext(ctx, query, id).Scan(
 		&v.ID, &v.ModuleID, &v.Version, &v.StoragePath, &v.StorageBackend, &v.SizeBytes, &v.Checksum,
 		&v.Readme, &v.PublishedBy, &v.DownloadCount, &v.Deprecated, &v.DeprecatedAt, &v.DeprecationMessage,
-		&v.CreatedAt, &v.CommitSHA, &v.TagName, &v.SCMRepoID,
+		&v.ReplacementSource, &v.CreatedAt, &v.CommitSHA, &v.TagName, &v.SCMRepoID,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
