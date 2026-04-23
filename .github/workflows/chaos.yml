@@ -62,7 +62,7 @@ jobs:
           TFR_DATABASE_NAME: terraform_registry
           TFR_DATABASE_SSL_MODE: disable
           TFR_SERVER_PORT: 5000
-          ENCRYPTION_KEY: chaos-test-encryption-key-32chars!
+          ENCRYPTION_KEY: chaos-test-encryption-key-32char
           TFR_JWT_SECRET: chaos-test-jwt-secret-32-chars-xx
         run: |
           ./bin/terraform-registry &
