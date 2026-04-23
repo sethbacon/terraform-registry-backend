@@ -160,10 +160,16 @@ func AuditMiddlewareWithShipper(auditRepo *repositories.AuditRepository, shipper
 func getResourceType(c *gin.Context) string {
 	fullPath := c.FullPath()
 	switch {
+	case strings.HasPrefix(fullPath, "/api/v1/admin/modules"):
+		return "module"
 	case strings.HasPrefix(fullPath, "/api/v1/modules"):
 		return "module"
+	case strings.HasPrefix(fullPath, "/api/v1/admin/providers"):
+		return "provider"
 	case strings.HasPrefix(fullPath, "/api/v1/providers"):
 		return "provider"
+	case strings.HasPrefix(fullPath, "/api/v1/storage"):
+		return "storage"
 	case strings.HasPrefix(fullPath, "/api/v1/admin/mirrors"):
 		return "mirror"
 	case strings.HasPrefix(fullPath, "/api/v1/admin/users"):

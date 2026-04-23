@@ -162,7 +162,14 @@ func TestAuditMiddleware_ResourceTypeDetection(t *testing.T) {
 		wantRes string
 	}{
 		{"/api/v1/modules/foo", "module"},
+		{"/api/v1/admin/modules/create", "module"},
+		{"/api/v1/admin/modules/some-id", "module"},
 		{"/api/v1/providers/bar", "provider"},
+		{"/api/v1/admin/providers", "provider"},
+		{"/api/v1/admin/providers/some-id", "provider"},
+		{"/api/v1/storage/configs", "storage"},
+		{"/api/v1/storage/configs/some-id", "storage"},
+		{"/api/v1/admin/storage/migrations", "storage"},
 		{"/api/v1/admin/users/baz", "user"},
 		{"/api/v1/admin/apikeys/1", "api_key"},
 		{"/api/v1/admin/organizations/x", "organization"},
