@@ -548,6 +548,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 
 	// Initialize SCM webhook handler
 	scmWebhookHandler := webhooks.NewSCMWebhookHandler(scmRepo, scmPublisher)
+	approvalWebhookHandler := webhooks.NewApprovalHandler(rbacRepo)
 
 	// Initialize rate limiters (conditionally, based on config)
 	var authRateLimiter, generalRateLimiter, uploadRateLimiter middleware.RateLimiterBackend
@@ -947,6 +948,8 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 				approvalsGroup.GET("/:id", middleware.RequireScope(auth.ScopeMirrorsRead), rbacHandlers.GetApprovalRequest)
 				approvalsGroup.POST("", middleware.RequireScope(auth.ScopeMirrorsManage), rbacHandlers.CreateApprovalRequest)
 				approvalsGroup.PUT("/:id/review", middleware.RequireScope(auth.ScopeAdmin), rbacHandlers.ReviewApproval)
+				// Generate a single-use token that allows out-of-band (email/Slack) approval.
+				approvalsGroup.POST("/:id/token", middleware.RequireScope(auth.ScopeMirrorsManage), rbacHandlers.GenerateApprovalToken)
 			}
 
 			// Mirror Policies
@@ -1053,6 +1056,8 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 
 	// Webhook endpoints (public, authentication via signature validation)
 	router.POST("/webhooks/scm/:module_source_repo_id/:secret", scmWebhookHandler.HandleWebhook)
+	// Single-use approval token redemption — no auth, token possession is the credential.
+	router.POST("/webhooks/approvals/:token", approvalWebhookHandler.RedeemApprovalToken)
 
 	bg := &BackgroundServices{
 		mirrorSyncJob:      mirrorSyncJob,
