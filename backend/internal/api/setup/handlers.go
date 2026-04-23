@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -685,6 +686,28 @@ func (h *Handlers) SaveScanningConfig(c *gin.Context) {
 		return
 	}
 
+	// Validate binary_path is within the managed install directory.
+	// This prevents arbitrary executables from being registered as scanners.
+	if h.cfg.Scanning.InstallDir != "" {
+		cleanBinary := filepath.Clean(input.BinaryPath)
+		cleanInstall := filepath.Clean(h.cfg.Scanning.InstallDir)
+		if !strings.HasPrefix(cleanBinary, cleanInstall+string(filepath.Separator)) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "binary_path must be within the scanner install directory"})
+			return
+		}
+	}
+
+	// Verify the binary exists on disk before saving.
+	if _, err := os.Stat(input.BinaryPath); err != nil {
+		if os.IsNotExist(err) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "binary_path does not exist"})
+		} else {
+			slog.Error("setup: failed to stat binary_path", "path", input.BinaryPath, "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to verify binary_path"})
+		}
+		return
+	}
+
 	ctx := c.Request.Context()
 
 	// Serialize the input to JSON for storage
@@ -700,6 +723,19 @@ func (h *Handlers) SaveScanningConfig(c *gin.Context) {
 		slog.Error("setup: failed to save scanning config", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save scanning configuration"})
 		return
+	}
+
+	// Update the in-memory config so the scanner job and config endpoint reflect
+	// the new settings immediately, without requiring a pod restart.
+	h.cfg.Scanning.Enabled = input.Enabled
+	h.cfg.Scanning.Tool = input.Tool
+	h.cfg.Scanning.BinaryPath = input.BinaryPath
+	h.cfg.Scanning.ExpectedVersion = input.ExpectedVersion
+	if input.TimeoutSecs > 0 {
+		h.cfg.Scanning.Timeout = time.Duration(input.TimeoutSecs) * time.Second
+	}
+	if input.WorkerCount > 0 {
+		h.cfg.Scanning.WorkerCount = input.WorkerCount
 	}
 
 	slog.Info("setup: scanning configuration saved", "tool", input.Tool, "enabled", input.Enabled)

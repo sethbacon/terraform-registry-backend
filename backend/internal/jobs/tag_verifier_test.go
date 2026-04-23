@@ -160,7 +160,7 @@ func TestRunVerification_EmptyVersions(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "module_id", "version", "storage_path", "storage_backend",
 			"size_bytes", "checksum", "readme", "published_by", "download_count",
-			"deprecated", "deprecated_at", "deprecation_message", "created_at",
+			"deprecated", "deprecated_at", "deprecation_message", "replacement_source", "created_at",
 			"commit_sha", "tag_name", "scm_repo_id",
 		}))
 

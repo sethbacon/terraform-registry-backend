@@ -25,14 +25,14 @@ var moduleCols = []string{
 var modVersionListCols = []string{
 	"id", "module_id", "version", "storage_path", "storage_backend", "size_bytes",
 	"checksum", "readme", "published_by", "published_by_name", "download_count",
-	"deprecated", "deprecated_at", "deprecation_message", "created_at",
+	"deprecated", "deprecated_at", "deprecation_message", "replacement_source", "created_at",
 	"commit_sha", "tag_name", "scm_repo_id", "has_docs",
 }
 
 var modVersionGetCols = []string{
 	"id", "module_id", "version", "storage_path", "storage_backend", "size_bytes",
 	"checksum", "readme", "published_by", "download_count",
-	"deprecated", "deprecated_at", "deprecation_message", "created_at",
+	"deprecated", "deprecated_at", "deprecation_message", "replacement_source", "created_at",
 	"commit_sha", "tag_name", "scm_repo_id",
 }
 
@@ -54,7 +54,7 @@ func emptyModuleRow() *sqlmock.Rows {
 func sampleModVersionListRow() *sqlmock.Rows {
 	return sqlmock.NewRows(modVersionListCols).
 		AddRow("ver-1", "mod-1", "1.0.0", "modules/hashicorp/vpc/aws/vpc-1.0.0.tar.gz", "default",
-			int64(1024), "abc123", nil, nil, nil, int64(5), false, nil, nil, time.Now(),
+			int64(1024), "abc123", nil, nil, nil, int64(5), false, nil, nil, nil, time.Now(),
 			nil, nil, nil, false)
 }
 
@@ -65,7 +65,7 @@ func emptyModVersionListRows() *sqlmock.Rows {
 func sampleModVersionGetRow() *sqlmock.Rows {
 	return sqlmock.NewRows(modVersionGetCols).
 		AddRow("ver-1", "mod-1", "1.0.0", "modules/hashicorp/vpc/aws/vpc-1.0.0.tar.gz", "default",
-			int64(1024), "abc123", nil, nil, int64(5), false, nil, nil, time.Now(),
+			int64(1024), "abc123", nil, nil, int64(5), false, nil, nil, nil, time.Now(),
 			nil, nil, nil)
 }
 
@@ -651,6 +651,29 @@ func TestDeprecateModuleVersion_Success(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/modules/hashicorp/vpc/aws/versions/1.0.0/deprecate",
 		jsonBody(map[string]string{"message": "deprecated"})))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestDeprecateModuleVersion_WithReplacementSource(t *testing.T) {
+	mock, r := newModuleRouter(t)
+
+	expectNoDefaultOrg(mock)
+	mock.ExpectQuery("SELECT.*FROM modules").
+		WillReturnRows(sampleModuleRow())
+	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").
+		WillReturnRows(sampleModVersionGetRow())
+	mock.ExpectExec("UPDATE module_versions").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/modules/hashicorp/vpc/aws/versions/1.0.0/deprecate",
+		jsonBody(map[string]interface{}{
+			"message":            "use the new module",
+			"replacement_source": "registry.example.com/acme/vpc-v2/aws",
+		})))
 
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())

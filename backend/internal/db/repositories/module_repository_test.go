@@ -22,14 +22,14 @@ var moduleCols = []string{
 var modVersionListCols = []string{
 	"id", "module_id", "version", "storage_path", "storage_backend", "size_bytes",
 	"checksum", "readme", "published_by", "published_by_name", "download_count",
-	"deprecated", "deprecated_at", "deprecation_message", "created_at",
+	"deprecated", "deprecated_at", "deprecation_message", "replacement_source", "created_at",
 	"commit_sha", "tag_name", "scm_repo_id", "has_docs",
 }
 
 var modVersionGetCols = []string{
 	"id", "module_id", "version", "storage_path", "storage_backend", "size_bytes",
 	"checksum", "readme", "published_by", "download_count",
-	"deprecated", "deprecated_at", "deprecation_message", "created_at",
+	"deprecated", "deprecated_at", "deprecation_message", "replacement_source", "created_at",
 	"commit_sha", "tag_name", "scm_repo_id",
 }
 
@@ -52,14 +52,14 @@ func emptyModuleRow() *sqlmock.Rows {
 func sampleModVersionRow() *sqlmock.Rows {
 	return sqlmock.NewRows(modVersionGetCols).
 		AddRow("ver-1", "mod-1", "1.0.0", "path/file.tar.gz", "default",
-			int64(1024), "checksum", nil, nil, int64(5), false, nil, nil, time.Now(),
+			int64(1024), "checksum", nil, nil, int64(5), false, nil, nil, nil, time.Now(),
 			nil, nil, nil)
 }
 
 func sampleModVersionListRowsData() *sqlmock.Rows {
 	return sqlmock.NewRows(modVersionListCols).
 		AddRow("ver-1", "mod-1", "1.0.0", "path/file.tar.gz", "default",
-			int64(1024), "checksum", nil, nil, nil, int64(5), false, nil, nil, time.Now(),
+			int64(1024), "checksum", nil, nil, nil, int64(5), false, nil, nil, nil, time.Now(),
 			nil, nil, nil, false)
 }
 
@@ -307,40 +307,7 @@ func TestDeleteModuleVersion_NotFound(t *testing.T) {
 // DeprecateVersion
 // ---------------------------------------------------------------------------
 
-func TestDeprecateVersion_Success(t *testing.T) {
-	repo, mock := newModuleRepo(t)
-	mock.ExpectExec("UPDATE module_versions.*SET deprecated").
-		WillReturnResult(sqlmock.NewResult(1, 1))
-
-	msg := "outdated"
-	if err := repo.DeprecateVersion(context.Background(), "ver-1", &msg); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestDeprecateVersion_NotFound(t *testing.T) {
-	repo, mock := newModuleRepo(t)
-	mock.ExpectExec("UPDATE module_versions.*SET deprecated").
-		WillReturnResult(sqlmock.NewResult(0, 0))
-
-	if err := repo.DeprecateVersion(context.Background(), "ver-missing", nil); err == nil {
-		t.Error("expected error for not found, got nil")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// UndeprecateVersion
-// ---------------------------------------------------------------------------
-
-func TestUndeprecateVersion_Success(t *testing.T) {
-	repo, mock := newModuleRepo(t)
-	mock.ExpectExec("UPDATE module_versions.*SET deprecated = false").
-		WillReturnResult(sqlmock.NewResult(1, 1))
-
-	if err := repo.UndeprecateVersion(context.Background(), "ver-1"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
+// DeprecateVersion and UndeprecateVersion tests are in module_repository_deprecation_test.go
 
 // ---------------------------------------------------------------------------
 // IncrementDownloadCount
@@ -647,10 +614,10 @@ var modVersionSourceCommitCols = modVersionGetCols // same columns as GetVersion
 func sampleModVersionSourceCommitRows() *sqlmock.Rows {
 	return sqlmock.NewRows(modVersionSourceCommitCols).
 		AddRow("ver-1", "mod-1", "1.0.0", "path/file.tar.gz", "default",
-			int64(1024), "checksum", nil, nil, int64(5), false, nil, nil, time.Now(),
+			int64(1024), "checksum", nil, nil, int64(5), false, nil, nil, nil, time.Now(),
 			"abc123", "v1.0.0", "scm-1").
 		AddRow("ver-2", "mod-2", "2.0.0", "path/file2.tar.gz", "default",
-			int64(2048), "checksum2", nil, nil, int64(10), false, nil, nil, time.Now(),
+			int64(2048), "checksum2", nil, nil, int64(10), false, nil, nil, nil, time.Now(),
 			"def456", "v2.0.0", "scm-2")
 }
 
@@ -913,36 +880,7 @@ func TestDeleteModuleVersion_DBError(t *testing.T) {
 	}
 }
 
-func TestDeprecateVersion_DBError(t *testing.T) {
-	repo, mock := newModuleRepo(t)
-	mock.ExpectExec("UPDATE module_versions.*SET deprecated").
-		WillReturnError(errDB)
-
-	msg := "outdated"
-	if err := repo.DeprecateVersion(context.Background(), "ver-1", &msg); err == nil {
-		t.Error("expected error, got nil")
-	}
-}
-
-func TestUndeprecateVersion_NotFound(t *testing.T) {
-	repo, mock := newModuleRepo(t)
-	mock.ExpectExec("UPDATE module_versions.*SET deprecated = false").
-		WillReturnResult(sqlmock.NewResult(0, 0))
-
-	if err := repo.UndeprecateVersion(context.Background(), "ver-missing"); err == nil {
-		t.Error("expected error for not found, got nil")
-	}
-}
-
-func TestUndeprecateVersion_DBError(t *testing.T) {
-	repo, mock := newModuleRepo(t)
-	mock.ExpectExec("UPDATE module_versions.*SET deprecated = false").
-		WillReturnError(errDB)
-
-	if err := repo.UndeprecateVersion(context.Background(), "ver-1"); err == nil {
-		t.Error("expected error, got nil")
-	}
-}
+// Additional DeprecateVersion/UndeprecateVersion error tests are in module_repository_deprecation_test.go
 
 // ---------------------------------------------------------------------------
 // ListVersionsPaginated

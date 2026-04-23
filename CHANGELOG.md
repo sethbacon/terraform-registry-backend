@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-04-23
+
+### Added
+
+- feat: add replacement_source to module version deprecation for Terraform CLI >=1.10 protocol compliance
+
+### Fixed
+
+- fix: scanning setup wizard leaves scanning disabled after config save — validate binary_path and update in-memory config on save
+
 ## [0.10.2] - 2026-04-22
 
 ### Added

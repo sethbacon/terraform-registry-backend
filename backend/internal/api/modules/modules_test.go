@@ -10,6 +10,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -72,19 +73,19 @@ var orgCols2 = []string{"id", "name", "display_name", "idp_type", "idp_name", "c
 // GetModule: id, org_id, namespace, name, system, description, source, created_by, created_at, updated_at, created_by_name, deprecated, deprecated_at, deprecation_message, successor_module_id
 var moduleCols2 = []string{"id", "organization_id", "namespace", "name", "system", "description", "source", "created_by", "created_at", "updated_at", "created_by_name", "deprecated", "deprecated_at", "deprecation_message", "successor_module_id"}
 
-// ListVersions: 18 cols (includes commit_sha, tag_name, scm_repo_id)
+// ListVersions: 20 cols (includes replacement_source, commit_sha, tag_name, scm_repo_id)
 var moduleVersionListCols2 = []string{
 	"id", "module_id", "version", "storage_path", "storage_backend", "size_bytes", "checksum",
 	"readme", "published_by", "published_by_name", "download_count", "deprecated",
-	"deprecated_at", "deprecation_message", "created_at",
+	"deprecated_at", "deprecation_message", "replacement_source", "created_at",
 	"commit_sha", "tag_name", "scm_repo_id", "has_docs",
 }
 
-// GetVersion: 17 cols (no published_by_name, includes commit_sha, tag_name, scm_repo_id)
+// GetVersion: 18 cols (no published_by_name, includes replacement_source, commit_sha, tag_name, scm_repo_id)
 var moduleVersionGetCols2 = []string{
 	"id", "module_id", "version", "storage_path", "storage_backend", "size_bytes", "checksum",
 	"readme", "published_by", "download_count", "deprecated",
-	"deprecated_at", "deprecation_message", "created_at",
+	"deprecated_at", "deprecation_message", "replacement_source", "created_at",
 	"commit_sha", "tag_name", "scm_repo_id",
 }
 
@@ -124,14 +125,14 @@ func sampleModuleRow2() *sqlmock.Rows {
 func sampleModuleVersionsRows() *sqlmock.Rows {
 	return sqlmock.NewRows(moduleVersionListCols2).
 		AddRow("ver-1", "mod-1", "1.0.0", "modules/hashicorp/consul/aws/1.0.0.tgz", "local",
-			1024, "abc123", nil, nil, nil, int64(5), false, nil, nil, time.Now(),
+			1024, "abc123", nil, nil, nil, int64(5), false, nil, nil, nil, time.Now(),
 			nil, nil, nil, false)
 }
 
 func sampleModuleVersionGetRow() *sqlmock.Rows {
 	return sqlmock.NewRows(moduleVersionGetCols2).
 		AddRow("ver-1", "mod-1", "1.0.0", "modules/hashicorp/consul/aws/1.0.0.tgz", "local",
-			1024, "abc123", nil, nil, int64(5), false, nil, nil, time.Now(),
+			1024, "abc123", nil, nil, int64(5), false, nil, nil, nil, time.Now(),
 			nil, nil, nil)
 }
 
@@ -262,6 +263,99 @@ func TestListVersionsHandler_VersionsError(t *testing.T) {
 	w := doGET(r, "/v1/modules/hashicorp/consul/aws/versions")
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestListVersionsHandler_DeprecationBlock(t *testing.T) {
+	mock, r := newVersionsRouter(t)
+
+	depMsg := "use vpc-v2"
+	replacement := "registry.example.com/acme/vpc-v2/aws"
+	depTime := time.Now()
+	deprecatedVersionRow := sqlmock.NewRows(moduleVersionListCols2).
+		AddRow("ver-1", "mod-1", "1.0.0", "modules/hashicorp/consul/aws/1.0.0.tgz", "local",
+			1024, "abc123", nil, nil, nil, int64(5), true, &depTime, &depMsg, &replacement, time.Now(),
+			nil, nil, nil, false)
+
+	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow2())
+	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(sampleModuleRow2())
+	mock.ExpectQuery("SELECT COUNT.*FROM module_versions WHERE module_id").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE mv.module_id").WillReturnRows(deprecatedVersionRow)
+
+	w := doGET(r, "/v1/modules/hashicorp/consul/aws/versions")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+
+	body := w.Body.String()
+	// Verify nested deprecation block with reason and link
+	if !strings.Contains(body, `"deprecation"`) {
+		t.Error("response missing nested 'deprecation' block")
+	}
+	if !strings.Contains(body, `"reason"`) {
+		t.Error("deprecation block missing 'reason' field")
+	}
+	if !strings.Contains(body, `"link"`) {
+		t.Error("deprecation block missing 'link' field")
+	}
+	// Verify flat fields preserved for backward compatibility
+	if !strings.Contains(body, `"deprecated":true`) && !strings.Contains(body, `"deprecated": true`) {
+		t.Error("response missing flat 'deprecated' field")
+	}
+	if !strings.Contains(body, `"replacement_source"`) {
+		t.Error("response missing flat 'replacement_source' field")
+	}
+}
+
+func TestListVersionsHandler_DeprecationBlock_NoReplacement(t *testing.T) {
+	mock, r := newVersionsRouter(t)
+
+	depMsg := "end of life"
+	depTime := time.Now()
+	deprecatedVersionRow := sqlmock.NewRows(moduleVersionListCols2).
+		AddRow("ver-1", "mod-1", "1.0.0", "modules/hashicorp/consul/aws/1.0.0.tgz", "local",
+			1024, "abc123", nil, nil, nil, int64(5), true, &depTime, &depMsg, nil, time.Now(),
+			nil, nil, nil, false)
+
+	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow2())
+	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(sampleModuleRow2())
+	mock.ExpectQuery("SELECT COUNT.*FROM module_versions WHERE module_id").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE mv.module_id").WillReturnRows(deprecatedVersionRow)
+
+	w := doGET(r, "/v1/modules/hashicorp/consul/aws/versions")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+
+	body := w.Body.String()
+	// Deprecation block should have reason but no link
+	if !strings.Contains(body, `"deprecation"`) {
+		t.Error("response missing nested 'deprecation' block")
+	}
+	if !strings.Contains(body, `"reason"`) {
+		t.Error("deprecation block missing 'reason' field")
+	}
+	if strings.Contains(body, `"link"`) {
+		t.Error("deprecation block should not contain 'link' when replacement_source is nil")
+	}
+}
+
+func TestListVersionsHandler_NotDeprecated_NoDeprecationBlock(t *testing.T) {
+	mock, r := newVersionsRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow2())
+	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(sampleModuleRow2())
+	mock.ExpectQuery("SELECT COUNT.*FROM module_versions WHERE module_id").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE mv.module_id").WillReturnRows(sampleModuleVersionsRows())
+
+	w := doGET(r, "/v1/modules/hashicorp/consul/aws/versions")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+
+	body := w.Body.String()
+	if strings.Contains(body, `"deprecation"`) {
+		t.Error("non-deprecated version should not have 'deprecation' block")
 	}
 }
 
