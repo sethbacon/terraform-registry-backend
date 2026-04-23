@@ -1,0 +1,104 @@
+# Terraform Registry — Prometheus Alert Rules
+#
+# These rules fire when the registry is violating latency or error-rate SLOs.
+#
+# Load into Prometheus by referencing this file in your prometheus.yml:
+#
+#   rule_files:
+#     - /etc/prometheus/terraform-registry-alerts.yml
+#
+# Validate with: promtool check rules alert-rules.yml
+#
+# Prerequisites: recording-rules.yml must also be loaded so that
+# job:http_request_duration_p95:rate5m and job:http_errors_ratio:rate5m
+# are available.
+
+groups:
+  - name: terraform_registry_slo_alerts
+    rules:
+
+      # -----------------------------------------------------------------------
+      # Latency SLO: p95 must be ≤ 2 s (5-minute window)
+      # -----------------------------------------------------------------------
+      - alert: RegistryHighLatency
+        expr: job:http_request_duration_p95:rate5m > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Terraform Registry p95 latency above 2 s"
+          description: >
+            The 95th-percentile HTTP request duration has been above 2 seconds
+            for 5 consecutive minutes.
+            Current p95: {{ printf "%.2f" $value }}s.
+            Check slow queries, storage backend latency, or upstream registry
+            timeouts.
+
+      - alert: RegistryCriticalLatency
+        expr: job:http_request_duration_p95:rate5m > 5
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Terraform Registry p95 latency above 5 s — SLO violation"
+          description: >
+            The 95th-percentile HTTP request duration has exceeded 5 seconds
+            for 2 consecutive minutes. SLO is in violation.
+            Current p95: {{ printf "%.2f" $value }}s.
+
+      # -----------------------------------------------------------------------
+      # Error rate SLO: 5xx rate must be < 1% (5-minute window)
+      # -----------------------------------------------------------------------
+      - alert: RegistryHighErrorRate
+        expr: job:http_errors_ratio:rate5m > 0.01
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Terraform Registry 5xx error rate above 1%"
+          description: >
+            The fraction of HTTP responses with 5xx status codes has been
+            above 1% for 5 consecutive minutes.
+            Current rate: {{ printf "%.2f%%" (mul $value 100) }}.
+            Check application logs and database connectivity.
+
+      - alert: RegistryCriticalErrorRate
+        expr: job:http_errors_ratio:rate5m > 0.05
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Terraform Registry 5xx error rate above 5% — SLO violation"
+          description: >
+            The fraction of HTTP responses with 5xx status codes has exceeded
+            5% for 2 consecutive minutes. SLO is in violation.
+            Current rate: {{ printf "%.2f%%" (mul $value 100) }}.
+
+      # -----------------------------------------------------------------------
+      # Fast burn: SLO burn rate > 14.4x for 1 hour (depletes 2% of monthly budget)
+      # -----------------------------------------------------------------------
+      - alert: RegistrySLOFastBurn
+        expr: job:slo_burn_rate:rate5m > 14.4
+        for: 1h
+        labels:
+          severity: critical
+        annotations:
+          summary: "Terraform Registry SLO fast-burn — monthly error budget at risk"
+          description: >
+            The SLO burn rate has been above 14.4x the steady-state for 1 hour,
+            meaning 2% of the monthly error budget (assuming 1% target) has been
+            consumed. Immediate investigation is required.
+            Current burn rate: {{ printf "%.1f" $value }}x.
+
+      # -----------------------------------------------------------------------
+      # Mirror sync health
+      # -----------------------------------------------------------------------
+      - alert: RegistryMirrorSyncErrors
+        expr: increase(mirror_sync_errors_total[30m]) > 3
+        labels:
+          severity: warning
+        annotations:
+          summary: "Terraform Registry mirror sync failing repeatedly"
+          description: >
+            Mirror {{ $labels.mirror_id }} has had more than 3 sync errors in
+            the last 30 minutes. Check upstream registry availability.
