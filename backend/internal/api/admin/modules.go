@@ -854,13 +854,15 @@ func (h *ModuleAdminHandlers) ReanalyzeVersion(c *gin.Context) {
 
 	// Re-queue security scan if configured
 	if h.scanRepo != nil && h.cfg.Scanning.Enabled && h.cfg.Scanning.BinaryPath != "" {
-		if err := h.scanRepo.CreatePendingScan(c.Request.Context(), versionRecord.ID); err != nil {
+		if err := h.scanRepo.UpsertPendingScan(c.Request.Context(), versionRecord.ID); err != nil {
 			slog.Warn("reanalyze: failed to queue security scan",
 				"version_id", versionRecord.ID, "error", err)
 			result["scan"] = "queue_failed"
 		} else {
 			result["scan"] = "queued"
 		}
+	} else {
+		result["scan"] = "not_configured"
 	}
 
 	result["message"] = "Re-analysis complete"

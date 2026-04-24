@@ -12,6 +12,7 @@ import (
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/jobs"
 )
 
 // ---------------------------------------------------------------------------
@@ -409,6 +410,50 @@ func TestSaveScanningConfig_InMemoryNotUpdatedOnDBError(t *testing.T) {
 	// In-memory config must not have changed on DB failure.
 	if env.h.cfg.Scanning.Enabled {
 		t.Error("cfg.Scanning.Enabled updated on DB error, want unchanged (false)")
+	}
+}
+
+func TestWithScannerJob_SetsField(t *testing.T) {
+	env := newTestEnv(t)
+	scanJob := jobs.NewModuleScannerJob(&config.ScanningConfig{}, nil, nil, nil)
+	h := env.h.WithScannerJob(scanJob)
+	if h.scannerJob == nil {
+		t.Error("WithScannerJob: scannerJob field not set")
+	}
+}
+
+func TestSaveScanningConfig_WithScannerJobAttached(t *testing.T) {
+	// Verifies that SaveScanningConfig still returns 200 when a scanner job
+	// is attached and scanning is enabled — the goroutine fires but returns
+	// immediately because the job's binary path is empty.
+	env := newTestEnv(t)
+	scanJob := jobs.NewModuleScannerJob(&config.ScanningConfig{}, nil, nil, nil)
+	env.h.WithScannerJob(scanJob)
+
+	dir := t.TempDir()
+	binaryPath := filepath.Join(dir, "trivy")
+	if err := os.WriteFile(binaryPath, []byte("fake"), 0o755); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	env.h.cfg.Scanning.InstallDir = dir
+	r := gin.New()
+	r.POST("/scanning", env.h.SaveScanningConfig)
+
+	body := jsonBody(map[string]interface{}{
+		"enabled":     true,
+		"tool":        "trivy",
+		"binary_path": binaryPath,
+	})
+
+	env.oidcMock.ExpectExec("UPDATE system_settings SET").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/scanning", body))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
 	}
 }
 
