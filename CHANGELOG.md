@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-04-24
+
+### Fixed
+
+- fix: security scanning configured via setup wizard silently broken — JSON tag mismatch discarded binary path on restart, scanner goroutine never started, re-scan idempotency broken for existing records
+- fix: FuzzParseDelivery panics on nil BitbucketDCConnector receiver in seed corpus run
+
 ## [0.11.0] - 2026-04-24
 
 ## [0.10.5] - 2026-04-23
