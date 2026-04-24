@@ -422,10 +422,11 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 		v1Mirror.GET("/:hostname/:namespace/:type/:versionfile", mirror.PlatformIndexHandler(db, cfg, auditRepo, pullThroughSvc))
 	}
 
-	// Terraform Binary Mirror endpoints (public, no auth required)
+	// Terraform Binary Mirror endpoints (public by default, protected when auth mode is configured)
 	// Allows clients to discover and download official Terraform/OpenTofu binaries synced by
 	// any named mirror config.  The :name segment identifies the mirror configuration.
 	tfBinaries := router.Group("/terraform/binaries")
+	tfBinaries.Use(middleware.BinaryMirrorAuthMiddleware(cfg.BinaryMirror))
 	{
 		tfBinaries.GET("", tfBinariesHandler.ListConfigs)
 		tfBinaries.GET("/:name/versions", tfBinariesHandler.ListVersions)
