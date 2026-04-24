@@ -33,6 +33,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/api/admin"
 	"github.com/terraform-registry/terraform-registry/internal/api/mirror"
 	"github.com/terraform-registry/terraform-registry/internal/api/modules"
+	"github.com/terraform-registry/terraform-registry/internal/api/oci"
 	"github.com/terraform-registry/terraform-registry/internal/api/providers"
 	"github.com/terraform-registry/terraform-registry/internal/api/scim"
 	"github.com/terraform-registry/terraform-registry/internal/api/setup"
@@ -176,6 +177,9 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	// Public handler is created here (before route registration)
 	tfBinariesHandler := terraform_binaries.NewHandler(tfMirrorRepo, storageBackend, auditRepo)
 
+	// OCI distribution handler (public read, backed by existing module storage)
+	ociHandler := oci.NewHandler(db, storageBackend)
+
 	// Initialize and start the API key expiry notifier
 	expiryNotifier := jobs.NewAPIKeyExpiryNotifier(apiKeyRepo, userRepo, &cfg.Notifications)
 	go expiryNotifier.Start(context.Background())
@@ -245,6 +249,17 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 
 	// Service discovery endpoint (Terraform protocol)
 	router.GET("/.well-known/terraform.json", serviceDiscoveryHandler(cfg))
+
+	// OCI Distribution Spec v1.1 — module archive pull endpoint
+	v2Group := router.Group("/v2")
+	{
+		v2Group.GET("/", ociHandler.Ping)
+		v2Group.HEAD("/:namespace/:name/:system/manifests/:reference", ociHandler.HeadManifest)
+		v2Group.GET("/:namespace/:name/:system/manifests/:reference", ociHandler.GetManifest)
+		v2Group.HEAD("/:namespace/:name/:system/blobs/:digest", ociHandler.HeadBlob)
+		v2Group.GET("/:namespace/:name/:system/blobs/:digest", ociHandler.GetBlob)
+		v2Group.PUT("/:namespace/:name/:system/manifests/:reference", ociHandler.PutManifest)
+	}
 
 	// API version
 	router.GET("/version", versionHandler())
@@ -1141,6 +1156,7 @@ func serviceDiscoveryHandler(cfg *config.Config) gin.HandlerFunc {
 		c.JSON(http.StatusOK, gin.H{
 			"modules.v1":   cfg.Server.BaseURL + "/v1/modules/",
 			"providers.v1": cfg.Server.BaseURL + "/v1/providers/",
+			"oci.v1":       cfg.Server.BaseURL + "/v2/",
 		})
 	}
 }
@@ -1163,6 +1179,9 @@ func versionHandler() gin.HandlerFunc {
 				"modules":   "v1",
 				"providers": "v1",
 				"mirror":    "v1",
+			},
+			"capabilities": gin.H{
+				"oci": true,
 			},
 		})
 	}
