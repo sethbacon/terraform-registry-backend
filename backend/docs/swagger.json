@@ -289,6 +289,75 @@
                 }
             }
         },
+        "/api/v1/admin/approvals/{id}/token": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Generates a single-use HMAC token that can be sent to an approver via email",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "RBAC"
+                ],
+                "summary": "Generate webhook approval token",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Approval request ID (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/admin.ApprovalTokenResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid approval request ID",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden — mirrors:manage scope required",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Approval request not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/admin/audit-logs": {
             "get": {
                 "security": [
@@ -402,14 +471,14 @@
                         "Bearer": []
                     }
                 ],
-                "description": "Streams audit log entries as newline-delimited JSON (NDJSON) for archival.",
+                "description": "Streams audit log entries as newline-delimited JSON (NDJSON) or OCSF 1.1 API",
                 "produces": [
                     "application/x-ndjson"
                 ],
                 "tags": [
                     "Audit"
                 ],
-                "summary": "Export audit logs as NDJSON",
+                "summary": "Export audit logs",
                 "parameters": [
                     {
                         "type": "string",
@@ -422,6 +491,16 @@
                         "description": "End date in RFC3339 format (default: now)",
                         "name": "end_date",
                         "in": "query"
+                    },
+                    {
+                        "enum": [
+                            "ndjson",
+                            "ocsf"
+                        ],
+                        "type": "string",
+                        "description": "Output format: ndjson (default) or ocsf",
+                        "name": "format",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -432,7 +511,7 @@
                         }
                     },
                     "400": {
-                        "description": "Invalid date parameters",
+                        "description": "Invalid date or format parameters",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -2189,6 +2268,147 @@
                     },
                     "500": {
                         "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/admin/policy/config": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Returns the current policy engine configuration (enabled, mode, bundle URL, refresh interval).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "System"
+                ],
+                "summary": "Get policy configuration",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/admin/policy/evaluate": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Evaluates an arbitrary input map against the currently loaded policy bundle.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "System"
+                ],
+                "summary": "Evaluate policy input",
+                "parameters": [
+                    {
+                        "description": "Input to evaluate",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/policy.PolicyResult"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/admin/policy/reload": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Forces an immediate reload of the Rego policy bundle from the configured URL.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "System"
+                ],
+                "summary": "Reload policy bundle",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "No bundle URL configured",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -5043,6 +5263,13 @@
                     },
                     "409": {
                         "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "Policy violation (block mode)",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -10806,6 +11033,260 @@
                 }
             }
         },
+        "/v2/": {
+            "get": {
+                "description": "Returns 200 to indicate OCI Distribution Spec v1.1 support.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "System"
+                ],
+                "summary": "OCI API ping",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/v2/{namespace}/{name}/{system}/blobs/{digest}": {
+            "get": {
+                "description": "Streams the module archive (tar.gz) for the given digest.",
+                "produces": [
+                    "application/octet-stream"
+                ],
+                "tags": [
+                    "Modules"
+                ],
+                "summary": "Download module blob",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Module namespace",
+                        "name": "namespace",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Module name",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Provider/system",
+                        "name": "system",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Blob digest (sha256:...)",
+                        "name": "digest",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "head": {
+                "description": "Returns headers for the module archive blob identified by its digest.",
+                "tags": [
+                    "Modules"
+                ],
+                "summary": "Check module blob",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Module namespace",
+                        "name": "namespace",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Module name",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Provider/system",
+                        "name": "system",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Blob digest (sha256:...)",
+                        "name": "digest",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/v2/{namespace}/{name}/{system}/manifests/{reference}": {
+            "get": {
+                "description": "Returns the OCI manifest for a module version.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Modules"
+                ],
+                "summary": "Get module manifest",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Module namespace",
+                        "name": "namespace",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Module name",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Provider/system",
+                        "name": "system",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Version tag or digest",
+                        "name": "reference",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/oci.ociManifest"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "OCI push is not supported; use POST /api/v1/modules to publish modules.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Modules"
+                ],
+                "summary": "Push module manifest (not supported)",
+                "responses": {
+                    "405": {
+                        "description": "Method Not Allowed",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "head": {
+                "description": "Returns headers for the OCI manifest corresponding to a module version.",
+                "tags": [
+                    "Modules"
+                ],
+                "summary": "Check module manifest",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Module namespace",
+                        "name": "namespace",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Module name",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Provider/system",
+                        "name": "system",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Version tag or digest",
+                        "name": "reference",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/version": {
             "get": {
                 "description": "Returns the current API version and supported protocol versions.",
@@ -10821,6 +11302,57 @@
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/api.VersionResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/webhooks/approvals/{token}": {
+            "post": {
+                "description": "Redeems a single-use approval token generated via the admin API. When valid,",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Webhooks"
+                ],
+                "summary": "Redeem approval token",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Single-use approval token",
+                        "name": "token",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Approval request approved",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid token format",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Token not found, already used, or expired",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
                         }
                     }
                 }
@@ -10961,6 +11493,21 @@
                     "type": "string"
                 },
                 "user_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "admin.ApprovalTokenResponse": {
+            "type": "object",
+            "properties": {
+                "approval_url": {
+                    "description": "ApprovalURL is informational — the caller should embed the token in the\nappropriate webhook URL before sending it to an approver.",
+                    "type": "string"
+                },
+                "expires_at": {
+                    "type": "string"
+                },
+                "token": {
                     "type": "string"
                 }
             }
@@ -14193,6 +14740,73 @@
                 },
                 "total": {
                     "type": "integer"
+                }
+            }
+        },
+        "oci.ociDescriptor": {
+            "type": "object",
+            "properties": {
+                "digest": {
+                    "type": "string"
+                },
+                "mediaType": {
+                    "type": "string"
+                },
+                "size": {
+                    "type": "integer"
+                }
+            }
+        },
+        "oci.ociManifest": {
+            "type": "object",
+            "properties": {
+                "config": {
+                    "$ref": "#/definitions/oci.ociDescriptor"
+                },
+                "layers": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/oci.ociDescriptor"
+                    }
+                },
+                "mediaType": {
+                    "type": "string"
+                },
+                "schemaVersion": {
+                    "type": "integer"
+                }
+            }
+        },
+        "policy.PolicyResult": {
+            "type": "object",
+            "properties": {
+                "allowed": {
+                    "description": "Allowed is true when no violations were found.",
+                    "type": "boolean"
+                },
+                "mode": {
+                    "description": "Mode mirrors the engine's configured enforcement mode.",
+                    "type": "string"
+                },
+                "violations": {
+                    "description": "Violations contains one entry per deny rule that fired.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/policy.Violation"
+                    }
+                }
+            }
+        },
+        "policy.Violation": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "description": "Message is the human-readable description produced by the Rego rule.",
+                    "type": "string"
+                },
+                "rule": {
+                    "description": "Rule is the Rego rule path that fired (e.g. \"data.registry.deny\").",
+                    "type": "string"
                 }
             }
         },

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/terraform-registry/terraform-registry/internal/telemetry"
 )
 
@@ -22,6 +23,11 @@ import (
 // (e.g. /v1/modules/:namespace/:name/:system/:version/download) rather than the raw URL.
 // Requests that do not match any registered route (404/405) use the literal string
 // "<no-route>" so unhandled paths do not inflate label cardinality.
+//
+// Prometheus exemplars are attached to the duration histogram using the X-Request-ID
+// as the trace_id label. This links individual histogram observations to specific
+// requests, enabling Grafana Tempo or other trace backends to correlate metrics with
+// traces when the same request ID is propagated through the tracing pipeline.
 //
 // This middleware must be registered AFTER gin.Recovery() and RequestIDMiddleware so that
 // the response status set by error handlers is captured correctly:
@@ -49,6 +55,17 @@ func MetricsMiddleware() gin.HandlerFunc {
 		status := fmt.Sprintf("%d", c.Writer.Status())
 
 		telemetry.HTTPRequestsTotal.WithLabelValues(method, path, status).Inc()
-		telemetry.HTTPRequestDuration.WithLabelValues(method, path).Observe(duration)
+
+		// Attach the request ID as an exemplar on the duration histogram so operators
+		// can navigate from a slow histogram bucket directly to the offending request's
+		// trace or log entry.
+		obs := telemetry.HTTPRequestDuration.WithLabelValues(method, path)
+		if eo, ok := obs.(prometheus.ExemplarObserver); ok {
+			if requestID := c.GetString(RequestIDKey); requestID != "" {
+				eo.ObserveWithExemplar(duration, prometheus.Labels{"trace_id": requestID})
+				return
+			}
+		}
+		obs.Observe(duration)
 	}
 }

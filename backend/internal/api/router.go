@@ -33,6 +33,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/api/admin"
 	"github.com/terraform-registry/terraform-registry/internal/api/mirror"
 	"github.com/terraform-registry/terraform-registry/internal/api/modules"
+	"github.com/terraform-registry/terraform-registry/internal/api/oci"
 	"github.com/terraform-registry/terraform-registry/internal/api/providers"
 	"github.com/terraform-registry/terraform-registry/internal/api/scim"
 	"github.com/terraform-registry/terraform-registry/internal/api/setup"
@@ -45,6 +46,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/jobs"
 	"github.com/terraform-registry/terraform-registry/internal/middleware"
+	"github.com/terraform-registry/terraform-registry/internal/policy"
 	"github.com/terraform-registry/terraform-registry/internal/services"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 
@@ -176,6 +178,9 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	// Public handler is created here (before route registration)
 	tfBinariesHandler := terraform_binaries.NewHandler(tfMirrorRepo, storageBackend, auditRepo)
 
+	// OCI distribution handler (public read, backed by existing module storage)
+	ociHandler := oci.NewHandler(db, storageBackend)
+
 	// Initialize and start the API key expiry notifier
 	expiryNotifier := jobs.NewAPIKeyExpiryNotifier(apiKeyRepo, userRepo, &cfg.Notifications)
 	go expiryNotifier.Start(context.Background())
@@ -245,6 +250,17 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 
 	// Service discovery endpoint (Terraform protocol)
 	router.GET("/.well-known/terraform.json", serviceDiscoveryHandler(cfg))
+
+	// OCI Distribution Spec v1.1 — module archive pull endpoint
+	v2Group := router.Group("/v2")
+	{
+		v2Group.GET("/", ociHandler.Ping)
+		v2Group.HEAD("/:namespace/:name/:system/manifests/:reference", ociHandler.HeadManifest)
+		v2Group.GET("/:namespace/:name/:system/manifests/:reference", ociHandler.GetManifest)
+		v2Group.HEAD("/:namespace/:name/:system/blobs/:digest", ociHandler.HeadBlob)
+		v2Group.GET("/:namespace/:name/:system/blobs/:digest", ociHandler.GetBlob)
+		v2Group.PUT("/:namespace/:name/:system/manifests/:reference", ociHandler.PutManifest)
+	}
 
 	// API version
 	router.GET("/version", versionHandler())
@@ -422,10 +438,11 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 		v1Mirror.GET("/:hostname/:namespace/:type/:versionfile", mirror.PlatformIndexHandler(db, cfg, auditRepo, pullThroughSvc))
 	}
 
-	// Terraform Binary Mirror endpoints (public, no auth required)
+	// Terraform Binary Mirror endpoints (public by default, protected when auth mode is configured)
 	// Allows clients to discover and download official Terraform/OpenTofu binaries synced by
 	// any named mirror config.  The :name segment identifies the mirror configuration.
 	tfBinaries := router.Group("/terraform/binaries")
+	tfBinaries.Use(middleware.BinaryMirrorAuthMiddleware(cfg.BinaryMirror))
 	{
 		tfBinaries.GET("", tfBinariesHandler.ListConfigs)
 		tfBinaries.GET("/:name/versions", tfBinariesHandler.ListVersions)
@@ -497,7 +514,6 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 		WithModuleDocs(moduleDocsRepo).
 		WithScanQueue(scanRepo)
 
-	// Initialize RBAC handlers
 	rbacRepo := repositories.NewRBACRepository(sqlxDB)
 	rbacHandlers := admin.NewRBACHandlers(rbacRepo)
 
@@ -530,8 +546,22 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 		cfg, tokenCipher, oidcConfigRepo, storageConfigRepo, userRepo, orgRepo, authHandlers,
 	)
 
+	// Initialize policy engine (no-op when disabled).
+	policyEngineCfg := policy.Config{
+		Enabled:               cfg.Policy.Enabled,
+		Mode:                  cfg.Policy.Mode,
+		BundleURL:             cfg.Policy.BundleURL,
+		BundleRefreshInterval: cfg.Policy.BundleRefreshInterval,
+	}
+	policyEngine, err := policy.NewPolicyEngine(policyEngineCfg)
+	if err != nil {
+		log.Fatalf("failed to initialize policy engine: %v", err)
+	}
+	policyAdminHandler := admin.NewPolicyHandler(policyEngine, cfg.Policy)
+
 	// Initialize SCM webhook handler
 	scmWebhookHandler := webhooks.NewSCMWebhookHandler(scmRepo, scmPublisher)
+	approvalWebhookHandler := webhooks.NewApprovalHandler(rbacRepo)
 
 	// Initialize rate limiters (conditionally, based on config)
 	var authRateLimiter, generalRateLimiter, uploadRateLimiter middleware.RateLimiterBackend
@@ -706,7 +736,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 			authenticatedGroup.POST("/modules",
 				middleware.RateLimitMiddleware(uploadRateLimiter), // Stricter rate limit for uploads
 				middleware.RequireScope(auth.ScopeModulesWrite),
-				modules.UploadHandler(db, storageBackend, cfg, scanRepo, moduleDocsRepo))
+				modules.UploadHandler(db, storageBackend, cfg, scanRepo, moduleDocsRepo, policyEngine))
 
 			// Providers admin endpoints - require write permissions
 			authenticatedGroup.POST("/providers",
@@ -931,6 +961,8 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 				approvalsGroup.GET("/:id", middleware.RequireScope(auth.ScopeMirrorsRead), rbacHandlers.GetApprovalRequest)
 				approvalsGroup.POST("", middleware.RequireScope(auth.ScopeMirrorsManage), rbacHandlers.CreateApprovalRequest)
 				approvalsGroup.PUT("/:id/review", middleware.RequireScope(auth.ScopeAdmin), rbacHandlers.ReviewApproval)
+				// Generate a single-use token that allows out-of-band (email/Slack) approval.
+				approvalsGroup.POST("/:id/token", middleware.RequireScope(auth.ScopeMirrorsManage), rbacHandlers.GenerateApprovalToken)
 			}
 
 			// Mirror Policies
@@ -997,8 +1029,17 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 			auditLogsGroup := authenticatedGroup.Group("/admin/audit-logs")
 			{
 				auditLogsGroup.GET("", middleware.RequireScope(auth.ScopeAuditRead), auditLogHandlers.ListAuditLogsHandler())
-				auditLogsGroup.GET("/export", middleware.RequireScope(auth.ScopeAuditRead), admin.ExportAuditLogs(auditRepo))
+				auditLogsGroup.GET("/export", middleware.RequireScope(auth.ScopeAuditRead), admin.ExportAuditLogs(auditRepo, AppVersion))
 				auditLogsGroup.GET("/:id", middleware.RequireScope(auth.ScopeAuditRead), auditLogHandlers.GetAuditLogHandler())
+			}
+
+			// Policy engine admin endpoints (requires admin scope)
+			policyGroup := authenticatedGroup.Group("/admin/policy")
+			policyGroup.Use(middleware.RequireScope(auth.ScopeAdmin))
+			{
+				policyGroup.GET("/config", policyAdminHandler.GetPolicyConfig)
+				policyGroup.POST("/reload", policyAdminHandler.ReloadBundle)
+				policyGroup.POST("/evaluate", policyAdminHandler.EvaluateInput)
 			}
 		}
 
@@ -1037,6 +1078,8 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 
 	// Webhook endpoints (public, authentication via signature validation)
 	router.POST("/webhooks/scm/:module_source_repo_id/:secret", scmWebhookHandler.HandleWebhook)
+	// Single-use approval token redemption — no auth, token possession is the credential.
+	router.POST("/webhooks/approvals/:token", approvalWebhookHandler.RedeemApprovalToken)
 
 	bg := &BackgroundServices{
 		mirrorSyncJob:      mirrorSyncJob,
@@ -1140,6 +1183,7 @@ func serviceDiscoveryHandler(cfg *config.Config) gin.HandlerFunc {
 		c.JSON(http.StatusOK, gin.H{
 			"modules.v1":   cfg.Server.BaseURL + "/v1/modules/",
 			"providers.v1": cfg.Server.BaseURL + "/v1/providers/",
+			"oci.v1":       cfg.Server.BaseURL + "/v2/",
 		})
 	}
 }
@@ -1162,6 +1206,9 @@ func versionHandler() gin.HandlerFunc {
 				"modules":   "v1",
 				"providers": "v1",
 				"mirror":    "v1",
+			},
+			"capabilities": gin.H{
+				"oci": true,
 			},
 		})
 	}

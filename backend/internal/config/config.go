@@ -38,6 +38,8 @@ type Config struct {
 	Scanning       ScanningConfig       `mapstructure:"scanning"`
 	AuditRetention AuditRetentionConfig `mapstructure:"audit_retention"`
 	Webhooks       WebhooksConfig       `mapstructure:"webhooks"`
+	BinaryMirror   BinaryMirrorConfig   `mapstructure:"binary_mirror"`
+	Policy         PolicyConfig         `mapstructure:"policy"`
 }
 
 // AuditRetentionConfig controls the background audit log cleanup job.
@@ -52,6 +54,34 @@ type AuditRetentionConfig struct {
 type WebhooksConfig struct {
 	MaxRetries        int `mapstructure:"max_retries"`
 	RetryIntervalMins int `mapstructure:"retry_interval_mins"`
+}
+
+// BinaryMirrorConfig controls access control for the /terraform/binaries endpoint group.
+type BinaryMirrorConfig struct {
+	// Auth selects the authentication mode: "none" (default), "allowlist", or "mtls".
+	// - none: no access control (current behaviour, suitable for internal networks)
+	// - allowlist: only allow requests from clients whose IP falls within one of the
+	//   configured CIDR blocks (e.g. "10.0.0.0/8")
+	// - mtls: require a verified TLS client certificate; the certificate subject CN
+	//   is logged but no additional role/scope check is performed
+	Auth string `mapstructure:"auth"`
+	// Allowlist is a list of CIDR ranges allowed when auth=allowlist.
+	// Example: ["10.0.0.0/8", "192.168.0.0/16"]
+	Allowlist []string `mapstructure:"allowlist"`
+}
+
+// PolicyConfig controls the OPA/Rego policy engine.
+// When Enabled is false (the default) the engine is a no-op and all actions are allowed.
+type PolicyConfig struct {
+	// Enabled gates the entire feature.
+	Enabled bool `mapstructure:"enabled"`
+	// Mode controls enforcement: "warn" logs violations and continues; "block" rejects the action.
+	Mode string `mapstructure:"mode"`
+	// BundleURL is the HTTP/HTTPS URL of the .tar.gz Rego bundle.
+	BundleURL string `mapstructure:"bundle_url"`
+	// BundleRefreshInterval is how often (in seconds) the bundle is re-fetched in the background.
+	// 0 means no background refresh.
+	BundleRefreshInterval int `mapstructure:"bundle_refresh_interval"`
 }
 
 // RedisConfig holds optional Redis connection settings.

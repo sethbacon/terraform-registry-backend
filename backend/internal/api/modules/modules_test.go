@@ -604,7 +604,7 @@ func newModuleUploadRouter(t *testing.T, store storage.Storage) (sqlmock.Sqlmock
 	db, mock, _ := sqlmock.New()
 	t.Cleanup(func() { db.Close() })
 	r := gin.New()
-	r.POST("/api/v1/modules", UploadHandler(db, store, &config.Config{}, nil, nil))
+	r.POST("/api/v1/modules", UploadHandler(db, store, &config.Config{}, nil, nil, nil))
 	return mock, r
 }
 

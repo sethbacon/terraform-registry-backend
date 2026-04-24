@@ -14,6 +14,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/policy"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 	"github.com/terraform-registry/terraform-registry/internal/telemetry"
 	"github.com/terraform-registry/terraform-registry/internal/validation"
@@ -36,12 +37,13 @@ import (
 // @Failure      400  {object}  map[string]interface{}
 // @Failure      401  {object}  map[string]interface{}
 // @Failure      409  {object}  map[string]interface{}
+// @Failure      422  {object}  map[string]interface{}  "Policy violation (block mode)"
 // @Failure      500  {object}  map[string]interface{}
 // @Router       /api/v1/modules/{namespace}/{name}/{provider}/{version} [post]
 // UploadHandler handles module upload requests
 // Implements: POST /api/v1/modules
 // Accepts multipart form with: namespace, name, system, version, description (optional), file
-func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Config, scanRepo *repositories.ModuleScanRepository, moduleDocsRepo *repositories.ModuleDocsRepository) gin.HandlerFunc {
+func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Config, scanRepo *repositories.ModuleScanRepository, moduleDocsRepo *repositories.ModuleDocsRepository, policyEngine *policy.PolicyEngine) gin.HandlerFunc {
 	moduleRepo := repositories.NewModuleRepository(db)
 	orgRepo := repositories.NewOrganizationRepository(db)
 
@@ -119,6 +121,40 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 				"error": fmt.Sprintf("Invalid archive: %v", err),
 			})
 			return
+		}
+
+		// Evaluate policy (after archive validation, before any DB or storage write).
+		if policyEngine != nil && policyEngine.IsEnabled() {
+			policyInput := map[string]interface{}{
+				"namespace": namespace,
+				"name":      name,
+				"system":    system,
+				"version":   version,
+				"size":      size,
+			}
+			result, err := policyEngine.Evaluate(c.Request.Context(), policyInput)
+			if err != nil {
+				slog.Warn("policy evaluation error", "error", err)
+				// Non-fatal: proceed on evaluation error to avoid breaking uploads.
+			} else {
+				mode := policyEngine.Mode()
+				if !result.Allowed {
+					if mode == "block" {
+						telemetry.PolicyEvaluationsTotal.WithLabelValues("blocked").Inc()
+						c.JSON(http.StatusUnprocessableEntity, gin.H{
+							"error":      "Module upload blocked by policy",
+							"violations": result.Violations,
+						})
+						return
+					}
+					telemetry.PolicyEvaluationsTotal.WithLabelValues("warn").Inc()
+					slog.Warn("policy violation (warn mode)",
+						"namespace", namespace, "name", name, "system", system, "version", version,
+						"violations", result.Violations)
+				} else {
+					telemetry.PolicyEvaluationsTotal.WithLabelValues("allowed").Inc()
+				}
+			}
 		}
 
 		// Get organization context

@@ -878,6 +878,31 @@ func (r *ModuleRepository) GetVersionByID(ctx context.Context, id string) (*mode
 	return v, nil
 }
 
+// GetVersionByChecksum retrieves a module version by its checksum (used by OCI blob lookups).
+func (r *ModuleRepository) GetVersionByChecksum(ctx context.Context, moduleID, checksum string) (*models.ModuleVersion, error) {
+	query := `
+		SELECT id, module_id, version, storage_path, storage_backend, size_bytes, checksum, readme, published_by,
+		       download_count, COALESCE(deprecated, false), deprecated_at, deprecation_message, replacement_source, created_at,
+		       commit_sha, tag_name, scm_repo_id::text
+		FROM module_versions
+		WHERE module_id = $1 AND checksum = $2
+		LIMIT 1
+	`
+	v := &models.ModuleVersion{}
+	err := r.db.QueryRowContext(ctx, query, moduleID, checksum).Scan(
+		&v.ID, &v.ModuleID, &v.Version, &v.StoragePath, &v.StorageBackend, &v.SizeBytes, &v.Checksum,
+		&v.Readme, &v.PublishedBy, &v.DownloadCount, &v.Deprecated, &v.DeprecatedAt, &v.DeprecationMessage,
+		&v.ReplacementSource, &v.CreatedAt, &v.CommitSHA, &v.TagName, &v.SCMRepoID,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get module version by checksum: %w", err)
+	}
+	return v, nil
+}
+
 // DeprecateModule marks an entire module as deprecated with an optional message and successor module ID
 func (r *ModuleRepository) DeprecateModule(ctx context.Context, moduleID string, message *string, successorModuleID *string) error {
 	query := `

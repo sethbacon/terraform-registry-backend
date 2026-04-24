@@ -1,6 +1,10 @@
 package webhooks
 
 import (
+	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -379,5 +383,106 @@ func TestConvertHeaders_WithEntries(t *testing.T) {
 	result := convertHeaders(map[string]string{"X-Key": "val"})
 	if v, ok := result["X-Key"]; !ok || v != "val" {
 		t.Errorf("result[X-Key] = %v, want val", result["X-Key"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// HandleWebhook — post-signature paths (ParseDelivery, CreateWebhookLog, success)
+// ---------------------------------------------------------------------------
+
+const testWebhookSecret = "test-webhook-secret-123"
+
+// sampleProviderRowWithSecret is like sampleProviderRow but sets a non-empty webhook_secret
+// so HMAC-based signature verification can pass.
+func sampleProviderRowWithSecret(id uuid.UUID, providerType, webhookSecret string) *sqlmock.Rows {
+	baseURL := "https://bitbucket.example.com"
+	return sqlmock.NewRows(scmProviderCols).AddRow(
+		id, uuid.New(), providerType, "Test Provider",
+		&baseURL, nil, "client-id",
+		"encrypted-secret", webhookSecret,
+		true, time.Now(), time.Now(),
+	)
+}
+
+// bbHMAC computes the Bitbucket DC webhook HMAC-SHA256 signature for the given payload and secret.
+func bbHMAC(payload []byte, secret string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(payload)
+	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+// TestWebhook_ParseDeliveryError — signature valid but payload is not JSON → 400
+func TestWebhook_ParseDeliveryError(t *testing.T) {
+	mock, r := newWebhookRouter(t)
+	providerID := uuid.New()
+	payload := []byte("this is not json")
+	sig := bbHMAC(payload, testWebhookSecret)
+
+	mock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE module_id").
+		WillReturnRows(sampleModuleSourceRepoRowWithURL(providerID,
+			"https://registry.example.com/webhooks/scm/"+webhookTestUUID+"/secret123"))
+	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
+		WillReturnRows(sampleProviderRowWithSecret(providerID, "bitbucket_dc", testWebhookSecret))
+
+	req := httptest.NewRequest("POST", "/webhooks/scm/"+webhookTestUUID+"/secret123",
+		bytes.NewReader(payload))
+	req.Header.Set("X-Hub-Signature", sig)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 (parse delivery error): body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestWebhook_CreateWebhookLogError — signature valid, payload parses, but CreateWebhookLog fails → 500
+func TestWebhook_CreateWebhookLogError(t *testing.T) {
+	mock, r := newWebhookRouter(t)
+	providerID := uuid.New()
+	payload := []byte(`{}`)
+	sig := bbHMAC(payload, testWebhookSecret)
+
+	mock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE module_id").
+		WillReturnRows(sampleModuleSourceRepoRowWithURL(providerID,
+			"https://registry.example.com/webhooks/scm/"+webhookTestUUID+"/secret123"))
+	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
+		WillReturnRows(sampleProviderRowWithSecret(providerID, "bitbucket_dc", testWebhookSecret))
+	mock.ExpectExec("INSERT INTO scm_webhook_events").
+		WillReturnError(errors.New("db error"))
+
+	req := httptest.NewRequest("POST", "/webhooks/scm/"+webhookTestUUID+"/secret123",
+		bytes.NewReader(payload))
+	req.Header.Set("X-Hub-Signature", sig)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500 (webhook log error): body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestWebhook_Success — signature valid, payload parses, log created → 200
+func TestWebhook_Success(t *testing.T) {
+	mock, r := newWebhookRouter(t)
+	providerID := uuid.New()
+	payload := []byte(`{}`)
+	sig := bbHMAC(payload, testWebhookSecret)
+
+	mock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE module_id").
+		WillReturnRows(sampleModuleSourceRepoRowWithURL(providerID,
+			"https://registry.example.com/webhooks/scm/"+webhookTestUUID+"/secret123"))
+	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
+		WillReturnRows(sampleProviderRowWithSecret(providerID, "bitbucket_dc", testWebhookSecret))
+	mock.ExpectExec("INSERT INTO scm_webhook_events").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	req := httptest.NewRequest("POST", "/webhooks/scm/"+webhookTestUUID+"/secret123",
+		bytes.NewReader(payload))
+	req.Header.Set("X-Hub-Signature", sig)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
 	}
 }

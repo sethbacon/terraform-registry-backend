@@ -23,7 +23,7 @@ backend:
   image:
     # Format: <ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/terraform-registry-backend
     repository: <ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/terraform-registry-backend
-    tag: "v0.10.3"
+    tag: "v0.11.0"
     pullPolicy: IfNotPresent
   replicaCount: 3
   resources:

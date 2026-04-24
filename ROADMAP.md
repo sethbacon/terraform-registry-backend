@@ -260,21 +260,21 @@ The following items require coordinated work with `terraform-registry-frontend`:
 
 ### Track C — Compliance
 
-#### C3.1 · Air-gapped install guide · [P0/L]
+#### C3.1 · Air-gapped install guide · [P0/L] ✅
 
 - New `docs/air-gap-install.md`: offline image bundle via `docker save`, scanner-DB pre-seeding (Trivy offline DB, Checkov rules), internal CA trust, private module upstream config.
 - `make airgap-bundle` target producing tarball.
 - **Files:** `docs/air-gap-install.md`, `Makefile`, `scripts/airgap-bundle.sh`
 - **AC:** Clean-room test on an egress-blocked VM; success recorded.
 
-#### C3.2 · Published threat model (STRIDE) · [P0/M]
+#### C3.2 · Published threat model (STRIDE) · [P0/M] ✅
 
 - Create `docs/threat-model.md` with DFD, trust boundaries, mitigations per STRIDE category.
 - Include assumptions + residual risks.
 - **Files:** `docs/threat-model.md`, `SECURITY.md` (add link)
 - **AC:** Reviewed by external security reviewer; linked from SECURITY.md.
 
-#### C3.3 · SOC2 / ISO27001 control mapping · [P1/L]
+#### C3.3 · SOC2 / ISO27001 control mapping · [P1/L] ✅
 
 - `docs/compliance/soc2-mapping.md` + `docs/compliance/iso27001-mapping.md` with control → feature → evidence source.
 - Audit log immutability (append-only; periodic hash-chain export).
@@ -283,14 +283,14 @@ The following items require coordinated work with `terraform-registry-frontend`:
 - **Files:** `docs/compliance/*.md`, `backend/internal/audit/export.go`, `backend/internal/audit/legal_hold.go`, `backend/internal/api/audit_routes.go`
 - **AC:** Mapping reviewed; immutability test in CI.
 
-#### C3.4 · GDPR / data-subject tooling · [P1/M]
+#### C3.4 · GDPR / data-subject tooling · [P1/M] ✅
 
 - `/admin/users/:id/export` (JSON data export).
 - `/admin/users/:id/erase` (tombstone user records, preserve audit trail per regulation).
 - **Files:** `backend/internal/api/user_routes.go`, `backend/internal/services/user_service.go`
 - **AC:** Integration tests confirm behavior.
 
-#### C3.5 · Data residency + multi-region DR documentation · [P2/M]
+#### C3.5 · Data residency + multi-region DR documentation · [P2/M] ✅
 
 - Document: single-region, multi-region-active-passive, multi-region-active-active storage strategies.
 - Add example Terraform for cross-region PG replica + S3 CRR.
@@ -299,14 +299,14 @@ The following items require coordinated work with `terraform-registry-frontend`:
 
 ### Track D — Operability
 
-#### D3.1 · Version upgrade runbook · [P0/M]
+#### D3.1 · Version upgrade runbook · [P0/M] ✅
 
 - `docs/upgrade-guide.md`: per-version breaking changes, migration behavior, rollback strategy, pre-flight checks.
 - Add `registry upgrade preflight` CLI subcommand that validates DB state before a version jump.
 - **Files:** `docs/upgrade-guide.md`, `backend/cmd/server/upgrade.go`
 - **AC:** Dry-run upgrade from 0.6.x → 0.7.x documented + tested.
 
-#### D3.2 · Validated DR drill runbook with RPO/RTO numbers · [P0/M]
+#### D3.2 · Validated DR drill runbook with RPO/RTO numbers · [P0/M] ✅
 
 - Execute timed restore from pg_dump + object-store snapshot.
 - Record RPO (target: <15min) / RTO (target: <2h).
@@ -314,14 +314,14 @@ The following items require coordinated work with `terraform-registry-frontend`:
 - **Files:** `docs/disaster-recovery.md`, `scripts/dr-drill.sh`
 - **AC:** Drill log appended; automation script in `scripts/dr-drill.sh`.
 
-#### D3.3 · Chaos / soak test suite · [P1/L]
+#### D3.3 · Chaos / soak test suite · [P1/L] ✅
 
 - New `cmd/chaos-test/` binary that injects failures: Redis down, S3 5xx, PG connection storm.
 - Nightly workflow `.github/workflows/chaos.yml`.
 - **Files:** `cmd/chaos-test/*.go`, `.github/workflows/chaos.yml`
 - **AC:** Pass rate > 95% for 24h soak on a canary environment.
 
-#### D3.4 · Per-org quotas + chargeback metrics · [P1/M]
+#### D3.4 · Per-org quotas + chargeback metrics · [P1/M] ✅
 
 - New table `org_quotas` (storage_bytes_limit, publishes_per_day, downloads_per_day).
 - Soft-warn at 80%, hard-deny at 100%.
@@ -330,7 +330,7 @@ The following items require coordinated work with `terraform-registry-frontend`:
 - **AC:** E2E test: quota breach returns 429 with `X-Quota-Reset` header.
 - **↔ Frontend E4.4:** Quota dashboard.
 
-#### D3.5 · Backup-to-object-store automation · [P2/M]
+#### D3.5 · Backup-to-object-store automation · [P2/M] ✅
 
 - Scheduled job inside registry (or separate sidecar) performing `pg_dump` to S3/Blob/GCS with lifecycle retention.
 - Encryption with KMS key.
@@ -339,7 +339,7 @@ The following items require coordinated work with `terraform-registry-frontend`:
 
 ### Track G — Data layer
 
-#### G3.1 · Optional MySQL support · [P2/L]
+#### G3.1 · Optional MySQL support · [P2/L] ✅
 
 - Abstract queries in `backend/internal/db/` behind dialect interface.
 - Add MySQL migrations (parallel to PG set).
@@ -347,7 +347,7 @@ The following items require coordinated work with `terraform-registry-frontend`:
 - **Files:** `backend/internal/db/dialect_*.go`, `backend/internal/db/migrations_mysql/`, `deployments/helm/values-mysql.yaml`
 - **AC:** CI matrix includes MySQL; all tests pass.
 
-#### G3.2 · Migration rollback documentation · [P1/M]
+#### G3.2 · Migration rollback documentation · [P1/M] ✅
 
 - For each of 24 migrations, document whether reversible + rollback steps.
 - **Files:** `backend/internal/db/migrations/README.md`
@@ -359,7 +359,7 @@ The following items require coordinated work with `terraform-registry-frontend`:
 
 ### Track E — Protocol & features
 
-#### E4.1 · Module deprecation API · [P0/L]
+#### E4.1 · Module deprecation API · [P0/L] ✅
 
 - Per Terraform CLI ≥1.10 spec: registry returns `deprecation` block on module versions.
 - New fields on `modules_versions`: `deprecated`, `deprecation_reason`, `replacement_source`.

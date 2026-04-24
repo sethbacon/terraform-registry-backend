@@ -1,0 +1,77 @@
+# Terraform Registry — Prometheus Recording Rules
+#
+# These rules pre-compute expensive PromQL expressions so dashboards and
+# alert rules can query cheap counters instead of repeating heavy aggregations.
+#
+# Load into Prometheus by referencing this file in your prometheus.yml:
+#
+#   rule_files:
+#     - /etc/prometheus/terraform-registry-rules.yml
+#
+# Validate with: promtool check rules recording-rules.yml
+
+groups:
+  - name: terraform_registry_slo
+    interval: 60s
+    rules:
+      # p95 HTTP request latency across all routes (5-minute window)
+      - record: job:http_request_duration_p95:rate5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (
+              rate(http_request_duration_seconds_bucket[5m])
+            )
+          )
+
+      # p99 HTTP request latency across all routes (5-minute window)
+      - record: job:http_request_duration_p99:rate5m
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le) (
+              rate(http_request_duration_seconds_bucket[5m])
+            )
+          )
+
+      # Per-route p95 latency (5-minute window) — labelled by path
+      - record: path:http_request_duration_p95:rate5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (path, le) (
+              rate(http_request_duration_seconds_bucket[5m])
+            )
+          )
+
+      # HTTP error ratio: 5xx / total (5-minute window)
+      - record: job:http_errors_ratio:rate5m
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m]))
+          /
+          sum(rate(http_requests_total[5m]))
+
+      # HTTP client error ratio: 4xx / total (5-minute window)
+      - record: job:http_client_errors_ratio:rate5m
+        expr: |
+          sum(rate(http_requests_total{status=~"4.."}[5m]))
+          /
+          sum(rate(http_requests_total[5m]))
+
+      # Module download rate (per second, 5-minute window)
+      - record: job:module_downloads:rate5m
+        expr: sum(rate(module_downloads_total[5m]))
+
+      # Provider download rate (per second, 5-minute window)
+      - record: job:provider_downloads:rate5m
+        expr: sum(rate(provider_downloads_total[5m]))
+
+      # Module publish rate (per second, 5-minute window)
+      - record: job:module_publishes:rate5m
+        expr: sum(rate(registry_module_publishes_total[5m]))
+
+      # SLO burn rate: how fast we are consuming the 1% monthly error budget.
+      # A value > 1 means we are burning faster than steady-state; > 14.4 triggers
+      # the 1-hour fast-burn alert window.
+      - record: job:slo_burn_rate:rate5m
+        expr: |
+          job:http_errors_ratio:rate5m
+          /
+          0.01

@@ -27,7 +27,7 @@ func newAuditExportRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	auditRepo := repositories.NewAuditRepository(db)
 
 	r := gin.New()
-	r.GET("/audit-logs/export", ExportAuditLogs(auditRepo))
+	r.GET("/audit-logs/export", ExportAuditLogs(auditRepo, "test"))
 
 	return mock, r
 }
@@ -255,5 +255,97 @@ func TestExportAuditLogs_DefaultDateRange(t *testing.T) {
 	// Should succeed with 200 — no date params means default 30-day window
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ExportAuditLogs — invalid format parameter
+// ---------------------------------------------------------------------------
+
+func TestExportAuditLogs_InvalidFormat(t *testing.T) {
+	_, r := newAuditExportRouter(t)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/audit-logs/export?format=xml", nil))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	if _, ok := resp["error"]; !ok {
+		t.Error("expected 'error' key in response body")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ExportAuditLogs — OCSF format returns valid OCSF events
+// ---------------------------------------------------------------------------
+
+func TestExportAuditLogs_OCSFFormat(t *testing.T) {
+	mock, r := newAuditExportRouter(t)
+
+	email := "bob@example.com"
+	name := "Bob"
+	userID := "user-42"
+	orgID := "org-99"
+	resType := "module"
+	resID := "mod-7"
+	ip := "192.168.1.1"
+
+	rows := sqlmock.NewRows(auditExportCols).
+		AddRow("entry-ocsf", &userID, &orgID, "create_module", &resType, &resID,
+			nil, &ip, time.Now(), &email, &name)
+
+	mock.ExpectQuery("SELECT al\\.id").
+		WillReturnRows(rows)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/audit-logs/export?format=ocsf", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+
+	ct := w.Header().Get("Content-Type")
+	if ct != "application/x-ndjson" {
+		t.Errorf("Content-Type = %q, want application/x-ndjson", ct)
+	}
+
+	cd := w.Header().Get("Content-Disposition")
+	if cd == "" {
+		t.Error("expected Content-Disposition header")
+	}
+
+	// OCSF event must have class_uid 6003 and correct actor fields.
+	var ev map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &ev); err != nil {
+		t.Fatalf("failed to parse OCSF NDJSON line: %v\nbody: %s", err, w.Body.String())
+	}
+	if ev["class_uid"] != float64(6003) {
+		t.Errorf("class_uid = %v, want 6003", ev["class_uid"])
+	}
+	actor, ok := ev["actor"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("actor is not a map: %T", ev["actor"])
+	}
+	user, ok := actor["user"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("actor.user is not a map: %T", actor["user"])
+	}
+	if user["uid"] != "user-42" {
+		t.Errorf("actor.user.uid = %v, want user-42", user["uid"])
+	}
+	if user["name"] != "Bob" {
+		t.Errorf("actor.user.name = %v, want Bob", user["name"])
+	}
+	unmapped, ok := ev["unmapped"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("unmapped is not a map: %T", ev["unmapped"])
+	}
+	if unmapped["user_email"] != "bob@example.com" {
+		t.Errorf("unmapped.user_email = %v, want bob@example.com", unmapped["user_email"])
 	}
 }
