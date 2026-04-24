@@ -369,7 +369,7 @@ The following items require coordinated work with `terraform-registry-frontend`:
 - **AC:** `terraform init` prints deprecation notice; API conformance test.
 - **↔ Frontend E4.1:** Deprecation banner on module detail page; admin toggle.
 
-#### E4.2 · OCI distribution endpoint for modules · [P1/L]
+#### E4.2 · OCI distribution endpoint for modules · [P1/L] ✅
 
 - Add `backend/internal/api/oci/` implementing OCI distribution spec v1.1.
 - Modules mirror-pushable/pullable as OCI artifacts (media type `application/vnd.opentofu.modulepkg`).
@@ -377,7 +377,7 @@ The following items require coordinated work with `terraform-registry-frontend`:
 - **AC:** `oras push` + `oras pull` round-trip succeeds; Harbor federation tested.
 - **↔ Frontend E4.5:** OCI pull snippet on module detail.
 
-#### E4.3 · Policy engine integration (OPA/Rego + Conftest) · [P1/L]
+#### E4.3 · Policy engine integration (OPA/Rego + Conftest) · [P1/L] ✅
 
 - New `backend/internal/policy/` evaluates Rego bundles on module publish + on consumer metadata endpoint.
 - Admin-configurable bundle sources (OCI, HTTP, S3).
@@ -386,7 +386,7 @@ The following items require coordinated work with `terraform-registry-frontend`:
 - **AC:** Example "no public S3 buckets" policy blocks non-compliant upload.
 - **↔ Frontend E4.2:** Policy results in upload flow.
 
-#### E4.4 · Module test orchestration on publish · [P1/L]
+#### E4.4 · Module test orchestration on publish · [P1/L] ⏳ _Deferred to post-phase 5_
 
 - Trigger ephemeral `terraform init && terraform validate && terraform test` sandbox against declared examples on upload.
 - Store results alongside version metadata.
@@ -395,20 +395,20 @@ The following items require coordinated work with `terraform-registry-frontend`:
 - **AC:** Malformed example blocks publish with clear error.
 - **↔ Frontend E4.3:** Test results UI.
 
-#### E4.5 · Inbound webhook / run-task approval surface · [P2/M]
+#### E4.5 · Inbound webhook / run-task approval surface · [P2/M] ✅
 
 - Add `/webhooks/approvals/:token` endpoint for external CI systems to approve pending publishes.
 - Signed tokens, single-use.
 - **Files:** `backend/internal/api/webhook_routes.go`, `backend/internal/services/approval_service.go`
 - **AC:** Jenkins/GitHub Actions approval round-trip tested.
 
-#### E4.6 · Optional mTLS / IP allowlist on binary mirror · [P2/M]
+#### E4.6 · Optional mTLS / IP allowlist on binary mirror · [P2/M] ✅
 
 - `config.yaml`: `binary_mirror.auth: none|allowlist|mtls`.
 - **Files:** `backend/internal/config/config.go`, `backend/internal/middleware/binary_mirror_auth.go`
 - **AC:** Locked-down mode rejects anonymous; open mode preserves protocol compliance.
 
-#### E4.7 · Bulk namespace import tooling · [P2/M]
+#### E4.7 · Bulk namespace import tooling · [P2/M] ✅
 
 - New `cmd/registry-import/` CLI: given a public namespace, mirror all modules/versions into the registry.
 - Respects pull-through cache.
@@ -417,14 +417,14 @@ The following items require coordinated work with `terraform-registry-frontend`:
 
 ### Track F — Observability extensions
 
-#### F4.1 · Trace-based SLO dashboards · [P1/M]
+#### F4.1 · Trace-based SLO dashboards · [P1/M] ✅
 
 - Exemplar wiring between metrics and OTel traces.
 - Publish Grafana dashboard + Prometheus recording rules.
 - **Files:** `deployments/observability/grafana-dashboard.json`, `deployments/observability/recording-rules.yml`
 - **AC:** Dashboards render; p95 latency alert rule firing tested.
 
-#### F4.2 · Structured audit log export (OCSF) · [P2/M]
+#### F4.2 · Structured audit log export (OCSF) · [P2/M] ✅
 
 - Convert audit events to OCSF JSON on export endpoint.
 - **Files:** `backend/internal/audit/ocsf_exporter.go`, `backend/internal/api/audit_routes.go`
