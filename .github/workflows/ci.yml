@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [ main ]
   pull_request:
-    branches: [main, development]
+    branches: [ main, development ]
   workflow_dispatch: {}
   workflow_call: {} # allows release.yml to call this as a prerequisite
 
@@ -103,7 +103,8 @@ jobs:
         # require a live external dependency (DB, SCM, OIDC issuer, scanner,
         # upstream HTTP registry) to exercise and are covered by the
         # integration suite in cmd/api-test / docker-compose.test.yml.
-        run: go run ./scripts/coverfilter -in coverage.out -out coverage.filtered.out -root .
+        run: go run ./scripts/coverfilter -in coverage.out -out coverage.filtered.out
+          -root .
 
       - name: Check coverage threshold
         working-directory: backend
@@ -111,11 +112,10 @@ jobs:
         #   - Security & core business logic (auth, middleware, repositories): target 85-95%
         #   - APIs & handlers: target 75-85%
         #   - Utilities & helpers: target 70-80%
-        #   - Overall floor: 80% (Google "good for production" after honoring
-        #     coverage:skip markers for unit-untestable integration surface).
+        #   - Overall floor: 85% (Phase 5 / H5.2 — raised from 80% at v1.0.0 milestone)
         # The threshold below is the hard CI floor; the build fails if coverage drops below it.
         run: |
-          THRESHOLD=80
+          THRESHOLD=85
           COVERAGE=$(go tool cover -func=coverage.filtered.out | grep "^total:" | awk '{print $3}' | tr -d '%')
           echo "Coverage (filtered): ${COVERAGE}%  (threshold: ${THRESHOLD}%)"
           awk -v cov="$COVERAGE" -v thr="$THRESHOLD" 'BEGIN {
@@ -147,7 +147,7 @@ jobs:
         run: |
           COVERAGE=$(go tool cover -func=coverage.filtered.out | grep "^total:" | awk '{print $3}' | tr -d '%')
           echo "percent=${COVERAGE}" >> $GITHUB_OUTPUT
-          if awk "BEGIN {exit !(${COVERAGE} >= 80)}"; then
+          if awk "BEGIN {exit !(${COVERAGE} >= 85)}"; then
             echo "color=brightgreen" >> $GITHUB_OUTPUT
           elif awk "BEGIN {exit !(${COVERAGE} >= 70)}"; then
             echo "color=green" >> $GITHUB_OUTPUT
