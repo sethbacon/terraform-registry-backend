@@ -39,6 +39,21 @@ type Config struct {
 	AuditRetention AuditRetentionConfig `mapstructure:"audit_retention"`
 	Webhooks       WebhooksConfig       `mapstructure:"webhooks"`
 	BinaryMirror   BinaryMirrorConfig   `mapstructure:"binary_mirror"`
+	Policy         PolicyConfig         `mapstructure:"policy"`
+}
+
+// AuditRetentionConfig controls the background audit log cleanup job.
+// When RetentionDays is 0 the job is disabled and logs are kept forever.
+type AuditRetentionConfig struct {
+	RetentionDays    int `mapstructure:"retention_days"`
+	CleanupBatchSize int `mapstructure:"cleanup_batch_size"`
+}
+
+// WebhooksConfig controls webhook retry behaviour.
+// When MaxRetries is 0 (the default), failed webhooks are not retried.
+type WebhooksConfig struct {
+	MaxRetries        int `mapstructure:"max_retries"`
+	RetryIntervalMins int `mapstructure:"retry_interval_mins"`
 }
 
 // BinaryMirrorConfig controls access control for the /terraform/binaries endpoint group.
@@ -55,18 +70,18 @@ type BinaryMirrorConfig struct {
 	Allowlist []string `mapstructure:"allowlist"`
 }
 
-// AuditRetentionConfig controls the background audit log cleanup job.
-// When RetentionDays is 0 the job is disabled and logs are kept forever.
-type AuditRetentionConfig struct {
-	RetentionDays    int `mapstructure:"retention_days"`
-	CleanupBatchSize int `mapstructure:"cleanup_batch_size"`
-}
-
-// WebhooksConfig controls webhook retry behaviour.
-// When MaxRetries is 0 (the default), failed webhooks are not retried.
-type WebhooksConfig struct {
-	MaxRetries        int `mapstructure:"max_retries"`
-	RetryIntervalMins int `mapstructure:"retry_interval_mins"`
+// PolicyConfig controls the OPA/Rego policy engine.
+// When Enabled is false (the default) the engine is a no-op and all actions are allowed.
+type PolicyConfig struct {
+	// Enabled gates the entire feature.
+	Enabled bool `mapstructure:"enabled"`
+	// Mode controls enforcement: "warn" logs violations and continues; "block" rejects the action.
+	Mode string `mapstructure:"mode"`
+	// BundleURL is the HTTP/HTTPS URL of the .tar.gz Rego bundle.
+	BundleURL string `mapstructure:"bundle_url"`
+	// BundleRefreshInterval is how often (in seconds) the bundle is re-fetched in the background.
+	// 0 means no background refresh.
+	BundleRefreshInterval int `mapstructure:"bundle_refresh_interval"`
 }
 
 // RedisConfig holds optional Redis connection settings.

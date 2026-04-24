@@ -302,6 +302,20 @@ var WebhookRetriesTotal = promauto.NewCounterVec(
 	[]string{"outcome"},
 )
 
+// PolicyEvaluationsTotal counts policy evaluations with labels {result} where result is
+// "allowed", "warn", or "blocked".
+//
+// Example PromQL:
+//
+//	rate(registry_policy_evaluations_total{result="blocked"}[5m])
+var PolicyEvaluationsTotal = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "registry_policy_evaluations_total",
+		Help: "Total number of policy evaluations by result (allowed, warn, blocked).",
+	},
+	[]string{"result"},
+)
+
 // DBOpenConnections is a Gauge that tracks the number of open connections currently
 // held by the sql.DB connection pool.  It is sampled every 30 seconds by
 // StartDBStatsCollector rather than per-request to avoid the overhead of sql.DB.Stats().

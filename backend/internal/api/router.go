@@ -46,6 +46,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/jobs"
 	"github.com/terraform-registry/terraform-registry/internal/middleware"
+	"github.com/terraform-registry/terraform-registry/internal/policy"
 	"github.com/terraform-registry/terraform-registry/internal/services"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 
@@ -513,7 +514,6 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 		WithModuleDocs(moduleDocsRepo).
 		WithScanQueue(scanRepo)
 
-	// Initialize RBAC handlers
 	rbacRepo := repositories.NewRBACRepository(sqlxDB)
 	rbacHandlers := admin.NewRBACHandlers(rbacRepo)
 
@@ -545,6 +545,19 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	setupHandlers := setup.NewHandlers(
 		cfg, tokenCipher, oidcConfigRepo, storageConfigRepo, userRepo, orgRepo, authHandlers,
 	)
+
+	// Initialize policy engine (no-op when disabled).
+	policyEngineCfg := policy.Config{
+		Enabled:               cfg.Policy.Enabled,
+		Mode:                  cfg.Policy.Mode,
+		BundleURL:             cfg.Policy.BundleURL,
+		BundleRefreshInterval: cfg.Policy.BundleRefreshInterval,
+	}
+	policyEngine, err := policy.NewPolicyEngine(policyEngineCfg)
+	if err != nil {
+		log.Fatalf("failed to initialize policy engine: %v", err)
+	}
+	policyAdminHandler := admin.NewPolicyHandler(policyEngine, cfg.Policy)
 
 	// Initialize SCM webhook handler
 	scmWebhookHandler := webhooks.NewSCMWebhookHandler(scmRepo, scmPublisher)
@@ -723,7 +736,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 			authenticatedGroup.POST("/modules",
 				middleware.RateLimitMiddleware(uploadRateLimiter), // Stricter rate limit for uploads
 				middleware.RequireScope(auth.ScopeModulesWrite),
-				modules.UploadHandler(db, storageBackend, cfg, scanRepo, moduleDocsRepo))
+				modules.UploadHandler(db, storageBackend, cfg, scanRepo, moduleDocsRepo, policyEngine))
 
 			// Providers admin endpoints - require write permissions
 			authenticatedGroup.POST("/providers",
@@ -1018,6 +1031,15 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 				auditLogsGroup.GET("", middleware.RequireScope(auth.ScopeAuditRead), auditLogHandlers.ListAuditLogsHandler())
 				auditLogsGroup.GET("/export", middleware.RequireScope(auth.ScopeAuditRead), admin.ExportAuditLogs(auditRepo, AppVersion))
 				auditLogsGroup.GET("/:id", middleware.RequireScope(auth.ScopeAuditRead), auditLogHandlers.GetAuditLogHandler())
+			}
+
+			// Policy engine admin endpoints (requires admin scope)
+			policyGroup := authenticatedGroup.Group("/admin/policy")
+			policyGroup.Use(middleware.RequireScope(auth.ScopeAdmin))
+			{
+				policyGroup.GET("/config", policyAdminHandler.GetPolicyConfig)
+				policyGroup.POST("/reload", policyAdminHandler.ReloadBundle)
+				policyGroup.POST("/evaluate", policyAdminHandler.EvaluateInput)
 			}
 		}
 

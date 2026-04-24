@@ -2276,6 +2276,147 @@
                 }
             }
         },
+        "/api/v1/admin/policy/config": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Returns the current policy engine configuration (enabled, mode, bundle URL, refresh interval).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "System"
+                ],
+                "summary": "Get policy configuration",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/admin/policy/evaluate": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Evaluates an arbitrary input map against the currently loaded policy bundle.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "System"
+                ],
+                "summary": "Evaluate policy input",
+                "parameters": [
+                    {
+                        "description": "Input to evaluate",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/policy.PolicyResult"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/admin/policy/reload": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Forces an immediate reload of the Rego policy bundle from the configured URL.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "System"
+                ],
+                "summary": "Reload policy bundle",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "No bundle URL configured",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/admin/providers": {
             "post": {
                 "security": [
@@ -5122,6 +5263,13 @@
                     },
                     "409": {
                         "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "Policy violation (block mode)",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -14626,6 +14774,39 @@
                 },
                 "schemaVersion": {
                     "type": "integer"
+                }
+            }
+        },
+        "policy.PolicyResult": {
+            "type": "object",
+            "properties": {
+                "allowed": {
+                    "description": "Allowed is true when no violations were found.",
+                    "type": "boolean"
+                },
+                "mode": {
+                    "description": "Mode mirrors the engine's configured enforcement mode.",
+                    "type": "string"
+                },
+                "violations": {
+                    "description": "Violations contains one entry per deny rule that fired.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/policy.Violation"
+                    }
+                }
+            }
+        },
+        "policy.Violation": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "description": "Message is the human-readable description produced by the Rego rule.",
+                    "type": "string"
+                },
+                "rule": {
+                    "description": "Rule is the Rego rule path that fired (e.g. \"data.registry.deny\").",
+                    "type": "string"
                 }
             }
         },
