@@ -110,7 +110,7 @@ func TestPolicyEngine_EnabledNoBundleURL(t *testing.T) {
 
 const denyNamespaceRego = `package registry
 
-deny[msg] {
+deny contains msg if {
 	input.namespace == "blocked"
 	msg := "namespace 'blocked' is not permitted"
 }
