@@ -2,6 +2,9 @@
 package admin
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"time"
 
@@ -767,4 +770,81 @@ func (h *RBACHandlers) EvaluatePolicy(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, result)
+}
+
+// ============================================================================
+// Webhook Approval Token Generation
+// ============================================================================
+
+// ApprovalTokenResponse is returned when a token is generated.
+type ApprovalTokenResponse struct {
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expires_at"`
+	// ApprovalURL is informational — the caller should embed the token in the
+	// appropriate webhook URL before sending it to an approver.
+	ApprovalURL string `json:"approval_url,omitempty"`
+}
+
+// @Summary      Generate webhook approval token
+// @Description  Generates a single-use HMAC token that can be sent to an approver via email
+//
+//	or Slack. When the recipient POSTs the token to /webhooks/approvals/:token the
+//	approval request is approved without requiring admin login. Tokens expire after
+//	24 hours. Requires mirrors:manage scope.
+//
+// @Tags         RBAC
+// @Security     Bearer
+// @Produce      json
+// @Param        id    path  string  true  "Approval request ID (UUID)"
+// @Success      201  {object}  admin.ApprovalTokenResponse
+// @Failure      400  {object}  map[string]interface{}  "Invalid approval request ID"
+// @Failure      401  {object}  map[string]interface{}  "Unauthorized"
+// @Failure      403  {object}  map[string]interface{}  "Forbidden — mirrors:manage scope required"
+// @Failure      404  {object}  map[string]interface{}  "Approval request not found"
+// @Failure      500  {object}  map[string]interface{}  "Internal server error"
+// @Router       /api/v1/admin/approvals/{id}/token [post]
+// GenerateApprovalToken creates a single-use approval token for an approval request.
+// POST /api/v1/admin/approvals/:id/token
+func (h *RBACHandlers) GenerateApprovalToken(c *gin.Context) {
+	idStr := c.Param("id")
+	approvalID, err := uuid.Parse(idStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid approval request ID"})
+		return
+	}
+
+	// Verify the approval request exists and is still pending.
+	approval, err := h.rbacRepo.GetApprovalRequest(c.Request.Context(), approvalID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Approval request not found"})
+		return
+	}
+	if approval.Status != models.ApprovalStatusPending {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Approval request is not pending"})
+		return
+	}
+
+	// Generate a 32-byte cryptographically random token.
+	rawBytes := make([]byte, 32)
+	if _, err := rand.Read(rawBytes); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
+		return
+	}
+	plainToken := hex.EncodeToString(rawBytes)
+
+	// Hash before storage — we never store the plain token.
+	sum := sha256.Sum256([]byte(plainToken))
+	tokenHash := hex.EncodeToString(sum[:])
+
+	expiresAt := time.Now().Add(24 * time.Hour)
+	if err := h.rbacRepo.CreateApprovalToken(c.Request.Context(), tokenHash, approvalID, expiresAt); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store approval token"})
+		return
+	}
+
+	c.JSON(http.StatusCreated, ApprovalTokenResponse{
+		Token:       plainToken,
+		ExpiresAt:   expiresAt,
+		ApprovalURL: "/webhooks/approvals/" + plainToken,
+	})
 }

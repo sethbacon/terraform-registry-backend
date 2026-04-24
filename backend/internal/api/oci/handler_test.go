@@ -3,6 +3,7 @@ package oci
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -284,5 +285,91 @@ func TestHeadManifest_OK(t *testing.T) {
 	}
 	if w.Header().Get("Content-Length") == "" {
 		t.Error("expected Content-Length header")
+	}
+}
+
+// ─── HeadBlob / GetBlob ───────────────────────────────────────────────────────
+
+// TestHeadBlob_InvalidDigest and TestGetBlob_InvalidDigest — no sha256: prefix → 400
+func TestHeadBlob_InvalidDigest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	h := NewHandler(db, nil)
+	r := gin.New()
+	r.HEAD("/v2/:namespace/:name/:system/blobs/:digest", h.HeadBlob)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodHead, "/v2/hashicorp/consul/aws/blobs/invaliddigest", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestGetBlob_InvalidDigest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	h := NewHandler(db, nil)
+	r := gin.New()
+	r.GET("/v2/:namespace/:name/:system/blobs/:digest", h.GetBlob)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/v2/hashicorp/consul/aws/blobs/invaliddigest", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+// TestHeadBlob_OK — valid digest, module version found → 200 with correct headers
+func TestHeadBlob_OK(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	const checksum = "abc123def456ff00"
+	const size = int64(512)
+
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
+		WithArgs("default").
+		WillReturnRows(orgRow("org-id", "default"))
+	mock.ExpectQuery("SELECT.*FROM modules").
+		WithArgs("org-id", "hashicorp", "consul", "aws").
+		WillReturnRows(moduleRow("mod-id", "org-id", "hashicorp", "consul", "aws"))
+	mock.ExpectQuery("SELECT.*FROM module_versions").
+		WithArgs("mod-id", checksum).
+		WillReturnRows(versionRow("ver-id", "mod-id", "1.0.0", "path.tar.gz", checksum, size))
+
+	h := NewHandler(db, nil)
+	r := gin.New()
+	r.HEAD("/v2/:namespace/:name/:system/blobs/:digest", h.HeadBlob)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodHead, "/v2/hashicorp/consul/aws/blobs/sha256:"+checksum, nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if cl := w.Header().Get("Content-Length"); cl != fmt.Sprintf("%d", size) {
+		t.Errorf("expected Content-Length=%d, got %q", size, cl)
+	}
+	if dig := w.Header().Get("Docker-Content-Digest"); dig != "sha256:"+checksum {
+		t.Errorf("expected Docker-Content-Digest sha256:%s, got %q", checksum, dig)
 	}
 }

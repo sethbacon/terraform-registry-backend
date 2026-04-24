@@ -405,3 +405,60 @@ func (r *RBACRepository) EvaluatePolicies(ctx context.Context, orgID *uuid.UUID,
 
 	return result, nil
 }
+
+// ============================================================================
+// Webhook Approval Tokens
+// ============================================================================
+
+// CreateApprovalToken stores a hashed single-use approval token linked to an
+// approval request. The caller is responsible for generating the random plain
+// token and hashing it before calling this method.
+func (r *RBACRepository) CreateApprovalToken(ctx context.Context, tokenHash string, approvalRequestID uuid.UUID, expiresAt time.Time) error {
+	_, err := r.db.ExecContext(ctx,
+		`INSERT INTO webhook_approval_tokens (token_hash, approval_request_id, expires_at)
+		 VALUES ($1, $2, $3)`,
+		tokenHash, approvalRequestID, expiresAt,
+	)
+	return err
+}
+
+// RedeemApprovalToken looks up a token by its hash, verifies it is unused and
+// not expired, marks it as used, and returns the associated approval request ID.
+// Returns sql.ErrNoRows if the token is not found, expired, or already used.
+func (r *RBACRepository) RedeemApprovalToken(ctx context.Context, tokenHash string) (uuid.UUID, error) {
+	var approvalRequestID uuid.UUID
+	var expiresAt time.Time
+	var usedAt *time.Time
+
+	err := r.db.QueryRowContext(ctx,
+		`SELECT approval_request_id, expires_at, used_at
+		 FROM webhook_approval_tokens
+		 WHERE token_hash = $1`,
+		tokenHash,
+	).Scan(&approvalRequestID, &expiresAt, &usedAt)
+	if err != nil {
+		return uuid.Nil, err
+	}
+
+	if usedAt != nil {
+		return uuid.Nil, sql.ErrNoRows // already used
+	}
+	if time.Now().After(expiresAt) {
+		return uuid.Nil, sql.ErrNoRows // expired
+	}
+
+	// Mark as used atomically — protect against concurrent redemption.
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE webhook_approval_tokens SET used_at = NOW()
+		 WHERE token_hash = $1 AND used_at IS NULL`,
+		tokenHash,
+	)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return uuid.Nil, sql.ErrNoRows // race: another request got there first
+	}
+
+	return approvalRequestID, nil
+}
