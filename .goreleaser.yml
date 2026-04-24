@@ -24,6 +24,26 @@ builds:
       - -X main.BuildDate={{ .Date }}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
+  - id: registry-import
+    dir: backend
+    main: ./cmd/registry-import
+    binary: registry-import
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
 archives:
   - id: terraform-registry-binaries
     formats: [ binary ]
