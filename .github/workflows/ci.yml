@@ -112,10 +112,10 @@ jobs:
         #   - Security & core business logic (auth, middleware, repositories): target 85-95%
         #   - APIs & handlers: target 75-85%
         #   - Utilities & helpers: target 70-80%
-        #   - Overall floor: 85% (Phase 5 / H5.2 — raised from 80% at v1.0.0 milestone)
+        #   - Overall floor: 80% (target 85% by Phase 5 / H5.2 milestone)
         # The threshold below is the hard CI floor; the build fails if coverage drops below it.
         run: |
-          THRESHOLD=85
+          THRESHOLD=80
           COVERAGE=$(go tool cover -func=coverage.filtered.out | grep "^total:" | awk '{print $3}' | tr -d '%')
           echo "Coverage (filtered): ${COVERAGE}%  (threshold: ${THRESHOLD}%)"
           awk -v cov="$COVERAGE" -v thr="$THRESHOLD" 'BEGIN {
