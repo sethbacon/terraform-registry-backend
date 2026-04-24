@@ -414,22 +414,22 @@ func zipToTarGz(zipData []byte) ([]byte, error) {
 		info := f.FileInfo()
 		header, err := tar.FileInfoHeader(info, "")
 		if err != nil {
-			rc.Close() //nolint:errcheck // #nosec G104 -- closing on error path, return value not actionable
+			rc.Close() // #nosec G104 -- nolint:errcheck, closing reader on error path
 			return nil, err
 		}
 		header.Name = f.Name
 		if err := tw.WriteHeader(header); err != nil {
-			rc.Close() //nolint:errcheck // #nosec G104 -- closing on error path, return value not actionable
+			rc.Close() // #nosec G104 -- nolint:errcheck, closing reader on error path
 			return nil, err
 		}
 		if !info.IsDir() {
 			const maxEntryBytes = 500 * 1024 * 1024 // 500 MB per-entry limit — prevents decompression bombs
 			if _, err := io.Copy(tw, io.LimitReader(rc, maxEntryBytes)); err != nil { // #nosec G110
-				rc.Close() //nolint:errcheck // #nosec G104 -- closing on error path, return value not actionable
+				rc.Close() // #nosec G104 -- nolint:errcheck, closing reader on error path
 				return nil, err
 			}
 		}
-		rc.Close() //nolint:errcheck // #nosec G104 -- closing entry reader, return value not actionable
+		rc.Close() // #nosec G104 -- nolint:errcheck, closing entry reader
 	}
 
 	if err := tw.Close(); err != nil {
