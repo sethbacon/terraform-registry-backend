@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -120,5 +121,36 @@ func TestRedeemApprovalToken_Success(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestRedeemApprovalToken_UpdateStatusError — token redeemed but UpdateApprovalStatus fails → 500
+func TestRedeemApprovalToken_UpdateStatusError(t *testing.T) {
+	mock, r := newApprovalRouter(t)
+	plain := randomHex64()
+	approvalID := uuid.New()
+	expiresAt := time.Now().Add(time.Hour)
+
+	// Step 1: SELECT to look up token — succeeds
+	rows := sqlmock.NewRows([]string{"approval_request_id", "expires_at", "used_at"}).
+		AddRow(approvalID, expiresAt, nil)
+	mock.ExpectQuery("SELECT approval_request_id").
+		WithArgs(hashToken(plain)).
+		WillReturnRows(rows)
+
+	// Step 2: UPDATE to mark used — succeeds
+	mock.ExpectExec("UPDATE webhook_approval_tokens").
+		WithArgs(hashToken(plain)).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	// Step 3: UPDATE approval status — fails
+	mock.ExpectExec("UPDATE mirror_approval_requests").
+		WillReturnError(errors.New("db error"))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/webhooks/approvals/"+plain, nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
 	}
 }
