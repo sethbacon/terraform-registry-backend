@@ -22,12 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: security scanning broken when configured via setup wizard
-- fix: FuzzParseDelivery panics on nil BitbucketDCConnector receiver
-
-### Changed
-
-- ci: add private-repository: true to SLSA binary provenance
+- fix: security scanning configured via setup wizard silently broken — JSON tag mismatch discarded binary path on restart, scanner goroutine never started, re-scan idempotency broken for existing records
+- fix: FuzzParseDelivery panics on nil BitbucketDCConnector receiver in seed corpus run
 
 ## [0.11.0] - 2026-04-24
 
