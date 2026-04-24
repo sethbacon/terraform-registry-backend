@@ -25,6 +25,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/jobs"
 	"github.com/terraform-registry/terraform-registry/internal/scanner"
 	"github.com/terraform-registry/terraform-registry/internal/scanner/installer"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
@@ -40,6 +41,15 @@ type Handlers struct {
 	orgRepo           *repositories.OrganizationRepository
 	authHandlers      *admin.AuthHandlers // to swap OIDC provider at runtime
 	installFunc       installer.InstallFunc
+	scannerJob        *jobs.ModuleScannerJob
+}
+
+// WithScannerJob attaches the scanner job so that SaveScanningConfig can kick
+// it off immediately after enabling scanning at runtime, without requiring a
+// server restart.
+func (h *Handlers) WithScannerJob(job *jobs.ModuleScannerJob) *Handlers {
+	h.scannerJob = job
+	return h
 }
 
 // NewHandlers creates a new setup Handlers instance.
@@ -739,6 +749,16 @@ func (h *Handlers) SaveScanningConfig(c *gin.Context) {
 	}
 
 	slog.Info("setup: scanning configuration saved", "tool", input.Tool, "enabled", input.Enabled)
+
+	// If scanning was just enabled at runtime, kick off the scanner job so that
+	// pending scans are processed immediately without a server restart.
+	if input.Enabled && h.scannerJob != nil {
+		go func() {
+			if err := h.scannerJob.Start(context.Background()); err != nil {
+				slog.Warn("setup: scanner job failed to start after config save", "error", err)
+			}
+		}()
+	}
 
 	c.JSON(http.StatusOK, SaveScanningConfigResponse{
 		Message: "Scanning configuration saved",

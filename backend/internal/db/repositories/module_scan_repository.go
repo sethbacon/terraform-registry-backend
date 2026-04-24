@@ -42,6 +42,27 @@ func (r *ModuleScanRepository) CreatePendingScan(ctx context.Context, moduleVers
 	return nil
 }
 
+// UpsertPendingScan inserts a new pending scan record, or resets an existing
+// completed/errored record back to pending so the worker will re-process it.
+// Records that are already pending or actively scanning are left untouched to
+// avoid interrupting an in-flight scan.
+func (r *ModuleScanRepository) UpsertPendingScan(ctx context.Context, moduleVersionID string) error {
+	const q = `
+		INSERT INTO module_version_scans (module_version_id, scanner, status)
+		VALUES ($1, 'pending', 'pending')
+		ON CONFLICT (module_version_id) DO UPDATE
+			SET status        = 'pending',
+			    error_message = NULL,
+			    updated_at    = NOW()
+			WHERE module_version_scans.status NOT IN ('pending', 'scanning')
+	`
+	_, err := r.db.ExecContext(ctx, q, moduleVersionID)
+	if err != nil {
+		return fmt.Errorf("upsert pending scan: %w", err)
+	}
+	return nil
+}
+
 // ListPendingScans returns up to limit scan records with status 'pending',
 // ordered by creation time ascending (FIFO).
 func (r *ModuleScanRepository) ListPendingScans(ctx context.Context, limit int) ([]*models.ModuleScan, error) {

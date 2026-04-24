@@ -27,6 +27,8 @@ type ModuleScannerJob struct {
 	moduleRepo *repositories.ModuleRepository
 	storage    storage.Storage
 	stopChan   chan struct{}
+	mu         sync.Mutex
+	started    bool
 }
 
 // NewModuleScannerJob constructs a ModuleScannerJob.
@@ -49,7 +51,10 @@ func NewModuleScannerJob(
 func (j *ModuleScannerJob) Name() string { return "module-scanner" }
 
 // Start begins the scan polling loop.  It is a no-op when scanning is disabled
-// or the binary path is not configured.
+// or the binary path is not configured.  It is safe to call multiple times: if
+// a loop is already running the call returns immediately without starting a
+// second one.  This allows the setup wizard to call Start after enabling
+// scanning at runtime without requiring a server restart.
 func (j *ModuleScannerJob) Start(ctx context.Context) error {
 	if !j.cfg.Enabled {
 		slog.Info("module scanner: disabled (scanning.enabled=false)")
@@ -59,6 +64,15 @@ func (j *ModuleScannerJob) Start(ctx context.Context) error {
 		slog.Info("module scanner: disabled (scanning.binary_path not set)")
 		return nil
 	}
+
+	j.mu.Lock()
+	if j.started {
+		j.mu.Unlock()
+		slog.Info("module scanner: already running, ignoring duplicate Start call")
+		return nil
+	}
+	j.started = true
+	j.mu.Unlock()
 
 	s, err := scanner.New(j.cfg)
 	if err != nil {
@@ -112,6 +126,9 @@ func (j *ModuleScannerJob) Start(ctx context.Context) error {
 
 // Stop signals the job to exit gracefully.
 func (j *ModuleScannerJob) Stop() error {
+	j.mu.Lock()
+	j.started = false
+	j.mu.Unlock()
 	select {
 	case <-j.stopChan:
 		// already stopped
