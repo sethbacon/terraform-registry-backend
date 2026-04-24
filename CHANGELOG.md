@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-04-24
+
+### Changed
+
+- chore: add fuzz testing workflow and fuzz tests for analyzer and SCM connectors
+- chore: extend CODEOWNERS with security-team review for security docs
+- chore: update ROADMAP with Phase 4 completion status
+- chore: bump deployment configs for v0.11.1 backend + v0.12.0 frontend
+
 ## [0.11.1] - 2026-04-24
 
 ### Fixed

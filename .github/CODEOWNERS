@@ -12,3 +12,11 @@ deployments/ @sethbacon
 
 # Release configuration
 .goreleaser.yml @sethbacon
+
+# Architecture decision records and compliance docs require security-team review.
+# These documents define threat models, auth schemes, and control mappings — changes
+# must be reviewed by a security-aware owner before merging.
+docs/adr/ @sethbacon @security-team
+docs/compliance/ @sethbacon @security-team
+docs/threat-model.md @sethbacon @security-team
+SECURITY.md @sethbacon @security-team

@@ -1,0 +1,101 @@
+name: Fuzz Tests
+
+on:
+  schedule:
+    # Run every night at 02:17 UTC. Off-peak time; avoids :00/:30 pile-up.
+    - cron: "17 2 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  fuzz:
+    name: Fuzz — ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: FuzzAnalyzeArchive
+            package: ./internal/analyzer/...
+          - target: FuzzParseDelivery-github
+            package: ./internal/scm/github/...
+            fuzz_name: FuzzParseDelivery
+          - target: FuzzParseDelivery-gitlab
+            package: ./internal/scm/gitlab/...
+            fuzz_name: FuzzParseDelivery
+          - target: FuzzParseDelivery-bitbucket
+            package: ./internal/scm/bitbucket/...
+            fuzz_name: FuzzParseDelivery
+          - target: FuzzParseDelivery-azuredevops
+            package: ./internal/scm/azuredevops/...
+            fuzz_name: FuzzParseDelivery
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Set up Go
+        uses: actions/setup-go@d60b41a563a30bd3e08e3a7ba8b3df35d568bc3a # v5
+        with:
+          go-version-file: backend/go.mod
+          cache: true
+
+      - name: Determine fuzz target name
+        id: target
+        run: |
+          if [ -n "${{ matrix.fuzz_name }}" ]; then
+            echo "name=${{ matrix.fuzz_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "name=${{ matrix.target }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run fuzz target for 10 minutes
+        working-directory: backend
+        run: |
+          go test ${{ matrix.package }} \
+            -run='^$' \
+            -fuzz=${{ steps.target.outputs.name }} \
+            -fuzztime=10m \
+            -v
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: |
+            backend/**/testdata/fuzz/**
+          retention-days: 30
+
+  fuzz-failure-issue:
+    name: Open issue on fuzz failure
+    runs-on: ubuntu-latest
+    needs: fuzz
+    if: failure() && github.event_name == 'schedule'
+    permissions:
+      issues: write
+    steps:
+      - name: Create issue
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        with:
+          script: |
+            const title = `Fuzz failure detected — ${new Date().toISOString().slice(0, 10)}`;
+            const body = [
+              '## Fuzz test failure',
+              '',
+              `A nightly fuzz run failed. See the [workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}) for crash artifacts.`,
+              '',
+              '**Action required:** download the crash artifact, reproduce with `go test -run=FuzzXxx/testdata/fuzz/FuzzXxx/<filename>`, and fix the underlying bug.',
+            ].join('\n');
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['bug', 'fuzz'],
+            });
