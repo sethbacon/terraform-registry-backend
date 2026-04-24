@@ -88,3 +88,23 @@ func TestModuleScannerJob_Start_InaccessibleBinary(t *testing.T) {
 		t.Errorf("Start (inaccessible binary) error = %v", err)
 	}
 }
+
+func TestModuleScannerJob_Start_AlreadyRunning(t *testing.T) {
+	// Simulate a job that is already started; calling Start again must be a no-op.
+	job := newTestScannerJob(true, "/nonexistent/path/to/scanner")
+	job.started = true
+	if err := job.Start(context.Background()); err != nil {
+		t.Errorf("Start (already running) error = %v", err)
+	}
+}
+
+func TestModuleScannerJob_Stop_ResetsStarted(t *testing.T) {
+	job := newTestScannerJob(false, "")
+	job.started = true
+	if err := job.Stop(); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	if job.started {
+		t.Error("Stop() did not reset started flag")
+	}
+}
