@@ -24,7 +24,7 @@ backend:
     # Replace <ACR_NAME> with your ACR name (e.g. mycompanyacr → mycompanyacr.azurecr.io)
     repository: <ACR_NAME>.azurecr.io/terraform-registry-backend
     # Pin to a specific semver tag. Never use 'latest' in production.
-    tag: "v0.10.5"
+    tag: "v0.11.0"
     pullPolicy: IfNotPresent
   # Production resource sizing — adjust to match your workload
   replicaCount: 3
