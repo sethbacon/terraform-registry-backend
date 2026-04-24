@@ -235,6 +235,11 @@ jobs:
       # the release atomically with all binaries + this provenance attached.
       upload-assets: false
       provenance-name: multiple.intoto.jsonl
+      # The repo description and topics contain the word "private" (as in
+      # "private registry"), which triggers a false-positive in the SLSA
+      # generator's repository-visibility check.  The repository is public;
+      # this flag suppresses the spurious error.
+      private-repository: true
 
   # ── SLSA Level 3 provenance — container image ───────────────────────────
   container-provenance:

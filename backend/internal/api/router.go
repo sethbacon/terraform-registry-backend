@@ -187,19 +187,48 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	log.Println("API key expiry notifier started")
 
 	// Initialize and start the module security scanner job (no-op when scanning is disabled)
-	// If scanning is not enabled via config file, check the database for setup wizard config
+	// If scanning is not enabled via config file, check the database for setup wizard config.
+	// The DB JSON was saved from SaveScanningConfigInput (snake_case json tags), so we decode
+	// into an anonymous struct with matching json tags rather than config.ScanningConfig which
+	// only carries mapstructure tags.
 	if !cfg.Scanning.Enabled {
 		if scanConfigJSON, err := oidcConfigRepo.GetScanningConfig(context.Background()); err == nil && scanConfigJSON != nil {
-			var dbScanCfg config.ScanningConfig
-			if json.Unmarshal(scanConfigJSON, &dbScanCfg) == nil && dbScanCfg.Enabled {
-				cfg.Scanning = dbScanCfg
+			var dbInput struct {
+				Enabled           bool   `json:"enabled"`
+				Tool              string `json:"tool"`
+				BinaryPath        string `json:"binary_path"`
+				ExpectedVersion   string `json:"expected_version"`
+				SeverityThreshold string `json:"severity_threshold"`
+				TimeoutSecs       int    `json:"timeout_secs"`
+				WorkerCount       int    `json:"worker_count"`
+				ScanIntervalMins  int    `json:"scan_interval_mins"`
+				InstallDir        string `json:"install_dir"`
+			}
+			if err := json.Unmarshal(scanConfigJSON, &dbInput); err == nil && dbInput.Enabled {
+				cfg.Scanning.Enabled = dbInput.Enabled
+				cfg.Scanning.Tool = dbInput.Tool
+				cfg.Scanning.BinaryPath = dbInput.BinaryPath
+				cfg.Scanning.ExpectedVersion = dbInput.ExpectedVersion
+				cfg.Scanning.SeverityThreshold = dbInput.SeverityThreshold
+				cfg.Scanning.WorkerCount = dbInput.WorkerCount
+				if dbInput.TimeoutSecs > 0 {
+					cfg.Scanning.Timeout = time.Duration(dbInput.TimeoutSecs) * time.Second
+				}
+				if dbInput.ScanIntervalMins > 0 {
+					cfg.Scanning.ScanIntervalMins = dbInput.ScanIntervalMins
+				}
+				if dbInput.InstallDir != "" {
+					cfg.Scanning.InstallDir = dbInput.InstallDir
+				}
 			}
 		}
 	}
 	moduleScannerJob := jobs.NewModuleScannerJob(&cfg.Scanning, scanRepo, moduleRepo, storageBackend)
-	if err := moduleScannerJob.Start(context.Background()); err != nil {
-		log.Printf("module scanner job failed to start: %v", err)
-	}
+	go func() {
+		if err := moduleScannerJob.Start(context.Background()); err != nil {
+			log.Printf("module scanner job failed to start: %v", err)
+		}
+	}()
 
 	// Initialize and start the audit log cleanup job (no-op when retention_days=0)
 	auditCleanupJob := jobs.NewAuditCleanupJob(&cfg.AuditRetention, auditRepo)
@@ -544,7 +573,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	// Initialize setup wizard handlers
 	setupHandlers := setup.NewHandlers(
 		cfg, tokenCipher, oidcConfigRepo, storageConfigRepo, userRepo, orgRepo, authHandlers,
-	)
+	).WithScannerJob(moduleScannerJob)
 
 	// Initialize policy engine (no-op when disabled).
 	policyEngineCfg := policy.Config{

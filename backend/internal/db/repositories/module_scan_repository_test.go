@@ -278,6 +278,39 @@ func TestGetLatestScan_DBError(t *testing.T) {
 // ResetStaleScanningRecords
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// UpsertPendingScan
+// ---------------------------------------------------------------------------
+
+func TestUpsertPendingScan_Success(t *testing.T) {
+	repo, mock := newScanRepo(t)
+	mock.ExpectExec("INSERT INTO module_version_scans").
+		WithArgs("ver-1").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	if err := repo.UpsertPendingScan(context.Background(), "ver-1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+func TestUpsertPendingScan_DBError(t *testing.T) {
+	repo, mock := newScanRepo(t)
+	mock.ExpectExec("INSERT INTO module_version_scans").
+		WithArgs("ver-1").
+		WillReturnError(errors.New("db error"))
+
+	if err := repo.UpsertPendingScan(context.Background(), "ver-1"); err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ResetStaleScanningRecords
+// ---------------------------------------------------------------------------
+
 func TestResetStaleScanningRecords_Success(t *testing.T) {
 	repo, mock := newScanRepo(t)
 	mock.ExpectExec("UPDATE module_version_scans.*SET status = 'pending'").
