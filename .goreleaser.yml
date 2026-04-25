@@ -46,8 +46,14 @@ builds:
 
 archives:
   - id: terraform-registry-binaries
+    builds: [ terraform-registry ]
     formats: [ binary ]
     name_template: "terraform-registry-{{ .Os }}-{{ .Arch }}"
+
+  - id: registry-import-binaries
+    builds: [ registry-import ]
+    formats: [ binary ]
+    name_template: "registry-import-{{ .Os }}-{{ .Arch }}"
 
 checksum:
   name_template: checksums.txt
@@ -55,10 +61,8 @@ checksum:
 
 # Release creation is disabled here because the repository has GitHub's
 # Immutable Releases feature enabled, which freezes a release (including
-# drafts) at the moment of creation. We need SLSA L3 binary provenance
-# (multiple.intoto.jsonl) attached at the same time as the binaries, so the
-# release is created atomically by the publish-release job in release.yml
-# AFTER all artifacts and provenance files are produced.
+# drafts) at the moment of creation. The publish-release job in release.yml
+# creates the release atomically with all binary assets attached.
 release:
   disable: true
 

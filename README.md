@@ -7,6 +7,8 @@ A fully-featured, enterprise-grade Terraform registry implementing all three Has
 [![Go Version](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go)](https://go.dev/)
 [![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/sethbacon/59239e8575b4f784f875647e2b344b41/raw/coverage.json)](https://github.com/sethbacon/terraform-registry-backend/actions/workflows/ci.yml)
 
+This repository contains the backend API, database migrations, and deployment infrastructure for the Enterprise Terraform Registry. The frontend UI is a separate React SPA: **[terraform-registry-frontend](https://github.com/sethbacon/terraform-registry-frontend)**.
+
 - [Features](#features)
   - [Terraform Protocol Support](#terraform-protocol-support)
   - [Authentication & Authorization](#authentication--authorization)
@@ -341,7 +343,7 @@ go build -o terraform-registry cmd/server/main.go
 
 ## Supply Chain Security
 
-Every release includes SLSA build provenance attestations, SBOM generation, and Sigstore cosign signatures published to the [Rekor](https://rekor.sigstore.dev) public transparency log.
+Every release includes build provenance attestations (via GitHub Artifact Attestations), SBOM generation, and Sigstore cosign signatures published to the [Rekor](https://rekor.sigstore.dev) public transparency log.
 
 ### Verify a container image
 
@@ -367,7 +369,7 @@ cosign verify-blob \
   --certificate checksums.txt.pem \
   checksums.txt
 
-# Verify SLSA provenance
+# Verify build provenance
 gh attestation verify <artifact> --repo sethbacon/terraform-registry-backend
 ```
 

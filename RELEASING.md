@@ -18,12 +18,30 @@ Releases are fully automated via `release-please.yml` and `release.yml`.
 
 5. **`release.yml` fires automatically** from the tag push. It:
    - Runs CI as a gate.
-   - Builds multi-platform Go binaries via GoReleaser.
+   - Builds multi-platform Go binaries via GoReleaser (including `registry-import`).
    - Signs checksum files with cosign (keyless, Sigstore).
    - Pushes Docker image to `ghcr.io` (tagged with version + latest).
-   - Attaches SLSA Level 3 provenance to both binaries and the container image.
+   - Attests build provenance via GitHub Artifact Attestations (binaries + container).
+   - Signs the container image with cosign (keyless, Sigstore).
    - Creates the GitHub Release with all assets attached atomically.
    - Updates the wiki Home page version badge.
+
+## Verifying supply-chain attestations
+
+```bash
+# Verify binary provenance
+gh attestation verify <binary-file> --repo sethbacon/terraform-registry-backend
+
+# Verify container provenance
+gh attestation verify oci://ghcr.io/sethbacon/terraform-registry-backend:vX.Y.Z \
+  --repo sethbacon/terraform-registry-backend
+
+# Verify cosign signature
+cosign verify \
+  --certificate-identity-regexp 'https://github\.com/sethbacon/terraform-registry-backend/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ghcr.io/sethbacon/terraform-registry-backend:vX.Y.Z
+```
 
 ## Cutting a release
 

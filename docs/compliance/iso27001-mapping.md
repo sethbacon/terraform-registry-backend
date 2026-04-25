@@ -97,4 +97,4 @@ For ISO 27001 audits, evidence can be gathered from:
 4. **Monitoring:** Prometheus metric snapshots, Grafana dashboard screenshots, audit log exports
 5. **Incident response:** GitHub Security Advisory history, `SECURITY.md` acknowledgment timeline compliance
 6. **Continuity:** DR drill execution logs from `scripts/dr-drill.sh`
-7. **Cryptographic:** cosign verification output, SLSA provenance verification, FIPS build attestation
+7. **Cryptographic:** cosign verification output, GitHub Artifact Attestations verification (`gh attestation verify`), FIPS build attestation

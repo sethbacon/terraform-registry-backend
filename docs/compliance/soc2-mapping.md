@@ -134,4 +134,4 @@ For SOC 2 audits, the following evidence should be collected:
 3. **Monitoring evidence:** Prometheus metrics snapshots, audit log exports (NDJSON or OCSF)
 4. **Incident response evidence:** GitHub Security Advisory history, `SECURITY.md` review log
 5. **Availability evidence:** DR drill log from `scripts/dr-drill.sh`, uptime metrics
-6. **Cryptographic evidence:** cosign verification output, SLSA provenance attestation
+6. **Cryptographic evidence:** cosign verification output, GitHub Artifact Attestations verification (`gh attestation verify`)
