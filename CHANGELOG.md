@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.2](https://github.com/sethbacon/terraform-registry-backend/compare/v0.13.1...v0.13.2) (2026-04-25)
+
+
+### Bug Fixes
+
+* replace SLSA generator workflows with GitHub Artifact Attestations and fix duplicate GoReleaser archives ([#277](https://github.com/sethbacon/terraform-registry-backend/issues/277)) ([c05118c](https://github.com/sethbacon/terraform-registry-backend/commit/c05118ca068345fd7ad68236422814b37575bad4))
+
 ## [0.13.1](https://github.com/sethbacon/terraform-registry-backend/compare/v0.13.0...v0.13.1) (2026-04-25)
 
 
