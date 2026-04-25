@@ -6,12 +6,7 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch: {}
-  workflow_call:
-    inputs:
-      run-security-deep:
-        description: Run OSV-Scanner and CodeQL (used by weekly-security.yml)
-        type: boolean
-        default: false
+  workflow_call: {} # allows release.yml and weekly-security.yml to call this
 
 concurrency:
   group: ci-${{ github.event_name }}-${{ github.head_ref || github.ref }}
@@ -350,73 +345,3 @@ jobs:
       - name: Terraform validate (GCP)
         working-directory: deployments/terraform/gcp
         run: terraform init -backend=false && terraform validate
-
-  osv-scan:
-    name: OSV Vulnerability Scan
-    runs-on: ubuntu-latest
-    if: inputs.run-security-deep
-    permissions:
-      contents: read
-      issues: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Run OSV-Scanner
-        id: osv
-        uses: google/osv-scanner-action/osv-scanner-action@c51854704019a247608d928f370c98740469d4b5 # v2.3.5
-        continue-on-error: true
-        with:
-          scan-args: |-
-            --lockfile=backend/go.sum
-            --format=table
-
-      - name: Create issue on new vulnerabilities
-        if: steps.osv.outcome == 'failure'
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
-        with:
-          script: |
-            const title = `OSV-Scanner: vulnerabilities found — ${new Date().toISOString().slice(0,10)}`;
-            const body = [
-              '## OSV-Scanner Vulnerability Report',
-              '',
-              `**Workflow run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-              '',
-              'OSV-Scanner found known vulnerabilities in `go.sum`. Please review the workflow logs and update affected dependencies.',
-            ].join('\n');
-
-            await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title,
-              body,
-              labels: ['security', 'dependencies'],
-            });
-
-  codeql:
-    name: CodeQL Analysis (Go)
-    runs-on: ubuntu-latest
-    if: inputs.run-security-deep
-    permissions:
-      contents: read
-      security-events: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Set up Go toolchain
-        uses: ./.github/actions/setup-backend
-
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3 # TODO: pin to SHA — see repo security policy
-        with:
-          languages: go
-
-      - name: Build for CodeQL
-        working-directory: backend
-        run: go build ./...
-
-      - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3 # TODO: pin to SHA — see repo security policy
-        with:
-          category: /language:go
