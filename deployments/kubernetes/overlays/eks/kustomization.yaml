@@ -72,4 +72,4 @@ images:
     newTag: v0.12.0
   - name: terraform-registry-frontend
     newName: <ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/terraform-registry-frontend
-    newTag: v0.12.2
+    newTag: v0.12.3
