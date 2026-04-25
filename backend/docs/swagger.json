@@ -2933,7 +2933,7 @@
                         "Bearer": []
                     }
                 ],
-                "description": "Returns the current security scanning configuration (read-only). Sensitive fields like binary_path are excluded. Requires admin scope.",
+                "description": "Returns the current security scanning configuration including binary path, availability, and detected version. Requires admin scope.",
                 "produces": [
                     "application/json"
                 ],
@@ -12666,6 +12666,15 @@
         "admin.ScanningConfigResponse": {
             "type": "object",
             "properties": {
+                "binary_found": {
+                    "type": "boolean"
+                },
+                "binary_path": {
+                    "type": "string"
+                },
+                "detected_version": {
+                    "type": "string"
+                },
                 "enabled": {
                     "type": "boolean"
                 },

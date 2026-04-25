@@ -26,6 +26,7 @@ func TestGetScanningConfigHandler_Success(t *testing.T) {
 		Timeout:           5 * time.Minute,
 		WorkerCount:       4,
 		ScanIntervalMins:  10,
+		// BinaryPath intentionally empty so binary_found=false without a real binary.
 	}
 
 	r := gin.New()
@@ -54,6 +55,12 @@ func TestGetScanningConfigHandler_Success(t *testing.T) {
 	}
 	if resp.ScanIntervalMins != 10 {
 		t.Errorf("ScanIntervalMins = %d, want 10", resp.ScanIntervalMins)
+	}
+	if resp.BinaryFound {
+		t.Error("expected BinaryFound=false when BinaryPath is empty")
+	}
+	if resp.DetectedVersion != nil {
+		t.Error("expected DetectedVersion=nil when binary not found")
 	}
 }
 
