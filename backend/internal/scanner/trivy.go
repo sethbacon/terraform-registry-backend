@@ -7,6 +7,7 @@
 package scanner
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -50,13 +51,16 @@ func (s *trivyScanner) ScanDirectory(ctx context.Context, dir string) (*ScanResu
 	defer cancel()
 
 	// #nosec G204 -- binaryPath is set from operator config, not user input
-	out, err := exec.CommandContext(ctx, s.binaryPath,
+	cmd := exec.CommandContext(ctx, s.binaryPath,
 		"fs", "--format", "json",
 		"--scanners", "vuln,secret,misconfig",
 		"--exit-code", "0",
 		"--quiet",
 		dir,
-	).Output()
+	)
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
+	out, err := cmd.Output()
 	if err != nil && ctx.Err() != nil {
 		return nil, fmt.Errorf("trivy timed out after %s", s.timeout)
 	}
@@ -65,7 +69,11 @@ func (s *trivyScanner) ScanDirectory(ctx context.Context, dir string) (*ScanResu
 	if err != nil && len(out) == 0 {
 		return nil, fmt.Errorf("trivy: %w", err)
 	}
-	return parseTrivyJSON(s.Name(), out)
+	result, err := parseTrivyJSON(s.Name(), out)
+	if err == nil {
+		result.ExecutionLog = truncateExecutionLog(stderrBuf.String())
+	}
+	return result, err
 }
 
 // trivyResult mirrors the relevant portions of Trivy's JSON output schema.

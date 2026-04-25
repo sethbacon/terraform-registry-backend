@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -51,7 +52,10 @@ func (s *customScanner) ScanDirectory(ctx context.Context, dir string) (*ScanRes
 
 	args := append(s.scanArgs, dir)
 	// #nosec G204
-	out, _ := exec.CommandContext(ctx, s.binaryPath, args...).Output()
+	cmd := exec.CommandContext(ctx, s.binaryPath, args...)
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
+	out, _ := cmd.Output()
 	if ctx.Err() != nil {
 		return nil, fmt.Errorf("custom scanner timed out after %s", s.timeout)
 	}
@@ -59,12 +63,17 @@ func (s *customScanner) ScanDirectory(ctx context.Context, dir string) (*ScanRes
 		return &ScanResult{}, nil
 	}
 
+	var result *ScanResult
+	var parseErr error
 	switch strings.ToLower(s.outputFormat) {
 	case "sarif":
-		return parseSARIF(s.Name(), out)
+		result, parseErr = parseSARIF(s.Name(), out)
 	default:
 		// Generic JSON: store raw, no severity parsing
-		result := &ScanResult{RawJSON: json.RawMessage(out)}
-		return result, nil
+		result = &ScanResult{RawJSON: json.RawMessage(out)}
 	}
+	if parseErr == nil && result != nil {
+		result.ExecutionLog = truncateExecutionLog(stderrBuf.String())
+	}
+	return result, parseErr
 }

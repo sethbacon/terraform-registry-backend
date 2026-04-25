@@ -7,6 +7,7 @@
 package scanner
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -40,16 +41,21 @@ func (s *snykScanner) ScanDirectory(ctx context.Context, dir string) (*ScanResul
 
 	// snyk exits 1 when issues found; we capture output regardless.
 	// #nosec G204
-	out, _ := exec.CommandContext(ctx, s.binaryPath,
-		"iac", "test", dir, "--json",
-	).Output()
+	cmd := exec.CommandContext(ctx, s.binaryPath, "iac", "test", dir, "--json")
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
+	out, _ := cmd.Output()
 	if ctx.Err() != nil {
 		return nil, fmt.Errorf("snyk timed out after %s", s.timeout)
 	}
 	if len(out) == 0 {
 		return &ScanResult{}, nil
 	}
-	return parseSnykJSON(s.Name(), out)
+	result, err := parseSnykJSON(s.Name(), out)
+	if err == nil {
+		result.ExecutionLog = truncateExecutionLog(stderrBuf.String())
+	}
+	return result, err
 }
 
 // snyk output may be a single object or an array when scanning multiple files

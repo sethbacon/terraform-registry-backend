@@ -10,6 +10,7 @@
 package scanner
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -43,16 +44,21 @@ func (s *checkovScanner) ScanDirectory(ctx context.Context, dir string) (*ScanRe
 
 	// checkov exits 1 on findings; capture output regardless.
 	// #nosec G204
-	out, _ := exec.CommandContext(ctx, s.binaryPath,
-		"-d", dir, "-o", "json", "--quiet",
-	).Output()
+	cmd := exec.CommandContext(ctx, s.binaryPath, "-d", dir, "-o", "json", "--quiet")
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
+	out, _ := cmd.Output()
 	if ctx.Err() != nil {
 		return nil, fmt.Errorf("checkov timed out after %s", s.timeout)
 	}
 	if len(out) == 0 {
 		return &ScanResult{}, nil
 	}
-	return parseCheckovJSON(s.Name(), out)
+	result, err := parseCheckovJSON(s.Name(), out)
+	if err == nil {
+		result.ExecutionLog = truncateExecutionLog(stderrBuf.String())
+	}
+	return result, err
 }
 
 type checkovOutput struct {
