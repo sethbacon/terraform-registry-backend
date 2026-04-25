@@ -102,7 +102,7 @@ Terraform modules and providers. It comprises:
 | T-2 | Attacker modifies module archive at rest in object storage | Storage         | Checksum verification on retrieval; storage bucket versioning recommended; cosign signatures on release artifacts  | ✅ Implemented                                |
 | T-3 | SQL injection modifies database records                    | Backend API     | Parameterized queries throughout; no raw SQL string interpolation; sqlc/GORM with prepared statements              | ✅ Implemented                                |
 | T-4 | Attacker tampers with audit logs                           | Audit system    | Append-only audit table; DB user has no DELETE/UPDATE on audit table; hash-chain export for integrity verification | ⚠️ Partial — hash-chain export planned (C3.3) |
-| T-5 | Supply chain attack via compromised base image             | Container build | Pinned image digests; cosign signatures; SLSA L3 provenance; SBOM generation                                       | ✅ Implemented                                |
+| T-5 | Supply chain attack via compromised base image             | Container build | Pinned image digests; cosign signatures; GitHub Artifact Attestations (SLSA provenance); SBOM generation            | ✅ Implemented                                |
 | T-6 | Malicious module upload with embedded malware              | Module pipeline | Security scanning (Trivy/Checkov) on upload; scanner version pinning; severity threshold blocking                  | ✅ Implemented                                |
 
 ### 5.3 Repudiation (R)

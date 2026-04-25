@@ -151,10 +151,10 @@ The following items require coordinated work with `terraform-registry-frontend`:
 
 #### A1.2 · SLSA Level 3 build provenance · [P1/M] ✅
 
-- Upgrade from basic attestation to SLSA L3 via `slsa-framework/slsa-github-generator`.
-- Isolated builder, non-falsifiable provenance, signed.
+- Build provenance via GitHub Artifact Attestations (`actions/attest-build-provenance@v2`).
+- Non-falsifiable provenance stored in GitHub's attestation API, signed via Sigstore.
 - **Files:** `.github/workflows/release.yml`
-- **AC:** `slsa-verifier verify-artifact` passes.
+- **AC:** `gh attestation verify` passes for binaries and container images.
 
 #### A1.3 · Vendor ReDoc + Swagger UI locally · [P1/M] ✅
 

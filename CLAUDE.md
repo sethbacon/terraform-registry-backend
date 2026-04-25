@@ -25,19 +25,19 @@ PR titles (and ideally commit messages) must follow [Conventional Commits](https
 <type>(<optional scope>): <description>
 ```
 
-| Type | When to use | Version bump |
-| ---- | ----------- | ------------ |
-| `feat` | New user-facing feature | minor |
-| `fix` | Bug fix | patch |
-| `perf` | Performance improvement | patch |
-| `refactor` | Code restructure (no behavior change) | none |
-| `docs` | Documentation only | none |
-| `test` | Adding or fixing tests | none |
-| `ci` | CI/CD workflow changes | none |
-| `chore` | Maintenance, deps, tooling | none |
-| `deps` | Dependency updates | none |
-| `security` | Security fix | patch |
-| `revert` | Reverts a previous commit | patch |
+| Type       | When to use                           | Version bump |
+| ---------- | ------------------------------------- | ------------ |
+| `feat`     | New user-facing feature               | minor        |
+| `fix`      | Bug fix                               | patch        |
+| `perf`     | Performance improvement               | patch        |
+| `refactor` | Code restructure (no behavior change) | none         |
+| `docs`     | Documentation only                    | none         |
+| `test`     | Adding or fixing tests                | none         |
+| `ci`       | CI/CD workflow changes                | none         |
+| `chore`    | Maintenance, deps, tooling            | none         |
+| `deps`     | Dependency updates                    | none         |
+| `security` | Security fix                          | patch        |
+| `revert`   | Reverts a previous commit             | patch        |
 
 Breaking changes: append `!` to the type (`feat!:`) **or** add a `BREAKING CHANGE:` footer.
 These trigger a **major** version bump.
@@ -138,8 +138,8 @@ Releases are fully automated via `release-please.yml`. See [RELEASING.md](RELEAS
 
 4. **`release.yml` fires automatically** from the tag pushed by the GitHub App.
    It runs CI, builds Go binaries via GoReleaser, pushes the Docker image to ghcr.io,
-   attaches SLSA Level 3 provenance, signs with cosign, creates the GitHub Release,
-   and updates the wiki version badge.
+   attests build provenance via GitHub Artifact Attestations, signs with cosign,
+   creates the GitHub Release, and updates the wiki version badge.
 
 #### Hotfix flow
 
