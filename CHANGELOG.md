@@ -7,6 +7,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0](https://github.com/sethbacon/terraform-registry-backend/compare/v0.12.0...v0.13.0) (2026-04-25)
+
+
+### Features
+
+* **admin:** expose scanner binary_path and detected_version in config endpoint ([#272](https://github.com/sethbacon/terraform-registry-backend/issues/272)) ([8a994fb](https://github.com/sethbacon/terraform-registry-backend/commit/8a994fb1de0e95f6803ef62cacd00cc7cea296b9))
+* **scanner:** capture scanner stderr as execution_log ([#270](https://github.com/sethbacon/terraform-registry-backend/issues/270)) ([11fbb25](https://github.com/sethbacon/terraform-registry-backend/commit/11fbb25c0da4e6556e54babf40f808bb23f5519a))
+
 ## [Unreleased]
 
 ## [0.12.0] - 2026-04-24
@@ -720,4 +728,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.0] - 2026-03-04
 
 - Initial commit
-
