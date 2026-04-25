@@ -13639,6 +13639,9 @@
                 "error_message": {
                     "type": "string"
                 },
+                "execution_log": {
+                    "type": "string"
+                },
                 "expected_version": {
                     "type": "string"
                 },

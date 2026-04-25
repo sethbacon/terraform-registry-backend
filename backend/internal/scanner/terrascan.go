@@ -7,6 +7,7 @@
 package scanner
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -45,16 +46,21 @@ func (s *terrascanScanner) ScanDirectory(ctx context.Context, dir string) (*Scan
 
 	// terrascan exits 3 when violations are found; that is expected, not an error.
 	// #nosec G204
-	out, _ := exec.CommandContext(ctx, s.binaryPath,
-		"scan", "-t", "terraform", "-d", dir, "-o", "json",
-	).Output()
+	cmd := exec.CommandContext(ctx, s.binaryPath, "scan", "-t", "terraform", "-d", dir, "-o", "json")
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
+	out, _ := cmd.Output()
 	if ctx.Err() != nil {
 		return nil, fmt.Errorf("terrascan timed out after %s", s.timeout)
 	}
 	if len(out) == 0 {
 		return &ScanResult{}, nil
 	}
-	return parseTerrascanJSON(s.Name(), out)
+	result, err := parseTerrascanJSON(s.Name(), out)
+	if err == nil {
+		result.ExecutionLog = truncateExecutionLog(stderrBuf.String())
+	}
+	return result, err
 }
 
 type terrascanOutput struct {

@@ -24,6 +24,7 @@ type ModuleScan struct {
 	LowCount        int             `db:"low_count"         json:"low_count"`
 	RawResults      json.RawMessage `db:"raw_results"       json:"raw_results,omitempty" swaggertype:"object"` //nolint:tagliatelle
 	ErrorMessage    *string         `db:"error_message"     json:"error_message,omitempty"`
+	ExecutionLog    *string         `db:"execution_log"     json:"execution_log,omitempty"`
 	CreatedAt       time.Time       `db:"created_at"        json:"created_at"`
 	UpdatedAt       time.Time       `db:"updated_at"        json:"updated_at"`
 }

@@ -38,6 +38,16 @@ type ScanResult struct {
 	LowCount       int
 	HasFindings    bool
 	RawJSON        json.RawMessage // raw output from the tool stored as-is
+	ExecutionLog   string          // stderr captured during execution (truncated to 10 KiB)
+}
+
+// truncateExecutionLog caps the log at 10 KiB to prevent unbounded DB growth.
+func truncateExecutionLog(s string) string {
+	const maxBytes = 10 * 1024
+	if len(s) <= maxBytes {
+		return s
+	}
+	return s[:maxBytes] + "\n... (truncated)"
 }
 
 // New constructs the appropriate Scanner implementation based on the operator config.

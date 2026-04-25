@@ -14,7 +14,7 @@ import (
 var scanCols = []string{
 	"id", "module_version_id", "scanner", "scanner_version", "expected_version",
 	"status", "scanned_at", "critical_count", "high_count", "medium_count", "low_count",
-	"raw_results", "error_message", "created_at", "updated_at",
+	"raw_results", "error_message", "execution_log", "created_at", "updated_at",
 }
 
 func newScanRepo(t *testing.T) (*ModuleScanRepository, sqlmock.Sqlmock) {
@@ -31,7 +31,7 @@ func sampleScanRow() *sqlmock.Rows {
 	return sqlmock.NewRows(scanCols).AddRow(
 		"scan-1", "ver-1", "trivy", "0.50.0", nil,
 		"clean", time.Now(), 0, 0, 0, 0,
-		json.RawMessage(`{}`), nil, time.Now(), time.Now(),
+		json.RawMessage(`{}`), nil, nil, time.Now(), time.Now(),
 	)
 }
 

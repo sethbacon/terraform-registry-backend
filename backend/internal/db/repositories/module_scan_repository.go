@@ -69,7 +69,7 @@ func (r *ModuleScanRepository) ListPendingScans(ctx context.Context, limit int) 
 	const q = `
 		SELECT id, module_version_id, scanner, scanner_version, expected_version,
 		       status, scanned_at, critical_count, high_count, medium_count, low_count,
-		       raw_results, error_message, created_at, updated_at
+		       raw_results, error_message, execution_log, created_at, updated_at
 		FROM module_version_scans
 		WHERE status = 'pending'
 		ORDER BY created_at
@@ -88,7 +88,7 @@ func (r *ModuleScanRepository) ListPendingScans(ctx context.Context, limit int) 
 		if err := rows.Scan(
 			&s.ID, &s.ModuleVersionID, &s.Scanner, &s.ScannerVersion, &s.ExpectedVersion,
 			&s.Status, &s.ScannedAt, &s.CriticalCount, &s.HighCount, &s.MediumCount, &s.LowCount,
-			&rawResults, &s.ErrorMessage, &s.CreatedAt, &s.UpdatedAt,
+			&rawResults, &s.ErrorMessage, &s.ExecutionLog, &s.CreatedAt, &s.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan row: %w", err)
 		}
@@ -143,18 +143,22 @@ func (r *ModuleScanRepository) MarkComplete(
 		expVer = &expectedVersion
 	}
 	actualVer := &result.ScannerVersion
+	var execLog *string
+	if result.ExecutionLog != "" {
+		execLog = &result.ExecutionLog
+	}
 
 	const q = `
 		UPDATE module_version_scans
 		SET status = $2, scanned_at = $3, scanner_version = $4, expected_version = $5,
 		    critical_count = $6, high_count = $7, medium_count = $8, low_count = $9,
-		    raw_results = $10, updated_at = NOW()
+		    raw_results = $10, execution_log = $11, updated_at = NOW()
 		WHERE id = $1
 	`
 	_, err := r.db.ExecContext(ctx, q,
 		scanID, status, now, actualVer, expVer,
 		result.CriticalCount, result.HighCount, result.MediumCount, result.LowCount,
-		rawJSON,
+		rawJSON, execLog,
 	)
 	if err != nil {
 		return fmt.Errorf("mark complete: %w", err)
@@ -181,7 +185,7 @@ func (r *ModuleScanRepository) GetLatestScan(ctx context.Context, moduleVersionI
 	const q = `
 		SELECT id, module_version_id, scanner, scanner_version, expected_version,
 		       status, scanned_at, critical_count, high_count, medium_count, low_count,
-		       raw_results, error_message, created_at, updated_at
+		       raw_results, error_message, execution_log, created_at, updated_at
 		FROM module_version_scans
 		WHERE module_version_id = $1
 		ORDER BY created_at DESC
@@ -192,7 +196,7 @@ func (r *ModuleScanRepository) GetLatestScan(ctx context.Context, moduleVersionI
 	err := r.db.QueryRowContext(ctx, q, moduleVersionID).Scan(
 		&s.ID, &s.ModuleVersionID, &s.Scanner, &s.ScannerVersion, &s.ExpectedVersion,
 		&s.Status, &s.ScannedAt, &s.CriticalCount, &s.HighCount, &s.MediumCount, &s.LowCount,
-		&rawResults, &s.ErrorMessage, &s.CreatedAt, &s.UpdatedAt,
+		&rawResults, &s.ErrorMessage, &s.ExecutionLog, &s.CreatedAt, &s.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil

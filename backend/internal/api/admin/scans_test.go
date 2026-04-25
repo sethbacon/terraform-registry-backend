@@ -15,7 +15,7 @@ import (
 var scanAdminCols = []string{
 	"id", "module_version_id", "scanner", "scanner_version", "expected_version",
 	"status", "scanned_at", "critical_count", "high_count", "medium_count", "low_count",
-	"raw_results", "error_message", "created_at", "updated_at",
+	"raw_results", "error_message", "execution_log", "created_at", "updated_at",
 }
 
 var orgColsScan = []string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}
@@ -73,7 +73,7 @@ func sampleScanResultRow() *sqlmock.Rows {
 	return sqlmock.NewRows(scanAdminCols).AddRow(
 		"scan-1", "ver-1", "trivy", "0.50.0", nil,
 		"clean", time.Now(), 0, 0, 0, 0,
-		`{}`, nil, time.Now(), time.Now(),
+		`{}`, nil, nil, time.Now(), time.Now(),
 	)
 }
 
