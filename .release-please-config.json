@@ -1,0 +1,31 @@
+{
+  "packages": {
+    ".": {
+      "release-type": "go",
+      "package-name": "terraform-registry",
+      "include-component-in-tag": false,
+      "extra-files": [
+        {
+          "type": "yaml",
+          "path": "deployments/helm/Chart.yaml",
+          "jsonpath": "$.appVersion"
+        },
+        {
+          "type": "yaml",
+          "path": "deployments/helm/Chart.yaml",
+          "jsonpath": "$.version"
+        }
+      ],
+      "changelog-sections": [
+        {"type": "feat", "section": "Features"},
+        {"type": "fix", "section": "Bug Fixes"},
+        {"type": "perf", "section": "Performance"},
+        {"type": "deps", "section": "Dependencies"},
+        {"type": "docs", "section": "Documentation"},
+        {"type": "refactor", "section": "Refactor"},
+        {"type": "revert", "section": "Reverts"},
+        {"type": "security", "section": "Security"}
+      ]
+    }
+  }
+}

@@ -77,16 +77,30 @@ For the frontend UI, see [terraform-registry-frontend](https://github.com/sethba
 | Documentation | `docs/topic` | `docs/deployment-guide` |
 | Refactor | `refactor/area` | `refactor/scm-connector-interface` |
 
-### Commit Messages
+### Conventional Commits
 
-- Use the **imperative mood**: "Add feature" not "Added feature"
-- Keep the subject line under **72 characters**
-- Leave a blank line, then explain **why** the change is needed in the body
-- Reference issues with `Fixes #123` or `Closes #123`
+PR titles (and commit messages) must follow [Conventional Commits](https://www.conventionalcommits.org/):
 
-### One Change Per Commit
+```text
+<type>(<optional scope>): <description>
+```
 
-Keep commits focused on a single logical change. This makes code review easier and keeps the git history useful as documentation.
+| Type | When to use |
+|------|-------------|
+| `feat` | New user-facing feature (minor version bump) |
+| `fix` | Bug fix (patch bump) |
+| `perf` | Performance improvement (patch bump) |
+| `security` | Security fix (patch bump) |
+| `refactor` | Code restructure, no behavior change |
+| `docs` | Documentation only |
+| `test` | Adding or fixing tests |
+| `ci` | CI/CD workflow changes |
+| `chore` | Maintenance, deps, tooling |
+| `deps` | Dependency updates |
+
+Breaking changes: append `!` to the type (`feat!:`) **or** add a `BREAKING CHANGE:` footer in the commit body. These trigger a major version bump.
+
+Keep the subject line under **72 characters**. Reference issues in the commit body with `Closes #123`.
 
 ---
 
@@ -204,15 +218,16 @@ New packages should include unit tests for core logic. Security-sensitive code (
 ## Pull Request Process
 
 1. **Open an issue first** for substantial changes.
-2. Write a clear PR description:
-   - What changed and why
-   - How you tested it
-   - Screenshots or curl examples for API changes
-   - Link to the issue being resolved
-3. All CI checks must pass.
-4. At least one reviewer approval is required before merging.
-5. **Squash merge** is preferred to keep the main branch history clean.
-6. The PR author is responsible for resolving merge conflicts.
+2. **Branch from `main`** and target `main` with your PR.
+3. **Use a Conventional Commit PR title** (enforced by CI). Examples:
+   - `feat(auth): add SCIM provisioning support`
+   - `fix(mirror): handle 429 rate-limit from upstream registry`
+   - `docs: update deployment guide for Helm v3`
+4. Write a clear PR description: what changed, why, how you tested it, and a link to the issue.
+5. All CI checks must pass.
+6. At least one reviewer approval is required before merging.
+7. **Squash merge** into `main` — the PR title becomes the commit message.
+8. The PR author is responsible for resolving merge conflicts.
 
 ---
 

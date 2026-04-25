@@ -305,3 +305,50 @@ jobs:
             release/*
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Update wiki version badge ─────────────────────────────────────────────
+  update-wiki:
+    name: Update wiki version
+    runs-on: ubuntu-latest
+    needs: publish-release
+    permissions:
+      contents: write
+    continue-on-error: true
+    steps:
+      - name: Clone wiki
+        run: |
+          git clone "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.wiki.git" wiki
+
+      - name: Update version in Home.md
+        working-directory: wiki
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          sed -i "s|\*\*Current:\*\* v[0-9]*\.[0-9]*\.[0-9]*[^ ]*|\*\*Current:\*\* ${TAG}|" Home.md
+          echo "Updated Home.md to version ${TAG}"
+          grep "Current:" Home.md
+
+      - name: Commit and push
+        working-directory: wiki
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git add Home.md
+          git commit -m "docs: update version to ${GITHUB_REF_NAME}"
+          git push
+
+      - name: Open issue on failure
+        if: failure()
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        with:
+          script: |
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Wiki update failed for ${context.ref}`,
+              body: `The automated wiki version update failed for release \`${context.ref}\`.\n\nPlease run the [Update Wiki Version (Manual)](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/workflows/update-wiki-manual.yml) workflow to update it manually.`,
+              labels: ['ci', 'automated'],
+            });
