@@ -3,22 +3,27 @@ package admin
 
 import (
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/scanner"
 )
 
-// ScanningConfigResponse is the public view of the scanning config (no binary path).
+// ScanningConfigResponse is the public view of the scanning config.
 type ScanningConfigResponse struct {
-	Enabled           bool   `json:"enabled"`
-	Tool              string `json:"tool"`
-	ExpectedVersion   string `json:"expected_version,omitempty"`
-	SeverityThreshold string `json:"severity_threshold"`
-	Timeout           string `json:"timeout"`
-	WorkerCount       int    `json:"worker_count"`
-	ScanIntervalMins  int    `json:"scan_interval_mins"`
+	Enabled           bool    `json:"enabled"`
+	Tool              string  `json:"tool"`
+	ExpectedVersion   string  `json:"expected_version,omitempty"`
+	SeverityThreshold string  `json:"severity_threshold"`
+	Timeout           string  `json:"timeout"`
+	WorkerCount       int     `json:"worker_count"`
+	ScanIntervalMins  int     `json:"scan_interval_mins"`
+	BinaryPath        string  `json:"binary_path,omitempty"`
+	BinaryFound       bool    `json:"binary_found"`
+	DetectedVersion   *string `json:"detected_version,omitempty"`
 }
 
 // ScanningStatsResponse aggregates scan counts by status and recent activity.
@@ -50,7 +55,7 @@ type RecentScanEntry struct {
 }
 
 // @Summary      Get scanning configuration
-// @Description  Returns the current security scanning configuration (read-only). Sensitive fields like binary_path are excluded. Requires admin scope.
+// @Description  Returns the current security scanning configuration including binary path, availability, and detected version. Requires admin scope.
 // @Tags         Security Scanning
 // @Security     Bearer
 // @Produce      json
@@ -67,7 +72,20 @@ func GetScanningConfigHandler(cfg *config.ScanningConfig) gin.HandlerFunc {
 			Timeout:           cfg.Timeout.String(),
 			WorkerCount:       cfg.WorkerCount,
 			ScanIntervalMins:  cfg.ScanIntervalMins,
+			BinaryPath:        cfg.BinaryPath,
 		}
+
+		if cfg.Enabled && cfg.BinaryPath != "" {
+			if _, err := os.Stat(cfg.BinaryPath); err == nil {
+				resp.BinaryFound = true
+				if s, err := scanner.New(cfg); err == nil {
+					if v, err := s.Version(c.Request.Context()); err == nil {
+						resp.DetectedVersion = &v
+					}
+				}
+			}
+		}
+
 		c.JSON(http.StatusOK, resp)
 	}
 }
