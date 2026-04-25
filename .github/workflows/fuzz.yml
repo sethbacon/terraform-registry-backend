@@ -39,11 +39,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - name: Set up Go
-        uses: actions/setup-go@d60b41a563a30bd3e08e3a7ba8b3df35d568bc3a # v5
-        with:
-          go-version-file: backend/go.mod
-          cache: true
+      - name: Set up Go toolchain
+        uses: ./.github/actions/setup-backend
 
       - name: Determine fuzz target name
         id: target

@@ -1,0 +1,73 @@
+name: Weekly Security Scan
+
+on:
+  schedule:
+    - cron: "0 8 * * 1" # Every Monday 08:00 UTC
+  workflow_dispatch: {}
+
+jobs:
+  ci:
+    name: CI (with deep security)
+    permissions:
+      contents: write
+      issues: write
+      security-events: write
+    secrets: inherit
+    uses: ./.github/workflows/ci.yml
+    with:
+      run-security-deep: true
+
+  stale-dependabot:
+    name: Flag stale Dependabot PRs
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Label PRs open > 14 days
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --author "app/dependabot" \
+            --state open \
+            --json number,createdAt,title \
+            --jq '.[] | select((.createdAt | fromdateiso8601) < (now - 1209600)) | .number' \
+          | xargs -r -I{} gh pr edit {} \
+              --repo "$GITHUB_REPOSITORY" \
+              --add-label "stale-security-patch" || true
+
+  notify-on-failure:
+    name: Create issue on failure
+    runs-on: ubuntu-latest
+    needs: [ci]
+    if: failure() && github.event_name == 'schedule'
+    permissions:
+      issues: write
+    steps:
+      - name: Create failure issue
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        with:
+          script: |
+            const title = `Scheduled build failed — ${new Date().toISOString().slice(0,10)}`;
+            const body = [
+              '## Scheduled Build Failure',
+              '',
+              `**Workflow run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              '',
+              'The weekly security scan failed. Please investigate and fix before the next release.',
+              '',
+              'Common causes:',
+              '- A transitive Go dependency published a breaking change',
+              '- The Docker base image changed in a breaking way',
+              '- A gosec or OSV finding was introduced',
+              '- CodeQL detected a new code quality issue',
+            ].join('\n');
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['bug', 'ci'],
+            });

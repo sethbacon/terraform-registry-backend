@@ -1,14 +1,12 @@
-name: Update Wiki Version
+name: Update Wiki Version (Manual)
 
-# Automatically update the wiki Home page version badge after a release.
-# Runs after the Release workflow completes, or on manual dispatch.
+# Manual fallback for updating the wiki version badge when the automatic
+# update in release.yml fails or needs to be re-run for a specific version.
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to set (e.g., v0.2.25). Defaults to latest release tag."
+        description: "Version tag to set (e.g., v0.12.1). Defaults to latest release."
         required: false
         type: string
 
@@ -17,15 +15,18 @@ jobs:
     name: Update wiki version
     runs-on: ubuntu-latest
     permissions:
-      contents: write # required to push to the wiki repo
+      contents: write
     steps:
       - name: Determine version
         id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ -n "${{ inputs.version }}" ]; then
             echo "tag=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
           else
-            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+            TAG=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName')
+            echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Clone wiki
@@ -40,7 +41,6 @@ jobs:
             echo "::error::No version tag found"
             exit 1
           fi
-          # Replace the version line: **Current:** vX.Y.Z | **License:** Apache 2.0
           sed -i "s|\*\*Current:\*\* v[0-9]*\.[0-9]*\.[0-9]*[^ ]*|\*\*Current:\*\* ${TAG}|" Home.md
           echo "Updated Home.md to version ${TAG}"
           grep "Current:" Home.md

@@ -1,0 +1,23 @@
+name: Setup Backend (Go toolchain)
+description: >
+  Sets up the Go toolchain with module caching.
+  The caller must run actions/checkout before using this action.
+
+inputs:
+  install-gosec:
+    description: Install gosec security scanner
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Go
+      uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
+      with:
+        go-version-file: backend/go.mod
+        cache-dependency-path: backend/go.sum
+
+    - name: Install gosec
+      if: inputs.install-gosec == 'true'
+      shell: bash
+      run: go install github.com/securego/gosec/v2/cmd/gosec@v2.22.11
