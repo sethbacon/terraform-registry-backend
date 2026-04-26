@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0](https://github.com/sethbacon/terraform-registry-backend/compare/v0.13.2...v0.14.0) (2026-04-26)
+
+
+### Features
+
+* **config:** add system-wide default language setting ([#280](https://github.com/sethbacon/terraform-registry-backend/issues/280)) ([4c6a27b](https://github.com/sethbacon/terraform-registry-backend/commit/4c6a27b39c123cc4c8b979bc5043f650ae5f5884)), closes [#265](https://github.com/sethbacon/terraform-registry-backend/issues/265)
+
 ## [0.13.2](https://github.com/sethbacon/terraform-registry-backend/compare/v0.13.1...v0.13.2) (2026-04-25)
 
 
