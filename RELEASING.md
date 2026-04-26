@@ -23,7 +23,7 @@ Releases are fully automated via `release-please.yml` and `release.yml`.
    - Pushes Docker image to `ghcr.io` (tagged with version + latest).
    - Attests build provenance via GitHub Artifact Attestations (binaries + container).
    - Signs the container image with cosign (keyless, Sigstore).
-   - Creates the GitHub Release with all assets attached atomically.
+   - Uploads assets to the draft GitHub Release and publishes it.
    - Updates the wiki Home page version badge.
 
 ## Verifying supply-chain attestations
