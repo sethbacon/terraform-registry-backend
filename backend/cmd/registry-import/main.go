@@ -423,7 +423,7 @@ func zipToTarGz(zipData []byte) ([]byte, error) {
 			return nil, err
 		}
 		if !info.IsDir() {
-			const maxEntryBytes = 500 * 1024 * 1024 // 500 MB per-entry limit — prevents decompression bombs
+			const maxEntryBytes = 500 * 1024 * 1024                                   // 500 MB per-entry limit — prevents decompression bombs
 			if _, err := io.Copy(tw, io.LimitReader(rc, maxEntryBytes)); err != nil { // #nosec G110
 				_ = rc.Close() // explicitly discard — already returning the io.Copy error
 				return nil, err

@@ -292,7 +292,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	}
 
 	// API version
-	router.GET("/version", versionHandler())
+	router.GET("/version", versionHandler(cfg))
 
 	// Swagger UI - served from embedded static assets (air-gap safe)
 	swaggerUIFS, _ := fs.Sub(docs.SwaggerUIAssets, "swagger-ui")
@@ -1224,13 +1224,14 @@ func serviceDiscoveryHandler(cfg *config.Config) gin.HandlerFunc {
 // @Success      200  {object}  api.VersionResponse
 // @Router       /version [get]
 // versionHandler returns the API version
-func versionHandler() gin.HandlerFunc {
+func versionHandler(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
-			"version":     AppVersion,
-			"build_date":  AppBuildDate,
-			"api_version": "v1",
-			"crypto_mode": AppCryptoMode,
+			"version":          AppVersion,
+			"build_date":       AppBuildDate,
+			"api_version":      "v1",
+			"crypto_mode":      AppCryptoMode,
+			"default_language": cfg.Server.DefaultLanguage,
 			"protocols": gin.H{
 				"modules":   "v1",
 				"providers": "v1",

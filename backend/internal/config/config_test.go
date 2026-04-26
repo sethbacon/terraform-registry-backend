@@ -97,8 +97,9 @@ func TestGetAddress(t *testing.T) {
 func minimalValidConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
-			Port:    8080,
-			BaseURL: "http://localhost:8080",
+			Port:            8080,
+			BaseURL:         "http://localhost:8080",
+			DefaultLanguage: "en",
 		},
 		Database: DatabaseConfig{
 			Host: "localhost",
@@ -334,6 +335,24 @@ func TestValidate(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("invalid default_language", func(t *testing.T) {
+		cfg := minimalValidConfig()
+		cfg.Server.DefaultLanguage = "xx"
+		if err := cfg.Validate(); err == nil {
+			t.Error("Validate() expected error for invalid default_language, got nil")
+		}
+	})
+
+	t.Run("all supported languages pass", func(t *testing.T) {
+		for _, lang := range []string{"en", "es", "fr", "de", "ja", "pt", "nl", "nb", "zh", "it"} {
+			cfg := minimalValidConfig()
+			cfg.Server.DefaultLanguage = lang
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("Validate() unexpected error for default_language %q: %v", lang, err)
+			}
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -503,6 +522,9 @@ logging:
 	}
 	if !cfg.Auth.APIKeys.Enabled {
 		t.Error("default Auth.APIKeys.Enabled = false, want true")
+	}
+	if cfg.Server.DefaultLanguage != "en" {
+		t.Errorf("default Server.DefaultLanguage = %q, want \"en\"", cfg.Server.DefaultLanguage)
 	}
 }
 
