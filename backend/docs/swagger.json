@@ -13077,6 +13077,9 @@
                 "build_date": {
                     "type": "string"
                 },
+                "default_language": {
+                    "type": "string"
+                },
                 "protocols": {
                     "$ref": "#/definitions/api.ProtocolVersions"
                 },

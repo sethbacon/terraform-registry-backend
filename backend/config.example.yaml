@@ -9,6 +9,10 @@ server:
   # public_url: https://registry.example.com
   read_timeout: 30s
   write_timeout: 30s
+  # default_language sets the system-wide default UI language for the frontend.
+  # Users can override this in their browser. Supported: en, es, fr, de, ja, pt, nl, nb, zh, it
+  # Environment variable: TFR_SERVER_DEFAULT_LANGUAGE
+  # default_language: en
 
 # OpenAPI / Swagger spec metadata — customisable at deploy time without recompiling.
 # These values override the defaults baked into the binary when non-empty.

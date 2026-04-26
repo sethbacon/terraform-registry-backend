@@ -213,8 +213,10 @@ func TestServiceDiscoveryHandler(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestVersionHandler(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Server.DefaultLanguage = "en"
 	r := gin.New()
-	r.GET("/version", versionHandler())
+	r.GET("/version", versionHandler(cfg))
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/version", nil))
@@ -234,6 +236,9 @@ func TestVersionHandler(t *testing.T) {
 	}
 	if body["api_version"] == nil {
 		t.Error("response missing 'api_version'")
+	}
+	if body["default_language"] != "en" {
+		t.Errorf("default_language = %v, want \"en\"", body["default_language"])
 	}
 }
 

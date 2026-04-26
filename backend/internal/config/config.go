@@ -143,12 +143,13 @@ type ScanningConfig struct {
 
 // ServerConfig holds HTTP server configuration
 type ServerConfig struct {
-	Host         string        `mapstructure:"host"`
-	Port         int           `mapstructure:"port"`
-	BaseURL      string        `mapstructure:"base_url"`
-	PublicURL    string        `mapstructure:"public_url"`
-	ReadTimeout  time.Duration `mapstructure:"read_timeout"`
-	WriteTimeout time.Duration `mapstructure:"write_timeout"`
+	Host            string        `mapstructure:"host"`
+	Port            int           `mapstructure:"port"`
+	BaseURL         string        `mapstructure:"base_url"`
+	PublicURL       string        `mapstructure:"public_url"`
+	ReadTimeout     time.Duration `mapstructure:"read_timeout"`
+	WriteTimeout    time.Duration `mapstructure:"write_timeout"`
+	DefaultLanguage string        `mapstructure:"default_language"`
 }
 
 // GetPublicURL returns the public-facing URL used for OAuth callbacks and external redirects.
@@ -589,6 +590,7 @@ func bindEnvVars(v *viper.Viper) error {
 		"server.public_url",
 		"server.read_timeout",
 		"server.write_timeout",
+		"server.default_language",
 
 		// Storage
 		"storage.default_backend",
@@ -780,6 +782,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.public_url", "")
 	v.SetDefault("server.read_timeout", "30s")
 	v.SetDefault("server.write_timeout", "30s")
+	v.SetDefault("server.default_language", "en")
 
 	// Redis defaults (empty host = disabled, in-memory fallback used)
 	v.SetDefault("redis.host", "")
@@ -884,6 +887,10 @@ func (c *Config) Validate() error {
 	}
 	if c.Server.BaseURL == "" {
 		return fmt.Errorf("server.base_url is required")
+	}
+	validLangs := map[string]bool{"en": true, "es": true, "fr": true, "de": true, "ja": true, "pt": true, "nl": true, "nb": true, "zh": true, "it": true}
+	if !validLangs[c.Server.DefaultLanguage] {
+		return fmt.Errorf("invalid server.default_language: %q (must be one of en, es, fr, de, ja, pt, nl, nb, zh, it)", c.Server.DefaultLanguage)
 	}
 
 	// Validate database

@@ -38,8 +38,9 @@ type ProtocolVersions struct {
 
 // VersionResponse is returned by GET /version.
 type VersionResponse struct {
-	Version    string           `json:"version"`
-	BuildDate  string           `json:"build_date"`
-	APIVersion string           `json:"api_version"`
-	Protocols  ProtocolVersions `json:"protocols"`
+	Version         string           `json:"version"`
+	BuildDate       string           `json:"build_date"`
+	APIVersion      string           `json:"api_version"`
+	DefaultLanguage string           `json:"default_language"`
+	Protocols       ProtocolVersions `json:"protocols"`
 }
