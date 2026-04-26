@@ -213,14 +213,19 @@ jobs:
           echo "  --repo ${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
-  # ── Create the GitHub Release atomically ─────────────────────────────────
-  # The repository enforces GitHub's Immutable Releases security feature: a
-  # release (including drafts) is frozen at creation time and cannot accept
-  # additional asset uploads later. We therefore wait until all artifacts
-  # (binaries, checksums, signatures, SBOMs, deployment configs) are available,
-  # then create the release once with everything attached.
-  # Build provenance is stored in the GitHub attestation API (not as a release
-  # asset) and can be verified with `gh attestation verify`.
+  # ── Publish the GitHub Release ────────────────────────────────────────────
+  # release-please creates a DRAFT GitHub Release (with changelog) when the
+  # release PR is merged (configured via "draft": true in
+  # .release-please-config.json).  Draft releases are not subject to the
+  # Immutable Releases restriction, so we can upload assets freely.  Once
+  # all assets are attached we publish the draft, which makes it immutable.
+  #
+  # If no draft release exists (e.g. manual workflow_dispatch), we create
+  # the release from scratch using `gh release create`, which internally
+  # uses a draft→upload→publish flow that is also Immutable-Releases-safe.
+  #
+  # Build provenance is stored in the GitHub attestation API (not as a
+  # release asset) and can be verified with `gh attestation verify`.
   publish-release:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
@@ -228,6 +233,11 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          sparse-checkout: CHANGELOG.md
+          sparse-checkout-cone-mode: false
+
       - name: Download release artifacts (binaries, checksums, sigs, deployment configs)
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -237,29 +247,15 @@ jobs:
       - name: List release assets
         run: ls -la release/
 
-      - name: Upload assets and update GitHub Release
+      - name: Upload assets and publish GitHub Release
         run: |
-          # release-please creates a GitHub Release (with changelog) when the
-          # release PR is merged.  Immutable Releases prevents deleting or
-          # recreating that release, so upload assets to it and append notes.
-          gh release upload "${GITHUB_REF_NAME}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --clobber \
-            release/*
+          TAG="${GITHUB_REF_NAME}"
+          REPO="${GITHUB_REPOSITORY}"
 
-          # Append Docker pull and verification instructions to the existing
-          # release-please changelog body.
-          EXISTING_BODY="$(gh release view "${GITHUB_REF_NAME}" \
-            --repo "${GITHUB_REPOSITORY}" --json body -q .body)"
-
-          gh release edit "${GITHUB_REF_NAME}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --notes "${EXISTING_BODY}
-
-          ## Docker Image
+          DOCKER_NOTES="## Docker Image
 
           \`\`\`
-          docker pull ghcr.io/${GITHUB_REPOSITORY_OWNER}/terraform-registry-backend:${GITHUB_REF_NAME}
+          docker pull ghcr.io/${GITHUB_REPOSITORY_OWNER}/terraform-registry-backend:${TAG}
           \`\`\`
 
           ## Supply-chain verification
@@ -268,17 +264,50 @@ jobs:
 
           \`\`\`bash
           # Verify binary provenance
-          gh attestation verify <binary-file> --repo ${GITHUB_REPOSITORY}
+          gh attestation verify <binary-file> --repo ${REPO}
 
           # Verify container provenance
-          gh attestation verify oci://ghcr.io/${GITHUB_REPOSITORY_OWNER}/terraform-registry-backend:${GITHUB_REF_NAME} --repo ${GITHUB_REPOSITORY}
+          gh attestation verify oci://ghcr.io/${GITHUB_REPOSITORY_OWNER}/terraform-registry-backend:${TAG} --repo ${REPO}
 
           # Verify cosign signature
           cosign verify \\\\
             --certificate-identity-regexp 'https://github\\.com/${GITHUB_REPOSITORY_OWNER}/terraform-registry-backend/' \\\\
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \\\\
-            ghcr.io/${GITHUB_REPOSITORY_OWNER}/terraform-registry-backend:${GITHUB_REF_NAME}
+            ghcr.io/${GITHUB_REPOSITORY_OWNER}/terraform-registry-backend:${TAG}
           \`\`\`"
+
+          # Check whether release-please already created a draft release for
+          # this tag.  If so, upload assets to the draft, append notes, and
+          # publish.  Otherwise create the release from scratch.
+          if gh release view "${TAG}" --repo "${REPO}" > /dev/null 2>&1; then
+            echo "Draft release found — uploading assets and publishing."
+            gh release upload "${TAG}" \
+              --repo "${REPO}" \
+              --clobber \
+              release/*
+
+            EXISTING_BODY="$(gh release view "${TAG}" \
+              --repo "${REPO}" --json body -q .body)"
+
+            gh release edit "${TAG}" \
+              --repo "${REPO}" \
+              --draft=false \
+              --notes "${EXISTING_BODY}
+
+          ${DOCKER_NOTES}"
+          else
+            echo "No existing release — creating release with assets."
+            # Extract changelog section for this version from CHANGELOG.md
+            CHANGELOG_BODY="$(sed -n "/^## \\[${TAG#v}\\]/,/^## \\[/{ /^## \\[${TAG#v}\\]/d; /^## \\[/d; p; }" CHANGELOG.md)"
+
+            gh release create "${TAG}" \
+              --repo "${REPO}" \
+              --title "${TAG}" \
+              --notes "${CHANGELOG_BODY}
+
+          ${DOCKER_NOTES}" \
+              release/*
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

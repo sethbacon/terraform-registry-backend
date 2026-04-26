@@ -59,10 +59,10 @@ checksum:
   name_template: checksums.txt
   algorithm: sha256
 
-# Release creation is disabled here because the repository has GitHub's
-# Immutable Releases feature enabled, which freezes a release (including
-# drafts) at the moment of creation. The publish-release job in release.yml
-# creates the release atomically with all binary assets attached.
+# Release creation is disabled here because release-please creates a draft
+# GitHub Release (with changelog) when the release PR is merged.  The
+# publish-release job in release.yml uploads binary assets to the draft and
+# then publishes it, which is compatible with Immutable Releases.
 release:
   disable: true
 

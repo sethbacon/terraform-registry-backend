@@ -1,4 +1,6 @@
 {
+  "draft": true,
+  "force-tag-creation": true,
   "packages": {
     ".": {
       "release-type": "go",
@@ -17,14 +19,38 @@
         }
       ],
       "changelog-sections": [
-        {"type": "feat", "section": "Features"},
-        {"type": "fix", "section": "Bug Fixes"},
-        {"type": "perf", "section": "Performance"},
-        {"type": "deps", "section": "Dependencies"},
-        {"type": "docs", "section": "Documentation"},
-        {"type": "refactor", "section": "Refactor"},
-        {"type": "revert", "section": "Reverts"},
-        {"type": "security", "section": "Security"}
+        {
+          "type": "feat",
+          "section": "Features"
+        },
+        {
+          "type": "fix",
+          "section": "Bug Fixes"
+        },
+        {
+          "type": "perf",
+          "section": "Performance"
+        },
+        {
+          "type": "deps",
+          "section": "Dependencies"
+        },
+        {
+          "type": "docs",
+          "section": "Documentation"
+        },
+        {
+          "type": "refactor",
+          "section": "Refactor"
+        },
+        {
+          "type": "revert",
+          "section": "Reverts"
+        },
+        {
+          "type": "security",
+          "section": "Security"
+        }
       ]
     }
   }
