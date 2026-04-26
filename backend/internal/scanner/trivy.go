@@ -2,7 +2,7 @@
 // Trivy is the default tool choice; it supports filesystem scanning for vulnerabilities,
 // secrets, and IaC misconfigurations in a single invocation.
 //
-// Invocation: trivy fs --format json --scanners vuln,secret,misconfig --exit-code 0 --quiet <dir>
+// Invocation: trivy fs --format json --scanners vuln,secret,misconfig --exit-code 0 --cache-dir <dir> --quiet <dir>
 // Output schema: {"Results": [{"Vulnerabilities": [{"Severity": "HIGH"}], "Misconfigurations": [...]}]}
 package scanner
 
@@ -11,10 +11,23 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
+
+// trivyCacheDir returns a writable directory for trivy's vulnerability DB
+// and other cached data. This avoids failures on read-only root filesystems
+// (e.g. Kubernetes pods with readOnlyRootFilesystem: true) where the default
+// ~/.cache path is not writable. The TRIVY_CACHE_DIR env var takes precedence.
+func trivyCacheDir() string {
+	if d := os.Getenv("TRIVY_CACHE_DIR"); d != "" {
+		return d
+	}
+	return filepath.Join(os.TempDir(), "trivy-cache")
+}
 
 type trivyScanner struct {
 	binaryPath string
@@ -55,6 +68,7 @@ func (s *trivyScanner) ScanDirectory(ctx context.Context, dir string) (*ScanResu
 		"fs", "--format", "json",
 		"--scanners", "vuln,secret,misconfig",
 		"--exit-code", "0",
+		"--cache-dir", trivyCacheDir(),
 		"--quiet",
 		dir,
 	)
