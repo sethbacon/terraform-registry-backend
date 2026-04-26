@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.1](https://github.com/sethbacon/terraform-registry-backend/compare/v0.14.0...v0.14.1) (2026-04-26)
+
+
+### Bug Fixes
+
+* use gh release upload instead of delete+create for Immutable Releases ([#282](https://github.com/sethbacon/terraform-registry-backend/issues/282)) ([15a2f1c](https://github.com/sethbacon/terraform-registry-backend/commit/15a2f1cb4244fdec222149cd0a2371012be258e0))
+
 ## [0.14.0](https://github.com/sethbacon/terraform-registry-backend/compare/v0.13.2...v0.14.0) (2026-04-26)
 
 
