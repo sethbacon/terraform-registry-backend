@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.3](https://github.com/sethbacon/terraform-registry-backend/compare/v0.14.2...v0.14.3) (2026-04-26)
+
+
+### Bug Fixes
+
+* **scanner:** use writable cache dir for trivy on read-only filesystems ([#288](https://github.com/sethbacon/terraform-registry-backend/issues/288)) ([ce99ceb](https://github.com/sethbacon/terraform-registry-backend/commit/ce99ceba59274e0fc71e4efb1dccf0a43dbc49a2)), closes [#287](https://github.com/sethbacon/terraform-registry-backend/issues/287)
+
 ## [0.14.2](https://github.com/sethbacon/terraform-registry-backend/compare/v0.14.1...v0.14.2) (2026-04-26)
 
 
