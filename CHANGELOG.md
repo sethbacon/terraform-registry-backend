@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0](https://github.com/sethbacon/terraform-registry-backend/compare/v0.14.3...v0.15.0) (2026-04-27)
+
+
+### chore
+
+* bump image tags and align version with frontend ([#291](https://github.com/sethbacon/terraform-registry-backend/issues/291)) ([30bbd70](https://github.com/sethbacon/terraform-registry-backend/commit/30bbd70047906d77d566c8fe6be5f17fd3faa6fb))
+
 ## [0.14.3](https://github.com/sethbacon/terraform-registry-backend/compare/v0.14.2...v0.14.3) (2026-04-26)
 
 
