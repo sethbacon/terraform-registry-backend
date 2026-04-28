@@ -25,19 +25,23 @@ PR titles (and ideally commit messages) must follow [Conventional Commits](https
 <type>(<optional scope>): <description>
 ```
 
-| Type       | When to use                           | Version bump |
-| ---------- | ------------------------------------- | ------------ |
-| `feat`     | New user-facing feature               | minor        |
-| `fix`      | Bug fix                               | patch        |
-| `perf`     | Performance improvement               | patch        |
-| `refactor` | Code restructure (no behavior change) | none         |
-| `docs`     | Documentation only                    | none         |
-| `test`     | Adding or fixing tests                | none         |
-| `ci`       | CI/CD workflow changes                | none         |
-| `chore`    | Maintenance, deps, tooling            | none         |
-| `deps`     | Dependency updates                    | none         |
-| `security` | Security fix                          | patch        |
-| `revert`   | Reverts a previous commit             | patch        |
+| Type       | When to use                                      | Version bump |
+| ---------- | ------------------------------------------------ | ------------ |
+| `feat`     | New user-facing feature                          | minor        |
+| `fix`      | Bug fix (also use for security fixes)            | patch        |
+| `perf`     | Performance improvement                          | patch        |
+| `refactor` | Code restructure (no behavior change)            | none         |
+| `docs`     | Documentation only                               | none         |
+| `style`    | Whitespace, formatting (no logic change)         | none         |
+| `test`     | Adding or fixing tests                           | none         |
+| `build`    | Build system or external dependency changes      | none         |
+| `ci`       | CI/CD workflow changes                           | none         |
+| `chore`    | Maintenance, tooling                             | none         |
+| `revert`   | Reverts a previous commit                        | patch        |
+
+> **Note:** The PR title is validated by `amannn/action-semantic-pull-request` (default config).
+> Only the types listed above are accepted. `security` and `deps` are **not** valid PR title types —
+> use `fix:` for security fixes and `build:` or `chore:` for dependency updates.
 
 Breaking changes: append `!` to the type (`feat!:`) **or** add a `BREAKING CHANGE:` footer.
 These trigger a **major** version bump.
@@ -160,7 +164,7 @@ An enterprise-grade private Terraform Registry implementing all three HashiCorp 
 - **Provider Registry Protocol** (`/v1/providers/`)
 - **Provider Network Mirror Protocol** (`/v1/mirror/`)
 
-Current version: **v0.8.2**. All phases 1–6 complete; Phase 7 (testing & documentation) in progress.
+Current version: **v0.17.0**.
 
 Frontend UI lives in a separate repository: [terraform-registry-frontend](https://github.com/sethbacon/terraform-registry-frontend)
 
@@ -188,7 +192,6 @@ terraform-registry-backend/
 │   │   └── audit/            # Audit logging
 │   ├── pkg/checksum/         # Public checksum utilities
 │   ├── Dockerfile            # Multi-stage Go build
-│   ├── go.mod                # Go 1.26.1
 │   └── config.example.yaml   # Configuration template
 ├── deployments/              # Docker Compose, Kubernetes, Helm, Bicep, CloudFormation, Terraform IaC
 ├── docs/                     # API quick reference, authentication guide, architecture, etc.
@@ -207,10 +210,10 @@ terraform-registry-backend/
 
 | Concern        | Technology                                                         |
 | -------------- | ------------------------------------------------------------------ |
-| Language       | Go 1.26.1                                                          |
+| Language       | Go 1.26.2                                                          |
 | HTTP Framework | Gin                                                                |
 | Database       | PostgreSQL 14+ via sqlx                                            |
-| Migrations     | golang-migrate (24 migrations (000001–000024))                     |
+| Migrations     | golang-migrate (31 migrations (000001–000031))                     |
 | Auth           | JWT (golang-jwt/jwt v5), API keys, OIDC (coreos/go-oidc), Azure AD |
 | Config         | Viper (`TFR_` env prefix overrides YAML)                           |
 | Storage        | Local filesystem, Azure Blob, S3-compatible, GCS                   |
@@ -343,7 +346,7 @@ HTTP Handler (api/)
 
 ### Database
 
-- 24 migrations (000001–000024) in `backend/internal/db/migrations/`.
+- 31 migrations (000001–000031) in `backend/internal/db/migrations/`.
 - Migrations run automatically at startup; use `migrate up/down` for manual control.
 - Always add a new migration file rather than editing existing ones.
 
