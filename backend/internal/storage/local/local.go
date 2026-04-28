@@ -66,8 +66,10 @@ func (s *LocalStorage) safeJoin(path string) (string, error) {
 
 // Upload stores a file in the local filesystem
 func (s *LocalStorage) Upload(ctx context.Context, path string, reader io.Reader, size int64) (*storage.UploadResult, error) {
-	// Create full path
-	fullPath := filepath.Join(s.basePath, filepath.FromSlash(path))
+	fullPath, err := s.safeJoin(path)
+	if err != nil {
+		return nil, err
+	}
 
 	// Ensure directory exists
 	dir := filepath.Dir(fullPath)
@@ -76,7 +78,7 @@ func (s *LocalStorage) Upload(ctx context.Context, path string, reader io.Reader
 	}
 
 	// Create file
-	file, err := os.Create(fullPath) // #nosec G304 -- path is constructed from validated namespace/name/version components; path traversal is prevented at the API and archive-extraction layers
+	file, err := os.Create(fullPath) // #nosec G304 -- fullPath has been validated by safeJoin to remain within basePath
 	if err != nil {
 		return nil, fmt.Errorf("failed to create file: %w", err)
 	}
