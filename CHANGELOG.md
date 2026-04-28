@@ -7,6 +7,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.1](https://github.com/sethbacon/terraform-registry-backend/compare/v0.17.0...v0.17.1) (2026-04-28)
+
+
+### Bug Fixes
+
+* **scanner:** pass --cache-dir to trivy version probe ([#306](https://github.com/sethbacon/terraform-registry-backend/issues/306)) ([80531c0](https://github.com/sethbacon/terraform-registry-backend/commit/80531c0da76c7058a187002e3111a9180f60deb7))
+
+
+### Documentation
+
+* update CLAUDE.md with accurate type list, Go version, and migration count ([#305](https://github.com/sethbacon/terraform-registry-backend/issues/305)) ([8b6c26f](https://github.com/sethbacon/terraform-registry-backend/commit/8b6c26f329f1f3ae16630a3bbc1c76e33a1a767d))
+
 ## [0.17.0](https://github.com/sethbacon/terraform-registry-backend/compare/v0.16.1...v0.17.0) (2026-04-28)
 
 
