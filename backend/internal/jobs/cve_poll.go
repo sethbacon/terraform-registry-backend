@@ -145,6 +145,7 @@ func (j *CVEPollJob) runPoll(ctx context.Context) {
 }
 
 // emitAuditLog records a cve.discovered audit entry.
+// coverage:skip:integration-only — requires a live AuditRepository (PostgreSQL).
 func (j *CVEPollJob) emitAuditLog(ctx context.Context, adv models.CVEAdvisory) {
 	// Determine target_kind from the advisory's first target (if any).
 	targetKind := "unknown"
@@ -173,6 +174,7 @@ func (j *CVEPollJob) emitAuditLog(ctx context.Context, adv models.CVEAdvisory) {
 // sendNotifications delivers email notification(s) for newly discovered advisories.
 // If there are >= digestThreshold new advisories, a single digest email is sent.
 // Otherwise, one email is sent per advisory.
+// coverage:skip:integration-only — requires live SMTP server.
 func (j *CVEPollJob) sendNotifications(ctx context.Context, newAdvisories []models.CVEAdvisory) {
 	if j.notifCfg == nil || !j.notifCfg.Enabled || j.notifCfg.SMTP.Host == "" {
 		return
@@ -199,6 +201,7 @@ func (j *CVEPollJob) sendNotifications(ctx context.Context, newAdvisories []mode
 }
 
 // sendAdvisoryEmail sends a single-advisory notification to all recipients.
+// coverage:skip:integration-only — requires live SMTP server.
 func (j *CVEPollJob) sendAdvisoryEmail(recipients []string, adv models.CVEAdvisory) error {
 	targetKind := "unknown"
 	if len(adv.Targets) > 0 {
@@ -228,6 +231,7 @@ func (j *CVEPollJob) sendAdvisoryEmail(recipients []string, adv models.CVEAdviso
 }
 
 // sendDigestEmail sends a multi-advisory digest to all recipients.
+// coverage:skip:integration-only — requires live SMTP server.
 func (j *CVEPollJob) sendDigestEmail(recipients []string, advisories []models.CVEAdvisory) error {
 	subject := fmt.Sprintf("[Security] %d new advisories detected in Terraform Registry", len(advisories))
 
@@ -253,6 +257,7 @@ func (j *CVEPollJob) sendDigestEmail(recipients []string, advisories []models.CV
 }
 
 // sendEmail is a thin wrapper that delegates to the shared SMTP helper.
+// coverage:skip:integration-only — calls smtp.SendMail / TLS dial; requires live SMTP.
 func (j *CVEPollJob) sendEmail(to []string, subject, body string) error {
 	smtpCfg := &j.notifCfg.SMTP
 	headers := fmt.Sprintf(
