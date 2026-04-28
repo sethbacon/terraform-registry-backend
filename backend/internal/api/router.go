@@ -832,6 +832,9 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 			authenticatedGroup.GET("/admin/scanning/stats",
 				middleware.RequireScope(auth.ScopeScanningRead),
 				admin.GetScanningStatsHandler(sqlxDB))
+			authenticatedGroup.GET("/admin/scanning/scans/:id",
+				middleware.RequireScope(auth.ScopeScanningRead),
+				admin.GetScanByIDHandler(db))
 			authenticatedGroup.POST("/admin/scanning/install",
 				middleware.RequireScope(auth.ScopeAdmin),
 				admin.InstallScannerHandler(&cfg.Scanning, nil))

@@ -201,3 +201,64 @@ func TestGetModuleScan_ScanNotFound(t *testing.T) {
 		t.Errorf("status = %d, want 404", w.Code)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// GetScanByIDHandler tests
+// ---------------------------------------------------------------------------
+
+func newScanByIDRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	r := gin.New()
+	r.GET("/admin/scanning/scans/:id", GetScanByIDHandler(db))
+	return mock, r
+}
+
+func TestGetScanByID_Success(t *testing.T) {
+	mock, r := newScanByIDRouter(t)
+	mock.ExpectQuery("SELECT.*FROM module_version_scans.*WHERE id").
+		WithArgs("a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11").
+		WillReturnRows(sampleScanResultRow())
+
+	w := doScanGET(r, "/admin/scanning/scans/a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11")
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestGetScanByID_InvalidUUID(t *testing.T) {
+	_, r := newScanByIDRouter(t)
+
+	w := doScanGET(r, "/admin/scanning/scans/not-a-uuid")
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400; body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestGetScanByID_NotFound(t *testing.T) {
+	mock, r := newScanByIDRouter(t)
+	mock.ExpectQuery("SELECT.*FROM module_version_scans.*WHERE id").
+		WithArgs("a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11").
+		WillReturnRows(sqlmock.NewRows(scanAdminCols))
+
+	w := doScanGET(r, "/admin/scanning/scans/a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11")
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404; body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestGetScanByID_DBError(t *testing.T) {
+	mock, r := newScanByIDRouter(t)
+	mock.ExpectQuery("SELECT.*FROM module_version_scans.*WHERE id").
+		WithArgs("a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11").
+		WillReturnError(errors.New("db error"))
+
+	w := doScanGET(r, "/admin/scanning/scans/a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11")
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500; body: %s", w.Code, w.Body.String())
+	}
+}

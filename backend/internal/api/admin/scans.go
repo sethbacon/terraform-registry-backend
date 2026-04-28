@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
 
@@ -67,6 +68,42 @@ func GetModuleScanHandler(db *sql.DB) gin.HandlerFunc {
 		}
 		if scan == nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "no scan found for this module version"})
+			return
+		}
+
+		c.JSON(http.StatusOK, scan)
+	}
+}
+
+// @Summary      Get scan result by ID
+// @Description  Returns a security scan record by its unique ID, including severity counts and raw output. Requires scanning:read scope.
+// @Tags         Security Scanning
+// @Security     Bearer
+// @Produce      json
+// @Param        id  path  string  true  "Scan ID (UUID)"
+// @Success      200  {object}  models.ModuleScan
+// @Failure      400  {object}  map[string]interface{}  "Invalid scan ID"
+// @Failure      401  {object}  map[string]interface{}  "Unauthorized"
+// @Failure      404  {object}  map[string]interface{}  "Scan not found"
+// @Failure      500  {object}  map[string]interface{}  "Internal server error"
+// @Router       /api/v1/admin/scanning/scans/{id} [get]
+func GetScanByIDHandler(db *sql.DB) gin.HandlerFunc {
+	scanRepo := repositories.NewModuleScanRepository(db)
+
+	return func(c *gin.Context) {
+		id := c.Param("id")
+		if _, err := uuid.Parse(id); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid scan ID"})
+			return
+		}
+
+		scan, err := scanRepo.GetScanByID(c.Request.Context(), id)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query scan result"})
+			return
+		}
+		if scan == nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "scan not found"})
 			return
 		}
 
