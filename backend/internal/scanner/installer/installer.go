@@ -20,6 +20,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	goversion "github.com/hashicorp/go-version"
 )
 
 // Size caps to prevent zip-bomb / decompression-bomb DoS.
@@ -219,6 +221,12 @@ func resolveRelease(ctx context.Context, client *http.Client, spec AssetSpec, pi
 		url = spec.LatestReleaseAPI
 	} else {
 		v := strings.TrimPrefix(pinnedVersion, "v")
+		// Validate pinnedVersion is a recognisable semver before interpolating it into
+		// the GitHub API URL.  An attacker-controlled value could otherwise redirect
+		// the request to an unexpected path (CWE-918 / CodeQL go/path-injection).
+		if _, err := goversion.NewSemver(v); err != nil {
+			return nil, fmt.Errorf("invalid pinned version %q: must be a valid semantic version", pinnedVersion)
+		}
 		url = fmt.Sprintf(spec.VersionedAPI, v)
 	}
 
