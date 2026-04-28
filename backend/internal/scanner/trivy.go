@@ -41,10 +41,16 @@ func newTrivyScanner(binaryPath string, timeout time.Duration) Scanner {
 func (s *trivyScanner) Name() string { return "trivy" }
 
 func (s *trivyScanner) Version(ctx context.Context) (string, error) {
-	out, err := exec.CommandContext(ctx, s.binaryPath, "version", "--format", "json").Output() // #nosec G204 -- binaryPath is operator-configured, not user input
+	// Pass --cache-dir so `trivy version` does not attempt to write to
+	// ~/.cache on read-only root filesystems (e.g. Kubernetes pods with
+	// readOnlyRootFilesystem: true). Without this, the version probe
+	// fails and the admin UI shows "Not reported by backend" even
+	// though scans themselves succeed. See #288 / #287.
+	cacheDir := trivyCacheDir()
+	out, err := exec.CommandContext(ctx, s.binaryPath, "--cache-dir", cacheDir, "version", "--format", "json").Output() // #nosec G204 -- binaryPath is operator-configured, not user input
 	if err != nil {
 		// Fall back to plain version output
-		out, err = exec.CommandContext(ctx, s.binaryPath, "--version").Output() // #nosec G204 -- binaryPath is operator-configured, not user input
+		out, err = exec.CommandContext(ctx, s.binaryPath, "--cache-dir", cacheDir, "--version").Output() // #nosec G204 -- binaryPath is operator-configured, not user input
 		if err != nil {
 			return "", fmt.Errorf("trivy version: %w", err)
 		}
