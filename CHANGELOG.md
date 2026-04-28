@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.1](https://github.com/sethbacon/terraform-registry-backend/compare/v0.16.0...v0.16.1) (2026-04-28)
+
+
+### Bug Fixes
+
+* **scanning:** store actual scanner tool name on scan completion ([#299](https://github.com/sethbacon/terraform-registry-backend/issues/299)) ([b7cab50](https://github.com/sethbacon/terraform-registry-backend/commit/b7cab503f6f13cb96ea4cc83e4bce926bce4e5d2)), closes [#298](https://github.com/sethbacon/terraform-registry-backend/issues/298)
+
 ## [0.16.0](https://github.com/sethbacon/terraform-registry-backend/compare/v0.15.0...v0.16.0) (2026-04-28)
 
 
