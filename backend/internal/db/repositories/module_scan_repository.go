@@ -210,6 +210,34 @@ func (r *ModuleScanRepository) GetLatestScan(ctx context.Context, moduleVersionI
 	return s, nil
 }
 
+// GetScanByID returns a single scan record by its primary key, or nil if not found.
+func (r *ModuleScanRepository) GetScanByID(ctx context.Context, scanID string) (*models.ModuleScan, error) {
+	const q = `
+		SELECT id, module_version_id, scanner, scanner_version, expected_version,
+		       status, scanned_at, critical_count, high_count, medium_count, low_count,
+		       raw_results, error_message, execution_log, created_at, updated_at
+		FROM module_version_scans
+		WHERE id = $1
+	`
+	s := &models.ModuleScan{}
+	var rawResults []byte
+	err := r.db.QueryRowContext(ctx, q, scanID).Scan(
+		&s.ID, &s.ModuleVersionID, &s.Scanner, &s.ScannerVersion, &s.ExpectedVersion,
+		&s.Status, &s.ScannedAt, &s.CriticalCount, &s.HighCount, &s.MediumCount, &s.LowCount,
+		&rawResults, &s.ErrorMessage, &s.ExecutionLog, &s.CreatedAt, &s.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get scan by id: %w", err)
+	}
+	if len(rawResults) > 0 {
+		s.RawResults = json.RawMessage(rawResults)
+	}
+	return s, nil
+}
+
 // ResetStaleScanningRecords resets records stuck in 'scanning' for longer than olderThan.
 // This recovers from worker crashes.
 func (r *ModuleScanRepository) ResetStaleScanningRecords(ctx context.Context, olderThan time.Duration) error {

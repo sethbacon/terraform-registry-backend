@@ -3018,6 +3018,68 @@
                 }
             }
         },
+        "/api/v1/admin/scanning/scans/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Returns a security scan record by its unique ID, including severity counts and raw output. Requires scanning:read scope.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Security Scanning"
+                ],
+                "summary": "Get scan result by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Scan ID (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.ModuleScan"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid scan ID",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Scan not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/admin/scanning/stats": {
             "get": {
                 "security": [
