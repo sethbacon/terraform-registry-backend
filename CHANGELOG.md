@@ -7,6 +7,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.0](https://github.com/sethbacon/terraform-registry-backend/compare/v0.16.1...v0.17.0) (2026-04-28)
+
+
+### Features
+
+* **deployments:** document backend/frontend version compatibility ([#293](https://github.com/sethbacon/terraform-registry-backend/issues/293)) ([b5deb51](https://github.com/sethbacon/terraform-registry-backend/commit/b5deb518d6d3d88663c558b1e48cf8665c8f938a))
+
+
+### Bug Fixes
+
+* **security:** resolve CodeQL path-injection and SSRF findings ([#304](https://github.com/sethbacon/terraform-registry-backend/issues/304)) ([287cdb8](https://github.com/sethbacon/terraform-registry-backend/commit/287cdb8e5ad281167d10143db4fdbb828538e315))
+
+
+### Security
+
+* bump Go to 1.26.2 and fix OSV scanner args ([#303](https://github.com/sethbacon/terraform-registry-backend/issues/303)) ([99d28ae](https://github.com/sethbacon/terraform-registry-backend/commit/99d28ae2db54e7ff1f7d7a8f87a77d783cf4654e)), closes [#290](https://github.com/sethbacon/terraform-registry-backend/issues/290)
+
 ## [0.16.1](https://github.com/sethbacon/terraform-registry-backend/compare/v0.16.0...v0.16.1) (2026-04-28)
 
 
