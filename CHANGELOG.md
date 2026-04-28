@@ -7,6 +7,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.1](https://github.com/sethbacon/terraform-registry-backend/compare/v0.16.0...v0.16.1) (2026-04-28)
+
+
+### Bug Fixes
+
+* **scanning:** store actual scanner tool name on scan completion ([#299](https://github.com/sethbacon/terraform-registry-backend/issues/299)) ([b7cab50](https://github.com/sethbacon/terraform-registry-backend/commit/b7cab503f6f13cb96ea4cc83e4bce926bce4e5d2)), closes [#298](https://github.com/sethbacon/terraform-registry-backend/issues/298)
+
+## [0.16.0](https://github.com/sethbacon/terraform-registry-backend/compare/v0.15.0...v0.16.0) (2026-04-28)
+
+
+### Features
+
+* **scanning:** add GET scan-by-ID endpoint ([#296](https://github.com/sethbacon/terraform-registry-backend/issues/296)) ([6b49124](https://github.com/sethbacon/terraform-registry-backend/commit/6b49124adcb808e8c89a4f34ac90b12702605155)), closes [#294](https://github.com/sethbacon/terraform-registry-backend/issues/294)
+
+## [0.15.0](https://github.com/sethbacon/terraform-registry-backend/compare/v0.14.3...v0.15.0) (2026-04-27)
+
+
+### chore
+
+* bump image tags and align version with frontend ([#291](https://github.com/sethbacon/terraform-registry-backend/issues/291)) ([30bbd70](https://github.com/sethbacon/terraform-registry-backend/commit/30bbd70047906d77d566c8fe6be5f17fd3faa6fb))
+
 ## [0.14.3](https://github.com/sethbacon/terraform-registry-backend/compare/v0.14.2...v0.14.3) (2026-04-26)
 
 

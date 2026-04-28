@@ -124,6 +124,7 @@ func (r *ModuleScanRepository) MarkScanning(ctx context.Context, scanID string) 
 func (r *ModuleScanRepository) MarkComplete(
 	ctx context.Context,
 	scanID string,
+	scannerName string,
 	result *scanner.ScanResult,
 	expectedVersion string,
 ) error {
@@ -150,13 +151,13 @@ func (r *ModuleScanRepository) MarkComplete(
 
 	const q = `
 		UPDATE module_version_scans
-		SET status = $2, scanned_at = $3, scanner_version = $4, expected_version = $5,
-		    critical_count = $6, high_count = $7, medium_count = $8, low_count = $9,
-		    raw_results = $10, execution_log = $11, updated_at = NOW()
+		SET scanner = $2, status = $3, scanned_at = $4, scanner_version = $5, expected_version = $6,
+		    critical_count = $7, high_count = $8, medium_count = $9, low_count = $10,
+		    raw_results = $11, execution_log = $12, updated_at = NOW()
 		WHERE id = $1
 	`
 	_, err := r.db.ExecContext(ctx, q,
-		scanID, status, now, actualVer, expVer,
+		scanID, scannerName, status, now, actualVer, expVer,
 		result.CriticalCount, result.HighCount, result.MediumCount, result.LowCount,
 		rawJSON, execLog,
 	)
@@ -203,6 +204,34 @@ func (r *ModuleScanRepository) GetLatestScan(ctx context.Context, moduleVersionI
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get latest scan: %w", err)
+	}
+	if len(rawResults) > 0 {
+		s.RawResults = json.RawMessage(rawResults)
+	}
+	return s, nil
+}
+
+// GetScanByID returns a single scan record by its primary key, or nil if not found.
+func (r *ModuleScanRepository) GetScanByID(ctx context.Context, scanID string) (*models.ModuleScan, error) {
+	const q = `
+		SELECT id, module_version_id, scanner, scanner_version, expected_version,
+		       status, scanned_at, critical_count, high_count, medium_count, low_count,
+		       raw_results, error_message, execution_log, created_at, updated_at
+		FROM module_version_scans
+		WHERE id = $1
+	`
+	s := &models.ModuleScan{}
+	var rawResults []byte
+	err := r.db.QueryRowContext(ctx, q, scanID).Scan(
+		&s.ID, &s.ModuleVersionID, &s.Scanner, &s.ScannerVersion, &s.ExpectedVersion,
+		&s.Status, &s.ScannedAt, &s.CriticalCount, &s.HighCount, &s.MediumCount, &s.LowCount,
+		&rawResults, &s.ErrorMessage, &s.ExecutionLog, &s.CreatedAt, &s.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get scan by id: %w", err)
 	}
 	if len(rawResults) > 0 {
 		s.RawResults = json.RawMessage(rawResults)

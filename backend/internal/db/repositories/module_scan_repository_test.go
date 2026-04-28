@@ -163,10 +163,10 @@ func TestMarkComplete_Clean(t *testing.T) {
 		RawJSON:        json.RawMessage(`{"results": []}`),
 	}
 
-	mock.ExpectExec("UPDATE module_version_scans.*SET status").
+	mock.ExpectExec("UPDATE module_version_scans.*SET scanner").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	if err := repo.MarkComplete(context.Background(), "scan-1", result, ""); err != nil {
+	if err := repo.MarkComplete(context.Background(), "scan-1", "trivy", result, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -181,10 +181,10 @@ func TestMarkComplete_WithFindings(t *testing.T) {
 		RawJSON:        json.RawMessage(`{"results": [{"severity": "CRITICAL"}]}`),
 	}
 
-	mock.ExpectExec("UPDATE module_version_scans.*SET status").
+	mock.ExpectExec("UPDATE module_version_scans.*SET scanner").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	if err := repo.MarkComplete(context.Background(), "scan-1", result, "0.50.0"); err != nil {
+	if err := repo.MarkComplete(context.Background(), "scan-1", "trivy", result, "0.50.0"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -192,10 +192,10 @@ func TestMarkComplete_WithFindings(t *testing.T) {
 func TestMarkComplete_DBError(t *testing.T) {
 	repo, mock := newScanRepo(t)
 	result := &scanner.ScanResult{ScannerVersion: "0.50.0"}
-	mock.ExpectExec("UPDATE module_version_scans.*SET status").
+	mock.ExpectExec("UPDATE module_version_scans.*SET scanner").
 		WillReturnError(errors.New("db error"))
 
-	if err := repo.MarkComplete(context.Background(), "scan-1", result, ""); err == nil {
+	if err := repo.MarkComplete(context.Background(), "scan-1", "trivy", result, ""); err == nil {
 		t.Error("expected error, got nil")
 	}
 }
@@ -221,6 +221,55 @@ func TestMarkError_DBError(t *testing.T) {
 		WillReturnError(errors.New("db error"))
 
 	if err := repo.MarkError(context.Background(), "scan-1", "msg"); err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetScanByID
+// ---------------------------------------------------------------------------
+
+func TestGetScanByID_Found(t *testing.T) {
+	repo, mock := newScanRepo(t)
+	mock.ExpectQuery("SELECT.*FROM module_version_scans.*WHERE id").
+		WithArgs("scan-1").
+		WillReturnRows(sampleScanRow())
+
+	scan, err := repo.GetScanByID(context.Background(), "scan-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if scan == nil {
+		t.Fatal("expected non-nil scan")
+	}
+	if scan.ID != "scan-1" {
+		t.Errorf("ID = %q, want scan-1", scan.ID)
+	}
+}
+
+func TestGetScanByID_NotFound(t *testing.T) {
+	repo, mock := newScanRepo(t)
+	mock.ExpectQuery("SELECT.*FROM module_version_scans.*WHERE id").
+		WithArgs("scan-99").
+		WillReturnRows(sqlmock.NewRows(scanCols))
+
+	scan, err := repo.GetScanByID(context.Background(), "scan-99")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if scan != nil {
+		t.Errorf("expected nil scan, got %+v", scan)
+	}
+}
+
+func TestGetScanByID_DBError(t *testing.T) {
+	repo, mock := newScanRepo(t)
+	mock.ExpectQuery("SELECT.*FROM module_version_scans.*WHERE id").
+		WithArgs("scan-1").
+		WillReturnError(errors.New("db error"))
+
+	_, err := repo.GetScanByID(context.Background(), "scan-1")
+	if err == nil {
 		t.Error("expected error, got nil")
 	}
 }

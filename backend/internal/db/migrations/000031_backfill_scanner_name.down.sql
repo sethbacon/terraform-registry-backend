@@ -1,0 +1,1 @@
+-- no-op: reverting scanner names is not meaningful
