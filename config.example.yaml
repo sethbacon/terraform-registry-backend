@@ -180,3 +180,21 @@ scanning:
   # scan_args: ["scan", "--format", "json"]
   # output_format is only used when tool is "custom": "sarif" or "json"
   # output_format: sarif
+
+# CVE vulnerability polling — periodically queries OSV.dev for advisories affecting
+# Terraform/OpenTofu binaries, registered providers, and the configured scanner binary.
+# Disabled by default; enable to get proactive CVE alerting and advisory banner display.
+cve:
+  enabled: false
+  # interval_hours controls how often the poll job runs (default 24).
+  interval_hours: 24
+  # osv_endpoint overrides the OSV.dev API base URL (for air-gapped deployments).
+  osv_endpoint: https://api.osv.dev
+  # email_recipients is a list of addresses to notify when new advisories are found.
+  # If empty, no emails are sent even when notifications.enabled=true.
+  # email_recipients:
+  #   - security@example.com
+  # poll_binaries, poll_providers, poll_scanner individually toggle each kind.
+  poll_binaries: true
+  poll_providers: true
+  poll_scanner: true
