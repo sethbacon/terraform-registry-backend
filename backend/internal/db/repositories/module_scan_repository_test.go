@@ -163,10 +163,10 @@ func TestMarkComplete_Clean(t *testing.T) {
 		RawJSON:        json.RawMessage(`{"results": []}`),
 	}
 
-	mock.ExpectExec("UPDATE module_version_scans.*SET status").
+	mock.ExpectExec("UPDATE module_version_scans.*SET scanner").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	if err := repo.MarkComplete(context.Background(), "scan-1", result, ""); err != nil {
+	if err := repo.MarkComplete(context.Background(), "scan-1", "trivy", result, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -181,10 +181,10 @@ func TestMarkComplete_WithFindings(t *testing.T) {
 		RawJSON:        json.RawMessage(`{"results": [{"severity": "CRITICAL"}]}`),
 	}
 
-	mock.ExpectExec("UPDATE module_version_scans.*SET status").
+	mock.ExpectExec("UPDATE module_version_scans.*SET scanner").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	if err := repo.MarkComplete(context.Background(), "scan-1", result, "0.50.0"); err != nil {
+	if err := repo.MarkComplete(context.Background(), "scan-1", "trivy", result, "0.50.0"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -192,10 +192,10 @@ func TestMarkComplete_WithFindings(t *testing.T) {
 func TestMarkComplete_DBError(t *testing.T) {
 	repo, mock := newScanRepo(t)
 	result := &scanner.ScanResult{ScannerVersion: "0.50.0"}
-	mock.ExpectExec("UPDATE module_version_scans.*SET status").
+	mock.ExpectExec("UPDATE module_version_scans.*SET scanner").
 		WillReturnError(errors.New("db error"))
 
-	if err := repo.MarkComplete(context.Background(), "scan-1", result, ""); err == nil {
+	if err := repo.MarkComplete(context.Background(), "scan-1", "trivy", result, ""); err == nil {
 		t.Error("expected error, got nil")
 	}
 }

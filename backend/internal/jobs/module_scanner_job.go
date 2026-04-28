@@ -210,7 +210,7 @@ func (j *ModuleScannerJob) scanOne(ctx context.Context, s scanner.Scanner, scanI
 	}
 	result.ScannerVersion = actualVersion
 
-	if err := j.scanRepo.MarkComplete(ctx, scanID, result, j.cfg.ExpectedVersion); err != nil {
+	if err := j.scanRepo.MarkComplete(ctx, scanID, s.Name(), result, j.cfg.ExpectedVersion); err != nil {
 		slog.Error("module scanner: failed to store result", "scan_id", scanID, "error", err)
 		return
 	}
