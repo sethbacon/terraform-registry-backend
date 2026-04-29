@@ -7,6 +7,8 @@ package scanner
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -231,6 +233,120 @@ func TestNew_InaccessibleBinary(t *testing.T) {
 	_, err := New(cfg)
 	if err == nil {
 		t.Error("expected error for inaccessible binary, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ResolveBinaryPath / New() fallback to InstallDir
+// ---------------------------------------------------------------------------
+
+// stageInstalledBinary copies the test binary to {installDir}/{tool} so that
+// ResolveBinaryPath can find it as the auto-installer fallback would.
+func stageInstalledBinary(t *testing.T, tool string) (installDir, binaryAtInstallDir string) {
+	t.Helper()
+	installDir = t.TempDir()
+	binaryAtInstallDir = filepath.Join(installDir, tool)
+	src, err := os.ReadFile(selfPath(t))
+	if err != nil {
+		t.Fatalf("read self: %v", err)
+	}
+	if err := os.WriteFile(binaryAtInstallDir, src, 0o755); err != nil {
+		t.Fatalf("write fake installed binary: %v", err)
+	}
+	return installDir, binaryAtInstallDir
+}
+
+func TestResolveBinaryPath_PrefersConfiguredPath(t *testing.T) {
+	bin := selfPath(t)
+	installDir, _ := stageInstalledBinary(t, "trivy")
+	cfg := &config.ScanningConfig{
+		BinaryPath: bin,
+		Tool:       "trivy",
+		InstallDir: installDir,
+	}
+	resolved, ok := ResolveBinaryPath(cfg)
+	if !ok {
+		t.Fatal("expected resolution to succeed")
+	}
+	if resolved != bin {
+		t.Errorf("resolved = %q, want configured path %q", resolved, bin)
+	}
+}
+
+func TestResolveBinaryPath_FallsBackToInstallDir(t *testing.T) {
+	installDir, fallback := stageInstalledBinary(t, "trivy")
+	cfg := &config.ScanningConfig{
+		BinaryPath: "/nonexistent/path/to/trivy",
+		Tool:       "trivy",
+		InstallDir: installDir,
+	}
+	resolved, ok := ResolveBinaryPath(cfg)
+	if !ok {
+		t.Fatal("expected fallback resolution to succeed")
+	}
+	if resolved != fallback {
+		t.Errorf("resolved = %q, want fallback %q", resolved, fallback)
+	}
+}
+
+func TestResolveBinaryPath_NoUsableBinary(t *testing.T) {
+	cfg := &config.ScanningConfig{
+		BinaryPath: "/nonexistent/binary",
+		Tool:       "trivy",
+		InstallDir: "/nonexistent/installdir",
+	}
+	if _, ok := ResolveBinaryPath(cfg); ok {
+		t.Error("expected resolution to fail when neither path exists")
+	}
+}
+
+func TestResolveBinaryPath_EmptyBinaryPathStillFallsBack(t *testing.T) {
+	// Operators may leave BinaryPath blank and rely entirely on the auto-installer.
+	installDir, fallback := stageInstalledBinary(t, "trivy")
+	cfg := &config.ScanningConfig{
+		BinaryPath: "",
+		Tool:       "trivy",
+		InstallDir: installDir,
+	}
+	resolved, ok := ResolveBinaryPath(cfg)
+	if !ok {
+		t.Fatal("expected fallback to succeed with empty BinaryPath")
+	}
+	if resolved != fallback {
+		t.Errorf("resolved = %q, want %q", resolved, fallback)
+	}
+}
+
+func TestNew_FallsBackToInstallDir(t *testing.T) {
+	installDir, _ := stageInstalledBinary(t, "trivy")
+	cfg := &config.ScanningConfig{
+		BinaryPath: "/nonexistent/path/to/trivy",
+		Tool:       "trivy",
+		InstallDir: installDir,
+	}
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: unexpected error: %v", err)
+	}
+	if s.Name() != "trivy" {
+		t.Errorf("Name = %q, want trivy", s.Name())
+	}
+
+	// Exercising Version() against the staged binary requires it to be
+	// launchable via os/exec.  Windows refuses to exec a file without .exe,
+	// and the production auto-installer is Linux/macOS-only (catalog.go has
+	// no Windows entries), so skip the exec-side check on Windows — the
+	// construction-side assertions above are sufficient.
+	if runtime.GOOS == "windows" {
+		return
+	}
+	t.Setenv("FAKE_SCANNER_MODE", "trivy-version")
+	ver, err := s.Version(t.Context())
+	if err != nil {
+		t.Fatalf("Version: %v", err)
+	}
+	if ver != "0.45.0" {
+		t.Errorf("Version = %q, want 0.45.0", ver)
 	}
 }
 

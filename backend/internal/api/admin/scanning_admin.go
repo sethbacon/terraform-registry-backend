@@ -3,7 +3,6 @@ package admin
 
 import (
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -75,9 +74,10 @@ func GetScanningConfigHandler(cfg *config.ScanningConfig) gin.HandlerFunc {
 			BinaryPath:        cfg.BinaryPath,
 		}
 
-		if cfg.Enabled && cfg.BinaryPath != "" {
-			if _, err := os.Stat(cfg.BinaryPath); err == nil {
+		if cfg.Enabled {
+			if resolved, ok := scanner.ResolveBinaryPath(cfg); ok {
 				resp.BinaryFound = true
+				resp.BinaryPath = resolved
 				if s, err := scanner.New(cfg); err == nil {
 					if v, err := s.Version(c.Request.Context()); err == nil {
 						resp.DetectedVersion = &v

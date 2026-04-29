@@ -11,7 +11,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/terraform-registry/terraform-registry/internal/config"
@@ -50,11 +52,50 @@ func truncateExecutionLog(s string) string {
 	return s[:maxBytes] + "\n... (truncated)"
 }
 
+// ResolveBinaryPath returns the path to the scanner binary that should actually
+// be invoked. It prefers the operator-configured cfg.BinaryPath when that file
+// exists, and falls back to the auto-installer's symlink at
+// {InstallDir}/{Tool} when BinaryPath is missing.  This lets installations that
+// rely on the in-app auto-installer keep working even if BinaryPath in the chart
+// values still points at the legacy /usr/local/bin/<tool> default.
+//
+// The second return value is the path that was actually checked successfully,
+// which may differ from cfg.BinaryPath when the fallback was used.  An empty
+// string means no usable binary was found.
+func ResolveBinaryPath(cfg *config.ScanningConfig) (string, bool) {
+	if cfg.BinaryPath != "" {
+		if _, err := os.Stat(cfg.BinaryPath); err == nil {
+			return cfg.BinaryPath, true
+		}
+	}
+	if cfg.InstallDir != "" && cfg.Tool != "" {
+		fallback := filepath.Join(cfg.InstallDir, cfg.Tool)
+		if _, err := os.Stat(fallback); err == nil {
+			return fallback, true
+		}
+	}
+	return "", false
+}
+
 // New constructs the appropriate Scanner implementation based on the operator config.
-// Returns an error if the tool is unknown or the binary is not accessible.
+// Returns an error if the tool is unknown or no usable binary can be located.
+//
+// When cfg.BinaryPath does not exist but {InstallDir}/{Tool} does, the latter is
+// used and a warning is logged.  This handles the common case where the chart
+// default BinaryPath (e.g. /usr/local/bin/trivy) is wrong for installations that
+// rely on the in-app auto-installer.
 func New(cfg *config.ScanningConfig) (Scanner, error) {
-	if _, err := os.Stat(cfg.BinaryPath); err != nil {
-		return nil, fmt.Errorf("scanner binary not accessible at %q: %w", cfg.BinaryPath, err)
+	resolved, ok := ResolveBinaryPath(cfg)
+	if !ok {
+		return nil, fmt.Errorf("scanner binary not accessible at %q (also checked %s): no usable binary found",
+			cfg.BinaryPath, filepath.Join(cfg.InstallDir, cfg.Tool))
+	}
+	if resolved != cfg.BinaryPath {
+		slog.Warn("scanner: configured binary_path missing, using auto-installed binary",
+			"tool", cfg.Tool,
+			"configured_path", cfg.BinaryPath,
+			"resolved_path", resolved,
+			"hint", "update scanning.binary_path in your config to "+resolved)
 	}
 	timeout := cfg.Timeout
 	if timeout == 0 {
@@ -62,15 +103,15 @@ func New(cfg *config.ScanningConfig) (Scanner, error) {
 	}
 	switch cfg.Tool {
 	case "trivy":
-		return newTrivyScanner(cfg.BinaryPath, timeout), nil
+		return newTrivyScanner(resolved, timeout), nil
 	case "terrascan":
-		return newTerrascanScanner(cfg.BinaryPath, timeout), nil
+		return newTerrascanScanner(resolved, timeout), nil
 	case "snyk":
-		return newSnykScanner(cfg.BinaryPath, timeout), nil
+		return newSnykScanner(resolved, timeout), nil
 	case "checkov":
-		return newCheckovScanner(cfg.BinaryPath, timeout), nil
+		return newCheckovScanner(resolved, timeout), nil
 	case "custom":
-		return newCustomScanner(cfg.BinaryPath, cfg.VersionArgs, cfg.ScanArgs, cfg.OutputFormat, timeout), nil
+		return newCustomScanner(resolved, cfg.VersionArgs, cfg.ScanArgs, cfg.OutputFormat, timeout), nil
 	default:
 		return nil, fmt.Errorf("unknown scanner tool %q (supported: trivy, terrascan, snyk, checkov, custom)", cfg.Tool)
 	}
