@@ -49,7 +49,7 @@ during SOC 2 Type II audits.
 | -------- | ----------------------------- | -------------------------------------------------------- | --------------------------------------------------------------------- |
 | CC5.1    | Risk-mitigating controls      | Rate limiting, input validation, parameterized queries   | `backend/internal/middleware/ratelimit.go`, API handlers              |
 | CC5.2    | Technology controls           | TLS, encryption at rest (encryption key), bcrypt hashing | Config, `backend/internal/crypto/`, `backend/internal/auth/apikey.go` |
-| CC5.3    | Policy and procedure controls | CONTRIBUTING.md, release process, CLAUDE.md              | Repository documentation                                              |
+| CC5.3    | Policy and procedure controls | CONTRIBUTING.md, RELEASING.md, SECURITY.md               | Repository documentation                                              |
 
 ## CC6 — Logical and Physical Access Controls
 
