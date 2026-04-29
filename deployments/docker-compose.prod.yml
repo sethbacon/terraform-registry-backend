@@ -20,7 +20,7 @@ services:
 
   backend:
     # Use pre-built image in production (override build context)
-    image: ${REGISTRY_IMAGE:-terraform-registry-backend}:${REGISTRY_TAG:-latest}
+    image: ${REGISTRY_IMAGE:-ghcr.io/sethbacon/terraform-registry-backend}:${REGISTRY_TAG:-latest}
     env_file:
       - .env.production
     environment:
@@ -44,7 +44,15 @@ services:
         condition: on-failure
         max_attempts: 5
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://localhost:8080/health",
+        ]
       interval: 30s
       timeout: 3s
       retries: 3

@@ -28,7 +28,7 @@ This project expects all participants to interact with each other professionally
 
 ### Prerequisites
 
-- Go 1.24 or later
+- Go 1.26 or later
 - PostgreSQL 14+
 - Docker and Docker Compose
 
@@ -70,12 +70,12 @@ For the frontend UI, see [terraform-registry-frontend](https://github.com/sethba
 
 ### Branch Naming
 
-| Type | Pattern | Example |
-|------|---------|---------|
-| Feature | `feat/short-description` | `feat/s3-multipart-upload` |
-| Bug fix | `fix/issue-description` | `fix/webhook-signature-validation` |
-| Documentation | `docs/topic` | `docs/deployment-guide` |
-| Refactor | `refactor/area` | `refactor/scm-connector-interface` |
+| Type          | Pattern                  | Example                            |
+| ------------- | ------------------------ | ---------------------------------- |
+| Feature       | `feat/short-description` | `feat/s3-multipart-upload`         |
+| Bug fix       | `fix/issue-description`  | `fix/webhook-signature-validation` |
+| Documentation | `docs/topic`             | `docs/deployment-guide`            |
+| Refactor      | `refactor/area`          | `refactor/scm-connector-interface` |
 
 ### Conventional Commits
 
@@ -85,18 +85,18 @@ PR titles (and commit messages) must follow [Conventional Commits](https://www.c
 <type>(<optional scope>): <description>
 ```
 
-| Type | When to use |
-|------|-------------|
-| `feat` | New user-facing feature (minor version bump) |
-| `fix` | Bug fix (patch bump) |
-| `perf` | Performance improvement (patch bump) |
-| `security` | Security fix (patch bump) |
-| `refactor` | Code restructure, no behavior change |
-| `docs` | Documentation only |
-| `test` | Adding or fixing tests |
-| `ci` | CI/CD workflow changes |
-| `chore` | Maintenance, deps, tooling |
-| `deps` | Dependency updates |
+| Type       | When to use                                  |
+| ---------- | -------------------------------------------- |
+| `feat`     | New user-facing feature (minor version bump) |
+| `fix`      | Bug fix (patch bump)                         |
+| `perf`     | Performance improvement (patch bump)         |
+| `security` | Security fix (patch bump)                    |
+| `refactor` | Code restructure, no behavior change         |
+| `docs`     | Documentation only                           |
+| `test`     | Adding or fixing tests                       |
+| `ci`       | CI/CD workflow changes                       |
+| `chore`    | Maintenance, deps, tooling                   |
+| `deps`     | Dependency updates                           |
 
 Breaking changes: append `!` to the type (`feat!:`) **or** add a `BREAKING CHANGE:` footer in the commit body. These trigger a major version bump.
 

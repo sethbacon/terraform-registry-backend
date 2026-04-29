@@ -25,7 +25,7 @@ Process webhook events asynchronously using fire-and-forget goroutines:
 - A background goroutine calls `SCMPublisher.ProcessTagPush()` with a 10-minute timeout.
 - On success, the event is marked `completed`.
 - On failure, the event is marked `failed` with the error message stored.
-- No automatic retry is performed (retry was deferred to a future phase; see Phase 2.1 in the roadmap for the webhook retry implementation).
+- No automatic retry is performed in this initial implementation. Webhook retry with exponential backoff was introduced in a later release; see the migration history under `backend/internal/db/migrations/` and the webhook retry handler implementation for current behavior.
 
 ## Consequences
 

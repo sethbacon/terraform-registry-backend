@@ -19,9 +19,10 @@ to a tested combination of versions.
 
 ## Compatibility matrix
 
-| Release line | Backend image tag | Frontend image tag | Notes                                                  |
-| ------------ | ----------------- | ------------------ | ------------------------------------------------------ |
-| `0.15.x`     | `v0.15.0`         | `v0.15.1`          | First aligned release. Frontend includes i18n updates. |
+| Release line | Backend image tag | Frontend image tag | Notes                                                               |
+| ------------ | ----------------- | ------------------ | ------------------------------------------------------------------- |
+| `0.18.x`     | `v0.18.2`         | `v0.18.2`          | Current stable: CVE polling, scanner improvements, migration fixes. |
+| `0.15.x`     | `v0.15.0`         | `v0.15.1`          | First aligned release. Frontend includes i18n updates. (historical) |
 
 ## Where versions live
 

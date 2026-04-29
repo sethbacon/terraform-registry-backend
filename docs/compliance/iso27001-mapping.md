@@ -17,7 +17,7 @@ seeking ISO 27001 certification that include the registry in their ISMS scope.
 | A.5.2   | Information security roles                 | CODEOWNERS, RBAC scopes                                        | `.github/CODEOWNERS`, `backend/internal/auth/scopes.go` |
 | A.5.3   | Segregation of duties                      | Separate scopes for read/write/admin; SCIM has dedicated scope | Role templates, scope enforcement                       |
 | A.5.7   | Threat intelligence                        | Dependabot alerts, OSV scanner, gosec baseline                 | `.github/dependabot.yml`, CI workflows                  |
-| A.5.8   | Information security in project management | Roadmap with security phases, ADRs for security decisions      | `ROADMAP.md`, `docs/adr/*.md`                           |
+| A.5.8   | Information security in project management | ADRs for security decisions, CHANGELOG of security fixes       | `docs/adr/*.md`, `CHANGELOG.md`                         |
 | A.5.9   | Inventory of information assets            | Asset classification in threat model                           | `docs/threat-model.md` §4                               |
 | A.5.10  | Acceptable use                             | Code of Conduct, Contributing guide                            | `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`                 |
 | A.5.14  | Information transfer                       | TLS for all connections; audit log shipping over TLS           | Server config, audit shipper config                     |

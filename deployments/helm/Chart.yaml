@@ -9,6 +9,6 @@ keywords:
   - registry
   - infrastructure
   - devops
-home: https://github.com/terraform-registry/terraform-registry
+home: https://github.com/sethbacon/terraform-registry-backend
 maintainers:
   - name: terraform-registry

@@ -21,11 +21,11 @@ during SOC 2 Type II audits.
 
 ## CC2 — Communication and Information
 
-| Criteria | Control                                    | Registry Feature                          | Evidence Source                                       |
-| -------- | ------------------------------------------ | ----------------------------------------- | ----------------------------------------------------- |
-| CC2.1    | Internal communication of objectives       | Architecture docs, ADRs, roadmap          | `docs/architecture.md`, `docs/adr/*.md`, `ROADMAP.md` |
-| CC2.2    | Internal communication of responsibilities | CODEOWNERS, contributing guide            | `.github/CODEOWNERS`, `CONTRIBUTING.md`               |
-| CC2.3    | External communication                     | Security policy, vulnerability disclosure | `SECURITY.md`, GitHub Security Advisories             |
+| Criteria | Control                                    | Registry Feature                          | Evidence Source                           |
+| -------- | ------------------------------------------ | ----------------------------------------- | ----------------------------------------- |
+| CC2.1    | Internal communication of objectives       | Architecture docs and ADRs                | `docs/architecture.md`, `docs/adr/*.md`   |
+| CC2.2    | Internal communication of responsibilities | CODEOWNERS, contributing guide            | `.github/CODEOWNERS`, `CONTRIBUTING.md`   |
+| CC2.3    | External communication                     | Security policy, vulnerability disclosure | `SECURITY.md`, GitHub Security Advisories |
 
 ## CC3 — Risk Assessment
 

@@ -17,7 +17,7 @@ Before upgrading, run the preflight validation command:
 # Docker
 docker run --rm \
   -v $(pwd)/config.yaml:/app/config.yaml \
-  ghcr.io/terraform-registry/backend:NEW_VERSION \
+  ghcr.io/sethbacon/terraform-registry-backend:NEW_VERSION \
   upgrade preflight --config /app/config.yaml
 ```
 

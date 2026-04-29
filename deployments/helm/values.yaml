@@ -60,8 +60,8 @@ frontend:
   # -- Number of frontend replicas
   replicaCount: 2
   image:
-    repository: terraform-registry-frontend
-    tag: "0.15.1"
+    repository: ghcr.io/sethbacon/terraform-registry-frontend
+    tag: "0.18.2"
     pullPolicy: IfNotPresent
   resources:
     requests:
