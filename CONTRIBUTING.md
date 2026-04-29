@@ -29,7 +29,7 @@ This project expects all participants to interact with each other professionally
 ### Prerequisites
 
 - Go 1.26 or later
-- PostgreSQL 14+
+- PostgreSQL 14+ (16 recommended)
 - Docker and Docker Compose
 
 ### Fork and Clone

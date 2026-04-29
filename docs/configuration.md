@@ -113,7 +113,8 @@ errors until the connection recovers.
 
 ## Database
 
-PostgreSQL 14 or later is required.
+PostgreSQL 14 or later is required. PostgreSQL 16 is recommended and is the
+version used in the bundled Docker Compose stack and in CI.
 
 ```yaml
 database:

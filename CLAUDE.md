@@ -212,7 +212,7 @@ terraform-registry-backend/
 | -------------- | ------------------------------------------------------------------ |
 | Language       | Go 1.26.2                                                          |
 | HTTP Framework | Gin                                                                |
-| Database       | PostgreSQL 14+ via sqlx                                            |
+| Database       | PostgreSQL 14+ via sqlx (16 recommended)                           |
 | Migrations     | golang-migrate (31 migrations (000001–000031))                     |
 | Auth           | JWT (golang-jwt/jwt v5), API keys, OIDC (coreos/go-oidc), Azure AD |
 | Config         | Viper (`TFR_` env prefix overrides YAML)                           |

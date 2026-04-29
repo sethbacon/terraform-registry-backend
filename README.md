@@ -82,14 +82,10 @@ This repository contains the backend API, database migrations, and deployment in
 
 ### Deployment Options
 
-- **Docker Compose** - Complete development and production setups
-- **Kubernetes + Kustomize** - Production-ready manifests
-- **Helm Chart** - Fully parameterized Helm chart
-- **Azure Container Apps** - Bicep templates
-- **AWS ECS Fargate** - CloudFormation stack
-- **Google Cloud Run** - Knative services
-- **Standalone Binary** - Systemd service with Nginx reverse proxy
-- **Terraform IaC** - Infrastructure-as-Code for AWS, Azure, and GCP
+Docker Compose, Kubernetes (Kustomize and Helm), Azure Container Apps, AWS ECS
+Fargate, Google Cloud Run, standalone binary + systemd, and full Terraform IaC
+for all three major clouds. See the [Deployment Guide](docs/deployment.md) for
+the full matrix, recommended targets, and step-by-step instructions.
 
 ### Terraform Binary Mirror
 
@@ -143,7 +139,7 @@ This repository contains the backend API, database migrations, and deployment in
 ### Prerequisites
 
 - Go 1.26 or later
-- PostgreSQL 14+
+- PostgreSQL 14 or later (16 recommended; used in Docker Compose and CI)
 - Docker & Docker Compose (for containerized deployment)
 
 ### Quick Start with Docker Compose
