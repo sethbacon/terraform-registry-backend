@@ -39,6 +39,110 @@
                 }
             }
         },
+        "/api/v1/admin/advisories": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Returns all advisories including withdrawn ones. Requires admin scope.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Vulnerability Advisories"
+                ],
+                "summary": "List all CVE advisories (admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Filter by target kind: binary, provider, scanner",
+                        "name": "kind",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "type": "object"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden — admin scope required",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/admin/advisories/poll": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Queues an immediate CVE poll pass outside the normal schedule. Requires admin scope.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Vulnerability Advisories"
+                ],
+                "summary": "Trigger a CVE poll (admin)",
+                "responses": {
+                    "202": {
+                        "description": "Poll queued",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden — admin scope required",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "503": {
+                        "description": "CVE poll job not running",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/admin/approvals": {
             "get": {
                 "security": [
@@ -4295,6 +4399,36 @@
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/advisories/active": {
+            "get": {
+                "description": "Returns all CVE advisories that have at least one non-deprecated affected version.\nWithdrawn advisories and advisories where all affected versions have been deprecated are excluded.\nResults are cached for 5 minutes.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Vulnerability Advisories"
+                ],
+                "summary": "List active CVE advisories",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.CVEActiveAdvisoryResponse"
+                            }
                         }
                     },
                     "500": {
@@ -13196,6 +13330,132 @@
                 "ApprovalStatusApproved",
                 "ApprovalStatusRejected"
             ]
+        },
+        "models.CVEActiveAdvisoryResponse": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string"
+                },
+                "references": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "severity": {
+                    "$ref": "#/definitions/models.CVESeverity"
+                },
+                "source_id": {
+                    "type": "string"
+                },
+                "summary": {
+                    "type": "string"
+                },
+                "target_kind": {
+                    "$ref": "#/definitions/models.CVETargetKind"
+                },
+                "targets": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.CVEAffectedTarget"
+                    }
+                }
+            }
+        },
+        "models.CVEAffectedTarget": {
+            "type": "object",
+            "properties": {
+                "advisory_id": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "provider_version_id": {
+                    "type": "string"
+                },
+                "target_kind": {
+                    "$ref": "#/definitions/models.CVETargetKind"
+                },
+                "target_ref": {
+                    "description": "decoded",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/models.CVETargetRef"
+                        }
+                    ]
+                },
+                "terraform_version_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.CVESeverity": {
+            "type": "string",
+            "enum": [
+                "critical",
+                "high",
+                "medium",
+                "low",
+                "unknown"
+            ],
+            "x-enum-varnames": [
+                "CVESeverityCritical",
+                "CVESeverityHigh",
+                "CVESeverityMedium",
+                "CVESeverityLow",
+                "CVESeverityUnknown"
+            ]
+        },
+        "models.CVETargetKind": {
+            "type": "string",
+            "enum": [
+                "binary",
+                "provider",
+                "scanner"
+            ],
+            "x-enum-varnames": [
+                "CVETargetKindBinary",
+                "CVETargetKindProvider",
+                "CVETargetKindScanner"
+            ]
+        },
+        "models.CVETargetRef": {
+            "type": "object",
+            "properties": {
+                "mirror_config_id": {
+                    "description": "binary",
+                    "type": "string"
+                },
+                "namespace": {
+                    "type": "string"
+                },
+                "provider_id": {
+                    "description": "provider",
+                    "type": "string"
+                },
+                "provider_version_id": {
+                    "type": "string"
+                },
+                "terraform_version_id": {
+                    "type": "string"
+                },
+                "tool": {
+                    "description": "\"terraform\" | \"opentofu\" | scanner name",
+                    "type": "string"
+                },
+                "type": {
+                    "type": "string"
+                },
+                "version": {
+                    "description": "semver",
+                    "type": "string"
+                }
+            }
         },
         "models.CreateMirrorConfigRequest": {
             "type": "object",
