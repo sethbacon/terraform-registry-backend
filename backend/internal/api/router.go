@@ -31,6 +31,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/terraform-registry/terraform-registry/docs"
 	"github.com/terraform-registry/terraform-registry/internal/api/admin"
+	"github.com/terraform-registry/terraform-registry/internal/api/advisories"
 	"github.com/terraform-registry/terraform-registry/internal/api/mirror"
 	"github.com/terraform-registry/terraform-registry/internal/api/modules"
 	"github.com/terraform-registry/terraform-registry/internal/api/oci"
@@ -73,6 +74,7 @@ type BackgroundServices struct {
 	moduleScannerJob   *jobs.ModuleScannerJob
 	auditCleanupJob    *jobs.AuditCleanupJob
 	webhookRetryJob    *jobs.WebhookRetryJob
+	cvePollJob         *jobs.CVEPollJob
 	rateLimiters       []middleware.RateLimiterBackend
 	principalOverrides *middleware.PrincipalOverrideLimiters
 }
@@ -99,6 +101,9 @@ func (bg *BackgroundServices) Shutdown() {
 	}
 	if bg.webhookRetryJob != nil {
 		bg.webhookRetryJob.Stop()
+	}
+	if bg.cvePollJob != nil {
+		bg.cvePollJob.Stop()
 	}
 	for _, rl := range bg.rateLimiters {
 		if rl != nil {
@@ -559,6 +564,12 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	go webhookRetryJob.Start(context.Background())
 	log.Println("Webhook retry job started")
 
+	// Initialize and start the CVE polling job (no-op when cve.enabled=false)
+	cveRepo := repositories.NewCVERepository(db)
+	cvePollJob := jobs.NewCVEPollJob(cveRepo, auditRepo, &cfg.Scanning, &cfg.CVE, &cfg.Notifications)
+	go cvePollJob.Start(context.Background())
+	log.Println("CVE poll job started")
+
 	// Initialize SCM handlers with the already-created repositories and token cipher
 	scmProviderHandlers := admin.NewSCMProviderHandlers(cfg, scmRepo, orgRepo, tokenCipher)
 	scmOAuthHandlers := admin.NewSCMOAuthHandlers(cfg, scmRepo, userRepo, tokenCipher)
@@ -722,6 +733,9 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 		{
 			publicGroup.GET("/modules/search", modules.SearchHandler(db, cfg))
 			publicGroup.GET("/providers/search", providers.SearchHandler(db, cfg))
+			// CVE advisory banner endpoint — consumed by the frontend to show active advisories
+			advisoryHandlers := advisories.NewHandlers(db)
+			publicGroup.GET("/advisories/active", advisoryHandlers.ListActive())
 		}
 
 		// Public detail endpoints — no auth required; optional auth populates user context if a
@@ -1073,6 +1087,15 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 				policyGroup.POST("/reload", policyAdminHandler.ReloadBundle)
 				policyGroup.POST("/evaluate", policyAdminHandler.EvaluateInput)
 			}
+
+			// CVE advisory admin endpoints (requires admin scope)
+			advisoryAdminHandlers := admin.NewAdvisoryHandlers(db, cvePollJob)
+			advisoryAdminGroup := authenticatedGroup.Group("/admin/advisories")
+			advisoryAdminGroup.Use(middleware.RequireScope(auth.ScopeAdmin))
+			{
+				advisoryAdminGroup.GET("", advisoryAdminHandlers.ListAdvisories())
+				advisoryAdminGroup.POST("/poll", advisoryAdminHandlers.TriggerPoll())
+			}
 		}
 
 		// SCIM 2.0 provisioning endpoints — bearer token auth only (no CSRF, no cookie auth).
@@ -1120,6 +1143,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 		moduleScannerJob:   moduleScannerJob,
 		auditCleanupJob:    auditCleanupJob,
 		webhookRetryJob:    webhookRetryJob,
+		cvePollJob:         cvePollJob,
 		rateLimiters:       collectRateLimiterBackends(authRateLimiter, generalRateLimiter, uploadRateLimiter, orgRateLimiter),
 		principalOverrides: principalOverrides,
 	}

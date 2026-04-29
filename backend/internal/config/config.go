@@ -40,6 +40,7 @@ type Config struct {
 	Webhooks       WebhooksConfig       `mapstructure:"webhooks"`
 	BinaryMirror   BinaryMirrorConfig   `mapstructure:"binary_mirror"`
 	Policy         PolicyConfig         `mapstructure:"policy"`
+	CVE            CVEConfig            `mapstructure:"cve"`
 }
 
 // AuditRetentionConfig controls the background audit log cleanup job.
@@ -82,6 +83,28 @@ type PolicyConfig struct {
 	// BundleRefreshInterval is how often (in seconds) the bundle is re-fetched in the background.
 	// 0 means no background refresh.
 	BundleRefreshInterval int `mapstructure:"bundle_refresh_interval"`
+}
+
+// CVEConfig controls the scheduled OSV.dev vulnerability polling feature.
+type CVEConfig struct {
+	// Enabled globally toggles the CVE polling job. Default false (opt-in).
+	Enabled bool `mapstructure:"enabled"`
+	// IntervalHours is how often the poll job runs. Default 24.
+	IntervalHours int `mapstructure:"interval_hours"`
+	// OSVEndpoint overrides the OSV.dev base URL. Default "https://api.osv.dev".
+	OSVEndpoint string `mapstructure:"osv_endpoint"`
+	// EmailRecipients is a list of addresses to notify when new advisories are found.
+	// If empty, no emails are sent even when notifications.enabled=true.
+	EmailRecipients []string `mapstructure:"email_recipients"`
+	// PollBinaries enables querying for advisories affecting Terraform/OpenTofu binary versions.
+	// Default true.
+	PollBinaries bool `mapstructure:"poll_binaries"`
+	// PollProviders enables querying for advisories affecting registered provider versions.
+	// Default true.
+	PollProviders bool `mapstructure:"poll_providers"`
+	// PollScanner enables querying for advisories affecting the configured scanner binary.
+	// Default true.
+	PollScanner bool `mapstructure:"poll_scanner"`
 }
 
 // RedisConfig holds optional Redis connection settings.
@@ -872,6 +895,14 @@ func setDefaults(v *viper.Viper) {
 	// Webhooks defaults
 	v.SetDefault("webhooks.max_retries", 3)
 	v.SetDefault("webhooks.retry_interval_mins", 2)
+
+	// CVE polling defaults
+	v.SetDefault("cve.enabled", false)
+	v.SetDefault("cve.interval_hours", 24)
+	v.SetDefault("cve.osv_endpoint", "https://api.osv.dev")
+	v.SetDefault("cve.poll_binaries", true)
+	v.SetDefault("cve.poll_providers", true)
+	v.SetDefault("cve.poll_scanner", true)
 }
 
 // expandEnv expands environment variables in the format ${VAR_NAME}
