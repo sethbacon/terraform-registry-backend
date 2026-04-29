@@ -49,6 +49,7 @@ type Matcher struct {
 }
 
 // NewMatcher creates a Matcher wired to the given OSV client and repositories.
+// coverage:skip:integration-only — constructor for the live-DB matcher pipeline.
 func NewMatcher(osvClient *osv.Client, cveRepo *repositories.CVERepository, scanCfg *config.ScanningConfig) *Matcher {
 	return &Matcher{
 		osvClient: osvClient,
@@ -66,6 +67,7 @@ type RunResult struct {
 // Run executes a full CVE polling pass across all enabled target kinds.
 // It returns a RunResult with any newly inserted advisories so the caller
 // (job) can emit notifications for them.
+// coverage:skip:integration-only — orchestrates live OSV.dev queries and PostgreSQL writes.
 func (m *Matcher) Run(ctx context.Context, pollBinaries, pollProviders, pollScanner bool) (RunResult, error) {
 	var result RunResult
 
@@ -101,6 +103,7 @@ func (m *Matcher) Run(ctx context.Context, pollBinaries, pollProviders, pollScan
 
 // ---- Binaries ---------------------------------------------------------------
 
+// coverage:skip:integration-only — requires live DB candidates + OSV.dev queries.
 func (m *Matcher) runBinaries(ctx context.Context, result *RunResult) (int, error) {
 	candidates, err := m.cveRepo.ListAllBinaryCandidates(ctx)
 	if err != nil {
@@ -163,6 +166,7 @@ func (m *Matcher) runBinaries(ctx context.Context, result *RunResult) (int, erro
 
 // ---- Providers ---------------------------------------------------------------
 
+// coverage:skip:integration-only — requires live DB candidates + OSV.dev queries.
 func (m *Matcher) runProviders(ctx context.Context, result *RunResult) (int, error) {
 	candidates, err := m.cveRepo.ListAllProviderCandidates(ctx)
 	if err != nil {
@@ -231,6 +235,7 @@ func (m *Matcher) runProviders(ctx context.Context, result *RunResult) (int, err
 
 // ---- Scanner ---------------------------------------------------------------
 
+// coverage:skip:integration-only — requires live ScanningConfig + OSV.dev query.
 func (m *Matcher) runScanner(ctx context.Context, result *RunResult) (int, error) {
 	if m.scanCfg == nil || !m.scanCfg.Enabled {
 		return 0, nil
@@ -277,6 +282,7 @@ func (m *Matcher) runScanner(ctx context.Context, result *RunResult) (int, error
 // persistAdvisories writes OSV advisories to the database as CVEAdvisory rows
 // and populates CVEAffectedTarget rows using the supplied target builder.
 // It returns the list of targets written, the count, and any error.
+// coverage:skip:integration-only — requires a live CVERepository (PostgreSQL).
 func (m *Matcher) persistAdvisories(
 	ctx context.Context,
 	vulns []osv.Advisory,
@@ -350,6 +356,7 @@ func (m *Matcher) persistAdvisories(
 }
 
 // queryBatched splits queries into chunks of batchSize and sends each chunk.
+// coverage:skip:integration-only — requires a live OSV.dev HTTP client.
 func (m *Matcher) queryBatched(ctx context.Context, queries []osv.Query) ([]osv.QueryResult, error) {
 	if len(queries) == 0 {
 		return nil, nil
