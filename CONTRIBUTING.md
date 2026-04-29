@@ -85,19 +85,19 @@ PR titles (and commit messages) must follow [Conventional Commits](https://www.c
 <type>(<optional scope>): <description>
 ```
 
-| Type       | When to use                                  |
-| ---------- | -------------------------------------------- |
-| `feat`     | New user-facing feature (minor version bump) |
+| Type       | When to use                                    |
+| ---------- | ---------------------------------------------- |
+| `feat`     | New user-facing feature (minor version bump)   |
 | `fix`      | Bug fix, including security fixes (patch bump) |
-| `perf`     | Performance improvement (patch bump)         |
-| `refactor` | Code restructure, no behavior change         |
-| `docs`     | Documentation only                           |
-| `style`    | Whitespace/formatting only                   |
-| `test`     | Adding or fixing tests                       |
-| `build`    | Build system / external dependency updates   |
-| `ci`       | CI/CD workflow changes                       |
-| `chore`    | Maintenance, tooling                         |
-| `revert`   | Reverts a previous commit                    |
+| `perf`     | Performance improvement (patch bump)           |
+| `refactor` | Code restructure, no behavior change           |
+| `docs`     | Documentation only                             |
+| `style`    | Whitespace/formatting only                     |
+| `test`     | Adding or fixing tests                         |
+| `build`    | Build system / external dependency updates     |
+| `ci`       | CI/CD workflow changes                         |
+| `chore`    | Maintenance, tooling                           |
+| `revert`   | Reverts a previous commit                      |
 
 > **PR title validation:** PR titles are validated by `amannn/action-semantic-pull-request`
 > with the default ruleset. The types above are the only ones accepted. `security` and
