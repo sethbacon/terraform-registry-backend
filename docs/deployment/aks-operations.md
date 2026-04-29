@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # AKS Operations
 
 Day-2 operational procedures for the Terraform Registry on AKS.
@@ -39,6 +40,7 @@ kubectl get pods -n terraform-registry --watch
 The backend and frontend Deployments use the default `RollingUpdate` strategy.
 
 With `minAvailable: 1` (PDB) and `replicas: 3` (production):
+
 - Maximum 1 pod is unavailable during a rolling update
 - The HPA allows scaling down to `minReplicas: 3`
 - Plan for at least `replicas + 1` schedulable nodes during node pool upgrades

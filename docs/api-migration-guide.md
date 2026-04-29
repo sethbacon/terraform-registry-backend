@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # API Migration Guide
 
 This document tracks API changes introduced across development phases of the Terraform

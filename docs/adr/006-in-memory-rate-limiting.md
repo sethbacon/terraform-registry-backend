@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # 6. In-Memory Rate Limiting
 
 **Status**: Superseded by Redis-backed rate limiting (Phase 1.1)
@@ -25,6 +26,7 @@ Initially implement rate limiting using in-memory token buckets:
 - Per-organization rate limiting adds a second check using `org:<orgID>` as the bucket key.
 
 This was chosen as the initial implementation because:
+
 1. Zero external dependencies -- no Redis required for simple deployments.
 2. Correct behavior for single-instance deployments.
 3. The `RateLimiterBackend` interface was designed from the start to allow swapping in a Redis backend later.
@@ -32,11 +34,13 @@ This was chosen as the initial implementation because:
 ## Consequences
 
 **Easier**:
+
 - No Redis dependency for development or single-instance production deployments.
 - Sub-microsecond rate limit checks (no network round-trip).
 - Simple operational model -- no additional infrastructure to manage.
 
 **Harder**:
+
 - Rate limits are per-pod, not global. A client can multiply their effective limit by the number of backend replicas.
 - No shared state across pods -- cannot enforce organization-level limits accurately in multi-pod deployments.
 - The Redis-backed implementation (`RedisRateLimiter` in `ratelimit_redis.go`) was added in Phase 1.1 to address these limitations, using the GCRA algorithm via `go-redis/redis_rate`.

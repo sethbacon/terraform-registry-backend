@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 MD060 -->
 # Air-Gapped Installation Guide
 
 This guide describes how to deploy the Terraform Registry in a network-isolated
@@ -31,7 +32,7 @@ make airgap-bundle
 
 This produces a tarball containing:
 
-```
+```text
 airgap-bundle/
 ├── images/
 │   ├── backend.tar.gz       # Backend container image
@@ -160,6 +161,7 @@ docker run -d \
 ```
 
 To update the Trivy DB periodically:
+
 1. On a connected machine: `trivy image --download-db-only --cache-dir ./trivy-db`
 2. Transfer `./trivy-db/` to the air-gapped host.
 3. Replace the mounted volume and restart the backend.
@@ -292,7 +294,7 @@ See also: [Upgrade Guide](upgrade-guide.md) for version-specific migration notes
 
 ### Images fail to load
 
-```
+```text
 Error: invalid tar header
 ```
 

@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # Configuration Reference
 
 This document covers all configuration options for the Enterprise Terraform Registry backend. Configuration is loaded from a YAML file (`config.yaml` by default) with environment variable overrides using the `TFR_` prefix.
@@ -23,49 +24,49 @@ For example, `database.host` in YAML becomes `TFR_DATABASE_HOST` as an env var.
 
 ## Quick Reference
 
-| Variable | Type | Default | Required | Description |
-| --- | --- | --- | --- | --- |
-| `TFR_DATABASE_HOST` | string | `localhost` | Yes | PostgreSQL host |
-| `TFR_DATABASE_PORT` | int | `5432` | No | PostgreSQL port |
-| `TFR_DATABASE_NAME` | string | `terraform_registry` | Yes | Database name |
-| `TFR_DATABASE_USER` | string | `registry` | Yes | Database user |
-| `TFR_DATABASE_PASSWORD` | string | — | Yes | Database password |
-| `TFR_DATABASE_SSL_MODE` | string | `require` | No | `disable`, `prefer`, `require`, `verify-ca`, `verify-full` |
-| `TFR_DATABASE_MAX_CONNECTIONS` | int | `25` | No | Connection pool size |
-| `TFR_SERVER_HOST` | string | `0.0.0.0` | No | Bind address |
-| `TFR_SERVER_PORT` | int | `8080` | No | HTTP listen port |
-| `TFR_SERVER_BASE_URL` | string | `http://localhost:8080` | Yes | Public URL (used in redirect and download URLs) |
-| `TFR_SERVER_READ_TIMEOUT` | duration | `30s` | No | HTTP read timeout |
-| `TFR_SERVER_WRITE_TIMEOUT` | duration | `30s` | No | HTTP write timeout |
-| `TFR_STORAGE_DEFAULT_BACKEND` | string | `local` | No | `local`, `azure`, `s3`, `gcs` |
-| `TFR_JWT_SECRET` | string | — | Yes (prod) | JWT signing secret, min 32 chars |
-| `ENCRYPTION_KEY` | string | — | Yes | 32-byte key for SCM OAuth token encryption |
-| `TFR_AUTH_API_KEYS_ENABLED` | bool | `true` | No | Enable API key authentication |
-| `TFR_AUTH_OIDC_ENABLED` | bool | `false` | No | Enable generic OIDC |
-| `TFR_AUTH_AZURE_AD_ENABLED` | bool | `false` | No | Enable Azure AD / Entra ID |
-| `TFR_MULTI_TENANCY_ENABLED` | bool | `false` | No | Enable multi-organization mode |
-| `TFR_LOGGING_LEVEL` | string | `info` | No | `debug`, `info`, `warn`, `error` |
-| `TFR_LOGGING_FORMAT` | string | `json` | No | `json`, `text` |
-| `TFR_TELEMETRY_ENABLED` | bool | `true` | No | Enable telemetry subsystem |
-| `TFR_TELEMETRY_METRICS_PROMETHEUS_PORT` | int | `9090` | No | Prometheus metrics port |
-| `TFR_REDIS_HOST` | string | — | No | Redis host (enables HA rate limiting and OIDC sessions) |
-| `TFR_REDIS_PORT` | int | `6379` | No | Redis port |
-| `TFR_REDIS_PASSWORD` | string | — | No | Redis password |
-| `TFR_REDIS_DB` | int | `0` | No | Redis database number |
-| `TFR_REDIS_TLS` | bool | `false` | No | Enable TLS for Redis connection |
-| `TFR_REDIS_POOL_SIZE` | int | `10` | No | Redis connection pool size |
-| `TFR_REDIS_DIAL_TIMEOUT` | duration | `5s` | No | Redis connection timeout |
-| `TFR_JWT_SECRET_FILE` | string | — | No | Path to file containing JWT secret (enables hot-reload) |
-| `ENCRYPTION_KEY_PREVIOUS` | string | — | No | Previous encryption key for zero-downtime rotation |
-| `TFR_SECURITY_RATE_LIMITING_ORG_REQUESTS_PER_MINUTE` | int | `0` | No | Per-org aggregate rate limit (0 = disabled) |
-| `TFR_SECURITY_RATE_LIMITING_ORG_BURST` | int | `0` | No | Per-org burst allowance |
-| `TFR_SCANNING_ENABLED` | bool | `false` | No | Enable module security scanning |
-| `TFR_SCANNING_TOOL` | string | `trivy` | No | Scanner backend (`trivy`, `checkov`, `terrascan`, `snyk`, `custom`) |
-| `TFR_AUDIT_RETENTION_RETENTION_DAYS` | int | `90` | No | Delete audit logs older than N days (0 = keep forever) |
-| `TFR_AUDIT_RETENTION_CLEANUP_BATCH_SIZE` | int | `1000` | No | Rows per cleanup batch |
-| `TFR_WEBHOOKS_MAX_RETRIES` | int | `3` | No | Webhook delivery retry attempts (0 = no retries) |
-| `TFR_WEBHOOKS_RETRY_INTERVAL_MINS` | int | `2` | No | Minutes between webhook retries |
-| `TFR_NOTIFICATIONS_ENABLED` | bool | `false` | No | Enable outbound email notifications |
+| Variable                                             | Type     | Default                 | Required   | Description                                                         |
+| ---------------------------------------------------- | -------- | ----------------------- | ---------- | ------------------------------------------------------------------- |
+| `TFR_DATABASE_HOST`                                  | string   | `localhost`             | Yes        | PostgreSQL host                                                     |
+| `TFR_DATABASE_PORT`                                  | int      | `5432`                  | No         | PostgreSQL port                                                     |
+| `TFR_DATABASE_NAME`                                  | string   | `terraform_registry`    | Yes        | Database name                                                       |
+| `TFR_DATABASE_USER`                                  | string   | `registry`              | Yes        | Database user                                                       |
+| `TFR_DATABASE_PASSWORD`                              | string   | —                       | Yes        | Database password                                                   |
+| `TFR_DATABASE_SSL_MODE`                              | string   | `require`               | No         | `disable`, `prefer`, `require`, `verify-ca`, `verify-full`          |
+| `TFR_DATABASE_MAX_CONNECTIONS`                       | int      | `25`                    | No         | Connection pool size                                                |
+| `TFR_SERVER_HOST`                                    | string   | `0.0.0.0`               | No         | Bind address                                                        |
+| `TFR_SERVER_PORT`                                    | int      | `8080`                  | No         | HTTP listen port                                                    |
+| `TFR_SERVER_BASE_URL`                                | string   | `http://localhost:8080` | Yes        | Public URL (used in redirect and download URLs)                     |
+| `TFR_SERVER_READ_TIMEOUT`                            | duration | `30s`                   | No         | HTTP read timeout                                                   |
+| `TFR_SERVER_WRITE_TIMEOUT`                           | duration | `30s`                   | No         | HTTP write timeout                                                  |
+| `TFR_STORAGE_DEFAULT_BACKEND`                        | string   | `local`                 | No         | `local`, `azure`, `s3`, `gcs`                                       |
+| `TFR_JWT_SECRET`                                     | string   | —                       | Yes (prod) | JWT signing secret, min 32 chars                                    |
+| `ENCRYPTION_KEY`                                     | string   | —                       | Yes        | 32-byte key for SCM OAuth token encryption                          |
+| `TFR_AUTH_API_KEYS_ENABLED`                          | bool     | `true`                  | No         | Enable API key authentication                                       |
+| `TFR_AUTH_OIDC_ENABLED`                              | bool     | `false`                 | No         | Enable generic OIDC                                                 |
+| `TFR_AUTH_AZURE_AD_ENABLED`                          | bool     | `false`                 | No         | Enable Azure AD / Entra ID                                          |
+| `TFR_MULTI_TENANCY_ENABLED`                          | bool     | `false`                 | No         | Enable multi-organization mode                                      |
+| `TFR_LOGGING_LEVEL`                                  | string   | `info`                  | No         | `debug`, `info`, `warn`, `error`                                    |
+| `TFR_LOGGING_FORMAT`                                 | string   | `json`                  | No         | `json`, `text`                                                      |
+| `TFR_TELEMETRY_ENABLED`                              | bool     | `true`                  | No         | Enable telemetry subsystem                                          |
+| `TFR_TELEMETRY_METRICS_PROMETHEUS_PORT`              | int      | `9090`                  | No         | Prometheus metrics port                                             |
+| `TFR_REDIS_HOST`                                     | string   | —                       | No         | Redis host (enables HA rate limiting and OIDC sessions)             |
+| `TFR_REDIS_PORT`                                     | int      | `6379`                  | No         | Redis port                                                          |
+| `TFR_REDIS_PASSWORD`                                 | string   | —                       | No         | Redis password                                                      |
+| `TFR_REDIS_DB`                                       | int      | `0`                     | No         | Redis database number                                               |
+| `TFR_REDIS_TLS`                                      | bool     | `false`                 | No         | Enable TLS for Redis connection                                     |
+| `TFR_REDIS_POOL_SIZE`                                | int      | `10`                    | No         | Redis connection pool size                                          |
+| `TFR_REDIS_DIAL_TIMEOUT`                             | duration | `5s`                    | No         | Redis connection timeout                                            |
+| `TFR_JWT_SECRET_FILE`                                | string   | —                       | No         | Path to file containing JWT secret (enables hot-reload)             |
+| `ENCRYPTION_KEY_PREVIOUS`                            | string   | —                       | No         | Previous encryption key for zero-downtime rotation                  |
+| `TFR_SECURITY_RATE_LIMITING_ORG_REQUESTS_PER_MINUTE` | int      | `0`                     | No         | Per-org aggregate rate limit (0 = disabled)                         |
+| `TFR_SECURITY_RATE_LIMITING_ORG_BURST`               | int      | `0`                     | No         | Per-org burst allowance                                             |
+| `TFR_SCANNING_ENABLED`                               | bool     | `false`                 | No         | Enable module security scanning                                     |
+| `TFR_SCANNING_TOOL`                                  | string   | `trivy`                 | No         | Scanner backend (`trivy`, `checkov`, `terrascan`, `snyk`, `custom`) |
+| `TFR_AUDIT_RETENTION_RETENTION_DAYS`                 | int      | `90`                    | No         | Delete audit logs older than N days (0 = keep forever)              |
+| `TFR_AUDIT_RETENTION_CLEANUP_BATCH_SIZE`             | int      | `1000`                  | No         | Rows per cleanup batch                                              |
+| `TFR_WEBHOOKS_MAX_RETRIES`                           | int      | `3`                     | No         | Webhook delivery retry attempts (0 = no retries)                    |
+| `TFR_WEBHOOKS_RETRY_INTERVAL_MINS`                   | int      | `2`                     | No         | Minutes between webhook retries                                     |
+| `TFR_NOTIFICATIONS_ENABLED`                          | bool     | `false`                 | No         | Enable outbound email notifications                                 |
 
 ---
 
@@ -87,15 +88,15 @@ redis:
   dial_timeout: 5s             # timeout for new connections
 ```
 
-| Variable | Type | Default | Description |
-| --- | --- | --- | --- |
-| `TFR_REDIS_HOST` | string | — | Redis server hostname or IP. When empty, HA features use in-memory fallback. |
-| `TFR_REDIS_PORT` | int | `6379` | Redis server port. |
-| `TFR_REDIS_PASSWORD` | string | — | Redis AUTH password. Leave blank for unauthenticated connections. |
-| `TFR_REDIS_DB` | int | `0` | Redis database number (0-15). |
-| `TFR_REDIS_TLS` | bool | `false` | Enable TLS. Required for Azure Cache for Redis and AWS ElastiCache with in-transit encryption. |
-| `TFR_REDIS_POOL_SIZE` | int | `10` | Maximum number of connections per backend instance. |
-| `TFR_REDIS_DIAL_TIMEOUT` | duration | `5s` | Timeout for establishing new connections. |
+| Variable                 | Type     | Default | Description                                                                                    |
+| ------------------------ | -------- | ------- | ---------------------------------------------------------------------------------------------- |
+| `TFR_REDIS_HOST`         | string   | —       | Redis server hostname or IP. When empty, HA features use in-memory fallback.                   |
+| `TFR_REDIS_PORT`         | int      | `6379`  | Redis server port.                                                                             |
+| `TFR_REDIS_PASSWORD`     | string   | —       | Redis AUTH password. Leave blank for unauthenticated connections.                              |
+| `TFR_REDIS_DB`           | int      | `0`     | Redis database number (0-15).                                                                  |
+| `TFR_REDIS_TLS`          | bool     | `false` | Enable TLS. Required for Azure Cache for Redis and AWS ElastiCache with in-transit encryption. |
+| `TFR_REDIS_POOL_SIZE`    | int      | `10`    | Maximum number of connections per backend instance.                                            |
+| `TFR_REDIS_DIAL_TIMEOUT` | duration | `5s`    | Timeout for establishing new connections.                                                      |
 
 ### Redis in Kubernetes
 
@@ -113,7 +114,8 @@ errors until the connection recovers.
 
 ## Database
 
-PostgreSQL 14 or later is required.
+PostgreSQL 14 or later is required. PostgreSQL 16 is recommended and is the
+version used in the bundled Docker Compose stack and in CI.
 
 ```yaml
 database:
@@ -128,12 +130,12 @@ database:
 
 ### SSL Mode Options
 
-| Value | Description |
-| --- | --- |
-| `disable` | No TLS. Use only in isolated internal networks. |
-| `prefer` | Use TLS if available, fall back to plain. Suitable for development. |
-| `require` | Require TLS but do not verify the server certificate. |
-| `verify-ca` | Require TLS and verify the certificate is signed by a trusted CA. |
+| Value         | Description                                                                                   |
+| ------------- | --------------------------------------------------------------------------------------------- |
+| `disable`     | No TLS. Use only in isolated internal networks.                                               |
+| `prefer`      | Use TLS if available, fall back to plain. Suitable for development.                           |
+| `require`     | Require TLS but do not verify the server certificate.                                         |
+| `verify-ca`   | Require TLS and verify the certificate is signed by a trusted CA.                             |
 | `verify-full` | Require TLS, verify certificate, and verify the hostname matches. Recommended for production. |
 
 ### Connection Pool
@@ -203,12 +205,12 @@ storage:
     access_tier: Hot                    # Hot | Cool | Cold | Archive
 ```
 
-| Variable | Description |
-| --- | --- |
-| `TFR_STORAGE_AZURE_ACCOUNT_NAME` | Storage account name (visible in Azure Portal) |
-| `TFR_STORAGE_AZURE_ACCOUNT_KEY` | Primary or secondary access key |
-| `TFR_STORAGE_AZURE_CONTAINER_NAME` | Blob container name. Must exist before first use. |
-| `TFR_STORAGE_AZURE_CDN_URL` | Optional CDN endpoint URL for high-performance downloads |
+| Variable                             | Description                                                        |
+| ------------------------------------ | ------------------------------------------------------------------ |
+| `TFR_STORAGE_AZURE_ACCOUNT_NAME`     | Storage account name (visible in Azure Portal)                     |
+| `TFR_STORAGE_AZURE_ACCOUNT_KEY`      | Primary or secondary access key                                    |
+| `TFR_STORAGE_AZURE_CONTAINER_NAME`   | Blob container name. Must exist before first use.                  |
+| `TFR_STORAGE_AZURE_CDN_URL`          | Optional CDN endpoint URL for high-performance downloads           |
 | `TFR_STORAGE_AZURE_SAS_TOKEN_EXPIRY` | Duration for which download SAS URLs are valid (e.g., `15m`, `1h`) |
 
 ### AWS S3 / S3-Compatible
@@ -235,12 +237,12 @@ storage:
 
 Choose the authentication method that matches your deployment:
 
-| Method | When to Use |
-| --- | --- |
-| `default` | **Recommended for AWS.** Uses the AWS credential chain: env vars → shared credentials file → EC2 instance profile → ECS task role → EKS IRSA. Zero-credential configuration for cloud deployments. |
-| `static` | Explicit access key and secret. Use only for local development against MinIO or for S3-compatible services that don't support IAM. Never use in production AWS deployments. |
-| `oidc` | Web Identity / OIDC token file (e.g., EKS Pod Identity, GitHub Actions OIDC). The registry assumes a role by exchanging an OIDC token. Keyless — no long-lived credentials. |
-| `assume_role` | AssumeRole for cross-account access. The current identity (from the `default` chain) assumes a specified role ARN. Use `external_id` when required by the role's trust policy. |
+| Method        | When to Use                                                                                                                                                                                        |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `default`     | **Recommended for AWS.** Uses the AWS credential chain: env vars → shared credentials file → EC2 instance profile → ECS task role → EKS IRSA. Zero-credential configuration for cloud deployments. |
+| `static`      | Explicit access key and secret. Use only for local development against MinIO or for S3-compatible services that don't support IAM. Never use in production AWS deployments.                        |
+| `oidc`        | Web Identity / OIDC token file (e.g., EKS Pod Identity, GitHub Actions OIDC). The registry assumes a role by exchanging an OIDC token. Keyless — no long-lived credentials.                        |
+| `assume_role` | AssumeRole for cross-account access. The current identity (from the `default` chain) assumes a specified role ARN. Use `external_id` when required by the role's trust policy.                     |
 
 **`TFR_STORAGE_S3_ENDPOINT`** — Only set for non-AWS services. For MinIO:
 `http://minio:9000`. For DigitalOcean Spaces: `https://<region>.digitaloceanspaces.com`.
@@ -260,11 +262,11 @@ storage:
 
 #### GCS Authentication Methods
 
-| Method | When to Use |
-| --- | --- |
-| `default` | **Recommended for GCP.** Uses Application Default Credentials (ADC): env var `GOOGLE_APPLICATION_CREDENTIALS` → gcloud CLI credentials → GCE/GKE metadata server. Zero-config for GKE deployments. |
-| `service_account` | Service account key file or inline JSON. Use for non-GCP environments or when ADC is not available. Rotate keys regularly; prefer Workload Identity when on GKE. |
-| `workload_identity` | Keyless federation via GKE Workload Identity or GitHub Actions with GCP Workload Identity Federation. No long-lived credentials; the provider identity is verified by Google. |
+| Method              | When to Use                                                                                                                                                                                        |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `default`           | **Recommended for GCP.** Uses Application Default Credentials (ADC): env var `GOOGLE_APPLICATION_CREDENTIALS` → gcloud CLI credentials → GCE/GKE metadata server. Zero-config for GKE deployments. |
+| `service_account`   | Service account key file or inline JSON. Use for non-GCP environments or when ADC is not available. Rotate keys regularly; prefer Workload Identity when on GKE.                                   |
+| `workload_identity` | Keyless federation via GKE Workload Identity or GitHub Actions with GCP Workload Identity Federation. No long-lived credentials; the provider identity is verified by Google.                      |
 
 ---
 
@@ -402,13 +404,13 @@ and the organization limit must pass for a request to proceed.
 This prevents a single organization from consuming all capacity on a shared registry, even
 if each individual user stays within their personal limit.
 
-| Variable | Type | Default | Description |
-| --- | --- | --- | --- |
-| `TFR_SECURITY_RATE_LIMITING_ENABLED` | bool | `true` | Master toggle for rate limiting. |
-| `TFR_SECURITY_RATE_LIMITING_REQUESTS_PER_MINUTE` | int | `60` | Per-client rate limit. |
-| `TFR_SECURITY_RATE_LIMITING_BURST` | int | `10` | Burst allowance above per-minute limit. |
-| `TFR_SECURITY_RATE_LIMITING_ORG_REQUESTS_PER_MINUTE` | int | `0` | Per-organization aggregate limit. 0 disables. |
-| `TFR_SECURITY_RATE_LIMITING_ORG_BURST` | int | `0` | Organization-level burst allowance. |
+| Variable                                             | Type | Default | Description                                   |
+| ---------------------------------------------------- | ---- | ------- | --------------------------------------------- |
+| `TFR_SECURITY_RATE_LIMITING_ENABLED`                 | bool | `true`  | Master toggle for rate limiting.              |
+| `TFR_SECURITY_RATE_LIMITING_REQUESTS_PER_MINUTE`     | int  | `60`    | Per-client rate limit.                        |
+| `TFR_SECURITY_RATE_LIMITING_BURST`                   | int  | `10`    | Burst allowance above per-minute limit.       |
+| `TFR_SECURITY_RATE_LIMITING_ORG_REQUESTS_PER_MINUTE` | int  | `0`     | Per-organization aggregate limit. 0 disables. |
+| `TFR_SECURITY_RATE_LIMITING_ORG_BURST`               | int  | `0`     | Organization-level burst allowance.           |
 
 ### TLS
 
@@ -541,20 +543,20 @@ scanning:
   install_dir: /app/scanners  # auto-install target directory
 ```
 
-| Variable | Type | Default | Description |
-| --- | --- | --- | --- |
-| `TFR_SCANNING_ENABLED` | bool | `false` | Master toggle for the scanning feature. |
-| `TFR_SCANNING_TOOL` | string | — | Scanner backend: `trivy`, `checkov`, `terrascan`, `snyk`, or `custom`. |
-| `TFR_SCANNING_BINARY_PATH` | string | — | Absolute path to the scanner binary on the server. |
-| `TFR_SCANNING_EXPECTED_VERSION` | string | — | Exact version string the binary must report. The job refuses to start if it doesn't match. Leave blank to disable pinning. |
-| `TFR_SCANNING_SEVERITY_THRESHOLD` | string | (all) | Comma-separated severities to record: `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`. Blank records all. |
-| `TFR_SCANNING_TIMEOUT` | duration | `5m` | Maximum time a single scan may run. |
-| `TFR_SCANNING_WORKER_COUNT` | int | `2` | Concurrent scan workers. |
-| `TFR_SCANNING_SCAN_INTERVAL_MINS` | int | `5` | How often the job polls for pending scans. |
-| `TFR_SCANNING_INSTALL_DIR` | string | `/app/scanners` | Directory where auto-installed scanner binaries are placed. Each version gets a subdirectory; a symlink points to the active version. |
-| `TFR_SCANNING_VERSION_ARGS` | string[] | — | **`custom` tool only.** Arguments to print the binary version. |
-| `TFR_SCANNING_SCAN_ARGS` | string[] | — | **`custom` tool only.** Arguments passed before the target directory. |
-| `TFR_SCANNING_OUTPUT_FORMAT` | string | — | **`custom` tool only.** Output parser: `sarif` or `json`. |
+| Variable                          | Type     | Default         | Description                                                                                                                           |
+| --------------------------------- | -------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `TFR_SCANNING_ENABLED`            | bool     | `false`         | Master toggle for the scanning feature.                                                                                               |
+| `TFR_SCANNING_TOOL`               | string   | —               | Scanner backend: `trivy`, `checkov`, `terrascan`, `snyk`, or `custom`.                                                                |
+| `TFR_SCANNING_BINARY_PATH`        | string   | —               | Absolute path to the scanner binary on the server.                                                                                    |
+| `TFR_SCANNING_EXPECTED_VERSION`   | string   | —               | Exact version string the binary must report. The job refuses to start if it doesn't match. Leave blank to disable pinning.            |
+| `TFR_SCANNING_SEVERITY_THRESHOLD` | string   | (all)           | Comma-separated severities to record: `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`. Blank records all.                                         |
+| `TFR_SCANNING_TIMEOUT`            | duration | `5m`            | Maximum time a single scan may run.                                                                                                   |
+| `TFR_SCANNING_WORKER_COUNT`       | int      | `2`             | Concurrent scan workers.                                                                                                              |
+| `TFR_SCANNING_SCAN_INTERVAL_MINS` | int      | `5`             | How often the job polls for pending scans.                                                                                            |
+| `TFR_SCANNING_INSTALL_DIR`        | string   | `/app/scanners` | Directory where auto-installed scanner binaries are placed. Each version gets a subdirectory; a symlink points to the active version. |
+| `TFR_SCANNING_VERSION_ARGS`       | string[] | —               | **`custom` tool only.** Arguments to print the binary version.                                                                        |
+| `TFR_SCANNING_SCAN_ARGS`          | string[] | —               | **`custom` tool only.** Arguments passed before the target directory.                                                                 |
+| `TFR_SCANNING_OUTPUT_FORMAT`      | string   | —               | **`custom` tool only.** Output parser: `sarif` or `json`.                                                                             |
 
 The scanning feature can also be configured through the web-based setup wizard, which
 stores the configuration encrypted in the database. DB-stored config takes precedence
@@ -574,10 +576,10 @@ audit_retention:
   cleanup_batch_size: 1000  # rows deleted per batch to avoid long-running transactions
 ```
 
-| Variable | Type | Default | Description |
-| --- | --- | --- | --- |
-| `TFR_AUDIT_RETENTION_RETENTION_DAYS` | int | `90` | Entries older than this many days are deleted. Set to `0` to disable cleanup. |
-| `TFR_AUDIT_RETENTION_CLEANUP_BATCH_SIZE` | int | `1000` | Maximum rows deleted per cleanup iteration. Smaller values reduce lock contention on busy databases. |
+| Variable                                 | Type | Default | Description                                                                                          |
+| ---------------------------------------- | ---- | ------- | ---------------------------------------------------------------------------------------------------- |
+| `TFR_AUDIT_RETENTION_RETENTION_DAYS`     | int  | `90`    | Entries older than this many days are deleted. Set to `0` to disable cleanup.                        |
+| `TFR_AUDIT_RETENTION_CLEANUP_BATCH_SIZE` | int  | `1000`  | Maximum rows deleted per cleanup iteration. Smaller values reduce lock contention on busy databases. |
 
 The cleanup job runs periodically in the background and emits the
 `terraform_registry_audit_logs_cleaned_total` Prometheus counter. See
@@ -596,10 +598,10 @@ webhooks:
   retry_interval_mins: 2    # minutes between retry attempts
 ```
 
-| Variable | Type | Default | Description |
-| --- | --- | --- | --- |
-| `TFR_WEBHOOKS_MAX_RETRIES` | int | `3` | Maximum number of retry attempts for failed webhook deliveries. Set to `0` to disable retries. |
-| `TFR_WEBHOOKS_RETRY_INTERVAL_MINS` | int | `2` | Interval in minutes between retry attempts. |
+| Variable                           | Type | Default | Description                                                                                    |
+| ---------------------------------- | ---- | ------- | ---------------------------------------------------------------------------------------------- |
+| `TFR_WEBHOOKS_MAX_RETRIES`         | int  | `3`     | Maximum number of retry attempts for failed webhook deliveries. Set to `0` to disable retries. |
+| `TFR_WEBHOOKS_RETRY_INTERVAL_MINS` | int  | `2`     | Interval in minutes between retry attempts.                                                    |
 
 The retry processor emits the `terraform_registry_webhook_retries_total` Prometheus
 counter with an `outcome` label (`success`, `failure`, `exhausted`). See
@@ -623,17 +625,17 @@ notifications:
   api_key_expiry_check_interval_hours: 24
 ```
 
-| Variable | Type | Default | Description |
-| --- | --- | --- | --- |
-| `TFR_NOTIFICATIONS_ENABLED` | bool | `false` | Master toggle for outbound email notifications. |
-| `TFR_NOTIFICATIONS_SMTP_HOST` | string | — | SMTP server hostname. |
-| `TFR_NOTIFICATIONS_SMTP_PORT` | int | `587` | SMTP server port (587 for STARTTLS, 465 for implicit TLS). |
-| `TFR_NOTIFICATIONS_SMTP_USERNAME` | string | — | SMTP authentication username. |
-| `TFR_NOTIFICATIONS_SMTP_PASSWORD` | string | — | SMTP authentication password. |
-| `TFR_NOTIFICATIONS_SMTP_FROM` | string | — | Sender address for notification emails. |
-| `TFR_NOTIFICATIONS_SMTP_USE_TLS` | bool | `true` | Enable TLS for SMTP connection. |
-| `TFR_NOTIFICATIONS_API_KEY_EXPIRY_WARNING_DAYS` | int | `7` | Days before API key expiry to send the first warning email. |
-| `TFR_NOTIFICATIONS_API_KEY_EXPIRY_CHECK_INTERVAL_HOURS` | int | `24` | How often the expiry check job runs (in hours). |
+| Variable                                                | Type   | Default | Description                                                 |
+| ------------------------------------------------------- | ------ | ------- | ----------------------------------------------------------- |
+| `TFR_NOTIFICATIONS_ENABLED`                             | bool   | `false` | Master toggle for outbound email notifications.             |
+| `TFR_NOTIFICATIONS_SMTP_HOST`                           | string | —       | SMTP server hostname.                                       |
+| `TFR_NOTIFICATIONS_SMTP_PORT`                           | int    | `587`   | SMTP server port (587 for STARTTLS, 465 for implicit TLS).  |
+| `TFR_NOTIFICATIONS_SMTP_USERNAME`                       | string | —       | SMTP authentication username.                               |
+| `TFR_NOTIFICATIONS_SMTP_PASSWORD`                       | string | —       | SMTP authentication password.                               |
+| `TFR_NOTIFICATIONS_SMTP_FROM`                           | string | —       | Sender address for notification emails.                     |
+| `TFR_NOTIFICATIONS_SMTP_USE_TLS`                        | bool   | `true`  | Enable TLS for SMTP connection.                             |
+| `TFR_NOTIFICATIONS_API_KEY_EXPIRY_WARNING_DAYS`         | int    | `7`     | Days before API key expiry to send the first warning email. |
+| `TFR_NOTIFICATIONS_API_KEY_EXPIRY_CHECK_INTERVAL_HOURS` | int    | `24`    | How often the expiry check job runs (in hours).             |
 
 ---
 

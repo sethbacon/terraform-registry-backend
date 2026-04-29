@@ -26,8 +26,8 @@ set -euo pipefail
 # --------------------------------------------------------------------------
 # Defaults
 # --------------------------------------------------------------------------
-BACKEND_IMAGE="${BACKEND_IMAGE:-ghcr.io/terraform-registry/backend:latest}"
-FRONTEND_IMAGE="${FRONTEND_IMAGE:-ghcr.io/terraform-registry/frontend:latest}"
+BACKEND_IMAGE="${BACKEND_IMAGE:-ghcr.io/sethbacon/terraform-registry-backend:latest}"
+FRONTEND_IMAGE="${FRONTEND_IMAGE:-ghcr.io/sethbacon/terraform-registry-frontend:latest}"
 SCANNER="none"
 OUTPUT_DIR="./airgap-bundle"
 HELM_CHART_DIR="./deployments/helm"
@@ -143,14 +143,14 @@ the registry containers must trust that CA.
 ```bash
 # Copy your CA certificate into the container's trust store
 docker run -v /path/to/ca.crt:/usr/local/share/ca-certificates/internal-ca.crt \
-  --entrypoint sh ghcr.io/terraform-registry/backend:latest \
+  --entrypoint sh ghcr.io/sethbacon/terraform-registry-backend:latest \
   -c "update-ca-certificates && /usr/bin/terraform-registry"
 ```
 
 Or build a derived image:
 
 ```dockerfile
-FROM ghcr.io/terraform-registry/backend:latest
+FROM ghcr.io/sethbacon/terraform-registry-backend:latest
 COPY internal-ca.crt /usr/local/share/ca-certificates/
 RUN update-ca-certificates
 ```

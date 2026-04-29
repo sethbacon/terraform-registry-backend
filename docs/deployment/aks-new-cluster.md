@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 MD060 -->
 # AKS New Cluster — Deployment Guide
 
 This guide walks through provisioning all required Azure infrastructure and deploying

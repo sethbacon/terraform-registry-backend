@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # 2. PostgreSQL as Primary Store
 
 **Status**: Accepted
@@ -27,12 +28,14 @@ Use PostgreSQL as the sole required database backend:
 ## Consequences
 
 **Easier**:
+
 - Rich query capabilities: JOINs across modules/versions/providers, aggregation for statistics, and future full-text search (GIN indexes on `tsvector` columns).
 - Strong consistency: ACID transactions protect against partial writes during module publishing.
 - Mature tooling: `pg_dump`/`pg_restore` for backups, streaming replication for HA, PgBouncer for connection pooling.
 - UUID primary keys enable future multi-region or federated registry scenarios.
 
 **Harder**:
+
 - PostgreSQL is a required external dependency -- cannot run the registry as a single self-contained binary (unlike SQLite-based alternatives).
 - Operators must provision and manage a PostgreSQL instance (or use a managed service).
 - Schema migrations must be carefully written to be backwards-compatible for zero-downtime deployments.

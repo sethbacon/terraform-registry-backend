@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # SOC 2 Type II Control Mapping
 
 This document maps SOC 2 Trust Service Criteria to Terraform Registry features,
@@ -21,11 +22,11 @@ during SOC 2 Type II audits.
 
 ## CC2 — Communication and Information
 
-| Criteria | Control                                    | Registry Feature                          | Evidence Source                                       |
-| -------- | ------------------------------------------ | ----------------------------------------- | ----------------------------------------------------- |
-| CC2.1    | Internal communication of objectives       | Architecture docs, ADRs, roadmap          | `docs/architecture.md`, `docs/adr/*.md`, `ROADMAP.md` |
-| CC2.2    | Internal communication of responsibilities | CODEOWNERS, contributing guide            | `.github/CODEOWNERS`, `CONTRIBUTING.md`               |
-| CC2.3    | External communication                     | Security policy, vulnerability disclosure | `SECURITY.md`, GitHub Security Advisories             |
+| Criteria | Control                                    | Registry Feature                          | Evidence Source                           |
+| -------- | ------------------------------------------ | ----------------------------------------- | ----------------------------------------- |
+| CC2.1    | Internal communication of objectives       | Architecture docs and ADRs                | `docs/architecture.md`, `docs/adr/*.md`   |
+| CC2.2    | Internal communication of responsibilities | CODEOWNERS, contributing guide            | `.github/CODEOWNERS`, `CONTRIBUTING.md`   |
+| CC2.3    | External communication                     | Security policy, vulnerability disclosure | `SECURITY.md`, GitHub Security Advisories |
 
 ## CC3 — Risk Assessment
 
@@ -49,7 +50,7 @@ during SOC 2 Type II audits.
 | -------- | ----------------------------- | -------------------------------------------------------- | --------------------------------------------------------------------- |
 | CC5.1    | Risk-mitigating controls      | Rate limiting, input validation, parameterized queries   | `backend/internal/middleware/ratelimit.go`, API handlers              |
 | CC5.2    | Technology controls           | TLS, encryption at rest (encryption key), bcrypt hashing | Config, `backend/internal/crypto/`, `backend/internal/auth/apikey.go` |
-| CC5.3    | Policy and procedure controls | CONTRIBUTING.md, release process, CLAUDE.md              | Repository documentation                                              |
+| CC5.3    | Policy and procedure controls | CONTRIBUTING.md, RELEASING.md, SECURITY.md               | Repository documentation                                              |
 
 ## CC6 — Logical and Physical Access Controls
 

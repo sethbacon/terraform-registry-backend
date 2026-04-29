@@ -1,4 +1,4 @@
-<!-- markdownlint-disable MD024 -->
+<!-- markdownlint-disable MD013 MD024 -->
 # Enterprise Terraform Registry — Backend
 
 A fully-featured, enterprise-grade Terraform registry implementing all three HashiCorp protocols with multi-tenancy support.
@@ -9,87 +9,50 @@ A fully-featured, enterprise-grade Terraform registry implementing all three Has
 
 This repository contains the backend API, database migrations, and deployment infrastructure for the Enterprise Terraform Registry. The frontend UI is a separate React SPA: **[terraform-registry-frontend](https://github.com/sethbacon/terraform-registry-frontend)**.
 
-- [Features](#features)
-  - [Terraform Protocol Support](#terraform-protocol-support)
-  - [Authentication & Authorization](#authentication--authorization)
-  - [Multi-Tenancy](#multi-tenancy)
-  - [Module Source Control (SCM) Integration](#module-source-control-scm-integration)
-  - [Storage Backends](#storage-backends)
-  - [Deployment Options](#deployment-options)
-  - [Terraform Binary Mirror](#terraform-binary-mirror)
-  - [Module Security Scanning](#module-security-scanning)
-  - [Observability & CI/CD](#observability--cicd)
-- [Architecture](#architecture)
-- [Installation](#installation)
-  - [Prerequisites](#prerequisites)
-  - [Quick Start with Docker Compose](#quick-start-with-docker-compose)
-  - [First-Run Setup](#first-run-setup)
-  - [Manual Setup](#manual-setup)
-- [Configuration](#configuration)
-- [Monitoring & Observability](#monitoring--observability)
-  - [Prometheus + Grafana Stack](#prometheus--grafana-stack)
-- [Usage with Terraform](#usage-with-terraform)
-  - [Publishing Modules](#publishing-modules)
-  - [Publishing Providers](#publishing-providers)
-- [Development](#development)
-  - [Running Tests](#running-tests)
-  - [Building](#building)
-- [Documentation](#documentation)
-- [References](#references)
-- [Contributing](#contributing)
-- [License](#license)
-- [Disclaimer](#disclaimer)
-- [Acknowledgments](#acknowledgments)
-  - [Trademark Notice](#trademark-notice)
-
 ## Features
 
 ### Terraform Protocol Support
 
-- **Module Registry Protocol** - Complete implementation for hosting and discovering Terraform modules
-- **Provider Registry Protocol** - Full provider hosting with platform-specific binaries
-- **Provider Network Mirror Protocol** - Efficient provider mirroring and caching
+- **Module Registry Protocol** — Complete implementation for hosting and discovering Terraform modules
+- **Provider Registry Protocol** — Full provider hosting with platform-specific binaries
+- **Provider Network Mirror Protocol** — Efficient provider mirroring and caching
 
 ### Authentication & Authorization
 
-- **API Key Authentication** - Secure token-based access with scoped permissions
-- **OIDC Integration** - Generic OIDC provider support for SSO
-- **Azure AD / Entra ID** - Native Azure Active Directory integration
-- **Role-Based Access Control (RBAC)** - Fine-grained permissions with organization roles
+- **API Key Authentication** — Secure token-based access with scoped permissions
+- **OIDC Integration** — Generic OIDC provider support for SSO
+- **Azure AD / Entra ID** — Native Azure Active Directory integration
+- **Role-Based Access Control (RBAC)** — Fine-grained permissions with organization roles
 
 ### Multi-Tenancy
 
-- **Organization Management** - Isolated organization namespaces for teams and projects
-- **User Management** - Comprehensive user administration
-- **Organization Membership** - Role-based team collaboration (viewer, publisher, devops, user_manager, auditor, admin)
-- **Configurable Modes** - Single-tenant or multi-tenant deployment
+- **Organization Management** — Isolated organization namespaces for teams and projects
+- **User Management** — Comprehensive user administration
+- **Organization Membership** — Role-based team collaboration (viewer, publisher, devops, user_manager, auditor, admin)
+- **Configurable Modes** — Single-tenant or multi-tenant deployment
 
 ### Module Source Control (SCM) Integration
 
-- **GitHub Integration** - Connect modules to GitHub repositories with OAuth
-- **Azure DevOps Integration** - Native support for Azure Repos
-- **GitLab Integration** - Full GitLab repository support
-- **Bitbucket Data Center** - Support for self-hosted Bitbucket instances with PAT authentication
-- **Webhook Support** - Automatic publishing on repository events
+- **GitHub Integration** — Connect modules to GitHub repositories with OAuth
+- **Azure DevOps Integration** — Native support for Azure Repos
+- **GitLab Integration** — Full GitLab repository support
+- **Bitbucket Data Center** — Self-hosted Bitbucket with PAT authentication
+- **Webhook Support** — Automatic publishing on repository events
 
 ### Storage Backends
 
-- **Local Filesystem** - Direct file serving for development and simple deployments
-- **Azure Blob Storage** - Cloud storage with SAS tokens, CDN URLs, and flexible access tiers
-- **AWS S3 / S3-Compatible** - Support for AWS S3, MinIO, DigitalOcean Spaces with presigned URLs
-- **Google Cloud Storage** - Native GCS integration with signed URLs and resumable uploads
-- **Pluggable Architecture** - Extensible storage interface for adding new backends
+- **Local Filesystem** — Direct file serving for development and simple deployments
+- **Azure Blob Storage** — Cloud storage with SAS tokens, CDN URLs, and flexible access tiers
+- **AWS S3 / S3-Compatible** — AWS S3, MinIO, and DigitalOcean Spaces with presigned URLs
+- **Google Cloud Storage** — Native GCS integration with signed URLs and resumable uploads
+- **Pluggable Architecture** — Extensible storage interface for adding new backends
 
 ### Deployment Options
 
-- **Docker Compose** - Complete development and production setups
-- **Kubernetes + Kustomize** - Production-ready manifests
-- **Helm Chart** - Fully parameterized Helm chart
-- **Azure Container Apps** - Bicep templates
-- **AWS ECS Fargate** - CloudFormation stack
-- **Google Cloud Run** - Knative services
-- **Standalone Binary** - Systemd service with Nginx reverse proxy
-- **Terraform IaC** - Infrastructure-as-Code for AWS, Azure, and GCP
+Docker Compose, Kubernetes (Kustomize and Helm), Azure Container Apps, AWS ECS
+Fargate, Google Cloud Run, standalone binary + systemd, and full Terraform IaC
+for all three major clouds. See the [Deployment Guide](docs/deployment.md) for
+the full matrix, recommended targets, and step-by-step instructions.
 
 ### Terraform Binary Mirror
 
@@ -102,19 +65,34 @@ This repository contains the backend API, database migrations, and deployment in
 
 ### Module Security Scanning
 
-- **Automatic Scanning** - Every uploaded module version is automatically queued for a security scan
-- **Multiple Scanner Backends** - Trivy (recommended), Checkov, Terrascan, Snyk, or a custom binary
-- **Structured Results** - Severity counts (Critical/High/Medium/Low) and raw output stored per version
-- **Supply-Chain Protection** - Optional binary version pinning rejects mismatched scanner executables
-- **Module Documentation Extraction** - Inputs, outputs, provider requirements, and Terraform version constraints automatically extracted from uploaded modules at upload time — no `terraform-docs` binary required
+- **Automatic Scanning** — Every uploaded module version is automatically queued for a security scan
+- **Multiple Scanner Backends** — Trivy (recommended), Checkov, Terrascan, Snyk, or a custom binary
+- **Structured Results** — Severity counts (Critical/High/Medium/Low) and raw output stored per version
+- **Supply-Chain Protection** — Optional binary version pinning rejects mismatched scanner executables
+- **Module Documentation Extraction** — Inputs, outputs, provider requirements, and Terraform version constraints automatically extracted at upload time
 
 ### Observability & CI/CD
 
-- **Prometheus Metrics** - Eleven named application metrics on a dedicated scrape port (default 9090)
-- **Structured Logging** - stdlib `slog` with JSON (production) and text (development) formats
-- **pprof Profiling** - Opt-in profiling server on a configurable port
-- **GitHub Actions CI/CD** - Build, vet, race-detector tests, gosec security scan, Docker build, multi-platform releases
-- **Bi-weekly Dependabot** - Automated Go module and Actions dependency updates
+- **Prometheus Metrics** — Eleven named application metrics on a dedicated scrape port (default 9090)
+- **Structured Logging** — stdlib `slog` with JSON (production) and text (development) formats
+- **pprof Profiling** — Opt-in profiling server on a configurable port
+- **GitHub Actions CI/CD** — Build, vet, race-detector tests, gosec security scan, Docker build, multi-platform releases
+- **Bi-weekly Dependabot** — Automated Go module and Actions dependency updates
+
+## Tech Stack
+
+| Concern         | Technology                                                  |
+| --------------- | ----------------------------------------------------------- |
+| Language        | Go 1.26                                                     |
+| HTTP framework  | Gin                                                         |
+| Database        | PostgreSQL 14+ (16 recommended)                             |
+| Migrations      | `golang-migrate` (file-based, immutable numbered pairs)     |
+| Auth            | JWT (HS256), API keys, OIDC, Azure AD                       |
+| Storage         | Local FS, Azure Blob, AWS S3 (+compatible), Google Cloud    |
+| SCM             | GitHub, Azure DevOps, GitLab, Bitbucket Data Center         |
+| Observability   | Prometheus metrics, `slog` JSON logs, pprof                 |
+| API docs        | Swagger 2.0 (swag annotations) → served at `/swagger`       |
+| Build / release | GoReleaser, GitHub Actions, cosign keyless, SLSA, syft SBOM |
 
 ## Architecture
 
@@ -143,7 +121,7 @@ This repository contains the backend API, database migrations, and deployment in
 ### Prerequisites
 
 - Go 1.26 or later
-- PostgreSQL 14+
+- PostgreSQL 14 or later (16 recommended; used in Docker Compose and CI)
 - Docker & Docker Compose (for containerized deployment)
 
 ### Quick Start with Docker Compose
@@ -313,25 +291,29 @@ go build -o terraform-registry cmd/server/main.go
 
 ## Documentation
 
-- [Getting Started](docs/getting-started.md) - Quick-start tutorial for new users
-- [Changelog](CHANGELOG.md) - Version history and changes
-- [Contributing](CONTRIBUTING.md) - How to contribute to this project
-- [Architecture](docs/architecture.md) - System design and component interactions
-- [Architecture Decision Records](docs/adr/) - Key design decisions and rationale
-- [API Reference](docs/api-reference.md) - API documentation guide
-- [API Migration Guide](docs/api-migration-guide.md) - Breaking changes and migration steps across releases
-- [Observability Reference](docs/observability.md) - Prometheus metrics catalogue
-- [Configuration Reference](docs/configuration.md) - All `TFR_*` environment variables
-- [Module Security Scanning](docs/module-scanning.md) - Scanner setup (Trivy, Checkov, Terrascan, Snyk, custom)
-- [Module Documentation Extraction](docs/module-documentation.md) - Automatic extraction of inputs, outputs, and provider requirements
-- [Deployment Guide](docs/deployment.md) - Production deployment for all platforms
-- [Capacity Planning](docs/capacity-planning.md) - Sizing guidance for production deployments
-- [Disaster Recovery](docs/disaster-recovery.md) - DR runbook and backup/restore procedures
-- [Troubleshooting](docs/troubleshooting.md) - Common issues and diagnostic tools
-- [Development Guide](docs/development.md) - Local development setup
-- [OIDC Configuration](docs/OIDC_CONFIGURATION.md) - SSO provider setup
-- [Terraform CLI Configuration](docs/terraform-cli-configuration.md) - Configure the Terraform CLI to use this registry
-- [Kubernetes Cloud Guides](docs/deployment/README.md) - AKS, EKS, and GKE deployment guides
+- [Getting Started](docs/getting-started.md) — Quick-start tutorial for new users
+- [Architecture](docs/architecture.md) — System design and component interactions
+- [Architecture Decision Records](docs/adr/) — Key design decisions and rationale
+- [API Reference](docs/api-reference.md) — API documentation guide
+- [API Migration Guide](docs/api-migration-guide.md) — Breaking changes and migration steps across releases
+- [Configuration Reference](docs/configuration.md) — All `TFR_*` environment variables
+- [Deployment Guide](docs/deployment.md) — Production deployment for all platforms
+- [Kubernetes Cloud Guides](docs/deployment/README.md) — AKS, EKS, and GKE deployment guides
+- [Capacity Planning](docs/capacity-planning.md) — Sizing guidance for production deployments
+- [Disaster Recovery](docs/disaster-recovery.md) — DR runbook and backup/restore procedures
+- [Observability Reference](docs/observability.md) — Prometheus metrics catalogue
+- [Troubleshooting](docs/troubleshooting.md) — Common issues and diagnostic tools
+- [Development Guide](docs/development.md) — Local development setup
+- [OIDC Configuration](docs/OIDC_CONFIGURATION.md) — SSO provider setup
+- [Module Security Scanning](docs/module-scanning.md) — Scanner setup (Trivy, Checkov, Terrascan, Snyk, custom)
+- [Module Documentation Extraction](docs/module-documentation.md) — Automatic extraction of inputs, outputs, and provider requirements
+- [Terraform CLI Configuration](docs/terraform-cli-configuration.md) — Configure the Terraform CLI to use this registry
+- [Releasing](RELEASING.md) — Release process and supply-chain verification
+- [Security](SECURITY.md) — Reporting vulnerabilities and supported versions
+- [Contributing](CONTRIBUTING.md) — How to contribute to this project
+- [Code of Conduct](CODE_OF_CONDUCT.md) — Community standards
+- [Changelog](CHANGELOG.md) — Version history and changes
+- [Frontend Repository](https://github.com/sethbacon/terraform-registry-frontend) — React SPA, accessibility, E2E tests
 
 ## References
 
@@ -402,7 +384,3 @@ This software is provided **"AS IS"**, without warranty of any kind, express or 
 HashiCorp, Terraform, and Vault are trademarks of HashiCorp, Inc. AWS and Amazon Web Services are trademarks of Amazon.com, Inc. or its affiliates. Microsoft Azure is a trademark of Microsoft Corporation. Google Cloud is a trademark of Google LLC. VMware and vSphere are trademarks of Broadcom Inc. Oracle and OCI are trademarks of Oracle Corporation. All other trademarks are the property of their respective owners.
 
 This project is not affiliated with, endorsed by, or sponsored by any of the above-named organizations.
-
----
-
-Built with ❤️ for the Terraform community

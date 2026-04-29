@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # Getting Started
 
 This tutorial walks you through deploying, configuring, and using the Terraform Registry from scratch. By the end, you will have a running registry with a published module and provider, and your local Terraform CLI configured to use it.
@@ -32,6 +33,7 @@ docker compose up -d
 ```
 
 This starts:
+
 - **PostgreSQL 16** on port 5432
 - **Backend API** on port 8080 (with Prometheus metrics on port 9090)
 
@@ -66,7 +68,7 @@ docker compose logs backend | grep "Setup Token"
 
 You will see output like:
 
-```
+```text
 Setup Token: tfr_setup_AbCdEfGh...
 ```
 
@@ -266,7 +268,7 @@ terraform init
 
 Expected output:
 
-```
+```text
 Initializing modules...
 Downloading localhost:8080/myorg/my-module/generic 1.0.0 for example...
 

@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 MD041 -->
 Closes #<!-- issue number -->
 
 ## Summary
@@ -9,6 +10,7 @@ Closes #<!-- issue number -->
 - fix:
 
 ## Checklist
+
 - [ ] `go test ./...` passes
 - [ ] `go fmt ./...` and `go vet ./...` clean
 - [ ] No new `gosec` findings

@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # AKS Existing Cluster — Deployment Guide
 
 This guide covers deploying the Terraform Registry into an existing AKS cluster.
@@ -23,6 +24,7 @@ az aks show \
 ```
 
 Required values:
+
 - `oidcEnabled: true`
 - `workloadIdentityEnabled: true`
 - `networkPlugin: "azure"` or `"azure-overlay"` (required for NetworkPolicy)

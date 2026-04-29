@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # Architecture
 
 This document describes the design of the Enterprise Terraform Registry — what the components are, how they interact, and why key architectural decisions were made.

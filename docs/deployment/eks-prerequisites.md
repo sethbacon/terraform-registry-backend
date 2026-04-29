@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # EKS Prerequisites — Terraform Registry
 
 Resources and tooling required before deploying to AWS EKS.

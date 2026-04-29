@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 MD060 -->
 # ADR-0011: Password and API Key Hashing
 
 **Status:** Accepted

@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # 1. Scope-Based RBAC
 
 **Status**: Accepted
@@ -26,12 +27,14 @@ Use fine-grained scope strings as the primary authorization mechanism:
 ## Consequences
 
 **Easier**:
+
 - API keys can be created with minimal required permissions (principle of least privilege).
 - New resource types can be added by defining a new scope string without modifying existing roles.
 - CI/CD integrations get precisely scoped tokens that cannot accidentally modify unrelated resources.
 - Authorization logic is simple: check if the token's scope list includes the required scope.
 
 **Harder**:
+
 - Users and administrators must understand the scope model when creating API keys.
 - Role templates must be maintained as a convenience layer to avoid requiring everyone to manually select scopes.
 - Scope lists in JWT claims increase token size slightly compared to a single role string.

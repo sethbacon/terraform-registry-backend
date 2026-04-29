@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 MD060 -->
 # Secrets Rotation Guide
 
 This document describes step-by-step procedures for rotating the three main secrets used by the Terraform Registry backend: the JWT signing secret, the encryption key (for SCM OAuth tokens), and OIDC client secrets.
@@ -21,6 +22,7 @@ This document describes step-by-step procedures for rotating the three main secr
 The backend supports watching a secret file for changes using `fsnotify`. When the file is updated, the signing key is atomically swapped. Tokens signed with the previous key remain valid for a configurable overlap period (default: 5 minutes).
 
 **Prerequisites:**
+
 - Set `TFR_JWT_SECRET_FILE` to the path of a file containing the JWT secret.
 - The file must be readable by the backend process.
 - In Kubernetes, use a projected volume from a Secret or an external secrets operator.
@@ -28,11 +30,13 @@ The backend supports watching a secret file for changes using `fsnotify`. When t
 **Steps:**
 
 1. **Generate a new secret:**
+
    ```bash
    openssl rand -hex 32 > /tmp/new-jwt-secret
    ```
 
 2. **Update the Kubernetes Secret** (or your secrets manager):
+
    ```bash
    kubectl create secret generic registry-jwt-secret \
      --from-file=jwt-secret=/tmp/new-jwt-secret \
@@ -42,16 +46,19 @@ The backend supports watching a secret file for changes using `fsnotify`. When t
 3. **Wait for volume projection.** Kubernetes propagates Secret updates to mounted volumes within the kubelet sync period (default: 60-120 seconds). The backend detects the file change via `fsnotify` and swaps the key atomically.
 
 4. **Monitor logs** for confirmation:
-   ```
+
+   ```text
    INFO JWT secret reloaded from file  path=/etc/secrets/jwt-secret  length=64
    ```
 
 5. **After the overlap period** (default 5 minutes), the previous key is cleared automatically:
-   ```
+
+   ```text
    INFO JWT previous secret cleared after overlap period
    ```
 
 6. **Clean up** the temporary file:
+
    ```bash
    rm /tmp/new-jwt-secret
    ```
@@ -63,11 +70,13 @@ If not using file-watch (`TFR_JWT_SECRET_FILE` is unset), rotating the JWT secre
 **Steps:**
 
 1. **Generate a new secret:**
+
    ```bash
    NEW_SECRET=$(openssl rand -hex 32)
    ```
 
 2. **Update the Kubernetes Secret:**
+
    ```bash
    kubectl create secret generic registry-secrets \
      --from-literal=TFR_JWT_SECRET="$NEW_SECRET" \
@@ -75,6 +84,7 @@ If not using file-watch (`TFR_JWT_SECRET_FILE` is unset), rotating the JWT secre
    ```
 
 3. **Rolling restart the backend:**
+
    ```bash
    kubectl rollout restart deployment/terraform-registry-backend
    ```
@@ -97,6 +107,7 @@ The encryption key protects SCM OAuth tokens stored in the database. The backend
 ### Step-by-Step Procedure
 
 1. **Generate a new encryption key:**
+
    ```bash
    NEW_KEY=$(openssl rand -hex 16)   # produces 32 hex chars = 32 bytes
    echo "New key: $NEW_KEY"
@@ -105,6 +116,7 @@ The encryption key protects SCM OAuth tokens stored in the database. The backend
 2. **Record the current key as the previous key.** Retrieve the current value of `ENCRYPTION_KEY` from your secrets manager.
 
 3. **Update the Kubernetes Secret** with both keys:
+
    ```bash
    kubectl create secret generic registry-secrets \
      --from-literal=ENCRYPTION_KEY="$NEW_KEY" \
@@ -113,6 +125,7 @@ The encryption key protects SCM OAuth tokens stored in the database. The backend
    ```
 
 4. **Rolling restart the backend:**
+
    ```bash
    kubectl rollout restart deployment/terraform-registry-backend
    ```
@@ -128,11 +141,13 @@ The encryption key protects SCM OAuth tokens stored in the database. The backend
    - A future version of the registry will include a built-in admin command for this.
 
 7. **Remove the previous key** once all tokens have been re-encrypted (or after a sufficient grace period):
+
    ```bash
    kubectl create secret generic registry-secrets \
      --from-literal=ENCRYPTION_KEY="$NEW_KEY" \
      --dry-run=client -o yaml | kubectl apply -f -
    ```
+
    Then rolling restart the backend again.
 
 ### Timeline Recommendation
@@ -161,6 +176,7 @@ OIDC client secrets are configured via `TFR_AUTH_OIDC_CLIENT_SECRET` (or `TFR_AU
 2. **Important:** Most IdPs allow multiple active client secrets simultaneously. Add the new secret **before** revoking the old one to avoid a window where no valid secret exists.
 
 3. **Update the Kubernetes Secret:**
+
    ```bash
    kubectl create secret generic registry-oidc-secrets \
      --from-literal=OIDC_CLIENT_SECRET="new-secret-value" \
@@ -168,6 +184,7 @@ OIDC client secrets are configured via `TFR_AUTH_OIDC_CLIENT_SECRET` (or `TFR_AU
    ```
 
 4. **Rolling restart the backend:**
+
    ```bash
    kubectl rollout restart deployment/terraform-registry-backend
    ```
@@ -182,14 +199,16 @@ OIDC client secrets are configured via `TFR_AUTH_OIDC_CLIENT_SECRET` (or `TFR_AU
 
 While not a registry-specific secret, the database password (`TFR_DATABASE_PASSWORD`) should also be rotated periodically.
 
-### Steps
+### Database Password Rotation Steps
 
 1. **Change the password in PostgreSQL:**
+
    ```sql
    ALTER USER registry WITH PASSWORD 'new-secure-password';
    ```
 
 2. **Update the Kubernetes Secret:**
+
    ```bash
    kubectl create secret generic registry-db-secrets \
      --from-literal=TFR_DATABASE_PASSWORD="new-secure-password" \
@@ -197,6 +216,7 @@ While not a registry-specific secret, the database password (`TFR_DATABASE_PASSW
    ```
 
 3. **Rolling restart the backend:**
+
    ```bash
    kubectl rollout restart deployment/terraform-registry-backend
    ```

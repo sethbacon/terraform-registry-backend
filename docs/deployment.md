@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # Deployment Guide
 
 This guide covers all supported deployment options for the Enterprise Terraform Registry.

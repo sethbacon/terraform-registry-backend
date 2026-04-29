@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # Troubleshooting
 
 This guide covers common issues and their solutions. For each issue, start with the diagnostic

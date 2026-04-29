@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 MD060 -->
 # AKS Prerequisites
 
 Before deploying the Terraform Registry to Azure Kubernetes Service, provision all
@@ -270,6 +271,7 @@ az identity federated-credential create \
 ```
 
 The `--subject` must match:
+
 - Kubernetes namespace: `terraform-registry`
 - Kubernetes ServiceAccount name: `terraform-registry`
 

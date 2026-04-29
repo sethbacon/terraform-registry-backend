@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # 10. Binary Mirror Custom Protocol
 
 **Status**: Accepted
@@ -37,6 +38,7 @@ Public, unauthenticated endpoints scoped to a named mirror configuration:
 ### Version Filtering
 
 Mirror configurations support:
+
 - `stable_only: true` -- skip pre-release versions (alpha, beta, rc).
 - `version_filter` -- regex pattern to match specific version ranges.
 - Platform selection -- sync only the platforms your organization uses.
@@ -48,6 +50,7 @@ Multiple mirror configurations can coexist (e.g., one for Terraform, one for Ope
 ## Consequences
 
 **Easier**:
+
 - Air-gapped environments can distribute approved Terraform versions without internet access.
 - Version pinning and filtering ensure only approved versions are available.
 - Download tracking provides visibility into Terraform version adoption across the organization.
@@ -55,6 +58,7 @@ Multiple mirror configurations can coexist (e.g., one for Terraform, one for Ope
 - Multiple mirror configs support both Terraform and OpenTofu from the same registry.
 
 **Harder**:
+
 - No standard protocol exists -- clients must use custom scripts or wrapper tools to download from this API (unlike the provider mirror which Terraform supports natively).
 - Storage requirements grow with each new Terraform release (~100 MB per platform per version).
 - GPG signature verification on the server side adds complexity.

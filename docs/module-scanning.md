@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 MD060 -->
 # Module Security Scanning
 
 The registry can automatically scan every uploaded Terraform module for security misconfigurations and vulnerabilities. When enabled, a background job picks up each newly uploaded module version, runs the configured scanner against the extracted archive, and stores the results. Results are viewable in the web UI on the module detail page and via the admin API.
@@ -76,12 +77,14 @@ Operators who cannot provide outbound internet access from the server should pre
 ### 1. Install Trivy
 
 **Linux / macOS (official install script):**
+
 ```bash
 curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
 trivy --version
 ```
 
 **Debian / Ubuntu:**
+
 ```bash
 sudo apt-get install wget apt-transport-https gnupg lsb-release
 wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
@@ -90,6 +93,7 @@ sudo apt-get update && sudo apt-get install trivy
 ```
 
 **macOS (Homebrew):**
+
 ```bash
 brew install trivy
 ```
@@ -97,6 +101,7 @@ brew install trivy
 **Docker-based (no install):**
 
 If you run the registry in a container, add Trivy to your Docker image:
+
 ```dockerfile
 FROM ghcr.io/aquasecurity/trivy:latest AS trivy
 FROM your-registry-base-image
@@ -117,6 +122,7 @@ scanning:
 ```
 
 Or with environment variables:
+
 ```bash
 export TFR_SCANNING_ENABLED=true
 export TFR_SCANNING_TOOL=trivy
@@ -126,16 +132,20 @@ export TFR_SCANNING_BINARY_PATH=/usr/local/bin/trivy
 ### 3. Restart the Backend
 
 The scanner job starts automatically when the server starts. Confirm it started:
-```
+
+```text
 INFO module scanner: started tool=trivy version=0.58.0
 ```
 
 If the binary is missing or misconfigured, the server logs a warning and continues running with scanning disabled — it does not crash:
-```
+
+```text
 INFO module scanner: disabled (scanning.binary_path not set)
 ```
+
 or:
-```
+
+```text
 ERROR module scanner: failed to construct scanner error="scanner binary not accessible at ..."
 ```
 
@@ -166,11 +176,13 @@ All options live under the `scanning:` key in `config.yaml` or use the `TFR_SCAN
 ### Trivy
 
 Trivy requires no authentication. The registry invokes:
-```
+
+```text
 trivy fs --format json --scanners vuln,secret,misconfig --exit-code 0 --quiet <dir>
 ```
 
 **Air-gapped environments:** Trivy downloads its vulnerability database on first use. In air-gapped deployments, pre-populate the database:
+
 ```bash
 # On a machine with internet access
 trivy image --download-db-only
@@ -180,6 +192,7 @@ trivy image --download-db-only
 Or set `TRIVY_NO_PROGRESS=true` and `TRIVY_OFFLINE_SCAN=true` to disable network access.
 
 **Recommended config:**
+
 ```yaml
 scanning:
   enabled: true
@@ -195,6 +208,7 @@ scanning:
 ### Checkov
 
 Checkov is Python-based. Install via pip:
+
 ```bash
 pip3 install checkov
 which checkov   # e.g. /usr/local/bin/checkov
@@ -202,18 +216,21 @@ checkov --version
 ```
 
 Or in a container:
+
 ```dockerfile
 RUN pip3 install checkov
 ```
 
 The registry invokes:
-```
+
+```text
 checkov -d <dir> -o json --quiet
 ```
 
 **Note:** Checkov exits with code `1` when checks fail, which is normal. The registry handles this correctly.
 
 **Recommended config:**
+
 ```yaml
 scanning:
   enabled: true
@@ -229,6 +246,7 @@ scanning:
 ### Terrascan
 
 Install the single binary:
+
 ```bash
 # Linux amd64
 curl -L "https://github.com/tenable/terrascan/releases/latest/download/terrascan_Linux_x86_64.tar.gz" | tar xz terrascan
@@ -237,11 +255,13 @@ terrascan version
 ```
 
 The registry invokes:
-```
+
+```text
 terrascan scan -t terraform -d <dir> -o json
 ```
 
 **Recommended config:**
+
 ```yaml
 scanning:
   enabled: true
@@ -257,6 +277,7 @@ scanning:
 ### Snyk
 
 Snyk requires authentication before it can scan. Install and authenticate:
+
 ```bash
 npm install -g snyk
 snyk auth   # opens browser to authenticate with your Snyk account
@@ -264,18 +285,21 @@ snyk --version
 ```
 
 Or in a container using an API token:
+
 ```bash
 snyk auth $SNYK_TOKEN
 ```
 
 The registry invokes:
-```
+
+```text
 snyk iac test <dir> --json
 ```
 
 **Note:** Snyk exits with code `1` when vulnerabilities are found, which is normal. The registry handles this correctly.
 
 **Recommended config:**
+
 ```yaml
 scanning:
   enabled: true
@@ -291,11 +315,13 @@ scanning:
 ### Custom Tool
 
 Use `custom` when you have an internal scanner or a tool not natively supported. The binary must:
+
 - Accept the target directory as its last argument
 - Write results to **stdout**
 - Output either **SARIF** (any conformant SARIF 2.1.0 JSON) or **JSON** with a `vulnerabilities` array where each entry has a `severity` field
 
 **Example — tfsec (SARIF output):**
+
 ```yaml
 scanning:
   enabled: true
@@ -310,6 +336,7 @@ scanning:
 ```
 
 **Example — internal tool (JSON output):**
+
 ```yaml
 scanning:
   enabled: true
@@ -324,6 +351,7 @@ scanning:
 ```
 
 For `output_format: json`, the expected output schema is:
+
 ```json
 {
   "vulnerabilities": [
@@ -353,7 +381,8 @@ scanning:
 ```
 
 When the version drifts (e.g. after a system package update), the scanner stops and logs:
-```
+
+```text
 ERROR module scanner: binary version mismatch — refusing to run
   tool=trivy expected=0.58.0 actual=0.59.1
   action=update scanning.expected_version in config or reinstall the expected binary
@@ -403,12 +432,14 @@ Results are available in two places:
 **Web UI:** Open any module's detail page, select a version, and the **Security Scan** panel appears in the right sidebar (visible to users with `admin` or `modules:write` scope).
 
 **API:**
+
 ```bash
 curl -H "Authorization: Bearer $TOKEN" \
   https://registry.example.com/api/v1/admin/modules/myorg/vpc/aws/versions/1.0.0/scan
 ```
 
 Response:
+
 ```json
 {
   "id": "...",
@@ -436,25 +467,30 @@ Response:
 
 ---
 
-## Troubleshooting
+## Scanning Troubleshooting
 
 **No scans are running:**
+
 - Check `scanning.enabled: true` is set.
 - Verify the binary path: `ls -la /usr/local/bin/trivy`.
 - Check server logs for `module scanner:` lines at startup.
 - Ensure the registry process has execute permission on the binary.
 
 **All scans show `error` status:**
+
 - Check the `error_message` field in the scan API response.
 - Common causes: binary path wrong, insufficient permissions, scanner requires authentication (Snyk), or timeout too short for large modules.
 
 **Scanner binary version mismatch:**
+
 - Update `expected_version` to match the installed binary, or reinstall the expected version.
 
 **Scans are slow / backing up:**
+
 - Increase `worker_count` (default: 2) to process more scans concurrently.
 - Reduce `timeout` if modules are small and scans are hanging.
 - Check available CPU on the server — scanner binaries are CPU-intensive.
 
 **`pending` scans left after a crash:**
+
 - The job automatically resets scan records stuck in `scanning` state for more than 30 minutes on startup. No manual intervention is needed for normal restarts.

@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # Contributing to Enterprise Terraform Registry — Backend
 
 Thank you for your interest in contributing. This project implements the full suite of HashiCorp Terraform protocols and is designed for enterprise deployments — contributions that uphold correctness, security, and protocol compliance are especially welcome.
@@ -28,8 +29,8 @@ This project expects all participants to interact with each other professionally
 
 ### Prerequisites
 
-- Go 1.24 or later
-- PostgreSQL 14+
+- Go 1.26 or later
+- PostgreSQL 14+ (16 recommended)
 - Docker and Docker Compose
 
 ### Fork and Clone
@@ -70,12 +71,12 @@ For the frontend UI, see [terraform-registry-frontend](https://github.com/sethba
 
 ### Branch Naming
 
-| Type | Pattern | Example |
-|------|---------|---------|
-| Feature | `feat/short-description` | `feat/s3-multipart-upload` |
-| Bug fix | `fix/issue-description` | `fix/webhook-signature-validation` |
-| Documentation | `docs/topic` | `docs/deployment-guide` |
-| Refactor | `refactor/area` | `refactor/scm-connector-interface` |
+| Type          | Pattern                  | Example                            |
+| ------------- | ------------------------ | ---------------------------------- |
+| Feature       | `feat/short-description` | `feat/s3-multipart-upload`         |
+| Bug fix       | `fix/issue-description`  | `fix/webhook-signature-validation` |
+| Documentation | `docs/topic`             | `docs/deployment-guide`            |
+| Refactor      | `refactor/area`          | `refactor/scm-connector-interface` |
 
 ### Conventional Commits
 
@@ -85,18 +86,24 @@ PR titles (and commit messages) must follow [Conventional Commits](https://www.c
 <type>(<optional scope>): <description>
 ```
 
-| Type | When to use |
-|------|-------------|
-| `feat` | New user-facing feature (minor version bump) |
-| `fix` | Bug fix (patch bump) |
-| `perf` | Performance improvement (patch bump) |
-| `security` | Security fix (patch bump) |
-| `refactor` | Code restructure, no behavior change |
-| `docs` | Documentation only |
-| `test` | Adding or fixing tests |
-| `ci` | CI/CD workflow changes |
-| `chore` | Maintenance, deps, tooling |
-| `deps` | Dependency updates |
+| Type       | When to use                                    |
+| ---------- | ---------------------------------------------- |
+| `feat`     | New user-facing feature (minor version bump)   |
+| `fix`      | Bug fix, including security fixes (patch bump) |
+| `perf`     | Performance improvement (patch bump)           |
+| `refactor` | Code restructure, no behavior change           |
+| `docs`     | Documentation only                             |
+| `style`    | Whitespace/formatting only                     |
+| `test`     | Adding or fixing tests                         |
+| `build`    | Build system / external dependency updates     |
+| `ci`       | CI/CD workflow changes                         |
+| `chore`    | Maintenance, tooling                           |
+| `revert`   | Reverts a previous commit                      |
+
+> **PR title validation:** PR titles are validated by `amannn/action-semantic-pull-request`
+> with the default ruleset. The types above are the only ones accepted. `security` and
+> `deps` are **not** valid — use `fix:` for security fixes and `build:` or `chore:` for
+> dependency updates.
 
 Breaking changes: append `!` to the type (`feat!:`) **or** add a `BREAKING CHANGE:` footer in the commit body. These trigger a major version bump.
 
@@ -153,7 +160,13 @@ cd backend
 swag init -g cmd/server/main.go --outputTypes json
 ```
 
-Then rebuild the binary (the spec is embedded at compile time). Add or update the entry in `docs/SWAGGER_ANNOTATION_CHECKLIST.md`. See `CLAUDE.md` for the full annotation rules.
+Then rebuild the binary (the spec is embedded at compile time). Add or update the entry in `docs/SWAGGER_ANNOTATION_CHECKLIST.md`, which also contains the canonical `@Tags` vocabulary and per-handler coverage tracking.
+
+**Annotation rules:**
+
+- Use `// @Security     Bearer` for authenticated endpoints.
+- Use `{param}` in `@Router` paths (swag style), **not** `:param` (Gin style).
+- All `@Tags` values must be title-cased and drawn from the established vocabulary in `docs/SWAGGER_ANNOTATION_CHECKLIST.md`. Do not invent new tags without updating the checklist.
 
 ### Architecture Conventions
 
@@ -203,15 +216,54 @@ Then rebuild the binary (the spec is embedded at compile time). Add or update th
 
 ## Testing Requirements
 
-Before submitting a pull request:
+Before submitting a pull request, run the full local quality gate. CI will reject anything that does not pass these:
 
 ```bash
-# All tests must pass
 cd backend
-go test ./...
+
+# 1. Format and vet
+go fmt ./...
+go vet ./...
+
+# 2. Tests with coverage (must stay >= 80%)
+go test ./internal/... ./pkg/... -coverprofile=coverage.out -covermode=atomic
+go run ./scripts/coverfilter -in coverage.out -out coverage.filtered.out -root .
+go tool cover -func=coverage.filtered.out | grep "^total:"
+
+# 3. Security scan -- compare against the committed baseline
+# Linux/CI:
+gosec -fmt=json -out=gosec-results.json ./...
+# Windows (paths must be quoted):
+#   gosec -fmt=json -out="gosec-results.json" "./..."
+
+python scripts/gosec-compare.py --results gosec-results.json --baseline gosec-baseline.json --base-dir .
 ```
 
-New packages should include unit tests for core logic. Security-sensitive code (authentication, signature verification, checksum validation) requires tests by default — PRs adding such code without tests will not be merged.
+If `gosec-compare.py` reports new findings, either fix them or, after review,
+update the baseline:
+
+```bash
+# Linux:   bash scripts/update-gosec-baseline.sh
+# Windows: gosec -fmt=json -out="gosec-baseline.json" "./..."
+```
+
+### Coverage skip annotations
+
+When a function genuinely cannot be exercised in unit tests (e.g. process-exit
+paths, `os.Exit` wrappers, hardware-specific branches), mark it with a comment
+of the form:
+
+```go
+// coverage:skip:{REASON}
+```
+
+The coverage filter (`scripts/coverfilter`) excludes these from the threshold
+calculation. Use this sparingly — it is for code that is truly untestable, not
+code that is merely inconvenient to test.
+
+New packages should include unit tests for core logic. Security-sensitive code
+(authentication, signature verification, checksum validation) requires tests by
+default — PRs adding such code without tests will not be merged.
 
 ---
 

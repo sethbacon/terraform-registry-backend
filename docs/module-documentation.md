@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 MD060 -->
 # Module Documentation Extraction
 
 When a module version is uploaded, the registry automatically parses its Terraform source files and extracts structured documentation: input variables, output values, provider requirements, and Terraform version constraints.
@@ -23,18 +24,20 @@ Extraction is **best-effort**: the parser tolerates incomplete modules and missi
 
 Retrieve extracted documentation for a specific version:
 
-```
+```text
 GET /api/v1/modules/{namespace}/{name}/{system}/versions/{version}/docs
 ```
 
 No authentication is required.
 
 **Example:**
+
 ```bash
 curl https://registry.example.com/api/v1/modules/myorg/vpc/aws/versions/1.0.0/docs
 ```
 
 **Response:**
+
 ```json
 {
   "inputs": [

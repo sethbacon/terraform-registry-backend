@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 MD060 -->
 # Data Residency & Multi-Region Deployment
 
 This document describes deployment strategies for data residency compliance and
@@ -20,7 +21,7 @@ required geographic region(s).
 
 The simplest topology: all components in one cloud region.
 
-```
+```text
 ┌─────────────────────────────────────┐
 │           Region: us-east-1         │
 │                                     │
@@ -48,7 +49,7 @@ The simplest topology: all components in one cloud region.
 One primary region handles all traffic; a standby region receives replicated
 data for failover.
 
-```
+```text
 ┌─────────────────────────────┐     ┌─────────────────────────────┐
 │     Primary: eu-west-1      │     │    Standby: eu-central-1    │
 │                             │     │                             │
@@ -217,7 +218,7 @@ resource "google_storage_bucket" "primary" {
 Both regions serve traffic simultaneously. This requires application-level
 conflict resolution and is significantly more complex.
 
-```
+```text
 ┌─────────────────────────────┐     ┌─────────────────────────────┐
 │     Region A: us-east-1     │     │     Region B: us-west-2     │
 │                             │     │                             │
@@ -252,6 +253,7 @@ conflict resolution and is significantly more complex.
 ### When to Use Active-Active
 
 Active-active is recommended only when:
+
 - Regulatory requirements mandate data processing in multiple jurisdictions simultaneously
 - Latency requirements (< 50ms) cannot be met from a single region for all users
 - Uptime SLA exceeds 99.99%
@@ -279,6 +281,7 @@ operational complexity.
 
 See `deployments/terraform/aws/multi-region/` for a complete active-passive
 example with:
+
 - Cross-region RDS replica
 - S3 cross-region replication
 - Route53 health-check failover

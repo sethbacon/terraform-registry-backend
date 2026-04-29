@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # Version Upgrade Guide
 
 This guide documents the upgrade process between Terraform Registry versions,
@@ -17,11 +18,12 @@ Before upgrading, run the preflight validation command:
 # Docker
 docker run --rm \
   -v $(pwd)/config.yaml:/app/config.yaml \
-  ghcr.io/terraform-registry/backend:NEW_VERSION \
+  ghcr.io/sethbacon/terraform-registry-backend:NEW_VERSION \
   upgrade preflight --config /app/config.yaml
 ```
 
 The preflight check validates:
+
 - Database connectivity and current schema version
 - Required schema migrations for the target version
 - Storage backend accessibility
@@ -31,6 +33,7 @@ The preflight check validates:
 ### Standard Upgrade Steps
 
 1. **Back up the database:**
+
    ```bash
    pg_dump -Fc terraform_registry > backup-$(date +%Y%m%d).dump
    ```
@@ -48,6 +51,7 @@ The preflight check validates:
 6. **Start the backend** — migrations run automatically on startup
 
 7. **Verify health:**
+
    ```bash
    curl -s https://registry.example.com/health | jq
    curl -s https://registry.example.com/api/v1/version | jq
@@ -64,9 +68,11 @@ If issues are found after upgrade:
 
 1. **Stop the new version**
 2. **Restore the database backup:**
+
    ```bash
    pg_restore -d terraform_registry backup-YYYYMMDD.dump
    ```
+
 3. **Deploy the previous version**
 4. **Verify functionality**
 
@@ -81,17 +87,20 @@ If issues are found after upgrade:
 ### 0.6.x → 0.7.0
 
 **Breaking Changes:**
+
 - Minimum PostgreSQL version raised to 14 (was 12)
 - `TFR_AUTH_SECRET` environment variable renamed to `ENCRYPTION_KEY`
 - API key format changed from UUID to prefixed format (`tfr_...`)
 
 **Migrations:**
+
 - `000020_search_indexes` — adds full-text search indexes (may take several minutes on large databases)
 - `000021_setup_scanning` — adds scanning configuration tables
 - `000022_storage_migration` — adds storage migration state tracking
 - `000023_audit_retention` — adds audit log retention configuration
 
 **Pre-flight:**
+
 ```bash
 ./terraform-registry upgrade preflight --from 0.6 --to 0.7
 ```
@@ -101,20 +110,24 @@ If issues are found after upgrade:
 ### 0.7.x → 0.8.0
 
 **Breaking Changes:**
+
 - OIDC configuration moved from flat fields to nested structure in `config.yaml`
 - Deprecated `auth.oidc_issuer_url` — use `auth.oidc.issuer_url` instead
 - Redis is now required for multi-pod deployments (rate limiting + session state)
 
 **Migrations:**
+
 - `000024_module_deprecation` — adds deprecation fields to module_versions
 - `000025_org_idp_binding` — adds per-org IdP binding support
 
 **New Features Requiring Configuration:**
+
 - SAML 2.0: configure in `auth.saml` section
 - LDAP: configure in `auth.ldap` section
 - SCIM: enable in `auth.scim.enabled: true`
 
 **Pre-flight:**
+
 ```bash
 ./terraform-registry upgrade preflight --from 0.7 --to 0.8
 ```
@@ -124,13 +137,16 @@ If issues are found after upgrade:
 ### 0.8.x → 0.9.0
 
 **Breaking Changes:**
+
 - None expected
 
 **Migrations:**
+
 - Per-org quota tables
 - Legal hold table for audit logs
 
 **Pre-flight:**
+
 ```bash
 ./terraform-registry upgrade preflight --from 0.8 --to 0.9
 ```
@@ -138,14 +154,17 @@ If issues are found after upgrade:
 ### 0.9.x → 0.10.0
 
 **Breaking Changes:**
+
 - Audit log cleanup job now respects legal holds. Ensure any active investigations have holds in place before upgrading.
 
 **New Features:**
+
 - GDPR data-subject export/erasure endpoints
 - OCSF audit log export format
 - Air-gap installation support (`make airgap-bundle`)
 
 **Pre-flight:**
+
 ```bash
 ./terraform-registry upgrade preflight --from 0.9 --to 0.10
 ```
@@ -154,7 +173,7 @@ If issues are found after upgrade:
 
 ## Upgrade Preflight CLI Reference
 
-```
+```text
 Usage: terraform-registry upgrade preflight [flags]
 
 Flags:
@@ -171,7 +190,7 @@ Examples:
 
 ### Preflight Check Output
 
-```
+```text
 Terraform Registry — Upgrade Preflight
 =======================================
 Current version:  0.7.2

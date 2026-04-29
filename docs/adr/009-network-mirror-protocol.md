@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # 9. Network Mirror Protocol
 
 **Status**: Accepted
@@ -12,6 +13,7 @@ Terraform's [Provider Network Mirror Protocol](https://developer.hashicorp.com/t
 4. **Compliance**: Some organizations require all binaries to pass through an approved internal registry.
 
 The protocol defines two endpoints:
+
 - `GET /terraform/providers/{hostname}/{namespace}/{type}/index.json` -- list available versions
 - `GET /terraform/providers/{hostname}/{namespace}/{type}/{version}.json` -- list platforms for a version with download URLs and hashes
 
@@ -41,6 +43,7 @@ provider_installation {
 ## Consequences
 
 **Easier**:
+
 - Air-gapped deployments can use Terraform normally by pointing at the private registry.
 - Provider binary caching reduces bandwidth costs and download times.
 - Pull-through mode provides a transparent caching proxy experience.
@@ -48,6 +51,7 @@ provider_installation {
 - Standard Terraform configuration -- no custom tooling needed on the client side.
 
 **Harder**:
+
 - Mirror storage requirements can be substantial (50-200 MB per provider per platform per version).
 - Pull-through mode introduces complexity: upstream availability affects first requests for uncached providers.
 - Mirror sync failures must be monitored to detect upstream registry outages.

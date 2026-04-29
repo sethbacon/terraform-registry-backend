@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # EKS Deployment Guide — Terraform Registry
 
 Complete all steps in [eks-prerequisites.md](eks-prerequisites.md) first.

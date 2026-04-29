@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # 8. Module Scanning Architecture
 
 **Status**: Accepted
@@ -7,6 +8,7 @@
 Enterprise Terraform registries need security scanning of published modules to detect misconfigurations, compliance violations, and vulnerabilities before they reach production infrastructure. The scanning ecosystem includes multiple tools (Trivy, Terrascan, Snyk, Checkov) each with different strengths, output formats, and licensing.
 
 The registry must:
+
 1. Support multiple scanning tools without coupling to any single vendor.
 2. Run scans asynchronously (scanning can take minutes for large modules).
 3. Store normalized results for consistent display regardless of tool.
@@ -55,6 +57,7 @@ All scanners produce a `ScanResult` with `CriticalCount`, `HighCount`, `MediumCo
 ## Consequences
 
 **Easier**:
+
 - Operators choose their preferred scanner tool via a single config value.
 - New scanners can be added by implementing the three-method interface.
 - The `custom` scanner supports any CLI tool with SARIF or JSON output, enabling tools not yet natively supported.
@@ -62,6 +65,7 @@ All scanners produce a `ScanResult` with `CriticalCount`, `HighCount`, `MediumCo
 - Version pinning prevents supply-chain attacks via compromised scanner binaries.
 
 **Harder**:
+
 - The scanner binary must be installed in the container image (not included in the registry image itself).
 - Different scanners may produce different severity mappings for the same issue.
 - The worker pool is bounded but scan duration is unpredictable, potentially causing queue buildup.

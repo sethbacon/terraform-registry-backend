@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # GKE Prerequisites — Terraform Registry
 
 Resources and tooling required before deploying to Google Kubernetes Engine.

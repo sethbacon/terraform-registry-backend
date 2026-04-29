@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 MD060 -->
 # Database Migration Reference
 
 This document catalogs all database migrations, their reversibility, and rollback procedures.

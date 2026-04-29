@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # Development Guide
 
 This document describes how to set up a local development environment, generate API docs, and run tests.

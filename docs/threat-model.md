@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 MD060 -->
 # Threat Model — Terraform Registry
 
 **Document version:** 1.0
@@ -20,7 +21,7 @@ Terraform modules and providers. It comprises:
 
 ## 2. Data Flow Diagram
 
-```
+```text
 ┌───────────────────────────────────────────────────────────────────┐
 │                       External Zone                               │
 │                                                                   │

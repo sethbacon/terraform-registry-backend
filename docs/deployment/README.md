@@ -1,23 +1,27 @@
-# Deployment Guide
+<!-- markdownlint-disable MD013 -->
+# Cloud-Specific Kubernetes Deployment Guides
 
-This directory contains cloud-specific Kubernetes deployment guides (AKS, EKS, GKE). For Docker Compose, standalone binary, Helm, and other deployment options, see the [main Deployment Guide](../deployment.md).
+This directory contains step-by-step Kubernetes deployment guides for the major
+managed-Kubernetes offerings (AKS, EKS, GKE). They cover provider-specific
+prerequisites such as ingress controllers, secret stores, and managed databases.
 
-This directory contains comprehensive documentation for deploying the Terraform Registry.
+For all other deployment options (Docker Compose, standalone binary, Helm
+overview, Azure Container Apps, AWS ECS, GCP Cloud Run, Terraform IaC), see the
+top-level [Deployment Guide](../deployment.md).
 
-## Deployment Targets
+## Cloud-Specific Guides
 
-| Target                     | Method                      | Guide                                                           |
-| -------------------------- | --------------------------- | --------------------------------------------------------------- |
-| **Local development**      | Docker Compose              | `deployments/docker-compose.yml`                                |
-| **AKS — new cluster**      | Helm or Kustomize           | [aks-new-cluster.md](aks-new-cluster.md)                        |
-| **AKS — existing cluster** | Helm or Kustomize           | [aks-existing-cluster.md](aks-existing-cluster.md)              |
-| **AWS EKS**                | Helm or Kustomize           | [eks-deployment.md](eks-deployment.md)                          |
-| **Google GKE**             | Helm or Kustomize           | [gke-deployment.md](gke-deployment.md)                          |
-| **Azure Container Apps**   | Bicep or Azure CLI          | `deployments/azure-container-apps/`                             |
-| **Azure (full infra)**     | Terraform                   | `deployments/terraform/azure/`                                  |
-| **AWS ECS**                | CloudFormation or Terraform | `deployments/aws-ecs/` or `deployments/terraform/aws/`          |
-| **GCP Cloud Run**          | Terraform or gcloud         | `deployments/terraform/gcp/` or `deployments/google-cloud-run/` |
-| **Bare metal / VM**        | systemd + nginx             | `deployments/binary/`                                           |
+| Target                     | Method            | Guide                                              |
+| -------------------------- | ----------------- | -------------------------------------------------- |
+| **AKS — new cluster**      | Helm or Kustomize | [aks-new-cluster.md](aks-new-cluster.md)           |
+| **AKS — existing cluster** | Helm or Kustomize | [aks-existing-cluster.md](aks-existing-cluster.md) |
+| **AWS EKS**                | Helm or Kustomize | [eks-deployment.md](eks-deployment.md)             |
+| **Google GKE**             | Helm or Kustomize | [gke-deployment.md](gke-deployment.md)             |
+
+For non-Kubernetes targets (Docker Compose, standalone binary, Azure Container
+Apps, AWS ECS Fargate, GCP Cloud Run, full-infra Terraform), see the
+[main Deployment Guide](../deployment.md) and the corresponding
+`deployments/<target>/` directory.
 
 ## Kubernetes Deployment Methods
 

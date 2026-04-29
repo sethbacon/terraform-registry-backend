@@ -2,13 +2,13 @@ apiVersion: v2
 name: terraform-registry
 description: A Helm chart for deploying the Enterprise Terraform Registry
 type: application
-version: 0.18.2
-appVersion: 0.18.2
+version: 1.0.0
+appVersion: 1.0.0
 keywords:
   - terraform
   - registry
   - infrastructure
   - devops
-home: https://github.com/terraform-registry/terraform-registry
+home: https://github.com/sethbacon/terraform-registry-backend
 maintainers:
   - name: terraform-registry

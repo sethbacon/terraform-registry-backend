@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # API Reference
 
 The Enterprise Terraform Registry provides a live, interactive API reference that is always
