@@ -1,0 +1,103 @@
+name: Wiki Sync
+
+# Mirror the repository's documentation to the GitHub wiki.
+#
+# Triggers:
+#   - On every push to main that touches markdown sources, the helm chart
+#     (which contains the version), or the sync script itself.
+#   - On every published release (so the version badge in Home.md picks
+#     up the new tag).
+#   - Manually via workflow_dispatch.
+#
+# The actual transformation lives in scripts/sync-wiki.py — see that file
+# for the path and link conventions used.
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - "docs/**/*.md"
+      - "README.md"
+      - "CONTRIBUTING.md"
+      - "SECURITY.md"
+      - "RELEASING.md"
+      - "CHANGELOG.md"
+      - ".release-please-manifest.json"
+      - "scripts/sync-wiki.py"
+      - ".github/workflows/wiki-sync.yml"
+  release:
+    types: [ published ]
+  workflow_dispatch:
+
+    # Only one wiki sync should run at a time; queued runs collapse so we
+    # never publish stale content over fresh content.
+concurrency:
+  group: wiki-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: write # to push to the wiki
+  issues: write # to file an issue if the sync fails
+
+jobs:
+  sync:
+    name: Mirror docs to wiki
+    runs-on: ubuntu-latest
+    continue-on-error: true # never block the source repo on a wiki failure
+
+    steps:
+      - name: Checkout source repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Clone wiki repository
+        run: |
+          git clone \
+            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.wiki.git" \
+            wiki
+
+      - name: Run sync script
+        run: |
+          python scripts/sync-wiki.py \
+            --wiki wiki \
+            --source-url-base "${{ github.server_url }}/${{ github.repository }}/blob/main"
+
+      - name: Commit and push wiki changes
+        working-directory: wiki
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet && [ -z "$(git status --porcelain)" ]; then
+            echo "Wiki is already up to date."
+            exit 0
+          fi
+          git add -A
+          git commit -m "docs: sync from ${GITHUB_SHA::7} (${GITHUB_EVENT_NAME})"
+          git push
+
+      - name: Open issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Wiki sync failed (${context.eventName} @ ${context.sha.slice(0,7)})`,
+              body: [
+                '## Wiki sync failed',
+                '',
+                `**Event:** \`${context.eventName}\``,
+                `**Commit:** ${context.sha}`,
+                `**Run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                '',
+                'Re-run the [Wiki Sync workflow](' +
+                  `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/workflows/wiki-sync.yml` +
+                  ') after addressing the failure.',
+              ].join('\n'),
+              labels: ['ci', 'documentation'],
+            });
