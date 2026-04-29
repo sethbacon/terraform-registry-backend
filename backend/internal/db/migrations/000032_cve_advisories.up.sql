@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS cve_advisories (
     severity      TEXT NOT NULL DEFAULT 'unknown', -- critical|high|medium|low|unknown
     summary       TEXT NOT NULL DEFAULT '',
     details       TEXT NOT NULL DEFAULT '',
-    references    JSONB NOT NULL DEFAULT '[]',   -- array of URL strings
+    "references"  JSONB NOT NULL DEFAULT '[]',   -- array of URL strings
     published_at  TIMESTAMPTZ,
     modified_at   TIMESTAMPTZ,
     fetched_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),

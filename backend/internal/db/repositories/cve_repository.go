@@ -35,14 +35,14 @@ func (r *CVERepository) UpsertAdvisory(ctx context.Context, a *models.CVEAdvisor
 
 	row := r.db.QueryRowContext(ctx, `
 		INSERT INTO cve_advisories
-			(source, source_id, severity, summary, details, references,
+			(source, source_id, severity, summary, details, "references",
 			 published_at, modified_at, fetched_at, withdrawn_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW(),$9)
 		ON CONFLICT (source, source_id) DO UPDATE
 			SET severity     = EXCLUDED.severity,
 			    summary      = EXCLUDED.summary,
 			    details      = EXCLUDED.details,
-			    references   = EXCLUDED.references,
+			    "references" = EXCLUDED."references",
 			    modified_at  = EXCLUDED.modified_at,
 			    fetched_at   = NOW(),
 			    withdrawn_at = EXCLUDED.withdrawn_at,
@@ -115,7 +115,7 @@ func (r *CVERepository) ReplaceAffectedTargets(ctx context.Context, advisoryID u
 func (r *CVERepository) ListActive(ctx context.Context) ([]models.CVEAdvisory, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT DISTINCT a.id, a.source, a.source_id, a.severity, a.summary, a.details,
-		       a.references, a.published_at, a.modified_at, a.fetched_at,
+		       a."references", a.published_at, a.modified_at, a.fetched_at,
 		       a.withdrawn_at, a.created_at, a.updated_at
 		FROM cve_advisories a
 		WHERE a.withdrawn_at IS NULL
@@ -181,7 +181,7 @@ func (r *CVERepository) ListActive(ctx context.Context) ([]models.CVEAdvisory, e
 func (r *CVERepository) ListAll(ctx context.Context, kindFilter string) ([]models.CVEAdvisory, error) {
 	query := `
 		SELECT a.id, a.source, a.source_id, a.severity, a.summary, a.details,
-		       a.references, a.published_at, a.modified_at, a.fetched_at,
+		       a."references", a.published_at, a.modified_at, a.fetched_at,
 		       a.withdrawn_at, a.created_at, a.updated_at
 		FROM cve_advisories a
 	`
