@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # Releasing
 
 Releases are fully automated via `release-please.yml` and `release.yml`.
@@ -84,6 +85,7 @@ git push origin vX.Y.Z
 The `terraform-registry-release-bot` App private key is stored as `RELEASE_DISPATCH_APP_KEY` in repository secrets. The Client ID is stored as `RELEASE_DISPATCH_APP_ID` in repository variables.
 
 To rotate the key:
+
 1. Go to GitHub → Settings → Developer settings → GitHub Apps → `terraform-registry-release-bot` → Private keys.
 2. Generate a new key and download it.
 3. Update `RELEASE_DISPATCH_APP_KEY` in repository secrets with the new key content.
@@ -106,10 +108,12 @@ release-please will propose a new release PR on the next `main` push. The alread
 These files reference specific image tags and are updated manually after each release:
 
 **Helm chart** (in `deployments/helm/`):
+
 - `Chart.yaml` — release-please auto-bumps `appVersion` and `version` on release.
 - `values.yaml` — update `frontend.image.tag` when releasing a new frontend version.
 - `values-aks.yaml`, `values-eks.yaml`, `values-gke.yaml` — update `backend.image.tag` and/or `frontend.image.tag`.
 
 **Kustomize overlays** (in `deployments/kubernetes/overlays/`):
+
 - `eks/kustomization.yaml` — update `newTag` for backend and/or frontend.
 - `gke/kustomization.yaml` — update `newTag` for backend and/or frontend.

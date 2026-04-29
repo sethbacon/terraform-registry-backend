@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # 7. Setup Wizard One-Time Token
 
 **Status**: Accepted
@@ -7,6 +8,7 @@
 The registry needs a secure first-run experience. When deployed fresh, there are no users, no OIDC configuration, and no API keys -- creating a bootstrapping problem. The administrator must configure OIDC, create the first admin user, and set up storage, but these operations normally require authentication.
 
 Common approaches:
+
 1. **Environment variable with admin credentials** -- simple but error-prone (credentials in deployment manifests, forgotten after setup).
 2. **First-request-wins** -- whoever hits the setup endpoint first becomes admin. Insecure in shared environments.
 3. **One-time setup token** -- generated at first boot, printed to server logs, used once to complete setup, then invalidated.
@@ -28,6 +30,7 @@ Use a cryptographically generated one-time setup token for bootstrapping:
 ## Consequences
 
 **Easier**:
+
 - Secure bootstrapping with no pre-shared credentials in deployment manifests.
 - The token is cryptographically strong (256 bits of entropy).
 - Bcrypt storage means even database access does not reveal the raw token.
@@ -36,6 +39,7 @@ Use a cryptographically generated one-time setup token for bootstrapping:
 - Token file output supports automated deployment pipelines.
 
 **Harder**:
+
 - The token is only visible in server logs at first boot -- if logs are not captured, the token is lost (mitigated by `SETUP_TOKEN_FILE`).
 - Operators must have log access to retrieve the token, which may require kubectl access in Kubernetes.
 - If the token is lost, recovery requires deleting the `setup_token_hash` row from `system_settings` and restarting the server.

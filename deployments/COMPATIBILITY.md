@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # Backend ↔ Frontend Compatibility
 
 The backend and frontend are released as a matched pair. Image tags

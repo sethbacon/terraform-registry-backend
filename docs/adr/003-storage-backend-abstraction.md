@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # 3. Storage Backend Abstraction
 
 **Status**: Accepted
@@ -28,12 +29,14 @@ This follows the plugin/registry pattern: adding a new backend (e.g., MinIO, SFT
 ## Consequences
 
 **Easier**:
+
 - Adding new storage backends requires no changes to existing code -- just a new package with `init()` and a blank import.
 - All handlers and services depend on the `Storage` interface, not concrete implementations.
 - `GetURL` with TTL enables signed URL generation for cloud backends and direct serving for local storage.
 - Per-artifact backend tracking enables future storage migration features.
 
 **Harder**:
+
 - Each backend must implement all six interface methods, even if some are trivial (e.g., `GetMetadata` on local storage).
 - Testing requires either real cloud credentials or mock implementations.
 - The `init()` registration pattern makes the dependency graph implicit rather than explicit.

@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # 5. Fire-and-Forget Webhooks
 
 **Status**: Accepted
@@ -30,12 +31,14 @@ Process webhook events asynchronously using fire-and-forget goroutines:
 ## Consequences
 
 **Easier**:
+
 - Webhook endpoints respond within milliseconds, well within provider timeout limits.
 - The implementation is straightforward: no message queue, no retry infrastructure, no dead-letter handling.
 - Failed events are visible in the webhook events table for manual investigation.
 - Background processing uses the existing `safego.Go()` utility with panic recovery.
 
 **Harder**:
+
 - Failed webhook processing is silently lost unless an operator monitors the `scm_webhook_events` table or logs.
 - Transient failures (SCM API rate limits, temporary network issues, storage backend hiccups) result in permanently missed module versions.
 - No backpressure mechanism: a burst of webhook events spawns unbounded goroutines.

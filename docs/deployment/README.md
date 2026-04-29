@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # Cloud-Specific Kubernetes Deployment Guides
 
 This directory contains step-by-step Kubernetes deployment guides for the major

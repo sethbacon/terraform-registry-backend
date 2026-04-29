@@ -1,4 +1,4 @@
-<!-- markdownlint-disable MD024 -->
+<!-- markdownlint-disable MD013 MD024 -->
 # Enterprise Terraform Registry — Backend
 
 A fully-featured, enterprise-grade Terraform registry implementing all three HashiCorp protocols with multi-tenancy support.

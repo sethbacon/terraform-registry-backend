@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # SOC 2 Type II Control Mapping
 
 This document maps SOC 2 Trust Service Criteria to Terraform Registry features,

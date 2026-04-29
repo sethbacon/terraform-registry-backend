@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 MD060 -->
 # Capacity Planning
 
 This guide provides sizing recommendations for the Terraform Registry across different deployment scales.
@@ -32,16 +33,18 @@ This guide provides sizing recommendations for the Terraform Registry across dif
 
 The `audit_logs` table is typically the largest and fastest-growing table. Estimate growth with:
 
-```
+```text
 monthly_audit_rows = avg_requests_per_day * 30 * audit_log_ratio
 ```
 
 Where `audit_log_ratio` depends on configuration:
+
 - `audit.log_read_operations: false` (default): ~10-20% of requests generate audit entries
 - `audit.log_read_operations: true`: ~80-100% of requests generate audit entries
 
 **Example**: 10,000 requests/day with read logging disabled:
-- Monthly rows: 10,000 * 30 * 0.15 = 45,000 rows
+
+- Monthly rows: 10,000 *30* 0.15 = 45,000 rows
 - Row size: ~500 bytes average
 - Monthly growth: ~22 MB
 
@@ -59,11 +62,12 @@ Configure `audit_retention_days` (default 90) to prevent unbounded growth. The a
 
 The default `maxConnections: 25` is suitable for most deployments. Tune based on:
 
-```
+```text
 recommended_pool = (backend_replicas * 2) + background_jobs + headroom
 ```
 
 Where:
+
 - `backend_replicas * 2`: Each pod uses ~2 connections for request handling
 - `background_jobs`: Mirror sync, scanner, expiry notifier, audit cleanup (~4 connections)
 - `headroom`: 5-10 connections for spikes
@@ -102,7 +106,7 @@ Provider binaries are significantly larger than modules. Each provider version i
 
 **Formula**: `total_provider_storage = num_provider_versions * platforms_per_version * avg_binary_size`
 
-**Example**: 100 provider versions * 6 platforms * 80 MB = ~48 GB
+**Example**: 100 provider versions *6 platforms* 80 MB = ~48 GB
 
 ### Mirror Storage
 
@@ -145,6 +149,7 @@ The Terraform/OpenTofu binary mirror stores binaries for each version and platfo
 | Large         | 500m        | 2000m     | 512 Mi         | 2 Gi         | 5-10     |
 
 Key factors affecting compute requirements:
+
 - **Module scanning**: The scanner job is CPU-intensive. Each worker can consume up to 500m CPU during a scan. Adjust `scanning.workerCount` based on available resources.
 - **Mirror sync**: Syncing providers from upstream registries is network-bound but requires moderate CPU for checksum verification.
 - **Request handling**: Typical API requests are lightweight. Large file uploads (module archives, provider binaries) require more memory.
@@ -188,19 +193,20 @@ autoscaling:
 
 Mirror sync downloads provider binaries from upstream registries. Estimate bandwidth based on sync frequency and mirror scope:
 
-```
+```text
 sync_bandwidth = providers_synced * versions_per_sync * platforms * avg_binary_size / sync_window
 ```
 
 **Example**: Syncing 10 providers, 2 new versions each, 6 platforms, 80 MB average, over a 1-hour window:
-- Total data: 10 * 2 * 6 * 80 MB = 9.6 GB
+
+- Total data: 10 *2* 6 * 80 MB = 9.6 GB
 - Bandwidth: 9.6 GB / 3600 s = ~22 Mbps sustained
 
 ### Client Download Bandwidth
 
 Estimate based on concurrent `terraform init` operations:
 
-```
+```text
 download_bandwidth = concurrent_inits * avg_download_size
 ```
 
@@ -208,6 +214,7 @@ download_bandwidth = concurrent_inits * avg_download_size
 - Provider downloads: 80 MB average (heavy)
 
 **Example**: 50 concurrent `terraform init` each downloading one provider:
+
 - Peak bandwidth: 50 * 80 MB = 4 GB burst
 - With caching/mirrors: significantly reduced
 
@@ -220,6 +227,7 @@ download_bandwidth = concurrent_inits * avg_download_size
 | Large         | 1 Gbps            | 10 Gbps     |
 
 For large deployments, consider:
+
 - Placing the registry in the same region/VPC as your CI/CD runners to minimize latency
 - Using CDN (CloudFront, Azure CDN, Cloud CDN) in front of the storage backend for provider binary downloads
 - Enabling HTTP/2 on the ingress for multiplexed connections

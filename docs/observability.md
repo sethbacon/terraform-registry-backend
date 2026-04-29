@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 MD060 -->
 # Observability Reference
 
 The Terraform Registry exposes structured logs, a Prometheus metrics endpoint, and an
@@ -22,7 +23,6 @@ up the bundled Prometheus + Grafana stack.
    - [Security Scanning Metrics](#security-scanning-metrics)
    - [Webhook Metrics](#webhook-metrics)
    - [Cleanup Job Metrics](#cleanup-job-metrics)
-   - [Database Metrics](#database-metrics)
 4. [PromQL Examples](#promql-examples)
 5. [Recommended Alert Rules](#recommended-alert-rules)
 6. [Grafana Dashboard Setup](#grafana-dashboard-setup)
@@ -68,14 +68,14 @@ prevents any risk of exposing internal metrics to anonymous internet traffic.
 
 ## Prometheus Metrics Endpoint
 
-| Property        | Value                                                        |
-|-----------------|--------------------------------------------------------------|
-| Path            | `GET /metrics`                                               |
-| Port            | `TFR_TELEMETRY_METRICS_PROMETHEUS_PORT` (default: **9090**)  |
-| Protocol        | HTTP (not HTTPS — keep on internal network only)             |
-| Format          | Prometheus text exposition format v0.0.4                     |
-| Authentication  | None — restrict at the network/firewall level                |
-| Scrape interval | 15 s recommended; 60 s acceptable for low-traffic installs   |
+| Property        | Value                                                       |
+| --------------- | ----------------------------------------------------------- |
+| Path            | `GET /metrics`                                              |
+| Port            | `TFR_TELEMETRY_METRICS_PROMETHEUS_PORT` (default: **9090**) |
+| Protocol        | HTTP (not HTTPS — keep on internal network only)            |
+| Format          | Prometheus text exposition format v0.0.4                    |
+| Authentication  | None — restrict at the network/firewall level               |
+| Scrape interval | 15 s recommended; 60 s acceptable for low-traffic installs  |
 
 ### Verify the endpoint is live
 
@@ -120,12 +120,12 @@ scrape_configs:
 
 #### `http_requests_total`
 
-| Property | Value |
-| --- | --- |
-| Type | Counter |
-| Labels | `method` (GET, POST, …), `path` (Gin route template), `status` (HTTP status code string) |
-| Source | `internal/middleware/metrics.go` → `MetricsMiddleware` |
-| Updated | After every request completes |
+| Property | Value                                                                                    |
+| -------- | ---------------------------------------------------------------------------------------- |
+| Type     | Counter                                                                                  |
+| Labels   | `method` (GET, POST, …), `path` (Gin route template), `status` (HTTP status code string) |
+| Source   | `internal/middleware/metrics.go` → `MetricsMiddleware`                                   |
+| Updated  | After every request completes                                                            |
 
 The `path` label holds the **Gin route template**, not the raw URL.  This keeps
 cardinality bounded regardless of how many unique module names, versions, or UUIDs
@@ -142,13 +142,13 @@ Examples of `path` values:
 
 #### `http_request_duration_seconds`
 
-| Property | Value |
-| --- | --- |
-| Type | Histogram |
-| Labels | `method`, `path` (Gin route template) |
-| Buckets | 5 ms, 10 ms, 25 ms, 50 ms, 100 ms, 250 ms, 500 ms, 1 s, 2.5 s, 5 s, 10 s, 30 s |
-| Source | `internal/middleware/metrics.go` → `MetricsMiddleware` |
-| Updated | After every request completes |
+| Property | Value                                                                          |
+| -------- | ------------------------------------------------------------------------------ |
+| Type     | Histogram                                                                      |
+| Labels   | `method`, `path` (Gin route template)                                          |
+| Buckets  | 5 ms, 10 ms, 25 ms, 50 ms, 100 ms, 250 ms, 500 ms, 1 s, 2.5 s, 5 s, 10 s, 30 s |
+| Source   | `internal/middleware/metrics.go` → `MetricsMiddleware`                         |
+| Updated  | After every request completes                                                  |
 
 Use `histogram_quantile` to compute percentile latencies per route.  The fine-grained
 buckets at the low end (5 ms–100 ms) are designed for health check and protocol
@@ -160,12 +160,12 @@ discovery endpoints; the high end (5 s–30 s) covers large module/provider uplo
 
 #### `module_downloads_total`
 
-| Property | Value |
-| --- | --- |
-| Type | Counter |
-| Labels | `namespace`, `system` |
-| Source | `internal/api/modules/` download handlers |
-| Updated | On each successful module download redirect |
+| Property | Value                                       |
+| -------- | ------------------------------------------- |
+| Type     | Counter                                     |
+| Labels   | `namespace`, `system`                       |
+| Source   | `internal/api/modules/` download handlers   |
+| Updated  | On each successful module download redirect |
 
 Tracks how many times Terraform fetched a module download URL.  The `system` label
 holds the root module system identifier (e.g. `aws`, `azurerm`, `kubernetes`).
@@ -174,12 +174,12 @@ holds the root module system identifier (e.g. `aws`, `azurerm`, `kubernetes`).
 
 #### `provider_downloads_total`
 
-| Property | Value |
-| --- | --- |
-| Type | Counter |
-| Labels | `namespace`, `type`, `os`, `arch` |
-| Source | `internal/api/providers/` download handlers |
-| Updated | On each successful provider binary download redirect |
+| Property | Value                                                |
+| -------- | ---------------------------------------------------- |
+| Type     | Counter                                              |
+| Labels   | `namespace`, `type`, `os`, `arch`                    |
+| Source   | `internal/api/providers/` download handlers          |
+| Updated  | On each successful provider binary download redirect |
 
 The `os` and `arch` labels (e.g. `linux`/`amd64`, `darwin`/`arm64`) are useful for
 understanding which platforms are actively used and for planning build matrix coverage.
@@ -190,13 +190,13 @@ understanding which platforms are actively used and for planning build matrix co
 
 #### `mirror_sync_duration_seconds`
 
-| Property | Value |
-| --- | --- |
-| Type | Histogram |
-| Labels | `mirror_id` (UUID of the mirror configuration row), `mirror_type` (`provider` or `terraform`) |
-| Buckets | Prometheus default: 5 ms to 10 s |
-| Source | `internal/jobs/` mirror sync job |
-| Updated | Once per completed sync cycle for each mirror configuration |
+| Property | Value                                                                                         |
+| -------- | --------------------------------------------------------------------------------------------- |
+| Type     | Histogram                                                                                     |
+| Labels   | `mirror_id` (UUID of the mirror configuration row), `mirror_type` (`provider` or `terraform`) |
+| Buckets  | Prometheus default: 5 ms to 10 s                                                              |
+| Source   | `internal/jobs/` mirror sync job                                                              |
+| Updated  | Once per completed sync cycle for each mirror configuration                                   |
 
 The `mirror_type` label distinguishes provider mirrors from Terraform binary mirrors,
 enabling separate duration tracking per mirror kind.
@@ -205,12 +205,12 @@ enabling separate duration tracking per mirror kind.
 
 #### `mirror_sync_errors_total`
 
-| Property | Value |
-| --- | --- |
-| Type | Counter |
-| Labels | `mirror_id` (UUID of the mirror configuration row) |
-| Source | `internal/jobs/` mirror sync job |
-| Updated | On each failed sync attempt for a given mirror |
+| Property | Value                                              |
+| -------- | -------------------------------------------------- |
+| Type     | Counter                                            |
+| Labels   | `mirror_id` (UUID of the mirror configuration row) |
+| Source   | `internal/jobs/` mirror sync job                   |
+| Updated  | On each failed sync attempt for a given mirror     |
 
 The `mirror_id` label lets you build per-mirror error rate dashboards and route alerts
 to the team responsible for a specific upstream.
@@ -221,12 +221,12 @@ to the team responsible for a specific upstream.
 
 #### `terraform_binary_downloads_total`
 
-| Property | Value |
-| --- | --- |
-| Type | Counter (CounterVec) |
-| Labels | `version` (semver string), `os` (e.g. `linux`, `darwin`, `windows`), `arch` (e.g. `amd64`, `arm64`) |
-| Source | `internal/api/terraform_binaries/` — `DownloadBinary` handler |
-| Updated | On each successful binary download (or redirect) |
+| Property | Value                                                                                               |
+| -------- | --------------------------------------------------------------------------------------------------- |
+| Type     | Counter (CounterVec)                                                                                |
+| Labels   | `version` (semver string), `os` (e.g. `linux`, `darwin`, `windows`), `arch` (e.g. `amd64`, `arm64`) |
+| Source   | `internal/api/terraform_binaries/` — `DownloadBinary` handler                                       |
+| Updated  | On each successful binary download (or redirect)                                                    |
 
 Counts how many times a Terraform or OpenTofu binary was served through the binary mirror
 download endpoint.  Use the `version`, `os`, and `arch` labels to understand which
@@ -251,12 +251,12 @@ sum by (version) (increase(terraform_binary_downloads_total[24h]))
 
 #### `apikey_expiry_notifications_sent_total`
 
-| Property | Value |
-| --- | --- |
-| Type | Counter |
-| Labels | None |
-| Source | `internal/jobs/api_key_expiry_notifier.go` |
-| Updated | Once per email successfully delivered |
+| Property | Value                                      |
+| -------- | ------------------------------------------ |
+| Type     | Counter                                    |
+| Labels   | None                                       |
+| Source   | `internal/jobs/api_key_expiry_notifier.go` |
+| Updated  | Once per email successfully delivered      |
 
 A stalling counter while keys are approaching expiry is an indicator of SMTP delivery
 failure.  Pair this metric with an alert on `apikey_expiry_notifications_sent_total`
@@ -268,12 +268,12 @@ increase being zero during the expected notification window.
 
 #### `rate_limit_rejections_total`
 
-| Property | Value |
-| --- | --- |
-| Type | Counter (CounterVec) |
-| Labels | `tier` (`individual` or `organization`), `key_type` (`user`, `apikey`, `ip`, or `org`) |
-| Source | `internal/middleware/ratelimit.go` |
-| Updated | Each time a request is rejected with HTTP 429 |
+| Property | Value                                                                                  |
+| -------- | -------------------------------------------------------------------------------------- |
+| Type     | Counter (CounterVec)                                                                   |
+| Labels   | `tier` (`individual` or `organization`), `key_type` (`user`, `apikey`, `ip`, or `org`) |
+| Source   | `internal/middleware/ratelimit.go`                                                     |
+| Updated  | Each time a request is rejected with HTTP 429                                          |
 
 Tracks every request rejected by the rate limiting middleware. The `tier` label
 distinguishes individual (per-user/IP) rejections from organization-level rejections.
@@ -296,12 +296,12 @@ rate(rate_limit_rejections_total{tier="organization"}[5m]) > 10
 
 #### `terraform_registry_info`
 
-| Property | Value |
-| --- | --- |
-| Type | Gauge (GaugeVec) |
-| Labels | `version` (application semver), `go_version` (Go runtime version), `build_date` |
-| Source | `internal/telemetry/metrics.go` → set at startup |
-| Updated | Once at startup; value is always `1` |
+| Property | Value                                                                           |
+| -------- | ------------------------------------------------------------------------------- |
+| Type     | Gauge (GaugeVec)                                                                |
+| Labels   | `version` (application semver), `go_version` (Go runtime version), `build_date` |
+| Source   | `internal/telemetry/metrics.go` → set at startup                                |
+| Updated  | Once at startup; value is always `1`                                            |
 
 Exposes build metadata as Prometheus labels. The gauge value is always `1`; the useful
 information is in the label values. Use this to verify which version is running across
@@ -323,12 +323,12 @@ count by (version) (terraform_registry_info)
 
 #### `terraform_registry_scan_queue_depth`
 
-| Property | Value |
-| --- | --- |
-| Type | Gauge |
-| Labels | None |
-| Source | Scanning subsystem |
-| Updated | Whenever a module is enqueued or dequeued for scanning |
+| Property | Value                                                  |
+| -------- | ------------------------------------------------------ |
+| Type     | Gauge                                                  |
+| Labels   | None                                                   |
+| Source   | Scanning subsystem                                     |
+| Updated  | Whenever a module is enqueued or dequeued for scanning |
 
 Tracks how many modules are waiting for a security scan. A persistently rising value
 indicates the scan workers cannot keep up with upload volume. Consider increasing
@@ -338,13 +338,13 @@ indicates the scan workers cannot keep up with upload volume. Consider increasin
 
 #### `terraform_registry_scan_duration_seconds`
 
-| Property | Value |
-| --- | --- |
-| Type | Histogram (HistogramVec) |
-| Labels | `tool` (scanner backend name, e.g. `trivy`), `status` (scan result status) |
-| Buckets | Prometheus default: 5 ms to 10 s |
-| Source | Scanning subsystem |
-| Updated | After each completed scan |
+| Property | Value                                                                      |
+| -------- | -------------------------------------------------------------------------- |
+| Type     | Histogram (HistogramVec)                                                   |
+| Labels   | `tool` (scanner backend name, e.g. `trivy`), `status` (scan result status) |
+| Buckets  | Prometheus default: 5 ms to 10 s                                           |
+| Source   | Scanning subsystem                                                         |
+| Updated  | After each completed scan                                                  |
 
 Records the wall-clock time of each module security scan. Use `tool` and `status`
 labels to identify slow or failing scanner backends.
@@ -365,12 +365,12 @@ histogram_quantile(0.95, sum by (tool, le) (rate(terraform_registry_scan_duratio
 
 #### `terraform_registry_webhook_retries_total`
 
-| Property | Value |
-| --- | --- |
-| Type | Counter (CounterVec) |
-| Labels | `outcome` (`success`, `failure`, `exhausted`) |
-| Source | Webhook retry processor |
-| Updated | On each retry attempt |
+| Property | Value                                         |
+| -------- | --------------------------------------------- |
+| Type     | Counter (CounterVec)                          |
+| Labels   | `outcome` (`success`, `failure`, `exhausted`) |
+| Source   | Webhook retry processor                       |
+| Updated  | On each retry attempt                         |
 
 Tracks webhook delivery retry attempts. `success` means the retry delivered
 successfully, `failure` means it failed but will be retried again, and `exhausted`
@@ -393,12 +393,12 @@ increase(terraform_registry_webhook_retries_total{outcome="exhausted"}[24h])
 
 #### `terraform_registry_jwt_revoked_tokens_cleaned_total`
 
-| Property | Value |
-| --- | --- |
-| Type | Counter |
-| Labels | None |
-| Source | JWT revoked token cleanup job |
-| Updated | Each time expired revoked tokens are removed from the database |
+| Property | Value                                                          |
+| -------- | -------------------------------------------------------------- |
+| Type     | Counter                                                        |
+| Labels   | None                                                           |
+| Source   | JWT revoked token cleanup job                                  |
+| Updated  | Each time expired revoked tokens are removed from the database |
 
 Counts the number of expired revoked JWT tokens that have been cleaned from the
 `revoked_tokens` table. A healthy system will show a steady increase. If this counter
@@ -408,12 +408,12 @@ stops growing while new tokens are being revoked, the cleanup job may have stall
 
 #### `terraform_registry_audit_logs_cleaned_total`
 
-| Property | Value |
-| --- | --- |
-| Type | Counter |
-| Labels | None |
-| Source | Audit log retention cleanup job |
-| Updated | Each time expired audit log entries are deleted |
+| Property | Value                                           |
+| -------- | ----------------------------------------------- |
+| Type     | Counter                                         |
+| Labels   | None                                            |
+| Source   | Audit log retention cleanup job                 |
+| Updated  | Each time expired audit log entries are deleted |
 
 Counts the number of audit log entries removed by the retention cleanup job. The job
 runs periodically and deletes entries older than `audit_retention.retention_days`.
@@ -429,13 +429,13 @@ increase(terraform_registry_audit_logs_cleaned_total[24h])
 
 #### `db_open_connections`
 
-| Property | Value |
-| --- | --- |
-| Type | Gauge |
-| Labels | None |
-| Source | `internal/telemetry/metrics.go` → `StartDBStatsCollector` |
-| Sampling interval | Every 30 seconds |
-| Updated | By a background goroutine; not per-request |
+| Property          | Value                                                     |
+| ----------------- | --------------------------------------------------------- |
+| Type              | Gauge                                                     |
+| Labels            | None                                                      |
+| Source            | `internal/telemetry/metrics.go` → `StartDBStatsCollector` |
+| Sampling interval | Every 30 seconds                                          |
+| Updated           | By a background goroutine; not per-request                |
 
 Reflects `sql.DB.Stats().OpenConnections`.  Compare against
 `TFR_DATABASE_MAX_CONNECTIONS` (default: 25) to compute pool utilisation.  If this
@@ -589,14 +589,14 @@ prometheusRule:
 
 The PrometheusRule includes these alerts out of the box:
 
-| Alert | Expression (summary) | Severity |
-| --- | --- | --- |
-| `TerraformRegistryHighErrorRate` | 5xx rate > 5% for 5 min | critical |
-| `TerraformRegistryRateLimiterExhaustion` | Rate limiter rejections > 10 req/s for 5 min | warning |
-| `TerraformRegistryMirrorSyncFailure` | > 3 mirror sync errors in 30 min | warning |
-| `TerraformRegistryScanFailure` | > 5 scan errors in 1 hr | warning |
-| `TerraformRegistryDBConnectionPoolNearExhaustion` | DB connections > 80% of max for 5 min | warning |
-| `TerraformRegistryHighP99Latency` | p99 latency > 5 s for 10 min | warning |
+| Alert                                             | Expression (summary)                         | Severity |
+| ------------------------------------------------- | -------------------------------------------- | -------- |
+| `TerraformRegistryHighErrorRate`                  | 5xx rate > 5% for 5 min                      | critical |
+| `TerraformRegistryRateLimiterExhaustion`          | Rate limiter rejections > 10 req/s for 5 min | warning  |
+| `TerraformRegistryMirrorSyncFailure`              | > 3 mirror sync errors in 30 min             | warning  |
+| `TerraformRegistryScanFailure`                    | > 5 scan errors in 1 hr                      | warning  |
+| `TerraformRegistryDBConnectionPoolNearExhaustion` | DB connections > 80% of max for 5 min        | warning  |
+| `TerraformRegistryHighP99Latency`                 | p99 latency > 5 s for 10 min                 | warning  |
 
 ### Additional Recommended Alert Rules
 
@@ -717,17 +717,17 @@ grafanaDashboard:
 
 The bundled dashboard includes panels for:
 
-| Panel | Metric |
-| --- | --- |
-| Request Rate (req/s) | `http_requests_total` |
-| Error Rate (%) | `http_requests_total{status=~"5.."}` / `http_requests_total` |
-| P99 Latency by Route | `http_request_duration_seconds_bucket` |
-| Mirror Sync Health | `mirror_sync_duration_seconds_bucket` + `mirror_sync_errors_total` |
-| Module Scan Queue Depth | `terraform_registry_scan_queue_depth` |
-| Rate Limiter Rejections | `rate_limit_rejections_total` |
-| DB Connection Pool | `db_open_connections` |
-| Module Downloads | `module_downloads_total` |
-| Build Info | `terraform_registry_info` |
+| Panel                   | Metric                                                             |
+| ----------------------- | ------------------------------------------------------------------ |
+| Request Rate (req/s)    | `http_requests_total`                                              |
+| Error Rate (%)          | `http_requests_total{status=~"5.."}` / `http_requests_total`       |
+| P99 Latency by Route    | `http_request_duration_seconds_bucket`                             |
+| Mirror Sync Health      | `mirror_sync_duration_seconds_bucket` + `mirror_sync_errors_total` |
+| Module Scan Queue Depth | `terraform_registry_scan_queue_depth`                              |
+| Rate Limiter Rejections | `rate_limit_rejections_total`                                      |
+| DB Connection Pool      | `db_open_connections`                                              |
+| Module Downloads        | `module_downloads_total`                                           |
+| Build Info              | `terraform_registry_info`                                          |
 
 #### Manual import from ConfigMap
 
@@ -766,22 +766,22 @@ Prometheus is automatically added as a data source (URL: `http://prometheus:9090
 
 ### Suggested Dashboard Panels
 
-| Panel | PromQL |
-| --- | --- |
-| Request rate (req/s) | `sum(rate(http_requests_total[5m]))` |
-| Error rate (%) | `100 * sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))` |
-| p50 / p95 / p99 latency | `histogram_quantile(0.99, sum by(le) (rate(http_request_duration_seconds_bucket[5m])))` |
-| DB connections | `db_open_connections` |
-| Module downloads / hr | `sum(increase(module_downloads_total[1h]))` |
-| Provider downloads / hr | `sum(increase(provider_downloads_total[1h]))` |
-| Binary mirror downloads / hr | `sum(increase(terraform_binary_downloads_total[1h]))` |
-| Mirror sync errors | `sum(rate(mirror_sync_errors_total[1h]))` |
-| Mirror sync p95 duration | `histogram_quantile(0.95, sum by(le) (rate(mirror_sync_duration_seconds_bucket[1h])))` |
-| Rate limiter rejections | `sum by (tier) (rate(rate_limit_rejections_total[5m]))` |
-| Scan queue depth | `terraform_registry_scan_queue_depth` |
-| Scan duration p95 | `histogram_quantile(0.95, rate(terraform_registry_scan_duration_seconds_bucket[1h]))` |
-| Webhook retry exhaustions | `increase(terraform_registry_webhook_retries_total{outcome="exhausted"}[24h])` |
-| Build info | `terraform_registry_info` |
+| Panel                        | PromQL                                                                                         |
+| ---------------------------- | ---------------------------------------------------------------------------------------------- |
+| Request rate (req/s)         | `sum(rate(http_requests_total[5m]))`                                                           |
+| Error rate (%)               | `100 * sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))` |
+| p50 / p95 / p99 latency      | `histogram_quantile(0.99, sum by(le) (rate(http_request_duration_seconds_bucket[5m])))`        |
+| DB connections               | `db_open_connections`                                                                          |
+| Module downloads / hr        | `sum(increase(module_downloads_total[1h]))`                                                    |
+| Provider downloads / hr      | `sum(increase(provider_downloads_total[1h]))`                                                  |
+| Binary mirror downloads / hr | `sum(increase(terraform_binary_downloads_total[1h]))`                                          |
+| Mirror sync errors           | `sum(rate(mirror_sync_errors_total[1h]))`                                                      |
+| Mirror sync p95 duration     | `histogram_quantile(0.95, sum by(le) (rate(mirror_sync_duration_seconds_bucket[1h])))`         |
+| Rate limiter rejections      | `sum by (tier) (rate(rate_limit_rejections_total[5m]))`                                        |
+| Scan queue depth             | `terraform_registry_scan_queue_depth`                                                          |
+| Scan duration p95            | `histogram_quantile(0.95, rate(terraform_registry_scan_duration_seconds_bucket[1h]))`          |
+| Webhook retry exhaustions    | `increase(terraform_registry_webhook_retries_total{outcome="exhausted"}[24h])`                 |
+| Build info                   | `terraform_registry_info`                                                                      |
 
 ### Without Docker Compose
 
@@ -806,10 +806,10 @@ HTTP server starts.
 
 ### Log format
 
-| `TFR_LOGGING_FORMAT` | Handler | Best for |
-| --- | --- | --- |
-| `json` (default) | `slog.JSONHandler` | Production (machine-parseable; Loki, CloudWatch, Datadog) |
-| `text` | `slog.NewTextHandler` | Local development (human-readable key=value) |
+| `TFR_LOGGING_FORMAT` | Handler               | Best for                                                  |
+| -------------------- | --------------------- | --------------------------------------------------------- |
+| `json` (default)     | `slog.JSONHandler`    | Production (machine-parseable; Loki, CloudWatch, Datadog) |
+| `text`               | `slog.NewTextHandler` | Local development (human-readable key=value)              |
 
 ### Log level
 
@@ -880,16 +880,16 @@ export TFR_TELEMETRY_PROFILING_PORT=6060   # default
 
 ### Available endpoints
 
-| Path | Description |
-| --- | --- |
-| `/debug/pprof/` | Index of all profiles |
-| `/debug/pprof/profile?seconds=30` | 30-second CPU profile |
-| `/debug/pprof/heap` | Heap snapshot |
-| `/debug/pprof/goroutine?debug=1` | All goroutine stacks |
-| `/debug/pprof/allocs` | Memory allocation profile |
-| `/debug/pprof/block` | Goroutine blocking events |
-| `/debug/pprof/mutex` | Mutex contention |
-| `/debug/pprof/trace?seconds=5` | 5-second execution trace |
+| Path                              | Description               |
+| --------------------------------- | ------------------------- |
+| `/debug/pprof/`                   | Index of all profiles     |
+| `/debug/pprof/profile?seconds=30` | 30-second CPU profile     |
+| `/debug/pprof/heap`               | Heap snapshot             |
+| `/debug/pprof/goroutine?debug=1`  | All goroutine stacks      |
+| `/debug/pprof/allocs`             | Memory allocation profile |
+| `/debug/pprof/block`              | Goroutine blocking events |
+| `/debug/pprof/mutex`              | Mutex contention          |
+| `/debug/pprof/trace?seconds=5`    | 5-second execution trace  |
 
 ### Example workflow: investigate high CPU
 
@@ -938,16 +938,16 @@ open http://localhost:6060/debug/pprof/
 All variables follow the `TFR_` prefix convention and can be set as environment
 variables or in `backend/config.yaml` under the `telemetry:` and `logging:` keys.
 
-| Environment Variable | Config Key | Default | Description |
-| --- | --- | --- | --- |
-| `TFR_TELEMETRY_METRICS_ENABLED` | `telemetry.metrics.enabled` | `true` | Expose `/metrics` endpoint |
-| `TFR_TELEMETRY_METRICS_PROMETHEUS_PORT` | `telemetry.metrics.prometheus_port` | `9090` | Port for the Prometheus scrape endpoint |
-| `TFR_TELEMETRY_PROFILING_ENABLED` | `telemetry.profiling.enabled` | `false` | Enable pprof endpoint |
-| `TFR_TELEMETRY_PROFILING_PORT` | `telemetry.profiling.port` | `6060` | Port for the pprof endpoint |
-| `TFR_LOGGING_FORMAT` | `logging.format` | `json` | Log format: `json` or `text` |
-| `TFR_LOGGING_LEVEL` | `logging.level` | `info` | Log level: `debug`, `info`, `warn`, `error` |
-| `TFR_DATABASE_MAX_CONNECTIONS` | `database.max_connections` | `25` | Maximum DB connections in pool |
-| `TFR_DATABASE_MIN_IDLE_CONNECTIONS` | `database.min_idle_connections` | `5` | Minimum idle DB connections kept warm |
+| Environment Variable                    | Config Key                          | Default | Description                                 |
+| --------------------------------------- | ----------------------------------- | ------- | ------------------------------------------- |
+| `TFR_TELEMETRY_METRICS_ENABLED`         | `telemetry.metrics.enabled`         | `true`  | Expose `/metrics` endpoint                  |
+| `TFR_TELEMETRY_METRICS_PROMETHEUS_PORT` | `telemetry.metrics.prometheus_port` | `9090`  | Port for the Prometheus scrape endpoint     |
+| `TFR_TELEMETRY_PROFILING_ENABLED`       | `telemetry.profiling.enabled`       | `false` | Enable pprof endpoint                       |
+| `TFR_TELEMETRY_PROFILING_PORT`          | `telemetry.profiling.port`          | `6060`  | Port for the pprof endpoint                 |
+| `TFR_LOGGING_FORMAT`                    | `logging.format`                    | `json`  | Log format: `json` or `text`                |
+| `TFR_LOGGING_LEVEL`                     | `logging.level`                     | `info`  | Log level: `debug`, `info`, `warn`, `error` |
+| `TFR_DATABASE_MAX_CONNECTIONS`          | `database.max_connections`          | `25`    | Maximum DB connections in pool              |
+| `TFR_DATABASE_MIN_IDLE_CONNECTIONS`     | `database.min_idle_connections`     | `5`     | Minimum idle DB connections kept warm       |
 
 See [Configuration Reference](configuration.md) for the complete list of all `TFR_*`
 variables.

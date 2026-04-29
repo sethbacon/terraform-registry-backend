@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # OIDC Configuration Guide
 
 This document provides comprehensive instructions for configuring OpenID Connect (OIDC) authentication with the Terraform Registry, supporting multiple enterprise identity providers.

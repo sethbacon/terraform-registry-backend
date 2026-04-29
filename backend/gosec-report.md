@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # Backend Security Scan Report — gosec
 
 **Scan date:** 2026-03-01 (CI `@latest` gosec — new rules G118, G122, G706 detected)
@@ -125,6 +126,7 @@ server access.
 **File:** `internal/api/admin/stats.go` (lines 183, 190)
 
 **Finding:** 2 additional `QueryRowContext`/`QueryContext` call sites flagged in the binary mirror stats section:
+
 - Line 190: `SELECT COALESCE(SUM(download_count), 0) FROM terraform_version_platforms` — total binary mirror download count
 - Line 197: `SELECT c.tool, COUNT(p.id) AS platforms ... GROUP BY c.tool` — per-tool binary platform breakdown
 

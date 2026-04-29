@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # 4. JWT + API Key Dual Authentication
 
 **Status**: Accepted
@@ -10,6 +11,7 @@ The registry serves two fundamentally different client types:
 2. **Machine clients** (CI/CD pipelines, `terraform init`, automation scripts) that need non-interactive, long-lived credentials.
 
 A single authentication scheme cannot serve both well:
+
 - JWT tokens from OIDC are short-lived (hours) and require browser-based login flows -- unsuitable for CI/CD.
 - API keys are long-lived and stateless but lack the identity federation and SSO capabilities humans expect.
 
@@ -28,6 +30,7 @@ Support dual authentication: JWT tokens for human users and API keys for machine
 ## Consequences
 
 **Easier**:
+
 - Human users get SSO through OIDC/Azure AD with short-lived tokens.
 - CI/CD pipelines use long-lived API keys with minimal scopes (least privilege).
 - API key expiration and revocation provide lifecycle management.
@@ -35,6 +38,7 @@ Support dual authentication: JWT tokens for human users and API keys for machine
 - `.terraformrc` credential blocks work naturally with API keys.
 
 **Harder**:
+
 - Two authentication code paths must be maintained and tested.
 - JWT secret management is critical -- loss invalidates all sessions (mitigated by `TFR_JWT_SECRET_FILE` and rotation support).
 - API key hashes in the database add a query per machine-client request (mitigated by the JWT-first check order).

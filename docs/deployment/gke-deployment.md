@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # GKE Deployment Guide — Terraform Registry
 
 Complete all steps in [gke-prerequisites.md](gke-prerequisites.md) first.

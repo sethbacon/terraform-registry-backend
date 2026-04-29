@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # Architecture Decision Records
 
 This directory contains Architecture Decision Records (ADRs) for the Terraform Registry Backend project.

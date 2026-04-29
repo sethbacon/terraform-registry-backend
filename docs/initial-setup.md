@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # Initial Setup Guide
 
 This document covers the first-run setup wizard for the Terraform Registry. The setup wizard allows you to configure OIDC authentication, storage backend, and the initial admin user through a secure, one-time process.

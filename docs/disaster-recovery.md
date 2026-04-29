@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # Disaster Recovery
 
 This document covers backup and restore procedures, RTO/RPO targets, failover playbooks, and DR drill procedures for the Terraform Registry.
@@ -134,11 +135,13 @@ Secrets should be managed through a dedicated secrets manager (HashiCorp Vault, 
 ### Scenario 1: Database Restore (Data Corruption or Loss)
 
 1. **Stop the registry** to prevent writes during restore:
+
    ```bash
    kubectl scale deployment terraform-registry-backend --replicas=0
    ```
 
 2. **Restore from pg_dump**:
+
    ```bash
    # Drop and recreate the database
    dropdb --host=$HOST --username=$USER terraform_registry
@@ -156,6 +159,7 @@ Secrets should be managed through a dedicated secrets manager (HashiCorp Vault, 
    ```
 
 3. **For point-in-time recovery** (requires WAL archives):
+
    ```bash
    # Stop PostgreSQL
    # Restore base backup
@@ -166,6 +170,7 @@ Secrets should be managed through a dedicated secrets manager (HashiCorp Vault, 
    ```
 
 4. **Start the registry**:
+
    ```bash
    kubectl scale deployment terraform-registry-backend --replicas=2
    ```

@@ -1,4 +1,4 @@
-<!-- markdownlint-disable MD024 -->
+<!-- markdownlint-disable MD013 MD024 MD041 -->
 
 # Changelog
 
@@ -9,13 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.18.2](https://github.com/sethbacon/terraform-registry-backend/compare/v0.18.1...v0.18.2) (2026-04-29)
 
-
 ### Bug Fixes
 
 * **scanner:** fall back to {install_dir}/{tool} when binary_path is missing ([#314](https://github.com/sethbacon/terraform-registry-backend/issues/314)) ([1998e8f](https://github.com/sethbacon/terraform-registry-backend/commit/1998e8ff662626c979c6713e461ea7929d6e423f))
 
 ## [0.18.1](https://github.com/sethbacon/terraform-registry-backend/compare/v0.18.0...v0.18.1) (2026-04-29)
-
 
 ### Bug Fixes
 
@@ -24,18 +22,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.18.0](https://github.com/sethbacon/terraform-registry-backend/compare/v0.17.1...v0.18.0) (2026-04-29)
 
-
 ### Features
 
 * **cve:** add daily CVE polling for binaries, providers, and scanner ([#308](https://github.com/sethbacon/terraform-registry-backend/issues/308)) ([05f37ca](https://github.com/sethbacon/terraform-registry-backend/commit/05f37caac1e8c977914cab78f14f9bdd05ea50f2))
 
 ## [0.17.1](https://github.com/sethbacon/terraform-registry-backend/compare/v0.17.0...v0.17.1) (2026-04-28)
 
-
 ### Bug Fixes
 
 * **scanner:** pass --cache-dir to trivy version probe ([#306](https://github.com/sethbacon/terraform-registry-backend/issues/306)) ([80531c0](https://github.com/sethbacon/terraform-registry-backend/commit/80531c0da76c7058a187002e3111a9180f60deb7))
-
 
 ### Documentation
 
@@ -43,16 +38,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.17.0](https://github.com/sethbacon/terraform-registry-backend/compare/v0.16.1...v0.17.0) (2026-04-28)
 
-
 ### Features
 
 * **deployments:** document backend/frontend version compatibility ([#293](https://github.com/sethbacon/terraform-registry-backend/issues/293)) ([b5deb51](https://github.com/sethbacon/terraform-registry-backend/commit/b5deb518d6d3d88663c558b1e48cf8665c8f938a))
 
-
 ### Bug Fixes
 
 * **security:** resolve CodeQL path-injection and SSRF findings ([#304](https://github.com/sethbacon/terraform-registry-backend/issues/304)) ([287cdb8](https://github.com/sethbacon/terraform-registry-backend/commit/287cdb8e5ad281167d10143db4fdbb828538e315))
-
 
 ### Security
 
@@ -60,13 +52,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.16.1](https://github.com/sethbacon/terraform-registry-backend/compare/v0.16.0...v0.16.1) (2026-04-28)
 
-
 ### Bug Fixes
 
 * **scanning:** store actual scanner tool name on scan completion ([#299](https://github.com/sethbacon/terraform-registry-backend/issues/299)) ([b7cab50](https://github.com/sethbacon/terraform-registry-backend/commit/b7cab503f6f13cb96ea4cc83e4bce926bce4e5d2)), closes [#298](https://github.com/sethbacon/terraform-registry-backend/issues/298)
 
 ## [0.16.0](https://github.com/sethbacon/terraform-registry-backend/compare/v0.15.0...v0.16.0) (2026-04-28)
-
 
 ### Features
 
@@ -74,13 +64,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.15.0](https://github.com/sethbacon/terraform-registry-backend/compare/v0.14.3...v0.15.0) (2026-04-27)
 
-
 ### chore
 
 * bump image tags and align version with frontend ([#291](https://github.com/sethbacon/terraform-registry-backend/issues/291)) ([30bbd70](https://github.com/sethbacon/terraform-registry-backend/commit/30bbd70047906d77d566c8fe6be5f17fd3faa6fb))
 
 ## [0.14.3](https://github.com/sethbacon/terraform-registry-backend/compare/v0.14.2...v0.14.3) (2026-04-26)
-
 
 ### Bug Fixes
 
@@ -88,13 +76,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.14.2](https://github.com/sethbacon/terraform-registry-backend/compare/v0.14.1...v0.14.2) (2026-04-26)
 
-
 ### Bug Fixes
 
 * use draft releases for Immutable Releases compatibility ([#285](https://github.com/sethbacon/terraform-registry-backend/issues/285)) ([3b0f426](https://github.com/sethbacon/terraform-registry-backend/commit/3b0f42607da0b3716c5009d01bdf25f0495d1c49)), closes [#284](https://github.com/sethbacon/terraform-registry-backend/issues/284)
 
 ## [0.14.1](https://github.com/sethbacon/terraform-registry-backend/compare/v0.14.0...v0.14.1) (2026-04-26)
-
 
 ### Bug Fixes
 
@@ -102,13 +88,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.14.0](https://github.com/sethbacon/terraform-registry-backend/compare/v0.13.2...v0.14.0) (2026-04-26)
 
-
 ### Features
 
 * **config:** add system-wide default language setting ([#280](https://github.com/sethbacon/terraform-registry-backend/issues/280)) ([4c6a27b](https://github.com/sethbacon/terraform-registry-backend/commit/4c6a27b39c123cc4c8b979bc5043f650ae5f5884)), closes [#265](https://github.com/sethbacon/terraform-registry-backend/issues/265)
 
 ## [0.13.2](https://github.com/sethbacon/terraform-registry-backend/compare/v0.13.1...v0.13.2) (2026-04-25)
-
 
 ### Bug Fixes
 
@@ -116,13 +100,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.13.1](https://github.com/sethbacon/terraform-registry-backend/compare/v0.13.0...v0.13.1) (2026-04-25)
 
-
 ### chore
 
 * trigger 0.13.1 release to backfill missing artifacts ([#275](https://github.com/sethbacon/terraform-registry-backend/issues/275)) ([8fbca39](https://github.com/sethbacon/terraform-registry-backend/commit/8fbca39d3adf88960b3788f274f4f6713bfe29d5))
 
 ## [0.13.0](https://github.com/sethbacon/terraform-registry-backend/compare/v0.12.0...v0.13.0) (2026-04-25)
-
 
 ### Features
 
@@ -135,17 +117,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- chore: add fuzz testing workflow and fuzz tests for analyzer and SCM connectors
-- chore: extend CODEOWNERS with security-team review for security docs
-- chore: update ROADMAP with Phase 4 completion status
-- chore: bump deployment configs for v0.11.1 backend + v0.12.0 frontend
+* chore: add fuzz testing workflow and fuzz tests for analyzer and SCM connectors
+* chore: extend CODEOWNERS with security-team review for security docs
+* chore: update ROADMAP with Phase 4 completion status
+* chore: bump deployment configs for v0.11.1 backend + v0.12.0 frontend
 
 ## [0.11.1] - 2026-04-24
 
 ### Fixed
 
-- fix: security scanning configured via setup wizard silently broken — JSON tag mismatch discarded binary path on restart, scanner goroutine never started, re-scan idempotency broken for existing records
-- fix: FuzzParseDelivery panics on nil BitbucketDCConnector receiver in seed corpus run
+* fix: security scanning configured via setup wizard silently broken — JSON tag mismatch discarded binary path on restart, scanner goroutine never started, re-scan idempotency broken for existing records
+* fix: FuzzParseDelivery panics on nil BitbucketDCConnector receiver in seed corpus run
 
 ## [0.11.0] - 2026-04-24
 
@@ -153,35 +135,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: audit log resource_type now correctly shows "organization" for /api/v1/organizations routes (org CRUD and member management)
+* fix: audit log resource_type now correctly shows "organization" for /api/v1/organizations routes (org CRUD and member management)
 
 ## [0.10.4] - 2026-04-23
 
 ### Fixed
 
-- fix: audit log resource_type now correctly shows "module", "provider", and "storage" instead of "unknown" for admin module/provider CRUD and storage config routes
+* fix: audit log resource_type now correctly shows "module", "provider", and "storage" instead of "unknown" for admin module/provider CRUD and storage config routes
 
 ## [0.10.3] - 2026-04-23
 
 ### Added
 
-- feat: add replacement_source to module version deprecation for Terraform CLI >=1.10 protocol compliance
+* feat: add replacement_source to module version deprecation for Terraform CLI >=1.10 protocol compliance
 
 ### Fixed
 
-- fix: scanning setup wizard leaves scanning disabled after config save — validate binary_path and update in-memory config on save
+* fix: scanning setup wizard leaves scanning disabled after config save — validate binary_path and update in-memory config on save
 
 ## [0.10.2] - 2026-04-22
 
 ### Added
 
-- feat: add scanner auto-install for trivy, terrascan, and checkov via setup wizard and admin API with SHA256 verification
+* feat: add scanner auto-install for trivy, terrascan, and checkov via setup wizard and admin API with SHA256 verification
 
 ## [0.10.1] - 2026-04-21
 
 ### Fixed
 
-- fix(db): use UUID type for organization_id in org_quotas migration to match organizations table schema
+* fix(db): use UUID type for organization_id in org_quotas migration to match organizations table schema
 
 ## [0.10.0] - 2026-04-21
 
@@ -189,37 +171,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix(setup): detect unconfigured features added after initial setup and re-trigger the setup wizard — registries that completed setup before scanning was added now correctly show the setup banner and allow configuring scanning without requiring a full re-setup (#215)
-- fix(setup): `SetupTokenMiddleware` now allows setup API requests when `setup_completed` is true but pending features remain unconfigured
-- fix(setup): server startup generates a new setup token when pending feature setup is detected
-- fix(setup): `CompleteSetup` handler supports pending-feature-only completion flow, validating only the unconfigured features
+* fix(setup): detect unconfigured features added after initial setup and re-trigger the setup wizard — registries that completed setup before scanning was added now correctly show the setup banner and allow configuring scanning without requiring a full re-setup (#215)
+* fix(setup): `SetupTokenMiddleware` now allows setup API requests when `setup_completed` is true but pending features remain unconfigured
+* fix(setup): server startup generates a new setup token when pending feature setup is detected
+* fix(setup): `CompleteSetup` handler supports pending-feature-only completion flow, validating only the unconfigured features
 
 ## [0.9.0] - 2026-04-20
 
 ### Fixed
 
-- fix(coverfilter): make `pathSuffixMatches` normalize backslashes to forward slashes explicitly so the Windows-path test input passes on Linux runners — `filepath.ToSlash` is a no-op on Linux and left `\`-separated paths unchanged, causing `TestPathSuffixMatches` to fail in the weekly scheduled build (#211)
-- fix(ci): bump pinned `google/osv-scanner-action` SHA to v2.3.5 — the prior pin was removed upstream and caused the scheduled OSV scan to fail with `Unable to resolve action ... unable to find version` (#211)
+* fix(coverfilter): make `pathSuffixMatches` normalize backslashes to forward slashes explicitly so the Windows-path test input passes on Linux runners — `filepath.ToSlash` is a no-op on Linux and left `\`-separated paths unchanged, causing `TestPathSuffixMatches` to fail in the weekly scheduled build (#211)
+* fix(ci): bump pinned `google/osv-scanner-action` SHA to v2.3.5 — the prior pin was removed upstream and caused the scheduled OSV scan to fail with `Unable to resolve action ... unable to find version` (#211)
 
 ## [0.8.4] - 2026-04-20
 
 ### Fixed
 
-- fix(release): stage curated release assets in `release.yml` so the publish step uploads only renamed binaries (`terraform-registry-<os>-<arch>`), `checksums.txt`, `checksums.txt.sig`, the deployment-configs tarball, and `multiple.intoto.jsonl` — avoiding HTTP 400 Bad Content-Length on GoReleaser's empty `digests.txt` and skipping internal files (`artifacts.json`, `metadata.json`, `config.yaml`, per-target build subdirs) (#210)
+* fix(release): stage curated release assets in `release.yml` so the publish step uploads only renamed binaries (`terraform-registry-<os>-<arch>`), `checksums.txt`, `checksums.txt.sig`, the deployment-configs tarball, and `multiple.intoto.jsonl` — avoiding HTTP 400 Bad Content-Length on GoReleaser's empty `digests.txt` and skipping internal files (`artifacts.json`, `metadata.json`, `config.yaml`, per-target build subdirs) (#210)
 
 ### Changed
 
-- chore: bump Helm chart `appVersion`, cloud values files (`values-aks`, `values-eks`, `values-gke`), and Kustomize overlay tags (`eks`, `gke`) to `v0.8.4`
+* chore: bump Helm chart `appVersion`, cloud values files (`values-aks`, `values-eks`, `values-gke`), and Kustomize overlay tags (`eks`, `gke`) to `v0.8.4`
 
 ## [0.8.3] - 2026-04-19
 
 ### Fixed
 
-- fix(release): create GitHub Release atomically with all assets (binaries, checksums, sigs, SBOMs, deployment configs, and SLSA L3 binary provenance) in a single `gh release create` call to satisfy GitHub's Immutable Releases security feature (#208)
+* fix(release): create GitHub Release atomically with all assets (binaries, checksums, sigs, SBOMs, deployment configs, and SLSA L3 binary provenance) in a single `gh release create` call to satisfy GitHub's Immutable Releases security feature (#208)
 
 ### Changed
 
-- chore: bump Helm chart `appVersion` to `0.8.3`
+* chore: bump Helm chart `appVersion` to `0.8.3`
 
 > Note: v0.8.3 had a partial release — the container image `ghcr.io/sethbacon/terraform-registry-backend:0.8.3` was published with cosign signature and SLSA attestation, but the GitHub Release was never created due to a workflow bug (HTTP 400 on empty `digests.txt`). The fix shipped in v0.8.4.
 
@@ -227,37 +209,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix(scm): re-run HCL analyzer on Sync now when module docs are missing so previously-imported modules without extracted variables/outputs are backfilled
-- fix(release): defer GitHub Release publication until after SLSA L3 binary-provenance upload so `multiple.intoto.jsonl` can be attached before the release becomes immutable
+* fix(scm): re-run HCL analyzer on Sync now when module docs are missing so previously-imported modules without extracted variables/outputs are backfilled
+* fix(release): defer GitHub Release publication until after SLSA L3 binary-provenance upload so `multiple.intoto.jsonl` can be attached before the release becomes immutable
 
 ### Changed
 
-- chore: bump Helm chart `appVersion`, cloud values files (`values-aks`, `values-eks`, `values-gke`), and Kustomize overlay tags (`eks`, `gke`) to `v0.8.2`
+* chore: bump Helm chart `appVersion`, cloud values files (`values-aks`, `values-eks`, `values-gke`), and Kustomize overlay tags (`eks`, `gke`) to `v0.8.2`
 
 ## [0.8.1] - 2026-04-19
 
 ### Fixed
 
-- fix: bump deployment configs from v0.7.1 to v0.8.0 in Helm values, Kustomize overlays, and deployment docs (#203)
-- fix: wire `TFR_SCANNING_*` env vars into Helm configmap so `scanning.enabled` actually takes effect (#203)
-- fix: add `TFR_SCANNING_*` and `TFR_REDIS_*` stubs to Kustomize base configmap (#203)
-- fix: store `collect-changelog.sh` as executable so `prepare-release.yml` rebase step no longer fails on an unstaged mode change (#204)
+* fix: bump deployment configs from v0.7.1 to v0.8.0 in Helm values, Kustomize overlays, and deployment docs (#203)
+* fix: wire `TFR_SCANNING_*` env vars into Helm configmap so `scanning.enabled` actually takes effect (#203)
+* fix: add `TFR_SCANNING_*` and `TFR_REDIS_*` stubs to Kustomize base configmap (#203)
+* fix: store `collect-changelog.sh` as executable so `prepare-release.yml` rebase step no longer fails on an unstaged mode change (#204)
 
 ## [0.8.0] - 2026-04-18
 
 ### Added
 
-- feat: Phase 0 quick wins — SECURITY.md, CODE_OF_CONDUCT.md, pinned Docker base-image digests, SBOM generation, cosign keyless signing, Prometheus metrics, gosec baseline drift gate (#197)
-- feat: Phase 1 security hardening — Rekor transparency log, Swagger UI vendored locally, FIPS-140-3 build variant, bcrypt cost rotation, dependency review + OSV scan, Trivy fs scan in CI (#198)
-- feat: upgrade to SLSA Level 3 build provenance via `slsa-framework/slsa-github-generator` (#201)
+* feat: Phase 0 quick wins — SECURITY.md, CODE_OF_CONDUCT.md, pinned Docker base-image digests, SBOM generation, cosign keyless signing, Prometheus metrics, gosec baseline drift gate (#197)
+* feat: Phase 1 security hardening — Rekor transparency log, Swagger UI vendored locally, FIPS-140-3 build variant, bcrypt cost rotation, dependency review + OSV scan, Trivy fs scan in CI (#198)
+* feat: upgrade to SLSA Level 3 build provenance via `slsa-framework/slsa-github-generator` (#201)
 
 ### Fixed
 
-- fix: correct trivy-action SHA in CI workflow (#199)
+* fix: correct trivy-action SHA in CI workflow (#199)
 
 ### Changed
 
-- docs: update ROADMAP with Phase 0 and Phase 1 completion checkmarks (#200)
+* docs: update ROADMAP with Phase 0 and Phase 1 completion checkmarks (#200)
 
 ## [0.7.1] - 2026-04-17
 
@@ -265,14 +247,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- test: add `coverfilter` tool honoring `// coverage:skip:*` doc-comment markers and raise CI coverage threshold from 75% to 80%
-- test: add httptest + fake-client unit tests for pull-through metadata fetch (100% of `services/pull_through.go`)
-- test: add delegation tests for `auth/azuread` provider (`ExtractUserInfo`, `VerifyIDToken`)
-- test: add unit test for `jobs.verifyGPGSignature` wrapper
+* test: add `coverfilter` tool honoring `// coverage:skip:*` doc-comment markers and raise CI coverage threshold from 75% to 80%
+* test: add httptest + fake-client unit tests for pull-through metadata fetch (100% of `services/pull_through.go`)
+* test: add delegation tests for `auth/azuread` provider (`ExtractUserInfo`, `VerifyIDToken`)
+* test: add unit test for `jobs.verifyGPGSignature` wrapper
 
 ### Changed
 
-- refactor: introduce `mirror.UpstreamRegistryClient` interface and inject via factory in `PullThroughService` + `MirrorSyncJob` to enable unit testing without live HTTP
+* refactor: introduce `mirror.UpstreamRegistryClient` interface and inject via factory in `PullThroughService` + `MirrorSyncJob` to enable unit testing without live HTTP
 
 ## [0.6.2] - 2026-04-16
 
@@ -284,22 +266,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- feat: add scanning:read RBAC scope granting devops and auditor roles access to scan results and stats
+* feat: add scanning:read RBAC scope granting devops and auditor roles access to scan results and stats
 
 ## [0.4.2] - 2026-04-14
 
 ### Added
 
-- feat: add security scanning config and stats API endpoints
-- feat: add Security Scanning swagger tag with full annotations
-- feat: sort swagger UI tags alphabetically
-- feat: extend dashboard stats with scanning health data
+* feat: add security scanning config and stats API endpoints
+* feat: add Security Scanning swagger tag with full annotations
+* feat: sort swagger UI tags alphabetically
+* feat: extend dashboard stats with scanning health data
 
 ## [0.4.1] - 2026-04-14
 
 ### Fixed
 
-- fix: initialise `ModuleDoc` `Inputs`/`Outputs`/`Providers` to empty slices — prevents null JSON arrays in module analysis API response for modules with no inputs, outputs, or provider requirements
+* fix: initialise `ModuleDoc` `Inputs`/`Outputs`/`Providers` to empty slices — prevents null JSON arrays in module analysis API response for modules with no inputs, outputs, or provider requirements
 
 ## [0.4.0-rc.2] - 2026-04-13
 
@@ -311,16 +293,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: add `/auth/exchange-token` endpoint so the frontend can securely receive the SSO JWT from the HttpOnly cookie instead of URL query params
-- fix: change SSO callback cookie SameSite from Strict to Lax for cross-site redirect compatibility with identity providers
+* fix: add `/auth/exchange-token` endpoint so the frontend can securely receive the SSO JWT from the HttpOnly cookie instead of URL query params
+* fix: change SSO callback cookie SameSite from Strict to Lax for cross-site redirect compatibility with identity providers
 
 ### Added
 
-- feat: include `version` and `build_date` in `/health` response for deployment verification
+* feat: include `version` and `build_date` in `/health` response for deployment verification
 
 ### Chore
 
-- chore: update deployment configs to v0.3.4/v0.4.2 and document release update steps in CLAUDE.md
+* chore: update deployment configs to v0.3.4/v0.4.2 and document release update steps in CLAUDE.md
 
 ---
 
@@ -328,7 +310,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: respect `security.rate_limiting.enabled` config — all rate limiters (auth, general, upload) were unconditionally applied, ignoring the config flag
+* fix: respect `security.rate_limiting.enabled` config — all rate limiters (auth, general, upload) were unconditionally applied, ignoring the config flag
 
 ---
 
@@ -336,13 +318,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: move module scan route from `/admin/modules/` to `/modules/` prefix to resolve gin wildcard panic on startup
+* fix: move module scan route from `/admin/modules/` to `/modules/` prefix to resolve gin wildcard panic on startup
 
 ### Documentation
 
-- docs: add module security scanning setup guide covering Trivy, Checkov, Terrascan, Snyk, and custom scanner backends
-- docs: add module documentation extraction guide covering terraform-docs auto-extraction API and web UI
-- docs: add `scanning:` section to `config.example.yaml` and `TFR_SCANNING_*` variables to configuration reference
+* docs: add module security scanning setup guide covering Trivy, Checkov, Terrascan, Snyk, and custom scanner backends
+* docs: add module documentation extraction guide covering terraform-docs auto-extraction API and web UI
+* docs: add `scanning:` section to `config.example.yaml` and `TFR_SCANNING_*` variables to configuration reference
 
 ---
 
@@ -350,9 +332,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- fix: reject path traversal sequences in `/v1/files/*filepath` handler and add `safeJoin` containment check to local storage backend — prevents arbitrary host file reads via `GET /v1/files/../../etc/passwd` when using local storage with `ServeDirectly: true` (public endpoint, no auth required)
-- fix: reject symlinks and hard links in module archive validation — prevents the registry from storing archives that would create path-escaping symlinks on Terraform client machines during `terraform init`
-- fix: require HTTPS for OIDC issuer URL — rejects `http://` issuers that would allow MITM substitution of JWKS signing keys to forge valid ID tokens
+* fix: reject path traversal sequences in `/v1/files/*filepath` handler and add `safeJoin` containment check to local storage backend — prevents arbitrary host file reads via `GET /v1/files/../../etc/passwd` when using local storage with `ServeDirectly: true` (public endpoint, no auth required)
+* fix: reject symlinks and hard links in module archive validation — prevents the registry from storing archives that would create path-escaping symlinks on Terraform client machines during `terraform init`
+* fix: require HTTPS for OIDC issuer URL — rejects `http://` issuers that would allow MITM substitution of JWKS signing keys to forge valid ID tokens
 
 ---
 
@@ -360,13 +342,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- feat: pull-through provider caching on mirror cache miss — serves provider metadata immediately from upstream on cache miss while triggering background binary download, eliminating 404s during `terraform init` for unsynced providers
-- feat: pluggable module security scanning (Trivy, Terrascan, Snyk, Checkov, custom SARIF) — async scan of every uploaded module archive; stores vulnerability counts and raw results surfaced via admin API
-- feat: terraform-docs auto-generation from .tf files at module upload time — extracts and indexes module variables, outputs, and provider requirements using `hashicorp/terraform-config-inspect` (no binary dependency)
+* feat: pull-through provider caching on mirror cache miss — serves provider metadata immediately from upstream on cache miss while triggering background binary download, eliminating 404s during `terraform init` for unsynced providers
+* feat: pluggable module security scanning (Trivy, Terrascan, Snyk, Checkov, custom SARIF) — async scan of every uploaded module archive; stores vulnerability counts and raw results surfaced via admin API
+* feat: terraform-docs auto-generation from .tf files at module upload time — extracts and indexes module variables, outputs, and provider requirements using `hashicorp/terraform-config-inspect` (no binary dependency)
 
 ### Changed
 
-- test: raise CI coverage floor from 74% to 76.2% via interface-based S3/GCS storage mocks and systematic branch coverage across validation, analyzer, auth/oidc, mirror, and admin packages
+* test: raise CI coverage floor from 74% to 76.2% via interface-based S3/GCS storage mocks and systematic branch coverage across validation, analyzer, auth/oidc, mirror, and admin packages
 
 ---
 
@@ -374,37 +356,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- fix: deliver JWT auth tokens via HttpOnly secure cookies instead of URL query parameters — prevents token leakage in browser history, server logs, and referrer headers
-- fix: add JWT revocation via JTI blocklist with database-backed `revoked_tokens` table — logout now invalidates tokens server-side instead of relying solely on client-side cookie deletion
-- fix: prevent CORS `Access-Control-Allow-Credentials: true` from being sent with wildcard origins — only specific origin matches now receive credentials support
-- fix: make HSTS header conditional on TLS — `Strict-Transport-Security` is no longer sent over plain HTTP connections, per RFC 6797
-- fix: prevent decompression bombs in archive extraction by counting actual bytes written instead of trusting tar header sizes
-- fix: protect session store with `sync.Mutex` to prevent concurrent map read/write panics
-- fix: `generateRandomSecret()` now returns an error instead of silently falling back to a time-based secret
-- fix: remove `GIN_MODE` from `isDevMode()` check — development-only code paths are no longer accidentally enabled by Gin's debug mode
-- fix: add `ReadHeaderTimeout` (10s) and `IdleTimeout` (120s) to HTTP server to mitigate slowloris attacks
+* fix: deliver JWT auth tokens via HttpOnly secure cookies instead of URL query parameters — prevents token leakage in browser history, server logs, and referrer headers
+* fix: add JWT revocation via JTI blocklist with database-backed `revoked_tokens` table — logout now invalidates tokens server-side instead of relying solely on client-side cookie deletion
+* fix: prevent CORS `Access-Control-Allow-Credentials: true` from being sent with wildcard origins — only specific origin matches now receive credentials support
+* fix: make HSTS header conditional on TLS — `Strict-Transport-Security` is no longer sent over plain HTTP connections, per RFC 6797
+* fix: prevent decompression bombs in archive extraction by counting actual bytes written instead of trusting tar header sizes
+* fix: protect session store with `sync.Mutex` to prevent concurrent map read/write panics
+* fix: `generateRandomSecret()` now returns an error instead of silently falling back to a time-based secret
+* fix: remove `GIN_MODE` from `isDevMode()` check — development-only code paths are no longer accidentally enabled by Gin's debug mode
+* fix: add `ReadHeaderTimeout` (10s) and `IdleTimeout` (120s) to HTTP server to mitigate slowloris attacks
 
 ### Added
 
-- feat: JWT revocation infrastructure — new migration `000013_jwt_revocation` creates `revoked_tokens` table; new `TokenRepository` with `RevokeToken`, `IsTokenRevoked`, and `CleanupExpiredRevocations` methods; daily cleanup goroutine in server startup
-- feat: pagination support with `limit`/`offset` query params and `{items, total, limit, offset}` envelope for module versions, provider versions, provider docs, mirrored providers, and mirror config versions
-- feat: background job registry with `Job` interface and `Registry` providing `Register`, `StartAll`, `StopAll` lifecycle management
-- feat: migration `000014_terraform_mirror_gpg_config` adds `custom_gpg_key` and `skip_gpg_verify` columns to `terraform_mirror_configs`
-- feat: checksum sidecar `.sha256` files for local storage — avoids re-reading entire files to compute checksums in `GetMetadata()`
-- feat: migration file count parity test ensuring every `.up.sql` has a matching `.down.sql`
+* feat: JWT revocation infrastructure — new migration `000013_jwt_revocation` creates `revoked_tokens` table; new `TokenRepository` with `RevokeToken`, `IsTokenRevoked`, and `CleanupExpiredRevocations` methods; daily cleanup goroutine in server startup
+* feat: pagination support with `limit`/`offset` query params and `{items, total, limit, offset}` envelope for module versions, provider versions, provider docs, mirrored providers, and mirror config versions
+* feat: background job registry with `Job` interface and `Registry` providing `Register`, `StartAll`, `StopAll` lifecycle management
+* feat: migration `000014_terraform_mirror_gpg_config` adds `custom_gpg_key` and `skip_gpg_verify` columns to `terraform_mirror_configs`
+* feat: checksum sidecar `.sha256` files for local storage — avoids re-reading entire files to compute checksums in `GetMetadata()`
+* feat: migration file count parity test ensuring every `.up.sql` has a matching `.down.sql`
 
 ### Changed
 
-- refactor: replace all `fmt.Printf`/`fmt.Println` logging with structured `log/slog` calls in audit shipper, SCM linking, and SCM publisher
-- refactor: replace `getResourceType()` string-scanning helpers with `c.FullPath()` switch statement in audit middleware
-- refactor: remove custom `itoa()` and `min()` functions in favour of stdlib `strconv.Itoa()` and Go builtin `min()`
-- refactor: remove `contains()` and `indexOf()` helper functions from audit middleware
-- chore: add HA limitation comments to `RateLimiter` (in-memory token bucket) and `docContentCache` (in-memory TTL cache)
-- chore: add Swagger annotations to `ServeModuleFile`, `UploadModule`, and `UploadProviderVersion` handlers
-- chore: bump Go version from 1.26.0 to 1.26.1
-- chore: bump Docker runtime image from `alpine:3.19` to `alpine:3.21`; add `TARGETARCH` build arg for multi-platform builds
-- chore: raise CI coverage threshold from 65% to 75%; add per-package coverage gate (80% for auth and middleware)
-- chore: add `golangci-lint` step to CI pipeline with `.golangci.yml` configuration
+* refactor: replace all `fmt.Printf`/`fmt.Println` logging with structured `log/slog` calls in audit shipper, SCM linking, and SCM publisher
+* refactor: replace `getResourceType()` string-scanning helpers with `c.FullPath()` switch statement in audit middleware
+* refactor: remove custom `itoa()` and `min()` functions in favour of stdlib `strconv.Itoa()` and Go builtin `min()`
+* refactor: remove `contains()` and `indexOf()` helper functions from audit middleware
+* chore: add HA limitation comments to `RateLimiter` (in-memory token bucket) and `docContentCache` (in-memory TTL cache)
+* chore: add Swagger annotations to `ServeModuleFile`, `UploadModule`, and `UploadProviderVersion` handlers
+* chore: bump Go version from 1.26.0 to 1.26.1
+* chore: bump Docker runtime image from `alpine:3.19` to `alpine:3.21`; add `TARGETARCH` build arg for multi-platform builds
+* chore: raise CI coverage threshold from 65% to 75%; add per-package coverage gate (80% for auth and middleware)
+* chore: add `golangci-lint` step to CI pipeline with `.golangci.yml` configuration
 
 ---
 
@@ -412,37 +394,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- fix: deliver JWT auth tokens via HttpOnly secure cookies instead of URL query parameters — prevents token leakage in browser history, server logs, and referrer headers
-- fix: add JWT revocation via JTI blocklist with database-backed `revoked_tokens` table — logout now invalidates tokens server-side instead of relying solely on client-side cookie deletion
-- fix: prevent CORS `Access-Control-Allow-Credentials: true` from being sent with wildcard origins — only specific origin matches now receive credentials support
-- fix: make HSTS header conditional on TLS — `Strict-Transport-Security` is no longer sent over plain HTTP connections, per RFC 6797
-- fix: prevent decompression bombs in archive extraction by counting actual bytes written instead of trusting tar header sizes
-- fix: protect session store with `sync.Mutex` to prevent concurrent map read/write panics
-- fix: `generateRandomSecret()` now returns an error instead of silently falling back to a time-based secret
-- fix: remove `GIN_MODE` from `isDevMode()` check — development-only code paths are no longer accidentally enabled by Gin's debug mode
-- fix: add `ReadHeaderTimeout` (10s) and `IdleTimeout` (120s) to HTTP server to mitigate slowloris attacks
+* fix: deliver JWT auth tokens via HttpOnly secure cookies instead of URL query parameters — prevents token leakage in browser history, server logs, and referrer headers
+* fix: add JWT revocation via JTI blocklist with database-backed `revoked_tokens` table — logout now invalidates tokens server-side instead of relying solely on client-side cookie deletion
+* fix: prevent CORS `Access-Control-Allow-Credentials: true` from being sent with wildcard origins — only specific origin matches now receive credentials support
+* fix: make HSTS header conditional on TLS — `Strict-Transport-Security` is no longer sent over plain HTTP connections, per RFC 6797
+* fix: prevent decompression bombs in archive extraction by counting actual bytes written instead of trusting tar header sizes
+* fix: protect session store with `sync.Mutex` to prevent concurrent map read/write panics
+* fix: `generateRandomSecret()` now returns an error instead of silently falling back to a time-based secret
+* fix: remove `GIN_MODE` from `isDevMode()` check — development-only code paths are no longer accidentally enabled by Gin's debug mode
+* fix: add `ReadHeaderTimeout` (10s) and `IdleTimeout` (120s) to HTTP server to mitigate slowloris attacks
 
 ### Added
 
-- feat: JWT revocation infrastructure — new migration `000013_jwt_revocation` creates `revoked_tokens` table; new `TokenRepository` with `RevokeToken`, `IsTokenRevoked`, and `CleanupExpiredRevocations` methods; daily cleanup goroutine in server startup
-- feat: pagination support with `limit`/`offset` query params and `{items, total, limit, offset}` envelope for module versions, provider versions, provider docs, mirrored providers, and mirror config versions
-- feat: background job registry with `Job` interface and `Registry` providing `Register`, `StartAll`, `StopAll` lifecycle management
-- feat: migration `000014_terraform_mirror_gpg_config` adds `custom_gpg_key` and `skip_gpg_verify` columns to `terraform_mirror_configs`
-- feat: checksum sidecar `.sha256` files for local storage — avoids re-reading entire files to compute checksums in `GetMetadata()`
-- feat: migration file count parity test ensuring every `.up.sql` has a matching `.down.sql`
+* feat: JWT revocation infrastructure — new migration `000013_jwt_revocation` creates `revoked_tokens` table; new `TokenRepository` with `RevokeToken`, `IsTokenRevoked`, and `CleanupExpiredRevocations` methods; daily cleanup goroutine in server startup
+* feat: pagination support with `limit`/`offset` query params and `{items, total, limit, offset}` envelope for module versions, provider versions, provider docs, mirrored providers, and mirror config versions
+* feat: background job registry with `Job` interface and `Registry` providing `Register`, `StartAll`, `StopAll` lifecycle management
+* feat: migration `000014_terraform_mirror_gpg_config` adds `custom_gpg_key` and `skip_gpg_verify` columns to `terraform_mirror_configs`
+* feat: checksum sidecar `.sha256` files for local storage — avoids re-reading entire files to compute checksums in `GetMetadata()`
+* feat: migration file count parity test ensuring every `.up.sql` has a matching `.down.sql`
 
 ### Changed
 
-- refactor: replace all `fmt.Printf`/`fmt.Println` logging with structured `log/slog` calls in audit shipper, SCM linking, and SCM publisher
-- refactor: replace `getResourceType()` string-scanning helpers with `c.FullPath()` switch statement in audit middleware
-- refactor: remove custom `itoa()` and `min()` functions in favour of stdlib `strconv.Itoa()` and Go builtin `min()`
-- refactor: remove `contains()` and `indexOf()` helper functions from audit middleware
-- chore: add HA limitation comments to `RateLimiter` (in-memory token bucket) and `docContentCache` (in-memory TTL cache)
-- chore: add Swagger annotations to `ServeModuleFile`, `UploadModule`, and `UploadProviderVersion` handlers
-- chore: bump Go version from 1.26.0 to 1.26.1
-- chore: bump Docker runtime image from `alpine:3.19` to `alpine:3.21`; add `TARGETARCH` build arg for multi-platform builds
-- chore: raise CI coverage threshold from 65% to 75%; add per-package coverage gate (80% for auth and middleware)
-- chore: add `golangci-lint` step to CI pipeline with `.golangci.yml` configuration
+* refactor: replace all `fmt.Printf`/`fmt.Println` logging with structured `log/slog` calls in audit shipper, SCM linking, and SCM publisher
+* refactor: replace `getResourceType()` string-scanning helpers with `c.FullPath()` switch statement in audit middleware
+* refactor: remove custom `itoa()` and `min()` functions in favour of stdlib `strconv.Itoa()` and Go builtin `min()`
+* refactor: remove `contains()` and `indexOf()` helper functions from audit middleware
+* chore: add HA limitation comments to `RateLimiter` (in-memory token bucket) and `docContentCache` (in-memory TTL cache)
+* chore: add Swagger annotations to `ServeModuleFile`, `UploadModule`, and `UploadProviderVersion` handlers
+* chore: bump Go version from 1.26.0 to 1.26.1
+* chore: bump Docker runtime image from `alpine:3.19` to `alpine:3.21`; add `TARGETARCH` build arg for multi-platform builds
+* chore: raise CI coverage threshold from 65% to 75%; add per-package coverage gate (80% for auth and middleware)
+* chore: add `golangci-lint` step to CI pipeline with `.golangci.yml` configuration
 
 ---
 
@@ -450,7 +432,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: switch doc-index and provider-version pagination from next-page sentinel to length-based detection — the registry v2 API never populates `meta.pagination.next-page`; `GetProviderDocIndexByVersion` now fetches all pages (1,500+ entries for large providers like azurerm) and `resolveProviderVersionID` pages through all provider-version pages to handle providers with more than 100 releases
+* fix: switch doc-index and provider-version pagination from next-page sentinel to length-based detection — the registry v2 API never populates `meta.pagination.next-page`; `GetProviderDocIndexByVersion` now fetches all pages (1,500+ entries for large providers like azurerm) and `resolveProviderVersionID` pages through all provider-version pages to handle providers with more than 100 releases
 
 ---
 
@@ -458,7 +440,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: backfill doc index for existing provider versions with no docs — the mirror sync job now checks the doc count when skipping already-complete versions; if zero docs exist (due to a prior failed doc fetch), it fetches and stores the doc index without re-downloading binaries
+* fix: backfill doc index for existing provider versions with no docs — the mirror sync job now checks the doc count when skipping already-complete versions; if zero docs exist (due to a prior failed doc fetch), it fetches and stores the doc index without re-downloading binaries
 
 ---
 
@@ -466,7 +448,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: resolve numeric v2 provider-version ID before fetching doc index — `resolveProviderVersionID` now calls `GET /v2/providers/{namespace}/{name}` to obtain the provider's numeric ID then `GET /v2/providers/{id}/provider-versions` to find the matching semver entry
+* fix: resolve numeric v2 provider-version ID before fetching doc index — `resolveProviderVersionID` now calls `GET /v2/providers/{namespace}/{name}` to obtain the provider's numeric ID then `GET /v2/providers/{id}/provider-versions` to find the matching semver entry
 
 ---
 
@@ -474,17 +456,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- feat: expose real version and build date from `GET /version` — new endpoint returns `{"version":"x.y.z","build_date":"..."}` populated at build time via ldflags injected by GoReleaser and Docker `--build-arg`
+* feat: expose real version and build date from `GET /version` — new endpoint returns `{"version":"x.y.z","build_date":"..."}` populated at build time via ldflags injected by GoReleaser and Docker `--build-arg`
 
 ### Fixed
 
-- fix: resolve GoReleaser dirty-state failure — deployment-configs tarball now written to `/tmp/` to avoid untracked file detection
-- fix: upload deployment-configs tarball via `gh release upload` — GoReleaser's `extra_files` glob rejects absolute paths; tarball attachment moved to a post-GoReleaser step
+* fix: resolve GoReleaser dirty-state failure — deployment-configs tarball now written to `/tmp/` to avoid untracked file detection
+* fix: upload deployment-configs tarball via `gh release upload` — GoReleaser's `extra_files` glob rejects absolute paths; tarball attachment moved to a post-GoReleaser step
 
 ### Maintenance
 
-- chore: migrate release workflow to GoReleaser — replaces 5-platform matrix build job and hand-rolled `sha256sum` + release upload steps; binary names and checksums file unchanged
-- chore: upgrade GitHub Actions to Node 24 compatible versions
+* chore: migrate release workflow to GoReleaser — replaces 5-platform matrix build job and hand-rolled `sha256sum` + release upload steps; binary names and checksums file unchanged
+* chore: upgrade GitHub Actions to Node 24 compatible versions
 
 ---
 
@@ -492,7 +474,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: fetch provider doc index from v2 API with version-specific filtering — replaces the v1 non-versioned endpoint with the upstream registry's v2 `provider-docs` API (`filter[provider-version]`), fixing empty doc listings for mirrored providers where the stored language or version didn't match
+* fix: fetch provider doc index from v2 API with version-specific filtering — replaces the v1 non-versioned endpoint with the upstream registry's v2 `provider-docs` API (`filter[provider-version]`), fixing empty doc listings for mirrored providers where the stored language or version didn't match
 
 ---
 
@@ -500,12 +482,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: add `/version` proxy location to Helm nginx ConfigMap — the ConfigMap was missing the location block, causing the SPA fallback to intercept backend API requests in Kubernetes deployments
-- fix: remove `go mod tidy` and swag doc generation from Dockerfile — both steps fail in environments with corporate TLS interception; `swagger.json` is committed to the repo by CI and `go.sum` already pins all dependencies
+* fix: add `/version` proxy location to Helm nginx ConfigMap — the ConfigMap was missing the location block, causing the SPA fallback to intercept backend API requests in Kubernetes deployments
+* fix: remove `go mod tidy` and swag doc generation from Dockerfile — both steps fail in environments with corporate TLS interception; `swagger.json` is committed to the repo by CI and `go.sum` already pins all dependencies
 
 ### Maintenance
 
-- chore: add PR template, CI changelog enforcement, and collection script — `.github/PULL_REQUEST_TEMPLATE.md` pre-fills the changelog section; `pr-checks.yml` fails PRs without a valid entry; `collect-changelog.sh` automates release-time changelog collection
+* chore: add PR template, CI changelog enforcement, and collection script — `.github/PULL_REQUEST_TEMPLATE.md` pre-fills the changelog section; `pr-checks.yml` fails PRs without a valid entry; `collect-changelog.sh` automates release-time changelog collection
 
 ---
 
@@ -513,17 +495,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- feat: expose real version and build date from `GET /version` — new endpoint returns `{"version":"x.y.z","build_date":"..."}` populated at build time via ldflags injected by GoReleaser and Docker `--build-arg`
+* feat: expose real version and build date from `GET /version` — new endpoint returns `{"version":"x.y.z","build_date":"..."}` populated at build time via ldflags injected by GoReleaser and Docker `--build-arg`
 
 ### Fixed
 
-- fix: resolve GoReleaser dirty-state failure — deployment-configs tarball now written to `/tmp/` to avoid untracked file detection
-- fix: upload deployment-configs tarball via `gh release upload` — GoReleaser's `extra_files` glob rejects absolute paths; tarball attachment moved to a post-GoReleaser step
+* fix: resolve GoReleaser dirty-state failure — deployment-configs tarball now written to `/tmp/` to avoid untracked file detection
+* fix: upload deployment-configs tarball via `gh release upload` — GoReleaser's `extra_files` glob rejects absolute paths; tarball attachment moved to a post-GoReleaser step
 
 ### Maintenance
 
-- chore: migrate release workflow to GoReleaser — replaces 5-platform matrix build job and hand-rolled `sha256sum` + release upload steps; binary names and checksums file unchanged
-- chore: upgrade GitHub Actions to Node 24 compatible versions
+* chore: migrate release workflow to GoReleaser — replaces 5-platform matrix build job and hand-rolled `sha256sum` + release upload steps; binary names and checksums file unchanged
+* chore: upgrade GitHub Actions to Node 24 compatible versions
 
 ---
 
@@ -531,7 +513,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: resolve numeric v2 provider-version ID before fetching doc index — `GetProviderDocIndexByVersion` was passing the semver string as `filter[provider-version]` to the upstream registry's v2 `provider-docs` API, which requires the numeric JSON:API provider-version ID; this caused HTTP 400 errors during mirror sync, leaving doc index entries empty and the provider documentation tab blank in the UI
+* fix: resolve numeric v2 provider-version ID before fetching doc index — `GetProviderDocIndexByVersion` was passing the semver string as `filter[provider-version]` to the upstream registry's v2 `provider-docs` API, which requires the numeric JSON:API provider-version ID; this caused HTTP 400 errors during mirror sync, leaving doc index entries empty and the provider documentation tab blank in the UI
 
 ---
 
@@ -539,7 +521,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: fetch provider doc index from v2 API with version-specific filtering — replaces the v1 non-versioned endpoint with the upstream registry's v2 `provider-docs` API (`filter[provider-version]`), fixing empty doc listings for mirrored providers where the stored language or version didn't match
+* fix: fetch provider doc index from v2 API with version-specific filtering — replaces the v1 non-versioned endpoint with the upstream registry's v2 `provider-docs` API (`filter[provider-version]`), fixing empty doc listings for mirrored providers where the stored language or version didn't match
 
 ---
 
@@ -547,12 +529,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: add `/version` proxy location to Helm nginx ConfigMap — the ConfigMap was missing the location block, causing the SPA fallback to intercept backend API requests in Kubernetes deployments
-- fix: remove `go mod tidy` and swag doc generation from Dockerfile — both steps fail in environments with corporate TLS interception; `swagger.json` is committed to the repo by CI and `go.sum` already pins all dependencies
+* fix: add `/version` proxy location to Helm nginx ConfigMap — the ConfigMap was missing the location block, causing the SPA fallback to intercept backend API requests in Kubernetes deployments
+* fix: remove `go mod tidy` and swag doc generation from Dockerfile — both steps fail in environments with corporate TLS interception; `swagger.json` is committed to the repo by CI and `go.sum` already pins all dependencies
 
 ### Maintenance
 
-- chore: add PR template, CI changelog enforcement, and collection script — `.github/PULL_REQUEST_TEMPLATE.md` pre-fills the changelog section; `pr-checks.yml` fails PRs without a valid entry; `collect-changelog.sh` automates release-time changelog collection
+* chore: add PR template, CI changelog enforcement, and collection script — `.github/PULL_REQUEST_TEMPLATE.md` pre-fills the changelog section; `pr-checks.yml` fails PRs without a valid entry; `collect-changelog.sh` automates release-time changelog collection
 
 ---
 
@@ -560,17 +542,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- feat: expose real version and build date from `GET /version` — new endpoint returns `{"version":"x.y.z","build_date":"..."}` populated at build time via ldflags injected by GoReleaser and Docker `--build-arg`
+* feat: expose real version and build date from `GET /version` — new endpoint returns `{"version":"x.y.z","build_date":"..."}` populated at build time via ldflags injected by GoReleaser and Docker `--build-arg`
 
 ### Fixed
 
-- fix: resolve GoReleaser dirty-state failure — deployment-configs tarball now written to `/tmp/` to avoid untracked file detection
-- fix: upload deployment-configs tarball via `gh release upload` — GoReleaser's `extra_files` glob rejects absolute paths; tarball attachment moved to a post-GoReleaser step
+* fix: resolve GoReleaser dirty-state failure — deployment-configs tarball now written to `/tmp/` to avoid untracked file detection
+* fix: upload deployment-configs tarball via `gh release upload` — GoReleaser's `extra_files` glob rejects absolute paths; tarball attachment moved to a post-GoReleaser step
 
 ### Maintenance
 
-- chore: migrate release workflow to GoReleaser — replaces 5-platform matrix build job and hand-rolled `sha256sum` + release upload steps; binary names and checksums file unchanged
-- chore: upgrade GitHub Actions to Node 24 compatible versions
+* chore: migrate release workflow to GoReleaser — replaces 5-platform matrix build job and hand-rolled `sha256sum` + release upload steps; binary names and checksums file unchanged
+* chore: upgrade GitHub Actions to Node 24 compatible versions
 
 ---
 
@@ -578,7 +560,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- feat: provider documentation browsing — new `provider_version_docs` table stores doc metadata fetched from the HashiCorp registry v1 API during mirror sync; two new endpoints (`GET /api/v1/providers/:namespace/:type/versions/:version/docs` and `GET /api/v1/providers/:namespace/:type/versions/:version/docs/:category/:slug`) serve the doc index and proxy markdown content from the registry v2 API with a 15-minute in-memory TTL cache
+* feat: provider documentation browsing — new `provider_version_docs` table stores doc metadata fetched from the HashiCorp registry v1 API during mirror sync; two new endpoints (`GET /api/v1/providers/:namespace/:type/versions/:version/docs` and `GET /api/v1/providers/:namespace/:type/versions/:version/docs/:category/:slug`) serve the doc index and proxy markdown content from the registry v2 API with a 15-minute in-memory TTL cache
 
 ---
 
@@ -586,14 +568,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: ADO `FetchTags` now adds `peelTags=true` and uses `peeledObjectId` as the commit SHA for annotated tags — migration script creates annotated tags whose `objectId` is the tag-object SHA, not the commit SHA, causing `DownloadSourceArchive` to 404 with `versionType=commit`
-- fix: `LinkModuleToSCM` auto-detects the repository's true default branch via `FetchRepository` when `default_branch` is omitted, instead of always defaulting to `"main"` — repos migrated from ADO with `master` as default branch now store correct metadata
-- fix: `UpdateSCMLink` no longer overwrites optional string fields with empty strings on partial update — fields absent from the request body now preserve their existing values
-- fix: `GetModule` response now includes `created_by_name` (user display name) and per-version `published_by` / `published_by_name` — these were already populated by the DB join but excluded from the `gin.H` response map
+* fix: ADO `FetchTags` now adds `peelTags=true` and uses `peeledObjectId` as the commit SHA for annotated tags — migration script creates annotated tags whose `objectId` is the tag-object SHA, not the commit SHA, causing `DownloadSourceArchive` to 404 with `versionType=commit`
+* fix: `LinkModuleToSCM` auto-detects the repository's true default branch via `FetchRepository` when `default_branch` is omitted, instead of always defaulting to `"main"` — repos migrated from ADO with `master` as default branch now store correct metadata
+* fix: `UpdateSCMLink` no longer overwrites optional string fields with empty strings on partial update — fields absent from the request body now preserve their existing values
+* fix: `GetModule` response now includes `created_by_name` (user display name) and per-version `published_by` / `published_by_name` — these were already populated by the DB join but excluded from the `gin.H` response map
 
 ### Changed
 
-- test: `api-test` integration tool now covers `PUT /api/v1/admin/modules/{id}` (UpdateModuleRecord), `POST /api/v1/admin/providers` (CreateProviderRecord), and `GET /api/v1/admin/providers/{id}` (GetProviderByID)
+* test: `api-test` integration tool now covers `PUT /api/v1/admin/modules/{id}` (UpdateModuleRecord), `POST /api/v1/admin/providers` (CreateProviderRecord), and `GET /api/v1/admin/providers/{id}` (GetProviderByID)
 
 ---
 
@@ -601,13 +583,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: add snake_case JSON tags to `models.APIKey` — `organization_id` was decoding as empty on the client side because Go serialized fields as PascalCase without explicit tags (#88)
-- fix: add `organization_id` to `CreateProviderRecordRequest` and correct `created_by` type assertion (`uuid.UUID` → `string`) in provider create handler (#89)
+* fix: add snake_case JSON tags to `models.APIKey` — `organization_id` was decoding as empty on the client side because Go serialized fields as PascalCase without explicit tags (#88)
+* fix: add `organization_id` to `CreateProviderRecordRequest` and correct `created_by` type assertion (`uuid.UUID` → `string`) in provider create handler (#89)
 
 ### Added
 
-- feat: `GET /api/v1/admin/modules/{id}` endpoint — required for Terraform provider `ImportState` on module resources (#90)
-- feat: `PUT /api/v1/admin/providers/{id}` endpoint for updating provider record description and source (#91)
+* feat: `GET /api/v1/admin/modules/{id}` endpoint — required for Terraform provider `ImportState` on module resources (#90)
+* feat: `PUT /api/v1/admin/providers/{id}` endpoint for updating provider record description and source (#91)
 
 ---
 
@@ -615,8 +597,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: add snake_case JSON tags to `models.Provider` — without them `CreateProviderRecord` and `GetProviderByID` responses decoded to empty structs on the client, leaving `organization_id` blank on every Read (#84, #86)
-- fix: add `organization_id`, `source`, and `created_by` to `GetModule` response — their absence caused a provider inconsistency error on every module update step since `UpdateModuleRecord` returns the full struct but `GetModule` did not (#85, #86)
+* fix: add snake_case JSON tags to `models.Provider` — without them `CreateProviderRecord` and `GetProviderByID` responses decoded to empty structs on the client, leaving `organization_id` blank on every Read (#84, #86)
+* fix: add `organization_id`, `source`, and `created_by` to `GetModule` response — their absence caused a provider inconsistency error on every module update step since `UpdateModuleRecord` returns the full struct but `GetModule` did not (#85, #86)
 
 ---
 
@@ -624,12 +606,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: org creator membership fails silently due to wrong type assertion — `c.Get("user_id")` returns a `string`, not `uuid.UUID`; the incorrect assertion always silently failed, leaving org creators without membership and causing 403 on all member-gated endpoints (#80, #82)
-- fix: add postgres healthcheck and required env vars (`TFR_DATABASE_SSL_MODE`, `ENCRYPTION_KEY`, `TFR_JWT_SECRET`) to `docker-compose.test.yml` so the acceptance-test stack starts correctly (#82)
+* fix: org creator membership fails silently due to wrong type assertion — `c.Get("user_id")` returns a `string`, not `uuid.UUID`; the incorrect assertion always silently failed, leaving org creators without membership and causing 403 on all member-gated endpoints (#80, #82)
+* fix: add postgres healthcheck and required env vars (`TFR_DATABASE_SSL_MODE`, `ENCRYPTION_KEY`, `TFR_JWT_SECRET`) to `docker-compose.test.yml` so the acceptance-test stack starts correctly (#82)
 
 ### Added
 
-- feat: `PUT /api/v1/admin/modules/{id}` endpoint for updating module records — the repository layer already had `UpdateModule`; only the HTTP handler and route registration were missing (#81, #82)
+* feat: `PUT /api/v1/admin/modules/{id}` endpoint for updating module records — the repository layer already had `UpdateModule`; only the HTTP handler and route registration were missing (#81, #82)
 
 ---
 
@@ -637,13 +619,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: mirror config detail **Latest Version** field now shows the highest semver version rather than the first version returned by the upstream registry (#74)
-- fix: storage config creation no longer unconditionally activates the new config — `activate=true` must be explicitly passed to make it active (#75)
-- fix: org creation now auto-adds the requesting user as an admin member so subsequent API calls succeed without a separate membership step (#76)
+* fix: mirror config detail **Latest Version** field now shows the highest semver version rather than the first version returned by the upstream registry (#74)
+* fix: storage config creation no longer unconditionally activates the new config — `activate=true` must be explicitly passed to make it active (#75)
+* fix: org creation now auto-adds the requesting user as an admin member so subsequent API calls succeed without a separate membership step (#76)
 
 ### Added
 
-- feat: `POST /api/v1/admin/providers` and `GET /api/v1/admin/providers/:id` CRUD endpoints for provider records, enabling the Terraform provider `registry_provider_record` resource to create and read provider entries by UUID (#77)
+* feat: `POST /api/v1/admin/providers` and `GET /api/v1/admin/providers/:id` CRUD endpoints for provider records, enabling the Terraform provider `registry_provider_record` resource to create and read provider entries by UUID (#77)
 
 ---
 
@@ -651,7 +633,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: semver sort no longer crashes on pre-release or build-metadata version strings (e.g. `5.0.0-beta`, `4.0.0-rc1`, `1.2.3+build`) — `NULLIF` only guarded against empty strings; the new `REGEXP_REPLACE(..., '[-+].*$', '')` strips suffixes before `SPLIT_PART` and `CAST` in all four semver `ORDER BY` expressions. Resolves the provider search 500 and the mirror detail "No providers synced" empty-state (#69)
+* fix: semver sort no longer crashes on pre-release or build-metadata version strings (e.g. `5.0.0-beta`, `4.0.0-rc1`, `1.2.3+build`) — `NULLIF` only guarded against empty strings; the new `REGEXP_REPLACE(..., '[-+].*$', '')` strips suffixes before `SPLIT_PART` and `CAST` in all four semver `ORDER BY` expressions. Resolves the provider search 500 and the mirror detail "No providers synced" empty-state (#69)
 
 ---
 
@@ -659,8 +641,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: module card, terraform binary mirror list, and mirror config detail modal now sort versions by semver instead of upload/sync time — `SearchModulesWithStats`, `TerraformMirrorRepository.ListVersions`, and `ListMirroredProviderVersions` all used `created_at`/`synced_at` ordering
-- fix: harden semver sort in `SearchProvidersWithStats` (v0.2.15) to guard against empty split parts with `COALESCE(CAST(NULLIF(...) AS INTEGER), 0)`
+* fix: module card, terraform binary mirror list, and mirror config detail modal now sort versions by semver instead of upload/sync time — `SearchModulesWithStats`, `TerraformMirrorRepository.ListVersions`, and `ListMirroredProviderVersions` all used `created_at`/`synced_at` ordering
+* fix: harden semver sort in `SearchProvidersWithStats` (v0.2.15) to guard against empty split parts with `COALESCE(CAST(NULLIF(...) AS INTEGER), 0)`
 
 ---
 
@@ -668,7 +650,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: provider card shows latest semver version instead of latest uploaded version — `SearchProvidersWithStats` was ordering the `latest_version` subquery by upload time; now sorts by semver major/minor/patch so the correct highest version is always shown (#62)
+* fix: provider card shows latest semver version instead of latest uploaded version — `SearchProvidersWithStats` was ordering the `latest_version` subquery by upload time; now sorts by semver major/minor/patch so the correct highest version is always shown (#62)
 
 ---
 
@@ -676,7 +658,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: broaden OIDC email fallback to cover all Azure AD UPN claim variants (`preferred_username`, `upn`, `unique_name`) and log the specific extraction error for diagnosis
+* fix: broaden OIDC email fallback to cover all Azure AD UPN claim variants (`preferred_username`, `upn`, `unique_name`) and log the specific extraction error for diagnosis
 
 ---
 
@@ -684,7 +666,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: OIDC login fails for Azure Entra ID when `email` claim is absent — fall back to `preferred_username` (UPN) so login works without requiring the optional `email` claim to be added to the App Registration
+* fix: OIDC login fails for Azure Entra ID when `email` claim is absent — fall back to `preferred_username` (UPN) so login works without requiring the optional `email` claim to be added to the App Registration
 
 ---
 
@@ -692,7 +674,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: stream provider and Terraform binary downloads to a temp file instead of buffering entire zip in memory — eliminates OOM kills for large providers (e.g. AWS ~500 MB) on memory-constrained deployments (#54)
+* fix: stream provider and Terraform binary downloads to a temp file instead of buffering entire zip in memory — eliminates OOM kills for large providers (e.g. AWS ~500 MB) on memory-constrained deployments (#54)
 
 ---
 
@@ -700,7 +682,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: AuditMiddleware logs failed write operations even when `LogFailedRequests=false` — removed erroneous `&& isReadOp` guard from the failed-request skip condition (#29)
+* fix: AuditMiddleware logs failed write operations even when `LogFailedRequests=false` — removed erroneous `&& isReadOp` guard from the failed-request skip condition (#29)
 
 ---
 
@@ -708,8 +690,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: resolve FK violation in `SetStorageConfigured` where `uuid.Nil` violated the `storage_configured_by → users(id)` FK, silently leaving `storage_configured = false` after a successful setup wizard save (#51)
-- fix: log encryption error when storage credential encryption fails in setup wizard (#51)
+* fix: resolve FK violation in `SetStorageConfigured` where `uuid.Nil` violated the `storage_configured_by → users(id)` FK, silently leaving `storage_configured = false` after a successful setup wizard save (#51)
+* fix: log encryption error when storage credential encryption fails in setup wizard (#51)
 
 ---
 
@@ -717,7 +699,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: run frontend nginx on port 8080 so non-root container can bind without NET_BIND_SERVICE capability (#49)
+* fix: run frontend nginx on port 8080 so non-root container can bind without NET_BIND_SERVICE capability (#49)
 
 ---
 
@@ -725,7 +707,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: make frontend pod security context configurable via Helm values to support rootless nginx on AKS (#47)
+* fix: make frontend pod security context configurable via Helm values to support rootless nginx on AKS (#47)
 
 ---
 
@@ -733,7 +715,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: correct helm liveness and startup probe path from /healthz to /health (#44)
+* fix: correct helm liveness and startup probe path from /healthz to /health (#44)
 
 ---
 
@@ -741,11 +723,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: reset stale `in_progress` mirror sync status on startup so mirrors are automatically re-scheduled after a backend restart or ECS task replacement (#42)
+* fix: reset stale `in_progress` mirror sync status on startup so mirrors are automatically re-scheduled after a backend restart or ECS task replacement (#42)
 
 ### Changed
 
-- chore: add `.gitattributes` to enforce LF line endings repo-wide (#42)
+* chore: add `.gitattributes` to enforce LF line endings repo-wide (#42)
 
 ---
 
@@ -753,7 +735,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: make mirror provider lookup deterministic by preferring organization-scoped providers over NULL-org fallback, preventing network mirror index/version mismatch errors during `terraform init` (#39)
+* fix: make mirror provider lookup deterministic by preferring organization-scoped providers over NULL-org fallback, preventing network mirror index/version mismatch errors during `terraform init` (#39)
 
 ---
 
@@ -761,7 +743,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: restore provider download count tracking for network mirror protocol — download counts were silently dropped for S3, Azure, GCS, and local storage without ServeDirectly after v0.2.3 moved tracking to ServeFileHandler, which is only reachable for local+ServeDirectly (#36, #37)
+* fix: restore provider download count tracking for network mirror protocol — download counts were silently dropped for S3, Azure, GCS, and local storage without ServeDirectly after v0.2.3 moved tracking to ServeFileHandler, which is only reachable for local+ServeDirectly (#36, #37)
 
 ---
 
@@ -769,7 +751,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: move mirror download tracking to file serve handler — User-Agent parsing fails with Terraform 1.14.6 which omits platform info; now tracks via URL path at `/v1/files/` which always contains os/arch (#20)
+* fix: move mirror download tracking to file serve handler — User-Agent parsing fails with Terraform 1.14.6 which omits platform info; now tracks via URL path at `/v1/files/` which always contains os/arch (#20)
 
 ---
 
@@ -777,7 +759,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: track provider downloads via network mirror protocol by parsing client User-Agent for platform detection (#18)
+* fix: track provider downloads via network mirror protocol by parsing client User-Agent for platform detection (#18)
 
 ---
 
@@ -785,19 +767,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- fix: compute and serve correct `h1:` dirhash for provider mirror packages, resolving `terraform init` checksum mismatch (#11)
+* fix: compute and serve correct `h1:` dirhash for provider mirror packages, resolving `terraform init` checksum mismatch (#11)
 
 ### Added
 
-- test: expand test coverage across API handlers (admin, mirror, modules, providers, setup), database repositories (modules, providers, terraform mirror), and CLI utilities (api-test, check-db, fix-migration, hash) (#15)
+* test: expand test coverage across API handlers (admin, mirror, modules, providers, setup), database repositories (modules, providers, terraform mirror), and CLI utilities (api-test, check-db, fix-migration, hash) (#15)
 
 ### Changed
 
-- docs: update and expand documentation across all sections (CLAUDE.md, README.md, deployment, configuration, troubleshooting, observability, architecture, development, OIDC, terraform-cli, api-reference) (#14)
+* docs: update and expand documentation across all sections (CLAUDE.md, README.md, deployment, configuration, troubleshooting, observability, architecture, development, OIDC, terraform-cli, api-reference) (#14)
 
 ### Removed
 
-- chore: remove legacy unused utility files (`backend/clean-db.sql`, `backend/fix-migration.sql`, `backend/cmd/test-api`) (#15)
+* chore: remove legacy unused utility files (`backend/clean-db.sql`, `backend/fix-migration.sql`, `backend/cmd/test-api`) (#15)
 
 ---
 
@@ -805,40 +787,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Fix `TriggerManualSync` not releasing `activeSyncsMutex` after marking a sync active, causing all subsequent sync requests to block indefinitely (#3)
-- Fix terraform mirror status response returning equal `version_count` and `platform_count` because `COUNT(*)` was used instead of `COUNT(DISTINCT v.id)` for versions (#4)
-- Fix swagger auto-commit being rejected by GitHub when two CI runs regenerated the file concurrently; add rebase before push (#6)
-- Fix Dockerfile health check using `https://` against an HTTP-only server (#8)
-- Fix NetworkPolicy (`allow-backend-ingress`) silently dropping direct Gateway/load-balancer traffic to the backend on AKS/EKS/GKE overlays (#8)
-- Fix HPA oscillation in production overlay caused by `spec.replicas` being re-applied on every `kubectl apply` (#8)
-- Fix liveness probe using `/health` (dependency-checking endpoint) — now uses `/healthz`; readiness probe correctly uses `/health` (#8)
-- Fix stale Azure-specific `<ACR_NAME>.azurecr.io` placeholder in the generic production overlay image references (#8)
-- Fix production overlay base URL patch being a no-op `registry.example.com` value (#8)
-- Fix deployment documentation environment variable names to use `TFR_` prefix throughout (#8)
+* Fix `TriggerManualSync` not releasing `activeSyncsMutex` after marking a sync active, causing all subsequent sync requests to block indefinitely (#3)
+* Fix terraform mirror status response returning equal `version_count` and `platform_count` because `COUNT(*)` was used instead of `COUNT(DISTINCT v.id)` for versions (#4)
+* Fix swagger auto-commit being rejected by GitHub when two CI runs regenerated the file concurrently; add rebase before push (#6)
+* Fix Dockerfile health check using `https://` against an HTTP-only server (#8)
+* Fix NetworkPolicy (`allow-backend-ingress`) silently dropping direct Gateway/load-balancer traffic to the backend on AKS/EKS/GKE overlays (#8)
+* Fix HPA oscillation in production overlay caused by `spec.replicas` being re-applied on every `kubectl apply` (#8)
+* Fix liveness probe using `/health` (dependency-checking endpoint) — now uses `/healthz`; readiness probe correctly uses `/health` (#8)
+* Fix stale Azure-specific `<ACR_NAME>.azurecr.io` placeholder in the generic production overlay image references (#8)
+* Fix production overlay base URL patch being a no-op `registry.example.com` value (#8)
+* Fix deployment documentation environment variable names to use `TFR_` prefix throughout (#8)
 
 ### Added
 
-- Add `startupProbe` on `/healthz` to backend Kustomize and Helm deployments (#8)
-- Add `readOnlyRootFilesystem: true` with `/tmp` emptyDir volume to backend container (#8)
-- Add pod and container `securityContext` to Helm frontend Deployment to match Kustomize base (#8)
-- Add `serviceAccountName` to Helm frontend Deployment (#8)
-- Add `topologySpreadConstraints` patch to generic production overlay (#8)
-- Add GKE Cloud SQL Auth Proxy sidecar patch to `overlays/gke/patches/backend-cloudsql-proxy.yaml` (#8)
-- Add nginx `Permissions-Policy` security header to frontend nginx ConfigMap (#8)
-- Add cloud-specific Helm values files: `values-aks.yaml`, `values-eks.yaml`, `values-gke.yaml` (#8)
-- Add Helm templates for Gateway API, ClusterIssuer, NetworkPolicy, SecretProviderClass (#8)
-- Add `docs/deployment/` directory with cloud-specific guides (AKS, EKS, GKE: prerequisites, deployment, operations) (#8)
-- Add database backup procedures and PVC Backup & Restore section to deployment documentation (#8)
+* Add `startupProbe` on `/healthz` to backend Kustomize and Helm deployments (#8)
+* Add `readOnlyRootFilesystem: true` with `/tmp` emptyDir volume to backend container (#8)
+* Add pod and container `securityContext` to Helm frontend Deployment to match Kustomize base (#8)
+* Add `serviceAccountName` to Helm frontend Deployment (#8)
+* Add `topologySpreadConstraints` patch to generic production overlay (#8)
+* Add GKE Cloud SQL Auth Proxy sidecar patch to `overlays/gke/patches/backend-cloudsql-proxy.yaml` (#8)
+* Add nginx `Permissions-Policy` security header to frontend nginx ConfigMap (#8)
+* Add cloud-specific Helm values files: `values-aks.yaml`, `values-eks.yaml`, `values-gke.yaml` (#8)
+* Add Helm templates for Gateway API, ClusterIssuer, NetworkPolicy, SecretProviderClass (#8)
+* Add `docs/deployment/` directory with cloud-specific guides (AKS, EKS, GKE: prerequisites, deployment, operations) (#8)
+* Add database backup procedures and PVC Backup & Restore section to deployment documentation (#8)
 
 ### Changed
 
-- Default Helm `cors.allowedOrigins` from `["*"]` to `[]` — requires explicit configuration (#8)
-- Default Helm `networkPolicy.enabled` from `false` to `true` (#8)
-- Default Helm `securityContext.readOnlyRootFilesystem` from `false` to `true` (#8)
-- Return `202 Accepted` instead of `409 Conflict` when a concurrent mirror sync is already in progress (#3)
+* Default Helm `cors.allowedOrigins` from `["*"]` to `[]` — requires explicit configuration (#8)
+* Default Helm `networkPolicy.enabled` from `false` to `true` (#8)
+* Default Helm `securityContext.readOnlyRootFilesystem` from `false` to `true` (#8)
+* Return `202 Accepted` instead of `409 Conflict` when a concurrent mirror sync is already in progress (#3)
 
 ---
 
 ## [0.1.0] - 2026-03-04
 
-- Initial commit
+* Initial commit

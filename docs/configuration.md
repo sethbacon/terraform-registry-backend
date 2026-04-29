@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # Configuration Reference
 
 This document covers all configuration options for the Enterprise Terraform Registry backend. Configuration is loaded from a YAML file (`config.yaml` by default) with environment variable overrides using the `TFR_` prefix.

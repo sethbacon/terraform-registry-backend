@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # ISO 27001:2022 Control Mapping
 
 This document maps ISO 27001:2022 Annex A controls to Terraform Registry
@@ -81,6 +82,7 @@ application with no physical infrastructure requirements.
 ## Statement of Applicability Notes
 
 Controls marked N/A are not applicable because:
+
 - **A.6.1 (Screening):** Organizational HR responsibility, not application-level.
 - **A.7.x (Physical controls):** Application runs in cloud/container environments; physical security is the provider's responsibility.
 - **A.8.1 (Endpoint devices):** Server-side application; end-user device management is organizational responsibility.

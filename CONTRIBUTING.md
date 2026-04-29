@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # Contributing to Enterprise Terraform Registry — Backend
 
 Thank you for your interest in contributing. This project implements the full suite of HashiCorp Terraform protocols and is designed for enterprise deployments — contributions that uphold correctness, security, and protocol compliance are especially welcome.

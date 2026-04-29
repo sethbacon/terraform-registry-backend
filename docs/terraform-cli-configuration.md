@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD013 -->
 # Terraform CLI Configuration
 
 This guide explains how to configure the Terraform CLI to authenticate with and use this registry for **modules**, **providers** (via the network mirror protocol), and the **provider registry protocol**.
