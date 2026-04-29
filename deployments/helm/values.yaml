@@ -295,8 +295,11 @@ scanning:
   enabled: false
   # -- Scanner tool: trivy, terrascan, snyk, checkov, custom
   tool: "trivy"
-  # -- Absolute path to scanner binary inside the container
-  binaryPath: "/usr/local/bin/trivy"
+  # -- Absolute path to scanner binary inside the container.
+  #    Default matches the symlink the in-app auto-installer creates at
+  #    {installDir}/{tool}.  Override only if you bake the scanner into
+  #    your image at a different path.
+  binaryPath: "/app/scanners/trivy"
   # -- Pin expected binary version
   # (supply-chain protection; leave empty to skip check)
   expectedVersion: ""

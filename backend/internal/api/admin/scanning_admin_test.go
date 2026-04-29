@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -61,6 +63,46 @@ func TestGetScanningConfigHandler_Success(t *testing.T) {
 	}
 	if resp.DetectedVersion != nil {
 		t.Error("expected DetectedVersion=nil when binary not found")
+	}
+}
+
+func TestGetScanningConfigHandler_FallsBackToInstallDir(t *testing.T) {
+	// When BinaryPath points nowhere but the auto-installer has placed a
+	// binary at {InstallDir}/{Tool}, the response should advertise that path
+	// as the active binary so the admin UI shows the truth.
+	installDir := t.TempDir()
+	fallbackBinary := filepath.Join(installDir, "trivy")
+	if err := os.WriteFile(fallbackBinary, []byte("fake"), 0o755); err != nil {
+		t.Fatalf("stage fallback binary: %v", err)
+	}
+
+	cfg := &config.ScanningConfig{
+		Enabled:    true,
+		Tool:       "trivy",
+		BinaryPath: "/nonexistent/path/to/trivy",
+		InstallDir: installDir,
+		Timeout:    time.Second,
+	}
+
+	r := gin.New()
+	r.GET("/scanning/config", GetScanningConfigHandler(cfg))
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/scanning/config", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	var resp ScanningConfigResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !resp.BinaryFound {
+		t.Error("expected BinaryFound=true when fallback binary exists")
+	}
+	if resp.BinaryPath != fallbackBinary {
+		t.Errorf("BinaryPath = %q, want %q (the resolved fallback)", resp.BinaryPath, fallbackBinary)
 	}
 }
 
