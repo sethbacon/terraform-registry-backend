@@ -5,6 +5,7 @@ package gitlab
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -533,24 +534,76 @@ func (c *GitLabConnector) DownloadSourceArchive(ctx context.Context, creds *scm.
 	return resp.Body, nil
 }
 
-// RegisterWebhook creates a webhook on the project
+// RegisterWebhook is not yet implemented for GitLab.
 func (c *GitLabConnector) RegisterWebhook(ctx context.Context, creds *scm.AccessToken, ownerName, repoName string, hookConfig scm.WebhookSetup) (*scm.WebhookInfo, error) {
 	return nil, scm.ErrWebhookSetupFailed
 }
 
-// RemoveWebhook deletes a webhook from the project
+// RemoveWebhook is not yet implemented for GitLab.
 func (c *GitLabConnector) RemoveWebhook(ctx context.Context, creds *scm.AccessToken, ownerName, repoName, hookID string) error {
 	return scm.ErrWebhookNotFound
 }
 
-// ParseDelivery parses an incoming webhook payload
-func (c *GitLabConnector) ParseDelivery(payloadBytes []byte, httpHeaders map[string]string) (*scm.IncomingHook, error) {
-	return nil, scm.ErrWebhookPayloadMalformed
+// gitlabPushPayload is the minimal subset of a GitLab push/tag_push event payload.
+type gitlabPushPayload struct {
+	ObjectKind  string `json:"object_kind"`
+	Ref         string `json:"ref"`
+	CheckoutSHA string `json:"checkout_sha"`
+	Project     struct {
+		PathWithNamespace string `json:"path_with_namespace"`
+		HTTPURL           string `json:"http_url"`
+		WebURL            string `json:"web_url"`
+	} `json:"project"`
 }
 
-// VerifyDeliverySignature validates webhook authenticity
+// ParseDelivery parses an incoming GitLab webhook payload.
+// GitLab sets X-Gitlab-Event to "Tag Push Hook" for tag events.
+func (c *GitLabConnector) ParseDelivery(payloadBytes []byte, httpHeaders map[string]string) (*scm.IncomingHook, error) {
+	if len(payloadBytes) == 0 {
+		return nil, scm.ErrWebhookPayloadMalformed
+	}
+
+	event := httpHeaders["X-Gitlab-Event"]
+
+	if event == "" {
+		return nil, scm.ErrWebhookPayloadMalformed
+	}
+
+	var p gitlabPushPayload
+	if err := json.Unmarshal(payloadBytes, &p); err != nil {
+		return nil, scm.ErrWebhookPayloadMalformed
+	}
+
+	isTagPush := event == "Tag Push Hook" || p.ObjectKind == "tag_push"
+	if isTagPush && strings.HasPrefix(p.Ref, "refs/tags/") {
+		tagName := strings.TrimPrefix(p.Ref, "refs/tags/")
+		return &scm.IncomingHook{
+			Type:      scm.WebhookEventTag,
+			Ref:       p.Ref,
+			CommitSHA: p.CheckoutSHA,
+			TagName:   tagName,
+		}, nil
+	}
+
+	if event == "Push Hook" || p.ObjectKind == "push" {
+		return &scm.IncomingHook{
+			Type:      scm.WebhookEventPush,
+			Ref:       p.Ref,
+			CommitSHA: p.CheckoutSHA,
+		}, nil
+	}
+
+	return &scm.IncomingHook{Type: scm.WebhookEventUnknown}, nil
+}
+
+// VerifyDeliverySignature validates a GitLab webhook token.
+// GitLab sends the configured secret token verbatim in the X-Gitlab-Token header.
+// A constant-time comparison is used to prevent timing attacks.
 func (c *GitLabConnector) VerifyDeliverySignature(payloadBytes []byte, signatureHeader, sharedSecret string) bool {
-	return false
+	if sharedSecret == "" {
+		return true
+	}
+	return subtle.ConstantTimeCompare([]byte(signatureHeader), []byte(sharedSecret)) == 1
 }
 
 // Helper methods

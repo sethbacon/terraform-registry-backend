@@ -2,6 +2,9 @@ package github
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -440,7 +443,7 @@ func TestSearchRepositories_NotOK(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Webhook stubs
+// Webhook — RegisterWebhook / RemoveWebhook stubs
 // ---------------------------------------------------------------------------
 
 func TestWebhookStubs(t *testing.T) {
@@ -452,11 +455,123 @@ func TestWebhookStubs(t *testing.T) {
 	if err := c.RemoveWebhook(context.Background(), creds(), "o", "r", "1"); err == nil {
 		t.Error("RemoveWebhook: expected error, got nil")
 	}
-	if _, err := c.ParseDelivery([]byte("{}"), nil); err == nil {
-		t.Error("ParseDelivery: expected error, got nil")
+}
+
+// ---------------------------------------------------------------------------
+// ParseDelivery
+// ---------------------------------------------------------------------------
+
+func TestParseDelivery_TagPush(t *testing.T) {
+	payload := []byte(`{
+		"ref": "refs/tags/v1.2.3",
+		"head_commit": {"id": "deadbeefdeadbeef"},
+		"repository": {"full_name": "org/repo", "html_url": "https://github.com/org/repo", "clone_url": "https://github.com/org/repo.git"}
+	}`)
+	c, _ := NewGitHubConnector(&scm.ConnectorSettings{})
+	hook, err := c.ParseDelivery(payload, map[string]string{"X-GitHub-Event": "push"})
+	if err != nil {
+		t.Fatalf("ParseDelivery error: %v", err)
 	}
-	if c.VerifyDeliverySignature([]byte("p"), "sig", "sec") {
-		t.Error("VerifyDeliverySignature: expected false, got true")
+	if hook.Type != scm.WebhookEventTag {
+		t.Errorf("Type = %v, want WebhookEventTag", hook.Type)
+	}
+	if hook.TagName != "v1.2.3" {
+		t.Errorf("TagName = %q, want v1.2.3", hook.TagName)
+	}
+	if hook.CommitSHA != "deadbeefdeadbeef" {
+		t.Errorf("CommitSHA = %q", hook.CommitSHA)
+	}
+}
+
+func TestParseDelivery_BranchPush(t *testing.T) {
+	payload := []byte(`{
+		"ref": "refs/heads/main",
+		"head_commit": {"id": "abc123"},
+		"repository": {"full_name": "org/repo"}
+	}`)
+	c, _ := NewGitHubConnector(&scm.ConnectorSettings{})
+	hook, err := c.ParseDelivery(payload, map[string]string{"X-GitHub-Event": "push"})
+	if err != nil {
+		t.Fatalf("ParseDelivery error: %v", err)
+	}
+	if hook.Type != scm.WebhookEventPush {
+		t.Errorf("Type = %v, want WebhookEventPush", hook.Type)
+	}
+	if hook.TagName != "" {
+		t.Errorf("TagName = %q, want empty", hook.TagName)
+	}
+}
+
+func TestParseDelivery_PingEvent(t *testing.T) {
+	c, _ := NewGitHubConnector(&scm.ConnectorSettings{})
+	hook, err := c.ParseDelivery([]byte(`{"zen":"Keep it logically awesome"}`), map[string]string{"X-GitHub-Event": "ping"})
+	if err != nil {
+		t.Fatalf("ParseDelivery error: %v", err)
+	}
+	if hook.Type != scm.WebhookEventPing {
+		t.Errorf("Type = %v, want WebhookEventPing", hook.Type)
+	}
+}
+
+func TestParseDelivery_UnknownEvent(t *testing.T) {
+	c, _ := NewGitHubConnector(&scm.ConnectorSettings{})
+	hook, err := c.ParseDelivery([]byte(`{}`), map[string]string{"X-GitHub-Event": "pull_request"})
+	if err != nil {
+		t.Fatalf("ParseDelivery error: %v", err)
+	}
+	if hook.Type != scm.WebhookEventUnknown {
+		t.Errorf("Type = %v, want WebhookEventUnknown", hook.Type)
+	}
+}
+
+func TestParseDelivery_EmptyPayload(t *testing.T) {
+	c, _ := NewGitHubConnector(&scm.ConnectorSettings{})
+	_, err := c.ParseDelivery([]byte{}, map[string]string{"X-GitHub-Event": "push"})
+	if err == nil {
+		t.Error("expected error for empty payload, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// VerifyDeliverySignature
+// ---------------------------------------------------------------------------
+
+// makeGitHubSig computes "sha256=<hex>" for use in test assertions.
+func makeGitHubSig(secret, payload string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(payload))
+	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+func TestVerifyDeliverySignature_ValidHMAC(t *testing.T) {
+	c, _ := NewGitHubConnector(&scm.ConnectorSettings{})
+	sig := makeGitHubSig("mysecret", "hello")
+	if !c.VerifyDeliverySignature([]byte("hello"), sig, "mysecret") {
+		t.Error("expected valid signature")
+	}
+}
+
+func TestVerifyDeliverySignature_WrongSecret(t *testing.T) {
+	c, _ := NewGitHubConnector(&scm.ConnectorSettings{})
+	sig := makeGitHubSig("mysecret", "hello")
+	if c.VerifyDeliverySignature([]byte("hello"), sig, "wrongsecret") {
+		t.Error("expected invalid signature with wrong secret")
+	}
+}
+
+func TestVerifyDeliverySignature_MissingPrefix(t *testing.T) {
+	c, _ := NewGitHubConnector(&scm.ConnectorSettings{})
+	valid := c.VerifyDeliverySignature([]byte("hello"), "734cc62f32841568", "mysecret")
+	if valid {
+		t.Error("expected false when sha256= prefix is missing")
+	}
+}
+
+func TestVerifyDeliverySignature_EmptySecret(t *testing.T) {
+	// When no secret is configured, validation is skipped.
+	c, _ := NewGitHubConnector(&scm.ConnectorSettings{})
+	if !c.VerifyDeliverySignature([]byte("payload"), "sha256=anything", "") {
+		t.Error("expected true when no secret configured")
 	}
 }
 

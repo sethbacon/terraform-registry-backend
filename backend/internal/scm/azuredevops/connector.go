@@ -584,7 +584,10 @@ func zipToTarGz(zipData []byte) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// Stub methods for webhooks
+// RegisterWebhook is not yet implemented for Azure DevOps.
+// Service hook subscriptions must be created manually in ADO project settings:
+// Project Settings → Service Hooks → create a "Web Hooks" subscription for the
+// "Code pushed" event pointing at the webhook URL shown in the registry UI.
 func (c *AzureDevOpsConnector) RegisterWebhook(ctx context.Context, creds *scm.AccessToken, ownerName, repoName string, hookConfig scm.WebhookSetup) (*scm.WebhookInfo, error) {
 	return nil, scm.ErrWebhookSetupFailed
 }
@@ -593,12 +596,80 @@ func (c *AzureDevOpsConnector) RemoveWebhook(ctx context.Context, creds *scm.Acc
 	return scm.ErrWebhookNotFound
 }
 
-func (c *AzureDevOpsConnector) ParseDelivery(payloadBytes []byte, httpHeaders map[string]string) (*scm.IncomingHook, error) {
-	return nil, scm.ErrWebhookPayloadMalformed
+// adoPushPayload is the minimal subset of an ADO git.push service-hook payload
+// that the registry needs to extract tag information.
+type adoPushPayload struct {
+	EventType string `json:"eventType"`
+	ID        string `json:"id"`
+	Resource  struct {
+		RefUpdates []struct {
+			Name        string `json:"name"`
+			NewObjectID string `json:"newObjectId"`
+			OldObjectID string `json:"oldObjectId"`
+		} `json:"refUpdates"`
+		Repository struct {
+			RemoteURL string `json:"remoteUrl"`
+			WebURL    string `json:"webUrl"`
+		} `json:"repository"`
+	} `json:"resource"`
 }
 
+const zeroOID = "0000000000000000000000000000000000000000"
+
+// ParseDelivery parses an Azure DevOps git.push service-hook payload.
+// ADO fires a git.push event for every ref update, including tag creation.
+// A new tag is identified by a refUpdate whose name starts with "refs/tags/"
+// and whose oldObjectId is all zeros (indicating a newly created ref).
+func (c *AzureDevOpsConnector) ParseDelivery(payloadBytes []byte, httpHeaders map[string]string) (*scm.IncomingHook, error) {
+	if len(payloadBytes) == 0 {
+		return nil, scm.ErrWebhookPayloadMalformed
+	}
+
+	var p adoPushPayload
+	if err := json.Unmarshal(payloadBytes, &p); err != nil {
+		return nil, scm.ErrWebhookPayloadMalformed
+	}
+
+	if p.EventType != "git.push" {
+		// Non-push events (e.g. pull_request_merged) are not used for auto-publish.
+		return &scm.IncomingHook{
+			ID:   p.ID,
+			Type: scm.WebhookEventUnknown,
+		}, nil
+	}
+
+	// Find the first newly-created tag ref in this push.
+	for _, ref := range p.Resource.RefUpdates {
+		if !strings.HasPrefix(ref.Name, "refs/tags/") {
+			continue
+		}
+		if ref.OldObjectID != zeroOID {
+			// Tag already existed — not a new publish event.
+			continue
+		}
+		tagName := strings.TrimPrefix(ref.Name, "refs/tags/")
+		return &scm.IncomingHook{
+			ID:        p.ID,
+			Type:      scm.WebhookEventTag,
+			Ref:       ref.Name,
+			CommitSHA: ref.NewObjectID,
+			TagName:   tagName,
+		}, nil
+	}
+
+	// Push contained no new tag refs — treat as a plain branch push.
+	return &scm.IncomingHook{
+		ID:   p.ID,
+		Type: scm.WebhookEventPush,
+	}, nil
+}
+
+// VerifyDeliverySignature always returns true for Azure DevOps.
+// ADO service hooks do not include an HMAC payload signature; the shared
+// secret is embedded in the webhook callback URL and is validated by the
+// registry's HandleWebhook handler before this method is called.
 func (c *AzureDevOpsConnector) VerifyDeliverySignature(payloadBytes []byte, signatureHeader, sharedSecret string) bool {
-	return false
+	return true
 }
 
 // Helper methods

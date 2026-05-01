@@ -5,6 +5,9 @@ package github
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -455,24 +458,94 @@ func (c *GitHubConnector) DownloadSourceArchive(ctx context.Context, creds *scm.
 	return resp.Body, nil
 }
 
-// RegisterWebhook creates a webhook on the repository
+// RegisterWebhook is not yet implemented for GitHub.
 func (c *GitHubConnector) RegisterWebhook(ctx context.Context, creds *scm.AccessToken, ownerName, repoName string, hookConfig scm.WebhookSetup) (*scm.WebhookInfo, error) {
 	return nil, scm.ErrWebhookSetupFailed
 }
 
-// RemoveWebhook deletes a webhook from the repository
+// RemoveWebhook is not yet implemented for GitHub.
 func (c *GitHubConnector) RemoveWebhook(ctx context.Context, creds *scm.AccessToken, ownerName, repoName, hookID string) error {
 	return scm.ErrWebhookNotFound
 }
 
-// ParseDelivery parses an incoming webhook payload
-func (c *GitHubConnector) ParseDelivery(payloadBytes []byte, httpHeaders map[string]string) (*scm.IncomingHook, error) {
-	return nil, scm.ErrWebhookPayloadMalformed
+// githubPushPayload is the minimal subset of a GitHub push event payload.
+type githubPushPayload struct {
+	Ref        string `json:"ref"`
+	HeadCommit struct {
+		ID string `json:"id"`
+	} `json:"head_commit"`
+	Repository struct {
+		FullName string `json:"full_name"`
+		HTMLURL  string `json:"html_url"`
+		CloneURL string `json:"clone_url"`
+	} `json:"repository"`
 }
 
-// VerifyDeliverySignature validates webhook authenticity
+// ParseDelivery parses an incoming GitHub webhook payload.
+// GitHub sends X-GitHub-Event: push for both branch and tag updates.
+// A tag push is identified by ref starting with "refs/tags/".
+func (c *GitHubConnector) ParseDelivery(payloadBytes []byte, httpHeaders map[string]string) (*scm.IncomingHook, error) {
+	if len(payloadBytes) == 0 {
+		return nil, scm.ErrWebhookPayloadMalformed
+	}
+
+	event := httpHeaders["X-GitHub-Event"]
+	if event == "" {
+		// Header keys may be canonicalized; try the canonical form too.
+		event = httpHeaders["X-Github-Event"]
+	}
+
+	if event == "ping" {
+		return &scm.IncomingHook{Type: scm.WebhookEventPing}, nil
+	}
+
+	if event != "push" {
+		return &scm.IncomingHook{Type: scm.WebhookEventUnknown}, nil
+	}
+
+	var p githubPushPayload
+	if err := json.Unmarshal(payloadBytes, &p); err != nil {
+		return nil, scm.ErrWebhookPayloadMalformed
+	}
+
+	if strings.HasPrefix(p.Ref, "refs/tags/") {
+		tagName := strings.TrimPrefix(p.Ref, "refs/tags/")
+		return &scm.IncomingHook{
+			Type:      scm.WebhookEventTag,
+			Ref:       p.Ref,
+			CommitSHA: p.HeadCommit.ID,
+			TagName:   tagName,
+		}, nil
+	}
+
+	return &scm.IncomingHook{
+		Type:      scm.WebhookEventPush,
+		Ref:       p.Ref,
+		CommitSHA: p.HeadCommit.ID,
+	}, nil
+}
+
+// VerifyDeliverySignature validates a GitHub HMAC-SHA256 webhook signature.
+// GitHub sets the X-Hub-Signature-256 header to "sha256=<hex>" where the hex
+// value is HMAC-SHA256(secret, payload).
 func (c *GitHubConnector) VerifyDeliverySignature(payloadBytes []byte, signatureHeader, sharedSecret string) bool {
-	return false
+	if sharedSecret == "" {
+		// No secret configured — skip validation.
+		return true
+	}
+	const prefix = "sha256="
+	if !strings.HasPrefix(signatureHeader, prefix) {
+		return false
+	}
+	gotHex := strings.TrimPrefix(signatureHeader, prefix)
+	got, err := hex.DecodeString(gotHex)
+	if err != nil {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(sharedSecret))
+	mac.Write(payloadBytes)
+	expected := mac.Sum(nil)
+	return hmac.Equal(got, expected)
 }
 
 // Helper methods
