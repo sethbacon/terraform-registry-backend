@@ -145,6 +145,9 @@ func TestSCMCreate_Success(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}).
 			AddRow(knownUUID, "default", "Default", nil, nil, time.Now(), time.Now()))
+	// GetProviderByOrgAndName — no existing provider
+	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE organization_id").
+		WillReturnRows(sqlmock.NewRows(scmProvCols))
 	mock.ExpectExec("INSERT INTO scm_providers").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -168,7 +171,8 @@ func TestSCMCreate_DBError(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}).
 			AddRow(knownUUID, "default", "Default", nil, nil, time.Now(), time.Now()))
-	mock.ExpectExec("INSERT INTO scm_providers").
+	// GetProviderByOrgAndName — DB error
+	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE organization_id").
 		WillReturnError(errDB)
 
 	w := httptest.NewRecorder()
@@ -182,6 +186,30 @@ func TestSCMCreate_DBError(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestSCMCreate_DuplicateConflict(t *testing.T) {
+	mock, r := newSCMProviderRouter(t)
+	// GetDefaultOrganization lookup
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}).
+			AddRow(knownUUID, "default", "Default", nil, nil, time.Now(), time.Now()))
+	// GetProviderByOrgAndName — returns existing provider
+	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE organization_id").
+		WillReturnRows(sampleSCMProviderRow())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/scm-providers",
+		jsonBody(map[string]interface{}{
+			"provider_type": "github",
+			"name":          "test-github",
+			"client_id":     "client-id",
+			"client_secret": "client-secret",
+		})))
+
+	if w.Code != http.StatusConflict {
+		t.Errorf("status = %d, want 409: body=%s", w.Code, w.Body.String())
 	}
 }
 
@@ -231,6 +259,9 @@ func TestSCMCreate_PATBased_Success(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}).
 			AddRow(knownUUID, "default", "Default", nil, nil, time.Now(), time.Now()))
+	// GetProviderByOrgAndName — no existing provider
+	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE organization_id").
+		WillReturnRows(sqlmock.NewRows(scmProvCols))
 	mock.ExpectExec("INSERT INTO scm_providers").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -309,7 +340,10 @@ func TestSCMCreate_DefaultOrgInvalidUUID(t *testing.T) {
 
 func TestSCMCreate_WithExplicitOrgID(t *testing.T) {
 	mock, r := newSCMProviderRouter(t)
-	// Explicit org ID skips default org lookup — only INSERT expected
+	// Explicit org ID skips default org lookup
+	// GetProviderByOrgAndName — no existing provider
+	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE organization_id").
+		WillReturnRows(sqlmock.NewRows(scmProvCols))
 	mock.ExpectExec("INSERT INTO scm_providers").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 

@@ -183,7 +183,7 @@ func (r *StorageConfigRepository) DeactivateAllStorageConfigs(ctx context.Contex
 }
 
 // ActivateStorageConfig activates a specific configuration (deactivates others first)
-func (r *StorageConfigRepository) ActivateStorageConfig(ctx context.Context, id uuid.UUID, userID uuid.UUID) error {
+func (r *StorageConfigRepository) ActivateStorageConfig(ctx context.Context, id uuid.UUID, userID uuid.NullUUID) error {
 	tx, err := r.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return err
@@ -196,7 +196,8 @@ func (r *StorageConfigRepository) ActivateStorageConfig(ctx context.Context, id 
 		return err
 	}
 
-	// Activate the specified config
+	// Activate the specified config; updated_by may be NULL if the user ID
+	// could not be resolved (avoids FK violation with zero UUID).
 	_, err = tx.ExecContext(ctx,
 		`UPDATE storage_config SET is_active = true, updated_at = $1, updated_by = $2 WHERE id = $3`,
 		time.Now(), userID, id,

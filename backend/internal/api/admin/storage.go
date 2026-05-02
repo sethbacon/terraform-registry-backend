@@ -410,13 +410,17 @@ func (h *StorageHandlers) ActivateStorageConfig(c *gin.Context) {
 		return
 	}
 
-	// Get user ID from context
-	userID, exists := c.Get("user_id")
-	var userUUID uuid.UUID
-	if exists {
-		if uid, ok := userID.(uuid.UUID); ok {
-			userUUID = uid
+	// Get user ID from context. User.ID is stored as a string by the auth
+	// middleware, so we must handle both string and uuid.UUID types.
+	userIDVal, _ := c.Get("user_id")
+	var userUUID uuid.NullUUID
+	switch v := userIDVal.(type) {
+	case string:
+		if parsed, parseErr := uuid.Parse(v); parseErr == nil {
+			userUUID = uuid.NullUUID{UUID: parsed, Valid: true}
 		}
+	case uuid.UUID:
+		userUUID = uuid.NullUUID{UUID: v, Valid: true}
 	}
 
 	if err := h.storageConfigRepo.ActivateStorageConfig(ctx, id, userUUID); err != nil {

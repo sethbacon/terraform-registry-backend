@@ -68,6 +68,7 @@ type UpdateSCMProviderRequest struct {
 // @Success      201  {object}  scm.SCMProviderRecord
 // @Failure      400  {object}  map[string]interface{}  "Invalid request or provider type"
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
+// @Failure      409  {object}  map[string]interface{}  "SCM provider with this name and type already exists"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/scm-providers [post]
 // CreateProvider creates a new SCM provider configuration
@@ -132,6 +133,18 @@ func (h *SCMProviderHandlers) CreateProvider(c *gin.Context) {
 			return
 		}
 		orgID = parsed
+	}
+
+	// Check for a duplicate before inserting to return 409 instead of letting
+	// the unique constraint produce a 500.
+	existing, err := h.scmRepo.GetProviderByOrgAndName(c.Request.Context(), orgID, req.ProviderType, req.Name)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check existing provider"})
+		return
+	}
+	if existing != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "An SCM provider with this name and type already exists in this organization"})
+		return
 	}
 
 	provider := &scm.SCMProviderRecord{

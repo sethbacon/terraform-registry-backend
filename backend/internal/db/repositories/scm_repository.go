@@ -44,6 +44,18 @@ func (r *SCMRepository) CreateProvider(ctx context.Context, provider *scm.SCMPro
 	return err
 }
 
+// GetProviderByOrgAndName retrieves an SCM provider by organization, provider type and name.
+// Returns nil if not found.
+func (r *SCMRepository) GetProviderByOrgAndName(ctx context.Context, orgID uuid.UUID, providerType scm.ProviderType, name string) (*scm.SCMProviderRecord, error) {
+	var provider scm.SCMProviderRecord
+	query := `SELECT * FROM scm_providers WHERE organization_id = $1 AND provider_type = $2 AND name = $3`
+	err := r.db.GetContext(ctx, &provider, query, orgID, providerType, name)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return &provider, err
+}
+
 // GetProvider retrieves an SCM provider by ID
 func (r *SCMRepository) GetProvider(ctx context.Context, id uuid.UUID) (*scm.SCMProviderRecord, error) {
 	var provider scm.SCMProviderRecord

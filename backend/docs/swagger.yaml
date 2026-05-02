@@ -46,6 +46,53 @@ definitions:
     required:
     - user_id
     type: object
+  admin.ApprovalTokenResponse:
+    properties:
+      approval_url:
+        description: |-
+          ApprovalURL is informational — the caller should embed the token in the
+          appropriate webhook URL before sending it to an approver.
+        type: string
+      expires_at:
+        type: string
+      token:
+        type: string
+    type: object
+  admin.AuditLogListResponse:
+    properties:
+      logs:
+        items:
+          $ref: '#/definitions/admin.AuditLogResponse'
+        type: array
+      pagination:
+        $ref: '#/definitions/admin.PaginationMeta'
+    type: object
+  admin.AuditLogResponse:
+    properties:
+      action:
+        type: string
+      created_at:
+        type: string
+      id:
+        type: string
+      ip_address:
+        type: string
+      metadata:
+        additionalProperties: true
+        type: object
+      organization_id:
+        type: string
+      resource_id:
+        type: string
+      resource_type:
+        type: string
+      user_email:
+        type: string
+      user_id:
+        type: string
+      user_name:
+        type: string
+    type: object
   admin.BinaryMirrorStats:
     properties:
       by_tool:
@@ -170,6 +217,22 @@ definitions:
     - display_name
     - name
     type: object
+  admin.CreateProviderRecordRequest:
+    properties:
+      description:
+        type: string
+      namespace:
+        type: string
+      organization_id:
+        type: string
+      source:
+        type: string
+      type:
+        type: string
+    required:
+    - namespace
+    - type
+    type: object
   admin.CreateRoleTemplateRequest:
     properties:
       description:
@@ -221,6 +284,21 @@ definitions:
     - email
     - name
     type: object
+  admin.DashboardScanning:
+    properties:
+      clean:
+        type: integer
+      enabled:
+        type: boolean
+      error:
+        type: integer
+      findings:
+        type: integer
+      pending:
+        type: integer
+      total:
+        type: integer
+    type: object
   admin.DashboardStats:
     properties:
       binary_mirrors:
@@ -239,6 +317,8 @@ definitions:
         items:
           $ref: '#/definitions/admin.RecentSyncEntry'
         type: array
+      scanning:
+        $ref: '#/definitions/admin.DashboardScanning'
       scm_providers:
         type: integer
       users:
@@ -260,9 +340,19 @@ definitions:
       version:
         type: string
     type: object
+  admin.DeprecateModuleRequest:
+    properties:
+      message:
+        type: string
+      successor_module_id:
+        type: string
+    type: object
   admin.DeprecateModuleVersionRequest:
     properties:
       message:
+        type: string
+      replacement_source:
+        description: Replacement module source address (e.g. "registry.example.com/acme/newmod/aws")
         type: string
     type: object
   admin.DeprecateVersionRequest:
@@ -283,6 +373,32 @@ definitions:
     - provider
     - registry
     type: object
+  admin.InstallScannerAdminInput:
+    properties:
+      tool:
+        type: string
+      version:
+        type: string
+    required:
+    - tool
+    type: object
+  admin.InstallScannerAdminResponse:
+    properties:
+      binary_path:
+        type: string
+      error:
+        type: string
+      sha256:
+        type: string
+      source_url:
+        type: string
+      success:
+        type: boolean
+      tool:
+        type: string
+      version:
+        type: string
+    type: object
   admin.ListAPIKeysResponse:
     properties:
       keys:
@@ -297,6 +413,13 @@ definitions:
   admin.ListMirrorConfigsResponse:
     properties:
       mirrors: {}
+    type: object
+  admin.ListMirroredProvidersResponse:
+    properties:
+      providers:
+        items:
+          $ref: '#/definitions/admin.MirroredProviderSummary'
+        type: array
     type: object
   admin.ListOrganizationsResponse:
     properties:
@@ -374,6 +497,61 @@ definitions:
   admin.MessageResponse:
     properties:
       message:
+        type: string
+    type: object
+  admin.MirroredPlatformSummary:
+    properties:
+      arch:
+        type: string
+      filename:
+        type: string
+      id:
+        type: string
+      os:
+        type: string
+      provider_version_id:
+        type: string
+      shasum:
+        type: string
+    type: object
+  admin.MirroredProviderSummary:
+    properties:
+      created_at:
+        type: string
+      id:
+        type: string
+      last_synced_at:
+        type: string
+      mirror_config_id:
+        type: string
+      provider_id:
+        type: string
+      sync_enabled:
+        type: boolean
+      upstream_namespace:
+        type: string
+      upstream_type:
+        type: string
+      versions:
+        items:
+          $ref: '#/definitions/admin.MirroredVersionSummary'
+        type: array
+    type: object
+  admin.MirroredVersionSummary:
+    properties:
+      id:
+        type: string
+      mirrored_provider_id:
+        type: string
+      platforms:
+        items:
+          $ref: '#/definitions/admin.MirroredPlatformSummary'
+        type: array
+      provider_version_id:
+        type: string
+      synced_at:
+        type: string
+      upstream_version:
         type: string
     type: object
   admin.ModuleDetailResponse:
@@ -501,9 +679,13 @@ definitions:
         type: string
       download_count:
         type: integer
+      filename:
+        type: string
       id:
         type: string
       os:
+        type: string
+      shasum:
         type: string
     type: object
   admin.ProviderStats:
@@ -542,6 +724,35 @@ definitions:
           type: string
         type: array
       version:
+        type: string
+    type: object
+  admin.RecentScanEntry:
+    properties:
+      created_at:
+        type: string
+      critical_count:
+        type: integer
+      high_count:
+        type: integer
+      id:
+        type: string
+      low_count:
+        type: integer
+      medium_count:
+        type: integer
+      module_name:
+        type: string
+      module_version:
+        type: string
+      namespace:
+        type: string
+      scanned_at:
+        type: string
+      scanner:
+        type: string
+      status:
+        type: string
+      system:
         type: string
     type: object
   admin.RecentSyncEntry:
@@ -609,6 +820,48 @@ definitions:
       token_type:
         type: string
     type: object
+  admin.ScanningConfigResponse:
+    properties:
+      binary_found:
+        type: boolean
+      binary_path:
+        type: string
+      detected_version:
+        type: string
+      enabled:
+        type: boolean
+      expected_version:
+        type: string
+      scan_interval_mins:
+        type: integer
+      severity_threshold:
+        type: string
+      timeout:
+        type: string
+      tool:
+        type: string
+      worker_count:
+        type: integer
+    type: object
+  admin.ScanningStatsResponse:
+    properties:
+      clean:
+        type: integer
+      error:
+        type: integer
+      findings:
+        type: integer
+      pending:
+        type: integer
+      recent_scans:
+        items:
+          $ref: '#/definitions/admin.RecentScanEntry'
+        type: array
+      scanning:
+        type: integer
+      total:
+        type: integer
+    type: object
   admin.StorageTestResponse:
     properties:
       message:
@@ -641,6 +894,19 @@ definitions:
   admin.UpdateOrganizationRequest:
     properties:
       display_name:
+        type: string
+      idp_name:
+        description: IdP name within type, or null to clear
+        type: string
+      idp_type:
+        description: '"oidc", "saml", "ldap", or null to clear'
+        type: string
+    type: object
+  admin.UpdateProviderRecordRequest:
+    properties:
+      description:
+        type: string
+      source:
         type: string
     type: object
   admin.UpdateSCMProviderRequest:
@@ -699,13 +965,89 @@ definitions:
     properties:
       events: {}
     type: object
+  admin.planRequest:
+    properties:
+      source_config_id:
+        type: string
+      target_config_id:
+        type: string
+    required:
+    - source_config_id
+    - target_config_id
+    type: object
+  admin.startMigrationRequest:
+    properties:
+      source_config_id:
+        type: string
+      target_config_id:
+        type: string
+    required:
+    - source_config_id
+    - target_config_id
+    type: object
+  analyzer.InputVar:
+    properties:
+      default: {}
+      description:
+        type: string
+      name:
+        type: string
+      required:
+        type: boolean
+      type:
+        type: string
+    type: object
+  analyzer.ModuleDoc:
+    properties:
+      inputs:
+        items:
+          $ref: '#/definitions/analyzer.InputVar'
+        type: array
+      outputs:
+        items:
+          $ref: '#/definitions/analyzer.OutputVal'
+        type: array
+      providers:
+        items:
+          $ref: '#/definitions/analyzer.ProviderReq'
+        type: array
+      requirements:
+        $ref: '#/definitions/analyzer.Requirements'
+    type: object
+  analyzer.OutputVal:
+    properties:
+      description:
+        type: string
+      name:
+        type: string
+      sensitive:
+        type: boolean
+    type: object
+  analyzer.ProviderReq:
+    properties:
+      name:
+        type: string
+      source:
+        type: string
+      version_constraints:
+        type: string
+    type: object
+  analyzer.Requirements:
+    properties:
+      required_version:
+        type: string
+    type: object
   api.HealthResponse:
     properties:
+      build_date:
+        type: string
       error:
         type: string
       status:
         type: string
       time:
+        type: string
+      version:
         type: string
     type: object
   api.ProtocolVersions:
@@ -746,6 +1088,10 @@ definitions:
     properties:
       api_version:
         type: string
+      build_date:
+        type: string
+      default_language:
+        type: string
       protocols:
         $ref: '#/definitions/api.ProtocolVersions'
       version:
@@ -783,6 +1129,93 @@ definitions:
     - ApprovalStatusPending
     - ApprovalStatusApproved
     - ApprovalStatusRejected
+  models.CVEActiveAdvisoryResponse:
+    properties:
+      id:
+        type: string
+      references:
+        items:
+          type: string
+        type: array
+      severity:
+        $ref: '#/definitions/models.CVESeverity'
+      source_id:
+        type: string
+      summary:
+        type: string
+      target_kind:
+        $ref: '#/definitions/models.CVETargetKind'
+      targets:
+        items:
+          $ref: '#/definitions/models.CVEAffectedTarget'
+        type: array
+    type: object
+  models.CVEAffectedTarget:
+    properties:
+      advisory_id:
+        type: string
+      created_at:
+        type: string
+      id:
+        type: string
+      provider_version_id:
+        type: string
+      target_kind:
+        $ref: '#/definitions/models.CVETargetKind'
+      target_ref:
+        allOf:
+        - $ref: '#/definitions/models.CVETargetRef'
+        description: decoded
+      terraform_version_id:
+        type: string
+    type: object
+  models.CVESeverity:
+    enum:
+    - critical
+    - high
+    - medium
+    - low
+    - unknown
+    type: string
+    x-enum-varnames:
+    - CVESeverityCritical
+    - CVESeverityHigh
+    - CVESeverityMedium
+    - CVESeverityLow
+    - CVESeverityUnknown
+  models.CVETargetKind:
+    enum:
+    - binary
+    - provider
+    - scanner
+    type: string
+    x-enum-varnames:
+    - CVETargetKindBinary
+    - CVETargetKindProvider
+    - CVETargetKindScanner
+  models.CVETargetRef:
+    properties:
+      mirror_config_id:
+        description: binary
+        type: string
+      namespace:
+        type: string
+      provider_id:
+        description: provider
+        type: string
+      provider_version_id:
+        type: string
+      terraform_version_id:
+        type: string
+      tool:
+        description: '"terraform" | "opentofu" | scanner name'
+        type: string
+      type:
+        type: string
+      version:
+        description: semver
+        type: string
+    type: object
   models.CreateMirrorConfigRequest:
     properties:
       description:
@@ -812,6 +1245,13 @@ definitions:
         items:
           type: string
         type: array
+      pull_through_cache_ttl_hours:
+        description: 'Default: 24'
+        minimum: 1
+        type: integer
+      pull_through_enabled:
+        description: 'Default: false'
+        type: boolean
       sync_interval_hours:
         description: 'Default: 24'
         minimum: 1
@@ -860,6 +1300,56 @@ definitions:
     - name
     - tool
     - upstream_url
+    type: object
+  models.LDAPConfigInput:
+    properties:
+      base_dn:
+        type: string
+      bind_dn:
+        type: string
+      bind_password:
+        type: string
+      group_base_dn:
+        type: string
+      group_filter:
+        type: string
+      group_member_attr:
+        type: string
+      host:
+        type: string
+      insecure_skip_verify:
+        type: boolean
+      port:
+        type: integer
+      start_tls:
+        type: boolean
+      use_tls:
+        type: boolean
+      user_attr_email:
+        type: string
+      user_attr_name:
+        type: string
+      user_filter:
+        type: string
+    required:
+    - base_dn
+    - bind_dn
+    - bind_password
+    - host
+    - user_filter
+    type: object
+  models.MigrationPlan:
+    properties:
+      module_count:
+        type: integer
+      provider_count:
+        type: integer
+      source_config_id:
+        type: string
+      target_config_id:
+        type: string
+      total_artifacts:
+        type: integer
     type: object
   models.MirrorApprovalRequest:
     properties:
@@ -939,6 +1429,10 @@ definitions:
       provider_filter:
         description: JSON array
         type: string
+      pull_through_cache_ttl_hours:
+        type: integer
+      pull_through_enabled:
+        type: boolean
       sync_interval_hours:
         type: integer
       updated_at:
@@ -1038,6 +1532,12 @@ definitions:
       created_by_name:
         description: Joined fields (not stored in modules table)
         type: string
+      deprecated:
+        type: boolean
+      deprecated_at:
+        type: string
+      deprecation_message:
+        type: string
       description:
         type: string
       id:
@@ -1050,7 +1550,45 @@ definitions:
         type: string
       source:
         type: string
+      successor_module_id:
+        type: string
       system:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  models.ModuleScan:
+    properties:
+      created_at:
+        type: string
+      critical_count:
+        type: integer
+      error_message:
+        type: string
+      execution_log:
+        type: string
+      expected_version:
+        type: string
+      high_count:
+        type: integer
+      id:
+        type: string
+      low_count:
+        type: integer
+      medium_count:
+        type: integer
+      module_version_id:
+        type: string
+      raw_results:
+        type: object
+      scanned_at:
+        type: string
+      scanner:
+        type: string
+      scanner_version:
+        type: string
+      status:
+        description: pending, scanning, clean, findings, error
         type: string
       updated_at:
         type: string
@@ -1166,6 +1704,30 @@ definitions:
     x-enum-varnames:
     - PolicyTypeAllow
     - PolicyTypeDeny
+  models.Provider:
+    properties:
+      created_at:
+        type: string
+      created_by:
+        type: string
+      created_by_name:
+        description: Joined fields (not stored in providers table)
+        type: string
+      description:
+        type: string
+      id:
+        type: string
+      namespace:
+        type: string
+      organization_id:
+        type: string
+      source:
+        type: string
+      type:
+        type: string
+      updated_at:
+        type: string
+    type: object
   models.RoleTemplate:
     properties:
       created_at:
@@ -1191,7 +1753,15 @@ definitions:
     properties:
       admin_configured:
         type: boolean
+      auth_method:
+        type: string
+      ldap_configured:
+        type: boolean
       oidc_configured:
+        type: boolean
+      pending_feature_setup:
+        type: boolean
+      scanning_configured:
         type: boolean
       setup_completed:
         type: boolean
@@ -1204,6 +1774,9 @@ definitions:
     type: object
   models.StorageConfigInput:
     properties:
+      activate:
+        description: When true, make this config active on creation; defaults to false
+        type: boolean
       azure_account_key:
         description: Plain text input, encrypted before storage
         type: string
@@ -1329,6 +1902,35 @@ definitions:
       updated_at:
         type: string
     type: object
+  models.StorageMigration:
+    properties:
+      completed_at:
+        type: string
+      created_at:
+        type: string
+      created_by:
+        type: string
+      error_message:
+        type: string
+      failed_artifacts:
+        type: integer
+      id:
+        type: string
+      migrated_artifacts:
+        type: integer
+      skipped_artifacts:
+        type: integer
+      source_config_id:
+        type: string
+      started_at:
+        type: string
+      status:
+        type: string
+      target_config_id:
+        type: string
+      total_artifacts:
+        type: integer
+    type: object
   models.TerraformBinaryDownloadResponse:
     properties:
       arch:
@@ -1347,6 +1949,8 @@ definitions:
   models.TerraformMirrorConfig:
     properties:
       created_at:
+        type: string
+      custom_gpg_key:
         type: string
       description:
         type: string
@@ -1367,6 +1971,8 @@ definitions:
       platform_filter:
         description: 'JSONB: []string "os/arch"'
         type: string
+      skip_gpg_verify:
+        type: boolean
       stable_only:
         description: exclude pre-release versions when true
         type: boolean
@@ -1555,6 +2161,11 @@ definitions:
         items:
           type: string
         type: array
+      pull_through_cache_ttl_hours:
+        minimum: 1
+        type: integer
+      pull_through_enabled:
+        type: boolean
       sync_interval_hours:
         minimum: 1
         type: integer
@@ -1606,6 +2217,8 @@ definitions:
         type: string
       webhook_callback_url:
         type: string
+      webhook_registered:
+        type: boolean
     type: object
   modules.LinkSCMRequest:
     properties:
@@ -1632,6 +2245,12 @@ definitions:
     properties:
       created_at:
         type: string
+      deprecated:
+        type: boolean
+      deprecated_at:
+        type: string
+      deprecation_message:
+        type: string
       description:
         type: string
       download_count:
@@ -1641,6 +2260,8 @@ definitions:
       name:
         type: string
       namespace:
+        type: string
+      successor_module_id:
         type: string
       system:
         type: string
@@ -1654,27 +2275,6 @@ definitions:
           $ref: '#/definitions/modules.ModuleSearchItem'
         type: array
     type: object
-  modules.ModuleUploadResponse:
-    properties:
-      checksum:
-        type: string
-      created_at:
-        type: string
-      filename:
-        type: string
-      id:
-        type: string
-      name:
-        type: string
-      namespace:
-        type: string
-      size_bytes:
-        type: integer
-      system:
-        type: string
-      version:
-        type: string
-    type: object
   modules.ModuleVersionEntry:
     properties:
       deprecated:
@@ -1685,6 +2285,8 @@ definitions:
         type: string
       download_count:
         type: integer
+      has_docs:
+        type: boolean
       id:
         type: string
       published_at:
@@ -1716,6 +2318,89 @@ definitions:
         type: integer
       total:
         type: integer
+    type: object
+  oci.ociDescriptor:
+    properties:
+      digest:
+        type: string
+      mediaType:
+        type: string
+      size:
+        type: integer
+    type: object
+  oci.ociManifest:
+    properties:
+      config:
+        $ref: '#/definitions/oci.ociDescriptor'
+      layers:
+        items:
+          $ref: '#/definitions/oci.ociDescriptor'
+        type: array
+      mediaType:
+        type: string
+      schemaVersion:
+        type: integer
+    type: object
+  policy.PolicyResult:
+    properties:
+      allowed:
+        description: Allowed is true when no violations were found.
+        type: boolean
+      mode:
+        description: Mode mirrors the engine's configured enforcement mode.
+        type: string
+      violations:
+        description: Violations contains one entry per deny rule that fired.
+        items:
+          $ref: '#/definitions/policy.Violation'
+        type: array
+    type: object
+  policy.Violation:
+    properties:
+      message:
+        description: Message is the human-readable description produced by the Rego
+          rule.
+        type: string
+      rule:
+        description: Rule is the Rego rule path that fired (e.g. "data.registry.deny").
+        type: string
+    type: object
+  providers.ProviderDocContentResponse:
+    properties:
+      category:
+        type: string
+      content:
+        type: string
+      slug:
+        type: string
+      title:
+        type: string
+    type: object
+  providers.ProviderDocEntryResponse:
+    properties:
+      category:
+        type: string
+      id:
+        type: string
+      language:
+        type: string
+      slug:
+        type: string
+      subcategory:
+        type: string
+      title:
+        type: string
+    type: object
+  providers.ProviderDocsListResponse:
+    properties:
+      categories:
+        items:
+          type: string
+        type: array
+      docs:
+        items:
+          $ref: '#/definitions/providers.ProviderDocEntryResponse'
+        type: array
     type: object
   providers.ProviderDownloadResponse:
     properties:
@@ -1804,31 +2489,6 @@ definitions:
           $ref: '#/definitions/providers.ProviderGPGKey'
         type: array
     type: object
-  providers.ProviderUploadResponse:
-    properties:
-      arch:
-        type: string
-      checksum:
-        type: string
-      filename:
-        type: string
-      id:
-        type: string
-      namespace:
-        type: string
-      os:
-        type: string
-      protocols:
-        items:
-          type: string
-        type: array
-      size_bytes:
-        type: integer
-      type:
-        type: string
-      version:
-        type: string
-    type: object
   providers.ProviderVersionEntry:
     properties:
       deprecated:
@@ -1860,6 +2520,104 @@ definitions:
         items:
           $ref: '#/definitions/providers.ProviderVersionEntry'
         type: array
+    type: object
+  scim.SCIMEmail:
+    properties:
+      primary:
+        type: boolean
+      type:
+        type: string
+      value:
+        type: string
+    type: object
+  scim.SCIMError:
+    properties:
+      detail:
+        type: string
+      schemas:
+        items:
+          type: string
+        type: array
+      scimType:
+        type: string
+      status:
+        type: string
+    type: object
+  scim.SCIMListResponse:
+    properties:
+      Resources: {}
+      itemsPerPage:
+        type: integer
+      schemas:
+        items:
+          type: string
+        type: array
+      startIndex:
+        type: integer
+      totalResults:
+        type: integer
+    type: object
+  scim.SCIMMeta:
+    properties:
+      created:
+        type: string
+      lastModified:
+        type: string
+      location:
+        type: string
+      resourceType:
+        type: string
+    type: object
+  scim.SCIMName:
+    properties:
+      familyName:
+        type: string
+      formatted:
+        type: string
+      givenName:
+        type: string
+    type: object
+  scim.SCIMOperation:
+    properties:
+      op:
+        type: string
+      path:
+        type: string
+      value: {}
+    type: object
+  scim.SCIMPatchOp:
+    properties:
+      Operations:
+        items:
+          $ref: '#/definitions/scim.SCIMOperation'
+        type: array
+      schemas:
+        items:
+          type: string
+        type: array
+    type: object
+  scim.SCIMUser:
+    properties:
+      active:
+        type: boolean
+      emails:
+        items:
+          $ref: '#/definitions/scim.SCIMEmail'
+        type: array
+      externalId:
+        type: string
+      id:
+        type: string
+      meta:
+        $ref: '#/definitions/scim.SCIMMeta'
+      name:
+        $ref: '#/definitions/scim.SCIMName'
+      schemas:
+        items:
+          type: string
+        type: array
+      userName:
+        type: string
     type: object
   scm.ModuleSourceRepoRecord:
     properties:
@@ -1941,6 +2699,77 @@ definitions:
       updated_at:
         type: string
     type: object
+  services.APIKeyRecord:
+    properties:
+      created_at:
+        type: string
+      expires_at:
+        type: string
+      id:
+        type: string
+      last_used_at:
+        type: string
+      name:
+        type: string
+    type: object
+  services.MembershipRecord:
+    properties:
+      organization_id:
+        type: string
+      organization_name:
+        type: string
+      role_template_name:
+        type: string
+    type: object
+  services.ResourceRecord:
+    properties:
+      id:
+        type: string
+      name:
+        type: string
+      namespace:
+        type: string
+    type: object
+  services.UserDataExport:
+    properties:
+      api_keys:
+        items:
+          $ref: '#/definitions/services.APIKeyRecord'
+        type: array
+      audit_entry_count:
+        type: integer
+      exported_at:
+        type: string
+      memberships:
+        items:
+          $ref: '#/definitions/services.MembershipRecord'
+        type: array
+      modules_created:
+        items:
+          $ref: '#/definitions/services.ResourceRecord'
+        type: array
+      providers_created:
+        items:
+          $ref: '#/definitions/services.ResourceRecord'
+        type: array
+      user:
+        $ref: '#/definitions/services.UserExportRecord'
+    type: object
+  services.UserExportRecord:
+    properties:
+      created_at:
+        type: string
+      email:
+        type: string
+      id:
+        type: string
+      name:
+        type: string
+      oidc_sub:
+        type: string
+      updated_at:
+        type: string
+    type: object
   setup.CompleteSetupResponse:
     properties:
       message:
@@ -1966,6 +2795,56 @@ definitions:
       role:
         type: string
     type: object
+  setup.InstallScannerInput:
+    properties:
+      tool:
+        type: string
+      version:
+        description: empty = latest
+        type: string
+    required:
+    - tool
+    type: object
+  setup.InstallScannerResponse:
+    properties:
+      binary_path:
+        type: string
+      error:
+        type: string
+      sha256:
+        type: string
+      source_url:
+        type: string
+      success:
+        type: boolean
+      tool:
+        type: string
+      version:
+        type: string
+    type: object
+  setup.SaveScanningConfigInput:
+    properties:
+      binary_path:
+        type: string
+      enabled:
+        type: boolean
+      expected_version:
+        type: string
+      timeout_secs:
+        type: integer
+      tool:
+        type: string
+      worker_count:
+        type: integer
+    required:
+    - binary_path
+    - tool
+    type: object
+  setup.SaveScanningConfigResponse:
+    properties:
+      message:
+        type: string
+    type: object
   setup.SaveStorageConfigResponse:
     properties:
       config: {}
@@ -1977,6 +2856,27 @@ definitions:
       issuer:
         type: string
       message:
+        type: string
+      success:
+        type: boolean
+    type: object
+  setup.TestScanningConfigInput:
+    properties:
+      binary_path:
+        type: string
+      expected_version:
+        type: string
+      tool:
+        type: string
+    required:
+    - binary_path
+    - tool
+    type: object
+  setup.TestScanningConfigResponse:
+    properties:
+      detected_version:
+        type: string
+      error:
         type: string
       success:
         type: boolean
@@ -2037,6 +2937,76 @@ paths:
       summary: Terraform service discovery
       tags:
       - System
+  /api/v1/admin/advisories:
+    get:
+      description: Returns all advisories including withdrawn ones. Requires admin
+        scope.
+      parameters:
+      - description: 'Filter by target kind: binary, provider, scanner'
+        in: query
+        name: kind
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              type: object
+            type: array
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Forbidden — admin scope required
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: List all CVE advisories (admin)
+      tags:
+      - Vulnerability Advisories
+  /api/v1/admin/advisories/poll:
+    post:
+      description: Queues an immediate CVE poll pass outside the normal schedule.
+        Requires admin scope.
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Poll queued
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Forbidden — admin scope required
+          schema:
+            additionalProperties: true
+            type: object
+        "503":
+          description: CVE poll job not running
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Trigger a CVE poll (admin)
+      tags:
+      - Vulnerability Advisories
   /api/v1/admin/approvals:
     get:
       description: List mirror approval requests, optionally filtered by organization
@@ -2204,6 +3174,245 @@ paths:
       summary: Review approval request
       tags:
       - RBAC
+  /api/v1/admin/approvals/{id}/token:
+    post:
+      description: Generates a single-use HMAC token that can be sent to an approver
+        via email
+      parameters:
+      - description: Approval request ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/admin.ApprovalTokenResponse'
+        "400":
+          description: Invalid approval request ID
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Forbidden — mirrors:manage scope required
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Approval request not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Generate webhook approval token
+      tags:
+      - RBAC
+  /api/v1/admin/audit-logs:
+    get:
+      consumes:
+      - application/json
+      description: Get a paginated, filterable list of audit log entries. Requires
+        audit:read scope.
+      parameters:
+      - description: Page number (default 1)
+        in: query
+        name: page
+        type: integer
+      - description: Items per page, max 200 (default 25)
+        in: query
+        name: per_page
+        type: integer
+      - description: Filter by action string (exact match)
+        in: query
+        name: action
+        type: string
+      - description: Filter by resource type (module, provider, user, mirror, api_key,
+          organization)
+        in: query
+        name: resource_type
+        type: string
+      - description: Filter by actor user ID (exact match)
+        in: query
+        name: user_id
+        type: string
+      - description: Filter by actor email (partial, case-insensitive)
+        in: query
+        name: user_email
+        type: string
+      - description: Filter entries at or after this RFC3339 timestamp
+        in: query
+        name: start_date
+        type: string
+      - description: Filter entries at or before this RFC3339 timestamp
+        in: query
+        name: end_date
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/admin.AuditLogListResponse'
+        "400":
+          description: Invalid query parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Forbidden — audit:read scope required
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: List audit logs
+      tags:
+      - Audit
+  /api/v1/admin/audit-logs/{id}:
+    get:
+      description: Retrieve a single audit log entry by ID. Requires audit:read scope.
+      parameters:
+      - description: Audit log entry ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/admin.AuditLogResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Forbidden — audit:read scope required
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Audit log entry not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Get audit log entry
+      tags:
+      - Audit
+  /api/v1/admin/audit-logs/export:
+    get:
+      description: Streams audit log entries as newline-delimited JSON (NDJSON) or
+        OCSF 1.1 API
+      parameters:
+      - description: 'Start date in RFC3339 format (default: 30 days ago)'
+        in: query
+        name: start_date
+        type: string
+      - description: 'End date in RFC3339 format (default: now)'
+        in: query
+        name: end_date
+        type: string
+      - description: 'Output format: ndjson (default) or ocsf'
+        enum:
+        - ndjson
+        - ocsf
+        in: query
+        name: format
+        type: string
+      produces:
+      - application/x-ndjson
+      responses:
+        "200":
+          description: NDJSON stream of audit log entries
+          schema:
+            type: string
+        "400":
+          description: Invalid date or format parameters
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Forbidden — audit:read scope required
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Export audit logs
+      tags:
+      - Audit
+  /api/v1/admin/identity/group-mappings:
+    get:
+      description: Returns read-only SAML and LDAP group-to-role mapping configuration.
+        OIDC mappings are managed separately via the OIDC admin endpoints.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: SAML and LDAP group mapping config
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Forbidden — requires admin scope
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Identity group mappings
+      tags:
+      - Authentication
   /api/v1/admin/mirrors:
     get:
       description: List all provider mirror configurations, optionally filtered to
@@ -2420,13 +3629,21 @@ paths:
         name: id
         required: true
         type: string
+      - description: Maximum results (default 100, max 1000)
+        in: query
+        name: limit
+        type: integer
+      - description: Offset for pagination (default 0)
+        in: query
+        name: offset
+        type: integer
       produces:
       - application/json
       responses:
         "200":
-          description: 'providers: []models.MirroredProvider with versions'
+          description: OK
           schema:
-            $ref: '#/definitions/admin.WebhookEventsResponse'
+            $ref: '#/definitions/admin.ListMirroredProvidersResponse'
         "400":
           description: Invalid mirror ID
           schema:
@@ -2533,11 +3750,6 @@ paths:
           schema:
             additionalProperties: true
             type: object
-        "409":
-          description: Sync already in progress
-          schema:
-            additionalProperties: true
-            type: object
         "500":
           description: Internal server error
           schema:
@@ -2553,6 +3765,91 @@ paths:
       summary: Trigger mirror sync
       tags:
       - Mirror
+  /api/v1/admin/modules/{id}:
+    get:
+      description: Retrieve a module record by its UUID. Requires modules:read scope.
+      parameters:
+      - description: Module record UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.Module'
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Module not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Get module record by ID
+      tags:
+      - Modules
+    put:
+      consumes:
+      - application/json
+      description: Update a module record's description or source URL. Requires modules:write
+        scope.
+      parameters:
+      - description: Module UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Fields to update
+        in: body
+        name: body
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.Module'
+        "400":
+          description: Invalid request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Module not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Update module record
+      tags:
+      - Modules
   /api/v1/admin/modules/{id}/scm:
     delete:
       description: |-
@@ -2876,6 +4173,34 @@ paths:
       summary: Create module record
       tags:
       - Modules
+  /api/v1/admin/mtls/config:
+    get:
+      description: Returns the mTLS certificate-subject to scope mappings from the
+        server configuration (read-only). Shows whether mTLS is enabled and lists
+        all configured subject-to-scope bindings.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: mTLS config with enabled flag, CA file path, and mappings
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Forbidden — requires admin scope
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: mTLS configuration
+      tags:
+      - Authentication
   /api/v1/admin/oidc/config:
     get:
       description: Returns the currently active OIDC configuration including group
@@ -3198,6 +4523,232 @@ paths:
       summary: Evaluate mirror policies
       tags:
       - RBAC
+  /api/v1/admin/policy/config:
+    get:
+      description: Returns the current policy engine configuration (enabled, mode,
+        bundle URL, refresh interval).
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Get policy configuration
+      tags:
+      - System
+  /api/v1/admin/policy/evaluate:
+    post:
+      consumes:
+      - application/json
+      description: Evaluates an arbitrary input map against the currently loaded policy
+        bundle.
+      parameters:
+      - description: Input to evaluate
+        in: body
+        name: body
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/policy.PolicyResult'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Evaluate policy input
+      tags:
+      - System
+  /api/v1/admin/policy/reload:
+    post:
+      description: Forces an immediate reload of the Rego policy bundle from the configured
+        URL.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: No bundle URL configured
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Reload policy bundle
+      tags:
+      - System
+  /api/v1/admin/providers:
+    post:
+      consumes:
+      - application/json
+      description: Create a new provider record in the registry. Requires providers:write
+        scope.
+      parameters:
+      - description: Provider namespace, type, optional description and source
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/admin.CreateProviderRecordRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/models.Provider'
+        "400":
+          description: Invalid request body
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Provider already exists
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Create provider record
+      tags:
+      - Providers
+  /api/v1/admin/providers/{id}:
+    get:
+      description: Retrieve a provider record by its UUID. Requires providers:read
+        scope.
+      parameters:
+      - description: Provider record UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.Provider'
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Provider not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Get provider record by ID
+      tags:
+      - Providers
+    put:
+      consumes:
+      - application/json
+      description: Update the description and/or source of a provider record. Requires
+        providers:write scope.
+      parameters:
+      - description: Provider record UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Fields to update
+        in: body
+        name: req
+        required: true
+        schema:
+          $ref: '#/definitions/admin.UpdateProviderRecordRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.Provider'
+        "400":
+          description: Bad request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Provider not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Update provider record by ID
+      tags:
+      - Providers
   /api/v1/admin/role-templates:
     get:
       description: Returns all available RBAC role templates. Requires admin scope.
@@ -3410,6 +4961,137 @@ paths:
       summary: Update role template
       tags:
       - RBAC
+  /api/v1/admin/scanning/config:
+    get:
+      description: Returns the current security scanning configuration including binary
+        path, availability, and detected version. Requires admin scope.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/admin.ScanningConfigResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Get scanning configuration
+      tags:
+      - Security Scanning
+  /api/v1/admin/scanning/install:
+    post:
+      consumes:
+      - application/json
+      description: Admin-only post-setup action that downloads, verifies, and installs
+        a supported scanner binary. Returns the installed binary path — updating the
+        scanning configuration to use it is a separate admin action. Requires admin
+        scope.
+      parameters:
+      - description: Scanner to install
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/admin.InstallScannerAdminInput'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/admin.InstallScannerAdminResponse'
+        "400":
+          description: Invalid request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Install directory not configured
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Install or upgrade a scanner binary
+      tags:
+      - Security Scanning
+  /api/v1/admin/scanning/scans/{id}:
+    get:
+      description: Returns a security scan record by its unique ID, including severity
+        counts and raw output. Requires scanning:read scope.
+      parameters:
+      - description: Scan ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.ModuleScan'
+        "400":
+          description: Invalid scan ID
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Scan not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Get scan result by ID
+      tags:
+      - Security Scanning
+  /api/v1/admin/scanning/stats:
+    get:
+      description: Returns aggregate scan counts by status and a list of recent scans.
+        Requires admin scope.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/admin.ScanningStatsResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Get scanning statistics
+      tags:
+      - Security Scanning
   /api/v1/admin/stats/dashboard:
     get:
       description: Returns aggregated statistics for the admin dashboard including
@@ -3437,6 +5119,205 @@ paths:
       summary: Get dashboard statistics
       tags:
       - Stats
+  /api/v1/admin/storage/migrations:
+    get:
+      description: Returns a paginated list of storage migration jobs. Requires admin
+        scope.
+      parameters:
+      - description: Max results (default 20)
+        in: query
+        name: limit
+        type: integer
+      - description: Offset for pagination (default 0)
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: migrations array and pagination
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: List storage migrations
+      tags:
+      - Storage Migration
+    post:
+      consumes:
+      - application/json
+      description: Creates a new migration job and begins copying artifacts from the
+        source to the target storage backend in the background. Requires admin scope.
+      parameters:
+      - description: Source and target storage config IDs
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/admin.startMigrationRequest'
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/models.StorageMigration'
+        "400":
+          description: Invalid request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Start storage migration
+      tags:
+      - Storage Migration
+  /api/v1/admin/storage/migrations/{id}:
+    get:
+      description: Returns the current progress and status of a specific migration
+        job. Requires admin scope.
+      parameters:
+      - description: Migration ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.StorageMigration'
+        "400":
+          description: Invalid migration ID
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Migration not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Get storage migration status
+      tags:
+      - Storage Migration
+  /api/v1/admin/storage/migrations/{id}/cancel:
+    post:
+      description: Cancels a running or pending migration. Artifacts already migrated
+        are not rolled back. Requires admin scope.
+      parameters:
+      - description: Migration ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/admin.MessageResponse'
+        "400":
+          description: Invalid ID or migration not cancellable
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Migration not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Cancel storage migration
+      tags:
+      - Storage Migration
+  /api/v1/admin/storage/migrations/plan:
+    post:
+      consumes:
+      - application/json
+      description: Counts artifacts that would be migrated between two storage configurations.
+        Does not start a migration. Requires admin scope.
+      parameters:
+      - description: Source and target storage config IDs
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/admin.planRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.MigrationPlan'
+        "400":
+          description: Invalid request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Plan storage migration
+      tags:
+      - Storage Migration
   /api/v1/admin/terraform-mirrors:
     get:
       description: Returns all Terraform binary mirror configurations. Requires mirrors:read
@@ -3462,7 +5343,7 @@ paths:
       - Bearer: []
       summary: List Terraform mirror configurations
       tags:
-      - TerraformMirror
+      - Terraform Mirror
     post:
       consumes:
       - application/json
@@ -3506,7 +5387,7 @@ paths:
       - Bearer: []
       summary: Create Terraform mirror configuration
       tags:
-      - TerraformMirror
+      - Terraform Mirror
   /api/v1/admin/terraform-mirrors/{id}:
     delete:
       description: Deletes a Terraform binary mirror config and all its associated
@@ -3543,7 +5424,7 @@ paths:
       - Bearer: []
       summary: Delete Terraform mirror configuration
       tags:
-      - TerraformMirror
+      - Terraform Mirror
     get:
       description: Returns a specific Terraform binary mirror configuration. Requires
         mirrors:read scope.
@@ -3579,7 +5460,7 @@ paths:
       - Bearer: []
       summary: Get Terraform mirror configuration
       tags:
-      - TerraformMirror
+      - Terraform Mirror
     put:
       consumes:
       - application/json
@@ -3633,7 +5514,7 @@ paths:
       - Bearer: []
       summary: Update Terraform mirror configuration
       tags:
-      - TerraformMirror
+      - Terraform Mirror
   /api/v1/admin/terraform-mirrors/{id}/history:
     get:
       description: Returns the most recent sync run records for the specified config.
@@ -3674,7 +5555,7 @@ paths:
       - Bearer: []
       summary: Get Terraform mirror sync history
       tags:
-      - TerraformMirror
+      - Terraform Mirror
   /api/v1/admin/terraform-mirrors/{id}/status:
     get:
       description: Returns the status and summary stats for a specific mirror config.
@@ -3711,7 +5592,7 @@ paths:
       - Bearer: []
       summary: Get Terraform mirror status
       tags:
-      - TerraformMirror
+      - Terraform Mirror
   /api/v1/admin/terraform-mirrors/{id}/sync:
     post:
       description: Enqueues a manual sync for the specified mirror config. Requires
@@ -3748,7 +5629,7 @@ paths:
       - Bearer: []
       summary: Trigger Terraform mirror sync
       tags:
-      - TerraformMirror
+      - Terraform Mirror
   /api/v1/admin/terraform-mirrors/{id}/versions:
     get:
       description: Returns all Terraform versions known to the specified mirror config.
@@ -3767,6 +5648,14 @@ paths:
         in: query
         name: synced
         type: boolean
+      - description: Maximum results (default 100, max 1000)
+        in: query
+        name: limit
+        type: integer
+      - description: Offset for pagination (default 0)
+        in: query
+        name: offset
+        type: integer
       produces:
       - application/json
       responses:
@@ -3793,7 +5682,7 @@ paths:
       - Bearer: []
       summary: List mirrored Terraform versions
       tags:
-      - TerraformMirror
+      - Terraform Mirror
   /api/v1/admin/terraform-mirrors/{id}/versions/{version}:
     delete:
       description: Removes a version and its platform records. Stored binaries are
@@ -3835,7 +5724,7 @@ paths:
       - Bearer: []
       summary: Delete a mirrored Terraform version
       tags:
-      - TerraformMirror
+      - Terraform Mirror
     get:
       description: Returns metadata and per-platform sync status for a single version.
         Requires mirrors:read scope.
@@ -3876,7 +5765,7 @@ paths:
       - Bearer: []
       summary: Get a specific mirrored Terraform version
       tags:
-      - TerraformMirror
+      - Terraform Mirror
   /api/v1/admin/terraform-mirrors/{id}/versions/{version}/platforms:
     get:
       description: Returns per-platform sync details for a specific version. Requires
@@ -3920,7 +5809,117 @@ paths:
       - Bearer: []
       summary: List platforms for a Terraform version
       tags:
-      - TerraformMirror
+      - Terraform Mirror
+  /api/v1/admin/users/{id}/erase:
+    post:
+      description: Anonymize a user's PII and revoke all access (GDPR Article 17 —
+        right to erasure). Audit log entries are preserved with the anonymized user
+        ID for compliance. Requires admin scope.
+      parameters:
+      - description: User ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: User data erased
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Forbidden — admin scope required
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: User not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Erase user data (GDPR)
+      tags:
+      - Users
+  /api/v1/admin/users/{id}/export:
+    get:
+      description: Export all personal data associated with a user as JSON. Implements
+        GDPR Article 15 (right of access) and Article 20 (data portability). Requires
+        admin scope.
+      parameters:
+      - description: User ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/services.UserDataExport'
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Forbidden — admin scope required
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: User not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Export user data (GDPR)
+      tags:
+      - Users
+  /api/v1/advisories/active:
+    get:
+      description: |-
+        Returns all CVE advisories that have at least one non-deprecated affected version.
+        Withdrawn advisories and advisories where all affected versions have been deprecated are excluded.
+        Results are cached for 5 minutes.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/models.CVEActiveAdvisoryResponse'
+            type: array
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: List active CVE advisories
+      tags:
+      - Vulnerability Advisories
   /api/v1/apikeys:
     get:
       consumes:
@@ -4201,8 +6200,8 @@ paths:
       consumes:
       - application/json
       description: Handles the callback from OAuth provider after user authorizes.
-        Exchanges the authorization code for a JWT and redirects the browser to the
-        frontend /auth/callback page with the token as a query parameter.
+        Exchanges the authorization code for a JWT, sets a `tfr_auth_token` HttpOnly
+        cookie, and redirects to `/auth/callback`.
       parameters:
       - description: Authorization code from OAuth provider
         in: query
@@ -4218,7 +6217,8 @@ paths:
       - application/json
       responses:
         "302":
-          description: Redirects to frontend /auth/callback?token=<jwt>
+          description: Sets tfr_auth_token HttpOnly cookie and redirects to frontend
+            /auth/callback
           schema:
             type: string
         "400":
@@ -4239,14 +6239,83 @@ paths:
       summary: OAuth callback handler
       tags:
       - Authentication
+  /api/v1/auth/exchange-token:
+    get:
+      description: Reads the HttpOnly `tfr_auth_token` cookie set during the OIDC
+        callback, validates it, returns the JWT in the response body, and clears the
+        cookie. The frontend calls this endpoint on the /auth/callback page to move
+        the token from the cookie into localStorage.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: token
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: No cookie or invalid token
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Exchange auth cookie for JWT
+      tags:
+      - Authentication
+  /api/v1/auth/ldap/login:
+    post:
+      consumes:
+      - application/json
+      description: Authenticates a user via LDAP with username and password. On success,
+        issues a JWT and sets an httpOnly auth cookie.
+      parameters:
+      - description: LDAP credentials
+        in: body
+        name: body
+        required: true
+        schema:
+          properties:
+            password:
+              type: string
+            username:
+              type: string
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: JWT token and user info
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Missing credentials or LDAP not configured
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Invalid username or password
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: LDAP login
+      tags:
+      - Authentication
   /api/v1/auth/login:
     get:
       consumes:
       - application/json
-      description: Redirect user to OAuth provider (OIDC or Azure AD) to begin authentication
-        flow
+      description: Redirect user to an identity provider to begin authentication.
+        Supports OIDC, Azure AD, SAML, and LDAP (LDAP uses a separate POST endpoint).
+        For SAML, set provider=saml:<idp-name>.
       parameters:
-      - description: 'OAuth provider: oidc or azuread (default: oidc)'
+      - description: 'Auth provider: oidc, azuread, saml, or saml:<idp-name> (default:
+          oidc)'
         in: query
         name: provider
         type: string
@@ -4254,7 +6323,7 @@ paths:
       - application/json
       responses:
         "302":
-          description: Redirects to OAuth provider authorization URL
+          description: Redirects to IdP authorization URL
           schema:
             type: string
         "400":
@@ -4274,9 +6343,10 @@ paths:
     get:
       consumes:
       - application/json
-      description: Clears the local session and, when OIDC is active, redirects the
-        browser to the provider's end_session_endpoint to terminate the SSO session.
-        Falls back to a plain redirect to the frontend login page for non-OIDC setups.
+      description: Revokes the current JWT, clears the auth cookie, and when OIDC
+        is active, redirects the browser to the provider's end_session_endpoint to
+        terminate the SSO session. Falls back to a plain redirect to the frontend
+        login page for non-OIDC setups.
       parameters:
       - description: URL to redirect to after the provider logs out (defaults to frontend
           /login)
@@ -4290,6 +6360,16 @@ paths:
           description: Redirects to OIDC end_session_endpoint or frontend /login
           schema:
             type: string
+        "401":
+          description: Unauthorized — no valid session
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
       summary: OIDC logout
       tags:
       - Authentication
@@ -4326,6 +6406,21 @@ paths:
       summary: Get current user
       tags:
       - Authentication
+  /api/v1/auth/providers:
+    get:
+      description: Returns the list of available authentication providers (OIDC, Azure
+        AD, SAML IdPs, LDAP) for the login page provider picker.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: List of available providers
+          schema:
+            additionalProperties: true
+            type: object
+      summary: List authentication providers
+      tags:
+      - Authentication
   /api/v1/auth/refresh:
     post:
       consumes:
@@ -4353,12 +6448,78 @@ paths:
       summary: Refresh JWT token
       tags:
       - Authentication
-  /api/v1/modules:
+  /api/v1/auth/saml/acs:
+    post:
+      consumes:
+      - application/x-www-form-urlencoded
+      description: Receives SAML responses from the IdP (SP-initiated or IdP-initiated),
+        validates the assertion, creates or updates the user, issues a JWT, and redirects
+        to the frontend callback.
+      parameters:
+      - description: Base64-encoded SAML response
+        in: formData
+        name: SAMLResponse
+        required: true
+        type: string
+      - description: Relay state (contains session key)
+        in: formData
+        name: RelayState
+        type: string
+      produces:
+      - text/html
+      responses:
+        "302":
+          description: Redirects to frontend /auth/callback with token
+          schema:
+            type: string
+        "400":
+          description: Invalid SAML response or assertion
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: SAML Assertion Consumer Service
+      tags:
+      - Authentication
+  /api/v1/auth/saml/metadata:
+    get:
+      description: Returns the SAML Service Provider metadata XML for the specified
+        (or first configured) IdP. Used by SAML identity providers during federation
+        setup.
+      parameters:
+      - description: SAML IdP name (defaults to first configured)
+        in: query
+        name: idp
+        type: string
+      produces:
+      - text/xml
+      responses:
+        "200":
+          description: SAML SP metadata XML
+          schema:
+            type: string
+        "404":
+          description: No SAML provider configured
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Failed to marshal metadata
+          schema:
+            additionalProperties: true
+            type: object
+      summary: SAML SP metadata
+      tags:
+      - Authentication
+  /api/v1/modules/{namespace}/{name}/{provider}/{version}:
     post:
       consumes:
       - multipart/form-data
-      description: Upload a new module version as a .tar.gz archive. Creates the module
-        if it doesn't exist. Requires modules:publish scope.
+      description: Uploads a new module version archive
       parameters:
       - description: Module namespace
         in: formData
@@ -4388,7 +6549,7 @@ paths:
         in: formData
         name: source
         type: string
-      - description: Module archive (.tar.gz, max 100MB)
+      - description: Module archive (tar.gz)
         in: formData
         name: file
         required: true
@@ -4398,10 +6559,8 @@ paths:
       responses:
         "201":
           description: Created
-          schema:
-            $ref: '#/definitions/modules.ModuleUploadResponse'
         "400":
-          description: Invalid request, bad version format, or invalid archive
+          description: Bad Request
           schema:
             additionalProperties: true
             type: object
@@ -4411,18 +6570,60 @@ paths:
             additionalProperties: true
             type: object
         "409":
-          description: Version already exists
+          description: Conflict
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: Policy violation (block mode)
           schema:
             additionalProperties: true
             type: object
         "500":
-          description: Internal server error
+          description: Internal Server Error
           schema:
             additionalProperties: true
             type: object
       security:
       - Bearer: []
       summary: Upload module version
+      tags:
+      - Modules
+  /api/v1/modules/{namespace}/{name}/{provider}/{version}/download:
+    get:
+      description: Streams a module version archive file
+      parameters:
+      - description: Namespace
+        in: path
+        name: namespace
+        required: true
+        type: string
+      - description: Module name
+        in: path
+        name: name
+        required: true
+        type: string
+      - description: Provider
+        in: path
+        name: provider
+        required: true
+        type: string
+      - description: Version
+        in: path
+        name: version
+        required: true
+        type: string
+      produces:
+      - application/zip
+      responses:
+        "200":
+          description: OK
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Download module archive
       tags:
       - Modules
   /api/v1/modules/{namespace}/{name}/{system}:
@@ -4509,6 +6710,151 @@ paths:
             additionalProperties: true
             type: object
       summary: Get module
+      tags:
+      - Modules
+  /api/v1/modules/{namespace}/{name}/{system}/{version}/docs:
+    get:
+      description: Returns terraform-docs metadata (inputs, outputs, providers, requirements)
+        extracted from the module archive at upload time.
+      parameters:
+      - description: Module namespace
+        in: path
+        name: namespace
+        required: true
+        type: string
+      - description: Module name
+        in: path
+        name: name
+        required: true
+        type: string
+      - description: Target system (e.g. aws, azurerm)
+        in: path
+        name: system
+        required: true
+        type: string
+      - description: Module version
+        in: path
+        name: version
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/analyzer.ModuleDoc'
+        "404":
+          description: Module, version, or docs not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get module documentation
+      tags:
+      - Modules
+  /api/v1/modules/{namespace}/{name}/{system}/deprecate:
+    delete:
+      description: Remove the deprecated status from a module. Requires modules:write
+        scope.
+      parameters:
+      - description: Module namespace
+        in: path
+        name: namespace
+        required: true
+        type: string
+      - description: Module name
+        in: path
+        name: name
+        required: true
+        type: string
+      - description: Target system (e.g. aws, azurerm)
+        in: path
+        name: system
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/admin.MessageResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Module not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Undeprecate module
+      tags:
+      - Modules
+    post:
+      consumes:
+      - application/json
+      description: Mark an entire module as deprecated with an optional message and
+        successor module reference. Requires modules:write scope.
+      parameters:
+      - description: Module namespace
+        in: path
+        name: namespace
+        required: true
+        type: string
+      - description: Module name
+        in: path
+        name: name
+        required: true
+        type: string
+      - description: Target system (e.g. aws, azurerm)
+        in: path
+        name: system
+        required: true
+        type: string
+      - description: Optional deprecation message and successor module ID
+        in: body
+        name: body
+        schema:
+          $ref: '#/definitions/admin.DeprecateModuleRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/admin.MessageResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Module not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Deprecate module
       tags:
       - Modules
   /api/v1/modules/{namespace}/{name}/{system}/versions/{version}:
@@ -4618,8 +6964,8 @@ paths:
     post:
       consumes:
       - application/json
-      description: Mark a specific module version as deprecated with an optional message.
-        Requires modules:publish scope.
+      description: Mark a specific module version as deprecated with an optional message
+        and replacement source. Requires modules:publish scope.
       parameters:
       - description: Module namespace
         in: path
@@ -4641,7 +6987,7 @@ paths:
         name: version
         required: true
         type: string
-      - description: Optional deprecation message
+      - description: Optional deprecation message and replacement source
         in: body
         name: body
         schema:
@@ -4673,10 +7019,111 @@ paths:
       summary: Deprecate module version
       tags:
       - Modules
+  /api/v1/modules/{namespace}/{name}/{system}/versions/{version}/reanalyze:
+    post:
+      description: Re-download the module archive from storage and re-run the HCL
+        analyzer to refresh terraform-docs metadata. Optionally re-queues a security
+        scan. Requires modules:publish scope.
+      parameters:
+      - description: Module namespace
+        in: path
+        name: namespace
+        required: true
+        type: string
+      - description: Module name
+        in: path
+        name: name
+        required: true
+        type: string
+      - description: Target system (e.g. aws, azurerm)
+        in: path
+        name: system
+        required: true
+        type: string
+      - description: Semantic version (e.g. 1.2.3)
+        in: path
+        name: version
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Module or version not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Re-analyze module version
+      tags:
+      - Modules
+  /api/v1/modules/{namespace}/{name}/{system}/versions/{version}/scan:
+    get:
+      description: Returns the latest security scan for a module version, including
+        tool name, version, severity counts, and raw output. Requires admin scope.
+      parameters:
+      - description: Module namespace
+        in: path
+        name: namespace
+        required: true
+        type: string
+      - description: Module name
+        in: path
+        name: name
+        required: true
+        type: string
+      - description: Provider system (e.g. aws)
+        in: path
+        name: system
+        required: true
+        type: string
+      - description: Module version
+        in: path
+        name: version
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.ModuleScan'
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Module version or scan not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Get module version scan result
+      tags:
+      - Security Scanning
   /api/v1/modules/search:
     get:
       description: Search for modules by name, namespace, or provider system with
-        pagination.
+        pagination and sorting.
       parameters:
       - description: Search query
         in: query
@@ -4689,6 +7136,14 @@ paths:
       - description: Filter by target system
         in: query
         name: system
+        type: string
+      - description: 'Sort field: relevance, name, downloads, created, updated'
+        in: query
+        name: sort
+        type: string
+      - description: 'Sort order: asc or desc (default desc)'
+        in: query
+        name: order
         type: string
       - description: Maximum results to return (default 20, max 100)
         in: query
@@ -4705,6 +7160,11 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/modules.ModuleSearchResponse'
+        "400":
+          description: Invalid sort parameter
+          schema:
+            additionalProperties: true
+            type: object
         "500":
           description: Internal server error
           schema:
@@ -4864,7 +7324,9 @@ paths:
     put:
       consumes:
       - application/json
-      description: Update an existing organization's display name.
+      description: Update an existing organization's display name and optional IdP
+        binding (idp_type + idp_name). Set idp_type to "oidc", "saml", or "ldap" to
+        restrict login; set to empty string to clear.
       parameters:
       - description: Organization ID
         in: path
@@ -5133,91 +7595,6 @@ paths:
       summary: Search organizations
       tags:
       - Organizations
-  /api/v1/providers:
-    post:
-      consumes:
-      - multipart/form-data
-      description: Upload a provider binary (.zip) for a specific platform. Creates
-        provider and version if they don't exist. Requires providers:publish scope.
-      parameters:
-      - description: Provider namespace
-        in: formData
-        name: namespace
-        required: true
-        type: string
-      - description: Provider type (e.g. aws, azurerm)
-        in: formData
-        name: type
-        required: true
-        type: string
-      - description: Semantic version (e.g. 1.2.3)
-        in: formData
-        name: version
-        required: true
-        type: string
-      - description: Target OS (e.g. linux, darwin, windows)
-        in: formData
-        name: os
-        required: true
-        type: string
-      - description: Target architecture (e.g. amd64, arm64)
-        in: formData
-        name: arch
-        required: true
-        type: string
-      - description: JSON array of supported protocols (default [\
-        in: formData
-        name: protocols
-        type: string
-      - description: ASCII-armored GPG public key for signing verification
-        in: formData
-        name: gpg_public_key
-        type: string
-      - description: Provider description
-        in: formData
-        name: description
-        type: string
-      - description: Source URL
-        in: formData
-        name: source
-        type: string
-      - description: Provider binary (.zip, max 500MB)
-        in: formData
-        name: file
-        required: true
-        type: file
-      produces:
-      - application/json
-      responses:
-        "201":
-          description: Created
-          schema:
-            $ref: '#/definitions/providers.ProviderUploadResponse'
-        "400":
-          description: Invalid request, version format, platform, or binary
-          schema:
-            additionalProperties: true
-            type: object
-        "401":
-          description: Unauthorized
-          schema:
-            additionalProperties: true
-            type: object
-        "409":
-          description: Platform already exists for this version
-          schema:
-            additionalProperties: true
-            type: object
-        "500":
-          description: Internal server error
-          schema:
-            additionalProperties: true
-            type: object
-      security:
-      - Bearer: []
-      summary: Upload provider platform binary
-      tags:
-      - Providers
   /api/v1/providers/{namespace}/{type}:
     delete:
       description: Delete a provider and all its versions and platform binaries from
@@ -5292,6 +7669,88 @@ paths:
             additionalProperties: true
             type: object
       summary: Get provider
+      tags:
+      - Providers
+  /api/v1/providers/{namespace}/{type}/{version}/{os}/{arch}:
+    post:
+      consumes:
+      - multipart/form-data
+      description: Uploads a new provider version binary and associated files
+      parameters:
+      - description: Provider namespace
+        in: formData
+        name: namespace
+        required: true
+        type: string
+      - description: Provider type (e.g. aws, azurerm)
+        in: formData
+        name: type
+        required: true
+        type: string
+      - description: Semantic version (e.g. 1.2.3)
+        in: formData
+        name: version
+        required: true
+        type: string
+      - description: Target OS (e.g. linux, darwin, windows)
+        in: formData
+        name: os
+        required: true
+        type: string
+      - description: Target architecture (e.g. amd64, arm64)
+        in: formData
+        name: arch
+        required: true
+        type: string
+      - description: JSON array of supported protocols (default [\
+        in: formData
+        name: protocols
+        type: string
+      - description: ASCII-armored GPG public key for signing verification
+        in: formData
+        name: gpg_public_key
+        type: string
+      - description: Provider description
+        in: formData
+        name: description
+        type: string
+      - description: Source URL
+        in: formData
+        name: source
+        type: string
+      - description: Provider binary (.zip, max 500MB)
+        in: formData
+        name: file
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Upload provider version
       tags:
       - Providers
   /api/v1/providers/{namespace}/{type}/versions/{version}:
@@ -5441,9 +7900,121 @@ paths:
       summary: Deprecate provider version
       tags:
       - Providers
+  /api/v1/providers/{namespace}/{type}/versions/{version}/docs:
+    get:
+      description: Returns documentation metadata (title, slug, category) for a specific
+        provider version. Only available for mirrored providers whose doc index was
+        fetched during sync.
+      parameters:
+      - description: Provider namespace
+        in: path
+        name: namespace
+        required: true
+        type: string
+      - description: Provider type
+        in: path
+        name: type
+        required: true
+        type: string
+      - description: Provider version
+        in: path
+        name: version
+        required: true
+        type: string
+      - description: Filter by doc category (overview, resources, data-sources, etc.)
+        in: query
+        name: category
+        type: string
+      - description: Filter by language (hcl, python, typescript)
+        in: query
+        name: language
+        type: string
+      - description: Maximum results (default 100, max 1000)
+        in: query
+        name: limit
+        type: integer
+      - description: Offset for pagination (default 0)
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/providers.ProviderDocsListResponse'
+        "404":
+          description: Provider or version not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: List provider documentation
+      tags:
+      - Providers
+  /api/v1/providers/{namespace}/{type}/versions/{version}/docs/{category}/{slug}:
+    get:
+      description: Returns the full markdown content for a single documentation page,
+        proxied from the upstream registry. Results are cached in memory for 15 minutes.
+      parameters:
+      - description: Provider namespace
+        in: path
+        name: namespace
+        required: true
+        type: string
+      - description: Provider type
+        in: path
+        name: type
+        required: true
+        type: string
+      - description: Provider version
+        in: path
+        name: version
+        required: true
+        type: string
+      - description: Documentation category (overview, resources, data-sources, etc.)
+        in: path
+        name: category
+        required: true
+        type: string
+      - description: Documentation slug
+        in: path
+        name: slug
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/providers.ProviderDocContentResponse'
+        "404":
+          description: Documentation not found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+        "502":
+          description: Failed to fetch from upstream
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get provider documentation content
+      tags:
+      - Providers
   /api/v1/providers/search:
     get:
-      description: Search for providers by name or namespace with pagination.
+      description: Search for providers by name or namespace with pagination and sorting.
       parameters:
       - description: Search query
         in: query
@@ -5452,6 +8023,14 @@ paths:
       - description: Filter by namespace
         in: query
         name: namespace
+        type: string
+      - description: 'Sort field: relevance, name, downloads, created, updated'
+        in: query
+        name: sort
+        type: string
+      - description: 'Sort order: asc or desc (default desc)'
+        in: query
+        name: order
         type: string
       - description: Maximum results to return (default 20, max 100)
         in: query
@@ -5468,6 +8047,11 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/providers.ProviderSearchResponse'
+        "400":
+          description: Invalid sort parameter
+          schema:
+            additionalProperties: true
+            type: object
         "500":
           description: Internal server error
           schema:
@@ -5540,6 +8124,11 @@ paths:
             type: object
         "401":
           description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: SCM provider with this name and type already exists
           schema:
             additionalProperties: true
             type: object
@@ -6118,9 +8707,9 @@ paths:
       - Setup
   /api/v1/setup/complete:
     post:
-      description: Finalizes the initial setup. Verifies that OIDC, storage, and admin
-        user are configured, then permanently disables setup endpoints by clearing
-        the setup token.
+      description: Finalizes the initial setup. Verifies that authentication (OIDC
+        or LDAP), storage, and admin user are configured, then permanently disables
+        setup endpoints by clearing the setup token.
       produces:
       - application/json
       responses:
@@ -6151,6 +8740,93 @@ paths:
       security:
       - SetupToken: []
       summary: Complete setup
+      tags:
+      - Setup
+  /api/v1/setup/ldap:
+    post:
+      consumes:
+      - application/json
+      description: Saves LDAP configuration and activates LDAP as the authentication
+        method. OIDC and LDAP are mutually exclusive.
+      parameters:
+      - description: LDAP configuration to save
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.LDAPConfigInput'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid configuration
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Invalid setup token
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Setup already completed
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - SetupToken: []
+      summary: Save LDAP configuration
+      tags:
+      - Setup
+  /api/v1/setup/ldap/test:
+    post:
+      consumes:
+      - application/json
+      description: Tests an LDAP configuration by attempting a bind with the service
+        account credentials. Does NOT save anything.
+      parameters:
+      - description: LDAP configuration to test
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/models.LDAPConfigInput'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid configuration
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Invalid setup token
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Setup already completed
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - SetupToken: []
+      summary: Test LDAP configuration
       tags:
       - Setup
   /api/v1/setup/oidc:
@@ -6238,10 +8914,144 @@ paths:
       summary: Test OIDC configuration
       tags:
       - Setup
+  /api/v1/setup/scanning:
+    post:
+      consumes:
+      - application/json
+      description: Saves security scanning configuration to the database and marks
+        scanning as configured.
+      parameters:
+      - description: Scanning configuration to save
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/setup.SaveScanningConfigInput'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/setup.SaveScanningConfigResponse'
+        "400":
+          description: Invalid configuration
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Invalid setup token
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Setup already completed
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - SetupToken: []
+      summary: Save scanning configuration
+      tags:
+      - Setup
+  /api/v1/setup/scanning/install:
+    post:
+      consumes:
+      - application/json
+      description: 'Downloads the official release of a supported scanner for this
+        server''s OS/architecture, verifies its SHA256 against the published checksum
+        file, and installs it to the server''s scanner directory. Returns the installed
+        binary path for use in the scanning configuration. Supported tools: trivy,
+        terrascan, checkov. Not supported: snyk (proprietary, no public checksums),
+        custom (no catalog entry).'
+      parameters:
+      - description: Scanner to install
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/setup.InstallScannerInput'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/setup.InstallScannerResponse'
+        "400":
+          description: Invalid request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Invalid setup token
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Setup already completed
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Install directory not configured
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - SetupToken: []
+      summary: Install a scanner binary
+      tags:
+      - Setup
+  /api/v1/setup/scanning/test:
+    post:
+      consumes:
+      - application/json
+      description: Tests a security scanner configuration by verifying the binary
+        exists and checking its version. Does NOT save anything.
+      parameters:
+      - description: Scanning configuration to test
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/setup.TestScanningConfigInput'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/setup.TestScanningConfigResponse'
+        "400":
+          description: Invalid configuration
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Invalid setup token
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Setup already completed
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - SetupToken: []
+      summary: Test scanning configuration
+      tags:
+      - Setup
   /api/v1/setup/status:
     get:
-      description: Returns the full setup status including OIDC, storage, and admin
-        configuration state. No authentication required.
+      description: Returns the full setup status including authentication (OIDC/LDAP),
+        storage, scanning, and admin configuration state. No authentication required.
       produces:
       - application/json
       responses:
@@ -7032,6 +9842,258 @@ paths:
       summary: Readiness check
       tags:
       - System
+  /scim/v2/Groups:
+    get:
+      description: Returns all organizations as SCIM 2.0 Group resources (up to 200).
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: SCIM list response
+          schema:
+            $ref: '#/definitions/scim.SCIMListResponse'
+        "500":
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/scim.SCIMError'
+      security:
+      - Bearer: []
+      summary: List SCIM groups
+      tags:
+      - SCIM
+  /scim/v2/Groups/{id}:
+    get:
+      description: Returns a single organization as a SCIM 2.0 Group resource by ID.
+      parameters:
+      - description: Group (organization) ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: SCIM group resource
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Group not found
+          schema:
+            $ref: '#/definitions/scim.SCIMError'
+      security:
+      - Bearer: []
+      summary: Get SCIM group
+      tags:
+      - SCIM
+  /scim/v2/Users:
+    get:
+      description: Returns a paginated list of users in SCIM 2.0 format. Supports
+        optional filter parameter (e.g., userName eq "alice@example.com").
+      parameters:
+      - default: 1
+        description: 1-based start index
+        in: query
+        name: startIndex
+        type: integer
+      - default: 100
+        description: Page size (max 200)
+        in: query
+        name: count
+        type: integer
+      - description: SCIM filter expression
+        in: query
+        name: filter
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: SCIM list response
+          schema:
+            $ref: '#/definitions/scim.SCIMListResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/scim.SCIMError'
+        "500":
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/scim.SCIMError'
+      security:
+      - Bearer: []
+      summary: List SCIM users
+      tags:
+      - SCIM
+    post:
+      consumes:
+      - application/json
+      description: Provisions a new user via SCIM 2.0. Requires userName or emails[0].value.
+        Uses externalId as the identity link.
+      parameters:
+      - description: SCIM user resource
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/scim.SCIMUser'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created SCIM user
+          schema:
+            $ref: '#/definitions/scim.SCIMUser'
+        "400":
+          description: Invalid payload
+          schema:
+            $ref: '#/definitions/scim.SCIMError'
+        "409":
+          description: User already exists
+          schema:
+            $ref: '#/definitions/scim.SCIMError'
+      security:
+      - Bearer: []
+      summary: Create SCIM user
+      tags:
+      - SCIM
+  /scim/v2/Users/{id}:
+    delete:
+      description: Soft-deletes (deactivates) a user by removing all organization
+        memberships. The user record is preserved.
+      parameters:
+      - description: User ID
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "204":
+          description: User deactivated
+        "404":
+          description: User not found
+          schema:
+            $ref: '#/definitions/scim.SCIMError'
+        "500":
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/scim.SCIMError'
+      security:
+      - Bearer: []
+      summary: Delete SCIM user
+      tags:
+      - SCIM
+    get:
+      description: Returns a single user in SCIM 2.0 format by ID.
+      parameters:
+      - description: User ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: SCIM user resource
+          schema:
+            $ref: '#/definitions/scim.SCIMUser'
+        "404":
+          description: User not found
+          schema:
+            $ref: '#/definitions/scim.SCIMError'
+        "500":
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/scim.SCIMError'
+      security:
+      - Bearer: []
+      summary: Get SCIM user
+      tags:
+      - SCIM
+    patch:
+      consumes:
+      - application/json
+      description: Partially updates a user via SCIM 2.0 PATCH operations. Supports
+        'replace' op for active, userName, name.formatted, and displayName.
+      parameters:
+      - description: User ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: SCIM PATCH request
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/scim.SCIMPatchOp'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Updated SCIM user
+          schema:
+            $ref: '#/definitions/scim.SCIMUser'
+        "400":
+          description: Invalid PATCH payload
+          schema:
+            $ref: '#/definitions/scim.SCIMError'
+        "404":
+          description: User not found
+          schema:
+            $ref: '#/definitions/scim.SCIMError'
+        "500":
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/scim.SCIMError'
+      security:
+      - Bearer: []
+      summary: Patch SCIM user
+      tags:
+      - SCIM
+    put:
+      consumes:
+      - application/json
+      description: Full replacement of a user resource via SCIM 2.0 PUT. Setting active=false
+        deactivates the user and removes all organization memberships.
+      parameters:
+      - description: User ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Full SCIM user resource
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/scim.SCIMUser'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Updated SCIM user
+          schema:
+            $ref: '#/definitions/scim.SCIMUser'
+        "400":
+          description: Invalid payload
+          schema:
+            $ref: '#/definitions/scim.SCIMError'
+        "404":
+          description: User not found
+          schema:
+            $ref: '#/definitions/scim.SCIMError'
+        "500":
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/scim.SCIMError'
+      security:
+      - Bearer: []
+      summary: Replace SCIM user
+      tags:
+      - SCIM
   /terraform/binaries:
     get:
       description: Returns the name, tool type, and description for all enabled mirror
@@ -7052,7 +10114,7 @@ paths:
             type: object
       summary: List enabled Terraform binary mirror configs
       tags:
-      - TerraformBinaries
+      - Terraform Binaries
   /terraform/binaries/{name}/versions:
     get:
       description: Returns all Terraform/OpenTofu versions that have been fully or
@@ -7082,7 +10144,7 @@ paths:
             type: object
       summary: List mirrored Terraform versions
       tags:
-      - TerraformBinaries
+      - Terraform Binaries
   /terraform/binaries/{name}/versions/{version}:
     get:
       description: Returns metadata and platform list for a specific version in the
@@ -7122,7 +10184,7 @@ paths:
             type: object
       summary: Get specific mirrored Terraform version
       tags:
-      - TerraformBinaries
+      - Terraform Binaries
   /terraform/binaries/{name}/versions/{version}/{os}/{arch}:
     get:
       description: Returns a signed download URL for the requested Terraform binary.
@@ -7178,7 +10240,7 @@ paths:
             type: object
       summary: Download Terraform binary
       tags:
-      - TerraformBinaries
+      - Terraform Binaries
   /terraform/binaries/{name}/versions/latest:
     get:
       description: Returns the latest stable Terraform/OpenTofu version available
@@ -7208,7 +10270,7 @@ paths:
             type: object
       summary: Get latest mirrored Terraform version
       tags:
-      - TerraformBinaries
+      - Terraform Binaries
   /terraform/providers/{hostname}/{namespace}/{type}/{versionfile}:
     get:
       description: Returns download URLs and hashes for all platforms of a specific
@@ -7367,6 +10429,14 @@ paths:
         name: system
         required: true
         type: string
+      - description: Maximum results (default 100, max 1000)
+        in: query
+        name: limit
+        type: integer
+      - description: Offset for pagination (default 0)
+        in: query
+        name: offset
+        type: integer
       produces:
       - application/json
       responses:
@@ -7457,6 +10527,14 @@ paths:
         name: type
         required: true
         type: string
+      - description: Maximum results (default 100, max 1000)
+        in: query
+        name: limit
+        type: integer
+      - description: Offset for pagination (default 0)
+        in: query
+        name: offset
+        type: integer
       produces:
       - application/json
       responses:
@@ -7477,6 +10555,181 @@ paths:
       summary: List provider versions
       tags:
       - Providers
+  /v2/:
+    get:
+      description: Returns 200 to indicate OCI Distribution Spec v1.1 support.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: OCI API ping
+      tags:
+      - System
+  /v2/{namespace}/{name}/{system}/blobs/{digest}:
+    get:
+      description: Streams the module archive (tar.gz) for the given digest.
+      parameters:
+      - description: Module namespace
+        in: path
+        name: namespace
+        required: true
+        type: string
+      - description: Module name
+        in: path
+        name: name
+        required: true
+        type: string
+      - description: Provider/system
+        in: path
+        name: system
+        required: true
+        type: string
+      - description: Blob digest (sha256:...)
+        in: path
+        name: digest
+        required: true
+        type: string
+      produces:
+      - application/octet-stream
+      responses:
+        "200":
+          description: OK
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Download module blob
+      tags:
+      - Modules
+    head:
+      description: Returns headers for the module archive blob identified by its digest.
+      parameters:
+      - description: Module namespace
+        in: path
+        name: namespace
+        required: true
+        type: string
+      - description: Module name
+        in: path
+        name: name
+        required: true
+        type: string
+      - description: Provider/system
+        in: path
+        name: system
+        required: true
+        type: string
+      - description: Blob digest (sha256:...)
+        in: path
+        name: digest
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Check module blob
+      tags:
+      - Modules
+  /v2/{namespace}/{name}/{system}/manifests/{reference}:
+    get:
+      description: Returns the OCI manifest for a module version.
+      parameters:
+      - description: Module namespace
+        in: path
+        name: namespace
+        required: true
+        type: string
+      - description: Module name
+        in: path
+        name: name
+        required: true
+        type: string
+      - description: Provider/system
+        in: path
+        name: system
+        required: true
+        type: string
+      - description: Version tag or digest
+        in: path
+        name: reference
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/oci.ociManifest'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get module manifest
+      tags:
+      - Modules
+    head:
+      description: Returns headers for the OCI manifest corresponding to a module
+        version.
+      parameters:
+      - description: Module namespace
+        in: path
+        name: namespace
+        required: true
+        type: string
+      - description: Module name
+        in: path
+        name: name
+        required: true
+        type: string
+      - description: Provider/system
+        in: path
+        name: system
+        required: true
+        type: string
+      - description: Version tag or digest
+        in: path
+        name: reference
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Check module manifest
+      tags:
+      - Modules
+    put:
+      description: OCI push is not supported; use POST /api/v1/modules to publish
+        modules.
+      produces:
+      - application/json
+      responses:
+        "405":
+          description: Method Not Allowed
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Push module manifest (not supported)
+      tags:
+      - Modules
   /version:
     get:
       description: Returns the current API version and supported protocol versions.
@@ -7490,6 +10743,42 @@ paths:
       summary: API version
       tags:
       - System
+  /webhooks/approvals/{token}:
+    post:
+      description: Redeems a single-use approval token generated via the admin API.
+        When valid,
+      parameters:
+      - description: Single-use approval token
+        in: path
+        name: token
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Approval request approved
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid token format
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Token not found, already used, or expired
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Redeem approval token
+      tags:
+      - Webhooks
   /webhooks/scm/{module_source_repo_id}/{secret}:
     post:
       consumes:
