@@ -182,11 +182,69 @@ func (h *SCMLinkingHandler) LinkModuleToSCM(c *gin.Context) {
 		return
 	}
 
+	// Attempt to auto-register the webhook with the SCM provider (non-fatal on failure).
+	webhookRegistered := false
+	userID, uidErr := getUserIDFromContext(c)
+	if uidErr == nil {
+		tokenRecord, tokErr := h.scmRepo.GetUserToken(c.Request.Context(), userID, providerID)
+		if tokErr == nil && tokenRecord != nil {
+			if accessToken, decErr := h.tokenCipher.Open(tokenRecord.AccessTokenEncrypted); decErr == nil {
+				if clientSecret, csErr := h.tokenCipher.Open(provider.ClientSecretEncrypted); csErr == nil {
+					baseURL := ""
+					if provider.BaseURL != nil {
+						baseURL = *provider.BaseURL
+					}
+					tenantID := ""
+					if provider.TenantID != nil {
+						tenantID = *provider.TenantID
+					}
+					connector, connErr := scm.BuildConnector(&scm.ConnectorSettings{
+						Kind:            provider.ProviderType,
+						InstanceBaseURL: baseURL,
+						ClientID:        provider.ClientID,
+						ClientSecret:    clientSecret,
+						CallbackURL:     fmt.Sprintf("%s/api/v1/scm-providers/%s/oauth/callback", h.publicURL, providerID),
+						TenantID:        tenantID,
+					})
+					if connErr == nil {
+						token := &scm.OAuthToken{
+							AccessToken: accessToken,
+							TokenType:   tokenRecord.TokenType,
+							ExpiresAt:   tokenRecord.ExpiresAt,
+						}
+						hookInfo, regErr := connector.RegisterWebhook(c.Request.Context(), token, req.RepositoryOwner, req.RepositoryName, scm.WebhookSetup{
+							CallbackURL:   webhookCallbackURL,
+							SharedSecret:  provider.WebhookSecret,
+							EventTypes:    []string{"push"},
+							ActiveOnSetup: true,
+						})
+						if regErr == nil && hookInfo != nil {
+							webhookRegistered = true
+							link.WebhookID = &hookInfo.ExternalID
+							link.WebhookEnabled = true
+							if updErr := h.scmRepo.UpdateModuleSourceRepo(c.Request.Context(), link); updErr != nil {
+								slog.Warn("webhook registered but failed to persist state", "link_id", linkID, "webhook_id", hookInfo.ExternalID, "error", updErr)
+							}
+						} else if regErr != nil {
+							slog.Warn("auto-register webhook failed", "provider_type", provider.ProviderType, "owner", req.RepositoryOwner, "repo", req.RepositoryName, "error", regErr)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	webhookNote := "Webhook registered automatically"
+	if !webhookRegistered {
+		webhookNote = "Auto-registration unavailable; register the webhook URL manually in your repository settings"
+	}
+
 	c.JSON(http.StatusCreated, gin.H{
 		"message":              "module linked to repository",
 		"link_id":              linkID,
 		"webhook_callback_url": webhookCallbackURL,
-		"note":                 "Register this webhook URL in your repository settings",
+		"webhook_registered":   webhookRegistered,
+		"note":                 webhookNote,
 	})
 }
 

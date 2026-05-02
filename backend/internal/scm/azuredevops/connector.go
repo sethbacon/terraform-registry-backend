@@ -584,21 +584,194 @@ func zipToTarGz(zipData []byte) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// Stub methods for webhooks
+// fetchRepoAndProjectIDs retrieves the ADO project GUID and repository GUID required
+// by the service-hooks subscriptions API. ownerName is the ADO project name.
+func (c *AzureDevOpsConnector) fetchRepoAndProjectIDs(ctx context.Context, creds *scm.AccessToken, ownerName, repoName string) (projectID, repoID string, err error) {
+	endpoint := fmt.Sprintf("%s/%s/%s/_apis/git/repositories/%s?api-version=7.0",
+		c.baseURL, c.organization, url.PathEscape(ownerName), url.PathEscape(repoName))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", "", fmt.Errorf("create request: %w", err)
+	}
+	c.setAuthHeaders(req, creds)
+	// #nosec G107 -- URL is sourced from admin-controlled SCM provider configuration; non-admin users cannot influence these code paths
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", "", scm.WrapRemoteError(0, "failed to fetch repository IDs", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", "", scm.WrapRemoteError(resp.StatusCode, "failed to fetch repository IDs", nil)
+	}
+	var result struct {
+		ID      string `json:"id"`
+		Project struct {
+			ID string `json:"id"`
+		} `json:"project"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", "", fmt.Errorf("decode repository: %w", err)
+	}
+	return result.Project.ID, result.ID, nil
+}
+
+// RegisterWebhook creates an Azure DevOps service-hook subscription for git.push events
+// on the specified repository. ownerName is the ADO project name; repoName is the repository name.
 func (c *AzureDevOpsConnector) RegisterWebhook(ctx context.Context, creds *scm.AccessToken, ownerName, repoName string, hookConfig scm.WebhookSetup) (*scm.WebhookInfo, error) {
-	return nil, scm.ErrWebhookSetupFailed
+	projectID, repoID, err := c.fetchRepoAndProjectIDs(ctx, creds, ownerName, repoName)
+	if err != nil {
+		return nil, fmt.Errorf("azuredevops: register webhook: %w", err)
+	}
+
+	endpoint := fmt.Sprintf("%s/%s/_apis/hooks/subscriptions?api-version=7.1", c.baseURL, c.organization)
+	body := map[string]interface{}{
+		"publisherId": "tfs",
+		"eventType":   "git.push",
+		"publisherInputs": map[string]string{
+			"projectId":  projectID,
+			"repository": repoID,
+			"branch":     "",
+			"pushedBy":   "",
+		},
+		"consumerId":       "webHooks",
+		"consumerActionId": "httpRequest",
+		"consumerInputs": map[string]string{
+			"url":                    hookConfig.CallbackURL,
+			"httpHeaders":            "",
+			"resourceDetailsToSend":  "all",
+			"messagesToSend":         "all",
+			"detailedMessagesToSend": "all",
+		},
+	}
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("azuredevops: marshal webhook body: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("azuredevops: create subscription request: %w", err)
+	}
+	c.setAuthHeaders(req, creds)
+	// #nosec G107 -- URL is sourced from admin-controlled SCM provider configuration; non-admin users cannot influence these code paths
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, scm.WrapRemoteError(0, "failed to create service hook subscription", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, scm.WrapRemoteError(resp.StatusCode, "failed to create service hook subscription", nil)
+	}
+	var result struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("azuredevops: decode subscription response: %w", err)
+	}
+	return &scm.WebhookInfo{
+		ExternalID:  result.ID,
+		CallbackURL: hookConfig.CallbackURL,
+		EventTypes:  []string{"git.push"},
+		IsActive:    true,
+	}, nil
 }
 
+// RemoveWebhook deletes an Azure DevOps service-hook subscription by its subscription ID.
 func (c *AzureDevOpsConnector) RemoveWebhook(ctx context.Context, creds *scm.AccessToken, ownerName, repoName, hookID string) error {
-	return scm.ErrWebhookNotFound
+	endpoint := fmt.Sprintf("%s/%s/_apis/hooks/subscriptions/%s?api-version=7.1", c.baseURL, c.organization, hookID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("azuredevops: create delete subscription request: %w", err)
+	}
+	c.setAuthHeaders(req, creds)
+	// #nosec G107 -- URL is sourced from admin-controlled SCM provider configuration; non-admin users cannot influence these code paths
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return scm.WrapRemoteError(0, "failed to delete service hook subscription", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return scm.ErrWebhookNotFound
+	}
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		return scm.WrapRemoteError(resp.StatusCode, "failed to delete service hook subscription", nil)
+	}
+	return nil
 }
 
+// adoPushPayload is the minimal subset of an ADO git.push service-hook payload
+// that the registry needs to extract tag information.
+type adoPushPayload struct {
+	EventType string `json:"eventType"`
+	ID        string `json:"id"`
+	Resource  struct {
+		RefUpdates []struct {
+			Name        string `json:"name"`
+			NewObjectID string `json:"newObjectId"`
+			OldObjectID string `json:"oldObjectId"`
+		} `json:"refUpdates"`
+		Repository struct {
+			RemoteURL string `json:"remoteUrl"`
+			WebURL    string `json:"webUrl"`
+		} `json:"repository"`
+	} `json:"resource"`
+}
+
+const zeroOID = "0000000000000000000000000000000000000000"
+
+// ParseDelivery parses an Azure DevOps git.push service-hook payload.
+// ADO fires a git.push event for every ref update, including tag creation.
+// A new tag is identified by a refUpdate whose name starts with "refs/tags/"
+// and whose oldObjectId is all zeros (indicating a newly created ref).
 func (c *AzureDevOpsConnector) ParseDelivery(payloadBytes []byte, httpHeaders map[string]string) (*scm.IncomingHook, error) {
-	return nil, scm.ErrWebhookPayloadMalformed
+	if len(payloadBytes) == 0 {
+		return nil, scm.ErrWebhookPayloadMalformed
+	}
+
+	var p adoPushPayload
+	if err := json.Unmarshal(payloadBytes, &p); err != nil {
+		return nil, scm.ErrWebhookPayloadMalformed
+	}
+
+	if p.EventType != "git.push" {
+		// Non-push events (e.g. pull_request_merged) are not used for auto-publish.
+		return &scm.IncomingHook{
+			ID:   p.ID,
+			Type: scm.WebhookEventUnknown,
+		}, nil
+	}
+
+	// Find the first newly-created tag ref in this push.
+	for _, ref := range p.Resource.RefUpdates {
+		if !strings.HasPrefix(ref.Name, "refs/tags/") {
+			continue
+		}
+		if ref.OldObjectID != zeroOID {
+			// Tag already existed — not a new publish event.
+			continue
+		}
+		tagName := strings.TrimPrefix(ref.Name, "refs/tags/")
+		return &scm.IncomingHook{
+			ID:        p.ID,
+			Type:      scm.WebhookEventTag,
+			Ref:       ref.Name,
+			CommitSHA: ref.NewObjectID,
+			TagName:   tagName,
+		}, nil
+	}
+
+	// Push contained no new tag refs — treat as a plain branch push.
+	return &scm.IncomingHook{
+		ID:   p.ID,
+		Type: scm.WebhookEventPush,
+	}, nil
 }
 
+// VerifyDeliverySignature always returns true for Azure DevOps.
+// ADO service hooks do not include an HMAC payload signature; the shared
+// secret is embedded in the webhook callback URL and is validated by the
+// registry's HandleWebhook handler before this method is called.
 func (c *AzureDevOpsConnector) VerifyDeliverySignature(payloadBytes []byte, signatureHeader, sharedSecret string) bool {
-	return false
+	return true
 }
 
 // Helper methods

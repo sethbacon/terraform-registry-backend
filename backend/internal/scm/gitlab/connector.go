@@ -4,7 +4,9 @@
 package gitlab
 
 import (
+	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -533,24 +535,134 @@ func (c *GitLabConnector) DownloadSourceArchive(ctx context.Context, creds *scm.
 	return resp.Body, nil
 }
 
-// RegisterWebhook creates a webhook on the project
+// RegisterWebhook creates a GitLab project webhook for push and tag-push events.
+// ownerName is the namespace (user or group) and repoName is the project name.
 func (c *GitLabConnector) RegisterWebhook(ctx context.Context, creds *scm.AccessToken, ownerName, repoName string, hookConfig scm.WebhookSetup) (*scm.WebhookInfo, error) {
-	return nil, scm.ErrWebhookSetupFailed
+	projectPath := url.PathEscape(ownerName + "/" + repoName)
+	endpoint := fmt.Sprintf("%s/projects/%s/hooks", c.apiURL, projectPath)
+	body := map[string]interface{}{
+		"url":                     hookConfig.CallbackURL,
+		"token":                   hookConfig.SharedSecret,
+		"push_events":             true,
+		"tag_push_events":         true,
+		"enable_ssl_verification": true,
+	}
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("gitlab: marshal webhook body: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("gitlab: create webhook request: %w", err)
+	}
+	c.setAuthHeaders(req, creds)
+	// #nosec G107 -- URL is sourced from admin-controlled SCM provider configuration; non-admin users cannot influence these code paths
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, scm.WrapRemoteError(0, "failed to create webhook", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		return nil, scm.WrapRemoteError(resp.StatusCode, "failed to create webhook", nil)
+	}
+	var result struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("gitlab: decode webhook response: %w", err)
+	}
+	return &scm.WebhookInfo{
+		ExternalID:  fmt.Sprintf("%d", result.ID),
+		CallbackURL: hookConfig.CallbackURL,
+		EventTypes:  []string{"push", "tag_push"},
+		IsActive:    true,
+	}, nil
 }
 
-// RemoveWebhook deletes a webhook from the project
+// RemoveWebhook deletes a GitLab project webhook by its numeric hook ID.
 func (c *GitLabConnector) RemoveWebhook(ctx context.Context, creds *scm.AccessToken, ownerName, repoName, hookID string) error {
-	return scm.ErrWebhookNotFound
+	projectPath := url.PathEscape(ownerName + "/" + repoName)
+	endpoint := fmt.Sprintf("%s/projects/%s/hooks/%s", c.apiURL, projectPath, hookID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("gitlab: create delete webhook request: %w", err)
+	}
+	c.setAuthHeaders(req, creds)
+	// #nosec G107 -- URL is sourced from admin-controlled SCM provider configuration; non-admin users cannot influence these code paths
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return scm.WrapRemoteError(0, "failed to delete webhook", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return scm.ErrWebhookNotFound
+	}
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		return scm.WrapRemoteError(resp.StatusCode, "failed to delete webhook", nil)
+	}
+	return nil
 }
 
-// ParseDelivery parses an incoming webhook payload
+// gitlabPushPayload is the minimal subset of a GitLab push/tag_push event payload.
+type gitlabPushPayload struct {
+	ObjectKind  string `json:"object_kind"`
+	Ref         string `json:"ref"`
+	CheckoutSHA string `json:"checkout_sha"`
+	Project     struct {
+		PathWithNamespace string `json:"path_with_namespace"`
+		HTTPURL           string `json:"http_url"`
+		WebURL            string `json:"web_url"`
+	} `json:"project"`
+}
+
+// ParseDelivery parses an incoming GitLab webhook payload.
+// GitLab sets X-Gitlab-Event to "Tag Push Hook" for tag events.
 func (c *GitLabConnector) ParseDelivery(payloadBytes []byte, httpHeaders map[string]string) (*scm.IncomingHook, error) {
-	return nil, scm.ErrWebhookPayloadMalformed
+	if len(payloadBytes) == 0 {
+		return nil, scm.ErrWebhookPayloadMalformed
+	}
+
+	event := httpHeaders["X-Gitlab-Event"]
+
+	if event == "" {
+		return nil, scm.ErrWebhookPayloadMalformed
+	}
+
+	var p gitlabPushPayload
+	if err := json.Unmarshal(payloadBytes, &p); err != nil {
+		return nil, scm.ErrWebhookPayloadMalformed
+	}
+
+	isTagPush := event == "Tag Push Hook" || p.ObjectKind == "tag_push"
+	if isTagPush && strings.HasPrefix(p.Ref, "refs/tags/") {
+		tagName := strings.TrimPrefix(p.Ref, "refs/tags/")
+		return &scm.IncomingHook{
+			Type:      scm.WebhookEventTag,
+			Ref:       p.Ref,
+			CommitSHA: p.CheckoutSHA,
+			TagName:   tagName,
+		}, nil
+	}
+
+	if event == "Push Hook" || p.ObjectKind == "push" {
+		return &scm.IncomingHook{
+			Type:      scm.WebhookEventPush,
+			Ref:       p.Ref,
+			CommitSHA: p.CheckoutSHA,
+		}, nil
+	}
+
+	return &scm.IncomingHook{Type: scm.WebhookEventUnknown}, nil
 }
 
-// VerifyDeliverySignature validates webhook authenticity
+// VerifyDeliverySignature validates a GitLab webhook token.
+// GitLab sends the configured secret token verbatim in the X-Gitlab-Token header.
+// A constant-time comparison is used to prevent timing attacks.
 func (c *GitLabConnector) VerifyDeliverySignature(payloadBytes []byte, signatureHeader, sharedSecret string) bool {
-	return false
+	if sharedSecret == "" {
+		return true
+	}
+	return subtle.ConstantTimeCompare([]byte(signatureHeader), []byte(sharedSecret)) == 1
 }
 
 // Helper methods

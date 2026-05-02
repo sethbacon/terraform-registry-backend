@@ -435,7 +435,7 @@ func TestSearchRepositories_NotOK(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Webhook stubs
+// Webhook — RegisterWebhook / RemoveWebhook stubs
 // ---------------------------------------------------------------------------
 
 func TestWebhookStubs(t *testing.T) {
@@ -446,11 +446,97 @@ func TestWebhookStubs(t *testing.T) {
 	if err := c.RemoveWebhook(context.Background(), creds(), "ns", "repo", "1"); err == nil {
 		t.Error("RemoveWebhook: expected error, got nil")
 	}
-	if _, err := c.ParseDelivery([]byte("{}"), nil); err == nil {
-		t.Error("ParseDelivery: expected error, got nil")
+}
+
+// ---------------------------------------------------------------------------
+// ParseDelivery
+// ---------------------------------------------------------------------------
+
+func TestParseDelivery_TagPush(t *testing.T) {
+	payload := []byte(`{
+		"object_kind": "tag_push",
+		"ref": "refs/tags/v2.0.0",
+		"checkout_sha": "aabbccdd1122",
+		"project": {"path_with_namespace": "org/repo", "http_url": "https://gitlab.com/org/repo.git", "web_url": "https://gitlab.com/org/repo"}
+	}`)
+	c, _ := NewGitLabConnector(&scm.ConnectorSettings{})
+	hook, err := c.ParseDelivery(payload, map[string]string{"X-Gitlab-Event": "Tag Push Hook"})
+	if err != nil {
+		t.Fatalf("ParseDelivery error: %v", err)
 	}
-	if c.VerifyDeliverySignature([]byte("p"), "sig", "sec") {
-		t.Error("VerifyDeliverySignature: expected false, got true")
+	if hook.Type != scm.WebhookEventTag {
+		t.Errorf("Type = %v, want WebhookEventTag", hook.Type)
+	}
+	if hook.TagName != "v2.0.0" {
+		t.Errorf("TagName = %q, want v2.0.0", hook.TagName)
+	}
+	if hook.CommitSHA != "aabbccdd1122" {
+		t.Errorf("CommitSHA = %q", hook.CommitSHA)
+	}
+}
+
+func TestParseDelivery_BranchPush(t *testing.T) {
+	payload := []byte(`{
+		"object_kind": "push",
+		"ref": "refs/heads/main",
+		"checkout_sha": "xyz789"
+	}`)
+	c, _ := NewGitLabConnector(&scm.ConnectorSettings{})
+	hook, err := c.ParseDelivery(payload, map[string]string{"X-Gitlab-Event": "Push Hook"})
+	if err != nil {
+		t.Fatalf("ParseDelivery error: %v", err)
+	}
+	if hook.Type != scm.WebhookEventPush {
+		t.Errorf("Type = %v, want WebhookEventPush", hook.Type)
+	}
+}
+
+func TestParseDelivery_NoEventHeader(t *testing.T) {
+	c, _ := NewGitLabConnector(&scm.ConnectorSettings{})
+	_, err := c.ParseDelivery([]byte(`{"object_kind":"tag_push"}`), map[string]string{})
+	if err == nil {
+		t.Error("expected error when X-Gitlab-Event header is absent")
+	}
+}
+
+func TestParseDelivery_EmptyPayload(t *testing.T) {
+	c, _ := NewGitLabConnector(&scm.ConnectorSettings{})
+	_, err := c.ParseDelivery([]byte{}, map[string]string{"X-Gitlab-Event": "Tag Push Hook"})
+	if err == nil {
+		t.Error("expected error for empty payload")
+	}
+}
+
+func TestParseDelivery_InvalidJSON(t *testing.T) {
+	c, _ := NewGitLabConnector(&scm.ConnectorSettings{})
+	_, err := c.ParseDelivery([]byte(`not json`), map[string]string{"X-Gitlab-Event": "Tag Push Hook"})
+	if err == nil {
+		t.Error("expected error for invalid JSON")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// VerifyDeliverySignature
+// ---------------------------------------------------------------------------
+
+func TestVerifyDeliverySignature_Match(t *testing.T) {
+	c, _ := NewGitLabConnector(&scm.ConnectorSettings{})
+	if !c.VerifyDeliverySignature([]byte("payload"), "mytoken", "mytoken") {
+		t.Error("expected valid when token matches secret")
+	}
+}
+
+func TestVerifyDeliverySignature_Mismatch(t *testing.T) {
+	c, _ := NewGitLabConnector(&scm.ConnectorSettings{})
+	if c.VerifyDeliverySignature([]byte("payload"), "wrongtoken", "mytoken") {
+		t.Error("expected invalid when token does not match secret")
+	}
+}
+
+func TestVerifyDeliverySignature_EmptySecret(t *testing.T) {
+	c, _ := NewGitLabConnector(&scm.ConnectorSettings{})
+	if !c.VerifyDeliverySignature([]byte("payload"), "anytoken", "") {
+		t.Error("expected true when no secret configured")
 	}
 }
 

@@ -43,6 +43,7 @@ type LinkModuleSCMResponse struct {
 	Message            string `json:"message"`
 	LinkID             string `json:"link_id"`
 	WebhookCallbackURL string `json:"webhook_callback_url"`
+	WebhookRegistered  bool   `json:"webhook_registered"`
 	Note               string `json:"note"`
 }
 

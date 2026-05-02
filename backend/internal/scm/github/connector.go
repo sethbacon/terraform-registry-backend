@@ -4,7 +4,11 @@
 package github
 
 import (
+	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -455,24 +459,154 @@ func (c *GitHubConnector) DownloadSourceArchive(ctx context.Context, creds *scm.
 	return resp.Body, nil
 }
 
-// RegisterWebhook creates a webhook on the repository
+// RegisterWebhook creates a GitHub repository webhook for push events.
 func (c *GitHubConnector) RegisterWebhook(ctx context.Context, creds *scm.AccessToken, ownerName, repoName string, hookConfig scm.WebhookSetup) (*scm.WebhookInfo, error) {
-	return nil, scm.ErrWebhookSetupFailed
+	endpoint := fmt.Sprintf("%s/repos/%s/%s/hooks", c.apiURL, ownerName, repoName)
+	body := map[string]interface{}{
+		"name":   "web",
+		"active": true,
+		"events": []string{"push"},
+		"config": map[string]string{
+			"url":          hookConfig.CallbackURL,
+			"content_type": "json",
+			"secret":       hookConfig.SharedSecret,
+			"insecure_ssl": "0",
+		},
+	}
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("github: marshal webhook body: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("github: create webhook request: %w", err)
+	}
+	c.setAuthHeaders(req, creds)
+	req.Header.Set("Content-Type", "application/json")
+	// #nosec G107 -- URL is sourced from admin-controlled SCM provider configuration; non-admin users cannot influence these code paths
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, scm.WrapRemoteError(0, "failed to create webhook", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		return nil, scm.WrapRemoteError(resp.StatusCode, "failed to create webhook", nil)
+	}
+	var result struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("github: decode webhook response: %w", err)
+	}
+	return &scm.WebhookInfo{
+		ExternalID:  fmt.Sprintf("%d", result.ID),
+		CallbackURL: hookConfig.CallbackURL,
+		EventTypes:  []string{"push"},
+		IsActive:    true,
+	}, nil
 }
 
-// RemoveWebhook deletes a webhook from the repository
+// RemoveWebhook deletes a GitHub repository webhook by its numeric hook ID.
 func (c *GitHubConnector) RemoveWebhook(ctx context.Context, creds *scm.AccessToken, ownerName, repoName, hookID string) error {
-	return scm.ErrWebhookNotFound
+	endpoint := fmt.Sprintf("%s/repos/%s/%s/hooks/%s", c.apiURL, ownerName, repoName, hookID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("github: create delete webhook request: %w", err)
+	}
+	c.setAuthHeaders(req, creds)
+	// #nosec G107 -- URL is sourced from admin-controlled SCM provider configuration; non-admin users cannot influence these code paths
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return scm.WrapRemoteError(0, "failed to delete webhook", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return scm.ErrWebhookNotFound
+	}
+	if resp.StatusCode != http.StatusNoContent {
+		return scm.WrapRemoteError(resp.StatusCode, "failed to delete webhook", nil)
+	}
+	return nil
 }
 
-// ParseDelivery parses an incoming webhook payload
+// githubPushPayload is the minimal subset of a GitHub push event payload.
+type githubPushPayload struct {
+	Ref        string `json:"ref"`
+	HeadCommit struct {
+		ID string `json:"id"`
+	} `json:"head_commit"`
+	Repository struct {
+		FullName string `json:"full_name"`
+		HTMLURL  string `json:"html_url"`
+		CloneURL string `json:"clone_url"`
+	} `json:"repository"`
+}
+
+// ParseDelivery parses an incoming GitHub webhook payload.
+// GitHub sends X-GitHub-Event: push for both branch and tag updates.
+// A tag push is identified by ref starting with "refs/tags/".
 func (c *GitHubConnector) ParseDelivery(payloadBytes []byte, httpHeaders map[string]string) (*scm.IncomingHook, error) {
-	return nil, scm.ErrWebhookPayloadMalformed
+	if len(payloadBytes) == 0 {
+		return nil, scm.ErrWebhookPayloadMalformed
+	}
+
+	event := httpHeaders["X-GitHub-Event"]
+	if event == "" {
+		// Header keys may be canonicalized; try the canonical form too.
+		event = httpHeaders["X-Github-Event"]
+	}
+
+	if event == "ping" {
+		return &scm.IncomingHook{Type: scm.WebhookEventPing}, nil
+	}
+
+	if event != "push" {
+		return &scm.IncomingHook{Type: scm.WebhookEventUnknown}, nil
+	}
+
+	var p githubPushPayload
+	if err := json.Unmarshal(payloadBytes, &p); err != nil {
+		return nil, scm.ErrWebhookPayloadMalformed
+	}
+
+	if strings.HasPrefix(p.Ref, "refs/tags/") {
+		tagName := strings.TrimPrefix(p.Ref, "refs/tags/")
+		return &scm.IncomingHook{
+			Type:      scm.WebhookEventTag,
+			Ref:       p.Ref,
+			CommitSHA: p.HeadCommit.ID,
+			TagName:   tagName,
+		}, nil
+	}
+
+	return &scm.IncomingHook{
+		Type:      scm.WebhookEventPush,
+		Ref:       p.Ref,
+		CommitSHA: p.HeadCommit.ID,
+	}, nil
 }
 
-// VerifyDeliverySignature validates webhook authenticity
+// VerifyDeliverySignature validates a GitHub HMAC-SHA256 webhook signature.
+// GitHub sets the X-Hub-Signature-256 header to "sha256=<hex>" where the hex
+// value is HMAC-SHA256(secret, payload).
 func (c *GitHubConnector) VerifyDeliverySignature(payloadBytes []byte, signatureHeader, sharedSecret string) bool {
-	return false
+	if sharedSecret == "" {
+		// No secret configured — skip validation.
+		return true
+	}
+	const prefix = "sha256="
+	if !strings.HasPrefix(signatureHeader, prefix) {
+		return false
+	}
+	gotHex := strings.TrimPrefix(signatureHeader, prefix)
+	got, err := hex.DecodeString(gotHex)
+	if err != nil {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(sharedSecret))
+	mac.Write(payloadBytes)
+	expected := mac.Sum(nil)
+	return hmac.Equal(got, expected)
 }
 
 // Helper methods

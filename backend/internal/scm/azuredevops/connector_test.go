@@ -397,7 +397,7 @@ func TestSearchRepositories_Filters(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Webhook stubs
+// Webhook — RegisterWebhook / RemoveWebhook stubs
 // ---------------------------------------------------------------------------
 
 func TestWebhookStubs(t *testing.T) {
@@ -408,11 +408,134 @@ func TestWebhookStubs(t *testing.T) {
 	if err := c.RemoveWebhook(context.Background(), creds(), "o", "r", "1"); err == nil {
 		t.Error("RemoveWebhook: expected error, got nil")
 	}
-	if _, err := c.ParseDelivery([]byte("{}"), nil); err == nil {
-		t.Error("ParseDelivery: expected error, got nil")
+}
+
+// ---------------------------------------------------------------------------
+// VerifyDeliverySignature
+// ---------------------------------------------------------------------------
+
+func TestVerifyDeliverySignature_AlwaysTrue(t *testing.T) {
+	c, _ := NewAzureDevOpsConnector(&scm.ConnectorSettings{})
+	// ADO relies on the URL-embedded secret; signature header is not validated.
+	if !c.VerifyDeliverySignature([]byte("payload"), "any-header", "any-secret") {
+		t.Error("VerifyDeliverySignature: expected true for ADO")
 	}
-	if c.VerifyDeliverySignature([]byte("p"), "sig", "sec") {
-		t.Error("VerifyDeliverySignature: expected false, got true")
+	if !c.VerifyDeliverySignature([]byte("payload"), "", "") {
+		t.Error("VerifyDeliverySignature: expected true with empty args")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ParseDelivery
+// ---------------------------------------------------------------------------
+
+func TestParseDelivery_TagPush(t *testing.T) {
+	payload := []byte(`{
+		"eventType": "git.push",
+		"id": "event-abc",
+		"resource": {
+			"refUpdates": [
+				{
+					"name": "refs/tags/v0.3.5",
+					"newObjectId": "aabbccdd1122334455667788990011223344556677",
+					"oldObjectId": "0000000000000000000000000000000000000000"
+				}
+			]
+		}
+	}`)
+	c, _ := NewAzureDevOpsConnector(&scm.ConnectorSettings{})
+	hook, err := c.ParseDelivery(payload, nil)
+	if err != nil {
+		t.Fatalf("ParseDelivery error: %v", err)
+	}
+	if hook.Type != scm.WebhookEventTag {
+		t.Errorf("Type = %v, want WebhookEventTag", hook.Type)
+	}
+	if hook.TagName != "v0.3.5" {
+		t.Errorf("TagName = %q, want v0.3.5", hook.TagName)
+	}
+	if hook.CommitSHA != "aabbccdd1122334455667788990011223344556677" {
+		t.Errorf("CommitSHA = %q", hook.CommitSHA)
+	}
+	if hook.Ref != "refs/tags/v0.3.5" {
+		t.Errorf("Ref = %q, want refs/tags/v0.3.5", hook.Ref)
+	}
+}
+
+func TestParseDelivery_ExistingTagIgnored(t *testing.T) {
+	// oldObjectId is non-zero — tag was moved, not created.
+	payload := []byte(`{
+		"eventType": "git.push",
+		"id": "event-xyz",
+		"resource": {
+			"refUpdates": [
+				{
+					"name": "refs/tags/v0.3.5",
+					"newObjectId": "aabbccdd1122334455667788990011223344556677",
+					"oldObjectId": "1111111111111111111111111111111111111111"
+				}
+			]
+		}
+	}`)
+	c, _ := NewAzureDevOpsConnector(&scm.ConnectorSettings{})
+	hook, err := c.ParseDelivery(payload, nil)
+	if err != nil {
+		t.Fatalf("ParseDelivery error: %v", err)
+	}
+	if hook.Type != scm.WebhookEventPush {
+		t.Errorf("Type = %v, want WebhookEventPush (existing tag skipped)", hook.Type)
+	}
+}
+
+func TestParseDelivery_BranchPush(t *testing.T) {
+	payload := []byte(`{
+		"eventType": "git.push",
+		"id": "event-branch",
+		"resource": {
+			"refUpdates": [
+				{
+					"name": "refs/heads/main",
+					"newObjectId": "aabb",
+					"oldObjectId": "0000000000000000000000000000000000000000"
+				}
+			]
+		}
+	}`)
+	c, _ := NewAzureDevOpsConnector(&scm.ConnectorSettings{})
+	hook, err := c.ParseDelivery(payload, nil)
+	if err != nil {
+		t.Fatalf("ParseDelivery error: %v", err)
+	}
+	if hook.Type != scm.WebhookEventPush {
+		t.Errorf("Type = %v, want WebhookEventPush", hook.Type)
+	}
+}
+
+func TestParseDelivery_NonPushEvent(t *testing.T) {
+	payload := []byte(`{"eventType":"git.pullrequest.created","id":"pr-event"}`)
+	c, _ := NewAzureDevOpsConnector(&scm.ConnectorSettings{})
+	hook, err := c.ParseDelivery(payload, nil)
+	if err != nil {
+		t.Fatalf("ParseDelivery error: %v", err)
+	}
+	if hook.Type != scm.WebhookEventUnknown {
+		t.Errorf("Type = %v, want WebhookEventUnknown", hook.Type)
+	}
+}
+
+func TestParseDelivery_EmptyPayload(t *testing.T) {
+	c, _ := NewAzureDevOpsConnector(&scm.ConnectorSettings{})
+	_, err := c.ParseDelivery([]byte{}, nil)
+	if err == nil {
+		t.Error("expected error for empty payload, got nil")
+	}
+}
+
+func TestParseDelivery_InvalidJSON(t *testing.T) {
+	c, _ := NewAzureDevOpsConnector(&scm.ConnectorSettings{})
+	_, err := c.ParseDelivery([]byte(`not json`), nil)
+	if err == nil {
+		t.Error("expected error for invalid JSON, got nil")
 	}
 }
 
