@@ -352,7 +352,7 @@ func TestActivateStorageConfig_Success(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
-	if err := repo.ActivateStorageConfig(context.Background(), uuid.New(), uuid.New()); err != nil {
+	if err := repo.ActivateStorageConfig(context.Background(), uuid.New(), uuid.NullUUID{UUID: uuid.New(), Valid: true}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -361,7 +361,7 @@ func TestActivateStorageConfig_BeginError(t *testing.T) {
 	repo, mock := newStorageConfigRepo(t)
 	mock.ExpectBegin().WillReturnError(errDB)
 
-	if err := repo.ActivateStorageConfig(context.Background(), uuid.New(), uuid.New()); err == nil {
+	if err := repo.ActivateStorageConfig(context.Background(), uuid.New(), uuid.NullUUID{UUID: uuid.New(), Valid: true}); err == nil {
 		t.Error("expected error, got nil")
 	}
 }
@@ -373,7 +373,7 @@ func TestActivateStorageConfig_DeactivateError(t *testing.T) {
 		WillReturnError(errDB)
 	mock.ExpectRollback()
 
-	if err := repo.ActivateStorageConfig(context.Background(), uuid.New(), uuid.New()); err == nil {
+	if err := repo.ActivateStorageConfig(context.Background(), uuid.New(), uuid.NullUUID{UUID: uuid.New(), Valid: true}); err == nil {
 		t.Error("expected error, got nil")
 	}
 }

@@ -134,7 +134,7 @@ func (r *CVERepository) ListActive(ctx context.Context) ([]models.CVEAdvisory, e
 		        (t.target_kind = 'provider' AND t.provider_version_id IS NOT NULL
 		         AND EXISTS (
 		           SELECT 1 FROM provider_versions pv
-		           WHERE pv.id = t.provider_version_id AND pv.is_deprecated = false
+		           WHERE pv.id = t.provider_version_id AND pv.deprecated = false
 		         ))
 		        OR
 		        -- scanner: always live (no deprecation FK)

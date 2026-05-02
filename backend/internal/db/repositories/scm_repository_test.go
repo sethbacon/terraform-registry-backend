@@ -153,6 +153,49 @@ func TestSCMGetProvider_NotFound(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// GetProviderByOrgAndName
+// ---------------------------------------------------------------------------
+
+func TestSCMGetProviderByOrgAndName_Found(t *testing.T) {
+	repo, mock := newSCMRepo(t)
+	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE organization_id").
+		WillReturnRows(sampleSCMProviderRow())
+
+	p, err := repo.GetProviderByOrgAndName(context.Background(), uuid.New(), scm.ProviderGitHub, "My GitHub")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p == nil {
+		t.Fatal("expected provider, got nil")
+	}
+}
+
+func TestSCMGetProviderByOrgAndName_NotFound(t *testing.T) {
+	repo, mock := newSCMRepo(t)
+	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE organization_id").
+		WillReturnRows(sqlmock.NewRows(scmProviderCols))
+
+	p, err := repo.GetProviderByOrgAndName(context.Background(), uuid.New(), scm.ProviderGitHub, "nonexistent")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p != nil {
+		t.Errorf("expected nil, got %v", p)
+	}
+}
+
+func TestSCMGetProviderByOrgAndName_Error(t *testing.T) {
+	repo, mock := newSCMRepo(t)
+	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE organization_id").
+		WillReturnError(errDB)
+
+	_, err := repo.GetProviderByOrgAndName(context.Background(), uuid.New(), scm.ProviderGitHub, "test")
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
 func TestSCMGetProvider_Error(t *testing.T) {
 	repo, mock := newSCMRepo(t)
 	mock.ExpectQuery("SELECT.*FROM scm_providers.*WHERE id").
