@@ -4,6 +4,7 @@
 package gitlab
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -534,14 +535,72 @@ func (c *GitLabConnector) DownloadSourceArchive(ctx context.Context, creds *scm.
 	return resp.Body, nil
 }
 
-// RegisterWebhook is not yet implemented for GitLab.
+// RegisterWebhook creates a GitLab project webhook for push and tag-push events.
+// ownerName is the namespace (user or group) and repoName is the project name.
 func (c *GitLabConnector) RegisterWebhook(ctx context.Context, creds *scm.AccessToken, ownerName, repoName string, hookConfig scm.WebhookSetup) (*scm.WebhookInfo, error) {
-	return nil, scm.ErrWebhookSetupFailed
+	projectPath := url.PathEscape(ownerName + "/" + repoName)
+	endpoint := fmt.Sprintf("%s/projects/%s/hooks", c.apiURL, projectPath)
+	body := map[string]interface{}{
+		"url":                     hookConfig.CallbackURL,
+		"token":                   hookConfig.SharedSecret,
+		"push_events":             true,
+		"tag_push_events":         true,
+		"enable_ssl_verification": true,
+	}
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("gitlab: marshal webhook body: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("gitlab: create webhook request: %w", err)
+	}
+	c.setAuthHeaders(req, creds)
+	// #nosec G107 -- URL is sourced from admin-controlled SCM provider configuration; non-admin users cannot influence these code paths
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, scm.WrapRemoteError(0, "failed to create webhook", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		return nil, scm.WrapRemoteError(resp.StatusCode, "failed to create webhook", nil)
+	}
+	var result struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("gitlab: decode webhook response: %w", err)
+	}
+	return &scm.WebhookInfo{
+		ExternalID:  fmt.Sprintf("%d", result.ID),
+		CallbackURL: hookConfig.CallbackURL,
+		EventTypes:  []string{"push", "tag_push"},
+		IsActive:    true,
+	}, nil
 }
 
-// RemoveWebhook is not yet implemented for GitLab.
+// RemoveWebhook deletes a GitLab project webhook by its numeric hook ID.
 func (c *GitLabConnector) RemoveWebhook(ctx context.Context, creds *scm.AccessToken, ownerName, repoName, hookID string) error {
-	return scm.ErrWebhookNotFound
+	projectPath := url.PathEscape(ownerName + "/" + repoName)
+	endpoint := fmt.Sprintf("%s/projects/%s/hooks/%s", c.apiURL, projectPath, hookID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("gitlab: create delete webhook request: %w", err)
+	}
+	c.setAuthHeaders(req, creds)
+	// #nosec G107 -- URL is sourced from admin-controlled SCM provider configuration; non-admin users cannot influence these code paths
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return scm.WrapRemoteError(0, "failed to delete webhook", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return scm.ErrWebhookNotFound
+	}
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		return scm.WrapRemoteError(resp.StatusCode, "failed to delete webhook", nil)
+	}
+	return nil
 }
 
 // gitlabPushPayload is the minimal subset of a GitLab push/tag_push event payload.

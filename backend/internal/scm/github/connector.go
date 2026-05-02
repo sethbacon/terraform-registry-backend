@@ -4,6 +4,7 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -458,14 +459,74 @@ func (c *GitHubConnector) DownloadSourceArchive(ctx context.Context, creds *scm.
 	return resp.Body, nil
 }
 
-// RegisterWebhook is not yet implemented for GitHub.
+// RegisterWebhook creates a GitHub repository webhook for push events.
 func (c *GitHubConnector) RegisterWebhook(ctx context.Context, creds *scm.AccessToken, ownerName, repoName string, hookConfig scm.WebhookSetup) (*scm.WebhookInfo, error) {
-	return nil, scm.ErrWebhookSetupFailed
+	endpoint := fmt.Sprintf("%s/repos/%s/%s/hooks", c.apiURL, ownerName, repoName)
+	body := map[string]interface{}{
+		"name":   "web",
+		"active": true,
+		"events": []string{"push"},
+		"config": map[string]string{
+			"url":          hookConfig.CallbackURL,
+			"content_type": "json",
+			"secret":       hookConfig.SharedSecret,
+			"insecure_ssl": "0",
+		},
+	}
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("github: marshal webhook body: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("github: create webhook request: %w", err)
+	}
+	c.setAuthHeaders(req, creds)
+	req.Header.Set("Content-Type", "application/json")
+	// #nosec G107 -- URL is sourced from admin-controlled SCM provider configuration; non-admin users cannot influence these code paths
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, scm.WrapRemoteError(0, "failed to create webhook", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		return nil, scm.WrapRemoteError(resp.StatusCode, "failed to create webhook", nil)
+	}
+	var result struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("github: decode webhook response: %w", err)
+	}
+	return &scm.WebhookInfo{
+		ExternalID:  fmt.Sprintf("%d", result.ID),
+		CallbackURL: hookConfig.CallbackURL,
+		EventTypes:  []string{"push"},
+		IsActive:    true,
+	}, nil
 }
 
-// RemoveWebhook is not yet implemented for GitHub.
+// RemoveWebhook deletes a GitHub repository webhook by its numeric hook ID.
 func (c *GitHubConnector) RemoveWebhook(ctx context.Context, creds *scm.AccessToken, ownerName, repoName, hookID string) error {
-	return scm.ErrWebhookNotFound
+	endpoint := fmt.Sprintf("%s/repos/%s/%s/hooks/%s", c.apiURL, ownerName, repoName, hookID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("github: create delete webhook request: %w", err)
+	}
+	c.setAuthHeaders(req, creds)
+	// #nosec G107 -- URL is sourced from admin-controlled SCM provider configuration; non-admin users cannot influence these code paths
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return scm.WrapRemoteError(0, "failed to delete webhook", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return scm.ErrWebhookNotFound
+	}
+	if resp.StatusCode != http.StatusNoContent {
+		return scm.WrapRemoteError(resp.StatusCode, "failed to delete webhook", nil)
+	}
+	return nil
 }
 
 // githubPushPayload is the minimal subset of a GitHub push event payload.
