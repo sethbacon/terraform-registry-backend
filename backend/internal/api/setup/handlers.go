@@ -613,8 +613,20 @@ func (h *Handlers) TestScanningConfig(c *gin.Context) {
 		return
 	}
 
+	// Validate binary_path is within the managed install directory.
+	// This prevents the test endpoint from being used to probe arbitrary
+	// executables on the host filesystem.
+	if h.cfg.Scanning.InstallDir != "" {
+		cleanBinary := filepath.Clean(input.BinaryPath)
+		cleanInstall := filepath.Clean(h.cfg.Scanning.InstallDir)
+		if !strings.HasPrefix(cleanBinary, cleanInstall+string(filepath.Separator)) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "binary_path must be within the scanner install directory"})
+			return
+		}
+	}
+
 	// Check binary exists
-	if _, err := os.Stat(input.BinaryPath); err != nil {
+	if _, err := os.Stat(input.BinaryPath); err != nil { // #nosec G304 -- BinaryPath constrained to InstallDir above; operator-managed directory only
 		c.JSON(http.StatusOK, TestScanningConfigResponse{
 			Success: false,
 			Error:   fmt.Sprintf("binary not found at %q: %v", input.BinaryPath, err),

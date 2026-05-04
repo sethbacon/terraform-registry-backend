@@ -64,13 +64,13 @@ func truncateExecutionLog(s string) string {
 // string means no usable binary was found.
 func ResolveBinaryPath(cfg *config.ScanningConfig) (string, bool) {
 	if cfg.BinaryPath != "" {
-		if _, err := os.Stat(cfg.BinaryPath); err == nil {
+		if _, err := os.Stat(cfg.BinaryPath); err == nil { // #nosec G304 -- BinaryPath is operator-configured (Helm chart / admin setup), not end-user input; validated against InstallDir before being stored
 			return cfg.BinaryPath, true
 		}
 	}
 	if cfg.InstallDir != "" && cfg.Tool != "" {
 		fallback := filepath.Join(cfg.InstallDir, cfg.Tool)
-		if _, err := os.Stat(fallback); err == nil {
+		if _, err := os.Stat(fallback); err == nil { // #nosec G304 -- fallback is constructed from operator-configured InstallDir + allowlisted Tool name; not user-controlled
 			return fallback, true
 		}
 	}
