@@ -236,7 +236,7 @@ func resolveRelease(ctx context.Context, client *http.Client, spec AssetSpec, pi
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) // #nosec G107 -- url is built from a static template (spec.LatestReleaseAPI or spec.VersionedAPI) with pinnedVersion validated by goversion.NewSemver; CWE-918 mitigated
 	if err != nil {
 		return nil, err
 	}

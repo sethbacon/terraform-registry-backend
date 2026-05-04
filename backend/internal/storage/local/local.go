@@ -129,9 +129,12 @@ func (s *LocalStorage) Download(ctx context.Context, path string) (io.ReadCloser
 
 // Delete removes a file from the local filesystem
 func (s *LocalStorage) Delete(ctx context.Context, path string) error {
-	fullPath := filepath.Join(s.basePath, filepath.FromSlash(path))
+	fullPath, err := s.safeJoin(path)
+	if err != nil {
+		return err
+	}
 
-	if err := os.Remove(fullPath); err != nil {
+	if err := os.Remove(fullPath); err != nil { // #nosec G304 -- fullPath has been validated by safeJoin to remain within basePath
 		if os.IsNotExist(err) {
 			return nil // File doesn't exist, consider it deleted
 		}
@@ -187,7 +190,7 @@ func (s *LocalStorage) Exists(ctx context.Context, path string) (bool, error) {
 		return false, err
 	}
 
-	_, err = os.Stat(fullPath)
+	_, err = os.Stat(fullPath) // #nosec G304 -- fullPath has been validated by safeJoin to remain within basePath
 	if err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
