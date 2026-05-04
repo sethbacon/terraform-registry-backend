@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 )
 
@@ -422,6 +423,101 @@ func (r *UserRepository) GetUserWithOrgRoles(ctx context.Context, userID string)
 		User:        *user,
 		Memberships: memberships,
 	}, rows.Err()
+}
+
+// loadMembershipsForUsers bulk-fetches memberships for a slice of users in a single
+// database round trip, then attaches them to per-user UserWithOrgRoles structs.
+// The returned slice preserves the order of the input users slice.
+func (r *UserRepository) loadMembershipsForUsers(ctx context.Context, users []*models.User) ([]*models.UserWithOrgRoles, error) {
+	result := make([]*models.UserWithOrgRoles, len(users))
+	for i, u := range users {
+		result[i] = &models.UserWithOrgRoles{
+			User:        *u,
+			Memberships: []models.UserMembership{},
+		}
+	}
+
+	if len(users) == 0 {
+		return result, nil
+	}
+
+	userIDs := make([]string, len(users))
+	for i, u := range users {
+		userIDs[i] = u.ID
+	}
+
+	query := `
+		SELECT om.user_id, om.organization_id, COALESCE(o.name, '') as organization_name,
+		       om.role_template_id, om.created_at,
+		       rt.name as role_template_name, rt.display_name as role_template_display_name,
+		       COALESCE(rt.scopes, '[]'::jsonb) as role_template_scopes
+		FROM organization_members om
+		LEFT JOIN organizations o ON om.organization_id = o.id
+		LEFT JOIN role_templates rt ON om.role_template_id = rt.id
+		WHERE om.user_id = ANY($1)
+		ORDER BY om.user_id, om.created_at DESC
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, pq.Array(userIDs))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	// Index result by user ID for O(1) lookup when attaching memberships
+	resultByUserID := make(map[string]*models.UserWithOrgRoles, len(result))
+	for _, uwor := range result {
+		resultByUserID[uwor.User.ID] = uwor
+	}
+
+	for rows.Next() {
+		var userID string
+		m := models.UserMembership{}
+		var scopesJSON []byte
+		err := rows.Scan(
+			&userID,
+			&m.OrganizationID,
+			&m.OrganizationName,
+			&m.RoleTemplateID,
+			&m.CreatedAt,
+			&m.RoleTemplateName,
+			&m.RoleTemplateDisplayName,
+			&scopesJSON,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if len(scopesJSON) > 0 {
+			if err := json.Unmarshal(scopesJSON, &m.RoleTemplateScopes); err != nil {
+				return nil, err
+			}
+		}
+		if uwor, ok := resultByUserID[userID]; ok {
+			uwor.Memberships = append(uwor.Memberships, m)
+		}
+	}
+
+	return result, rows.Err()
+}
+
+// ListUsersWithMemberships returns a paginated list of users with their organization
+// memberships fetched in a single additional query (2 queries total, not N+1).
+func (r *UserRepository) ListUsersWithMemberships(ctx context.Context, limit, offset int) ([]*models.UserWithOrgRoles, int, error) {
+	users, total, err := r.ListUsers(ctx, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	result, err := r.loadMembershipsForUsers(ctx, users)
+	return result, total, err
+}
+
+// SearchWithMemberships searches users and returns results with their organization memberships.
+func (r *UserRepository) SearchWithMemberships(ctx context.Context, query string, limit, offset int) ([]*models.UserWithOrgRoles, error) {
+	users, err := r.Search(ctx, query, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	return r.loadMembershipsForUsers(ctx, users)
 }
 
 // ListUsersWithRoles is deprecated - use ListUsers instead

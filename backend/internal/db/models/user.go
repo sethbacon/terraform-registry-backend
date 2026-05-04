@@ -17,7 +17,7 @@ type User struct {
 // UserWithOrgRoles represents a user with their per-organization role template information
 type UserWithOrgRoles struct {
 	User
-	Memberships []UserMembership // Per-organization role templates
+	Memberships []UserMembership `json:"memberships"` // Per-organization role templates
 }
 
 // GetAllowedScopes returns all unique scopes across all organization memberships

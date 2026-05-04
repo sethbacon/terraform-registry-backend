@@ -33,6 +33,16 @@ var membershipSQLCols = []string{
 	"role_template_name", "role_template_display_name", "role_template_scopes",
 }
 
+// bulkMembershipSQLCols are the columns returned by loadMembershipsForUsers (includes user_id).
+var bulkMembershipSQLCols = []string{
+	"user_id", "organization_id", "organization_name", "role_template_id", "created_at",
+	"role_template_name", "role_template_display_name", "role_template_scopes",
+}
+
+func emptyBulkMembershipRows() *sqlmock.Rows {
+	return sqlmock.NewRows(bulkMembershipSQLCols)
+}
+
 func sampleUserRow() *sqlmock.Rows {
 	return sqlmock.NewRows(userSQLCols).
 		AddRow("user-1", "alice@example.com", "Alice", nil, time.Now(), time.Now())
@@ -96,6 +106,9 @@ func TestListUsersHandler_Success(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectQuery("SELECT").
 		WillReturnRows(sampleUserRow())
+	// loadMembershipsForUsers bulk query
+	mock.ExpectQuery("ANY").
+		WillReturnRows(emptyBulkMembershipRows())
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("GET", "/users", nil))
@@ -109,6 +122,15 @@ func TestListUsersHandler_Success(t *testing.T) {
 	}
 	if resp["pagination"] == nil {
 		t.Error("response missing 'pagination' key")
+	}
+	// Verify memberships are embedded in the users array
+	users, ok := resp["users"].([]interface{})
+	if !ok || len(users) == 0 {
+		t.Fatal("expected at least one user in response")
+	}
+	userMap, _ := users[0].(map[string]interface{})
+	if _, hasMemberships := userMap["memberships"]; !hasMemberships {
+		t.Error("user response missing 'memberships' key")
 	}
 }
 
@@ -416,6 +438,9 @@ func TestSearchUsersHandler_Success(t *testing.T) {
 
 	mock.ExpectQuery("SELECT").
 		WillReturnRows(sampleUserRow())
+	// loadMembershipsForUsers bulk query
+	mock.ExpectQuery("ANY").
+		WillReturnRows(emptyBulkMembershipRows())
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("GET", "/users/search?q=alice", nil))
@@ -764,6 +789,9 @@ func TestSearchUsersHandler_PaginationDefaults(t *testing.T) {
 
 	mock.ExpectQuery("SELECT").
 		WillReturnRows(sampleUserRow())
+	// loadMembershipsForUsers bulk query
+	mock.ExpectQuery("ANY").
+		WillReturnRows(emptyBulkMembershipRows())
 
 	// page < 1 and perPage > 100 → clamped to defaults
 	w := httptest.NewRecorder()

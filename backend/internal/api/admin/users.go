@@ -59,8 +59,8 @@ func (h *UserHandlers) ListUsersHandler() gin.HandlerFunc {
 
 		offset := (page - 1) * perPage
 
-		// Get users with role template information
-		users, total, err := h.userRepo.ListUsersWithRoles(c.Request.Context(), perPage, offset)
+		// Get users with memberships (2 queries total, not N+1)
+		users, total, err := h.userRepo.ListUsersWithMemberships(c.Request.Context(), perPage, offset)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to list users",
@@ -371,8 +371,8 @@ func (h *UserHandlers) SearchUsersHandler() gin.HandlerFunc {
 
 		offset := (page - 1) * perPage
 
-		// Search users
-		users, err := h.userRepo.Search(c.Request.Context(), query, perPage, offset)
+		// Search users with memberships
+		users, err := h.userRepo.SearchWithMemberships(c.Request.Context(), query, perPage, offset)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to search users",
