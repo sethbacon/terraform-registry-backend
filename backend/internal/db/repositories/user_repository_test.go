@@ -703,3 +703,131 @@ func TestGetOrCreateUserFromOIDC_EmailMatch(t *testing.T) {
 		t.Fatal("expected user, got nil")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ListUsersWithMemberships / SearchWithMemberships (N+1 elimination)
+// ---------------------------------------------------------------------------
+
+// bulkMembershipCols matches the SELECT produced by loadMembershipsForUsers.
+var bulkMembershipCols = []string{
+	"user_id", "organization_id", "organization_name", "role_template_id", "created_at",
+	"role_template_name", "role_template_display_name", "role_template_scopes",
+}
+
+func emptyBulkMembershipRowsRepo() *sqlmock.Rows {
+	return sqlmock.NewRows(bulkMembershipCols)
+}
+
+func TestListUsersWithMemberships_Success(t *testing.T) {
+	repo, mock := newUserRepo(t)
+
+	mock.ExpectQuery("SELECT COUNT.*FROM users").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectQuery("SELECT.*FROM users.*ORDER BY").
+		WillReturnRows(sampleUserRow())
+	// Bulk membership query for user-1
+	mock.ExpectQuery("ANY").
+		WillReturnRows(emptyBulkMembershipRowsRepo())
+
+	result, total, err := repo.ListUsersWithMemberships(context.Background(), 20, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 1 {
+		t.Errorf("total = %d, want 1", total)
+	}
+	if len(result) != 1 {
+		t.Fatalf("len(result) = %d, want 1", len(result))
+	}
+	if result[0].User.ID != "user-1" {
+		t.Errorf("user ID = %q, want %q", result[0].User.ID, "user-1")
+	}
+	// Memberships should be an empty (non-nil) slice, not nil
+	if result[0].Memberships == nil {
+		t.Error("Memberships should be a non-nil empty slice when there are no memberships")
+	}
+}
+
+func TestListUsersWithMemberships_WithMembership(t *testing.T) {
+	repo, mock := newUserRepo(t)
+
+	mock.ExpectQuery("SELECT COUNT.*FROM users").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectQuery("SELECT.*FROM users.*ORDER BY").
+		WillReturnRows(sampleUserRow())
+
+	// Return one membership row for user-1
+	memberRows := sqlmock.NewRows(bulkMembershipCols).AddRow(
+		"user-1", "org-1", "Acme Corp", "rt-1", time.Now(),
+		"admin", "Administrator", []byte(`["admin","users:read"]`),
+	)
+	mock.ExpectQuery("ANY").WillReturnRows(memberRows)
+
+	result, _, err := repo.ListUsersWithMemberships(context.Background(), 20, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result[0].Memberships) != 1 {
+		t.Fatalf("memberships = %d, want 1", len(result[0].Memberships))
+	}
+	m := result[0].Memberships[0]
+	if m.OrganizationName != "Acme Corp" {
+		t.Errorf("org name = %q, want %q", m.OrganizationName, "Acme Corp")
+	}
+	if len(m.RoleTemplateScopes) != 2 {
+		t.Errorf("scopes len = %d, want 2", len(m.RoleTemplateScopes))
+	}
+}
+
+func TestListUsersWithMemberships_Empty(t *testing.T) {
+	repo, mock := newUserRepo(t)
+
+	mock.ExpectQuery("SELECT COUNT.*FROM users").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery("SELECT.*FROM users.*ORDER BY").
+		WillReturnRows(emptyUserRow())
+	// No users → no bulk membership query should be issued
+
+	result, total, err := repo.ListUsersWithMemberships(context.Background(), 20, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 0 || len(result) != 0 {
+		t.Errorf("expected empty result, got total=%d len=%d", total, len(result))
+	}
+}
+
+func TestListUsersWithMemberships_MembershipDBError(t *testing.T) {
+	repo, mock := newUserRepo(t)
+
+	mock.ExpectQuery("SELECT COUNT.*FROM users").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectQuery("SELECT.*FROM users.*ORDER BY").
+		WillReturnRows(sampleUserRow())
+	mock.ExpectQuery("ANY").WillReturnError(errDB)
+
+	_, _, err := repo.ListUsersWithMemberships(context.Background(), 20, 0)
+	if err == nil {
+		t.Error("expected error from membership query, got nil")
+	}
+}
+
+func TestSearchWithMemberships_Success(t *testing.T) {
+	repo, mock := newUserRepo(t)
+
+	mock.ExpectQuery("SELECT.*FROM users.*ILIKE").
+		WillReturnRows(sampleUserRow())
+	mock.ExpectQuery("ANY").
+		WillReturnRows(emptyBulkMembershipRowsRepo())
+
+	result, err := repo.SearchWithMemberships(context.Background(), "alice", 20, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("len(result) = %d, want 1", len(result))
+	}
+	if result[0].Memberships == nil {
+		t.Error("Memberships should be a non-nil empty slice")
+	}
+}
