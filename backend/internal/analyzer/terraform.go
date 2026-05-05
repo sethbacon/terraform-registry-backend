@@ -55,7 +55,17 @@ type Requirements struct {
 // AnalyzeDir parses Terraform files in moduleDir and returns structured metadata.
 // Uses tfconfig.LoadModule which tolerates partial/incomplete modules.
 // Returns (nil, nil) if the directory has no .tf files.
-func AnalyzeDir(moduleDir string) (*ModuleDoc, error) {
+//
+// A deferred recover() guards against panics from terraform-config-inspect (e.g.
+// variables whose default values cannot be serialised as JSON, such as Infinity).
+// Those are converted to errors so callers never observe a panic.
+func AnalyzeDir(moduleDir string) (doc *ModuleDoc, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("terraform-config-inspect panic: %v", r)
+			doc = nil
+		}
+	}()
 	module, diags := tfconfig.LoadModule(moduleDir)
 	if module == nil {
 		return nil, nil
@@ -66,7 +76,7 @@ func AnalyzeDir(moduleDir string) (*ModuleDoc, error) {
 			"dir", moduleDir, "diags", diags.Error())
 	}
 
-	doc := &ModuleDoc{
+	doc = &ModuleDoc{
 		Inputs:    []InputVar{},
 		Outputs:   []OutputVal{},
 		Providers: []ProviderReq{},
