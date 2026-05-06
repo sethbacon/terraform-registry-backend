@@ -210,6 +210,66 @@ func (h *ModuleAdminHandlers) GetModule(c *gin.Context) {
 	})
 }
 
+// @Summary      Get module version
+// @Description  Retrieve a single module version's metadata, including deprecation fields. No authentication required; authentication is optional and provides user context.
+// @Tags         Modules
+// @Produce      json
+// @Param        namespace  path  string  true  "Module namespace"
+// @Param        name       path  string  true  "Module name"
+// @Param        system     path  string  true  "Target system (e.g. aws, azurerm)"
+// @Param        version    path  string  true  "Semantic version (e.g. 1.2.3)"
+// @Success      200  {object}  models.ModuleVersion
+// @Failure      404  {object}  map[string]interface{}  "Module or version not found"
+// @Failure      500  {object}  map[string]interface{}  "Internal server error"
+// @Router       /api/v1/modules/{namespace}/{name}/{system}/{version} [get]
+// GetModuleVersion retrieves a single module version's metadata.
+//
+// This endpoint is the Read counterpart for the registry_module_version_deprecation
+// Terraform resource and any other consumer that needs to fetch a specific version
+// (with deprecation fields) without pulling the entire version list.
+// GET /api/v1/modules/:namespace/:name/:system/:version
+func (h *ModuleAdminHandlers) GetModuleVersion(c *gin.Context) {
+	namespace := c.Param("namespace")
+	name := c.Param("name")
+	system := c.Param("system")
+	version := c.Param("version")
+
+	// Get organization context (default org for single-tenant mode). Mirrors GetModule
+	// so that callers without an authenticated org still resolve to the default tenant.
+	org, err := h.orgRepo.GetDefaultOrganization(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get organization context"})
+		return
+	}
+
+	var orgID string
+	if org != nil {
+		orgID = org.ID
+	}
+
+	module, err := h.moduleRepo.GetModule(c.Request.Context(), orgID, namespace, name, system)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get module"})
+		return
+	}
+	if module == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Module not found"})
+		return
+	}
+
+	mv, err := h.moduleRepo.GetVersion(c.Request.Context(), module.ID, version)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get module version"})
+		return
+	}
+	if mv == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Version not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, mv)
+}
+
 // @Summary      Delete module
 // @Description  Delete a module and all its versions, including files in storage. Requires modules:delete scope.
 // @Tags         Modules
