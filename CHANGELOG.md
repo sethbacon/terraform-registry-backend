@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0](https://github.com/sethbacon/terraform-registry-backend/compare/v1.0.5...v1.1.0) (2026-05-06)
+
+
+### Features
+
+* **api:** add GET /api/v1/modules/{namespace}/{name}/{system}/{version} ([#335](https://github.com/sethbacon/terraform-registry-backend/issues/335)) ([01323f2](https://github.com/sethbacon/terraform-registry-backend/commit/01323f2661d090611d9f8fd818de9ba97ea98dd2))
+
 ## [1.0.5](https://github.com/sethbacon/terraform-registry-backend/compare/v1.0.4...v1.0.5) (2026-05-05)
 
 
