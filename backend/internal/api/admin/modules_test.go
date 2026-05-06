@@ -90,6 +90,7 @@ func newModuleRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	r := gin.New()
 	r.POST("/modules/create", h.CreateModuleRecord)
 	r.GET("/modules/:namespace/:name/:system", h.GetModule)
+	r.GET("/modules/:namespace/:name/:system/:version", h.GetModuleVersion)
 	r.DELETE("/modules/:namespace/:name/:system", h.DeleteModule)
 	r.DELETE("/modules/:namespace/:name/:system/versions/:version", h.DeleteVersion)
 	r.POST("/modules/:namespace/:name/:system/versions/:version/deprecate", h.DeprecateVersion)
@@ -284,6 +285,115 @@ func TestGetModule_Success_WithVersions(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetModuleVersion tests
+// ---------------------------------------------------------------------------
+
+func TestGetModuleVersion_OrgDBError(t *testing.T) {
+	mock, r := newModuleRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM organizations").
+		WithArgs("default").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/modules/hashicorp/vpc/aws/1.0.0", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestGetModuleVersion_ModuleNotFound(t *testing.T) {
+	mock, r := newModuleRouter(t)
+
+	expectNoDefaultOrg(mock)
+	mock.ExpectQuery("SELECT.*FROM modules").
+		WillReturnRows(emptyModuleRow())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/modules/hashicorp/vpc/aws/1.0.0", nil))
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestGetModuleVersion_ModuleDBError(t *testing.T) {
+	mock, r := newModuleRouter(t)
+
+	expectNoDefaultOrg(mock)
+	mock.ExpectQuery("SELECT.*FROM modules").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/modules/hashicorp/vpc/aws/1.0.0", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestGetModuleVersion_VersionNotFound(t *testing.T) {
+	mock, r := newModuleRouter(t)
+
+	expectNoDefaultOrg(mock)
+	mock.ExpectQuery("SELECT.*FROM modules").
+		WillReturnRows(sampleModuleRow())
+	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").
+		WillReturnRows(emptyModVersionGetRow())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/modules/hashicorp/vpc/aws/9.9.9", nil))
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestGetModuleVersion_VersionDBError(t *testing.T) {
+	mock, r := newModuleRouter(t)
+
+	expectNoDefaultOrg(mock)
+	mock.ExpectQuery("SELECT.*FROM modules").
+		WillReturnRows(sampleModuleRow())
+	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/modules/hashicorp/vpc/aws/1.0.0", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestGetModuleVersion_Success(t *testing.T) {
+	mock, r := newModuleRouter(t)
+
+	expectNoDefaultOrg(mock)
+	mock.ExpectQuery("SELECT.*FROM modules").
+		WillReturnRows(sampleModuleRow())
+	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").
+		WillReturnRows(sampleModVersionGetRow())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/modules/hashicorp/vpc/aws/1.0.0", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	resp := getJSON(w)
+	if resp["version"] != "1.0.0" {
+		t.Errorf("response version = %v, want 1.0.0", resp["version"])
+	}
+	// Deprecation fields must be present in the JSON shape so the provider Read
+	// implementation can reconcile state (even when null/false on a non-deprecated version).
+	if _, ok := resp["deprecated"]; !ok {
+		t.Error("response missing 'deprecated' key")
 	}
 }
 

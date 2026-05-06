@@ -745,6 +745,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 		publicDetailGroup.Use(middleware.RateLimitMiddleware(generalRateLimiter))
 		{
 			publicDetailGroup.GET("/modules/:namespace/:name/:system", moduleAdminHandlers.GetModule)
+			publicDetailGroup.GET("/modules/:namespace/:name/:system/:version", moduleAdminHandlers.GetModuleVersion)
 			publicDetailGroup.GET("/modules/:namespace/:name/:system/versions/:version/docs", modules.GetModuleDocsHandler(db))
 			publicDetailGroup.GET("/providers/:namespace/:type", providerAdminHandlers.GetProvider)
 			publicDetailGroup.GET("/providers/:namespace/:type/versions/:version/docs", providers.ListProviderDocsHandler(db))
