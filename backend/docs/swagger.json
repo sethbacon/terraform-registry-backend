@@ -6189,6 +6189,70 @@
                 }
             }
         },
+        "/api/v1/modules/{namespace}/{name}/{system}/{version}": {
+            "get": {
+                "description": "Retrieve a single module version's metadata, including deprecation fields. No authentication required; authentication is optional and provides user context.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Modules"
+                ],
+                "summary": "Get module version",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Module namespace",
+                        "name": "namespace",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Module name",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Target system (e.g. aws, azurerm)",
+                        "name": "system",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Semantic version (e.g. 1.2.3)",
+                        "name": "version",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.ModuleVersion"
+                        }
+                    },
+                    "404": {
+                        "description": "Module or version not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/modules/{namespace}/{name}/{system}/{version}/docs": {
             "get": {
                 "description": "Returns terraform-docs metadata (inputs, outputs, providers, requirements) extracted from the module archive at upload time.",
@@ -14009,6 +14073,80 @@
                     "type": "string"
                 },
                 "updated_at": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.ModuleVersion": {
+            "type": "object",
+            "properties": {
+                "checksum": {
+                    "type": "string"
+                },
+                "commit_sha": {
+                    "description": "SCM source tracking fields (populated for webhook/sync-published versions)",
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "deprecated": {
+                    "description": "Whether this version is deprecated",
+                    "type": "boolean"
+                },
+                "deprecated_at": {
+                    "description": "When the version was deprecated",
+                    "type": "string"
+                },
+                "deprecation_message": {
+                    "description": "Optional message explaining deprecation",
+                    "type": "string"
+                },
+                "download_count": {
+                    "type": "integer"
+                },
+                "has_docs": {
+                    "description": "Whether terraform-docs metadata exists (joined from module_version_docs)",
+                    "type": "boolean"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "module_id": {
+                    "type": "string"
+                },
+                "published_by": {
+                    "type": "string"
+                },
+                "published_by_name": {
+                    "description": "Joined fields (not stored in module_versions table)",
+                    "type": "string"
+                },
+                "readme": {
+                    "type": "string"
+                },
+                "replacement_source": {
+                    "description": "Replacement module source address (Terraform CLI \u003e=1.10 protocol)",
+                    "type": "string"
+                },
+                "scm_repo_id": {
+                    "description": "FK to module_scm_repos.id",
+                    "type": "string"
+                },
+                "size_bytes": {
+                    "type": "integer"
+                },
+                "storage_backend": {
+                    "type": "string"
+                },
+                "storage_path": {
+                    "type": "string"
+                },
+                "tag_name": {
+                    "description": "Git tag name that triggered publish",
+                    "type": "string"
+                },
+                "version": {
                     "type": "string"
                 }
             }
