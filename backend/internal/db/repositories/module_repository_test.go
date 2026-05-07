@@ -330,7 +330,7 @@ func TestIncrementDownloadCount_Success(t *testing.T) {
 
 func TestUpdateModule_Success(t *testing.T) {
 	repo, mock := newModuleRepo(t)
-	mock.ExpectQuery("UPDATE modules.*SET description").
+	mock.ExpectQuery("UPDATE modules.*SET namespace").
 		WillReturnRows(sqlmock.NewRows([]string{"updated_at"}).AddRow(time.Now()))
 
 	m := &models.Module{ID: "mod-1", Namespace: "hashicorp", Name: "vpc", System: "aws"}
@@ -816,7 +816,7 @@ func TestSearchModulesWithStats_ScanError(t *testing.T) {
 
 func TestUpdateModule_DBError(t *testing.T) {
 	repo, mock := newModuleRepo(t)
-	mock.ExpectQuery("UPDATE modules.*SET description").
+	mock.ExpectQuery("UPDATE modules.*SET namespace").
 		WillReturnError(errDB)
 
 	m := &models.Module{ID: "mod-1"}
