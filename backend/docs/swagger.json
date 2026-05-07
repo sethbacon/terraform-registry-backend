@@ -1395,7 +1395,7 @@
                         "Bearer": []
                     }
                 ],
-                "description": "Update a module record's description or source URL. Requires modules:write scope.",
+                "description": "Update a module record's namespace, description, or source URL. Requires modules:write scope.",
                 "consumes": [
                     "application/json"
                 ],
@@ -1447,6 +1447,13 @@
                     },
                     "404": {
                         "description": "Module not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict - namespace/name/system already exists",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
