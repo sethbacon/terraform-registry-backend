@@ -154,6 +154,10 @@ func TestGetScanningStatsHandler_Success(t *testing.T) {
 			"total", "pending", "scanning", "clean", "findings", "error_count",
 		}).AddRow(100, 5, 2, 80, 10, 3))
 
+	// Mock total_filtered count query
+	mock.ExpectQuery("SELECT COUNT").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(100))
+
 	// Mock recent scans
 	now := time.Now()
 	mock.ExpectQuery("module_version_scans s").
@@ -187,12 +191,96 @@ func TestGetScanningStatsHandler_Success(t *testing.T) {
 	if resp.Clean != 80 {
 		t.Errorf("Clean = %d, want 80", resp.Clean)
 	}
+	if resp.TotalFiltered != 100 {
+		t.Errorf("TotalFiltered = %d, want 100", resp.TotalFiltered)
+	}
 	if len(resp.RecentScans) != 1 {
 		t.Errorf("len(RecentScans) = %d, want 1", len(resp.RecentScans))
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unfulfilled expectations: %v", err)
+	}
+}
+
+func TestGetScanningStatsHandler_WithStatusFilter(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	sqlxDB := sqlx.NewDb(db, "sqlmock")
+
+	r := gin.New()
+	r.GET("/scanning/stats", GetScanningStatsHandler(sqlxDB))
+
+	// Mock aggregate counts
+	mock.ExpectQuery("module_version_scans").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"total", "pending", "scanning", "clean", "findings", "error_count",
+		}).AddRow(100, 5, 2, 80, 10, 3))
+
+	// Mock filtered count
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs("findings").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(10))
+
+	// Mock filtered recent scans
+	now := time.Now()
+	mock.ExpectQuery("module_version_scans s").
+		WithArgs("findings", 20, 0).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "version", "name", "namespace", "system",
+			"scanner", "status",
+			"critical_count", "high_count", "medium_count", "low_count",
+			"scanned_at", "created_at",
+		}).AddRow(
+			"scan-1", "1.0.0", "vpc", "hashicorp", "aws",
+			"trivy", "findings",
+			1, 2, 3, 0,
+			now, now,
+		))
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/scanning/stats?status=findings", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp ScanningStatsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.TotalFiltered != 10 {
+		t.Errorf("TotalFiltered = %d, want 10", resp.TotalFiltered)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled expectations: %v", err)
+	}
+}
+
+func TestGetScanningStatsHandler_InvalidStatusFilter(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	sqlxDB := sqlx.NewDb(db, "sqlmock")
+
+	r := gin.New()
+	r.GET("/scanning/stats", GetScanningStatsHandler(sqlxDB))
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/scanning/stats?status=invalid", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
 }
 
@@ -237,6 +325,10 @@ func TestGetScanningStatsHandler_RecentQueryError(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{
 			"total", "pending", "scanning", "clean", "findings", "error_count",
 		}).AddRow(10, 0, 0, 10, 0, 0))
+
+	// Filtered count succeeds
+	mock.ExpectQuery("SELECT COUNT").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(10))
 
 	// Recent scans query fails
 	mock.ExpectQuery("module_version_scans s").

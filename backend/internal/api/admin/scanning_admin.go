@@ -2,7 +2,9 @@
 package admin
 
 import (
+	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -27,13 +29,14 @@ type ScanningConfigResponse struct {
 
 // ScanningStatsResponse aggregates scan counts by status and recent activity.
 type ScanningStatsResponse struct {
-	Total       int64             `json:"total"`
-	Pending     int64             `json:"pending"`
-	Scanning    int64             `json:"scanning"`
-	Clean       int64             `json:"clean"`
-	Findings    int64             `json:"findings"`
-	Error       int64             `json:"error"`
-	RecentScans []RecentScanEntry `json:"recent_scans"`
+	Total         int64             `json:"total"`
+	Pending       int64             `json:"pending"`
+	Scanning      int64             `json:"scanning"`
+	Clean         int64             `json:"clean"`
+	Findings      int64             `json:"findings"`
+	Error         int64             `json:"error"`
+	RecentScans   []RecentScanEntry `json:"recent_scans"`
+	TotalFiltered int64             `json:"total_filtered"`
 }
 
 // RecentScanEntry summarises a single recent scan for the admin UI.
@@ -91,21 +94,53 @@ func GetScanningConfigHandler(cfg *config.ScanningConfig) gin.HandlerFunc {
 }
 
 // @Summary      Get scanning statistics
-// @Description  Returns aggregate scan counts by status and a list of recent scans. Requires admin scope.
+// @Description  Returns aggregate scan counts by status and a list of recent scans. Supports optional status filter and pagination via query parameters. Requires admin scope.
 // @Tags         Security Scanning
 // @Security     Bearer
 // @Produce      json
+// @Param        status  query  string  false  "Filter recent scans by status (pending, scanning, clean, findings, error)"
+// @Param        limit   query  int     false  "Maximum number of recent scans to return (default 20, max 100)"
+// @Param        offset  query  int     false  "Offset for pagination (default 0)"
 // @Success      200  {object}  ScanningStatsResponse
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/admin/scanning/stats [get]
 func GetScanningStatsHandler(db *sqlx.DB) gin.HandlerFunc {
+	validStatuses := map[string]bool{
+		"pending":  true,
+		"scanning": true,
+		"clean":    true,
+		"findings": true,
+		"error":    true,
+	}
+
 	return func(c *gin.Context) {
 		ctx := c.Request.Context()
 
+		// Parse query parameters.
+		statusFilter := c.Query("status")
+		if statusFilter != "" && !validStatuses[statusFilter] {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status filter; must be one of: pending, scanning, clean, findings, error"})
+			return
+		}
+
+		limit := 20
+		if l := c.Query("limit"); l != "" {
+			if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 100 {
+				limit = parsed
+			}
+		}
+
+		offset := 0
+		if o := c.Query("offset"); o != "" {
+			if parsed, err := strconv.Atoi(o); err == nil && parsed >= 0 {
+				offset = parsed
+			}
+		}
+
 		var stats ScanningStatsResponse
 
-		// Aggregate counts by status.
+		// Aggregate counts by status (always unfiltered).
 		err := db.QueryRowContext(ctx, `
 			SELECT
 				COUNT(*) AS total,
@@ -128,8 +163,26 @@ func GetScanningStatsHandler(db *sqlx.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Recent scans — last 10, with module info joined.
-		rows, err := db.QueryContext(ctx, `
+		// Build filtered recent scans query.
+		var whereClause string
+		var args []interface{}
+		argIdx := 1
+
+		if statusFilter != "" {
+			whereClause = fmt.Sprintf(" WHERE s.status = $%d", argIdx)
+			args = append(args, statusFilter)
+			argIdx++
+		}
+
+		// Get total count for filtered results.
+		countQuery := `SELECT COUNT(*) FROM module_version_scans s` + whereClause
+		if err := db.QueryRowContext(ctx, countQuery, args...).Scan(&stats.TotalFiltered); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query filtered count"})
+			return
+		}
+
+		// Recent scans with optional status filter and pagination.
+		query := fmt.Sprintf(`
 			SELECT
 				s.id, mv.version, m.name, m.namespace, m.system,
 				s.scanner, s.status,
@@ -138,9 +191,13 @@ func GetScanningStatsHandler(db *sqlx.DB) gin.HandlerFunc {
 			FROM module_version_scans s
 			JOIN module_versions mv ON mv.id = s.module_version_id
 			JOIN modules m ON m.id = mv.module_id
+			%s
 			ORDER BY s.updated_at DESC
-			LIMIT 10
-		`)
+			LIMIT $%d OFFSET $%d
+		`, whereClause, argIdx, argIdx+1)
+		args = append(args, limit, offset)
+
+		rows, err := db.QueryContext(ctx, query, args...)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query recent scans"})
 			return
