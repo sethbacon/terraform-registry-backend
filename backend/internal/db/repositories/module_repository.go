@@ -162,12 +162,13 @@ func (r *ModuleRepository) GetModuleByID(ctx context.Context, id string) (*model
 func (r *ModuleRepository) UpdateModule(ctx context.Context, module *models.Module) error {
 	query := `
 		UPDATE modules
-		SET description = $1, source = $2, updated_at = NOW()
-		WHERE id = $3
+		SET namespace = $1, description = $2, source = $3, updated_at = NOW()
+		WHERE id = $4
 		RETURNING updated_at
 	`
 
 	err := r.db.QueryRowContext(ctx, query,
+		module.Namespace,
 		module.Description,
 		module.Source,
 		module.ID,

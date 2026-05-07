@@ -589,7 +589,7 @@ func (h *ModuleAdminHandlers) UndeprecateVersion(c *gin.Context) {
 
 // UpdateModuleRecord handler
 // @Summary      Update module record
-// @Description  Update a module record's description or source URL. Requires modules:write scope.
+// @Description  Update a module record's namespace, description, or source URL. Requires modules:write scope.
 // @Tags         Modules
 // @Security     Bearer
 // @Accept       json
@@ -600,6 +600,7 @@ func (h *ModuleAdminHandlers) UndeprecateVersion(c *gin.Context) {
 // @Failure      400  {object}  map[string]interface{}  "Invalid request"
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
 // @Failure      404  {object}  map[string]interface{}  "Module not found"
+// @Failure      409  {object}  map[string]interface{}  "Conflict - namespace/name/system already exists"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/admin/modules/{id} [put]
 // UpdateModuleRecord updates a module record
@@ -610,6 +611,7 @@ func (h *ModuleAdminHandlers) UpdateModuleRecord(c *gin.Context) {
 	var req struct {
 		Description *string `json:"description"`
 		Source      *string `json:"source"`
+		Namespace   *string `json:"namespace"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -626,6 +628,26 @@ func (h *ModuleAdminHandlers) UpdateModuleRecord(c *gin.Context) {
 		return
 	}
 
+	if req.Namespace != nil {
+		ns := *req.Namespace
+		if ns == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "namespace must not be empty"})
+			return
+		}
+		if ns != module.Namespace {
+			// Check for conflict with existing module at the new namespace.
+			existing, err := h.moduleRepo.GetModule(c.Request.Context(), module.OrganizationID, ns, module.Name, module.System)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check namespace availability"})
+				return
+			}
+			if existing != nil {
+				c.JSON(http.StatusConflict, gin.H{"error": "a module with the same name and system already exists in the target namespace"})
+				return
+			}
+			module.Namespace = ns
+		}
+	}
 	if req.Description != nil {
 		module.Description = req.Description
 	}

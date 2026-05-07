@@ -1004,6 +1004,44 @@ func TestUpdateModuleRecord_Success(t *testing.T) {
 	}
 }
 
+func TestUpdateModuleRecord_NamespaceChange_Success(t *testing.T) {
+	mock, r := newModuleRouter(t)
+	mock.ExpectQuery("SELECT.*FROM modules").WithArgs("mod-1").WillReturnRows(sampleModuleRow())
+	// Conflict check — no existing module at new namespace
+	mock.ExpectQuery("SELECT.*FROM modules").WillReturnRows(emptyModuleRow())
+	mock.ExpectQuery("UPDATE modules").WillReturnRows(sqlmock.NewRows([]string{"updated_at"}).AddRow(time.Now()))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/modules/id/mod-1",
+		jsonBody(map[string]string{"namespace": "new-namespace"})))
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestUpdateModuleRecord_NamespaceChange_Conflict(t *testing.T) {
+	mock, r := newModuleRouter(t)
+	mock.ExpectQuery("SELECT.*FROM modules").WithArgs("mod-1").WillReturnRows(sampleModuleRow())
+	// Conflict check — module already exists at target namespace
+	mock.ExpectQuery("SELECT.*FROM modules").WillReturnRows(sampleModuleRow())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/modules/id/mod-1",
+		jsonBody(map[string]string{"namespace": "other-namespace"})))
+	if w.Code != http.StatusConflict {
+		t.Errorf("status = %d, want 409: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestUpdateModuleRecord_NamespaceEmpty(t *testing.T) {
+	mock, r := newModuleRouter(t)
+	mock.ExpectQuery("SELECT.*FROM modules").WithArgs("mod-1").WillReturnRows(sampleModuleRow())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/modules/id/mod-1",
+		jsonBody(map[string]string{"namespace": ""})))
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
 // ---------------------------------------------------------------------------
 // DeprecateModule tests
 // ---------------------------------------------------------------------------
