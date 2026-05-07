@@ -672,6 +672,47 @@ func TestTerraformMirrorDeleteVersion_DBError(t *testing.T) {
 	}
 }
 
+// --- SetVersionDeprecated ---
+
+func TestSetVersionDeprecated_True(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	id := uuid.New()
+
+	mock.ExpectExec(`UPDATE terraform_versions SET is_deprecated`).
+		WithArgs(true, id).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	if err := repo.SetVersionDeprecated(context.Background(), id, true); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSetVersionDeprecated_False(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	id := uuid.New()
+
+	mock.ExpectExec(`UPDATE terraform_versions SET is_deprecated`).
+		WithArgs(false, id).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	if err := repo.SetVersionDeprecated(context.Background(), id, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSetVersionDeprecated_DBError(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	id := uuid.New()
+
+	mock.ExpectExec(`UPDATE terraform_versions SET is_deprecated`).
+		WithArgs(true, id).
+		WillReturnError(fmt.Errorf("db error"))
+
+	if err := repo.SetVersionDeprecated(context.Background(), id, true); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
 // --- SetLatestVersion ---
 
 func TestSetLatestVersion_Success(t *testing.T) {

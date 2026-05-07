@@ -471,6 +471,21 @@ func (r *TerraformMirrorRepository) DeleteVersion(ctx context.Context, versionID
 	return nil
 }
 
+// SetVersionDeprecated flips the is_deprecated flag on a version row.
+// When deprecated, the sync job will skip re-downloading the version's binaries;
+// the version row and any already-downloaded artifacts remain in place so
+// existing pulls still resolve.
+func (r *TerraformMirrorRepository) SetVersionDeprecated(ctx context.Context, versionID uuid.UUID, deprecated bool) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE terraform_versions SET is_deprecated = $1, updated_at = NOW() WHERE id = $2`,
+		deprecated, versionID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update terraform version deprecation: %w", err)
+	}
+	return nil
+}
+
 // ---- Platforms -------------------------------------------------------------
 
 // UpsertPlatform inserts or updates a platform row.
@@ -579,6 +594,7 @@ func (r *TerraformMirrorRepository) ListPendingPlatforms(ctx context.Context, co
 		FROM terraform_version_platforms p
 		JOIN terraform_versions v ON v.id = p.version_id
 		WHERE v.config_id = $1
+		  AND v.is_deprecated = false
 		  AND p.sync_status IN ('pending', 'failed')
 		ORDER BY p.created_at
 	`

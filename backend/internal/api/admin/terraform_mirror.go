@@ -548,6 +548,86 @@ func (h *TerraformMirrorHandler) DeleteVersion(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Version deleted", "version": versionStr})
 }
 
+// ---- POST /api/v1/admin/terraform-mirrors/:id/versions/:version/deprecate --
+
+// @Summary      Deprecate a mirrored Terraform version
+// @Description  Mark a mirrored Terraform/OpenTofu version as deprecated. Deprecated versions are skipped by the sync job (no further binary downloads), but already-mirrored artifacts remain available so existing pulls keep working. Requires mirrors:manage scope.
+// @Tags         Terraform Mirror
+// @Security     Bearer
+// @Produce      json
+// @Param        id       path  string  true  "Mirror config UUID"
+// @Param        version  path  string  true  "Terraform version (e.g. 1.7.0)"
+// @Success      200  {object}  map[string]interface{}
+// @Failure      401  {object}  map[string]interface{}  "Unauthorized"
+// @Failure      404  {object}  map[string]interface{}  "Not found"
+// @Failure      500  {object}  map[string]interface{}  "Internal server error"
+// @Router       /api/v1/admin/terraform-mirrors/{id}/versions/{version}/deprecate [post]
+func (h *TerraformMirrorHandler) DeprecateVersion(c *gin.Context) {
+	id, ok := parseMirrorID(c)
+	if !ok {
+		return
+	}
+
+	versionStr := c.Param("version")
+
+	v, err := h.repo.GetVersionByString(c.Request.Context(), id, versionStr)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to look up version: " + err.Error()})
+		return
+	}
+	if v == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Version not found"})
+		return
+	}
+
+	if updErr := h.repo.SetVersionDeprecated(c.Request.Context(), v.ID, true); updErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to deprecate version: " + updErr.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Version deprecated", "version": versionStr})
+}
+
+// ---- DELETE /api/v1/admin/terraform-mirrors/:id/versions/:version/deprecate
+
+// @Summary      Undeprecate a mirrored Terraform version
+// @Description  Clear the deprecated flag on a mirrored Terraform/OpenTofu version, restoring normal sync behavior on subsequent runs. Requires mirrors:manage scope.
+// @Tags         Terraform Mirror
+// @Security     Bearer
+// @Produce      json
+// @Param        id       path  string  true  "Mirror config UUID"
+// @Param        version  path  string  true  "Terraform version (e.g. 1.7.0)"
+// @Success      200  {object}  map[string]interface{}
+// @Failure      401  {object}  map[string]interface{}  "Unauthorized"
+// @Failure      404  {object}  map[string]interface{}  "Not found"
+// @Failure      500  {object}  map[string]interface{}  "Internal server error"
+// @Router       /api/v1/admin/terraform-mirrors/{id}/versions/{version}/deprecate [delete]
+func (h *TerraformMirrorHandler) UndeprecateVersion(c *gin.Context) {
+	id, ok := parseMirrorID(c)
+	if !ok {
+		return
+	}
+
+	versionStr := c.Param("version")
+
+	v, err := h.repo.GetVersionByString(c.Request.Context(), id, versionStr)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to look up version: " + err.Error()})
+		return
+	}
+	if v == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Version not found"})
+		return
+	}
+
+	if updErr := h.repo.SetVersionDeprecated(c.Request.Context(), v.ID, false); updErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to undeprecate version: " + updErr.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Version deprecation cleared", "version": versionStr})
+}
+
 // ---- GET /api/v1/admin/terraform-mirrors/:id/history ----------------------
 
 // @Summary      Get Terraform mirror sync history
