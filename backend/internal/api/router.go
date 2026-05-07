@@ -986,6 +986,8 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 				tfMirrorGroup.GET("/:id/versions", middleware.RequireScope(auth.ScopeMirrorsRead), tfMirrorAdminHandler.ListVersions)
 				tfMirrorGroup.GET("/:id/versions/:version", middleware.RequireScope(auth.ScopeMirrorsRead), tfMirrorAdminHandler.GetVersion)
 				tfMirrorGroup.DELETE("/:id/versions/:version", middleware.RequireScope(auth.ScopeMirrorsManage), tfMirrorAdminHandler.DeleteVersion)
+				tfMirrorGroup.POST("/:id/versions/:version/deprecate", middleware.RequireScope(auth.ScopeMirrorsManage), tfMirrorAdminHandler.DeprecateVersion)
+				tfMirrorGroup.DELETE("/:id/versions/:version/deprecate", middleware.RequireScope(auth.ScopeMirrorsManage), tfMirrorAdminHandler.UndeprecateVersion)
 				tfMirrorGroup.GET("/:id/versions/:version/platforms", middleware.RequireScope(auth.ScopeMirrorsRead), tfMirrorAdminHandler.ListPlatforms)
 				// Sync history
 				tfMirrorGroup.GET("/:id/history", middleware.RequireScope(auth.ScopeMirrorsRead), tfMirrorAdminHandler.GetSyncHistory)

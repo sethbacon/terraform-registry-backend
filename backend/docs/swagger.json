@@ -4248,6 +4248,130 @@
                 }
             }
         },
+        "/api/v1/admin/terraform-mirrors/{id}/versions/{version}/deprecate": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Mark a mirrored Terraform/OpenTofu version as deprecated. Deprecated versions are skipped by the sync job (no further binary downloads), but already-mirrored artifacts remain available so existing pulls keep working. Requires mirrors:manage scope.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Terraform Mirror"
+                ],
+                "summary": "Deprecate a mirrored Terraform version",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Mirror config UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Terraform version (e.g. 1.7.0)",
+                        "name": "version",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Clear the deprecated flag on a mirrored Terraform/OpenTofu version, restoring normal sync behavior on subsequent runs. Requires mirrors:manage scope.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Terraform Mirror"
+                ],
+                "summary": "Undeprecate a mirrored Terraform version",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Mirror config UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Terraform version (e.g. 1.7.0)",
+                        "name": "version",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/admin/terraform-mirrors/{id}/versions/{version}/platforms": {
             "get": {
                 "security": [

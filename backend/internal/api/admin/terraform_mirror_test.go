@@ -105,6 +105,8 @@ func newTerraformMirrorRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	r.GET("/terraform-mirrors/:id/versions", h.ListVersions)
 	r.GET("/terraform-mirrors/:id/versions/:version", h.GetVersion)
 	r.DELETE("/terraform-mirrors/:id/versions/:version", h.DeleteVersion)
+	r.POST("/terraform-mirrors/:id/versions/:version/deprecate", h.DeprecateVersion)
+	r.DELETE("/terraform-mirrors/:id/versions/:version/deprecate", h.UndeprecateVersion)
 	r.GET("/terraform-mirrors/:id/history", h.GetSyncHistory)
 	r.GET("/terraform-mirrors/:id/versions/:version/platforms", h.ListPlatforms)
 
@@ -691,6 +693,106 @@ func TestTMMirrorDeleteVersion_Success(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/terraform-mirrors/"+knownUUID+"/versions/1.7.0", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DeprecateVersion / UndeprecateVersion (mirror handler) tests
+// ---------------------------------------------------------------------------
+
+func TestTMMirrorDeprecateVersion_InvalidID(t *testing.T) {
+	_, r := newTerraformMirrorRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/terraform-mirrors/not-a-uuid/versions/1.7.0/deprecate", nil))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestTMMirrorDeprecateVersion_LookupDBError(t *testing.T) {
+	mock, r := newTerraformMirrorRouter(t)
+	mock.ExpectQuery("SELECT.*FROM terraform_versions WHERE config_id.*AND version").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/terraform-mirrors/"+knownUUID+"/versions/1.7.0/deprecate", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestTMMirrorDeprecateVersion_NotFound(t *testing.T) {
+	mock, r := newTerraformMirrorRouter(t)
+	mock.ExpectQuery("SELECT.*FROM terraform_versions WHERE config_id.*AND version").
+		WillReturnRows(sqlmock.NewRows(tfvCols))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/terraform-mirrors/"+knownUUID+"/versions/1.7.0/deprecate", nil))
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestTMMirrorDeprecateVersion_UpdateDBError(t *testing.T) {
+	mock, r := newTerraformMirrorRouter(t)
+	mock.ExpectQuery("SELECT.*FROM terraform_versions WHERE config_id.*AND version").
+		WillReturnRows(sampleTFVRow())
+	mock.ExpectExec("UPDATE terraform_versions SET is_deprecated").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/terraform-mirrors/"+knownUUID+"/versions/1.7.0/deprecate", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestTMMirrorDeprecateVersion_Success(t *testing.T) {
+	mock, r := newTerraformMirrorRouter(t)
+	mock.ExpectQuery("SELECT.*FROM terraform_versions WHERE config_id.*AND version").
+		WillReturnRows(sampleTFVRow())
+	mock.ExpectExec("UPDATE terraform_versions SET is_deprecated").
+		WithArgs(true, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/terraform-mirrors/"+knownUUID+"/versions/1.7.0/deprecate", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestTMMirrorUndeprecateVersion_NotFound(t *testing.T) {
+	mock, r := newTerraformMirrorRouter(t)
+	mock.ExpectQuery("SELECT.*FROM terraform_versions WHERE config_id.*AND version").
+		WillReturnRows(sqlmock.NewRows(tfvCols))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/terraform-mirrors/"+knownUUID+"/versions/1.7.0/deprecate", nil))
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestTMMirrorUndeprecateVersion_Success(t *testing.T) {
+	mock, r := newTerraformMirrorRouter(t)
+	mock.ExpectQuery("SELECT.*FROM terraform_versions WHERE config_id.*AND version").
+		WillReturnRows(sampleTFVRow())
+	mock.ExpectExec("UPDATE terraform_versions SET is_deprecated").
+		WithArgs(false, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/terraform-mirrors/"+knownUUID+"/versions/1.7.0/deprecate", nil))
 
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
