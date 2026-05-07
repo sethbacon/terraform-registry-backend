@@ -7,6 +7,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1](https://github.com/sethbacon/terraform-registry-backend/compare/v1.1.0...v1.1.1) (2026-05-07)
+
+
+### Bug Fixes
+
+* **api:** add status filter and pagination to scanning stats endpoint ([#340](https://github.com/sethbacon/terraform-registry-backend/issues/340)) ([ed2b4b0](https://github.com/sethbacon/terraform-registry-backend/commit/ed2b4b0c4dae86a6576962ec6051a845a4bbf372))
+* **api:** allow namespace update in PUT /api/v1/admin/modules/{id} ([#341](https://github.com/sethbacon/terraform-registry-backend/issues/341)) ([7901c81](https://github.com/sethbacon/terraform-registry-backend/commit/7901c81a6f0ad43752678e79073e49ca2cffdcc6))
+
 ## [1.1.0](https://github.com/sethbacon/terraform-registry-backend/compare/v1.0.5...v1.1.0) (2026-05-06)
 
 
