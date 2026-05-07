@@ -3191,7 +3191,7 @@
                         "Bearer": []
                     }
                 ],
-                "description": "Returns aggregate scan counts by status and a list of recent scans. Requires admin scope.",
+                "description": "Returns aggregate scan counts by status and a list of recent scans. Supports optional status filter and pagination via query parameters. Requires admin scope.",
                 "produces": [
                     "application/json"
                 ],
@@ -3199,6 +3199,26 @@
                     "Security Scanning"
                 ],
                 "summary": "Get scanning statistics",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Filter recent scans by status (pending, scanning, clean, findings, error)",
+                        "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Maximum number of recent scans to return (default 20, max 100)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Offset for pagination (default 0)",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "OK",
@@ -12990,6 +13010,9 @@
                     "type": "integer"
                 },
                 "total": {
+                    "type": "integer"
+                },
+                "total_filtered": {
                     "type": "integer"
                 }
             }
