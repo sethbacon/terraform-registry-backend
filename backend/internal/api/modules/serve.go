@@ -17,18 +17,17 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/telemetry"
 )
 
-// ServeFileHandler serves a module archive file.
-// @Summary      Download module archive
-// @Description  Streams a module version archive file
-// @Tags         Modules
-// @Param        namespace  path  string  true  "Namespace"
-// @Param        name       path  string  true  "Module name"
-// @Param        provider   path  string  true  "Provider"
-// @Param        version    path  string  true  "Version"
-// @Produce      application/zip
+// ServeFileHandler serves a module or provider archive file directly from local storage.
+// @Summary      Serve archive file from local storage
+// @Description  Streams a stored archive file. Only registered when the local storage backend has ServeDirectly enabled. Path traversal sequences are rejected.
+// @Tags         Files
+// @Param        filepath   path  string  true  "Storage-relative file path"
+// @Produce      application/octet-stream
 // @Success      200
-// @Failure      404  {object}  map[string]interface{}
-// @Router       /api/v1/modules/{namespace}/{name}/{provider}/{version}/download [get]
+// @Failure      400  {object}  map[string]interface{}  "Invalid file path"
+// @Failure      404  {object}  map[string]interface{}  "File not found"
+// @Failure      500  {object}  map[string]interface{}  "Internal server error"
+// @Router       /v1/files/{filepath} [get]
 // ServeFileHandler handles direct file serving for local storage
 // Implements: GET /v1/files/*filepath
 // Only used when local storage has ServeDirectly: true

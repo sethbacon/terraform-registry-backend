@@ -5445,92 +5445,14 @@
                 }
             }
         },
-        "/api/v1/modules/search": {
-            "get": {
-                "description": "Search for modules by name, namespace, or provider system with pagination and sorting.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Modules"
-                ],
-                "summary": "Search modules",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Search query",
-                        "name": "q",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Filter by namespace",
-                        "name": "namespace",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Filter by target system",
-                        "name": "system",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Sort field: relevance, name, downloads, created, updated",
-                        "name": "sort",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Sort order: asc or desc (default desc)",
-                        "name": "order",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "description": "Maximum results to return (default 20, max 100)",
-                        "name": "limit",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "description": "Offset for pagination (default 0)",
-                        "name": "offset",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/modules.ModuleSearchResponse"
-                        }
-                    },
-                    "400": {
-                        "description": "Invalid sort parameter",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": true
-                        }
-                    },
-                    "500": {
-                        "description": "Internal server error",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": true
-                        }
-                    }
-                }
-            }
-        },
-        "/api/v1/modules/{namespace}/{name}/{provider}/{version}": {
+        "/api/v1/modules": {
             "post": {
                 "security": [
                     {
                         "Bearer": []
                     }
                 ],
-                "description": "Uploads a new module version archive",
+                "description": "Uploads a new module version archive. Module identity (namespace, name, system, version) is supplied as multipart form fields, not path params. Requires modules:write scope.",
                 "consumes": [
                     "multipart/form-data"
                 ],
@@ -5632,52 +5554,76 @@
                 }
             }
         },
-        "/api/v1/modules/{namespace}/{name}/{provider}/{version}/download": {
+        "/api/v1/modules/search": {
             "get": {
-                "description": "Streams a module version archive file",
+                "description": "Search for modules by name, namespace, or provider system with pagination and sorting.",
                 "produces": [
-                    "application/zip"
+                    "application/json"
                 ],
                 "tags": [
                     "Modules"
                 ],
-                "summary": "Download module archive",
+                "summary": "Search modules",
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Namespace",
+                        "description": "Search query",
+                        "name": "q",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by namespace",
                         "name": "namespace",
-                        "in": "path",
-                        "required": true
+                        "in": "query"
                     },
                     {
                         "type": "string",
-                        "description": "Module name",
-                        "name": "name",
-                        "in": "path",
-                        "required": true
+                        "description": "Filter by target system",
+                        "name": "system",
+                        "in": "query"
                     },
                     {
                         "type": "string",
-                        "description": "Provider",
-                        "name": "provider",
-                        "in": "path",
-                        "required": true
+                        "description": "Sort field: relevance, name, downloads, created, updated",
+                        "name": "sort",
+                        "in": "query"
                     },
                     {
                         "type": "string",
-                        "description": "Version",
-                        "name": "version",
-                        "in": "path",
-                        "required": true
+                        "description": "Sort order: asc or desc (default desc)",
+                        "name": "order",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Maximum results to return (default 20, max 100)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Offset for pagination (default 0)",
+                        "name": "offset",
+                        "in": "query"
                     }
                 ],
                 "responses": {
                     "200": {
-                        "description": "OK"
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/modules.ModuleSearchResponse"
+                        }
                     },
-                    "404": {
-                        "description": "Not Found",
+                    "400": {
+                        "description": "Invalid sort parameter",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -6194,6 +6140,70 @@
                 }
             }
         },
+        "/api/v1/modules/{namespace}/{name}/{system}/versions/{version}/docs": {
+            "get": {
+                "description": "Returns terraform-docs metadata (inputs, outputs, providers, requirements) extracted from the module archive at upload time.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Modules"
+                ],
+                "summary": "Get module documentation",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Module namespace",
+                        "name": "namespace",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Module name",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Target system (e.g. aws, azurerm)",
+                        "name": "system",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Module version",
+                        "name": "version",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/analyzer.ModuleDoc"
+                        }
+                    },
+                    "404": {
+                        "description": "Module, version, or docs not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/modules/{namespace}/{name}/{system}/versions/{version}/reanalyze": {
             "post": {
                 "security": [
@@ -6389,70 +6399,6 @@
                     },
                     "404": {
                         "description": "Module or version not found",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": true
-                        }
-                    },
-                    "500": {
-                        "description": "Internal server error",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": true
-                        }
-                    }
-                }
-            }
-        },
-        "/api/v1/modules/{namespace}/{name}/{system}/{version}/docs": {
-            "get": {
-                "description": "Returns terraform-docs metadata (inputs, outputs, providers, requirements) extracted from the module archive at upload time.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Modules"
-                ],
-                "summary": "Get module documentation",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Module namespace",
-                        "name": "namespace",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Module name",
-                        "name": "name",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Target system (e.g. aws, azurerm)",
-                        "name": "system",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Module version",
-                        "name": "version",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/analyzer.ModuleDoc"
-                        }
-                    },
-                    "404": {
-                        "description": "Module, version, or docs not found",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -7101,6 +7047,127 @@
                 }
             }
         },
+        "/api/v1/providers": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Uploads a new provider version binary and associated files. Provider identity (namespace, type, version, os, arch) is supplied as multipart form fields, not path params. Requires providers:write scope.",
+                "consumes": [
+                    "multipart/form-data"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Providers"
+                ],
+                "summary": "Upload provider version",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Provider namespace",
+                        "name": "namespace",
+                        "in": "formData",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Provider type (e.g. aws, azurerm)",
+                        "name": "type",
+                        "in": "formData",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Semantic version (e.g. 1.2.3)",
+                        "name": "version",
+                        "in": "formData",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Target OS (e.g. linux, darwin, windows)",
+                        "name": "os",
+                        "in": "formData",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Target architecture (e.g. amd64, arm64)",
+                        "name": "arch",
+                        "in": "formData",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "JSON array of supported protocols (default [\\",
+                        "name": "protocols",
+                        "in": "formData"
+                    },
+                    {
+                        "type": "string",
+                        "description": "ASCII-armored GPG public key for signing verification",
+                        "name": "gpg_public_key",
+                        "in": "formData"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Provider description",
+                        "name": "description",
+                        "in": "formData"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Source URL",
+                        "name": "source",
+                        "in": "formData"
+                    },
+                    {
+                        "type": "file",
+                        "description": "Provider binary (.zip, max 500MB)",
+                        "name": "file",
+                        "in": "formData",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/providers/search": {
             "get": {
                 "description": "Search for providers by name or namespace with pagination and sorting.",
@@ -7650,127 +7717,6 @@
                     },
                     "502": {
                         "description": "Failed to fetch from upstream",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": true
-                        }
-                    }
-                }
-            }
-        },
-        "/api/v1/providers/{namespace}/{type}/{version}/{os}/{arch}": {
-            "post": {
-                "security": [
-                    {
-                        "Bearer": []
-                    }
-                ],
-                "description": "Uploads a new provider version binary and associated files",
-                "consumes": [
-                    "multipart/form-data"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Providers"
-                ],
-                "summary": "Upload provider version",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Provider namespace",
-                        "name": "namespace",
-                        "in": "formData",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Provider type (e.g. aws, azurerm)",
-                        "name": "type",
-                        "in": "formData",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Semantic version (e.g. 1.2.3)",
-                        "name": "version",
-                        "in": "formData",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Target OS (e.g. linux, darwin, windows)",
-                        "name": "os",
-                        "in": "formData",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Target architecture (e.g. amd64, arm64)",
-                        "name": "arch",
-                        "in": "formData",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "JSON array of supported protocols (default [\\",
-                        "name": "protocols",
-                        "in": "formData"
-                    },
-                    {
-                        "type": "string",
-                        "description": "ASCII-armored GPG public key for signing verification",
-                        "name": "gpg_public_key",
-                        "in": "formData"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Provider description",
-                        "name": "description",
-                        "in": "formData"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Source URL",
-                        "name": "source",
-                        "in": "formData"
-                    },
-                    {
-                        "type": "file",
-                        "description": "Provider binary (.zip, max 500MB)",
-                        "name": "file",
-                        "in": "formData",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "201": {
-                        "description": "Created"
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": true
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": true
-                        }
-                    },
-                    "409": {
-                        "description": "Conflict",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": true
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -11159,6 +11105,53 @@
                     },
                     "404": {
                         "description": "Provider or version not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/files/{filepath}": {
+            "get": {
+                "description": "Streams a stored archive file. Only registered when the local storage backend has ServeDirectly enabled. Path traversal sequences are rejected.",
+                "produces": [
+                    "application/octet-stream"
+                ],
+                "tags": [
+                    "Files"
+                ],
+                "summary": "Serve archive file from local storage",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Storage-relative file path",
+                        "name": "filepath",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    },
+                    "400": {
+                        "description": "Invalid file path",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "File not found",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true

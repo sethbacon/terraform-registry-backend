@@ -20,7 +20,7 @@ import (
 // @Success      200  {object}  analyzer.ModuleDoc
 // @Failure      404  {object}  map[string]interface{}  "Module, version, or docs not found"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
-// @Router       /api/v1/modules/{namespace}/{name}/{system}/{version}/docs [get]
+// @Router       /api/v1/modules/{namespace}/{name}/{system}/versions/{version}/docs [get]
 func GetModuleDocsHandler(db *sql.DB) gin.HandlerFunc {
 	moduleRepo := repositories.NewModuleRepository(db)
 	orgRepo := repositories.NewOrganizationRepository(db)
