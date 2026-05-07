@@ -21,7 +21,7 @@ import (
 )
 
 // @Summary      Upload module version
-// @Description  Uploads a new module version archive
+// @Description  Uploads a new module version archive. Module identity (namespace, name, system, version) is supplied as multipart form fields, not path params. Requires modules:write scope.
 // @Tags         Modules
 // @Security     Bearer
 // @Accept       multipart/form-data
@@ -39,7 +39,7 @@ import (
 // @Failure      409  {object}  map[string]interface{}
 // @Failure      422  {object}  map[string]interface{}  "Policy violation (block mode)"
 // @Failure      500  {object}  map[string]interface{}
-// @Router       /api/v1/modules/{namespace}/{name}/{provider}/{version} [post]
+// @Router       /api/v1/modules [post]
 // UploadHandler handles module upload requests
 // Implements: POST /api/v1/modules
 // Accepts multipart form with: namespace, name, system, version, description (optional), file

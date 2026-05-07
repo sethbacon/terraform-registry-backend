@@ -26,7 +26,7 @@ const (
 )
 
 // @Summary      Upload provider version
-// @Description  Uploads a new provider version binary and associated files
+// @Description  Uploads a new provider version binary and associated files. Provider identity (namespace, type, version, os, arch) is supplied as multipart form fields, not path params. Requires providers:write scope.
 // @Tags         Providers
 // @Security     Bearer
 // @Accept       multipart/form-data
@@ -46,7 +46,7 @@ const (
 // @Failure      401  {object}  map[string]interface{}
 // @Failure      409  {object}  map[string]interface{}
 // @Failure      500  {object}  map[string]interface{}
-// @Router       /api/v1/providers/{namespace}/{type}/{version}/{os}/{arch} [post]
+// @Router       /api/v1/providers [post]
 // UploadHandler handles provider upload requests
 // Implements: POST /api/v1/providers
 // Accepts multipart form with: namespace, type, version, os, arch, protocols, gpg_public_key, file
