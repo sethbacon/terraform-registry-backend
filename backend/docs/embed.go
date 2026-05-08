@@ -15,6 +15,15 @@ import (
 //go:embed swagger.json
 var SwaggerJSON []byte
 
+// OpenAPI3JSON holds the raw bytes of openapi3.json — the same spec as
+// SwaggerJSON converted from Swagger 2.0 to OpenAPI 3.0 via swagger2openapi.
+// Downstream consumers (frontend typegen, provider oapi-codegen) want
+// OpenAPI 3 natively; emitting both formats from this repo means each
+// consumer doesn't have to run its own conversion step.
+//
+//go:embed openapi3.json
+var OpenAPI3JSON []byte
+
 // SwaggerUIAssets embeds the Swagger UI static files (JS bundle, standalone
 // preset, CSS). These are served at /api-docs/static/ so the /api-docs/ page
 // works in air-gapped environments without any CDN dependency.
