@@ -15,7 +15,7 @@ import (
 type InstallScannerAdminInput struct {
 	Tool    string `json:"tool" binding:"required"`
 	Version string `json:"version"`
-}
+} // @name InstallScannerInput
 
 // InstallScannerAdminResponse is returned by POST /api/v1/admin/scanning/install.
 type InstallScannerAdminResponse struct {
@@ -26,7 +26,7 @@ type InstallScannerAdminResponse struct {
 	Sha256     string `json:"sha256,omitempty"`
 	SourceURL  string `json:"source_url,omitempty"`
 	Error      string `json:"error,omitempty"`
-}
+} // @name InstallScannerResponse
 
 // @Summary      Install or upgrade a scanner binary
 // @Description  Admin-only post-setup action that downloads, verifies, and installs a supported scanner binary. Returns the installed binary path — updating the scanning configuration to use it is a separate admin action. Requires admin scope.

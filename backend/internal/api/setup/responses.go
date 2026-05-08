@@ -17,13 +17,13 @@ type TestOIDCConfigResponse struct {
 type TestStorageConfigResponse struct {
 	Success bool   `json:"success"`
 	Message string `json:"message"`
-}
+} // @name StorageConfigTestResponse
 
 // SaveStorageConfigResponse is returned by POST /api/v1/setup/storage.
 type SaveStorageConfigResponse struct {
 	Message string      `json:"message"`
 	Config  interface{} `json:"config"`
-}
+} // @name StorageConfigSavedResponse
 
 // ConfigureAdminResponse is returned by POST /api/v1/setup/admin.
 type ConfigureAdminResponse struct {
@@ -60,4 +60,4 @@ type InstallScannerResponse struct {
 	Sha256     string `json:"sha256,omitempty"`
 	SourceURL  string `json:"source_url,omitempty"`
 	Error      string `json:"error,omitempty"`
-}
+} // @name InstallScannerResponse

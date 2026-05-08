@@ -3876,15 +3876,7 @@
                 ],
                 "summary": "Install or upgrade a scanner binary",
                 "requestBody": {
-                    "content": {
-                        "application/json": {
-                            "schema": {
-                                "$ref": "#/components/schemas/admin.InstallScannerAdminInput"
-                            }
-                        }
-                    },
-                    "description": "Scanner to install",
-                    "required": true
+                    "$ref": "#/components/requestBodies/InstallScannerInput"
                 },
                 "responses": {
                     "200": {
@@ -3892,7 +3884,7 @@
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/admin.InstallScannerAdminResponse"
+                                    "$ref": "#/components/schemas/InstallScannerResponse"
                                 }
                             }
                         }
@@ -11334,15 +11326,7 @@
                 ],
                 "summary": "Install a scanner binary",
                 "requestBody": {
-                    "content": {
-                        "application/json": {
-                            "schema": {
-                                "$ref": "#/components/schemas/setup.InstallScannerInput"
-                            }
-                        }
-                    },
-                    "description": "Scanner to install",
-                    "required": true
+                    "$ref": "#/components/requestBodies/InstallScannerInput"
                 },
                 "responses": {
                     "200": {
@@ -11350,7 +11334,7 @@
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/setup.InstallScannerResponse"
+                                    "$ref": "#/components/schemas/InstallScannerResponse"
                                 }
                             }
                         }
@@ -11533,7 +11517,7 @@
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/setup.SaveStorageConfigResponse"
+                                    "$ref": "#/components/schemas/StorageConfigSavedResponse"
                                 }
                             }
                         }
@@ -11606,7 +11590,7 @@
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/setup.TestStorageConfigResponse"
+                                    "$ref": "#/components/schemas/StorageConfigTestResponse"
                                 }
                             }
                         }
@@ -11886,7 +11870,7 @@
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/admin.StorageTestResponse"
+                                    "$ref": "#/components/schemas/StorageConfigTestResponse"
                                 }
                             }
                         }
@@ -12198,7 +12182,7 @@
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/admin.ActivateStorageConfigResponse"
+                                    "$ref": "#/components/schemas/StorageConfigSavedResponse"
                                 }
                             }
                         }
@@ -14747,6 +14731,17 @@
     ],
     "components": {
         "requestBodies": {
+            "InstallScannerInput": {
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "$ref": "#/components/schemas/InstallScannerInput"
+                        }
+                    }
+                },
+                "description": "Scanner to install",
+                "required": true
+            },
             "models.StorageConfigInput": {
                 "content": {
                     "application/json": {
@@ -14779,6 +14774,124 @@
             }
         },
         "schemas": {
+            "InstallScannerInput": {
+                "type": "object",
+                "required": [
+                    "tool"
+                ],
+                "properties": {
+                    "tool": {
+                        "type": "string"
+                    },
+                    "version": {
+                        "description": "empty = latest",
+                        "type": "string"
+                    }
+                }
+            },
+            "InstallScannerResponse": {
+                "type": "object",
+                "properties": {
+                    "binary_path": {
+                        "type": "string"
+                    },
+                    "error": {
+                        "type": "string"
+                    },
+                    "sha256": {
+                        "type": "string"
+                    },
+                    "source_url": {
+                        "type": "string"
+                    },
+                    "success": {
+                        "type": "boolean"
+                    },
+                    "tool": {
+                        "type": "string"
+                    },
+                    "version": {
+                        "type": "string"
+                    }
+                }
+            },
+            "PaginationMetadata": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer"
+                    },
+                    "offset": {
+                        "type": "integer"
+                    },
+                    "total": {
+                        "type": "integer"
+                    }
+                }
+            },
+            "ProviderPlatform": {
+                "type": "object",
+                "properties": {
+                    "arch": {
+                        "type": "string"
+                    },
+                    "download_count": {
+                        "type": "integer"
+                    },
+                    "filename": {
+                        "type": "string"
+                    },
+                    "id": {
+                        "type": "string"
+                    },
+                    "os": {
+                        "type": "string"
+                    },
+                    "shasum": {
+                        "type": "string"
+                    }
+                }
+            },
+            "StorageConfigSavedResponse": {
+                "type": "object",
+                "properties": {
+                    "config": {},
+                    "message": {
+                        "type": "string"
+                    }
+                }
+            },
+            "StorageConfigTestResponse": {
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string"
+                    },
+                    "success": {
+                        "type": "boolean"
+                    }
+                }
+            },
+            "User": {
+                "type": "object",
+                "properties": {
+                    "created_at": {
+                        "type": "string"
+                    },
+                    "email": {
+                        "type": "string"
+                    },
+                    "id": {
+                        "type": "string"
+                    },
+                    "name": {
+                        "type": "string"
+                    },
+                    "updated_at": {
+                        "type": "string"
+                    }
+                }
+            },
             "admin.APIKeyItem": {
                 "type": "object",
                 "properties": {
@@ -14822,15 +14935,6 @@
                 "properties": {
                     "key": {
                         "$ref": "#/components/schemas/admin.APIKeyItem"
-                    }
-                }
-            },
-            "admin.ActivateStorageConfigResponse": {
-                "type": "object",
-                "properties": {
-                    "config": {},
-                    "message": {
-                        "type": "string"
                     }
                 }
             },
@@ -15336,46 +15440,6 @@
                     }
                 }
             },
-            "admin.InstallScannerAdminInput": {
-                "type": "object",
-                "required": [
-                    "tool"
-                ],
-                "properties": {
-                    "tool": {
-                        "type": "string"
-                    },
-                    "version": {
-                        "type": "string"
-                    }
-                }
-            },
-            "admin.InstallScannerAdminResponse": {
-                "type": "object",
-                "properties": {
-                    "binary_path": {
-                        "type": "string"
-                    },
-                    "error": {
-                        "type": "string"
-                    },
-                    "sha256": {
-                        "type": "string"
-                    },
-                    "source_url": {
-                        "type": "string"
-                    },
-                    "success": {
-                        "type": "boolean"
-                    },
-                    "tool": {
-                        "type": "string"
-                    },
-                    "version": {
-                        "type": "string"
-                    }
-                }
-            },
             "admin.ListAPIKeysResponse": {
                 "type": "object",
                 "properties": {
@@ -15440,7 +15504,7 @@
                     "users": {
                         "type": "array",
                         "items": {
-                            "$ref": "#/components/schemas/admin.UserItem"
+                            "$ref": "#/components/schemas/User"
                         }
                     }
                 }
@@ -15491,27 +15555,7 @@
                     },
                     "role_template": {},
                     "user": {
-                        "$ref": "#/components/schemas/admin.MeUserInfo"
-                    }
-                }
-            },
-            "admin.MeUserInfo": {
-                "type": "object",
-                "properties": {
-                    "created_at": {
-                        "type": "string"
-                    },
-                    "email": {
-                        "type": "string"
-                    },
-                    "id": {
-                        "type": "string"
-                    },
-                    "name": {
-                        "type": "string"
-                    },
-                    "updated_at": {
-                        "type": "string"
+                        "$ref": "#/components/schemas/User"
                     }
                 }
             },
@@ -15794,29 +15838,6 @@
                     }
                 }
             },
-            "admin.ProviderPlatformItem": {
-                "type": "object",
-                "properties": {
-                    "arch": {
-                        "type": "string"
-                    },
-                    "download_count": {
-                        "type": "integer"
-                    },
-                    "filename": {
-                        "type": "string"
-                    },
-                    "id": {
-                        "type": "string"
-                    },
-                    "os": {
-                        "type": "string"
-                    },
-                    "shasum": {
-                        "type": "string"
-                    }
-                }
-            },
             "admin.ProviderStats": {
                 "type": "object",
                 "properties": {
@@ -15860,7 +15881,7 @@
                     "platforms": {
                         "type": "array",
                         "items": {
-                            "$ref": "#/components/schemas/admin.ProviderPlatformItem"
+                            "$ref": "#/components/schemas/ProviderPlatform"
                         }
                     },
                     "protocols": {
@@ -16082,17 +16103,6 @@
                     }
                 }
             },
-            "admin.StorageTestResponse": {
-                "type": "object",
-                "properties": {
-                    "message": {
-                        "type": "string"
-                    },
-                    "success": {
-                        "type": "boolean"
-                    }
-                }
-            },
             "admin.TerraformMirrorSyncResponse": {
                 "type": "object",
                 "properties": {
@@ -16191,26 +16201,6 @@
                     }
                 }
             },
-            "admin.UserItem": {
-                "type": "object",
-                "properties": {
-                    "created_at": {
-                        "type": "string"
-                    },
-                    "email": {
-                        "type": "string"
-                    },
-                    "id": {
-                        "type": "string"
-                    },
-                    "name": {
-                        "type": "string"
-                    },
-                    "updated_at": {
-                        "type": "string"
-                    }
-                }
-            },
             "admin.UserMembershipsResponse": {
                 "type": "object",
                 "properties": {
@@ -16221,7 +16211,7 @@
                 "type": "object",
                 "properties": {
                     "user": {
-                        "$ref": "#/components/schemas/admin.UserItem"
+                        "$ref": "#/components/schemas/User"
                     }
                 }
             },
@@ -16230,7 +16220,7 @@
                 "properties": {
                     "organizations": {},
                     "user": {
-                        "$ref": "#/components/schemas/admin.UserItem"
+                        "$ref": "#/components/schemas/User"
                     }
                 }
             },
@@ -18238,7 +18228,7 @@
                 "type": "object",
                 "properties": {
                     "meta": {
-                        "$ref": "#/components/schemas/modules.SearchMetadata"
+                        "$ref": "#/components/schemas/PaginationMetadata"
                     },
                     "modules": {
                         "type": "array",
@@ -18299,20 +18289,6 @@
                         "items": {
                             "$ref": "#/components/schemas/modules.ModuleVersionsModuleItem"
                         }
-                    }
-                }
-            },
-            "modules.SearchMetadata": {
-                "type": "object",
-                "properties": {
-                    "limit": {
-                        "type": "integer"
-                    },
-                    "offset": {
-                        "type": "integer"
-                    },
-                    "total": {
-                        "type": "integer"
                     }
                 }
             },
@@ -18486,29 +18462,6 @@
                     }
                 }
             },
-            "providers.ProviderPlatformEntry": {
-                "type": "object",
-                "properties": {
-                    "arch": {
-                        "type": "string"
-                    },
-                    "download_count": {
-                        "type": "integer"
-                    },
-                    "filename": {
-                        "type": "string"
-                    },
-                    "id": {
-                        "type": "string"
-                    },
-                    "os": {
-                        "type": "string"
-                    },
-                    "shasum": {
-                        "type": "string"
-                    }
-                }
-            },
             "providers.ProviderSearchItem": {
                 "type": "object",
                 "properties": {
@@ -18535,25 +18488,11 @@
                     }
                 }
             },
-            "providers.ProviderSearchMeta": {
-                "type": "object",
-                "properties": {
-                    "limit": {
-                        "type": "integer"
-                    },
-                    "offset": {
-                        "type": "integer"
-                    },
-                    "total": {
-                        "type": "integer"
-                    }
-                }
-            },
             "providers.ProviderSearchResponse": {
                 "type": "object",
                 "properties": {
                     "meta": {
-                        "$ref": "#/components/schemas/providers.ProviderSearchMeta"
+                        "$ref": "#/components/schemas/PaginationMetadata"
                     },
                     "providers": {
                         "type": "array",
@@ -18595,7 +18534,7 @@
                     "platforms": {
                         "type": "array",
                         "items": {
-                            "$ref": "#/components/schemas/providers.ProviderPlatformEntry"
+                            "$ref": "#/components/schemas/ProviderPlatform"
                         }
                     },
                     "protocols": {
@@ -19035,47 +18974,6 @@
                     }
                 }
             },
-            "setup.InstallScannerInput": {
-                "type": "object",
-                "required": [
-                    "tool"
-                ],
-                "properties": {
-                    "tool": {
-                        "type": "string"
-                    },
-                    "version": {
-                        "description": "empty = latest",
-                        "type": "string"
-                    }
-                }
-            },
-            "setup.InstallScannerResponse": {
-                "type": "object",
-                "properties": {
-                    "binary_path": {
-                        "type": "string"
-                    },
-                    "error": {
-                        "type": "string"
-                    },
-                    "sha256": {
-                        "type": "string"
-                    },
-                    "source_url": {
-                        "type": "string"
-                    },
-                    "success": {
-                        "type": "boolean"
-                    },
-                    "tool": {
-                        "type": "string"
-                    },
-                    "version": {
-                        "type": "string"
-                    }
-                }
-            },
             "setup.SaveScanningConfigInput": {
                 "type": "object",
                 "required": [
@@ -19106,15 +19004,6 @@
             "setup.SaveScanningConfigResponse": {
                 "type": "object",
                 "properties": {
-                    "message": {
-                        "type": "string"
-                    }
-                }
-            },
-            "setup.SaveStorageConfigResponse": {
-                "type": "object",
-                "properties": {
-                    "config": {},
                     "message": {
                         "type": "string"
                     }
@@ -19159,17 +19048,6 @@
                         "type": "string"
                     },
                     "error": {
-                        "type": "string"
-                    },
-                    "success": {
-                        "type": "boolean"
-                    }
-                }
-            },
-            "setup.TestStorageConfigResponse": {
-                "type": "object",
-                "properties": {
-                    "message": {
                         "type": "string"
                     },
                     "success": {

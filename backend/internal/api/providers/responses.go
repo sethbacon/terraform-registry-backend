@@ -22,7 +22,7 @@ type ProviderPlatformEntry struct {
 	Filename      string `json:"filename"`
 	Shasum        string `json:"shasum"`
 	DownloadCount int64  `json:"download_count"`
-}
+} // @name ProviderPlatform
 
 // ProviderVersionEntry represents a single version in the provider versions list response.
 type ProviderVersionEntry struct {
@@ -58,7 +58,7 @@ type ProviderSearchMeta struct {
 	Limit  int   `json:"limit"`
 	Offset int   `json:"offset"`
 	Total  int64 `json:"total"`
-}
+} // @name PaginationMetadata
 
 // ProviderSearchResponse is returned by GET /api/v1/providers/search.
 type ProviderSearchResponse struct {

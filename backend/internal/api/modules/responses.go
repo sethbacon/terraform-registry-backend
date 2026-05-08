@@ -52,7 +52,7 @@ type SearchMetadata struct {
 	Limit  int   `json:"limit"`
 	Offset int   `json:"offset"`
 	Total  int64 `json:"total"`
-}
+} // @name PaginationMetadata
 
 // ModuleSearchItem represents a single module result in search responses.
 type ModuleSearchItem struct {

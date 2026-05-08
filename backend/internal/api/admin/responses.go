@@ -21,7 +21,7 @@ type MeUserInfo struct {
 	Name      string    `json:"name"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
-}
+} // @name User
 
 // MeMembershipEntry describes one organisation membership in the /me response.
 type MeMembershipEntry struct {
@@ -127,7 +127,7 @@ type UserItem struct {
 	Name      string    `json:"name"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
-}
+} // @name User
 
 // ListUsersResponse is returned by GET /api/v1/users and GET /api/v1/users/search.
 type ListUsersResponse struct {
@@ -207,13 +207,13 @@ type WebhookEventsResponse struct {
 type ActivateStorageConfigResponse struct {
 	Message string      `json:"message"`
 	Config  interface{} `json:"config"`
-}
+} // @name StorageConfigSavedResponse
 
 // StorageTestResponse is returned by POST /api/v1/storage/configs/test.
 type StorageTestResponse struct {
 	Success bool   `json:"success"`
 	Message string `json:"message"`
-}
+} // @name StorageConfigTestResponse
 
 // ModuleVersionItem represents a version entry inside a module detail response.
 type ModuleVersionItem struct {
@@ -248,7 +248,7 @@ type ProviderPlatformItem struct {
 	Filename      string `json:"filename"`
 	Shasum        string `json:"shasum"`
 	DownloadCount int64  `json:"download_count"`
-}
+} // @name ProviderPlatform
 
 // ProviderVersionItem represents a version entry inside a provider detail response.
 type ProviderVersionItem struct {
