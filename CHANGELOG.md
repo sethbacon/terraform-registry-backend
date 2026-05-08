@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.4](https://github.com/sethbacon/terraform-registry-backend/compare/v1.1.3...v1.1.4) (2026-05-08)
+
+
+### Bug Fixes
+
+* **api:** wire up GDPR user export/erase handlers (roadmap C3.4 recovery) ([#350](https://github.com/sethbacon/terraform-registry-backend/issues/350)) ([9492e00](https://github.com/sethbacon/terraform-registry-backend/commit/9492e00f3754c52335d882cde0ced50078cb901d))
+
 ## [1.1.3](https://github.com/sethbacon/terraform-registry-backend/compare/v1.1.2...v1.1.3) (2026-05-07)
 
 
