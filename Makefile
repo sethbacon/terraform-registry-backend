@@ -2,11 +2,20 @@ SWAG=swag
 VERSION ?= dev
 BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
-.PHONY: swag backend-test test-compose-up test-compose-down build build-fips docker-fips
+.PHONY: swag openapi3 backend-test test-compose-up test-compose-down build build-fips docker-fips
 
 swag:
 	@echo "Generating Swagger JSON..."
 	cd backend && $(SWAG) init -g cmd/server/main.go --outputTypes json
+	@$(MAKE) openapi3
+
+# openapi3 converts the swag-generated Swagger 2.0 spec to OpenAPI 3.0.
+# Downstream consumers (frontend codegen, terraform-provider-registry oapi-codegen)
+# require OpenAPI 3 — emitting it from this repo means each consumer doesn't
+# have to run its own conversion step.
+openapi3:
+	@echo "Converting Swagger 2.0 -> OpenAPI 3.0..."
+	@npx --yes swagger2openapi backend/docs/swagger.json -o backend/docs/openapi3.json -p
 
 backend-test:
 	@echo "Running Go unit tests..."

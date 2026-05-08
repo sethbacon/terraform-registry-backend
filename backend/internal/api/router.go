@@ -442,6 +442,17 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 		c.Data(http.StatusOK, "application/json", out)
 	})
 
+	// Raw OpenAPI 3 JSON — same spec as /swagger.json converted to OpenAPI 3
+	// at build time via swagger2openapi. Served without runtime metadata
+	// injection because downstream consumers (frontend typegen, provider
+	// oapi-codegen) only care about the route and schema surface, not
+	// terms-of-service / license fields.
+	router.GET("/openapi3.json", func(c *gin.Context) {
+		c.Header("Content-Type", "application/json")
+		c.Header("Access-Control-Allow-Origin", "*")
+		c.Data(http.StatusOK, "application/json", docs.OpenAPI3JSON)
+	})
+
 	// Module Registry endpoints (v1) - Terraform Protocol
 	// These are public endpoints that support optional authentication
 	v1Modules := router.Group("/v1/modules")
