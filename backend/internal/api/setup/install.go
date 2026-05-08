@@ -14,7 +14,7 @@ import (
 type InstallScannerInput struct {
 	Tool    string `json:"tool" binding:"required"`
 	Version string `json:"version"` // empty = latest
-}
+} // @name InstallScannerInput
 
 // @Summary      Install a scanner binary
 // @Description  Downloads the official release of a supported scanner for this server's OS/architecture, verifies its SHA256 against the published checksum file, and installs it to the server's scanner directory. Returns the installed binary path for use in the scanning configuration. Supported tools: trivy, terrascan, checkov. Not supported: snyk (proprietary, no public checksums), custom (no catalog entry).
