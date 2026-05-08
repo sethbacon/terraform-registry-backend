@@ -548,6 +548,11 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 		WithModuleDocs(moduleDocsRepo).
 		WithScanQueue(scanRepo)
 
+	// GDPR data-subject handlers (Article 15/17/20). Registered under
+	// /api/v1/admin/users/:id/{export,erase} below.
+	userSvc := services.NewUserService(db)
+	gdprHandlers := admin.NewGDPRHandlers(userSvc)
+
 	rbacRepo := repositories.NewRBACRepository(sqlxDB)
 	rbacHandlers := admin.NewRBACHandlers(rbacRepo)
 
@@ -887,6 +892,16 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 				usersWriteGroup.POST("", userHandlers.CreateUserHandler())
 				usersWriteGroup.PUT("/:id", userHandlers.UpdateUserHandler())
 				usersWriteGroup.DELETE("/:id", userHandlers.DeleteUserHandler())
+			}
+
+			// GDPR data-subject endpoints (Articles 15/17/20). Admin scope only —
+			// these reveal or destroy PII for any user, so the gate is stricter than
+			// users:write.
+			adminUsersGroup := authenticatedGroup.Group("/admin/users")
+			adminUsersGroup.Use(middleware.RequireScope(auth.ScopeAdmin))
+			{
+				adminUsersGroup.GET("/:id/export", gdprHandlers.ExportUserDataHandler())
+				adminUsersGroup.POST("/:id/erase", gdprHandlers.EraseUserHandler())
 			}
 
 			// Organizations management
