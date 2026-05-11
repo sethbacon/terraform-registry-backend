@@ -84,7 +84,7 @@ func NewAzureDevOpsConnector(settings *scm.ConnectorSettings) (*AzureDevOpsConne
 }
 
 func (c *AzureDevOpsConnector) Platform() scm.ProviderKind {
-	return scm.KindAzureDevOps
+	return scm.ProviderAzureDevOps
 }
 
 func (c *AzureDevOpsConnector) AuthorizationEndpoint(stateParam string, requestedScopes []string) string {
@@ -863,7 +863,7 @@ type adoRepo struct {
 
 // Register the Azure DevOps connector
 func init() {
-	scm.RegisterConnector(scm.KindAzureDevOps, func(settings *scm.ConnectorSettings) (scm.Connector, error) {
+	scm.RegisterConnector(scm.ProviderAzureDevOps, func(settings *scm.ConnectorSettings) (scm.Connector, error) {
 		return NewAzureDevOpsConnector(settings)
 	})
 }

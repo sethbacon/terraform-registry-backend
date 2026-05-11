@@ -15838,21 +15838,13 @@
                 "github",
                 "azuredevops",
                 "gitlab",
-                "bitbucket_dc",
-                "github",
-                "azuredevops",
-                "gitlab",
                 "bitbucket_dc"
             ],
             "x-enum-varnames": [
                 "ProviderGitHub",
                 "ProviderAzureDevOps",
                 "ProviderGitLab",
-                "ProviderBitbucketDC",
-                "KindGitHub",
-                "KindAzureDevOps",
-                "KindGitLab",
-                "KindBitbucketDC"
+                "ProviderBitbucketDC"
             ]
         },
         "scm.SCMProviderRecord": {
@@ -16158,9 +16150,15 @@
     },
     "securityDefinitions": {
         "Bearer": {
-            "description": "\"JWT token or API key. For JWT: 'Bearer {token}'. For API Key: 'Bearer {api_key}'\"",
+            "description": "JWT token or API key. For JWT: 'Bearer {token}'. For API key: 'Bearer {api_key}'",
             "type": "apiKey",
             "name": "Authorization",
+            "in": "header"
+        },
+        "SetupToken": {
+            "description": "One-time setup token, valid until /api/v1/setup/complete is called.",
+            "type": "apiKey",
+            "name": "X-Setup-Token",
             "in": "header"
         }
     }

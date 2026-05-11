@@ -159,22 +159,3 @@ func TestWebhookEventIsTagEvent(t *testing.T) {
 		})
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Constants / Kind aliases are consistent with ProviderType values
-// ---------------------------------------------------------------------------
-
-func TestKindAliasesMatchProviderTypes(t *testing.T) {
-	if KindGitHub != ProviderGitHub {
-		t.Errorf("KindGitHub != ProviderGitHub")
-	}
-	if KindAzureDevOps != ProviderAzureDevOps {
-		t.Errorf("KindAzureDevOps != ProviderAzureDevOps")
-	}
-	if KindGitLab != ProviderGitLab {
-		t.Errorf("KindGitLab != ProviderGitLab")
-	}
-	if KindBitbucketDC != ProviderBitbucketDC {
-		t.Errorf("KindBitbucketDC != ProviderBitbucketDC")
-	}
-}

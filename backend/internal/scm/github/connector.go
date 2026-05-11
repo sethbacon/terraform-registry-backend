@@ -55,7 +55,7 @@ func NewGitHubConnector(settings *scm.ConnectorSettings) (*GitHubConnector, erro
 
 // Platform returns the provider kind
 func (c *GitHubConnector) Platform() scm.ProviderKind {
-	return scm.KindGitHub
+	return scm.ProviderGitHub
 }
 
 // AuthorizationEndpoint returns the OAuth authorization URL
@@ -685,7 +685,7 @@ type githubRepo struct {
 }
 
 func init() {
-	scm.RegisterConnector(scm.KindGitHub, func(settings *scm.ConnectorSettings) (scm.Connector, error) {
+	scm.RegisterConnector(scm.ProviderGitHub, func(settings *scm.ConnectorSettings) (scm.Connector, error) {
 		return NewGitHubConnector(settings)
 	})
 }

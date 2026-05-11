@@ -70,7 +70,7 @@ func TestNewGitHubConnector_CustomBase(t *testing.T) {
 
 func TestPlatform(t *testing.T) {
 	c, _ := NewGitHubConnector(&scm.ConnectorSettings{})
-	if c.Platform() != scm.KindGitHub {
+	if c.Platform() != scm.ProviderGitHub {
 		t.Errorf("Platform() = %v, want KindGitHub", c.Platform())
 	}
 }
@@ -577,7 +577,7 @@ func TestVerifyDeliverySignature_EmptySecret(t *testing.T) {
 
 func TestBuildConnector_GitHub(t *testing.T) {
 	settings := &scm.ConnectorSettings{
-		Kind:         scm.KindGitHub,
+		Kind:         scm.ProviderGitHub,
 		ClientID:     "client-id",
 		ClientSecret: "client-secret",
 		CallbackURL:  "https://example.com/callback",
