@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.7](https://github.com/sethbacon/terraform-registry-backend/compare/v1.1.6...v1.1.7) (2026-05-11)
+
+
+### Bug Fixes
+
+* **swagger:** correct spec for strict OpenAPI 3 validators ([#362](https://github.com/sethbacon/terraform-registry-backend/issues/362)) ([f772779](https://github.com/sethbacon/terraform-registry-backend/commit/f772779251064ba32dfd13826ad11bc340c18e3c))
+
 ## [1.1.6](https://github.com/sethbacon/terraform-registry-backend/compare/v1.1.5...v1.1.6) (2026-05-08)
 
 
