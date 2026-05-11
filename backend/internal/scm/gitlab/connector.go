@@ -52,7 +52,7 @@ func NewGitLabConnector(settings *scm.ConnectorSettings) (*GitLabConnector, erro
 
 // Platform returns the provider kind
 func (c *GitLabConnector) Platform() scm.ProviderKind {
-	return scm.KindGitLab
+	return scm.ProviderGitLab
 }
 
 // AuthorizationEndpoint returns the OAuth authorization URL
@@ -721,7 +721,7 @@ type gitlabProject struct {
 }
 
 func init() {
-	scm.RegisterConnector(scm.KindGitLab, func(settings *scm.ConnectorSettings) (scm.Connector, error) {
+	scm.RegisterConnector(scm.ProviderGitLab, func(settings *scm.ConnectorSettings) (scm.Connector, error) {
 		return NewGitLabConnector(settings)
 	})
 }

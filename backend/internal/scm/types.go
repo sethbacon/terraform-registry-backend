@@ -283,12 +283,4 @@ type ModuleSourceRepoRecord = ModuleSCMRepo
 type SCMWebhookLogRecord = SCMWebhookEvent
 type TagImmutabilityAlertRecord = VersionImmutabilityViolation
 
-// KindGitHub, KindAzureDevOps, KindGitLab, KindBitbucketDC are aliases for consistency
-const (
-	KindGitHub      = ProviderGitHub
-	KindAzureDevOps = ProviderAzureDevOps
-	KindGitLab      = ProviderGitLab
-	KindBitbucketDC = ProviderBitbucketDC
-)
-
 // Note: ArchiveKind type and constants (ArchiveTarball, ArchiveZipball) are defined in connector.go

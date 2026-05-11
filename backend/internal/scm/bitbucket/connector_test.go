@@ -61,7 +61,7 @@ func TestNewBitbucketDCConnector_MissingURL(t *testing.T) {
 
 func TestPlatform(t *testing.T) {
 	c, _ := NewBitbucketDCConnector(&scm.ConnectorSettings{InstanceBaseURL: "http://localhost"})
-	if c.Platform() != scm.KindBitbucketDC {
+	if c.Platform() != scm.ProviderBitbucketDC {
 		t.Errorf("Platform() = %v, want KindBitbucketDC", c.Platform())
 	}
 }
@@ -568,7 +568,7 @@ func TestSearchRepositories_HTTPError(t *testing.T) {
 
 func TestBuildConnector_Bitbucket(t *testing.T) {
 	settings := &scm.ConnectorSettings{
-		Kind:            scm.KindBitbucketDC,
+		Kind:            scm.ProviderBitbucketDC,
 		InstanceBaseURL: "http://bitbucket.example.com",
 	}
 	c, err := scm.BuildConnector(settings)
@@ -582,7 +582,7 @@ func TestBuildConnector_Bitbucket(t *testing.T) {
 
 func TestBuildConnector_Bitbucket_NoURL(t *testing.T) {
 	settings := &scm.ConnectorSettings{
-		Kind: scm.KindBitbucketDC,
+		Kind: scm.ProviderBitbucketDC,
 	}
 	_, err := scm.BuildConnector(settings)
 	if err == nil {

@@ -62,7 +62,7 @@ func TestNewGitLabConnector_CustomBase(t *testing.T) {
 
 func TestPlatform(t *testing.T) {
 	c, _ := NewGitLabConnector(&scm.ConnectorSettings{})
-	if c.Platform() != scm.KindGitLab {
+	if c.Platform() != scm.ProviderGitLab {
 		t.Errorf("Platform() = %v, want KindGitLab", c.Platform())
 	}
 }
@@ -542,7 +542,7 @@ func TestVerifyDeliverySignature_EmptySecret(t *testing.T) {
 
 func TestBuildConnector_GitLab(t *testing.T) {
 	settings := &scm.ConnectorSettings{
-		Kind:         scm.KindGitLab,
+		Kind:         scm.ProviderGitLab,
 		ClientID:     "client-id",
 		ClientSecret: "client-secret",
 		CallbackURL:  "https://example.com/callback",

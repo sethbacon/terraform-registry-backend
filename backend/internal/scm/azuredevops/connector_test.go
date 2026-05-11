@@ -58,7 +58,7 @@ func TestNewAzureDevOpsConnector_CustomURL(t *testing.T) {
 
 func TestPlatform(t *testing.T) {
 	c, _ := NewAzureDevOpsConnector(&scm.ConnectorSettings{})
-	if c.Platform() != scm.KindAzureDevOps {
+	if c.Platform() != scm.ProviderAzureDevOps {
 		t.Errorf("Platform() = %v, want KindAzureDevOps", c.Platform())
 	}
 }
@@ -678,7 +678,7 @@ func TestRenewToken_HTTPError(t *testing.T) {
 
 func TestBuildConnector_AzureDevOps(t *testing.T) {
 	settings := &scm.ConnectorSettings{
-		Kind:         scm.KindAzureDevOps,
+		Kind:         scm.ProviderAzureDevOps,
 		ClientID:     "client-id",
 		ClientSecret: "client-secret",
 		CallbackURL:  "https://example.com/callback",

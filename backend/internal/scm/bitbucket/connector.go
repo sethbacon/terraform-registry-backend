@@ -38,7 +38,7 @@ func NewBitbucketDCConnector(settings *scm.ConnectorSettings) (*BitbucketDCConne
 }
 
 func (c *BitbucketDCConnector) Platform() scm.ProviderKind {
-	return scm.KindBitbucketDC
+	return scm.ProviderBitbucketDC
 }
 
 // AuthorizationEndpoint is not applicable for PAT-based auth
@@ -636,7 +636,7 @@ type bbRef struct {
 }
 
 func init() {
-	scm.RegisterConnector(scm.KindBitbucketDC, func(settings *scm.ConnectorSettings) (scm.Connector, error) {
+	scm.RegisterConnector(scm.ProviderBitbucketDC, func(settings *scm.ConnectorSettings) (scm.Connector, error) {
 		return NewBitbucketDCConnector(settings)
 	})
 }

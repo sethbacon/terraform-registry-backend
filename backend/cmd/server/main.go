@@ -9,8 +9,13 @@
 // @schemes         http https
 // @securityDefinitions.apiKey  Bearer
 // @in                          header
-// @name                         Authorization
-// @description                  "JWT token or API key. For JWT: 'Bearer {token}'. For API Key: 'Bearer {api_key}'"
+// @name                        Authorization
+// @description                 JWT token or API key. For JWT: 'Bearer {token}'. For API key: 'Bearer {api_key}'
+//
+// @securityDefinitions.apiKey  SetupToken
+// @in                          header
+// @name                        X-Setup-Token
+// @description                 One-time setup token, valid until /api/v1/setup/complete is called.
 //
 // @tag.name         System
 // @tag.description  Health, readiness, and service-discovery endpoints.
