@@ -254,6 +254,98 @@ func TestUpdateOrganization_Success(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Rename tests
+// ---------------------------------------------------------------------------
+
+func TestUpdateOrganization_RenameSuccess(t *testing.T) {
+	mock, r := newOrgRouter(t)
+
+	// 1. GetByID — return current org (name = "default")
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE id").
+		WillReturnRows(sampleOrgRow())
+	// 2. GetByName uniqueness check — new name is available
+	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
+		WillReturnRows(emptyOrgRow())
+	// 3. RenameWithCascade transaction
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE organizations SET name").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec("UPDATE modules SET namespace").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("UPDATE providers SET namespace").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectCommit()
+	// 4. Regular Update for remaining fields (display_name / idp_type)
+	mock.ExpectExec("UPDATE organizations SET display_name").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	newName := "new-org-name"
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/organizations/org-1",
+		jsonBody(map[string]interface{}{"name": &newName})))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestUpdateOrganization_RenameConflict(t *testing.T) {
+	mock, r := newOrgRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE id").
+		WillReturnRows(sampleOrgRow())
+	// GetByName — name already taken
+	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
+		WillReturnRows(sampleOrgRow())
+
+	taken := "already-taken"
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/organizations/org-1",
+		jsonBody(map[string]interface{}{"name": &taken})))
+
+	if w.Code != http.StatusConflict {
+		t.Errorf("status = %d, want 409: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestUpdateOrganization_RenameInvalidFormat(t *testing.T) {
+	mock, r := newOrgRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE id").
+		WillReturnRows(sampleOrgRow())
+
+	// Name with spaces and uppercase — fails ValidateRegistrySegment before any DB call
+	badName := "My Bad Name!"
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/organizations/org-1",
+		jsonBody(map[string]interface{}{"name": &badName})))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestUpdateOrganization_RenameSameName(t *testing.T) {
+	// Sending the same name as current should be a no-op (no cascade, no conflict check)
+	mock, r := newOrgRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE id").
+		WillReturnRows(sampleOrgRow())
+	// No rename branch runs; only the regular Update executes
+	mock.ExpectExec("UPDATE organizations SET display_name").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	sameName := "default" // matches sampleOrgRow name
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/organizations/org-1",
+		jsonBody(map[string]interface{}{"name": &sameName})))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
 // DeleteOrganizationHandler tests
 // ---------------------------------------------------------------------------
 

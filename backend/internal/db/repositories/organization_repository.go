@@ -398,6 +398,56 @@ func (r *OrganizationRepository) Update(ctx context.Context, org *models.Organiz
 	return nil
 }
 
+// RenameWithCascade atomically renames an organization and propagates the new name
+// to all module and provider namespace columns that currently carry oldName for this
+// organization. User membership links are stored by organization UUID and are therefore
+// unaffected by a rename.
+//
+// The three UPDATE statements run inside a single database transaction. If any step
+// fails the transaction is rolled back and the error is returned.
+func (r *OrganizationRepository) RenameWithCascade(ctx context.Context, orgID, oldName, newName string) (retErr error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin rename transaction: %w", err)
+	}
+	defer func() {
+		if retErr != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	// 1. Rename the organization itself.
+	if _, err = tx.ExecContext(ctx,
+		`UPDATE organizations SET name = $1, updated_at = NOW() WHERE id = $2`,
+		newName, orgID,
+	); err != nil {
+		return fmt.Errorf("rename organization: %w", err)
+	}
+
+	// 2. Cascade to module namespaces.
+	if _, err = tx.ExecContext(ctx,
+		`UPDATE modules SET namespace = $1, updated_at = NOW() WHERE organization_id = $2 AND namespace = $3`,
+		newName, orgID, oldName,
+	); err != nil {
+		return fmt.Errorf("cascade rename to modules: %w", err)
+	}
+
+	// 3. Cascade to provider namespaces.
+	if _, err = tx.ExecContext(ctx,
+		`UPDATE providers SET namespace = $1, updated_at = NOW() WHERE organization_id = $2 AND namespace = $3`,
+		newName, orgID, oldName,
+	); err != nil {
+		return fmt.Errorf("cascade rename to providers: %w", err)
+	}
+
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("commit rename transaction: %w", err)
+	}
+
+	r.InvalidateDefaultOrgCache()
+	return nil
+}
+
 // Delete deletes an organization
 func (r *OrganizationRepository) Delete(ctx context.Context, orgID string) error {
 	query := `DELETE FROM organizations WHERE id = $1`

@@ -11,6 +11,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/validation"
 )
 
 // OrganizationHandlers handles organization management endpoints
@@ -257,13 +258,14 @@ func (h *OrganizationHandlers) CreateOrganizationHandler() gin.HandlerFunc {
 
 // UpdateOrganizationRequest represents the request to update an organization
 type UpdateOrganizationRequest struct {
-	DisplayName *string `json:"display_name"`
-	IdpType     *string `json:"idp_type"` // "oidc", "saml", "ldap", or null to clear
-	IdpName     *string `json:"idp_name"` // IdP name within type, or null to clear
+	Name        *string `json:"name"`         // Optional rename; must satisfy registry naming rules
+	DisplayName *string `json:"display_name"` // Human-readable display name
+	IdpType     *string `json:"idp_type"`     // "oidc", "saml", "ldap", or null to clear
+	IdpName     *string `json:"idp_name"`     // IdP name within type, or null to clear
 }
 
 // @Summary      Update organization
-// @Description  Update an existing organization's display name and optional IdP binding (idp_type + idp_name). Set idp_type to "oidc", "saml", or "ldap" to restrict login; set to empty string to clear.
+// @Description  Update an existing organization's name, display name, and optional IdP binding. Supplying a new `name` triggers a cascade rename: the organization row, all module namespace columns, and all provider namespace columns are updated atomically in a single transaction. User memberships reference the organization by UUID and are therefore unaffected. Set idp_type to "oidc", "saml", or "ldap" to restrict login; set to empty string to clear.
 // @Tags         Organizations
 // @Security     Bearer
 // @Accept       json
@@ -271,9 +273,10 @@ type UpdateOrganizationRequest struct {
 // @Param        id    path  string                    true  "Organization ID"
 // @Param        body  body  UpdateOrganizationRequest  true  "Fields to update"
 // @Success      200  {object}  admin.OrganizationResponse
-// @Failure      400  {object}  map[string]interface{}  "Invalid request body"
+// @Failure      400  {object}  map[string]interface{}  "Invalid request body or name format"
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
 // @Failure      404  {object}  map[string]interface{}  "Organization not found"
+// @Failure      409  {object}  map[string]interface{}  "Organization name already taken"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/organizations/{id} [put]
 // UpdateOrganizationHandler updates an organization
@@ -306,7 +309,38 @@ func (h *OrganizationHandlers) UpdateOrganizationHandler() gin.HandlerFunc {
 			return
 		}
 
-		// Update fields
+		// Handle rename — validate format, check uniqueness, then cascade.
+		if req.Name != nil && *req.Name != org.Name {
+			newName := *req.Name
+			if err := validation.ValidateRegistrySegment(newName); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": "invalid organization name: " + err.Error(),
+				})
+				return
+			}
+			existing, err := h.orgRepo.GetByName(c.Request.Context(), newName)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"error": "Failed to check name availability",
+				})
+				return
+			}
+			if existing != nil {
+				c.JSON(http.StatusConflict, gin.H{
+					"error": "Organization name already taken",
+				})
+				return
+			}
+			if err := h.orgRepo.RenameWithCascade(c.Request.Context(), orgID, org.Name, newName); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"error": "Failed to rename organization",
+				})
+				return
+			}
+			org.Name = newName
+		}
+
+		// Update remaining fields
 		if req.DisplayName != nil {
 			org.DisplayName = *req.DisplayName
 		}

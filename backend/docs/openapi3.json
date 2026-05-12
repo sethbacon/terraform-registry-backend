@@ -8329,7 +8329,7 @@
                         "Bearer": []
                     }
                 ],
-                "description": "Update an existing organization's display name and optional IdP binding (idp_type + idp_name). Set idp_type to \"oidc\", \"saml\", or \"ldap\" to restrict login; set to empty string to clear.",
+                "description": "Update an existing organization's name, display name, and optional IdP binding. Supplying a new `name` triggers a cascade rename: the organization row, all module namespace columns, and all provider namespace columns are updated atomically in a single transaction. User memberships reference the organization by UUID and are therefore unaffected. Set idp_type to \"oidc\", \"saml\", or \"ldap\" to restrict login; set to empty string to clear.",
                 "tags": [
                     "Organizations"
                 ],
@@ -8368,7 +8368,7 @@
                         }
                     },
                     "400": {
-                        "description": "Invalid request body",
+                        "description": "Invalid request body or name format",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -8391,6 +8391,17 @@
                     },
                     "404": {
                         "description": "Organization not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Organization name already taken",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -16147,6 +16158,7 @@
                 "type": "object",
                 "properties": {
                     "display_name": {
+                        "description": "Human-readable display name",
                         "type": "string"
                     },
                     "idp_name": {
@@ -16155,6 +16167,10 @@
                     },
                     "idp_type": {
                         "description": "\"oidc\", \"saml\", \"ldap\", or null to clear",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Optional rename; must satisfy registry naming rules",
                         "type": "string"
                     }
                 }
