@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.8](https://github.com/sethbacon/terraform-registry-backend/compare/v1.1.7...v1.1.8) (2026-05-12)
+
+
+### Bug Fixes
+
+* support org rename with cascade to modules and providers ([e9f8de4](https://github.com/sethbacon/terraform-registry-backend/commit/e9f8de45586a129ac7e826fe760173adf3713835)), closes [#364](https://github.com/sethbacon/terraform-registry-backend/issues/364)
+
 ## [1.1.7](https://github.com/sethbacon/terraform-registry-backend/compare/v1.1.6...v1.1.7) (2026-05-11)
 
 
