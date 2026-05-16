@@ -407,6 +407,13 @@ func (j *TerraformMirrorSyncJob) performSync(
 		}
 	}
 
+	// 6b. SHA256 back-fill: for already-synced platforms with sha256='', fetch the
+	// upstream SHA256SUMS text (~5KB) and write the per-filename hashes into the
+	// sha256 column. No binaries are re-downloaded.
+	if backfillErr := j.backfillSHA256(ctx, client, cfg, allVersions); backfillErr != nil {
+		log.Printf("[terraform-mirror] SHA256 back-fill error for %s: %v", cfg.Name, backfillErr)
+	}
+
 	// 7. Mark the highest fully-synced stable version as is_latest.
 	if setLatestErr := j.updateLatestVersion(ctx, cfg.ID); setLatestErr != nil {
 		log.Printf("[terraform-mirror] failed to update latest version for %s: %v", cfg.Name, setLatestErr)
@@ -558,6 +565,12 @@ func (j *TerraformMirrorSyncJob) syncOnePlatform(
 		}
 	}
 
+	if sha256Verified {
+		if shaErr := j.repo.UpdatePlatformSHA256(ctx, p.ID, strings.ToLower(actualSHA256)); shaErr != nil {
+			log.Printf("[terraform-mirror] failed to persist sha256 for %s %s/%s: %v", version, p.OS, p.Arch, shaErr)
+		}
+	}
+
 	if _, seekErr := tmpFile.Seek(0, io.SeekStart); seekErr != nil {
 		errStr := fmt.Sprintf("failed to seek temp file: %v", seekErr)
 		_ = j.repo.UpdatePlatformSyncStatus(ctx, p.ID, "failed", nil, nil, sha256Verified, sumsGPGVerified, &errStr)
@@ -577,6 +590,66 @@ func (j *TerraformMirrorSyncJob) syncOnePlatform(
 	_ = j.repo.UpdatePlatformSyncStatus(ctx, p.ID, "synced", &storagePath, &backendName, sha256Verified, sumsGPGVerified, nil)
 	log.Printf("[terraform-mirror] stored %s %s/%s -> %s", version, p.OS, p.Arch, storagePath)
 	return true
+}
+
+// backfillSHA256 populates the sha256 column for already-synced platforms whose
+// hash was not persisted during their original sync run. It fetches the
+// lightweight upstream SHA256SUMS text for each filtered version (~5KB each)
+// and writes per-filename hashes — no binary downloads.
+// coverage:skip:integration-only — fetches SUMS files over HTTP and writes to the database; covered by integration tests.
+func (j *TerraformMirrorSyncJob) backfillSHA256(
+	ctx context.Context,
+	client terraformReleasesClient,
+	cfg *models.TerraformMirrorConfig,
+	filteredVersions []mirror.TerraformVersionInfo,
+) error {
+	wantedVersions := make(map[string]bool, len(filteredVersions))
+	for _, vi := range filteredVersions {
+		wantedVersions[vi.Version] = true
+	}
+
+	syncedVersions, err := j.repo.ListVersions(ctx, cfg.ID, true /* syncedOnly */)
+	if err != nil {
+		return fmt.Errorf("failed to list synced versions: %w", err)
+	}
+
+	for _, sv := range syncedVersions {
+		if !wantedVersions[sv.Version] {
+			continue
+		}
+
+		platforms, plErr := j.repo.ListPlatformsForVersion(ctx, sv.ID)
+		if plErr != nil {
+			log.Printf("[terraform-mirror] sha256 backfill: failed to list platforms for %s: %v", sv.Version, plErr)
+			continue
+		}
+		needsBackfill := false
+		for _, p := range platforms {
+			if p.SyncStatus == "synced" && p.SHA256 == "" {
+				needsBackfill = true
+				break
+			}
+		}
+		if !needsBackfill {
+			continue
+		}
+
+		sums, _, sumsErr := client.FetchSHASums(ctx, sv.Version)
+		if sumsErr != nil {
+			log.Printf("[terraform-mirror] sha256 backfill: failed to fetch SUMS for %s: %v", sv.Version, sumsErr)
+			continue
+		}
+		if len(sums) == 0 {
+			continue
+		}
+		if bfErr := j.repo.BackfillPlatformSHA256(ctx, sv.ID, sums); bfErr != nil {
+			log.Printf("[terraform-mirror] sha256 backfill: DB update failed for %s: %v", sv.Version, bfErr)
+			continue
+		}
+		log.Printf("[terraform-mirror] sha256 backfill: populated hashes for version %s", sv.Version)
+	}
+
+	return nil
 }
 
 // backfillGPGVerification re-verifies the SHA256SUMS GPG signature for any synced

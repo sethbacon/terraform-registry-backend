@@ -1115,6 +1115,98 @@ func TestTerraformMirrorUpdateGPGVerifiedForVersion_DBError(t *testing.T) {
 	}
 }
 
+// --- UpdatePlatformSHA256 ---
+
+func TestTerraformMirrorUpdatePlatformSHA256_Success(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	id := uuid.New()
+
+	mock.ExpectExec(`UPDATE terraform_version_platforms\s+SET sha256`).
+		WithArgs(id, "deadbeef").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	if err := repo.UpdatePlatformSHA256(context.Background(), id, "deadbeef"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestTerraformMirrorUpdatePlatformSHA256_DBError(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	id := uuid.New()
+
+	mock.ExpectExec(`UPDATE terraform_version_platforms\s+SET sha256`).
+		WillReturnError(fmt.Errorf("db error"))
+
+	if err := repo.UpdatePlatformSHA256(context.Background(), id, "abc"); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// --- BackfillPlatformSHA256 ---
+
+func TestTerraformMirrorBackfillPlatformSHA256_NoSums(t *testing.T) {
+	repo, _ := newTerraformMirrorRepo(t)
+	if err := repo.BackfillPlatformSHA256(context.Background(), uuid.New(), nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestTerraformMirrorBackfillPlatformSHA256_UpdatesEmptyHashes(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	versionID := uuid.New()
+
+	// Three platforms: one needs backfill, one already has sha256, one not synced.
+	pNeed := testTFPlatform(versionID)
+	pNeed.SHA256 = ""
+	pNeed.SyncStatus = "synced"
+
+	pHas := testTFPlatform(versionID)
+	pHas.SHA256 = "alreadyset"
+	pHas.SyncStatus = "synced"
+	pHas.Filename = "terraform_1.9.0_darwin_amd64.zip"
+	pHas.OS = "darwin"
+
+	pPending := testTFPlatform(versionID)
+	pPending.SHA256 = ""
+	pPending.SyncStatus = "pending"
+	pPending.Filename = "terraform_1.9.0_windows_amd64.zip"
+	pPending.OS = "windows"
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_version_platforms\s+WHERE version_id`).
+		WithArgs(versionID).
+		WillReturnRows(newTFPlatformRow(mock, pNeed).
+			AddRow(pHas.ID, pHas.VersionID, pHas.OS, pHas.Arch, pHas.UpstreamURL, pHas.Filename, pHas.SHA256,
+				pHas.StorageKey, pHas.StorageBackend, pHas.SHA256Verified, pHas.GPGVerified,
+				pHas.SyncStatus, pHas.SyncError, pHas.SyncedAt, pHas.DownloadCount, pHas.CreatedAt, pHas.UpdatedAt).
+			AddRow(pPending.ID, pPending.VersionID, pPending.OS, pPending.Arch, pPending.UpstreamURL, pPending.Filename, pPending.SHA256,
+				pPending.StorageKey, pPending.StorageBackend, pPending.SHA256Verified, pPending.GPGVerified,
+				pPending.SyncStatus, pPending.SyncError, pPending.SyncedAt, pPending.DownloadCount, pPending.CreatedAt, pPending.UpdatedAt))
+
+	mock.ExpectExec(`UPDATE terraform_version_platforms\s+SET sha256`).
+		WithArgs(pNeed.ID, "linuxhash").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	sums := map[string]string{
+		pNeed.Filename:    "linuxhash",
+		pHas.Filename:     "darwinhash",
+		pPending.Filename: "windowshash",
+	}
+	if err := repo.BackfillPlatformSHA256(context.Background(), versionID, sums); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestTerraformMirrorBackfillPlatformSHA256_ListError(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	versionID := uuid.New()
+	mock.ExpectQuery(`SELECT.*FROM terraform_version_platforms\s+WHERE version_id`).
+		WillReturnError(fmt.Errorf("db error"))
+
+	if err := repo.BackfillPlatformSHA256(context.Background(), versionID, map[string]string{"x": "y"}); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
 // --- CountVersionStats ---
 
 func TestTerraformMirrorCountVersionStats_Success(t *testing.T) {
