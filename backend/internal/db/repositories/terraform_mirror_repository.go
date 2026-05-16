@@ -647,6 +647,47 @@ func (r *TerraformMirrorRepository) UpdatePlatformSyncStatus(
 	return nil
 }
 
+// UpdatePlatformSHA256 writes the hex SHA256 of a platform's zip to its row.
+// Called once the upstream SHA256SUMS hash for the platform's filename is known
+// (either after fresh download/verify or during back-fill from the SUMS file).
+func (r *TerraformMirrorRepository) UpdatePlatformSHA256(ctx context.Context, id uuid.UUID, sha256Hex string) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE terraform_version_platforms
+		SET sha256 = $2, updated_at = NOW()
+		WHERE id = $1
+	`, id, sha256Hex)
+	if err != nil {
+		return fmt.Errorf("failed to update sha256 for platform %s: %w", id, err)
+	}
+	return nil
+}
+
+// BackfillPlatformSHA256 populates sha256 from the supplied SUMS map for any
+// synced platform of the given version whose sha256 column is still empty.
+// No binaries are re-downloaded. sums maps filename -> hex SHA256.
+func (r *TerraformMirrorRepository) BackfillPlatformSHA256(ctx context.Context, versionID uuid.UUID, sums map[string]string) error {
+	if len(sums) == 0 {
+		return nil
+	}
+	platforms, err := r.ListPlatformsForVersion(ctx, versionID)
+	if err != nil {
+		return err
+	}
+	for _, p := range platforms {
+		if p.SHA256 != "" || p.SyncStatus != "synced" {
+			continue
+		}
+		hash, ok := sums[p.Filename]
+		if !ok || hash == "" {
+			continue
+		}
+		if updErr := r.UpdatePlatformSHA256(ctx, p.ID, hash); updErr != nil {
+			return updErr
+		}
+	}
+	return nil
+}
+
 // UpdateGPGVerifiedForVersion sets gpg_verified on all synced platforms for a version.
 // Used to back-fill the flag when a sync run successfully verifies the GPG signature
 // but the platforms were already stored in a previous run.
