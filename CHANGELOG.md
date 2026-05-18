@@ -7,6 +7,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.10](https://github.com/sethbacon/terraform-registry-backend/compare/v1.1.9...v1.1.10) (2026-05-18)
+
+
+### Bug Fixes
+
+* **api:** validate module namespace/name/system against Terraform segment rules ([#365](https://github.com/sethbacon/terraform-registry-backend/issues/365)) ([#372](https://github.com/sethbacon/terraform-registry-backend/issues/372)) ([42b2c85](https://github.com/sethbacon/terraform-registry-backend/commit/42b2c859ec4d58006f2e5ac4cf9dcd1c750e601e))
+* **deps:** bump go to 1.26.3 and golang.org/x/net to v0.54.0 ([#358](https://github.com/sethbacon/terraform-registry-backend/issues/358)) ([#374](https://github.com/sethbacon/terraform-registry-backend/issues/374)) ([d8e6c85](https://github.com/sethbacon/terraform-registry-backend/commit/d8e6c854c30c5187d33239b1982fdf44a64026f1))
+
 ## [1.1.9](https://github.com/sethbacon/terraform-registry-backend/compare/v1.1.8...v1.1.9) (2026-05-16)
 
 
