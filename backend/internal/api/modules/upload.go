@@ -72,6 +72,18 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 			return
 		}
 
+		// Terraform registry source addresses are <hostname>/<namespace>/<name>/<provider>
+		// — each segment must be a URL-safe lowercase identifier or the Terraform CLI
+		// will fail to resolve the module.
+		for field, val := range map[string]string{"namespace": namespace, "name": name, "system": system} {
+			if err := validation.ValidateRegistrySegment(val); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": fmt.Sprintf("Invalid %s: %v", field, err),
+				})
+				return
+			}
+		}
+
 		// Validate semantic versioning
 		if err := validation.ValidateSemver(version); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{
