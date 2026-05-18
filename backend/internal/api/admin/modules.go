@@ -4,6 +4,7 @@ package admin
 import (
 	"bytes"
 	"database/sql"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
+	"github.com/terraform-registry/terraform-registry/internal/validation"
 )
 
 // ModuleAdminHandlers handles administrative module operations
@@ -73,6 +75,13 @@ func (h *ModuleAdminHandlers) CreateModuleRecord(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+
+	for field, val := range map[string]string{"namespace": req.Namespace, "name": req.Name, "system": req.System} {
+		if err := validation.ValidateRegistrySegment(val); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid %s: %v", field, err)})
+			return
+		}
 	}
 
 	org, err := h.orgRepo.GetDefaultOrganization(c.Request.Context())

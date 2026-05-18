@@ -130,6 +130,27 @@ func TestCreateModuleRecord_MissingNamespace(t *testing.T) {
 	}
 }
 
+func TestCreateModuleRecord_InvalidSegmentFormat(t *testing.T) {
+	cases := []struct {
+		name string
+		body map[string]string
+	}{
+		{"uppercase namespace", map[string]string{"namespace": "HashiCorp", "name": "vpc", "system": "aws"}},
+		{"space in name", map[string]string{"namespace": "hashicorp", "name": "vpc module", "system": "aws"}},
+		{"leading hyphen system", map[string]string{"namespace": "hashicorp", "name": "vpc", "system": "-aws"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, r := newModuleRouter(t)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, httptest.NewRequest("POST", "/modules/create", jsonBody(tc.body)))
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
 func TestCreateModuleRecord_OrgDBError(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
