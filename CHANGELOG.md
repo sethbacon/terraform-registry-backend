@@ -7,6 +7,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0](https://github.com/sethbacon/terraform-registry-backend/compare/v1.1.10...v1.2.0) (2026-05-19)
+
+
+### Features
+
+* **api:** per-org quotas dashboard endpoint (roadmap D3.4 recovery) ([#355](https://github.com/sethbacon/terraform-registry-backend/issues/355)) ([#376](https://github.com/sethbacon/terraform-registry-backend/issues/376)) ([5d38653](https://github.com/sethbacon/terraform-registry-backend/commit/5d386533e2ff292c8214ab8cfcad23aca52ec191))
+* **api:** UI theme config endpoints (roadmap G5.1 recovery) ([#356](https://github.com/sethbacon/terraform-registry-backend/issues/356)) ([#375](https://github.com/sethbacon/terraform-registry-backend/issues/375)) ([7e273b1](https://github.com/sethbacon/terraform-registry-backend/commit/7e273b1e4aaace7e332c504554b414be09b8cc9f))
+
 ## [1.1.10](https://github.com/sethbacon/terraform-registry-backend/compare/v1.1.9...v1.1.10) (2026-05-18)
 
 
