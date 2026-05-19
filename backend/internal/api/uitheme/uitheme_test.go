@@ -73,6 +73,44 @@ func TestGetTheme_Success(t *testing.T) {
 	}
 }
 
+func TestGetTheme_DBError(t *testing.T) {
+	_, r, mock := newTestRouter(t)
+	mock.ExpectQuery(`SELECT.*FROM ui_theme_config`).
+		WillReturnError(errDB())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/ui/theme", nil))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestPutTheme_InvalidJSON(t *testing.T) {
+	_, r, _ := newTestRouter(t)
+	req := httptest.NewRequest("PUT", "/admin/ui-theme", bytes.NewReader([]byte("{bad json")))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestPutTheme_DBError(t *testing.T) {
+	_, r, mock := newTestRouter(t)
+	mock.ExpectQuery(`INSERT INTO ui_theme_config`).
+		WillReturnError(errDB())
+
+	body, _ := json.Marshal(map[string]any{"product_name": "Acme"})
+	req := httptest.NewRequest("PUT", "/admin/ui-theme", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", w.Code)
+	}
+}
+
 func TestPutTheme_InvalidColor(t *testing.T) {
 	_, r, _ := newTestRouter(t)
 	body, _ := json.Marshal(map[string]any{"primary_color": "rgb(1,2,3)"})
@@ -180,6 +218,12 @@ func longString(n int) string {
 }
 
 func sqlNoRows() error { return sql.ErrNoRows }
+
+func errDB() error { return testErr("database error") }
+
+type testErr string
+
+func (e testErr) Error() string { return string(e) }
 
 func fixedTime() time.Time {
 	t, _ := time.Parse(time.RFC3339, "2026-05-18T20:00:00Z")
