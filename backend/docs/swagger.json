@@ -2722,6 +2722,61 @@
                 }
             }
         },
+        "/api/v1/admin/quotas": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Returns one QuotaStatus per organization with current limits and today's usage. Optional `organization_id` filter narrows the result to a single org. Requires admin scope. Limits of `0` mean unlimited and produce a utilization ratio of `0`.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Quotas"
+                ],
+                "summary": "List per-org quota status (admin)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Optional: scope the result to a single organization (UUID)",
+                        "name": "organization_id",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "{\\\"quotas\\\": []QuotaStatus}",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden — admin scope required",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/admin/role-templates": {
             "get": {
                 "security": [
