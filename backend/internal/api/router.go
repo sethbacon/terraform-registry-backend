@@ -39,6 +39,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/api/scim"
 	"github.com/terraform-registry/terraform-registry/internal/api/setup"
 	terraform_binaries "github.com/terraform-registry/terraform-registry/internal/api/terraform_binaries"
+	"github.com/terraform-registry/terraform-registry/internal/api/uitheme"
 	"github.com/terraform-registry/terraform-registry/internal/api/webhooks"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/auth/oidc"
@@ -722,6 +723,11 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 			setupGroup.POST("/scanning", setupHandlers.SaveScanningConfig)
 			setupGroup.POST("/scanning/install", setupHandlers.InstallScanner)
 			setupGroup.POST("/complete", setupHandlers.CompleteSetup)
+
+			// White-label theme — wizard BrandingStep upserts via setup-token auth.
+			// Same handler is also mounted under /admin/ui-theme below for post-setup edits.
+			setupUIThemeHandlers := uitheme.NewHandlers(sqlxDB)
+			setupGroup.PUT("/ui-theme", setupUIThemeHandlers.PutTheme())
 		}
 
 		// Public authentication endpoints (no auth required, but rate limited)
@@ -752,6 +758,11 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 			// CVE advisory banner endpoint — consumed by the frontend to show active advisories
 			advisoryHandlers := advisories.NewHandlers(db)
 			publicGroup.GET("/advisories/active", advisoryHandlers.ListActive())
+
+			// White-label UI theme — read endpoint is public so the unauthenticated
+			// login page can render branded colors/logo before sign-in.
+			uiThemeHandlers := uitheme.NewHandlers(sqlxDB)
+			publicGroup.GET("/ui/theme", uiThemeHandlers.GetTheme())
 		}
 
 		// Public detail endpoints — no auth required; optional auth populates user context if a
@@ -914,6 +925,13 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 				adminUsersGroup.GET("/:id/export", gdprHandlers.ExportUserDataHandler())
 				adminUsersGroup.POST("/:id/erase", gdprHandlers.EraseUserHandler())
 			}
+
+			// White-label theme writes for admins (post-setup edits).
+			// Setup-wizard writes use PUT /api/v1/setup/ui-theme above.
+			adminUIThemeHandlers := uitheme.NewHandlers(sqlxDB)
+			authenticatedGroup.PUT("/admin/ui-theme",
+				middleware.RequireScope(auth.ScopeAdmin),
+				adminUIThemeHandlers.PutTheme())
 
 			// Per-org quota status — feeds the frontend QuotaUsageChart dashboard.
 			// READ-ONLY in this PR; enforcement middleware (429 / X-Quota-Reset)
