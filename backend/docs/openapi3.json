@@ -5577,6 +5577,76 @@
                 }
             }
         },
+        "/api/v1/admin/ui-theme": {
+            "put": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Writes the white-label theme used by the frontend. Accepts the same shape returned by GET /api/v1/ui/theme. Accessible to admin scope or via a valid setup token (used by the setup wizard's BrandingStep). Color fields must be `#RGB` or `#RRGGBB`. URL fields must be absolute https URLs or relative paths beginning with `/`.",
+                "tags": [
+                    "UI Theme"
+                ],
+                "summary": "Upsert UI theme configuration",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/models.UIThemeConfig"
+                            }
+                        }
+                    },
+                    "description": "Theme configuration",
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/models.UIThemeConfig"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid input",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/admin/users/{id}/erase": {
             "post": {
                 "security": [
@@ -12245,6 +12315,49 @@
                 }
             }
         },
+        "/api/v1/ui/theme": {
+            "get": {
+                "description": "Returns the white-label theme configuration consumed by the frontend ThemeContext. Public — no authentication required so the login page can brand itself before sign-in. Returns 404 when nothing has been configured; the frontend then falls back to its built-in defaults.",
+                "tags": [
+                    "UI Theme"
+                ],
+                "summary": "Get UI theme configuration",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/models.UIThemeConfig"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Theme has not been configured",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/users": {
             "get": {
                 "security": [
@@ -18050,6 +18163,35 @@
                     },
                     "provider_name": {
                         "description": "Optional: sync specific provider",
+                        "type": "string"
+                    }
+                }
+            },
+            "models.UIThemeConfig": {
+                "type": "object",
+                "properties": {
+                    "favicon_url": {
+                        "type": "string"
+                    },
+                    "login_hero_url": {
+                        "type": "string"
+                    },
+                    "logo_url": {
+                        "type": "string"
+                    },
+                    "primary_color": {
+                        "type": "string"
+                    },
+                    "product_name": {
+                        "type": "string"
+                    },
+                    "secondary_color_dark": {
+                        "type": "string"
+                    },
+                    "secondary_color_light": {
+                        "type": "string"
+                    },
+                    "updated_at": {
                         "type": "string"
                     }
                 }
