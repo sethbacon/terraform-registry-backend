@@ -933,6 +933,14 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 				middleware.RequireScope(auth.ScopeAdmin),
 				adminUIThemeHandlers.PutTheme())
 
+			// Per-org quota status — feeds the frontend QuotaUsageChart dashboard.
+			// READ-ONLY in this PR; enforcement middleware (429 / X-Quota-Reset)
+			// and admin writes for setting per-org limits are tracked separately.
+			quotaHandlers := admin.NewQuotaHandlers(sqlxDB)
+			authenticatedGroup.GET("/admin/quotas",
+				middleware.RequireScope(auth.ScopeAdmin),
+				quotaHandlers.ListQuotas())
+
 			// Organizations management
 			orgsGroup := authenticatedGroup.Group("/organizations")
 			{
