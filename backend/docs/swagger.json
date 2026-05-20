@@ -9453,6 +9453,66 @@
                 }
             }
         },
+        "/api/v1/setup/ui-theme": {
+            "put": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Writes the white-label theme used by the frontend. Accepts the same shape returned by GET /api/v1/ui/theme. Accessible to admin scope or via a valid setup token (used by the setup wizard's BrandingStep). Color fields must be `#RGB` or `#RRGGBB`. URL fields must be absolute https URLs or relative paths beginning with `/`.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "UI Theme"
+                ],
+                "summary": "Upsert UI theme configuration",
+                "parameters": [
+                    {
+                        "description": "Theme configuration",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.UIThemeConfig"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.UIThemeConfig"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid input",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/setup/validate-token": {
             "post": {
                 "security": [
