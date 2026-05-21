@@ -12,10 +12,13 @@ import (
 	"path/filepath"
 )
 
-const maxExtractBytes = 500 << 20 // 500 MB — matches scm_publisher constant
+// maxExtractBytes is the cumulative decompressed-bytes limit across all entries;
+// matches the 100 MB cap enforced by validation.ValidateArchive at upload time.
+const maxExtractBytes = 100 << 20 // 100 MB total
 
 // ExtractTarGz extracts a gzipped tar archive from reader into destDir.
-// Enforces path traversal protection. Returns an error on invalid archives.
+// Enforces path traversal protection and a 100 MB cumulative extraction limit.
+// Returns an error on invalid archives.
 func ExtractTarGz(reader io.Reader, destDir string) error {
 	gzr, err := gzip.NewReader(reader)
 	if err != nil {
@@ -24,6 +27,7 @@ func ExtractTarGz(reader io.Reader, destDir string) error {
 	defer gzr.Close()
 
 	tr := tar.NewReader(gzr)
+	var totalWritten int64
 	for {
 		header, err := tr.Next()
 		if err == io.EOF {
@@ -33,11 +37,9 @@ func ExtractTarGz(reader io.Reader, destDir string) error {
 			return fmt.Errorf("read tar: %w", err)
 		}
 
-		// Prevent path traversal
+		// Prevent path traversal: filepath.Join calls Clean internally; the prefix
+		// check below is the actual guard (destDir is always absolute).
 		target := filepath.Join(destDir, header.Name) // #nosec G305
-		if !filepath.IsAbs(target) {
-			target = filepath.Clean(target)
-		}
 		cleanDest := filepath.Clean(destDir) + string(os.PathSeparator)
 		if len(target) < len(cleanDest) || target[:len(cleanDest)] != cleanDest {
 			return fmt.Errorf("invalid file path in archive: %s", header.Name)
@@ -56,11 +58,16 @@ func ExtractTarGz(reader io.Reader, destDir string) error {
 			if err != nil {
 				return fmt.Errorf("create file %s: %w", target, err)
 			}
-			if _, err := io.Copy(f, io.LimitReader(tr, maxExtractBytes)); err != nil {
-				_ = f.Close()
-				return fmt.Errorf("write file %s: %w", target, err)
-			}
+			remaining := maxExtractBytes - totalWritten
+			n, copyErr := io.Copy(f, io.LimitReader(tr, remaining+1))
 			_ = f.Close()
+			if copyErr != nil {
+				return fmt.Errorf("write file %s: %w", target, copyErr)
+			}
+			totalWritten += n
+			if totalWritten > maxExtractBytes {
+				return fmt.Errorf("archive exceeds extraction size limit of %d bytes", maxExtractBytes)
+			}
 		}
 	}
 	return nil
