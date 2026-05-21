@@ -777,11 +777,6 @@ func gpgKeyForTool(tool string) string {
 	case "terraform":
 		return mirror.HashiCorpReleasesGPGKey
 	case "opentofu":
-		// OpenTofu key requires a non-placeholder value to be embedded.
-		// Until the real key is embedded, return "" to skip verification.
-		if strings.Contains(mirror.OpenTofuReleasesGPGKey, "<INSERT_OPENTOFU_GPG_KEY_HERE>") {
-			return ""
-		}
 		return mirror.OpenTofuReleasesGPGKey
 	default:
 		return ""
