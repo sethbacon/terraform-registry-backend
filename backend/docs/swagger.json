@@ -4499,7 +4499,7 @@
                         "Bearer": []
                     }
                 ],
-                "description": "Writes the white-label theme used by the frontend. Accepts the same shape returned by GET /api/v1/ui/theme. Accessible to admin scope or via a valid setup token (used by the setup wizard's BrandingStep). Color fields must be `#RGB` or `#RRGGBB`. URL fields must be absolute https URLs or relative paths beginning with `/`.",
+                "description": "Writes the white-label theme used by the frontend. Accepts the same shape returned by GET /api/v1/ui/theme.\n\nTwo routes share this handler:\n- `PUT /api/v1/admin/ui-theme` — Bearer auth, requires the `admin` scope. Use this for post-setup edits.\n- `PUT /api/v1/setup/ui-theme` — `Authorization: SetupToken \u003ctoken\u003e`. Use this from the setup wizard's BrandingStep before any admin user exists.\n\nValidation: color fields must match `#RGB` or `#RRGGBB`. URL fields must be absolute `https://` URLs or relative paths beginning with `/` (rejects `javascript:`, protocol-relative URLs, and embedded quotes).",
                 "consumes": [
                     "application/json"
                 ],
@@ -9460,7 +9460,7 @@
                         "Bearer": []
                     }
                 ],
-                "description": "Writes the white-label theme used by the frontend. Accepts the same shape returned by GET /api/v1/ui/theme. Accessible to admin scope or via a valid setup token (used by the setup wizard's BrandingStep). Color fields must be `#RGB` or `#RRGGBB`. URL fields must be absolute https URLs or relative paths beginning with `/`.",
+                "description": "Writes the white-label theme used by the frontend. Accepts the same shape returned by GET /api/v1/ui/theme.\n\nTwo routes share this handler:\n- `PUT /api/v1/admin/ui-theme` — Bearer auth, requires the `admin` scope. Use this for post-setup edits.\n- `PUT /api/v1/setup/ui-theme` — `Authorization: SetupToken \u003ctoken\u003e`. Use this from the setup wizard's BrandingStep before any admin user exists.\n\nValidation: color fields must match `#RGB` or `#RRGGBB`. URL fields must be absolute `https://` URLs or relative paths beginning with `/` (rejects `javascript:`, protocol-relative URLs, and embedded quotes).",
                 "consumes": [
                     "application/json"
                 ],
