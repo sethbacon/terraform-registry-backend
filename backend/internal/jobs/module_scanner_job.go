@@ -76,6 +76,9 @@ func (j *ModuleScannerJob) Start(ctx context.Context) error {
 
 	s, err := scanner.New(j.cfg)
 	if err != nil {
+		j.mu.Lock()
+		j.started = false
+		j.mu.Unlock()
 		slog.Error("module scanner: failed to construct scanner", "error", err)
 		return nil // non-fatal — do not crash the server
 	}
@@ -83,11 +86,17 @@ func (j *ModuleScannerJob) Start(ctx context.Context) error {
 	// Supply-chain version pinning check.
 	actualVersion, err := s.Version(ctx)
 	if err != nil {
+		j.mu.Lock()
+		j.started = false
+		j.mu.Unlock()
 		slog.Error("module scanner: cannot get binary version",
 			"tool", j.cfg.Tool, "binary", j.cfg.BinaryPath, "error", err)
 		return nil
 	}
 	if j.cfg.ExpectedVersion != "" && actualVersion != j.cfg.ExpectedVersion {
+		j.mu.Lock()
+		j.started = false
+		j.mu.Unlock()
 		slog.Error("module scanner: binary version mismatch — refusing to run",
 			"tool", j.cfg.Tool,
 			"expected", j.cfg.ExpectedVersion,
@@ -127,13 +136,11 @@ func (j *ModuleScannerJob) Start(ctx context.Context) error {
 // Stop signals the job to exit gracefully.
 func (j *ModuleScannerJob) Stop() error {
 	j.mu.Lock()
-	j.started = false
-	j.mu.Unlock()
-	select {
-	case <-j.stopChan:
-		// already stopped
-	default:
+	defer j.mu.Unlock()
+	if j.started {
 		close(j.stopChan)
+		j.stopChan = make(chan struct{}) // fresh channel so Start() can be called again
+		j.started = false
 	}
 	return nil
 }
