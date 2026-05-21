@@ -63,6 +63,7 @@ func (h *Handlers) GetTheme() gin.HandlerFunc {
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/admin/ui-theme [put]
+// @Router       /api/v1/setup/ui-theme [put]
 func (h *Handlers) PutTheme() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var in models.UIThemeConfig

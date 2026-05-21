@@ -5660,15 +5660,7 @@
                 ],
                 "summary": "Upsert UI theme configuration",
                 "requestBody": {
-                    "content": {
-                        "application/json": {
-                            "schema": {
-                                "$ref": "#/components/schemas/models.UIThemeConfig"
-                            }
-                        }
-                    },
-                    "description": "Theme configuration",
-                    "required": true
+                    "$ref": "#/components/requestBodies/models.UIThemeConfig"
                 },
                 "responses": {
                     "200": {
@@ -11782,6 +11774,68 @@
                 }
             }
         },
+        "/api/v1/setup/ui-theme": {
+            "put": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Writes the white-label theme used by the frontend. Accepts the same shape returned by GET /api/v1/ui/theme. Accessible to admin scope or via a valid setup token (used by the setup wizard's BrandingStep). Color fields must be `#RGB` or `#RRGGBB`. URL fields must be absolute https URLs or relative paths beginning with `/`.",
+                "tags": [
+                    "UI Theme"
+                ],
+                "summary": "Upsert UI theme configuration",
+                "requestBody": {
+                    "$ref": "#/components/requestBodies/models.UIThemeConfig"
+                },
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/models.UIThemeConfig"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid input",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/setup/validate-token": {
             "post": {
                 "security": [
@@ -14934,6 +14988,17 @@
                     }
                 },
                 "description": "Scanner to install",
+                "required": true
+            },
+            "models.UIThemeConfig": {
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "$ref": "#/components/schemas/models.UIThemeConfig"
+                        }
+                    }
+                },
+                "description": "Theme configuration",
                 "required": true
             },
             "models.StorageConfigInput": {
