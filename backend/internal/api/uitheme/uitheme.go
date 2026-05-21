@@ -52,7 +52,13 @@ func (h *Handlers) GetTheme() gin.HandlerFunc {
 }
 
 // @Summary      Upsert UI theme configuration
-// @Description  Writes the white-label theme used by the frontend. Accepts the same shape returned by GET /api/v1/ui/theme. Accessible to admin scope or via a valid setup token (used by the setup wizard's BrandingStep). Color fields must be `#RGB` or `#RRGGBB`. URL fields must be absolute https URLs or relative paths beginning with `/`.
+// @Description  Writes the white-label theme used by the frontend. Accepts the same shape returned by GET /api/v1/ui/theme.
+// @Description
+// @Description  Two routes share this handler:
+// @Description  - `PUT /api/v1/admin/ui-theme` — Bearer auth, requires the `admin` scope. Use this for post-setup edits.
+// @Description  - `PUT /api/v1/setup/ui-theme` — `Authorization: SetupToken <token>`. Use this from the setup wizard's BrandingStep before any admin user exists.
+// @Description
+// @Description  Validation: color fields must match `#RGB` or `#RRGGBB`. URL fields must be absolute `https://` URLs or relative paths beginning with `/` (rejects `javascript:`, protocol-relative URLs, and embedded quotes).
 // @Tags         UI Theme
 // @Security     Bearer
 // @Accept       json
