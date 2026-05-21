@@ -470,7 +470,10 @@ func (j *MirrorSyncJob) syncProvider(ctx context.Context, upstreamClient mirror.
 		localProvider = existingProvider
 
 		// Get existing mirrored provider record
-		providerUUID, _ := uuid.Parse(localProvider.ID)
+		providerUUID, err := uuid.Parse(localProvider.ID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid provider ID %q in database: %w", localProvider.ID, err)
+		}
 		mirroredProvider, err = j.mirrorRepo.GetMirroredProviderByProviderID(ctx, providerUUID)
 
 		// If the provider exists but isn't tracked as mirrored yet, create the tracking record
@@ -480,7 +483,7 @@ func (j *MirrorSyncJob) syncProvider(ctx context.Context, upstreamClient mirror.
 			mirroredProvider = &models.MirroredProvider{
 				ID:                uuid.New(),
 				MirrorConfigID:    config.ID,
-				ProviderID:        uuid.MustParse(localProvider.ID),
+				ProviderID:        providerUUID,
 				UpstreamNamespace: namespace,
 				UpstreamType:      providerName,
 				LastSyncedAt:      time.Now(),
