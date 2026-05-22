@@ -7,6 +7,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2](https://github.com/sethbacon/terraform-registry-backend/compare/v1.2.1...v1.2.2) (2026-05-22)
+
+
+### Bug Fixes
+
+* **archiver:** enforce cumulative 100 MB extraction limit; remove dead IsAbs branch ([#389](https://github.com/sethbacon/terraform-registry-backend/issues/389)) ([bb3946c](https://github.com/sethbacon/terraform-registry-backend/commit/bb3946ced48e66b477beeadaf576efb4f6dc1e74)), closes [#390](https://github.com/sethbacon/terraform-registry-backend/issues/390)
+* **jobs:** handle uuid.Parse error in mirror_sync; fix N+1 ListVersions query ([#391](https://github.com/sethbacon/terraform-registry-backend/issues/391)) ([999ac07](https://github.com/sethbacon/terraform-registry-backend/commit/999ac07e28f852e10654399671a156a533e478f6))
+* **jobs:** reset started flag and reinitialize stopChan on scanner lifecycle ([#388](https://github.com/sethbacon/terraform-registry-backend/issues/388)) ([43a9cd5](https://github.com/sethbacon/terraform-registry-backend/commit/43a9cd52944a467270e6caec239bbc517aafd847))
+
 ## [1.2.1](https://github.com/sethbacon/terraform-registry-backend/compare/v1.2.0...v1.2.1) (2026-05-21)
 
 
