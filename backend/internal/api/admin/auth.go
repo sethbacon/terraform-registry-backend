@@ -752,6 +752,15 @@ func (h *AuthHandlers) MeHandler() gin.HandlerFunc {
 		// and provide a "primary" role template (highest privilege) for backward compatibility
 		response["allowed_scopes"] = userWithRoles.GetAllowedScopes()
 
+		// Include session expiry from JWT claims so the frontend can schedule the
+		// pre-expiry warning dialog for cookie-based sessions. Absent for API-key auth.
+		if claimsVal, ok := c.Get("jwt_claims"); ok {
+			if claims, ok := claimsVal.(*auth.Claims); ok {
+				t := claims.ExpiresAt.Time
+				response["session_expires_at"] = t
+			}
+		}
+
 		// For backward compatibility, provide the first membership's role template as primary
 		// In a multi-org setup, the frontend should use per-org memberships
 		if len(userWithRoles.Memberships) > 0 && userWithRoles.Memberships[0].RoleTemplateID != nil {
