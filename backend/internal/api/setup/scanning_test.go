@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -155,6 +156,54 @@ func TestSaveScanningConfig_MissingToolField(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400 for missing tool", w.Code)
+	}
+}
+
+func TestIsValidScanningTool(t *testing.T) {
+	cases := []struct {
+		tool string
+		want bool
+	}{
+		{"trivy", true},
+		{"terrascan", true},
+		{"snyk", true},
+		{"checkov", true},
+		{"custom", true},
+		{"", false},
+		{"TRIVY", false},
+		{"../etc/passwd", false},
+		{"trivy ", false},
+		{"unknown", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.tool, func(t *testing.T) {
+			if got := IsValidScanningTool(tc.tool); got != tc.want {
+				t.Errorf("IsValidScanningTool(%q) = %v, want %v", tc.tool, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSaveScanningConfig_UnsupportedTool(t *testing.T) {
+	env := newTestEnv(t)
+
+	r := gin.New()
+	r.POST("/scanning", env.h.SaveScanningConfig)
+
+	// Non-allowlisted Tool value — must be rejected before any DB/filesystem call.
+	body := jsonBody(map[string]string{
+		"tool":        "../etc/passwd",
+		"binary_path": "/app/scanners/trivy",
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/scanning", body))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for unsupported tool", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "unsupported tool") {
+		t.Errorf("response body missing 'unsupported tool': %s", w.Body.String())
 	}
 }
 
