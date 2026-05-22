@@ -20,6 +20,9 @@ const maxExtractBytes = 100 << 20 // 100 MB total
 // Enforces path traversal protection and a 100 MB cumulative extraction limit.
 // Returns an error on invalid archives.
 func ExtractTarGz(reader io.Reader, destDir string) error {
+	if !filepath.IsAbs(destDir) {
+		return fmt.Errorf("destDir must be an absolute path, got: %s", destDir)
+	}
 	gzr, err := gzip.NewReader(reader)
 	if err != nil {
 		return fmt.Errorf("open gzip: %w", err)
