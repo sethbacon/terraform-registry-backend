@@ -12834,6 +12834,9 @@
                     }
                 },
                 "role_template": {},
+                "session_expires_at": {
+                    "type": "string"
+                },
                 "user": {
                     "$ref": "#/definitions/User"
                 }
