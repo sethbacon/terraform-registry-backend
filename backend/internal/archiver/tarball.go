@@ -57,7 +57,7 @@ func ExtractTarGz(reader io.Reader, destDir string) error {
 			if err := os.MkdirAll(filepath.Dir(target), 0750); err != nil {
 				return fmt.Errorf("mkdir parent: %w", err)
 			}
-			f, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR, os.FileMode(header.Mode&0777)) // G304: target validated above; G115: mode & 0777 fits in uint32
+			f, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR, os.FileMode(header.Mode&0777)) // #nosec G304,G115 -- target validated by prefix check above; mode & 0777 fits in uint32
 			if err != nil {
 				return fmt.Errorf("create file %s: %w", target, err)
 			}
