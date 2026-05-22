@@ -575,6 +575,28 @@ func (h *Handlers) CompleteSetup(c *gin.Context) {
 
 // === Scanning Configuration ===
 
+// validScanningTools is the allowlist of supported scanner backends. Any code
+// path that accepts a Tool value from outside the binary (HTTP body, DB row)
+// MUST validate against this set before the value flows into filesystem or
+// process-invocation paths — see internal/scanner.ResolveBinaryPath, which
+// joins InstallDir + Tool when falling back from a missing BinaryPath.
+var validScanningTools = map[string]bool{
+	"trivy":     true,
+	"terrascan": true,
+	"snyk":      true,
+	"checkov":   true,
+	"custom":    true,
+}
+
+// IsValidScanningTool reports whether tool is in the supported-scanners allowlist.
+// Exported so the router's startup-reload path can re-validate persisted DB values
+// before they are written into the live config.
+func IsValidScanningTool(tool string) bool {
+	return validScanningTools[tool]
+}
+
+const supportedScanningToolsList = "trivy, terrascan, snyk, checkov, custom"
+
 // TestScanningConfigInput is the request body for testing a scanning configuration.
 type TestScanningConfigInput struct {
 	Tool            string `json:"tool" binding:"required"`
@@ -601,14 +623,11 @@ func (h *Handlers) TestScanningConfig(c *gin.Context) {
 		return
 	}
 
-	// Validate tool is one of the supported scanners
-	validTools := map[string]bool{
-		"trivy": true, "terrascan": true, "snyk": true, "checkov": true, "custom": true,
-	}
-	if !validTools[input.Tool] {
+	// Validate tool is one of the supported scanners.
+	if !IsValidScanningTool(input.Tool) {
 		c.JSON(http.StatusOK, TestScanningConfigResponse{
 			Success: false,
-			Error:   fmt.Sprintf("unsupported tool %q; must be one of: trivy, terrascan, snyk, checkov, custom", input.Tool),
+			Error:   fmt.Sprintf("unsupported tool %q; must be one of: %s", input.Tool, supportedScanningToolsList),
 		})
 		return
 	}
@@ -705,6 +724,16 @@ func (h *Handlers) SaveScanningConfig(c *gin.Context) {
 	var input SaveScanningConfigInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Validate tool is one of the supported scanners. Without this, an arbitrary
+	// Tool value would be persisted and later flow into filepath.Join(InstallDir,
+	// Tool) at scanner startup (see internal/scanner.ResolveBinaryPath).
+	if !IsValidScanningTool(input.Tool) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": fmt.Sprintf("unsupported tool %q; must be one of: %s", input.Tool, supportedScanningToolsList),
+		})
 		return
 	}
 

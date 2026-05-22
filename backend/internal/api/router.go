@@ -211,20 +211,28 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 				InstallDir        string `json:"install_dir"`
 			}
 			if err := json.Unmarshal(scanConfigJSON, &dbInput); err == nil && dbInput.Enabled {
-				cfg.Scanning.Enabled = dbInput.Enabled
-				cfg.Scanning.Tool = dbInput.Tool
-				cfg.Scanning.BinaryPath = dbInput.BinaryPath
-				cfg.Scanning.ExpectedVersion = dbInput.ExpectedVersion
-				cfg.Scanning.SeverityThreshold = dbInput.SeverityThreshold
-				cfg.Scanning.WorkerCount = dbInput.WorkerCount
-				if dbInput.TimeoutSecs > 0 {
-					cfg.Scanning.Timeout = time.Duration(dbInput.TimeoutSecs) * time.Second
-				}
-				if dbInput.ScanIntervalMins > 0 {
-					cfg.Scanning.ScanIntervalMins = dbInput.ScanIntervalMins
-				}
-				if dbInput.InstallDir != "" {
-					cfg.Scanning.InstallDir = dbInput.InstallDir
+				// Re-validate the persisted tool name. SaveScanningConfig now
+				// guards this at write time, but DB rows written by older
+				// versions could still carry a non-allowlisted value that
+				// would flow into filepath.Join(InstallDir, Tool) below.
+				if !setup.IsValidScanningTool(dbInput.Tool) {
+					log.Printf("scanner startup: refusing to apply DB config with unsupported tool %q; scanning will remain disabled until reconfigured", dbInput.Tool)
+				} else {
+					cfg.Scanning.Enabled = dbInput.Enabled
+					cfg.Scanning.Tool = dbInput.Tool
+					cfg.Scanning.BinaryPath = dbInput.BinaryPath
+					cfg.Scanning.ExpectedVersion = dbInput.ExpectedVersion
+					cfg.Scanning.SeverityThreshold = dbInput.SeverityThreshold
+					cfg.Scanning.WorkerCount = dbInput.WorkerCount
+					if dbInput.TimeoutSecs > 0 {
+						cfg.Scanning.Timeout = time.Duration(dbInput.TimeoutSecs) * time.Second
+					}
+					if dbInput.ScanIntervalMins > 0 {
+						cfg.Scanning.ScanIntervalMins = dbInput.ScanIntervalMins
+					}
+					if dbInput.InstallDir != "" {
+						cfg.Scanning.InstallDir = dbInput.InstallDir
+					}
 				}
 			}
 		}
