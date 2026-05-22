@@ -372,12 +372,12 @@ func (j *TerraformMirrorSyncJob) performSync(
 		versionID uuid.UUID
 		platforms []models.TerraformVersionPlatform
 	}
-	allVersionsList, versionsErr := j.repo.ListVersions(ctx, cfg.ID, false)
+	dbVersions, versionsErr := j.repo.ListVersions(ctx, cfg.ID, false)
 	if versionsErr != nil {
 		return 0, 0, 0, details, fmt.Errorf("failed to list versions for grouping: %w", versionsErr)
 	}
-	versionByID := make(map[uuid.UUID]models.TerraformVersion, len(allVersionsList))
-	for _, vv := range allVersionsList {
+	versionByID := make(map[uuid.UUID]models.TerraformVersion, len(dbVersions))
+	for _, vv := range dbVersions {
 		versionByID[vv.ID] = vv
 	}
 
