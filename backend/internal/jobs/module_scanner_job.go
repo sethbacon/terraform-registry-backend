@@ -72,6 +72,7 @@ func (j *ModuleScannerJob) Start(ctx context.Context) error {
 		return nil
 	}
 	j.started = true
+	stopChan := j.stopChan // capture under mutex; Stop() may replace the field concurrently
 	j.mu.Unlock()
 
 	s, err := scanner.New(j.cfg)
@@ -125,9 +126,12 @@ func (j *ModuleScannerJob) Start(ctx context.Context) error {
 		select {
 		case <-ticker.C:
 			j.runScanCycle(ctx, s, actualVersion)
-		case <-j.stopChan:
+		case <-stopChan:
 			return nil
 		case <-ctx.Done():
+			j.mu.Lock()
+			j.started = false
+			j.mu.Unlock()
 			return nil
 		}
 	}
