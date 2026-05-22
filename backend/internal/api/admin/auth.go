@@ -755,7 +755,7 @@ func (h *AuthHandlers) MeHandler() gin.HandlerFunc {
 		// Include session expiry from JWT claims so the frontend can schedule the
 		// pre-expiry warning dialog for cookie-based sessions. Absent for API-key auth.
 		if claimsVal, ok := c.Get("jwt_claims"); ok {
-			if claims, ok := claimsVal.(*auth.Claims); ok {
+			if claims, ok := claimsVal.(*auth.Claims); ok && claims.ExpiresAt != nil {
 				t := claims.ExpiresAt.Time
 				response["session_expires_at"] = t
 			}
