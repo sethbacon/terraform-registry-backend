@@ -36,10 +36,11 @@ type MeMembershipEntry struct {
 
 // MeResponse is returned by GET /api/v1/auth/me.
 type MeResponse struct {
-	User          MeUserInfo          `json:"user"`
-	Memberships   []MeMembershipEntry `json:"memberships"`
-	AllowedScopes []string            `json:"allowed_scopes"`
-	RoleTemplate  interface{}         `json:"role_template"`
+	User             MeUserInfo          `json:"user"`
+	Memberships      []MeMembershipEntry `json:"memberships"`
+	AllowedScopes    []string            `json:"allowed_scopes"`
+	RoleTemplate     interface{}         `json:"role_template"`
+	SessionExpiresAt *time.Time          `json:"session_expires_at,omitempty"`
 }
 
 // APIKeyItem represents a single API key in list/get responses.
