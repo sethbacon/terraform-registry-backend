@@ -372,17 +372,22 @@ func (j *TerraformMirrorSyncJob) performSync(
 		versionID uuid.UUID
 		platforms []models.TerraformVersionPlatform
 	}
+	dbVersions, versionsErr := j.repo.ListVersions(ctx, cfg.ID, false)
+	if versionsErr != nil {
+		return 0, 0, 0, details, fmt.Errorf("failed to list versions for grouping: %w", versionsErr)
+	}
+	versionByID := make(map[uuid.UUID]models.TerraformVersion, len(dbVersions))
+	for _, vv := range dbVersions {
+		versionByID[vv.ID] = vv
+	}
+
 	groups := make(map[uuid.UUID]*platformGroup)
 	for _, p := range pendingPlatforms {
 		if _, ok := groups[p.VersionID]; !ok {
-			versions, _ := j.repo.ListVersions(ctx, cfg.ID, false)
-			for _, vv := range versions {
-				if vv.ID == p.VersionID {
-					groups[p.VersionID] = &platformGroup{
-						version:   vv.Version,
-						versionID: vv.ID,
-					}
-					break
+			if vv, found := versionByID[p.VersionID]; found {
+				groups[p.VersionID] = &platformGroup{
+					version:   vv.Version,
+					versionID: vv.ID,
 				}
 			}
 		}
@@ -772,11 +777,6 @@ func gpgKeyForTool(tool string) string {
 	case "terraform":
 		return mirror.HashiCorpReleasesGPGKey
 	case "opentofu":
-		// OpenTofu key requires a non-placeholder value to be embedded.
-		// Until the real key is embedded, return "" to skip verification.
-		if strings.Contains(mirror.OpenTofuReleasesGPGKey, "<INSERT_OPENTOFU_GPG_KEY_HERE>") {
-			return ""
-		}
 		return mirror.OpenTofuReleasesGPGKey
 	default:
 		return ""
