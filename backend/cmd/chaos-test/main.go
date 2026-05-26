@@ -364,7 +364,7 @@ func runLargePayload(ctx context.Context, cfg *Config, results *Results) {
 				// Create a large payload (10MB) to test upload limits
 				payload := make([]byte, 10*1024*1024)
 				for j := range payload {
-					payload[j] = byte('A' + rand.Intn(26)) // #nosec G404 -- non-cryptographic use for test payload
+					payload[j] = byte('A' + rand.Intn(26)) // #nosec G404,G115 -- non-cryptographic test payload; 'A'+rand.Intn(26) is 65-90, fits in byte
 				}
 
 				start := time.Now()
@@ -396,7 +396,7 @@ type randomReader struct{}
 
 func (r randomReader) Read(p []byte) (n int, err error) {
 	for i := range p {
-		p[i] = byte('A' + rand.Intn(26)) // #nosec G404 -- non-cryptographic use for test payload
+		p[i] = byte('A' + rand.Intn(26)) // #nosec G404,G115 -- non-cryptographic test payload; 'A'+rand.Intn(26) is 65-90, fits in byte
 	}
 	return len(p), nil
 }
