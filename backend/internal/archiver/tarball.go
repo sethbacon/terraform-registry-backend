@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // maxExtractBytes is the cumulative decompressed-bytes limit across all entries;
@@ -40,11 +41,13 @@ func ExtractTarGz(reader io.Reader, destDir string) error {
 			return fmt.Errorf("read tar: %w", err)
 		}
 
-		// Prevent path traversal: filepath.Join calls Clean internally; the prefix
-		// check below is the actual guard (destDir is always absolute).
-		target := filepath.Join(destDir, header.Name) // #nosec G305
-		cleanDest := filepath.Clean(destDir) + string(os.PathSeparator)
-		if len(target) < len(cleanDest) || target[:len(cleanDest)] != cleanDest {
+		// Prevent path traversal: resolve against destDir and verify containment
+		// using filepath.Rel. A relative path that starts with ".." (or equals it)
+		// escapes destDir; we also reject absolute results defensively.
+		cleanDest := filepath.Clean(destDir)
+		target := filepath.Join(cleanDest, header.Name) // #nosec G305 -- containment verified below
+		rel, err := filepath.Rel(cleanDest, target)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
 			return fmt.Errorf("invalid file path in archive: %s", header.Name)
 		}
 
