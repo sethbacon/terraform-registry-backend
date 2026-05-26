@@ -16,9 +16,6 @@ on:
         required: false
         default: "all"
 
-env:
-  GO_VERSION: "1.26"
-
 jobs:
   chaos-test:
     runs-on: ubuntu-latest
@@ -39,7 +36,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Set up Go toolchain
         uses: ./.github/actions/setup-backend
@@ -79,7 +76,7 @@ jobs:
             2>&1 | tee chaos-results.json
 
       - name: Upload results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
           name: chaos-test-results

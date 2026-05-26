@@ -20,4 +20,4 @@ runs:
     - name: Install gosec
       if: inputs.install-gosec == 'true'
       shell: bash
-      run: go install github.com/securego/gosec/v2/cmd/gosec@v2.22.11
+      run: go install github.com/securego/gosec/v2/cmd/gosec@v2.26.1
