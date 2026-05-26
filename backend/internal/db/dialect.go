@@ -151,7 +151,7 @@ func GetDialect(dbType string) Dialect {
 
 func itoa(i int) string {
 	if i < 10 {
-		return string(rune('0' + i))
+		return string(rune('0' + i)) // #nosec G115 -- guarded by i < 10
 	}
-	return itoa(i/10) + string(rune('0'+i%10))
+	return itoa(i/10) + string(rune('0'+i%10)) // #nosec G115 -- i%10 is 0-9
 }

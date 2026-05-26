@@ -53,6 +53,7 @@ func SetCSRFCookie(w http.ResponseWriter, secure bool) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// #nosec G124 -- double-submit CSRF cookie must be readable by JS (HttpOnly=false by design)
 	http.SetCookie(w, &http.Cookie{
 		Name:     CSRFCookieName,
 		Value:    token,
@@ -67,6 +68,7 @@ func SetCSRFCookie(w http.ResponseWriter, secure bool) (string, error) {
 
 // ClearCSRFCookie removes the CSRF cookie (e.g. on logout).
 func ClearCSRFCookie(w http.ResponseWriter) {
+	// #nosec G124 -- double-submit CSRF cookie must be readable by JS (HttpOnly=false by design)
 	http.SetCookie(w, &http.Cookie{
 		Name:     CSRFCookieName,
 		Value:    "",
