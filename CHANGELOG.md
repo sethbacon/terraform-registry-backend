@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.4](https://github.com/sethbacon/terraform-registry-backend/compare/v1.2.3...v1.2.4) (2026-05-26)
+
+
+### Bug Fixes
+
+* **ci:** SHA-pin actions, bump backend dependencies, harden archiver path check ([#399](https://github.com/sethbacon/terraform-registry-backend/issues/399)) ([c2d2dd5](https://github.com/sethbacon/terraform-registry-backend/commit/c2d2dd5efb67505767e31dc94372668c522dbb31))
+
 ## [1.2.3](https://github.com/sethbacon/terraform-registry-backend/compare/v1.2.2...v1.2.3) (2026-05-22)
 
 
