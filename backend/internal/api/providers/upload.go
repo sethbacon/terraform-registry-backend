@@ -420,6 +420,7 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 
 // storeUploadedSignatureFiles handles the optional shasums_file and
 // shasums_signature_file multipart inputs:
+// coverage:skip:integration-only — performs storage backend uploads and DB writes that require a live storage service; parameter validation and error paths are exercised by unit tests (TestUploadHandler_Rejects* and TestUploadHandler_StoresShasumsFileWithoutSignature).
 //
 //   - If neither file is provided, no-op.
 //   - If shasums_signature_file is provided, shasums_file AND a non-empty
