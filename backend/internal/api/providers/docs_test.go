@@ -22,10 +22,16 @@ var docsProviderCols = []string{
 	"created_at", "updated_at",
 }
 
-// provider version row (GetVersion): id, provider_id, version, protocols, gpg_key, shasums_url, shasums_sig_url, published_by, deprecated, deprecated_at, deprecation_message, created_at
+// provider version row (GetVersion): same column ordering as the production
+// SELECT in provider_repository.go: id, provider_id, version, protocols,
+// gpg_public_key, shasums_url, shasums_signature_url, shasum_storage_key,
+// shasum_signature_storage_key, published_by, deprecated, deprecated_at,
+// deprecation_message, created_at.
 var docsVersionCols = []string{
 	"id", "provider_id", "version", "protocols", "gpg_public_key",
-	"shasums_url", "shasums_signature_url", "published_by",
+	"shasums_url", "shasums_signature_url",
+	"shasum_storage_key", "shasum_signature_storage_key",
+	"published_by",
 	"deprecated", "deprecated_at", "deprecation_message", "created_at",
 }
 
@@ -56,7 +62,7 @@ func TestListProviderDocsHandler_Success(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM provider_versions").
 		WithArgs("prov-1", "3.6.0").
 		WillReturnRows(sqlmock.NewRows(docsVersionCols).
-			AddRow("ver-1", "prov-1", "3.6.0", []byte(`["5.0"]`), "", "", "", nil, false, nil, nil, time.Now()))
+			AddRow("ver-1", "prov-1", "3.6.0", []byte(`["5.0"]`), "", "", "", nil, nil, nil, false, nil, nil, time.Now()))
 
 	// ListProviderVersionDocsPaginated — COUNT query
 	mock.ExpectQuery("SELECT COUNT.*FROM provider_version_docs").
@@ -177,7 +183,7 @@ func TestListProviderDocsHandler_EmptyDocs(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM provider_versions").
 		WithArgs("prov-1", "3.6.0").
 		WillReturnRows(sqlmock.NewRows(docsVersionCols).
-			AddRow("ver-1", "prov-1", "3.6.0", []byte(`["5.0"]`), "", "", "", nil, false, nil, nil, time.Now()))
+			AddRow("ver-1", "prov-1", "3.6.0", []byte(`["5.0"]`), "", "", "", nil, nil, nil, false, nil, nil, time.Now()))
 
 	// ListProviderVersionDocsPaginated — COUNT query
 	mock.ExpectQuery("SELECT COUNT.*FROM provider_version_docs").
@@ -264,7 +270,7 @@ func TestGetProviderDocContentHandler_DocNotFound(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM provider_versions").
 		WithArgs("prov-1", "3.6.0").
 		WillReturnRows(sqlmock.NewRows(docsVersionCols).
-			AddRow("ver-1", "prov-1", "3.6.0", []byte(`["5.0"]`), "", "", "", nil, false, nil, nil, time.Now()))
+			AddRow("ver-1", "prov-1", "3.6.0", []byte(`["5.0"]`), "", "", "", nil, nil, nil, false, nil, nil, time.Now()))
 
 	// Doc slug not found
 	mock.ExpectQuery("SELECT.*FROM provider_version_docs").
@@ -429,7 +435,7 @@ func TestListProviderDocsHandler_DocsDBError(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM provider_versions").
 		WithArgs("prov-1", "5.0.0").
 		WillReturnRows(sqlmock.NewRows(docsVersionCols).
-			AddRow("ver-1", "prov-1", "5.0.0", []byte(`["6.0"]`), "", "", "", nil, false, nil, nil, time.Now()))
+			AddRow("ver-1", "prov-1", "5.0.0", []byte(`["6.0"]`), "", "", "", nil, nil, nil, false, nil, nil, time.Now()))
 
 	// Count query for ListProviderVersionDocsPaginated
 	mock.ExpectQuery("SELECT COUNT").WillReturnError(docsTestErr)
@@ -566,7 +572,7 @@ func TestGetProviderDocContentHandler_DocSlugDBError(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM provider_versions").
 		WithArgs("prov-1", "5.0.0").
 		WillReturnRows(sqlmock.NewRows(docsVersionCols).
-			AddRow("ver-1", "prov-1", "5.0.0", []byte(`["6.0"]`), "", "", "", nil, false, nil, nil, time.Now()))
+			AddRow("ver-1", "prov-1", "5.0.0", []byte(`["6.0"]`), "", "", "", nil, nil, nil, false, nil, nil, time.Now()))
 
 	mock.ExpectQuery("SELECT.*FROM provider_version_docs").WillReturnError(docsTestErr)
 

@@ -52,6 +52,7 @@ var providerCols = []string{
 var versionCols = []string{
 	"id", "provider_id", "version", "protocols",
 	"gpg_public_key", "shasums_url", "shasums_signature_url",
+	"shasum_storage_key", "shasum_signature_storage_key",
 	"published_by", "published_by_name", "deprecated", "deprecated_at",
 	"deprecation_message", "created_at",
 }
@@ -64,6 +65,7 @@ var platformCols = []string{
 var versionGetCols = []string{
 	"id", "provider_id", "version", "protocols",
 	"gpg_public_key", "shasums_url", "shasums_signature_url",
+	"shasum_storage_key", "shasum_signature_storage_key",
 	"published_by", "deprecated", "deprecated_at",
 	"deprecation_message", "created_at",
 }
@@ -97,7 +99,9 @@ func emptyVersionGetRow() *sqlmock.Rows {
 func sampleVersionRow() *sqlmock.Rows {
 	protocols := []byte(`["6.0"]`)
 	return sqlmock.NewRows(versionGetCols).
-		AddRow("ver-1", "prov-1", "5.0.0", protocols, "", "", "", nil, false, nil, nil, time.Now())
+		AddRow("ver-1", "prov-1", "5.0.0", protocols, "", "", "",
+			nil, nil, // shasum_storage_key, shasum_signature_storage_key
+			nil, false, nil, nil, time.Now())
 }
 
 func emptyPlatformRows() *sqlmock.Rows {
@@ -346,7 +350,9 @@ func TestDeleteProvider_Success_WithVersionsAndPlatforms(t *testing.T) {
 	protocols := []byte(`["6.0"]`)
 	mock.ExpectQuery("SELECT.*FROM provider_versions").
 		WillReturnRows(sqlmock.NewRows(versionCols).
-			AddRow("ver-1", "prov-1", "5.0.0", protocols, "", "", "", nil, nil, false, nil, nil, time.Now()))
+			AddRow("ver-1", "prov-1", "5.0.0", protocols, "", "", "",
+				nil, nil, // shasum_storage_key, shasum_signature_storage_key
+				nil, nil, false, nil, nil, time.Now()))
 	// ListPlatforms returns one platform with a non-empty StoragePath
 	mock.ExpectQuery("SELECT.*FROM provider_platforms").
 		WillReturnRows(sqlmock.NewRows(platformCols).
@@ -682,7 +688,9 @@ func TestGetProvider_OrgFound_Success_WithVersionsAndPlatforms(t *testing.T) {
 	deprecationMsg := "use v6 instead"
 	mock.ExpectQuery("SELECT.*FROM provider_versions").
 		WillReturnRows(sqlmock.NewRows(versionCols).
-			AddRow("ver-1", "prov-1", "5.0.0", protocols, "", "", "", nil, nil, true, &deprecatedAt, &deprecationMsg, time.Now()))
+			AddRow("ver-1", "prov-1", "5.0.0", protocols, "", "", "",
+				nil, nil, // shasum_storage_key, shasum_signature_storage_key
+				nil, nil, true, &deprecatedAt, &deprecationMsg, time.Now()))
 	// ListPlatforms returns one platform
 	mock.ExpectQuery("SELECT.*FROM provider_platforms").
 		WillReturnRows(sqlmock.NewRows(platformCols).

@@ -30,10 +30,13 @@ var mirrorProvCols = []string{
 	"created_by", "created_at", "updated_at", "created_by_name",
 }
 
-// 13 columns from ListVersions row.Scan
+// Column ordering mirrors the production SELECT in provider_repository.go
+// (gpg_public_key, shasums_url, shasums_signature_url,
+//  shasum_storage_key, shasum_signature_storage_key, published_by, ...).
 var mirrorVersionCols = []string{
 	"id", "provider_id", "version", "protocols",
 	"gpg_public_key", "shasums_url", "shasums_signature_url",
+	"shasum_storage_key", "shasum_signature_storage_key",
 	"published_by", "published_by_name",
 	"deprecated", "deprecated_at", "deprecation_message", "created_at",
 }
@@ -280,10 +283,12 @@ func TestFormatZhHash_Empty(t *testing.T) {
 // PlatformIndexHandler — additional uncovered branches
 // ---------------------------------------------------------------------------
 
-// mirrorVersionGetCols are the 12 columns returned by ProviderRepository.GetVersion positional scan
+// mirrorVersionGetCols are the columns returned by ProviderRepository.GetVersion
+// positional scan (same ordering as the production SELECT).
 var mirrorVersionGetCols = []string{
 	"id", "provider_id", "version", "protocols",
 	"gpg_public_key", "shasums_url", "shasums_signature_url",
+	"shasum_storage_key", "shasum_signature_storage_key",
 	"published_by", "deprecated", "deprecated_at",
 	"deprecation_message", "created_at",
 }
@@ -297,7 +302,9 @@ var mirrorPlatformCols = []string{
 func sampleMirrorVersionGetRow() *sqlmock.Rows {
 	protocols := []byte(`["6.0"]`)
 	return sqlmock.NewRows(mirrorVersionGetCols).
-		AddRow("ver-1", "prov-1", "1.2.3", protocols, "", "", "", nil, false, nil, nil, time.Now())
+		AddRow("ver-1", "prov-1", "1.2.3", protocols, "", "", "",
+			nil, nil, // shasum_storage_key, shasum_signature_storage_key
+			nil, false, nil, nil, time.Now())
 }
 
 func TestPlatformIndex_ProviderDBError(t *testing.T) {

@@ -241,8 +241,13 @@ func (r *ProviderRepository) CreateVersion(ctx context.Context, version *models.
 	}
 
 	query := `
-		INSERT INTO provider_versions (provider_id, version, protocols, gpg_public_key, shasums_url, shasums_signature_url, published_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO provider_versions (
+			provider_id, version, protocols, gpg_public_key,
+			shasums_url, shasums_signature_url,
+			shasum_storage_key, shasum_signature_storage_key,
+			published_by
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING id, created_at
 	`
 
@@ -253,6 +258,8 @@ func (r *ProviderRepository) CreateVersion(ctx context.Context, version *models.
 		version.GPGPublicKey,
 		version.ShasumURL,
 		version.ShasumSignatureURL,
+		version.ShasumStorageKey,
+		version.ShasumSignatureStorageKey,
 		version.PublishedBy,
 	).Scan(&version.ID, &version.CreatedAt)
 
@@ -266,7 +273,10 @@ func (r *ProviderRepository) CreateVersion(ctx context.Context, version *models.
 // GetVersion retrieves a specific provider version
 func (r *ProviderRepository) GetVersion(ctx context.Context, providerID, version string) (*models.ProviderVersion, error) {
 	query := `
-		SELECT id, provider_id, version, protocols, gpg_public_key, shasums_url, shasums_signature_url, published_by,
+		SELECT id, provider_id, version, protocols, gpg_public_key,
+		       shasums_url, shasums_signature_url,
+		       shasum_storage_key, shasum_signature_storage_key,
+		       published_by,
 		       COALESCE(deprecated, false), deprecated_at, deprecation_message, created_at
 		FROM provider_versions
 		WHERE provider_id = $1 AND version = $2
@@ -283,6 +293,8 @@ func (r *ProviderRepository) GetVersion(ctx context.Context, providerID, version
 		&v.GPGPublicKey,
 		&v.ShasumURL,
 		&v.ShasumSignatureURL,
+		&v.ShasumStorageKey,
+		&v.ShasumSignatureStorageKey,
 		&v.PublishedBy,
 		&v.Deprecated,
 		&v.DeprecatedAt,
@@ -308,7 +320,9 @@ func (r *ProviderRepository) GetVersion(ctx context.Context, providerID, version
 // ListVersions retrieves all versions for a provider, sorted by semver (highest first)
 func (r *ProviderRepository) ListVersions(ctx context.Context, providerID string) ([]*models.ProviderVersion, error) {
 	query := `
-		SELECT pv.id, pv.provider_id, pv.version, pv.protocols, pv.gpg_public_key, pv.shasums_url, pv.shasums_signature_url,
+		SELECT pv.id, pv.provider_id, pv.version, pv.protocols, pv.gpg_public_key,
+		       pv.shasums_url, pv.shasums_signature_url,
+		       pv.shasum_storage_key, pv.shasum_signature_storage_key,
 		       pv.published_by, u.name as published_by_name,
 		       COALESCE(pv.deprecated, false), pv.deprecated_at, pv.deprecation_message, pv.created_at
 		FROM provider_versions pv
@@ -335,6 +349,8 @@ func (r *ProviderRepository) ListVersions(ctx context.Context, providerID string
 			&v.GPGPublicKey,
 			&v.ShasumURL,
 			&v.ShasumSignatureURL,
+			&v.ShasumStorageKey,
+			&v.ShasumSignatureStorageKey,
 			&v.PublishedBy,
 			&v.PublishedByName,
 			&v.Deprecated,
@@ -376,7 +392,9 @@ func (r *ProviderRepository) ListVersionsPaginated(ctx context.Context, provider
 	}
 
 	query := `
-		SELECT pv.id, pv.provider_id, pv.version, pv.protocols, pv.gpg_public_key, pv.shasums_url, pv.shasums_signature_url,
+		SELECT pv.id, pv.provider_id, pv.version, pv.protocols, pv.gpg_public_key,
+		       pv.shasums_url, pv.shasums_signature_url,
+		       pv.shasum_storage_key, pv.shasum_signature_storage_key,
 		       pv.published_by, u.name as published_by_name,
 		       COALESCE(pv.deprecated, false), pv.deprecated_at, pv.deprecation_message, pv.created_at
 		FROM provider_versions pv
@@ -405,6 +423,8 @@ func (r *ProviderRepository) ListVersionsPaginated(ctx context.Context, provider
 			&v.GPGPublicKey,
 			&v.ShasumURL,
 			&v.ShasumSignatureURL,
+			&v.ShasumStorageKey,
+			&v.ShasumSignatureStorageKey,
 			&v.PublishedBy,
 			&v.PublishedByName,
 			&v.Deprecated,
@@ -474,6 +494,23 @@ func (r *ProviderRepository) DeprecateVersion(ctx context.Context, versionID str
 		return fmt.Errorf("provider version not found")
 	}
 
+	return nil
+}
+
+// UpdateVersionSignatureStorage persists the storage keys for an uploaded
+// provider version's SHA256SUMS file and its detached signature. Either may
+// be nil to leave the existing column unchanged.
+func (r *ProviderRepository) UpdateVersionSignatureStorage(ctx context.Context, versionID string, sumsKey, sigKey *string) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE provider_versions
+		    SET shasum_storage_key           = COALESCE($2, shasum_storage_key),
+		        shasum_signature_storage_key = COALESCE($3, shasum_signature_storage_key)
+		  WHERE id = $1`,
+		versionID, sumsKey, sigKey,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update provider version signature storage: %w", err)
+	}
 	return nil
 }
 
