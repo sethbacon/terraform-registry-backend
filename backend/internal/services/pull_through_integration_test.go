@@ -127,10 +127,13 @@ var providerGetCols = []string{
 // providerCreateCols are returned by CreateProvider's RETURNING clause.
 var providerCreateCols = []string{"id", "created_at", "updated_at"}
 
-// versionGetCols are the 12 columns returned by GetVersion positional scan.
+// versionGetCols are the columns returned by GetVersion positional scan
+// (same ordering as the production SELECT).
 var versionGetCols = []string{
 	"id", "provider_id", "version", "protocols", "gpg_public_key",
-	"shasums_url", "shasums_signature_url", "published_by",
+	"shasums_url", "shasums_signature_url",
+	"shasum_storage_key", "shasum_signature_storage_key",
+	"published_by",
 	"deprecated", "deprecated_at", "deprecation_message", "created_at",
 }
 

@@ -72,17 +72,23 @@ var providerCols = []string{
 	"created_by", "created_at", "updated_at", "created_by_name",
 }
 
-// ListVersions (provider): id, provider_id, version, protocols_json, gpg_key, shasums_url, shasums_sig_url, published_by, published_by_name, deprecated, deprecated_at, deprecation_message, created_at
+// ListVersions (provider): id, provider_id, version, protocols_json, gpg_key,
+// shasums_url, shasums_sig_url, shasum_storage_key, shasum_signature_storage_key,
+// published_by, published_by_name, deprecated, deprecated_at, deprecation_message, created_at
 var providerVersionListCols = []string{
 	"id", "provider_id", "version", "protocols", "gpg_public_key",
-	"shasums_url", "shasums_signature_url", "published_by", "published_by_name",
+	"shasums_url", "shasums_signature_url",
+	"shasum_storage_key", "shasum_signature_storage_key",
+	"published_by", "published_by_name",
 	"deprecated", "deprecated_at", "deprecation_message", "created_at",
 }
 
-// GetVersion (provider): 12 cols - no published_by_name
+// GetVersion (provider): no published_by_name; otherwise same column set
 var providerVersionGetCols = []string{
 	"id", "provider_id", "version", "protocols", "gpg_public_key",
-	"shasums_url", "shasums_signature_url", "published_by",
+	"shasums_url", "shasums_signature_url",
+	"shasum_storage_key", "shasum_signature_storage_key",
+	"published_by",
 	"deprecated", "deprecated_at", "deprecation_message", "created_at",
 }
 
@@ -128,14 +134,18 @@ func sampleProviderRow() *sqlmock.Rows {
 func sampleProviderVersionListRow() *sqlmock.Rows {
 	return sqlmock.NewRows(providerVersionListCols).
 		AddRow("ver-1", "prov-1", "4.0.0", sampleProtocolsJSON, "",
-			"", "", nil, nil,
+			"", "",
+			nil, nil, // shasum_storage_key, shasum_signature_storage_key
+			nil, nil, // published_by, published_by_name
 			false, nil, nil, time.Now())
 }
 
 func sampleProviderVersionGetRow() *sqlmock.Rows {
 	return sqlmock.NewRows(providerVersionGetCols).
 		AddRow("ver-1", "prov-1", "4.0.0", sampleProtocolsJSON, "",
-			"", "", nil,
+			"", "",
+			nil, nil, // shasum_storage_key, shasum_signature_storage_key
+			nil, // published_by
 			false, nil, nil, time.Now())
 }
 
@@ -457,6 +467,21 @@ func makeValidZIP(t *testing.T) []byte {
 // fields maps form field names to values; if fileData is non-nil it is included as "file".
 func buildUploadRequest(t *testing.T, path string, fields map[string]string, fileData []byte) *http.Request {
 	t.Helper()
+	return buildUploadRequestWithFiles(t, path, fields, fileData, nil)
+}
+
+// buildUploadRequestWithFiles is buildUploadRequest with extra named file
+// uploads (e.g. shasums_file, shasums_signature_file). A nil/empty map omits
+// the extra files entirely. Each value is written verbatim as the file body
+// under the given form-field name.
+func buildUploadRequestWithFiles(
+	t *testing.T,
+	path string,
+	fields map[string]string,
+	fileData []byte,
+	extraFiles map[string][]byte,
+) *http.Request {
+	t.Helper()
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
 	for k, v := range fields {
@@ -470,6 +495,13 @@ func buildUploadRequest(t *testing.T, path string, fields map[string]string, fil
 			t.Fatalf("CreateFormFile: %v", err)
 		}
 		fw.Write(fileData)
+	}
+	for fieldName, data := range extraFiles {
+		fw, err := mw.CreateFormFile(fieldName, fieldName)
+		if err != nil {
+			t.Fatalf("CreateFormFile %q: %v", fieldName, err)
+		}
+		fw.Write(data)
 	}
 	mw.Close()
 	req, err := http.NewRequest(http.MethodPost, path, &body)
@@ -493,6 +525,8 @@ func newUploadRouter(t *testing.T, store *mockStore) (sqlmock.Sqlmock, *gin.Engi
 var providerInsertCols = []string{"id", "created_at", "updated_at"}
 var providerVersionInsertCols = []string{"id", "created_at"}
 var platformInsertCols = []string{"id"}
+
+func strPtr(s string) *string { return &s }
 
 // ---------------------------------------------------------------------------
 // UploadHandler tests — early-exit paths (no SQL mocking needed)
@@ -730,6 +764,84 @@ func TestUploadHandler_PlatformConflict(t *testing.T) {
 		t.Errorf("status = %d, want 409 (platform conflict): body=%s", w.Code, w.Body.String())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// UploadHandler — SHA256SUMS / signature handling (issue #404)
+// ---------------------------------------------------------------------------
+
+// uploadHappyPathExpectations sets up the SQL mocks for the normal
+// upload path (create provider + version + check-no-platform + insert
+// platform) so the signature-file validation paths can be exercised
+// without re-stating the entire fixture chain in every test.
+func uploadHappyPathExpectations(mock sqlmock.Sqlmock) {
+	mock.ExpectQuery("SELECT.*FROM organizations").WillReturnRows(sampleOrgRow())
+	mock.ExpectQuery("SELECT.*FROM providers.*WHERE").WillReturnRows(sqlmock.NewRows(providerCols))
+	mock.ExpectQuery("INSERT INTO providers").
+		WillReturnRows(sqlmock.NewRows(providerInsertCols).AddRow("prov-new", time.Now(), time.Now()))
+	mock.ExpectQuery("SELECT.*FROM provider_versions.*WHERE provider_id.*AND version").
+		WillReturnRows(sqlmock.NewRows(providerVersionGetCols))
+	mock.ExpectQuery("INSERT INTO provider_versions").
+		WillReturnRows(sqlmock.NewRows(providerVersionInsertCols).AddRow("ver-new", time.Now()))
+}
+
+func TestUploadHandler_RejectsSignatureWithoutSums(t *testing.T) {
+	store := &mockStore{}
+	mock, r := newUploadRouter(t, store)
+	uploadHappyPathExpectations(mock)
+	// Note: no platform-query / insert-platform expectations — the request
+	// must be rejected before that point.
+
+	// No gpg_public_key supplied — the validator skips key parsing entirely
+	// so the request reaches the signature-file pairing check.
+	req := buildUploadRequestWithFiles(t, "/v1/providers", map[string]string{
+		"namespace": "hashicorp",
+		"type":      "aws",
+		"version":   "4.0.0",
+		"os":        "linux",
+		"arch":      "amd64",
+	}, makeValidZIP(t), map[string][]byte{
+		"shasums_signature_file": []byte("fake-sig-bytes"),
+	})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 (sig without sums): body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "shasums_signature_file requires shasums_file") {
+		t.Errorf("body should explain the missing companion file; got: %s", w.Body.String())
+	}
+}
+
+func TestUploadHandler_RejectsSignatureWithoutGPGKey(t *testing.T) {
+	store := &mockStore{}
+	mock, r := newUploadRouter(t, store)
+	uploadHappyPathExpectations(mock)
+
+	req := buildUploadRequestWithFiles(t, "/v1/providers", map[string]string{
+		"namespace": "hashicorp",
+		"type":      "aws",
+		"version":   "4.0.0",
+		"os":        "linux",
+		"arch":      "amd64",
+		// NOTE: no gpg_public_key
+	}, makeValidZIP(t), map[string][]byte{
+		"shasums_file":           []byte("abc123  terraform-provider-aws_4.0.0_linux_amd64.zip\n"),
+		"shasums_signature_file": []byte("fake-sig-bytes"),
+	})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 (sig without gpg key): body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "requires gpg_public_key") {
+		t.Errorf("body should explain the missing gpg key; got: %s", w.Body.String())
+	}
+}
+
+// NOTE: GPG verification-failure path is covered exhaustively in
+// internal/validation/gpg_test.go; the upload handler simply delegates to
+// validation.VerifySignature, so duplicating the positive/negative crypto
+// matrix here would only test the same code through a different door.
 
 // ---------------------------------------------------------------------------
 // UploadHandler — additional error paths
@@ -1032,7 +1144,9 @@ func TestDownloadHandler_SuccessWithGPGKey(t *testing.T) {
 		sqlmock.NewRows(providerVersionGetCols).
 			AddRow("ver-1", "prov-1", "4.0.0", sampleProtocolsJSON,
 				"-----BEGIN PGP PUBLIC KEY BLOCK-----\ntest\n-----END PGP PUBLIC KEY BLOCK-----",
-				"", "", nil, false, nil, nil, time.Now()),
+				"", "",
+				nil, nil, // shasum_storage_key, shasum_signature_storage_key
+				nil, false, nil, nil, time.Now()),
 	)
 	mock.ExpectQuery("SELECT.*FROM provider_platforms.*WHERE provider_version_id").
 		WillReturnRows(samplePlatformRow())
@@ -1056,6 +1170,7 @@ func TestDownloadHandler_SuccessWithShasumURLs(t *testing.T) {
 		sqlmock.NewRows(providerVersionGetCols).
 			AddRow("ver-1", "prov-1", "4.0.0", sampleProtocolsJSON, "",
 				"https://example.com/shasums", "https://example.com/shasums.sig",
+				nil, nil, // shasum_storage_key, shasum_signature_storage_key
 				nil, false, nil, nil, time.Now()),
 	)
 	mock.ExpectQuery("SELECT.*FROM provider_platforms.*WHERE provider_version_id").
@@ -1070,6 +1185,40 @@ func TestDownloadHandler_SuccessWithShasumURLs(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "https://example.com/shasums.sig") {
 		t.Errorf("response should contain shasums_signature_url; body: %s", w.Body.String())
+	}
+}
+
+// Issue #404: when the upload path has stored SHA256SUMS + .sig files in
+// our own storage backend, the download handler must generate pre-signed
+// URLs from the storage keys and prefer them over the (empty) external
+// ShasumURL / ShasumSignatureURL columns.
+func TestDownloadHandler_SuccessWithStorageKeys(t *testing.T) {
+	const presignedURL = "https://storage.example.com/presigned"
+	store := &mockStore{getURLResult: presignedURL}
+	mock, r := newDownloadRouter(t, store)
+
+	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow())
+	mock.ExpectQuery("SELECT.*FROM providers.*WHERE").WillReturnRows(sampleProviderRow())
+	mock.ExpectQuery("SELECT.*FROM provider_versions.*WHERE provider_id.*AND version").WillReturnRows(
+		sqlmock.NewRows(providerVersionGetCols).
+			AddRow("ver-1", "prov-1", "4.0.0", sampleProtocolsJSON, "",
+				"", "", // external URLs empty (this is an uploaded provider)
+				strPtr("providers/hashicorp/aws/4.0.0/SHA256SUMS"),
+				strPtr("providers/hashicorp/aws/4.0.0/SHA256SUMS.sig"),
+				nil, false, nil, nil, time.Now()),
+	)
+	mock.ExpectQuery("SELECT.*FROM provider_platforms.*WHERE provider_version_id").
+		WillReturnRows(samplePlatformRow())
+
+	w := doGET(r, "/v1/providers/hashicorp/aws/4.0.0/download/linux/amd64")
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+	// Both signature URLs must be the pre-signed URL produced by the storage
+	// backend; the JSON contains it three times (binary + sums + sig) for an
+	// uploaded provider since the mock returns the same URL for any key.
+	if got := strings.Count(w.Body.String(), presignedURL); got < 3 {
+		t.Errorf("expected pre-signed URL to appear for binary, sums, and sig (3 times); got %d in body: %s", got, w.Body.String())
 	}
 }
 

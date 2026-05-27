@@ -9021,6 +9021,16 @@
                                         "description": "Provider binary (.zip, max 500MB)",
                                         "type": "string",
                                         "format": "binary"
+                                    },
+                                    "shasums_file": {
+                                        "description": "SHA256SUMS file (max 64KB). Required if shasums_signature_file is provided.",
+                                        "type": "string",
+                                        "format": "binary"
+                                    },
+                                    "shasums_signature_file": {
+                                        "description": "Detached GPG signature of SHA256SUMS (max 64KB). Requires shasums_file AND gpg_public_key; verified before persistence.",
+                                        "type": "string",
+                                        "format": "binary"
                                     }
                                 },
                                 "required": [

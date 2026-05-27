@@ -32,15 +32,21 @@ type ProviderVersion struct {
 	ID                 string
 	ProviderID         string
 	Version            string
-	Protocols          []string   // JSON array of supported Terraform protocol versions (e.g. ["4.0", "5.0"])
-	GPGPublicKey       string     // PEM-encoded GPG public key for signature verification
-	ShasumURL          string     // URL to SHA256SUMS file
-	ShasumSignatureURL string     // URL to SHA256SUMS.sig file
-	PublishedBy        *string    // User ID who published this version
-	Deprecated         bool       // Whether this version is deprecated
-	DeprecatedAt       *time.Time // When the version was deprecated
-	DeprecationMessage *string    // Optional message explaining deprecation
-	CreatedAt          time.Time
+	Protocols          []string // JSON array of supported Terraform protocol versions (e.g. ["4.0", "5.0"])
+	GPGPublicKey       string   // PEM-encoded GPG public key for signature verification
+	ShasumURL          string   // External URL to SHA256SUMS file (populated by mirror sync from upstream)
+	ShasumSignatureURL string   // External URL to SHA256SUMS.sig file (populated by mirror sync from upstream)
+	// ShasumStorageKey / ShasumSignatureStorageKey are populated for *uploaded*
+	// (non-mirrored) providers where the SUMS + sig files were attached to the
+	// upload form. The download handler generates pre-signed URLs from these on
+	// demand. Mirrored providers leave these NULL and use ShasumURL instead.
+	ShasumStorageKey          *string
+	ShasumSignatureStorageKey *string
+	PublishedBy               *string    // User ID who published this version
+	Deprecated                bool       // Whether this version is deprecated
+	DeprecatedAt              *time.Time // When the version was deprecated
+	DeprecationMessage        *string    // Optional message explaining deprecation
+	CreatedAt                 time.Time
 	// Joined fields (not stored in provider_versions table)
 	PublishedByName *string // User name who published this version (joined from users table)
 }

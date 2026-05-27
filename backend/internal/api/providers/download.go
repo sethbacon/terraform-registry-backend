@@ -135,13 +135,32 @@ func DownloadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Con
 			return
 		}
 
-		// Get SHA256SUMS and signature URLs if available
+		// Resolve SHA256SUMS and signature URLs. For uploaded providers the
+		// SUMS/sig files live in our own storage backend (storage-key columns),
+		// in which case we generate a pre-signed URL on demand with the same
+		// 15-minute TTL as the binary download. For mirrored providers the
+		// columns hold external URLs published by HashiCorp and we pass them
+		// through verbatim. Both paths conform to the Provider Registry
+		// Protocol which permits relative, absolute, or pre-signed URLs.
 		shasumsURL := ""
-		shasumsSignatureURL := ""
-		if providerVersion.ShasumURL != "" {
+		if providerVersion.ShasumStorageKey != nil && *providerVersion.ShasumStorageKey != "" {
+			if url, sumsErr := storageBackend.GetURL(c.Request.Context(), *providerVersion.ShasumStorageKey, 15*time.Minute); sumsErr == nil {
+				shasumsURL = url
+			} else {
+				slog.Warn("failed to generate SHA256SUMS URL", "version", providerVersion.Version, "error", sumsErr)
+			}
+		} else if providerVersion.ShasumURL != "" {
 			shasumsURL = providerVersion.ShasumURL
 		}
-		if providerVersion.ShasumSignatureURL != "" {
+
+		shasumsSignatureURL := ""
+		if providerVersion.ShasumSignatureStorageKey != nil && *providerVersion.ShasumSignatureStorageKey != "" {
+			if url, sigErr := storageBackend.GetURL(c.Request.Context(), *providerVersion.ShasumSignatureStorageKey, 15*time.Minute); sigErr == nil {
+				shasumsSignatureURL = url
+			} else {
+				slog.Warn("failed to generate SHA256SUMS signature URL", "version", providerVersion.Version, "error", sigErr)
+			}
+		} else if providerVersion.ShasumSignatureURL != "" {
 			shasumsSignatureURL = providerVersion.ShasumSignatureURL
 		}
 

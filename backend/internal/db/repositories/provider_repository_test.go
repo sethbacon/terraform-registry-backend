@@ -21,12 +21,14 @@ var providerCols = []string{
 var provVersionGetCols = []string{
 	"id", "provider_id", "version", "protocols",
 	"gpg_public_key", "shasums_url", "shasums_signature_url",
+	"shasum_storage_key", "shasum_signature_storage_key",
 	"published_by", "deprecated", "deprecated_at", "deprecation_message", "created_at",
 }
 
 var provVersionListCols = []string{
 	"id", "provider_id", "version", "protocols",
 	"gpg_public_key", "shasums_url", "shasums_signature_url",
+	"shasum_storage_key", "shasum_signature_storage_key",
 	"published_by", "published_by_name", "deprecated", "deprecated_at", "deprecation_message", "created_at",
 }
 
@@ -56,7 +58,9 @@ func emptyProviderRow() *sqlmock.Rows {
 func sampleProvVersionRow() *sqlmock.Rows {
 	protocols := []byte(`["6.0"]`)
 	return sqlmock.NewRows(provVersionGetCols).
-		AddRow("ver-1", "prov-1", "5.0.0", protocols, "", "", "", nil, false, nil, nil, time.Now())
+		AddRow("ver-1", "prov-1", "5.0.0", protocols, "", "", "",
+			nil, nil, // shasum_storage_key, shasum_signature_storage_key
+			nil, false, nil, nil, time.Now())
 }
 
 func emptyProvVersionRow() *sqlmock.Rows {
@@ -66,7 +70,9 @@ func emptyProvVersionRow() *sqlmock.Rows {
 func sampleProvVersionListRows() *sqlmock.Rows {
 	protocols := []byte(`["6.0"]`)
 	return sqlmock.NewRows(provVersionListCols).
-		AddRow("ver-1", "prov-1", "5.0.0", protocols, "", "", "", nil, nil, false, nil, nil, time.Now())
+		AddRow("ver-1", "prov-1", "5.0.0", protocols, "", "", "",
+			nil, nil, // shasum_storage_key, shasum_signature_storage_key
+			nil, nil, false, nil, nil, time.Now())
 }
 
 func samplePlatformRow() *sqlmock.Rows {
@@ -1155,7 +1161,9 @@ func TestListVersionsPaginated_Success(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM provider_versions").
 		WithArgs("prov-1", 10, 0).
 		WillReturnRows(sqlmock.NewRows(provVersionListCols).
-			AddRow("ver-1", "prov-1", "1.0.0", protocols, "", "", "", nil, nil, false, nil, nil, time.Now()))
+			AddRow("ver-1", "prov-1", "1.0.0", protocols, "", "", "",
+				nil, nil, // shasum_storage_key, shasum_signature_storage_key
+				nil, nil, false, nil, nil, time.Now()))
 
 	versions, total, err := repo.ListVersionsPaginated(context.Background(), "prov-1", 10, 0)
 	if err != nil {

@@ -2,6 +2,7 @@
 package providers
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -23,6 +24,10 @@ import (
 const (
 	// MaxProviderBinarySize is the maximum size for a provider binary (500MB)
 	MaxProviderBinarySize = 500 << 20 // 500MB
+
+	// MaxSignatureFileSize bounds the SHA256SUMS file (~5KB) and its detached
+	// signature (~1KB) generously. Anything larger is malformed.
+	MaxSignatureFileSize = 64 << 10 // 64KB
 )
 
 // @Summary      Upload provider version
@@ -41,6 +46,8 @@ const (
 // @Param        description    formData  string  false  "Provider description"
 // @Param        source         formData  string  false  "Source URL"
 // @Param        file           formData  file    true   "Provider binary (.zip, max 500MB)"
+// @Param        shasums_file           formData  file    false  "SHA256SUMS file (max 64KB). Required if shasums_signature_file is provided."
+// @Param        shasums_signature_file formData  file    false  "Detached GPG signature of SHA256SUMS (max 64KB). Requires shasums_file AND gpg_public_key; verified before persistence."
 // @Success      201
 // @Failure      400  {object}  map[string]interface{}
 // @Failure      401  {object}  map[string]interface{}
@@ -280,16 +287,16 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 		}
 
 		if providerVersion == nil {
-			// Create new version
-			// Note: shasums_url and shasums_signature_url would be set separately
-			// For now, we'll leave them empty as they're typically external URLs
+			// Create new version. ShasumURL/ShasumSignatureURL stay empty here —
+			// they're populated by the mirror sync path for mirrored providers.
+			// For uploaded providers, the SHA256SUMS file and detached signature
+			// are stored in our own backend and surfaced via the storage-key
+			// columns populated below.
 			providerVersion = &models.ProviderVersion{
-				ProviderID:         provider.ID,
-				Version:            version,
-				Protocols:          protocols,
-				GPGPublicKey:       gpgPublicKey,
-				ShasumURL:          "",
-				ShasumSignatureURL: "",
+				ProviderID:   provider.ID,
+				Version:      version,
+				Protocols:    protocols,
+				GPGPublicKey: gpgPublicKey,
 			}
 			// Set published_by for audit tracking
 			if userID, exists := c.Get("user_id"); exists {
@@ -304,6 +311,16 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 				})
 				return
 			}
+		}
+
+		// Optional: accept shasums_file and shasums_signature_file. These are
+		// per-version files, so we only need to store them once. Subsequent
+		// platform uploads against the same version can omit them; if provided,
+		// we'll re-validate and overwrite (the operator may be re-uploading the
+		// signed files after a key rotation).
+		if storeErr := storeUploadedSignatureFiles(c, storageBackend, providerRepo, providerVersion, namespace, providerType, version, gpgPublicKey); storeErr != nil {
+			// storeUploadedSignatureFiles has already written the HTTP error.
+			return
 		}
 
 		// Check for duplicate platform
@@ -399,4 +416,129 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 			"filename":   header.Filename,
 		})
 	}
+}
+
+// storeUploadedSignatureFiles handles the optional shasums_file and
+// shasums_signature_file multipart inputs:
+//
+//   - If neither file is provided, no-op.
+//   - If shasums_signature_file is provided, shasums_file AND a non-empty
+//     gpg_public_key form value are required; the signature is verified
+//     against the SUMS before persistence (rejected with 400 on failure).
+//   - If only shasums_file is provided (no signature), it is stored as-is.
+//
+// On success the version row's storage-key columns are updated and the
+// download handler will start returning pre-signed URLs for these files.
+// On any error this function writes the HTTP response and returns a
+// non-nil error so the caller can abort the upload flow.
+func storeUploadedSignatureFiles(
+	c *gin.Context,
+	storageBackend storage.Storage,
+	providerRepo *repositories.ProviderRepository,
+	providerVersion *models.ProviderVersion,
+	namespace, providerType, version, gpgPublicKey string,
+) error {
+	sumsBytes, sumsProvided, err := readOptionalMultipartFile(c, "shasums_file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return err
+	}
+	sigBytes, sigProvided, err := readOptionalMultipartFile(c, "shasums_signature_file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return err
+	}
+
+	if !sumsProvided && !sigProvided {
+		return nil
+	}
+
+	if sigProvided {
+		if !sumsProvided {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "shasums_signature_file requires shasums_file in the same upload",
+			})
+			return fmt.Errorf("sig without sums")
+		}
+		if gpgPublicKey == "" {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "shasums_signature_file requires gpg_public_key to verify the signature",
+			})
+			return fmt.Errorf("sig without gpg key")
+		}
+		if verifyErr := validation.VerifySignature(gpgPublicKey, sumsBytes, sigBytes); verifyErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": fmt.Sprintf("shasums signature failed GPG verification: %v", verifyErr),
+			})
+			return verifyErr
+		}
+	}
+
+	var sumsKey, sigKey *string
+
+	if sumsProvided {
+		path := fmt.Sprintf("providers/%s/%s/%s/SHA256SUMS", namespace, providerType, version)
+		if _, upErr := storageBackend.Upload(c.Request.Context(), path, bytes.NewReader(sumsBytes), int64(len(sumsBytes))); upErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": fmt.Sprintf("Failed to upload SHA256SUMS: %v", upErr),
+			})
+			return upErr
+		}
+		sumsKey = &path
+	}
+
+	if sigProvided {
+		path := fmt.Sprintf("providers/%s/%s/%s/SHA256SUMS.sig", namespace, providerType, version)
+		if _, upErr := storageBackend.Upload(c.Request.Context(), path, bytes.NewReader(sigBytes), int64(len(sigBytes))); upErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": fmt.Sprintf("Failed to upload SHA256SUMS signature: %v", upErr),
+			})
+			return upErr
+		}
+		sigKey = &path
+	}
+
+	if updErr := providerRepo.UpdateVersionSignatureStorage(c.Request.Context(), providerVersion.ID, sumsKey, sigKey); updErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": fmt.Sprintf("Failed to persist signature storage keys: %v", updErr),
+		})
+		return updErr
+	}
+	// Mirror the new values back onto the in-memory version so callers see
+	// the persisted state without reloading from the DB.
+	if sumsKey != nil {
+		providerVersion.ShasumStorageKey = sumsKey
+	}
+	if sigKey != nil {
+		providerVersion.ShasumSignatureStorageKey = sigKey
+	}
+	return nil
+}
+
+// readOptionalMultipartFile reads up to MaxSignatureFileSize bytes from the
+// named multipart file. Returns (nil, false, nil) when the field is absent
+// (the common case for platform uploads that don't include SUMS data).
+// Returns an error when the field exists but is malformed or oversized.
+func readOptionalMultipartFile(c *gin.Context, field string) ([]byte, bool, error) {
+	file, header, err := c.Request.FormFile(field)
+	if err == http.ErrMissingFile {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("invalid %s field: %w", field, err)
+	}
+	defer file.Close()
+
+	if header.Size > MaxSignatureFileSize {
+		return nil, true, fmt.Errorf("%s exceeds %d-byte limit", field, MaxSignatureFileSize)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(file, MaxSignatureFileSize+1))
+	if err != nil {
+		return nil, true, fmt.Errorf("failed to read %s: %w", field, err)
+	}
+	if int64(len(data)) > MaxSignatureFileSize {
+		return nil, true, fmt.Errorf("%s exceeds %d-byte limit", field, MaxSignatureFileSize)
+	}
+	return data, true, nil
 }
