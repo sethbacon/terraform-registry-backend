@@ -135,7 +135,7 @@ jobs:
           ./scripts/check_package_coverage.sh
 
       - name: Upload Go coverage
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: go-coverage
           path: backend/coverage.out
@@ -165,7 +165,7 @@ jobs:
         # Once set, the action writes / overwrites 'coverage.json' in that gist, which the
         # shields.io endpoint badge in README.md reads.
         if: github.event_name == 'push'
-        uses: schneegans/dynamic-badges-action@e9a478b16159b4d31420099ba146cdc50f134483 # v1.7.0
+        uses: schneegans/dynamic-badges-action@0e50b8bad39e7e1afd3e4e9c2b7dd145fad07501 # v1.8.0
         with:
           auth: ${{ secrets.GIST_TOKEN }}
           gistID: ${{ vars.COVERAGE_GIST_ID }}
@@ -248,7 +248,7 @@ jobs:
 
       - name: Upload gosec results
         if: always()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: gosec-results
           path: backend/gosec-results.json
@@ -334,7 +334,7 @@ jobs:
         run: kubectl kustomize deployments/kubernetes/overlays/production > /dev/null
 
       - name: Install Terraform
-        uses: hashicorp/setup-terraform@5e8dbf3c6d9deaf4193ca7a8fb23f2ac83bb6c85 # v4
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: latest
 
