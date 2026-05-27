@@ -498,12 +498,14 @@ func TestTerraformMirrorUpdateSyncStatus_DBError(t *testing.T) {
 var tfVersionCols = []string{
 	"id", "config_id", "version", "is_latest", "is_deprecated", "release_date",
 	"sync_status", "sync_error", "synced_at", "created_at", "updated_at",
+	"sums_storage_key", "sig_storage_key",
 }
 
 func newTFVersionRow(mock sqlmock.Sqlmock, v *models.TerraformVersion) *sqlmock.Rows {
 	return mock.NewRows(tfVersionCols).AddRow(
 		v.ID, v.ConfigID, v.Version, v.IsLatest, v.IsDeprecated, v.ReleaseDate,
 		v.SyncStatus, v.SyncError, v.SyncedAt, v.CreatedAt, v.UpdatedAt,
+		v.SumsStorageKey, v.SigStorageKey,
 	)
 }
 

@@ -291,6 +291,27 @@ func (h *Handler) DownloadBinary(c *gin.Context) {
 		return
 	}
 
+	// Generate pre-signed URLs for the per-version SHA256SUMS and its detached
+	// GPG signature when the sync job has uploaded them. Both are optional —
+	// older versions synced before signature persistence was introduced will
+	// not have storage keys and the corresponding URLs will be empty strings.
+	shasumsURL := ""
+	if version.SumsStorageKey != nil && *version.SumsStorageKey != "" {
+		if url, sumsErr := h.storageBackend.GetURL(c.Request.Context(), *version.SumsStorageKey, 15*time.Minute); sumsErr == nil {
+			shasumsURL = url
+		} else {
+			slog.Warn("failed to generate SHA256SUMS URL", "version", version.Version, "error", sumsErr)
+		}
+	}
+	shasumsSignatureURL := ""
+	if version.SigStorageKey != nil && *version.SigStorageKey != "" {
+		if url, sigErr := h.storageBackend.GetURL(c.Request.Context(), *version.SigStorageKey, 15*time.Minute); sigErr == nil {
+			shasumsSignatureURL = url
+		} else {
+			slog.Warn("failed to generate SHA256SUMS signature URL", "version", version.Version, "error", sigErr)
+		}
+	}
+
 	// Increment Prometheus download counter and persist to DB (non-blocking).
 	telemetry.TerraformBinaryDownloadsTotal.WithLabelValues(versionStr, osStr, archStr).Inc()
 	go func() {
@@ -334,11 +355,13 @@ func (h *Handler) DownloadBinary(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, models.TerraformBinaryDownloadResponse{
-		OS:          platform.OS,
-		Arch:        platform.Arch,
-		Version:     version.Version,
-		Filename:    platform.Filename,
-		SHA256:      platform.SHA256,
-		DownloadURL: downloadURL,
+		OS:                  platform.OS,
+		Arch:                platform.Arch,
+		Version:             version.Version,
+		Filename:            platform.Filename,
+		SHA256:              platform.SHA256,
+		DownloadURL:         downloadURL,
+		ShasumsURL:          shasumsURL,
+		ShasumsSignatureURL: shasumsSignatureURL,
 	})
 }

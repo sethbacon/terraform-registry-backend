@@ -49,6 +49,13 @@ type TerraformVersion struct {
 	CreatedAt    time.Time  `json:"created_at" db:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at" db:"updated_at"`
 
+	// Storage keys for the per-version GPG-verified SHA256SUMS file and its
+	// detached signature. NULL until the sync job has uploaded them. Used by
+	// the public download endpoint to hand clients both files for offline
+	// signature verification.
+	SumsStorageKey *string `json:"-" db:"sums_storage_key"`
+	SigStorageKey  *string `json:"-" db:"sig_storage_key"`
+
 	// Populated by joins — not stored in columns
 	Platforms []TerraformVersionPlatform `json:"platforms,omitempty" db:"-"`
 }
@@ -147,11 +154,16 @@ type TerraformSyncHistoryListResponse struct {
 }
 
 // TerraformBinaryDownloadResponse is returned by the public download endpoint.
+// ShasumsURL and ShasumsSignatureURL are populated when the sync job has stored
+// the GPG-verified SHA256SUMS and its detached .sig file for this version; they
+// are empty strings when no signature/sums file is available yet.
 type TerraformBinaryDownloadResponse struct {
-	OS          string `json:"os"`
-	Arch        string `json:"arch"`
-	Version     string `json:"version"`
-	Filename    string `json:"filename"`
-	SHA256      string `json:"sha256"`
-	DownloadURL string `json:"download_url"`
+	OS                  string `json:"os"`
+	Arch                string `json:"arch"`
+	Version             string `json:"version"`
+	Filename            string `json:"filename"`
+	SHA256              string `json:"sha256"`
+	DownloadURL         string `json:"download_url"`
+	ShasumsURL          string `json:"shasums_url"`
+	ShasumsSignatureURL string `json:"shasums_signature_url"`
 }
