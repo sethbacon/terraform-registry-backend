@@ -7253,6 +7253,18 @@
                         "name": "file",
                         "in": "formData",
                         "required": true
+                    },
+                    {
+                        "type": "file",
+                        "description": "SHA256SUMS file (max 64KB). Required if shasums_signature_file is provided.",
+                        "name": "shasums_file",
+                        "in": "formData"
+                    },
+                    {
+                        "type": "file",
+                        "description": "Detached GPG signature of SHA256SUMS (max 64KB). Requires shasums_file AND gpg_public_key; verified before persistence.",
+                        "name": "shasums_signature_file",
+                        "in": "formData"
                     }
                 ],
                 "responses": {
