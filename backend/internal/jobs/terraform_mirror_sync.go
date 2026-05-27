@@ -420,6 +420,14 @@ func (j *TerraformMirrorSyncJob) performSync(
 		log.Printf("[terraform-mirror] SHA256 back-fill error for %s: %v", cfg.Name, backfillErr)
 	}
 
+	// 6c. Signature back-fill: upload SHA256SUMS and its detached GPG signature
+	// for any already-synced version whose storage keys are still NULL. This
+	// covers versions synced before signature persistence was introduced; the
+	// public download endpoint will now return populated URLs for them.
+	if backfillErr := j.backfillSignatureStorage(ctx, client, cfg, allVersions); backfillErr != nil {
+		log.Printf("[terraform-mirror] signature back-fill error for %s: %v", cfg.Name, backfillErr)
+	}
+
 	// 7. Mark the highest fully-synced stable version as is_latest.
 	if setLatestErr := j.updateLatestVersion(ctx, cfg.ID); setLatestErr != nil {
 		log.Printf("[terraform-mirror] failed to update latest version for %s: %v", cfg.Name, setLatestErr)
@@ -790,6 +798,71 @@ func (j *TerraformMirrorSyncJob) backfillGPGVerification(
 		if updErr := j.repo.UpdateGPGVerifiedForVersion(ctx, sv.ID, true); updErr != nil {
 			log.Printf("[terraform-mirror] backfill: failed to update gpg_verified for %s: %v", sv.Version, updErr)
 		}
+	}
+
+	return nil
+}
+
+// backfillSignatureStorage uploads the per-version SHA256SUMS file and (when
+// GPG verification succeeds) its detached signature for any already-synced
+// version whose sums_storage_key or sig_storage_key column is still NULL.
+// This covers versions synced before signature persistence was introduced.
+// Binaries are never re-downloaded — only the small SUMS + signature files.
+// coverage:skip:integration-only — fetches SUMS/sig files over HTTP and writes to storage + DB; covered by integration tests.
+func (j *TerraformMirrorSyncJob) backfillSignatureStorage(
+	ctx context.Context,
+	client terraformReleasesClient,
+	cfg *models.TerraformMirrorConfig,
+	filteredVersions []mirror.TerraformVersionInfo,
+) error {
+	// Limit work to versions the operator has actually opted into via the
+	// platform/version/stable filters.
+	wantedVersions := make(map[string]bool, len(filteredVersions))
+	for _, vi := range filteredVersions {
+		wantedVersions[vi.Version] = true
+	}
+
+	syncedVersions, err := j.repo.ListVersions(ctx, cfg.ID, true /* syncedOnly */)
+	if err != nil {
+		return fmt.Errorf("failed to list synced versions: %w", err)
+	}
+
+	gpgKey := gpgKeyForConfig(cfg)
+
+	for _, sv := range syncedVersions {
+		if !wantedVersions[sv.Version] {
+			continue
+		}
+		// Skip versions that already have at least the SUMS stored. A sig may
+		// still be missing if GPG was disabled the first time around, but we
+		// re-attempt that on every sync to pick up a newly-configured key.
+		sumsAlreadyStored := sv.SumsStorageKey != nil && *sv.SumsStorageKey != ""
+		sigAlreadyStored := sv.SigStorageKey != nil && *sv.SigStorageKey != ""
+		if sumsAlreadyStored && (sigAlreadyStored || !cfg.GPGVerify || gpgKey == "") {
+			continue
+		}
+
+		_, sumsRaw, sumsErr := client.FetchSHASums(ctx, sv.Version)
+		if sumsErr != nil {
+			log.Printf("[terraform-mirror] sig backfill: failed to fetch SHA256SUMS for %s: %v", sv.Version, sumsErr)
+			continue
+		}
+
+		var verifiedSigBytes []byte
+		if cfg.GPGVerify && gpgKey != "" {
+			sigBytes, sigErr := client.FetchSHASumsSignature(ctx, sv.Version)
+			if sigErr != nil {
+				log.Printf("[terraform-mirror] sig backfill: failed to fetch GPG sig for %s: %v", sv.Version, sigErr)
+			} else if verifyErr := validation.VerifySignature(gpgKey, sumsRaw, sigBytes); verifyErr != nil {
+				log.Printf("[terraform-mirror] sig backfill: GPG verification FAILED for %s: %v", sv.Version, verifyErr)
+			} else {
+				verifiedSigBytes = sigBytes
+			}
+		}
+
+		// Reuse the same upload helper used during the normal sync path so
+		// storage path conventions and DB updates stay consistent.
+		j.storeVersionVerificationFiles(ctx, cfg, sv.Version, sv.ID, sumsRaw, verifiedSigBytes)
 	}
 
 	return nil
