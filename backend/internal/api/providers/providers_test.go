@@ -843,6 +843,49 @@ func TestUploadHandler_RejectsSignatureWithoutGPGKey(t *testing.T) {
 // validation.VerifySignature, so duplicating the positive/negative crypto
 // matrix here would only test the same code through a different door.
 
+// TestUploadHandler_StoresShasumsFileWithoutSignature exercises the happy
+// path of storeUploadedSignatureFiles when the caller supplies only the
+// SHA256SUMS file (no signature). No GPG verification is required, so this
+// covers the storage upload and the UPDATE-version SQL step without needing
+// a real key/signature pair.
+func TestUploadHandler_StoresShasumsFileWithoutSignature(t *testing.T) {
+	store := &mockStore{}
+	mock, r := newUploadRouter(t, store)
+
+	// Normal new-provider, new-version flow.
+	mock.ExpectQuery("SELECT.*FROM organizations").WillReturnRows(sampleOrgRow())
+	mock.ExpectQuery("SELECT.*FROM providers.*WHERE").WillReturnRows(sqlmock.NewRows(providerCols))
+	mock.ExpectQuery("INSERT INTO providers").
+		WillReturnRows(sqlmock.NewRows(providerInsertCols).AddRow("prov-new", time.Now(), time.Now()))
+	mock.ExpectQuery("SELECT.*FROM provider_versions.*WHERE provider_id.*AND version").
+		WillReturnRows(sqlmock.NewRows(providerVersionGetCols))
+	mock.ExpectQuery("INSERT INTO provider_versions").
+		WillReturnRows(sqlmock.NewRows(providerVersionInsertCols).AddRow("ver-new", time.Now()))
+	// storeUploadedSignatureFiles -> UpdateVersionSignatureStorage UPDATE.
+	mock.ExpectExec("UPDATE provider_versions").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	// Back to the main flow.
+	mock.ExpectQuery("SELECT.*FROM provider_platforms.*WHERE provider_version_id").
+		WillReturnRows(sqlmock.NewRows(platformCols))
+	mock.ExpectQuery("INSERT INTO provider_platforms").
+		WillReturnRows(sqlmock.NewRows(platformInsertCols).AddRow("plat-new"))
+
+	req := buildUploadRequestWithFiles(t, "/v1/providers", map[string]string{
+		"namespace": "hashicorp",
+		"type":      "aws",
+		"version":   "4.0.0",
+		"os":        "linux",
+		"arch":      "amd64",
+	}, makeValidZIP(t), map[string][]byte{
+		"shasums_file": []byte("abc123def  terraform-provider-aws_4.0.0_linux_amd64.zip\n"),
+	})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201; body=%s", w.Code, w.Body.String())
+	}
+}
+
 // ---------------------------------------------------------------------------
 // UploadHandler — additional error paths
 // ---------------------------------------------------------------------------
