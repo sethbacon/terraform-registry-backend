@@ -39,6 +39,7 @@ var configCols = []string{
 var versionCols = []string{
 	"id", "config_id", "version", "is_latest", "is_deprecated", "release_date",
 	"sync_status", "sync_error", "synced_at", "created_at", "updated_at",
+	"sums_storage_key", "sig_storage_key",
 }
 
 var platformCols = []string{
@@ -61,6 +62,18 @@ func sampleVersionRow(version string, isLatest bool) *sqlmock.Rows {
 	return sqlmock.NewRows(versionCols).AddRow(
 		sampleVersionID, sampleConfigID, version, isLatest, false, nil,
 		"synced", nil, time.Now(), time.Now(), time.Now(),
+		nil, nil,
+	)
+}
+
+// sampleVersionRowWithSignature is like sampleVersionRow but with populated
+// sums_storage_key and sig_storage_key columns — used to exercise the GPG
+// signature URL path on the download response.
+func sampleVersionRowWithSignature(version string, isLatest bool, sumsKey, sigKey string) *sqlmock.Rows {
+	return sqlmock.NewRows(versionCols).AddRow(
+		sampleVersionID, sampleConfigID, version, isLatest, false, nil,
+		"synced", nil, time.Now(), time.Now(), time.Now(),
+		sumsKey, sigKey,
 	)
 }
 
@@ -309,6 +322,7 @@ func TestGetVersion_PendingVersion(t *testing.T) {
 	pendingRow := sqlmock.NewRows(versionCols).AddRow(
 		sampleVersionID, sampleConfigID, "1.9.0", false, false, nil,
 		"pending", nil, nil, time.Now(), time.Now(),
+		nil, nil,
 	)
 
 	mock.ExpectQuery(`SELECT.*FROM terraform_mirror_configs.*WHERE name`).
@@ -355,6 +369,50 @@ func TestDownloadBinary_Success(t *testing.T) {
 	assert.Equal(t, "https://example.com/signed-download-url", resp["download_url"])
 	assert.Equal(t, "linux", resp["os"])
 	assert.Equal(t, "amd64", resp["arch"])
+	// Versions synced before signature persistence have no storage keys —
+	// the URLs must still be present in the response (empty strings) so
+	// clients can rely on the field being there.
+	assert.Equal(t, "", resp["shasums_url"])
+	assert.Equal(t, "", resp["shasums_signature_url"])
+}
+
+func TestDownloadBinary_ReturnsSignatureURLsWhenStored(t *testing.T) {
+	// Verifies the fix for #402: when the sync job has stored both the
+	// SHA256SUMS file and its detached GPG signature for a version, the
+	// public download endpoint returns signed URLs for both alongside
+	// the binary's download URL.
+	store := &mockStorage{url: "https://example.com/signed-download-url"}
+	mock, r := newRouter(t, store)
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_mirror_configs.*WHERE name`).
+		WithArgs(sampleConfigName).
+		WillReturnRows(sampleConfigRow())
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_versions.*WHERE config_id.*version`).
+		WithArgs(sampleConfigID, "1.9.0").
+		WillReturnRows(sampleVersionRowWithSignature(
+			"1.9.0", true,
+			"terraform-binaries/1.9.0/SHA256SUMS",
+			"terraform-binaries/1.9.0/SHA256SUMS.terraform.sig",
+		))
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_version_platforms.*WHERE version_id.*os.*arch`).
+		WithArgs(sampleVersionID, "linux", "amd64").
+		WillReturnRows(samplePlatformRow("tf/1.9.0/linux_amd64.zip"))
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/"+sampleConfigName+"/versions/1.9.0/linux/amd64", nil)
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	// All three URLs come from the same mock storage so they share a value;
+	// what we care about is that both signature fields are NON-EMPTY when
+	// keys exist in the DB.
+	assert.NotEmpty(t, resp["shasums_url"], "shasums_url must be returned when sums_storage_key is set")
+	assert.NotEmpty(t, resp["shasums_signature_url"], "shasums_signature_url must be returned when sig_storage_key is set")
 }
 
 func TestDownloadBinary_InvalidVersion(t *testing.T) {

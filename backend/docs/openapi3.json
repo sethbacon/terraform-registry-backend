@@ -18018,6 +18018,12 @@
                     "sha256": {
                         "type": "string"
                     },
+                    "shasums_signature_url": {
+                        "type": "string"
+                    },
+                    "shasums_url": {
+                        "type": "string"
+                    },
                     "version": {
                         "type": "string"
                     }

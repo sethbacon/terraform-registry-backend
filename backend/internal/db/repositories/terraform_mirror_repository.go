@@ -280,7 +280,8 @@ func (r *TerraformMirrorRepository) UpsertVersion(ctx context.Context, v *models
 		SET release_date  = COALESCE(EXCLUDED.release_date, terraform_versions.release_date),
 		    updated_at    = EXCLUDED.updated_at
 		RETURNING id, config_id, version, is_latest, is_deprecated, release_date,
-		          sync_status, sync_error, synced_at, created_at, updated_at
+		          sync_status, sync_error, synced_at, created_at, updated_at,
+		          sums_storage_key, sig_storage_key
 	`
 
 	return r.db.QueryRowContext(ctx, query,
@@ -305,6 +306,8 @@ func (r *TerraformMirrorRepository) UpsertVersion(ctx context.Context, v *models
 		&v.SyncedAt,
 		&v.CreatedAt,
 		&v.UpdatedAt,
+		&v.SumsStorageKey,
+		&v.SigStorageKey,
 	)
 }
 
@@ -312,7 +315,8 @@ func (r *TerraformMirrorRepository) UpsertVersion(ctx context.Context, v *models
 func (r *TerraformMirrorRepository) GetVersionByString(ctx context.Context, configID uuid.UUID, version string) (*models.TerraformVersion, error) {
 	query := `
 		SELECT id, config_id, version, is_latest, is_deprecated, release_date,
-		       sync_status, sync_error, synced_at, created_at, updated_at
+		       sync_status, sync_error, synced_at, created_at, updated_at,
+		       sums_storage_key, sig_storage_key
 		FROM terraform_versions
 		WHERE config_id = $1 AND version = $2
 	`
@@ -333,7 +337,8 @@ func (r *TerraformMirrorRepository) GetVersionByString(ctx context.Context, conf
 func (r *TerraformMirrorRepository) GetLatestVersion(ctx context.Context, configID uuid.UUID) (*models.TerraformVersion, error) {
 	query := `
 		SELECT id, config_id, version, is_latest, is_deprecated, release_date,
-		       sync_status, sync_error, synced_at, created_at, updated_at
+		       sync_status, sync_error, synced_at, created_at, updated_at,
+		       sums_storage_key, sig_storage_key
 		FROM terraform_versions
 		WHERE config_id = $1 AND is_latest = true
 		LIMIT 1
@@ -356,7 +361,8 @@ func (r *TerraformMirrorRepository) GetLatestVersion(ctx context.Context, config
 func (r *TerraformMirrorRepository) ListVersions(ctx context.Context, configID uuid.UUID, syncedOnly bool) ([]models.TerraformVersion, error) {
 	query := `
 		SELECT id, config_id, version, is_latest, is_deprecated, release_date,
-		       sync_status, sync_error, synced_at, created_at, updated_at
+		       sync_status, sync_error, synced_at, created_at, updated_at,
+		       sums_storage_key, sig_storage_key
 		FROM terraform_versions
 		WHERE config_id = $1
 	`
@@ -390,7 +396,8 @@ func (r *TerraformMirrorRepository) ListVersionsPaginated(ctx context.Context, c
 
 	query := `
 		SELECT id, config_id, version, is_latest, is_deprecated, release_date,
-		       sync_status, sync_error, synced_at, created_at, updated_at
+		       sync_status, sync_error, synced_at, created_at, updated_at,
+		       sums_storage_key, sig_storage_key
 		FROM terraform_versions
 		WHERE config_id = $1
 	`
@@ -409,6 +416,24 @@ func (r *TerraformMirrorRepository) ListVersionsPaginated(ctx context.Context, c
 	}
 
 	return versions, total, nil
+}
+
+// UpdateVersionSignatureStorage persists the storage keys for the per-version
+// SHA256SUMS file and its detached GPG signature. Both keys may be set
+// independently — a nil value leaves the existing column unchanged.
+func (r *TerraformMirrorRepository) UpdateVersionSignatureStorage(ctx context.Context, id uuid.UUID, sumsKey, sigKey *string) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE terraform_versions
+		    SET sums_storage_key = COALESCE($2, sums_storage_key),
+		        sig_storage_key  = COALESCE($3, sig_storage_key),
+		        updated_at       = NOW()
+		  WHERE id = $1`,
+		id, sumsKey, sigKey,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update terraform version signature storage: %w", err)
+	}
+	return nil
 }
 
 // UpdateVersionSyncStatus updates the sync_status, sync_error, and synced_at for a version.
