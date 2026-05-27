@@ -24,7 +24,7 @@ jobs:
 
       - name: Run OSV-Scanner
         id: osv
-        uses: google/osv-scanner-action/osv-scanner-action@c51854704019a247608d928f370c98740469d4b5 # v2.3.5
+        uses: google/osv-scanner-action/osv-scanner-action@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
         continue-on-error: true
         with:
           scan-args: |-
@@ -34,7 +34,7 @@ jobs:
 
       - name: Create issue on new vulnerabilities
         if: steps.osv.outcome == 'failure'
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
         with:
           script: |
             const title = `OSV-Scanner: vulnerabilities found — ${new Date().toISOString().slice(0,10)}`;
@@ -111,7 +111,7 @@ jobs:
       issues: write
     steps:
       - name: Create failure issue
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
         with:
           script: |
             const title = `Scheduled build failed — ${new Date().toISOString().slice(0,10)}`;
