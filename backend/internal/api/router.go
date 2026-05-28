@@ -585,6 +585,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	// Initialize Terraform binary mirror admin handler
 	tfMirrorAdminHandler := admin.NewTerraformMirrorHandler(tfMirrorRepo)
 	tfMirrorAdminHandler.SetSyncJob(tfMirrorSyncJob)
+	releasesGPGKeysAdminHandler := admin.NewReleasesGPGKeysHandler(releasesKeyRepo, cfg.ReleasesGPGKeys)
 	providerAdminHandlers := admin.NewProviderAdminHandlers(db, storageBackend, cfg)
 	moduleAdminHandlers := admin.NewModuleAdminHandlers(db, storageBackend, cfg).
 		WithModuleDocs(moduleDocsRepo).
@@ -1055,6 +1056,9 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 			// Read operations require mirrors:read scope; management requires mirrors:manage
 			tfMirrorGroup := authenticatedGroup.Group("/admin/terraform-mirrors")
 			{
+				// Release-signing GPG key cache + expiry state (read-only).
+				// Registered before /:id routes so the static path takes priority.
+				tfMirrorGroup.GET("/releases-gpg-keys", middleware.RequireScope(auth.ScopeMirrorsRead), releasesGPGKeysAdminHandler.GetReleasesGPGKeys)
 				// Config CRUD
 				tfMirrorGroup.GET("", middleware.RequireScope(auth.ScopeMirrorsRead), tfMirrorAdminHandler.ListConfigs)
 				tfMirrorGroup.POST("", middleware.RequireScope(auth.ScopeMirrorsManage), tfMirrorAdminHandler.CreateConfig)
