@@ -115,9 +115,33 @@ func TestWebhook_InvalidUUID(t *testing.T) {
 	}
 }
 
+// TestWebhook_LookupUsesLinkID is a regression test for the bug where the
+// inbound webhook handler looked up module_scm_repos by module_id instead of
+// by the link's own id. The webhook URL embeds the link id (module_scm_repos.id),
+// so any lookup keyed on module_id would always miss and return 404 in
+// production. Asserting WithArgs(linkID) pins that the handler queries with
+// the URL path UUID — not some other column.
+func TestWebhook_LookupUsesLinkID(t *testing.T) {
+	mock, r := newWebhookRouter(t)
+	linkID := uuid.MustParse(webhookTestUUID)
+	mock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE id").
+		WithArgs(linkID).
+		WillReturnRows(sqlmock.NewRows(moduleSourceRepoCols))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/webhooks/scm/"+webhookTestUUID+"/secret123", nil))
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 (empty rows → link not found)", w.Code)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sql expectations not met (handler used the wrong column or argument): %v", err)
+	}
+}
+
 func TestWebhook_GetModuleSourceRepo_DBError(t *testing.T) {
 	mock, r := newWebhookRouter(t)
-	mock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE module_id").
+	mock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE id").
 		WillReturnError(webhookErrDB)
 
 	w := httptest.NewRecorder()
@@ -130,7 +154,7 @@ func TestWebhook_GetModuleSourceRepo_DBError(t *testing.T) {
 
 func TestWebhook_GetModuleSourceRepo_NotFound(t *testing.T) {
 	mock, r := newWebhookRouter(t)
-	mock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE module_id").
+	mock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE id").
 		WillReturnRows(sqlmock.NewRows(moduleSourceRepoCols))
 
 	w := httptest.NewRecorder()
@@ -144,7 +168,7 @@ func TestWebhook_GetModuleSourceRepo_NotFound(t *testing.T) {
 func TestWebhook_GetProvider_DBError(t *testing.T) {
 	mock, r := newWebhookRouter(t)
 	providerID := uuid.New()
-	mock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE module_id").
+	mock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE id").
 		WillReturnRows(sampleModuleSourceRepoRow(providerID))
 	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
 		WillReturnError(webhookErrDB)
@@ -161,7 +185,7 @@ func TestWebhook_GetProvider_NotFound(t *testing.T) {
 	mock, r := newWebhookRouter(t)
 	providerID := uuid.New()
 	// Use matching secret so the URL-secret check passes and we reach the provider lookup.
-	mock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE module_id").
+	mock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE id").
 		WillReturnRows(sampleModuleSourceRepoRowWithURL(providerID,
 			"https://registry.example.com/webhooks/scm/"+webhookTestUUID+"/secret123"))
 	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
@@ -190,7 +214,7 @@ func TestWebhook_InvalidConnectorType(t *testing.T) {
 	mock, r := newWebhookRouter(t)
 	providerID := uuid.New()
 
-	mock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE module_id").
+	mock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE id").
 		WillReturnRows(sampleModuleSourceRepoRow(providerID))
 	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
 		WillReturnRows(sampleProviderRow(providerID, "unknown_type"))
@@ -208,7 +232,7 @@ func TestWebhook_GetProviderDBError(t *testing.T) {
 	mock, r := newWebhookRouter(t)
 	providerID := uuid.New()
 
-	mock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE module_id").
+	mock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE id").
 		WillReturnRows(sampleModuleSourceRepoRowWithURL(providerID,
 			"https://registry.example.com/webhooks/scm/"+webhookTestUUID+"/secret123"))
 	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
@@ -227,7 +251,7 @@ func TestWebhook_InvalidConnectorTypeMismatch(t *testing.T) {
 	mock, r := newWebhookRouter(t)
 	providerID := uuid.New()
 
-	mock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE module_id").
+	mock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE id").
 		WillReturnRows(sampleModuleSourceRepoRowWithURL(providerID,
 			"https://registry.example.com/webhooks/scm/"+webhookTestUUID+"/secret123"))
 	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
@@ -247,7 +271,7 @@ func TestWebhook_InvalidHMACSignature(t *testing.T) {
 	mock, r := newWebhookRouter(t)
 	providerID := uuid.New()
 
-	mock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE module_id").
+	mock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE id").
 		WillReturnRows(sampleModuleSourceRepoRowWithURL(providerID,
 			"https://registry.example.com/webhooks/scm/"+webhookTestUUID+"/secret123"))
 	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
@@ -268,7 +292,7 @@ func TestWebhook_InvalidSignature(t *testing.T) {
 	providerID := uuid.New()
 
 	// Use a webhook URL whose embedded secret does NOT match "secret123" → 401.
-	mock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE module_id").
+	mock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE id").
 		WillReturnRows(sampleModuleSourceRepoRowWithURL(providerID,
 			"https://registry.example.com/webhooks/scm/"+webhookTestUUID+"/different-secret"))
 
@@ -418,7 +442,7 @@ func TestWebhook_ParseDeliveryError(t *testing.T) {
 	payload := []byte("this is not json")
 	sig := bbHMAC(payload, testWebhookSecret)
 
-	mock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE module_id").
+	mock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE id").
 		WillReturnRows(sampleModuleSourceRepoRowWithURL(providerID,
 			"https://registry.example.com/webhooks/scm/"+webhookTestUUID+"/secret123"))
 	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
@@ -442,7 +466,7 @@ func TestWebhook_CreateWebhookLogError(t *testing.T) {
 	payload := []byte(`{}`)
 	sig := bbHMAC(payload, testWebhookSecret)
 
-	mock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE module_id").
+	mock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE id").
 		WillReturnRows(sampleModuleSourceRepoRowWithURL(providerID,
 			"https://registry.example.com/webhooks/scm/"+webhookTestUUID+"/secret123"))
 	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
@@ -468,7 +492,7 @@ func TestWebhook_Success(t *testing.T) {
 	payload := []byte(`{}`)
 	sig := bbHMAC(payload, testWebhookSecret)
 
-	mock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE module_id").
+	mock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE id").
 		WillReturnRows(sampleModuleSourceRepoRowWithURL(providerID,
 			"https://registry.example.com/webhooks/scm/"+webhookTestUUID+"/secret123"))
 	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
