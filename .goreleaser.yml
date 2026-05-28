@@ -72,12 +72,12 @@ sboms:
 
 signs:
   - cmd: cosign
+    signature: "${artifact}.sigstore.json"
     artifacts: checksum
     args:
       - sign-blob
+      - --bundle=${signature}
       - --yes
-      - --output-signature=${signature}
-      - --output-bundle=${signature}.bundle
       - ${artifact}
 
 docker_signs:
