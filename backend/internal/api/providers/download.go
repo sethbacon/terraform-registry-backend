@@ -215,10 +215,11 @@ func DownloadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Con
 		// signing_keys must always be present; gpg_public_keys is empty when no key is configured.
 		gpgPublicKeys := []gin.H{}
 		if providerVersion.GPGPublicKey != "" {
+			gpgKey := resolveProviderGPGKey(providerVersion.GPGPublicKey)
 			gpgPublicKeys = []gin.H{
 				{
 					"key_id":      "", // Could be extracted from GPG key if needed
-					"ascii_armor": providerVersion.GPGPublicKey,
+					"ascii_armor": gpgKey,
 				},
 			}
 		}

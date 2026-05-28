@@ -702,6 +702,12 @@ func (j *MirrorSyncJob) syncProviderVersion(
 		gpgPublicKey = packageInfo.SigningKeys.GPGPublicKeys[0].ASCIIArmor
 	}
 
+	// If the upstream-provided key is expired but matches a known fingerprint,
+	// substitute the refreshed embedded snapshot so we don't persist a stale key.
+	if gpgPublicKey != "" {
+		gpgPublicKey = mirror.ResolveExpiredGPGKey(gpgPublicKey)
+	}
+
 	// Download the SHASUM file to verify binaries
 	shasumContent, err := upstreamClient.DownloadFile(ctx, packageInfo.SHASumsURL)
 	if err != nil {
