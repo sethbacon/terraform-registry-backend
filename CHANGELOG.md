@@ -7,24 +7,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.2.6](https://github.com/sethbacon/terraform-registry-backend/compare/v1.2.5...v1.2.6) (2026-05-28)
-
-
-### Bug Fixes
-
-* **ci:** add --output-bundle for cosign v3 compatibility ([#412](https://github.com/sethbacon/terraform-registry-backend/issues/412)) ([7b7e6b1](https://github.com/sethbacon/terraform-registry-backend/commit/7b7e6b12c9683a1ac80cd91c5e90334f0c560501))
-* **webhooks:** look up SCM link by id, not module_id ([#410](https://github.com/sethbacon/terraform-registry-backend/issues/410)) ([e46b687](https://github.com/sethbacon/terraform-registry-backend/commit/e46b68768db88200488109b516140fb0c005be78)), closes [#409](https://github.com/sethbacon/terraform-registry-backend/issues/409)
-
-## [1.2.5](https://github.com/sethbacon/terraform-registry-backend/compare/v1.2.4...v1.2.5) (2026-05-27)
-
-
-### Bug Fixes
-
-* **ci:** upgrade all GitHub Actions to Node 24 and latest versions ([#408](https://github.com/sethbacon/terraform-registry-backend/issues/408)) ([5713664](https://github.com/sethbacon/terraform-registry-backend/commit/5713664d135ad7ad4d844c285ea2a96924a20dc0))
-* provider upload signature ([#406](https://github.com/sethbacon/terraform-registry-backend/issues/406)) ([ef974ec](https://github.com/sethbacon/terraform-registry-backend/commit/ef974ecefd9885f94c4b89fd3e3be0e19ad193f2))
-* **providers:** accept SHA256SUMS + signature files on upload ([#405](https://github.com/sethbacon/terraform-registry-backend/issues/405)) ([5d18fd0](https://github.com/sethbacon/terraform-registry-backend/commit/5d18fd08ed4e1af52e2ee93e477b61fd024557ff))
-* **terraform-binaries:** persist and serve SHA256SUMS + GPG signature ([#403](https://github.com/sethbacon/terraform-registry-backend/issues/403)) ([0c3de84](https://github.com/sethbacon/terraform-registry-backend/commit/0c3de848ac659b77890563c35fdaaa0119189094))
-
 ## [1.2.4](https://github.com/sethbacon/terraform-registry-backend/compare/v1.2.3...v1.2.4) (2026-05-26)
 
 
