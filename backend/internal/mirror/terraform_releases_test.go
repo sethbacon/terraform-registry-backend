@@ -10,6 +10,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/ProtonMail/go-crypto/openpgp"
 )
 
 // ---------------------------------------------------------------------------
@@ -478,4 +481,101 @@ func TestValidateBinarySHA256_Mismatch(t *testing.T) {
 	if ValidateBinarySHA256(data, "000000000000000000000000000000000000000000000000000000000000000") {
 		t.Error("expected mismatch, got true")
 	}
+}
+
+// TestEmbeddedReleasesGPGKeys_NotExpired guards against the embedded HashiCorp
+// and OpenTofu release-signing keys silently expiring. When a self-sig
+// expiration passes, openpgp.CheckArmoredDetachedSignature returns
+// "openpgp: key expired" and every mirror-sync GPG verification fails — the
+// admin UI then shows the GPG column as failed for every synced version. We
+// caught that the hard way (issue #415); this test fails fast in CI instead.
+func TestEmbeddedReleasesGPGKeys_NotExpired(t *testing.T) {
+	cases := []struct {
+		name string
+		key  string
+	}{
+		{"hashicorp", HashiCorpReleasesGPGKey},
+		{"opentofu", OpenTofuReleasesGPGKey},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			ring, err := openpgp.ReadArmoredKeyRing(strings.NewReader(tc.key))
+			if err != nil {
+				t.Fatalf("failed to parse embedded %s key: %v", tc.name, err)
+			}
+			if len(ring) == 0 {
+				t.Fatalf("embedded %s key parsed to empty keyring", tc.name)
+			}
+			now := time.Now()
+			for _, entity := range ring {
+				ident := primaryIdentity(entity)
+				if ident == nil || ident.SelfSignature == nil {
+					t.Errorf("%s: no primary self-signature on entity %X", tc.name, entity.PrimaryKey.Fingerprint)
+					continue
+				}
+				if ident.SelfSignature.KeyLifetimeSecs != nil {
+					expiry := entity.PrimaryKey.CreationTime.Add(
+						time.Duration(*ident.SelfSignature.KeyLifetimeSecs) * time.Second,
+					)
+					if !now.Before(expiry) {
+						t.Errorf("%s primary key %X expired at %s — refresh from https://www.hashicorp.com/.well-known/pgp-key.txt (HashiCorp) or https://opentofu.org/.well-known/pgp-key.txt (OpenTofu)",
+							tc.name, entity.PrimaryKey.Fingerprint, expiry.Format(time.RFC3339))
+					}
+				}
+				// At least one signing subkey must be unexpired so SHA256SUMS
+				// signatures can verify. HashiCorp's primary [SC] key can sign
+				// directly, but in practice they sign with a dedicated [S] subkey;
+				// fail the test if none of the available signing keys are usable
+				// today.
+				if !hasUsableSigningKey(entity, now) {
+					t.Errorf("%s: no unexpired signing-capable key (primary or subkey) — refresh the embedded snapshot",
+						tc.name)
+				}
+			}
+		})
+	}
+}
+
+// primaryIdentity returns the entity's primary identity, or nil if none.
+func primaryIdentity(e *openpgp.Entity) *openpgp.Identity {
+	for _, id := range e.Identities {
+		return id
+	}
+	return nil
+}
+
+// hasUsableSigningKey returns true if the entity's primary key or any of its
+// subkeys is signing-capable and not expired at the given instant.
+func hasUsableSigningKey(e *openpgp.Entity, now time.Time) bool {
+	// Primary key with SC capability.
+	if e.PrimaryKey != nil && e.PrivateKey == nil {
+		ident := primaryIdentity(e)
+		if ident != nil && ident.SelfSignature != nil && ident.SelfSignature.FlagsValid && ident.SelfSignature.FlagSign {
+			if !primaryExpired(e, ident, now) {
+				return true
+			}
+		}
+	}
+	for _, sub := range e.Subkeys {
+		if sub.Sig == nil || !sub.Sig.FlagsValid || !sub.Sig.FlagSign {
+			continue
+		}
+		if sub.Sig.KeyLifetimeSecs != nil {
+			expiry := sub.PublicKey.CreationTime.Add(time.Duration(*sub.Sig.KeyLifetimeSecs) * time.Second)
+			if !now.Before(expiry) {
+				continue
+			}
+		}
+		return true
+	}
+	return false
+}
+
+func primaryExpired(e *openpgp.Entity, ident *openpgp.Identity, now time.Time) bool {
+	if ident.SelfSignature.KeyLifetimeSecs == nil {
+		return false
+	}
+	expiry := e.PrimaryKey.CreationTime.Add(time.Duration(*ident.SelfSignature.KeyLifetimeSecs) * time.Second)
+	return !now.Before(expiry)
 }
