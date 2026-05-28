@@ -73,8 +73,11 @@ func (h *SCMWebhookHandler) HandleWebhook(c *gin.Context) {
 		return
 	}
 
-	// Get the module source repository link
-	moduleSourceRepo, err := h.scmRepo.GetModuleSourceRepo(c.Request.Context(), repoID)
+	// Get the module source repository link.
+	// The URL path segment is the link's own id (module_scm_repos.id), not the
+	// module_id — so we must look up by id. Using GetModuleSourceRepo (which
+	// queries WHERE module_id = $1) would always return nil and produce 404.
+	moduleSourceRepo, err := h.scmRepo.GetModuleSourceRepoByID(c.Request.Context(), repoID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get repository link"})
 		return
