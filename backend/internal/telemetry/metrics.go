@@ -345,3 +345,37 @@ func StartDBStatsCollector(db *sql.DB) {
 		}
 	}()
 }
+
+// ReleasesKeyRefreshTotal counts attempts by the releases-key refresh job with
+// labels {tool, outcome}. Possible outcome values: "success",
+// "fingerprint_mismatch", "fetch_failed", "parse_failed", "db_failed",
+// "skipped_unchanged".
+//
+// Example PromQL:
+//   - Fingerprint mismatches in the last hour (a critical alert):
+//     increase(terraform_registry_releases_key_refresh_total{outcome="fingerprint_mismatch"}[1h])
+//   - Refresh failure rate by tool:
+//     sum by (tool) (rate(terraform_registry_releases_key_refresh_total{outcome!~"success|skipped_unchanged"}[1h]))
+var ReleasesKeyRefreshTotal = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "terraform_registry_releases_key_refresh_total",
+		Help: "Total release-signing GPG key refresh attempts by tool and outcome.",
+	},
+	[]string{"tool", "outcome"},
+)
+
+// ReleasesKeyExpiresSeconds is a GaugeVec reporting seconds until the earliest
+// signing-key expiry for each {tool, source} pair. source is "cache" or
+// "embedded". 0 means no expiry is set on the key (rare; usually means the
+// gauge has not been populated yet).
+//
+// Example PromQL:
+//   - Alert when any source is within 30 days of expiry:
+//     min by (tool) (terraform_registry_releases_key_expires_seconds) < 86400 * 30
+var ReleasesKeyExpiresSeconds = promauto.NewGaugeVec(
+	prometheus.GaugeOpts{
+		Name: "terraform_registry_releases_key_expires_seconds",
+		Help: "Seconds until the earliest signing-key expiry, by tool and source (cache|embedded).",
+	},
+	[]string{"tool", "source"},
+)

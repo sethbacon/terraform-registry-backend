@@ -609,6 +609,58 @@ counter with an `outcome` label (`success`, `failure`, `exhausted`). See
 
 ---
 
+## Release Signing Keys (auto-refresh)
+
+The terraform binary mirror verifies upstream SHA256SUMS files against ASCII-armored
+GPG keys for HashiCorp and OpenTofu. The repo ships embedded snapshots of those keys
+as an offline fallback, but every snapshot has a self-sig expiration — when it
+passes, every mirror sync fails GPG verification (see [#415][issue-415] for the
+incident). To prevent that, a background job re-fetches each tool's public key
+from its `.well-known/pgp-key.txt` endpoint on a schedule and caches it in the
+database. The mirror sync prefers the cached key over the embedded snapshot.
+
+New keys are accepted only if their parsed **primary fingerprint matches a
+hardcoded allow-list** in `internal/jobs`. A compromised TLS path can never
+substitute a different key — at worst it can serve a stale or denied response,
+and we fall back to the embedded snapshot.
+
+Rotating to a new fingerprint requires a reviewed code change to update the
+allow-list. There is intentionally no DB or config knob for that.
+
+[issue-415]: https://github.com/sethbacon/terraform-registry-backend/issues/415
+
+```yaml
+releases_gpg_keys:
+  enabled: true                  # set false for air-gapped deployments
+  refresh_interval_hours: 24
+  expiry_warning_days: 60
+  hashicorp_url: https://www.hashicorp.com/.well-known/pgp-key.txt
+  opentofu_url:  https://opentofu.org/.well-known/pgp-key.txt
+```
+
+| Variable                                          | Type   | Default                                              | Description                                                                                                            |
+| ------------------------------------------------- | ------ | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `TFR_RELEASES_GPG_KEYS_ENABLED`                   | bool   | `true`                                               | Master toggle. When `false`, the job never runs and mirror sync always uses the embedded snapshots.                    |
+| `TFR_RELEASES_GPG_KEYS_REFRESH_INTERVAL_HOURS`    | int    | `24`                                                 | How often the job re-fetches each upstream key.                                                                        |
+| `TFR_RELEASES_GPG_KEYS_EXPIRY_WARNING_DAYS`       | int    | `60`                                                 | Warning threshold. When the effective key (cache or embedded) is within this many days of expiry, the job logs a warn. |
+| `TFR_RELEASES_GPG_KEYS_HASHICORP_URL`             | string | `https://www.hashicorp.com/.well-known/pgp-key.txt`  | Override the HashiCorp upstream URL (e.g. when proxying through an internal mirror).                                   |
+| `TFR_RELEASES_GPG_KEYS_OPENTOFU_URL`              | string | `https://opentofu.org/.well-known/pgp-key.txt`       | Override the OpenTofu upstream URL.                                                                                    |
+
+The job emits two Prometheus metrics:
+
+- `terraform_registry_releases_key_refresh_total{tool, outcome}` (counter):
+  outcomes are `success`, `fingerprint_mismatch`, `fetch_failed`,
+  `parse_failed`, `db_failed`, `skipped_unchanged`. Any
+  `fingerprint_mismatch` should page on-call — it indicates either an
+  upstream key rotation we need to allow-list, or an attempted substitution.
+- `terraform_registry_releases_key_expires_seconds{tool, source}` (gauge):
+  seconds until the earliest signing-key expiry. `source` is `cache` or
+  `embedded`. Alert when `min by (tool) (...)` drops below your refresh SLA.
+
+See [Observability Reference](observability.md) for example PromQL alerts.
+
+---
+
 ## Notifications
 
 ```yaml
