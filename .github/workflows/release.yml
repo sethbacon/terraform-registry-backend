@@ -113,8 +113,7 @@ jobs:
               cp "$src" "release/$name"
           done
           cp dist/checksums.txt release/
-          cp dist/checksums.txt.sig release/
-          cp dist/checksums.txt.sig.bundle release/
+          cp dist/checksums.txt.sigstore.json release/
           cp "dist/deployment-configs-${GITHUB_REF_NAME}.tar.gz" release/
           ls -la release/
 
