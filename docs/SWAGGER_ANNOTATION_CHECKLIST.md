@@ -200,9 +200,10 @@ on dedicated ports and are deliberately excluded from the OpenAPI spec.
 - [x] `POST /api/v1/admin/mirrors/:id/sync` - Trigger mirror sync
 - [x] `GET /terraform/providers/:hostname/:namespace/:type/index.json` - Mirror index (public)
 - [x] `GET /terraform/providers/:hostname/:namespace/:type/:versionfile` - Mirror version file (public)
+- [x] `GET /api/v1/admin/terraform-mirrors/releases-gpg-keys` - Release signing key cache + expiry state
 
-**Files**: `backend/internal/api/admin/mirror.go`, `backend/internal/api/mirror/index.go`, `backend/internal/api/mirror/platform_index.go`
-**Progress**: 9/9 annotated ✅
+**Files**: `backend/internal/api/admin/mirror.go`, `backend/internal/api/mirror/index.go`, `backend/internal/api/mirror/platform_index.go`, `backend/internal/api/admin/releases_gpg_keys.go`
+**Progress**: 10/10 annotated ✅
 
 ---
 

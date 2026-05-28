@@ -3744,6 +3744,52 @@
                 }
             }
         },
+        "/api/v1/admin/terraform-mirrors/releases-gpg-keys": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Returns the current cached upstream release-signing GPG key and embedded snapshot state for each supported tool (terraform, opentofu). The response includes the fingerprint, expiry, and a pre-computed status against the configured warning threshold so UIs can render a glance-level view without re-deriving the rules.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Terraform Mirror"
+                ],
+                "summary": "Get release signing key cache + expiry state",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/admin.ReleasesGPGKeysResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Missing required scope",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/admin/terraform-mirrors/{id}": {
             "get": {
                 "security": [
@@ -13272,6 +13318,79 @@
                 },
                 "token": {
                     "type": "string"
+                }
+            }
+        },
+        "admin.ReleasesGPGKeyCacheView": {
+            "type": "object",
+            "properties": {
+                "armored_present": {
+                    "type": "boolean"
+                },
+                "days_until_expiry": {
+                    "type": "integer"
+                },
+                "fetched_at": {
+                    "type": "string"
+                },
+                "fingerprint": {
+                    "type": "string"
+                },
+                "key_expires_at": {
+                    "type": "string"
+                },
+                "source_url": {
+                    "type": "string"
+                }
+            }
+        },
+        "admin.ReleasesGPGKeyEmbeddedView": {
+            "type": "object",
+            "properties": {
+                "days_until_expiry": {
+                    "type": "integer"
+                },
+                "fingerprint": {
+                    "type": "string"
+                },
+                "key_expires_at": {
+                    "type": "string"
+                }
+            }
+        },
+        "admin.ReleasesGPGKeyStatusView": {
+            "type": "object",
+            "properties": {
+                "cache": {
+                    "$ref": "#/definitions/admin.ReleasesGPGKeyCacheView"
+                },
+                "effective_source": {
+                    "description": "\"cache\" | \"embedded\"",
+                    "type": "string"
+                },
+                "embedded": {
+                    "$ref": "#/definitions/admin.ReleasesGPGKeyEmbeddedView"
+                },
+                "expiry_warning_days": {
+                    "type": "integer"
+                },
+                "status": {
+                    "description": "\"ok\" | \"warn\" | \"expired\" | \"unknown\"",
+                    "type": "string"
+                },
+                "tool": {
+                    "type": "string"
+                }
+            }
+        },
+        "admin.ReleasesGPGKeysResponse": {
+            "type": "object",
+            "properties": {
+                "keys": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/admin.ReleasesGPGKeyStatusView"
+                    }
                 }
             }
         },
