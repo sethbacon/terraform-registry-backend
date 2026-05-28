@@ -166,3 +166,21 @@ func TestResolveExpiredGPGKey_UnknownExpiredKey_ReturnsUnchanged(t *testing.T) {
 		t.Error("expected non-HashiCorp key to be returned unchanged")
 	}
 }
+
+func TestHasUsableGPGKey_ValidKey(t *testing.T) {
+	if !HasUsableGPGKey(HashiCorpReleasesGPGKey) {
+		t.Error("expected current HashiCorp key to be usable")
+	}
+}
+
+func TestHasUsableGPGKey_ExpiredKey(t *testing.T) {
+	if HasUsableGPGKey(expiredHashiCorpKey) {
+		t.Error("expected expired key to be not usable")
+	}
+}
+
+func TestHasUsableGPGKey_Empty(t *testing.T) {
+	if HasUsableGPGKey("") {
+		t.Error("expected empty string to be not usable")
+	}
+}

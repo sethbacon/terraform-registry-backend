@@ -538,6 +538,25 @@ func (j *MirrorSyncJob) syncProvider(ctx context.Context, upstreamClient mirror.
 				}
 			}
 
+			// Backfill GPG key if the stored value is empty or expired.
+			if existingVersion.GPGPublicKey == "" || !mirror.HasUsableGPGKey(existingVersion.GPGPublicKey) {
+				if len(version.Platforms) > 0 {
+					p0 := version.Platforms[0]
+					if pkgInfo, pkgErr := upstreamClient.GetProviderPackage(ctx, namespace, providerName, version.Version, p0.OS, p0.Arch); pkgErr == nil {
+						if len(pkgInfo.SigningKeys.GPGPublicKeys) > 0 {
+							resolved := mirror.ResolveExpiredGPGKey(pkgInfo.SigningKeys.GPGPublicKeys[0].ASCIIArmor)
+							if resolved != "" {
+								if err := j.providerRepo.UpdateVersionGPGKey(ctx, existingVersion.ID, resolved); err != nil {
+									log.Printf("Warning: failed to backfill GPG key for %s/%s@%s: %v", namespace, providerName, version.Version, err)
+								} else {
+									log.Printf("Backfilled GPG key for %s/%s@%s", namespace, providerName, version.Version)
+								}
+							}
+						}
+					}
+				}
+			}
+
 			// Check for missing platforms — the user may have deleted individual
 			// platform records. Build a set of platforms already in the DB for this version.
 			existingPlatforms, err := j.providerRepo.ListPlatforms(ctx, existingVersion.ID)
