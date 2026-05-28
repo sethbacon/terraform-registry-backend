@@ -28,19 +28,20 @@ type Config struct {
 	Storage  StorageConfig  `mapstructure:"storage"`
 	Auth     AuthConfig     `mapstructure:"auth"`
 	// ApiDocs holds OpenAPI/Swagger metadata that can be overridden at deploy-time
-	ApiDocs        ApiDocsConfig        `mapstructure:"api_docs"`
-	MultiTenancy   MultiTenancyConfig   `mapstructure:"multi_tenancy"`
-	Security       SecurityConfig       `mapstructure:"security"`
-	Logging        LoggingConfig        `mapstructure:"logging"`
-	Telemetry      TelemetryConfig      `mapstructure:"telemetry"`
-	Audit          AuditConfig          `mapstructure:"audit"`
-	Notifications  NotificationsConfig  `mapstructure:"notifications"`
-	Scanning       ScanningConfig       `mapstructure:"scanning"`
-	AuditRetention AuditRetentionConfig `mapstructure:"audit_retention"`
-	Webhooks       WebhooksConfig       `mapstructure:"webhooks"`
-	BinaryMirror   BinaryMirrorConfig   `mapstructure:"binary_mirror"`
-	Policy         PolicyConfig         `mapstructure:"policy"`
-	CVE            CVEConfig            `mapstructure:"cve"`
+	ApiDocs         ApiDocsConfig         `mapstructure:"api_docs"`
+	MultiTenancy    MultiTenancyConfig    `mapstructure:"multi_tenancy"`
+	Security        SecurityConfig        `mapstructure:"security"`
+	Logging         LoggingConfig         `mapstructure:"logging"`
+	Telemetry       TelemetryConfig       `mapstructure:"telemetry"`
+	Audit           AuditConfig           `mapstructure:"audit"`
+	Notifications   NotificationsConfig   `mapstructure:"notifications"`
+	Scanning        ScanningConfig        `mapstructure:"scanning"`
+	AuditRetention  AuditRetentionConfig  `mapstructure:"audit_retention"`
+	Webhooks        WebhooksConfig        `mapstructure:"webhooks"`
+	BinaryMirror    BinaryMirrorConfig    `mapstructure:"binary_mirror"`
+	Policy          PolicyConfig          `mapstructure:"policy"`
+	CVE             CVEConfig             `mapstructure:"cve"`
+	ReleasesGPGKeys ReleasesGPGKeysConfig `mapstructure:"releases_gpg_keys"`
 }
 
 // AuditRetentionConfig controls the background audit log cleanup job.
@@ -55,6 +56,36 @@ type AuditRetentionConfig struct {
 type WebhooksConfig struct {
 	MaxRetries        int `mapstructure:"max_retries"`
 	RetryIntervalMins int `mapstructure:"retry_interval_mins"`
+}
+
+// ReleasesGPGKeysConfig controls the background job that refreshes upstream
+// release-signing GPG keys (Terraform / OpenTofu) from each tool's
+// .well-known/pgp-key.txt endpoint. When Enabled is false the cache is never
+// written and mirror sync falls back to the embedded snapshots in
+// internal/mirror — recommended for air-gapped deployments.
+//
+// New keys are accepted only if the parsed primary-key fingerprint matches a
+// hardcoded allow-list in internal/jobs; a compromised TLS path can therefore
+// never substitute a different key. Rotating to a new fingerprint requires a
+// reviewed code change to update the allow-list.
+type ReleasesGPGKeysConfig struct {
+	// Enabled gates the background refresh job. Default true.
+	Enabled bool `mapstructure:"enabled"`
+	// RefreshIntervalHours is how often (in hours) the job re-fetches each
+	// upstream key. Default 24.
+	RefreshIntervalHours int `mapstructure:"refresh_interval_hours"`
+	// ExpiryWarningDays is the warning threshold: when the effective key
+	// (cache or embedded fallback) is within this many days of its earliest
+	// signing-key expiry, the job logs a high-visibility warning and the
+	// terraform_registry_releases_key_expires_seconds gauge falls below the
+	// equivalent threshold. Default 60.
+	ExpiryWarningDays int `mapstructure:"expiry_warning_days"`
+	// HashiCorpURL overrides the upstream URL for the HashiCorp Terraform
+	// release-signing key. Default https://www.hashicorp.com/.well-known/pgp-key.txt.
+	HashiCorpURL string `mapstructure:"hashicorp_url"`
+	// OpenTofuURL overrides the upstream URL for the OpenTofu release-signing
+	// key. Default https://opentofu.org/.well-known/pgp-key.txt.
+	OpenTofuURL string `mapstructure:"opentofu_url"`
 }
 
 // BinaryMirrorConfig controls access control for the /terraform/binaries endpoint group.
@@ -903,6 +934,14 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("cve.poll_binaries", true)
 	v.SetDefault("cve.poll_providers", true)
 	v.SetDefault("cve.poll_scanner", true)
+
+	// Releases-key auto-refresh defaults. Enabled by default because the
+	// embedded snapshot is the failure mode this feature exists to prevent.
+	v.SetDefault("releases_gpg_keys.enabled", true)
+	v.SetDefault("releases_gpg_keys.refresh_interval_hours", 24)
+	v.SetDefault("releases_gpg_keys.expiry_warning_days", 60)
+	v.SetDefault("releases_gpg_keys.hashicorp_url", "https://www.hashicorp.com/.well-known/pgp-key.txt")
+	v.SetDefault("releases_gpg_keys.opentofu_url", "https://opentofu.org/.well-known/pgp-key.txt")
 }
 
 // expandEnv expands environment variables in the format ${VAR_NAME}

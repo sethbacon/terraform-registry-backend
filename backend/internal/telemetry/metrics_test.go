@@ -30,6 +30,8 @@ func TestMetricRegistration(t *testing.T) {
 		{"AuditLogsCleanedTotal", AuditLogsCleanedTotal},
 		{"WebhookRetriesTotal", WebhookRetriesTotal},
 		{"DBOpenConnections", DBOpenConnections},
+		{"ReleasesKeyRefreshTotal", ReleasesKeyRefreshTotal},
+		{"ReleasesKeyExpiresSeconds", ReleasesKeyExpiresSeconds},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -83,6 +85,16 @@ func TestModuleScanDurationLabels(t *testing.T) {
 
 func TestWebhookRetriesTotalLabels(t *testing.T) {
 	WebhookRetriesTotal.WithLabelValues("success").Inc()
+}
+
+func TestReleasesKeyRefreshTotalLabels(t *testing.T) {
+	ReleasesKeyRefreshTotal.WithLabelValues("terraform", "success").Inc()
+	ReleasesKeyRefreshTotal.WithLabelValues("opentofu", "fingerprint_mismatch").Inc()
+}
+
+func TestReleasesKeyExpiresSecondsLabels(t *testing.T) {
+	ReleasesKeyExpiresSeconds.WithLabelValues("terraform", "cache").Set(86400 * 365)
+	ReleasesKeyExpiresSeconds.WithLabelValues("opentofu", "embedded").Set(86400 * 90)
 }
 
 func TestStartDBStatsCollector(t *testing.T) {

@@ -69,15 +69,16 @@ import (
 // be stopped during graceful shutdown. The caller (cmd/server) is responsible for
 // calling Shutdown() when the process receives a termination signal.
 type BackgroundServices struct {
-	mirrorSyncJob      *jobs.MirrorSyncJob
-	tfMirrorSyncJob    *jobs.TerraformMirrorSyncJob
-	expiryNotifier     *jobs.APIKeyExpiryNotifier
-	moduleScannerJob   *jobs.ModuleScannerJob
-	auditCleanupJob    *jobs.AuditCleanupJob
-	webhookRetryJob    *jobs.WebhookRetryJob
-	cvePollJob         *jobs.CVEPollJob
-	rateLimiters       []middleware.RateLimiterBackend
-	principalOverrides *middleware.PrincipalOverrideLimiters
+	mirrorSyncJob         *jobs.MirrorSyncJob
+	tfMirrorSyncJob       *jobs.TerraformMirrorSyncJob
+	expiryNotifier        *jobs.APIKeyExpiryNotifier
+	moduleScannerJob      *jobs.ModuleScannerJob
+	auditCleanupJob       *jobs.AuditCleanupJob
+	webhookRetryJob       *jobs.WebhookRetryJob
+	cvePollJob            *jobs.CVEPollJob
+	releasesKeyRefreshJob *jobs.ReleasesKeyRefreshJob
+	rateLimiters          []middleware.RateLimiterBackend
+	principalOverrides    *middleware.PrincipalOverrideLimiters
 }
 
 // Shutdown stops all background goroutines. It should be called after the HTTP
@@ -102,6 +103,9 @@ func (bg *BackgroundServices) Shutdown() {
 	}
 	if bg.webhookRetryJob != nil {
 		bg.webhookRetryJob.Stop()
+	}
+	if bg.releasesKeyRefreshJob != nil {
+		bg.releasesKeyRefreshJob.Stop()
 	}
 	if bg.cvePollJob != nil {
 		bg.cvePollJob.Stop()
@@ -180,6 +184,24 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	tfMirrorSyncJob := jobs.NewTerraformMirrorSyncJob(tfMirrorRepo, storageBackend, cfg.Storage.DefaultBackend)
 	tfMirrorSyncJob.Start(context.Background(), 10)
 	log.Println("Terraform binary mirror sync job started (checking every 10 minutes)")
+
+	// Initialize and start the upstream release-signing GPG key refresh job.
+	// On success it installs itself as the in-process resolver consulted by
+	// terraform mirror sync, so the next sync tick after a successful refresh
+	// uses the cached upstream key instead of the embedded snapshot.
+	releasesKeyRepo := repositories.NewReleasesGPGKeyRepository(sqlxDB)
+	releasesKeyRefreshJob, releasesKeyJobErr := jobs.NewReleasesKeyRefreshJob(&cfg.ReleasesGPGKeys, releasesKeyRepo, nil)
+	if releasesKeyJobErr != nil {
+		// The only way construction fails is a parse error on the embedded
+		// OpenTofu snapshot — fatal because the fingerprint pin can't be
+		// derived. Log and continue without auto-refresh; the embedded
+		// fallback still works.
+		log.Printf("Releases key refresh job: construction failed: %v (auto-refresh disabled)", releasesKeyJobErr)
+	} else {
+		jobs.SetReleasesKeyResolver(releasesKeyRefreshJob)
+		go releasesKeyRefreshJob.Start(context.Background())
+		log.Println("Releases key refresh job started")
+	}
 
 	// Public handler is created here (before route registration)
 	tfBinariesHandler := terraform_binaries.NewHandler(tfMirrorRepo, storageBackend, auditRepo)
@@ -1200,15 +1222,16 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	router.POST("/webhooks/approvals/:token", approvalWebhookHandler.RedeemApprovalToken)
 
 	bg := &BackgroundServices{
-		mirrorSyncJob:      mirrorSyncJob,
-		tfMirrorSyncJob:    tfMirrorSyncJob,
-		expiryNotifier:     expiryNotifier,
-		moduleScannerJob:   moduleScannerJob,
-		auditCleanupJob:    auditCleanupJob,
-		webhookRetryJob:    webhookRetryJob,
-		cvePollJob:         cvePollJob,
-		rateLimiters:       collectRateLimiterBackends(authRateLimiter, generalRateLimiter, uploadRateLimiter, orgRateLimiter),
-		principalOverrides: principalOverrides,
+		mirrorSyncJob:         mirrorSyncJob,
+		tfMirrorSyncJob:       tfMirrorSyncJob,
+		expiryNotifier:        expiryNotifier,
+		moduleScannerJob:      moduleScannerJob,
+		auditCleanupJob:       auditCleanupJob,
+		webhookRetryJob:       webhookRetryJob,
+		cvePollJob:            cvePollJob,
+		releasesKeyRefreshJob: releasesKeyRefreshJob,
+		rateLimiters:          collectRateLimiterBackends(authRateLimiter, generalRateLimiter, uploadRateLimiter, orgRateLimiter),
+		principalOverrides:    principalOverrides,
 	}
 
 	return router, bg

@@ -33,6 +33,7 @@ This document catalogs all database migrations, their reversibility, and rollbac
 | 000024 | `module_deprecation`                   | ✅ Yes         | Drops deprecation columns; existing deprecation data lost |
 | 000025 | `org_idp_binding`                      | ✅ Yes         | Drops IdP binding columns; IdP associations lost          |
 | 000026 | `org_quotas`                           | ✅ Yes         | Drops quota tables; quota config and usage data lost      |
+| 000036 | `releases_gpg_keys`                    | ✅ Yes         | Drops the cached upstream-key table; cache is rebuilt on next refresh tick |
 
 ## How to Run Migrations
 

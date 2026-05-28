@@ -907,9 +907,37 @@ func productNameForTool(tool string) string {
 	}
 }
 
+// ReleasesKeyResolver returns the ASCII-armored release-signing key for the
+// given tool, preferring a fresh upstream snapshot over the embedded fallback.
+// Implementations must return "" only when no key (cached or embedded) is
+// available so callers can correctly choose to skip GPG verification.
+type ReleasesKeyResolver interface {
+	ResolveReleasesKey(tool string) string
+}
+
+// releasesKeyResolver is the package-level hook used by gpgKeyForTool. It is
+// nil by default — gpgKeyForTool then returns the embedded snapshot directly,
+// preserving the original behavior for tests and for deployments that have not
+// wired in the auto-refresh job. main.go calls SetReleasesKeyResolver during
+// startup to install the cache-aware resolver.
+var releasesKeyResolver ReleasesKeyResolver
+
+// SetReleasesKeyResolver installs a resolver consulted by gpgKeyForTool before
+// it falls back to the embedded constants. Passing nil clears the hook.
+func SetReleasesKeyResolver(r ReleasesKeyResolver) {
+	releasesKeyResolver = r
+}
+
 // gpgKeyForTool returns the PGP public key block for the given tool.
 // Returns "" if no key is configured (caller should skip GPG verification).
+// When a resolver is installed via SetReleasesKeyResolver it is consulted
+// first; the embedded snapshot is used only when the resolver returns "".
 func gpgKeyForTool(tool string) string {
+	if releasesKeyResolver != nil {
+		if k := releasesKeyResolver.ResolveReleasesKey(tool); k != "" {
+			return k
+		}
+	}
 	switch strings.ToLower(tool) {
 	case "terraform":
 		return mirror.HashiCorpReleasesGPGKey

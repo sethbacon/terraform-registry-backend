@@ -78,6 +78,47 @@ func TestGPGKeyForTool_Unknown(t *testing.T) {
 	}
 }
 
+// stubResolver is a test-only ReleasesKeyResolver that returns a fixed value
+// for one tool and "" for everything else.
+type stubResolver struct {
+	tool string
+	key  string
+}
+
+func (s *stubResolver) ResolveReleasesKey(tool string) string {
+	if tool == s.tool {
+		return s.key
+	}
+	return ""
+}
+
+func TestGPGKeyForTool_ResolverOverridesEmbedded(t *testing.T) {
+	SetReleasesKeyResolver(&stubResolver{tool: "terraform", key: "REFRESHED-KEY"})
+	t.Cleanup(func() { SetReleasesKeyResolver(nil) })
+
+	if got := gpgKeyForTool("terraform"); got != "REFRESHED-KEY" {
+		t.Errorf("expected resolver key, got %q", got)
+	}
+}
+
+func TestGPGKeyForTool_ResolverEmptyFallsBackToEmbedded(t *testing.T) {
+	// Resolver returns "" (cache miss). Embedded snapshot must be served.
+	SetReleasesKeyResolver(&stubResolver{tool: "nothing-matches", key: "irrelevant"})
+	t.Cleanup(func() { SetReleasesKeyResolver(nil) })
+
+	if got := gpgKeyForTool("terraform"); got == "" || got == "REFRESHED-KEY" {
+		t.Errorf("expected embedded HashiCorp key fallback, got %q", got)
+	}
+}
+
+func TestGPGKeyForTool_NilResolverUsesEmbedded(t *testing.T) {
+	// Explicit nil — exercise the default no-resolver path.
+	SetReleasesKeyResolver(nil)
+	if got := gpgKeyForTool("terraform"); got == "" {
+		t.Error("expected embedded HashiCorp key, got empty")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // hasPreReleaseSuffix
 // ---------------------------------------------------------------------------
