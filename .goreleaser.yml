@@ -46,13 +46,13 @@ builds:
 
 archives:
   - id: terraform-registry-binaries
-    builds: [ terraform-registry ]
-    formats: [ binary ]
+    builds: [terraform-registry]
+    formats: [binary]
     name_template: "terraform-registry-{{ .Os }}-{{ .Arch }}"
 
   - id: registry-import-binaries
-    builds: [ registry-import ]
-    formats: [ binary ]
+    builds: [registry-import]
+    formats: [binary]
     name_template: "registry-import-{{ .Os }}-{{ .Arch }}"
 
 checksum:
@@ -77,6 +77,7 @@ signs:
       - sign-blob
       - --yes
       - --output-signature=${signature}
+      - --output-bundle=${signature}.bundle
       - ${artifact}
 
 docker_signs:
