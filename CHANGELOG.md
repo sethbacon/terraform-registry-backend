@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.6](https://github.com/sethbacon/terraform-registry-backend/compare/v1.2.5...v1.2.6) (2026-05-28)
+
+
+### Bug Fixes
+
+* **mirror:** refresh expired HashiCorp Releases GPG key snapshot ([#416](https://github.com/sethbacon/terraform-registry-backend/issues/416)) ([1fc2071](https://github.com/sethbacon/terraform-registry-backend/commit/1fc2071834e9e1c49420c04f00e124d571b0b93b)), closes [#415](https://github.com/sethbacon/terraform-registry-backend/issues/415)
+
 ## [1.2.5](https://github.com/sethbacon/terraform-registry-backend/compare/v1.2.4...v1.2.5) (2026-05-28)
 
 
