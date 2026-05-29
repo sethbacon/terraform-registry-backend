@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.4](https://github.com/sethbacon/terraform-registry-backend/compare/v1.3.3...v1.3.4) (2026-05-29)
+
+
+### Bug Fixes
+
+* **mirror:** run gpg_verified backfill independently of key backfill ([#429](https://github.com/sethbacon/terraform-registry-backend/issues/429)) ([626b5d5](https://github.com/sethbacon/terraform-registry-backend/commit/626b5d5ca47bb224eb17a7c69a96bbea26a34d3a))
+
 ## [1.3.3](https://github.com/sethbacon/terraform-registry-backend/compare/v1.3.2...v1.3.3) (2026-05-29)
 
 
