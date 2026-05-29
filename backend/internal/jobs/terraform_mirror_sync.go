@@ -329,9 +329,10 @@ func (j *TerraformMirrorSyncJob) performSync(
 	// 4. Upsert version + platform rows (metadata only, no downloads yet).
 	for _, vi := range allVersions {
 		v := &models.TerraformVersion{
-			ConfigID:   cfg.ID,
-			Version:    vi.Version,
-			SyncStatus: "pending",
+			ConfigID:       cfg.ID,
+			Version:        vi.Version,
+			SyncStatus:     "pending",
+			ApprovalStatus: j.resolveTerraformApproval(ctx, cfg, vi.Version),
 		}
 		if upsertErr := j.repo.UpsertVersion(ctx, v); upsertErr != nil {
 			log.Printf("[terraform-mirror] failed to upsert version %s: %v", vi.Version, upsertErr)
@@ -877,15 +878,27 @@ func (j *TerraformMirrorSyncJob) updateLatestVersion(ctx context.Context, config
 		return err
 	}
 
-	stable := make([]models.TerraformVersion, 0, len(syncedVersions))
+	// Exclude versions that are gated and not yet approved — "latest" must never
+	// resolve to a pending or rejected version.
+	visible := make([]models.TerraformVersion, 0, len(syncedVersions))
 	for _, v := range syncedVersions {
+		if v.ApprovalStatus == nil || *v.ApprovalStatus == models.VersionApprovalStatusApproved {
+			visible = append(visible, v)
+		}
+	}
+	if len(visible) == 0 {
+		return nil // nothing approved/visible yet — leave is_latest unset
+	}
+
+	stable := make([]models.TerraformVersion, 0, len(visible))
+	for _, v := range visible {
 		if !hasPreReleaseSuffix(v.Version) {
 			stable = append(stable, v)
 		}
 	}
 
 	if len(stable) == 0 {
-		stable = syncedVersions
+		stable = visible
 	}
 
 	sort.Slice(stable, func(i, k int) bool {
@@ -893,6 +906,42 @@ func (j *TerraformMirrorSyncJob) updateLatestVersion(ctx context.Context, config
 	})
 
 	return j.repo.SetLatestVersion(ctx, configID, stable[0].ID)
+}
+
+// resolveTerraformApproval decides the approval_status for a freshly discovered
+// terraform version. Returns nil when the mirror is not gated, otherwise a
+// pending pointer unless an auto-approve rule matches at sync time. GPG
+// verification is per-platform and not yet known here, so the gpg_verified rule
+// does not fire at discovery time (delay_hours is handled by the periodic sweep).
+func (j *TerraformMirrorSyncJob) resolveTerraformApproval(ctx context.Context, cfg *models.TerraformMirrorConfig, version string) *string {
+	if !cfg.RequiresApproval {
+		return nil
+	}
+	pending := models.VersionApprovalStatusPending
+	approved := models.VersionApprovalStatusApproved
+
+	rules, err := mirror.ParseAutoApproveRules(cfg.AutoApproveRules)
+	if err != nil || rules == nil {
+		return &pending
+	}
+
+	var existing []string
+	if vs, lErr := j.repo.ListVersions(ctx, cfg.ID, false); lErr == nil {
+		for _, v := range vs {
+			existing = append(existing, v.Version)
+		}
+	}
+
+	matched, _ := mirror.EvaluateAutoApprove(rules, mirror.AutoApproveInput{
+		Version:          version,
+		GPGVerified:      false,
+		ExistingVersions: existing,
+		VersionAge:       0,
+	})
+	if matched {
+		return &approved
+	}
+	return &pending
 }
 
 // ----- Tool helpers ---------------------------------------------------------

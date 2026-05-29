@@ -21,6 +21,8 @@ type MirrorConfiguration struct {
 	PlatformFilter           *string    `json:"platform_filter,omitempty" db:"platform_filter"`   // JSON array of "os/arch" strings
 	Enabled                  bool       `json:"enabled" db:"enabled"`
 	SyncIntervalHours        int        `json:"sync_interval_hours" db:"sync_interval_hours"`
+	RequiresApproval         bool       `json:"requires_approval" db:"requires_approval"`             // Gate newly synced versions behind admin approval
+	AutoApproveRules         *string    `json:"auto_approve_rules,omitempty" db:"auto_approve_rules"` // JSONB: AutoApproveRules; NULL = manual approval only
 	PullThroughEnabled       bool       `json:"pull_through_enabled" db:"pull_through_enabled"`
 	PullThroughCacheTTLHours int        `json:"pull_through_cache_ttl_hours" db:"pull_through_cache_ttl_hours"`
 	LastSyncAt               *time.Time `json:"last_sync_at,omitempty" db:"last_sync_at"`
@@ -53,6 +55,7 @@ type MirroredProviderVersion struct {
 	SyncedAt           time.Time `json:"synced_at" db:"synced_at"`
 	ShasumVerified     bool      `json:"shasum_verified" db:"shasum_verified"`
 	GPGVerified        bool      `json:"gpg_verified" db:"gpg_verified"`
+	ApprovalStatus     *string   `json:"approval_status,omitempty" db:"approval_status"` // NULL|pending_approval|approved|rejected
 }
 
 // MirrorSyncHistory represents a historical record of a mirror synchronization operation
@@ -80,6 +83,8 @@ type CreateMirrorConfigRequest struct {
 	PlatformFilter           []string `json:"platform_filter,omitempty"`                                        // List of "os/arch" strings (e.g. ["linux/amd64", "windows/amd64"])
 	Enabled                  *bool    `json:"enabled,omitempty"`                                                // Default: true
 	SyncIntervalHours        *int     `json:"sync_interval_hours,omitempty" binding:"omitempty,min=1"`          // Default: 24
+	RequiresApproval         *bool    `json:"requires_approval,omitempty"`                                     // Default: false
+	AutoApproveRules         *string  `json:"auto_approve_rules,omitempty"`                                    // JSON: AutoApproveRules
 	PullThroughEnabled       *bool    `json:"pull_through_enabled,omitempty"`                                   // Default: false
 	PullThroughCacheTTLHours *int     `json:"pull_through_cache_ttl_hours,omitempty" binding:"omitempty,min=1"` // Default: 24
 }
@@ -96,6 +101,8 @@ type UpdateMirrorConfigRequest struct {
 	PlatformFilter           []string `json:"platform_filter,omitempty"` // List of "os/arch" strings (e.g. ["linux/amd64", "windows/amd64"])
 	Enabled                  *bool    `json:"enabled,omitempty"`
 	SyncIntervalHours        *int     `json:"sync_interval_hours,omitempty" binding:"omitempty,min=1"`
+	RequiresApproval         *bool    `json:"requires_approval,omitempty"`
+	AutoApproveRules         *string  `json:"auto_approve_rules,omitempty"` // JSON: AutoApproveRules
 	PullThroughEnabled       *bool    `json:"pull_through_enabled,omitempty"`
 	PullThroughCacheTTLHours *int     `json:"pull_through_cache_ttl_hours,omitempty" binding:"omitempty,min=1"`
 }

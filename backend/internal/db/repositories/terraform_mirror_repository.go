@@ -40,10 +40,12 @@ func (r *TerraformMirrorRepository) Create(ctx context.Context, cfg *models.Terr
 		INSERT INTO terraform_mirror_configs (
 			id, name, description, tool, enabled, upstream_url,
 			platform_filter, version_filter, gpg_verify, stable_only, sync_interval_hours,
+			requires_approval, auto_approve_rules,
 			created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
 		RETURNING id, name, description, tool, enabled, upstream_url,
 		          platform_filter, version_filter, gpg_verify, stable_only, sync_interval_hours,
+		          requires_approval, auto_approve_rules,
 		          last_sync_at, last_sync_status, last_sync_error,
 		          created_at, updated_at
 	`
@@ -60,6 +62,8 @@ func (r *TerraformMirrorRepository) Create(ctx context.Context, cfg *models.Terr
 		cfg.GPGVerify,
 		cfg.StableOnly,
 		cfg.SyncIntervalHours,
+		cfg.RequiresApproval,
+		cfg.AutoApproveRules,
 		cfg.CreatedAt,
 		cfg.UpdatedAt,
 	).Scan(
@@ -74,6 +78,8 @@ func (r *TerraformMirrorRepository) Create(ctx context.Context, cfg *models.Terr
 		&cfg.GPGVerify,
 		&cfg.StableOnly,
 		&cfg.SyncIntervalHours,
+		&cfg.RequiresApproval,
+		&cfg.AutoApproveRules,
 		&cfg.LastSyncAt,
 		&cfg.LastSyncStatus,
 		&cfg.LastSyncError,
@@ -87,6 +93,7 @@ func (r *TerraformMirrorRepository) GetByID(ctx context.Context, id uuid.UUID) (
 	query := `
 		SELECT id, name, description, tool, enabled, upstream_url,
 		       platform_filter, version_filter, gpg_verify, stable_only, sync_interval_hours,
+		       requires_approval, auto_approve_rules,
 		       last_sync_at, last_sync_status, last_sync_error,
 		       created_at, updated_at
 		FROM terraform_mirror_configs
@@ -110,6 +117,7 @@ func (r *TerraformMirrorRepository) GetByName(ctx context.Context, name string) 
 	query := `
 		SELECT id, name, description, tool, enabled, upstream_url,
 		       platform_filter, version_filter, gpg_verify, stable_only, sync_interval_hours,
+		       requires_approval, auto_approve_rules,
 		       last_sync_at, last_sync_status, last_sync_error,
 		       created_at, updated_at
 		FROM terraform_mirror_configs
@@ -133,6 +141,7 @@ func (r *TerraformMirrorRepository) ListAll(ctx context.Context) ([]models.Terra
 	query := `
 		SELECT id, name, description, tool, enabled, upstream_url,
 		       platform_filter, version_filter, gpg_verify, stable_only, sync_interval_hours,
+		       requires_approval, auto_approve_rules,
 		       last_sync_at, last_sync_status, last_sync_error,
 		       created_at, updated_at
 		FROM terraform_mirror_configs
@@ -152,6 +161,7 @@ func (r *TerraformMirrorRepository) ListEnabled(ctx context.Context) ([]models.T
 	query := `
 		SELECT id, name, description, tool, enabled, upstream_url,
 		       platform_filter, version_filter, gpg_verify, stable_only, sync_interval_hours,
+		       requires_approval, auto_approve_rules,
 		       last_sync_at, last_sync_status, last_sync_error,
 		       created_at, updated_at
 		FROM terraform_mirror_configs
@@ -172,6 +182,7 @@ func (r *TerraformMirrorRepository) GetConfigsNeedingSync(ctx context.Context) (
 	query := `
 		SELECT id, name, description, tool, enabled, upstream_url,
 		       platform_filter, version_filter, gpg_verify, stable_only, sync_interval_hours,
+		       requires_approval, auto_approve_rules,
 		       last_sync_at, last_sync_status, last_sync_error,
 		       created_at, updated_at
 		FROM terraform_mirror_configs
@@ -207,7 +218,9 @@ func (r *TerraformMirrorRepository) Update(ctx context.Context, cfg *models.Terr
 		    gpg_verify          = $9,
 		    stable_only         = $10,
 		    sync_interval_hours = $11,
-		    updated_at          = $12
+		    requires_approval   = $12,
+		    auto_approve_rules  = $13,
+		    updated_at          = $14
 		WHERE id = $1
 	`
 
@@ -223,6 +236,8 @@ func (r *TerraformMirrorRepository) Update(ctx context.Context, cfg *models.Terr
 		cfg.GPGVerify,
 		cfg.StableOnly,
 		cfg.SyncIntervalHours,
+		cfg.RequiresApproval,
+		cfg.AutoApproveRules,
 		cfg.UpdatedAt,
 	)
 	if err != nil {
@@ -274,14 +289,16 @@ func (r *TerraformMirrorRepository) UpsertVersion(ctx context.Context, v *models
 
 	query := `
 		INSERT INTO terraform_versions (
-			id, config_id, version, is_latest, is_deprecated, release_date, sync_status, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			id, config_id, version, is_latest, is_deprecated, release_date, sync_status, approval_status, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (config_id, version) DO UPDATE
 		SET release_date  = COALESCE(EXCLUDED.release_date, terraform_versions.release_date),
 		    updated_at    = EXCLUDED.updated_at
+		    -- approval_status intentionally NOT updated on conflict: a re-sync must
+		    -- never reset an already-decided version back to pending.
 		RETURNING id, config_id, version, is_latest, is_deprecated, release_date,
 		          sync_status, sync_error, synced_at, created_at, updated_at,
-		          sums_storage_key, sig_storage_key
+		          sums_storage_key, sig_storage_key, approval_status
 	`
 
 	return r.db.QueryRowContext(ctx, query,
@@ -292,6 +309,7 @@ func (r *TerraformMirrorRepository) UpsertVersion(ctx context.Context, v *models
 		v.IsDeprecated,
 		v.ReleaseDate,
 		v.SyncStatus,
+		v.ApprovalStatus,
 		v.CreatedAt,
 		v.UpdatedAt,
 	).Scan(
@@ -308,6 +326,7 @@ func (r *TerraformMirrorRepository) UpsertVersion(ctx context.Context, v *models
 		&v.UpdatedAt,
 		&v.SumsStorageKey,
 		&v.SigStorageKey,
+		&v.ApprovalStatus,
 	)
 }
 
@@ -316,7 +335,7 @@ func (r *TerraformMirrorRepository) GetVersionByString(ctx context.Context, conf
 	query := `
 		SELECT id, config_id, version, is_latest, is_deprecated, release_date,
 		       sync_status, sync_error, synced_at, created_at, updated_at,
-		       sums_storage_key, sig_storage_key
+		       sums_storage_key, sig_storage_key, approval_status
 		FROM terraform_versions
 		WHERE config_id = $1 AND version = $2
 	`
@@ -338,7 +357,7 @@ func (r *TerraformMirrorRepository) GetLatestVersion(ctx context.Context, config
 	query := `
 		SELECT id, config_id, version, is_latest, is_deprecated, release_date,
 		       sync_status, sync_error, synced_at, created_at, updated_at,
-		       sums_storage_key, sig_storage_key
+		       sums_storage_key, sig_storage_key, approval_status
 		FROM terraform_versions
 		WHERE config_id = $1 AND is_latest = true
 		LIMIT 1
@@ -362,7 +381,7 @@ func (r *TerraformMirrorRepository) ListVersions(ctx context.Context, configID u
 	query := `
 		SELECT id, config_id, version, is_latest, is_deprecated, release_date,
 		       sync_status, sync_error, synced_at, created_at, updated_at,
-		       sums_storage_key, sig_storage_key
+		       sums_storage_key, sig_storage_key, approval_status
 		FROM terraform_versions
 		WHERE config_id = $1
 	`
@@ -397,7 +416,7 @@ func (r *TerraformMirrorRepository) ListVersionsPaginated(ctx context.Context, c
 	query := `
 		SELECT id, config_id, version, is_latest, is_deprecated, release_date,
 		       sync_status, sync_error, synced_at, created_at, updated_at,
-		       sums_storage_key, sig_storage_key
+		       sums_storage_key, sig_storage_key, approval_status
 		FROM terraform_versions
 		WHERE config_id = $1
 	`

@@ -242,6 +242,15 @@ The background mirror sync job runs every 10 minutes. This interval was chosen a
 
 Sync history is recorded in the `mirror_sync_history` table so operators can diagnose failures without inspecting logs.
 
+### Version Approval Gate
+
+When a mirror config has `requires_approval` enabled, each newly synced version
+is recorded with `approval_status = pending_approval` and is hidden from the
+protocol listing endpoints until an administrator approves it. Optional
+auto-approve rules (`internal/mirror/auto_approve.go`) can approve low-risk
+versions at sync time. See [version-approval.md](version-approval.md) and
+[ADR 011](adr/011-version-approval-gate.md) for the full design.
+
 ---
 
 ## Background Jobs

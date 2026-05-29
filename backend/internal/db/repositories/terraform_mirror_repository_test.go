@@ -17,6 +17,7 @@ import (
 var tfMirrorConfigCols = []string{
 	"id", "name", "description", "tool", "enabled", "upstream_url",
 	"platform_filter", "version_filter", "gpg_verify", "stable_only", "sync_interval_hours",
+	"requires_approval", "auto_approve_rules",
 	"last_sync_at", "last_sync_status", "last_sync_error",
 	"created_at", "updated_at",
 }
@@ -45,6 +46,8 @@ func newTfMirrorConfigRow(mock sqlmock.Sqlmock, cfg *models.TerraformMirrorConfi
 		cfg.GPGVerify,
 		cfg.StableOnly,
 		cfg.SyncIntervalHours,
+		cfg.RequiresApproval,
+		cfg.AutoApproveRules,
 		cfg.LastSyncAt,
 		cfg.LastSyncStatus,
 		cfg.LastSyncError,
@@ -318,6 +321,7 @@ func TestTerraformMirrorListAll_Success(t *testing.T) {
 		rows.AddRow(
 			c.ID, c.Name, c.Description, c.Tool, c.Enabled, c.UpstreamURL,
 			c.PlatformFilter, c.VersionFilter, c.GPGVerify, c.StableOnly, c.SyncIntervalHours,
+			c.RequiresApproval, c.AutoApproveRules,
 			c.LastSyncAt, c.LastSyncStatus, c.LastSyncError, c.CreatedAt, c.UpdatedAt,
 		)
 	}
@@ -498,14 +502,14 @@ func TestTerraformMirrorUpdateSyncStatus_DBError(t *testing.T) {
 var tfVersionCols = []string{
 	"id", "config_id", "version", "is_latest", "is_deprecated", "release_date",
 	"sync_status", "sync_error", "synced_at", "created_at", "updated_at",
-	"sums_storage_key", "sig_storage_key",
+	"sums_storage_key", "sig_storage_key", "approval_status",
 }
 
 func newTFVersionRow(mock sqlmock.Sqlmock, v *models.TerraformVersion) *sqlmock.Rows {
 	return mock.NewRows(tfVersionCols).AddRow(
 		v.ID, v.ConfigID, v.Version, v.IsLatest, v.IsDeprecated, v.ReleaseDate,
 		v.SyncStatus, v.SyncError, v.SyncedAt, v.CreatedAt, v.UpdatedAt,
-		v.SumsStorageKey, v.SigStorageKey,
+		v.SumsStorageKey, v.SigStorageKey, v.ApprovalStatus,
 	)
 }
 

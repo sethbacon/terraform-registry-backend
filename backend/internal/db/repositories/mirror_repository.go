@@ -31,9 +31,9 @@ func (r *MirrorRepository) Create(ctx context.Context, config *models.MirrorConf
 	query := `
 		INSERT INTO mirror_configurations (
 			id, name, description, upstream_registry_url, organization_id, namespace_filter, provider_filter,
-			version_filter, platform_filter, enabled, sync_interval_hours, pull_through_enabled,
-			pull_through_cache_ttl_hours, created_at, updated_at, created_by
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+			version_filter, platform_filter, enabled, sync_interval_hours, requires_approval, auto_approve_rules,
+			pull_through_enabled, pull_through_cache_ttl_hours, created_at, updated_at, created_by
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 	`
 
 	_, err := r.db.ExecContext(ctx, query,
@@ -48,6 +48,8 @@ func (r *MirrorRepository) Create(ctx context.Context, config *models.MirrorConf
 		config.PlatformFilter,
 		config.Enabled,
 		config.SyncIntervalHours,
+		config.RequiresApproval,
+		config.AutoApproveRules,
 		config.PullThroughEnabled,
 		config.PullThroughCacheTTLHours,
 		config.CreatedAt,
@@ -66,7 +68,7 @@ func (r *MirrorRepository) Create(ctx context.Context, config *models.MirrorConf
 func (r *MirrorRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.MirrorConfiguration, error) {
 	query := `
 		SELECT id, name, description, upstream_registry_url, organization_id, namespace_filter, provider_filter,
-		       version_filter, platform_filter, enabled, sync_interval_hours, pull_through_enabled,
+		       version_filter, platform_filter, enabled, sync_interval_hours, requires_approval, auto_approve_rules, pull_through_enabled,
 		       pull_through_cache_ttl_hours, last_sync_at, last_sync_status, last_sync_error,
 		       created_at, updated_at, created_by
 		FROM mirror_configurations
@@ -89,7 +91,7 @@ func (r *MirrorRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.M
 func (r *MirrorRepository) GetByName(ctx context.Context, name string) (*models.MirrorConfiguration, error) {
 	query := `
 		SELECT id, name, description, upstream_registry_url, organization_id, namespace_filter, provider_filter,
-		       version_filter, platform_filter, enabled, sync_interval_hours, pull_through_enabled,
+		       version_filter, platform_filter, enabled, sync_interval_hours, requires_approval, auto_approve_rules, pull_through_enabled,
 		       pull_through_cache_ttl_hours, last_sync_at, last_sync_status, last_sync_error,
 		       created_at, updated_at, created_by
 		FROM mirror_configurations
@@ -112,7 +114,7 @@ func (r *MirrorRepository) GetByName(ctx context.Context, name string) (*models.
 func (r *MirrorRepository) List(ctx context.Context, enabledOnly bool) ([]models.MirrorConfiguration, error) {
 	query := `
 		SELECT id, name, description, upstream_registry_url, organization_id, namespace_filter, provider_filter,
-		       version_filter, platform_filter, enabled, sync_interval_hours, pull_through_enabled,
+		       version_filter, platform_filter, enabled, sync_interval_hours, requires_approval, auto_approve_rules, pull_through_enabled,
 		       pull_through_cache_ttl_hours, last_sync_at, last_sync_status, last_sync_error,
 		       created_at, updated_at, created_by
 		FROM mirror_configurations
@@ -141,8 +143,8 @@ func (r *MirrorRepository) Update(ctx context.Context, config *models.MirrorConf
 		UPDATE mirror_configurations
 		SET name = $2, description = $3, upstream_registry_url = $4, organization_id = $5,
 		    namespace_filter = $6, provider_filter = $7, version_filter = $8, platform_filter = $9,
-		    enabled = $10, sync_interval_hours = $11, pull_through_enabled = $12,
-		    pull_through_cache_ttl_hours = $13, updated_at = $14
+		    enabled = $10, sync_interval_hours = $11, requires_approval = $12, auto_approve_rules = $13,
+		    pull_through_enabled = $14, pull_through_cache_ttl_hours = $15, updated_at = $16
 		WHERE id = $1
 	`
 
@@ -158,6 +160,8 @@ func (r *MirrorRepository) Update(ctx context.Context, config *models.MirrorConf
 		config.PlatformFilter,
 		config.Enabled,
 		config.SyncIntervalHours,
+		config.RequiresApproval,
+		config.AutoApproveRules,
 		config.PullThroughEnabled,
 		config.PullThroughCacheTTLHours,
 		config.UpdatedAt,
@@ -253,7 +257,7 @@ func (r *MirrorRepository) ResetStaleSyncs(ctx context.Context) (int64, error) {
 func (r *MirrorRepository) GetMirrorsNeedingSync(ctx context.Context) ([]models.MirrorConfiguration, error) {
 	query := `
 		SELECT id, name, description, upstream_registry_url, organization_id, namespace_filter, provider_filter,
-		       version_filter, platform_filter, enabled, sync_interval_hours, pull_through_enabled,
+		       version_filter, platform_filter, enabled, sync_interval_hours, requires_approval, auto_approve_rules, pull_through_enabled,
 		       pull_through_cache_ttl_hours, last_sync_at, last_sync_status, last_sync_error,
 		       created_at, updated_at, created_by
 		FROM mirror_configurations
@@ -525,13 +529,15 @@ func (r *MirrorRepository) CreateMirroredProviderVersion(ctx context.Context, mp
 	query := `
 		INSERT INTO mirrored_provider_versions (
 			id, mirrored_provider_id, provider_version_id, upstream_version,
-			synced_at, shasum_verified, gpg_verified
-		) VALUES ($1, $2, $3, $4, $5, $6, $7)
+			synced_at, shasum_verified, gpg_verified, approval_status
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (mirrored_provider_id, upstream_version) DO UPDATE
-		SET provider_version_id = EXCLUDED.provider_version_id, 
-		    synced_at = EXCLUDED.synced_at, 
-		    shasum_verified = EXCLUDED.shasum_verified, 
+		SET provider_version_id = EXCLUDED.provider_version_id,
+		    synced_at = EXCLUDED.synced_at,
+		    shasum_verified = EXCLUDED.shasum_verified,
 		    gpg_verified = EXCLUDED.gpg_verified
+		-- approval_status intentionally NOT updated on conflict: a re-sync must
+		-- never reset an already-decided version back to pending.
 	`
 
 	_, err := r.db.ExecContext(ctx, query,
@@ -542,6 +548,7 @@ func (r *MirrorRepository) CreateMirroredProviderVersion(ctx context.Context, mp
 		mpv.SyncedAt,
 		mpv.ShasumVerified,
 		mpv.GPGVerified,
+		mpv.ApprovalStatus,
 	)
 
 	if err != nil {
@@ -567,7 +574,7 @@ func (r *MirrorRepository) UpdateMirroredProviderVersionGPGStatus(ctx context.Co
 func (r *MirrorRepository) GetMirroredProviderVersion(ctx context.Context, mirroredProviderID uuid.UUID, version string) (*models.MirroredProviderVersion, error) {
 	query := `
 		SELECT id, mirrored_provider_id, provider_version_id, upstream_version,
-		       synced_at, shasum_verified, gpg_verified
+		       synced_at, shasum_verified, gpg_verified, approval_status
 		FROM mirrored_provider_versions
 		WHERE mirrored_provider_id = $1 AND upstream_version = $2
 	`
@@ -588,7 +595,7 @@ func (r *MirrorRepository) GetMirroredProviderVersion(ctx context.Context, mirro
 func (r *MirrorRepository) ListMirroredProviderVersions(ctx context.Context, mirroredProviderID uuid.UUID) ([]models.MirroredProviderVersion, error) {
 	query := `
 		SELECT id, mirrored_provider_id, provider_version_id, upstream_version,
-		       synced_at, shasum_verified, gpg_verified
+		       synced_at, shasum_verified, gpg_verified, approval_status
 		FROM mirrored_provider_versions
 		WHERE mirrored_provider_id = $1
 		ORDER BY
@@ -610,7 +617,7 @@ func (r *MirrorRepository) ListMirroredProviderVersions(ctx context.Context, mir
 func (r *MirrorRepository) GetMirroredProviderVersionByVersionID(ctx context.Context, providerVersionID uuid.UUID) (*models.MirroredProviderVersion, error) {
 	query := `
 		SELECT id, mirrored_provider_id, provider_version_id, upstream_version,
-		       synced_at, shasum_verified, gpg_verified
+		       synced_at, shasum_verified, gpg_verified, approval_status
 		FROM mirrored_provider_versions
 		WHERE provider_version_id = $1
 	`
@@ -635,7 +642,7 @@ func (r *MirrorRepository) GetPullThroughConfigsForProvider(
 ) ([]*models.MirrorConfiguration, error) {
 	const q = `
 		SELECT id, name, description, upstream_registry_url, organization_id, namespace_filter, provider_filter,
-		       version_filter, platform_filter, enabled, sync_interval_hours, pull_through_enabled,
+		       version_filter, platform_filter, enabled, sync_interval_hours, requires_approval, auto_approve_rules, pull_through_enabled,
 		       pull_through_cache_ttl_hours, last_sync_at, last_sync_status, last_sync_error,
 		       created_at, updated_at, created_by
 		FROM mirror_configurations

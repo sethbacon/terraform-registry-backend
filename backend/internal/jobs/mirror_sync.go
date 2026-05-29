@@ -77,6 +77,7 @@ type MirrorSyncJob struct {
 	providerRepo       *repositories.ProviderRepository
 	providerDocsRepo   *repositories.ProviderDocsRepository
 	orgRepo            *repositories.OrganizationRepository
+	approvalRepo       *repositories.VersionApprovalRepository // optional; set via SetApprovalRepo for auto-approve event logging
 	storageBackend     storage.Storage
 	storageBackendName string
 	activeSyncs        map[uuid.UUID]bool
@@ -115,6 +116,13 @@ func NewMirrorSyncJob(
 			return mirror.NewUpstreamRegistry(baseURL)
 		},
 	}
+}
+
+// SetApprovalRepo wires the version-approval repository so the sync job can log
+// auto_approved audit events. Optional: when unset, auto-approval still applies
+// to the version's status but no event row is written.
+func (j *MirrorSyncJob) SetApprovalRepo(repo *repositories.VersionApprovalRepository) {
+	j.approvalRepo = repo
 }
 
 // SetUpstreamFactory replaces the upstream-client factory.  Intended for tests
@@ -684,7 +692,7 @@ func (j *MirrorSyncJob) syncProvider(ctx context.Context, upstreamClient mirror.
 		}
 
 		// Sync this version (download and create)
-		err := j.syncProviderVersion(ctx, upstreamClient, localProvider, mirroredProvider, namespace, providerName, version, config.PlatformFilter)
+		err := j.syncProviderVersion(ctx, upstreamClient, localProvider, mirroredProvider, namespace, providerName, version, config)
 		if err != nil {
 			log.Printf("Error syncing version %s of %s/%s: %v", version.Version, namespace, providerName, err)
 			// Continue with other versions
@@ -727,8 +735,9 @@ func (j *MirrorSyncJob) syncProviderVersion(
 	mirroredProvider *models.MirroredProvider,
 	namespace, providerName string,
 	version mirror.ProviderVersion,
-	platformFilter *string,
+	config models.MirrorConfiguration,
 ) error {
+	platformFilter := config.PlatformFilter
 	// Filter platforms if a filter is specified
 	platforms := filterPlatforms(version.Platforms, platformFilter)
 
@@ -879,22 +888,82 @@ func (j *MirrorSyncJob) syncProviderVersion(
 
 	// Track the mirrored version
 	if mirroredProvider != nil {
+		mpvID := uuid.New()
+		approvalStatus, autoRule := j.resolveProviderApproval(ctx, config, mirroredProvider.ID, version.Version, gpgVerified)
 		mpv := &models.MirroredProviderVersion{
-			ID:                 uuid.New(),
+			ID:                 mpvID,
 			MirroredProviderID: mirroredProvider.ID,
 			ProviderVersionID:  uuid.MustParse(versionRecord.ID),
 			UpstreamVersion:    version.Version,
 			SyncedAt:           time.Now(),
 			ShasumVerified:     len(shasumContent) > 0,
 			GPGVerified:        gpgVerified,
+			ApprovalStatus:     approvalStatus,
 		}
 		if err := j.mirrorRepo.CreateMirroredProviderVersion(ctx, mpv); err != nil {
 			log.Printf("Warning: failed to record mirrored provider version for %s/%s@%s: %v", namespace, providerName, version.Version, err)
+		} else if autoRule != "" && j.approvalRepo != nil {
+			// Log the auto-approval so the version's audit trail explains why it
+			// skipped manual review.
+			rule := autoRule
+			if recErr := j.approvalRepo.RecordEvent(ctx, &models.VersionApprovalEvent{
+				MirroredProviderVersionID: &mpvID,
+				Action:                    models.VersionApprovalActionAuto,
+				AutoApproveRule:           &rule,
+			}); recErr != nil {
+				log.Printf("Warning: failed to record auto-approve event for %s/%s@%s: %v", namespace, providerName, version.Version, recErr)
+			}
 		}
 	}
 
 	log.Printf("Synced version %s: %d/%d platforms downloaded", version.Version, platformsDownloaded, len(platforms))
 	return nil
+}
+
+// resolveProviderApproval decides the approval_status for a freshly synced
+// provider version. It returns (nil, "") when the mirror is not gated, a
+// pending pointer when review is required, or an approved pointer plus the
+// matched rule name when an auto-approve rule fires.
+func (j *MirrorSyncJob) resolveProviderApproval(
+	ctx context.Context,
+	config models.MirrorConfiguration,
+	mirroredProviderID uuid.UUID,
+	version string,
+	gpgVerified bool,
+) (status *string, autoRule string) {
+	if !config.RequiresApproval {
+		return nil, ""
+	}
+
+	pending := models.VersionApprovalStatusPending
+	approved := models.VersionApprovalStatusApproved
+
+	rules, err := mirror.ParseAutoApproveRules(config.AutoApproveRules)
+	if err != nil {
+		log.Printf("Warning: invalid auto_approve_rules for mirror %s: %v", config.Name, err)
+		return &pending, ""
+	}
+	if rules == nil {
+		return &pending, ""
+	}
+
+	var existing []string
+	if versions, lErr := j.mirrorRepo.ListMirroredProviderVersions(ctx, mirroredProviderID); lErr == nil {
+		for _, v := range versions {
+			existing = append(existing, v.UpstreamVersion)
+		}
+	}
+
+	matched, rule := mirror.EvaluateAutoApprove(rules, mirror.AutoApproveInput{
+		Version:          version,
+		GPGVerified:      gpgVerified,
+		ExistingVersions: existing,
+		VersionAge:       0, // just synced; delay_hours is handled by the periodic sweep
+	})
+	if matched {
+		return &approved, rule
+	}
+	return &pending, ""
 }
 
 // syncPlatformBinary downloads and stores a single platform binary.

@@ -21,6 +21,7 @@ import (
 var tmcCols = []string{
 	"id", "name", "description", "tool", "enabled", "upstream_url",
 	"platform_filter", "version_filter", "gpg_verify", "stable_only", "sync_interval_hours",
+	"requires_approval", "auto_approve_rules",
 	"last_sync_at", "last_sync_status", "last_sync_error",
 	"created_at", "updated_at",
 }
@@ -57,6 +58,7 @@ func sampleTMCRow() *sqlmock.Rows {
 		AddRow(
 			knownUUID, "my-mirror", nil, "terraform", false,
 			"https://releases.hashicorp.com", nil, nil, true, false, 24,
+			false, nil,
 			nil, nil, nil,
 			time.Now(), time.Now(),
 		)

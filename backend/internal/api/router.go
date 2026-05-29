@@ -175,6 +175,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 
 	// Initialize mirror sync job
 	mirrorSyncJob := jobs.NewMirrorSyncJob(mirrorRepo, providerRepo, providerDocsRepo, orgRepo, storageBackend, cfg.Storage.DefaultBackend)
+	mirrorSyncJob.SetApprovalRepo(repositories.NewVersionApprovalRepository(sqlxDB))
 	// Start background sync job - check every 10 minutes for mirrors that need syncing
 	mirrorSyncJob.Start(context.Background(), 10)
 	log.Println("Mirror sync job started (checking every 10 minutes)")
@@ -586,6 +587,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	tfMirrorAdminHandler := admin.NewTerraformMirrorHandler(tfMirrorRepo)
 	tfMirrorAdminHandler.SetSyncJob(tfMirrorSyncJob)
 	releasesGPGKeysAdminHandler := admin.NewReleasesGPGKeysHandler(releasesKeyRepo, cfg.ReleasesGPGKeys)
+	versionApprovalHandler := admin.NewVersionApprovalHandler(repositories.NewVersionApprovalRepository(sqlxDB))
 	providerAdminHandlers := admin.NewProviderAdminHandlers(db, storageBackend, cfg)
 	moduleAdminHandlers := admin.NewModuleAdminHandlers(db, storageBackend, cfg).
 		WithModuleDocs(moduleDocsRepo).
@@ -1098,6 +1100,18 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 				approvalsGroup.PUT("/:id/review", middleware.RequireScope(auth.ScopeAdmin), rbacHandlers.ReviewApproval)
 				// Generate a single-use token that allows out-of-band (email/Slack) approval.
 				approvalsGroup.POST("/:id/token", middleware.RequireScope(auth.ScopeMirrorsManage), rbacHandlers.GenerateApprovalToken)
+			}
+
+			// Version Approvals (provider + terraform mirror version gate)
+			versionApprovalsGroup := authenticatedGroup.Group("/admin/version-approvals")
+			{
+				versionApprovalsGroup.GET("", middleware.RequireScope(auth.ScopeMirrorsRead), versionApprovalHandler.List)
+				versionApprovalsGroup.GET("/pending-count", middleware.RequireScope(auth.ScopeMirrorsRead), versionApprovalHandler.PendingCount)
+				versionApprovalsGroup.GET("/:id/events", middleware.RequireScope(auth.ScopeMirrorsRead), versionApprovalHandler.Events)
+				versionApprovalsGroup.PUT("/:id/approve", middleware.RequireScope(auth.ScopeAdmin), versionApprovalHandler.Approve)
+				versionApprovalsGroup.PUT("/:id/reject", middleware.RequireScope(auth.ScopeAdmin), versionApprovalHandler.Reject)
+				versionApprovalsGroup.POST("/bulk-approve", middleware.RequireScope(auth.ScopeAdmin), versionApprovalHandler.BulkApprove)
+				versionApprovalsGroup.POST("/bulk-reject", middleware.RequireScope(auth.ScopeAdmin), versionApprovalHandler.BulkReject)
 			}
 
 			// Mirror Policies
