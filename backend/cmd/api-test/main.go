@@ -2,10 +2,16 @@
 // Runs ~170 tests across 23 phases, cleans up everything it creates, and
 // reports any remaining swagger/spec discrepancies separately from failures.
 //
+// After the phases run it fetches the live OpenAPI spec and prints an API
+// coverage report: every spec path+method the runner never touched is listed
+// so new endpoints can't ship untested. Coverage is informational by default;
+// pass -strict-coverage to fail the run when uncovered endpoints exist.
+//
 // Usage:
 //
 //	go run ./cmd/api-test/ -key <api-key>
 //	go run ./cmd/api-test/ -url http://registry.local:8080 -key <api-key>
+//	go run ./cmd/api-test/ -key <api-key> -strict-coverage
 //	./api-test.exe -key <api-key>
 package main
 
@@ -199,6 +205,7 @@ func nested(m map[string]interface{}, key string) map[string]interface{} {
 }
 
 func record(method, path string, got int, want []int, elapsed time.Duration, note string) bool {
+	markTouched(method, path)
 	label := ""
 	if note != "" {
 		label = " | " + note
@@ -221,6 +228,7 @@ func record(method, path string, got int, want []int, elapsed time.Duration, not
 }
 
 func skipTest(method, path, reason string) {
+	markTouched(method, path)
 	skipped++
 	skippedTests = append(skippedTests, fmt.Sprintf("#%-3d %-7s %s → %s", passed+failed+skipped, method, path, reason))
 	fmt.Printf("[SKIP] #%-3d %-7s %-72s → %s\n", passed+failed+skipped, method, path, reason)
@@ -1507,6 +1515,7 @@ func main() {
 	urlFlag := flag.String("url", "http://registry.local:8080", "Base URL of the registry API")
 	keyFlag := flag.String("key", "", "API key for authenticated requests") // #nosec G101 -- integration test credential
 	delayFlag := flag.Int("delay", 750, "Milliseconds to wait before each request (use 0 for local, 750+ for rate-limited environments)")
+	strictCoverage := flag.Bool("strict-coverage", false, "Exit non-zero if the live spec contains endpoints the runner never touches")
 	flag.Parse()
 
 	baseURL = *urlFlag
@@ -1588,6 +1597,8 @@ func main() {
 		}
 	}
 
+	uncovered := reportCoverage()
+
 	if len(skippedTests) > 0 {
 		fmt.Println("\n--- Skipped Tests ---")
 		for _, s := range skippedTests {
@@ -1606,5 +1617,10 @@ func main() {
 		// non-zero exit so CI can detect failures
 		fmt.Println()
 		panic("test failures")
+	}
+
+	if *strictCoverage && uncovered > 0 {
+		fmt.Println()
+		panic("uncovered API endpoints (run without -strict-coverage to list only)")
 	}
 }
