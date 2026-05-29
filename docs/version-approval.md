@@ -22,6 +22,11 @@ infrastructure code.
    - the Provider Registry Protocol version listing,
    - the Network Mirror Protocol `index.json`,
    - the Terraform binary mirror version/latest/download endpoints.
+
+   Hidden versions are also rejected by the provider and Terraform binary
+   **download** endpoints (a direct request for a pending/rejected version
+   returns 404), so the gate cannot be bypassed by referencing a version
+   directly.
 3. An administrator reviews pending versions on the **Version Approvals** admin
    page and approves or rejects each one (individually or in bulk).
 4. Approved versions become visible; rejected versions stay permanently hidden.

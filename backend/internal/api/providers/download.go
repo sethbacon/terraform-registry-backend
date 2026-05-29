@@ -110,6 +110,27 @@ func DownloadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Con
 			return
 		}
 
+		// Enforce the version approval gate: a mirrored version still pending
+		// approval or rejected must not be downloadable, even by direct version
+		// reference (it is already hidden from the listing endpoints). Locally
+		// uploaded versions have no mirrored row and are always visible. We
+		// return the same 404 as a missing version so the gate does not reveal
+		// that a hidden version exists.
+		approvalStatus, err := providerRepo.GetVersionApprovalStatus(c.Request.Context(), providerVersion.ID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to query provider version",
+			})
+			return
+		}
+		if approvalStatus != nil &&
+			*approvalStatus != models.VersionApprovalStatusApproved {
+			c.JSON(http.StatusNotFound, gin.H{
+				"errors": []string{"Provider version not found"},
+			})
+			return
+		}
+
 		// Get platform binary
 		platform, err := providerRepo.GetPlatform(c.Request.Context(), providerVersion.ID, os, arch)
 		if err != nil {

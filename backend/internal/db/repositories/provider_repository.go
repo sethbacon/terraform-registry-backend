@@ -317,6 +317,25 @@ func (r *ProviderRepository) GetVersion(ctx context.Context, providerID, version
 	return v, nil
 }
 
+// GetVersionApprovalStatus returns the approval_status of the mirrored tracking
+// row for a provider version, or nil when the version is not mirrored (locally
+// uploaded) and therefore not subject to the approval gate. Callers treat a nil
+// status — and "approved" — as visible; "pending_approval"/"rejected" are gated.
+func (r *ProviderRepository) GetVersionApprovalStatus(ctx context.Context, providerVersionID string) (*string, error) {
+	var status *string
+	err := r.db.QueryRowContext(ctx,
+		`SELECT approval_status FROM mirrored_provider_versions WHERE provider_version_id = $1`,
+		providerVersionID,
+	).Scan(&status)
+	if err == sql.ErrNoRows {
+		return nil, nil // not mirrored -> not gated
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get version approval status: %w", err)
+	}
+	return status, nil
+}
+
 // approvalExclusionClause hides mirrored versions that are pending or rejected
 // under the approval gate. Locally-uploaded versions (no mirrored row) and
 // approved/ungated versions remain visible.

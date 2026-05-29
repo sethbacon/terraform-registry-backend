@@ -1197,6 +1197,37 @@ func TestListVisibleVersions_ExcludesGated(t *testing.T) {
 	}
 }
 
+func TestGetVersionApprovalStatus(t *testing.T) {
+	t.Run("not mirrored returns nil", func(t *testing.T) {
+		repo, mock := newProviderRepo(t)
+		// No matching row -> sql.ErrNoRows -> nil status (version not gated).
+		mock.ExpectQuery(`SELECT approval_status FROM mirrored_provider_versions`).
+			WithArgs("ver-1").
+			WillReturnRows(sqlmock.NewRows([]string{"approval_status"}))
+		status, err := repo.GetVersionApprovalStatus(context.Background(), "ver-1")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if status != nil {
+			t.Fatalf("expected nil status for unmirrored version, got %v", *status)
+		}
+	})
+
+	t.Run("gated returns status", func(t *testing.T) {
+		repo, mock := newProviderRepo(t)
+		mock.ExpectQuery(`SELECT approval_status FROM mirrored_provider_versions`).
+			WithArgs("ver-1").
+			WillReturnRows(sqlmock.NewRows([]string{"approval_status"}).AddRow("pending_approval"))
+		status, err := repo.GetVersionApprovalStatus(context.Background(), "ver-1")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if status == nil || *status != "pending_approval" {
+			t.Fatalf("expected pending_approval, got %v", status)
+		}
+	})
+}
+
 func TestListVisibleVersions_QueryError(t *testing.T) {
 	repo, mock := newProviderRepo(t)
 	mock.ExpectQuery(`SELECT.*FROM provider_versions pv`).
