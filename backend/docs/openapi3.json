@@ -5931,6 +5931,413 @@
                 }
             }
         },
+        "/api/v1/admin/version-approvals": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Lists mirrored provider and terraform versions that are subject to the approval gate, filtered by status, type, and mirror config.",
+                "tags": [
+                    "Version Approvals"
+                ],
+                "summary": "List version approvals",
+                "parameters": [
+                    {
+                        "description": "Filter by status (pending_approval, approved, rejected)",
+                        "name": "status",
+                        "in": "query",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Filter by type (provider, terraform)",
+                        "name": "type",
+                        "in": "query",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Filter by mirror config UUID",
+                        "name": "config_id",
+                        "in": "query",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Max results (default 100, max 500)",
+                        "name": "limit",
+                        "in": "query",
+                        "schema": {
+                            "type": "integer"
+                        }
+                    },
+                    {
+                        "description": "Offset for pagination",
+                        "name": "offset",
+                        "in": "query",
+                        "schema": {
+                            "type": "integer"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/models.VersionApprovalListResponse"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/admin/version-approvals/bulk-approve": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Approves multiple gated versions in one request. Returns per-id failures without aborting the batch.",
+                "tags": [
+                    "Version Approvals"
+                ],
+                "summary": "Bulk approve versions",
+                "requestBody": {
+                    "$ref": "#/components/requestBodies/models.VersionApprovalBulkRequest"
+                },
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/models.VersionApprovalBulkResponse"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/admin/version-approvals/bulk-reject": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Rejects multiple gated versions in one request. Returns per-id failures without aborting the batch.",
+                "tags": [
+                    "Version Approvals"
+                ],
+                "summary": "Bulk reject versions",
+                "requestBody": {
+                    "$ref": "#/components/requestBodies/models.VersionApprovalBulkRequest"
+                },
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/models.VersionApprovalBulkResponse"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/admin/version-approvals/pending-count": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Returns the number of versions awaiting approval across all mirrors. Used for the admin dashboard badge.",
+                "tags": [
+                    "Version Approvals"
+                ],
+                "summary": "Pending version approval count",
+                "responses": {
+                    "200": {
+                        "description": "count",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                        "type": "integer"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/admin/version-approvals/{id}/approve": {
+            "put": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Approves a single gated version, making it visible to Terraform clients.",
+                "tags": [
+                    "Version Approvals"
+                ],
+                "summary": "Approve a version",
+                "parameters": [
+                    {
+                        "description": "Version row UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "$ref": "#/components/requestBodies/models.VersionApprovalActionRequest"
+                },
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/admin.MessageResponse"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid id",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Version not found or not gated",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/admin/version-approvals/{id}/events": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Returns the chronological approval events (auto/manual) for a single version.",
+                "tags": [
+                    "Version Approvals"
+                ],
+                "summary": "Version approval audit trail",
+                "parameters": [
+                    {
+                        "description": "Version row UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/models.VersionApprovalEvent"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid id",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/admin/version-approvals/{id}/reject": {
+            "put": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Rejects a single gated version, permanently hiding it from Terraform clients.",
+                "tags": [
+                    "Version Approvals"
+                ],
+                "summary": "Reject a version",
+                "parameters": [
+                    {
+                        "description": "Version row UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "$ref": "#/components/requestBodies/models.VersionApprovalActionRequest"
+                },
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/admin.MessageResponse"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid id",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Version not found or not gated",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/advisories/active": {
             "get": {
                 "description": "Returns all CVE advisories that have at least one non-deprecated affected version.\nWithdrawn advisories and advisories where all affected versions have been deprecated are excluded.\nResults are cached for 5 minutes.",
@@ -15070,6 +15477,27 @@
                 "description": "Theme configuration",
                 "required": true
             },
+            "models.VersionApprovalBulkRequest": {
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "$ref": "#/components/schemas/models.VersionApprovalBulkRequest"
+                        }
+                    }
+                },
+                "description": "IDs and optional notes",
+                "required": true
+            },
+            "models.VersionApprovalActionRequest": {
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "$ref": "#/components/schemas/models.VersionApprovalActionRequest"
+                        }
+                    }
+                },
+                "description": "Optional notes"
+            },
             "models.StorageConfigInput": {
                 "content": {
                     "application/json": {
@@ -17028,6 +17456,10 @@
                     "upstream_registry_url"
                 ],
                 "properties": {
+                    "auto_approve_rules": {
+                        "description": "JSON: AutoApproveRules",
+                        "type": "string"
+                    },
                     "description": {
                         "type": "string"
                     },
@@ -17074,6 +17506,10 @@
                         "description": "Default: false",
                         "type": "boolean"
                     },
+                    "requires_approval": {
+                        "description": "Default: false",
+                        "type": "boolean"
+                    },
                     "sync_interval_hours": {
                         "description": "Default: 24",
                         "type": "integer",
@@ -17096,6 +17532,10 @@
                     "upstream_url"
                 ],
                 "properties": {
+                    "auto_approve_rules": {
+                        "description": "JSON: AutoApproveRules",
+                        "type": "string"
+                    },
                     "description": {
                         "type": "string"
                     },
@@ -17115,6 +17555,9 @@
                         "items": {
                             "type": "string"
                         }
+                    },
+                    "requires_approval": {
+                        "type": "boolean"
                     },
                     "stable_only": {
                         "type": "boolean"
@@ -17281,6 +17724,10 @@
             "models.MirrorConfiguration": {
                 "type": "object",
                 "properties": {
+                    "auto_approve_rules": {
+                        "description": "JSONB: AutoApproveRules; NULL = manual approval only",
+                        "type": "string"
+                    },
                     "created_at": {
                         "type": "string"
                     },
@@ -17329,6 +17776,10 @@
                         "type": "integer"
                     },
                     "pull_through_enabled": {
+                        "type": "boolean"
+                    },
+                    "requires_approval": {
+                        "description": "Gate newly synced versions behind admin approval",
                         "type": "boolean"
                     },
                     "sync_interval_hours": {
@@ -18174,6 +18625,10 @@
             "models.TerraformMirrorConfig": {
                 "type": "object",
                 "properties": {
+                    "auto_approve_rules": {
+                        "description": "JSONB: AutoApproveRules; NULL = manual approval only",
+                        "type": "string"
+                    },
                     "created_at": {
                         "type": "string"
                     },
@@ -18207,6 +18662,10 @@
                     "platform_filter": {
                         "description": "JSONB: []string \"os/arch\"",
                         "type": "string"
+                    },
+                    "requires_approval": {
+                        "description": "Gate newly synced versions behind admin approval",
+                        "type": "boolean"
                     },
                     "skip_gpg_verify": {
                         "type": "boolean"
@@ -18326,6 +18785,10 @@
             "models.TerraformVersion": {
                 "type": "object",
                 "properties": {
+                    "approval_status": {
+                        "description": "NULL|pending_approval|approved|rejected",
+                        "type": "string"
+                    },
                     "config_id": {
                         "type": "string"
                     },
@@ -18485,6 +18948,10 @@
             "models.UpdateMirrorConfigRequest": {
                 "type": "object",
                 "properties": {
+                    "auto_approve_rules": {
+                        "description": "JSON: AutoApproveRules",
+                        "type": "string"
+                    },
                     "description": {
                         "type": "string"
                     },
@@ -18526,6 +18993,9 @@
                     "pull_through_enabled": {
                         "type": "boolean"
                     },
+                    "requires_approval": {
+                        "type": "boolean"
+                    },
                     "sync_interval_hours": {
                         "type": "integer",
                         "minimum": 1
@@ -18542,6 +19012,10 @@
             "models.UpdateTerraformMirrorConfigRequest": {
                 "type": "object",
                 "properties": {
+                    "auto_approve_rules": {
+                        "description": "JSON: AutoApproveRules",
+                        "type": "string"
+                    },
                     "description": {
                         "type": "string"
                     },
@@ -18561,6 +19035,9 @@
                         "items": {
                             "type": "string"
                         }
+                    },
+                    "requires_approval": {
+                        "type": "boolean"
                     },
                     "stable_only": {
                         "type": "boolean"
@@ -18582,6 +19059,125 @@
                     },
                     "version_filter": {
                         "type": "string"
+                    }
+                }
+            },
+            "models.VersionApproval": {
+                "type": "object",
+                "properties": {
+                    "approval_status": {
+                        "type": "string"
+                    },
+                    "gpg_verified": {
+                        "type": "boolean"
+                    },
+                    "id": {
+                        "type": "string"
+                    },
+                    "mirror_config_id": {
+                        "type": "string"
+                    },
+                    "mirror_config_name": {
+                        "type": "string"
+                    },
+                    "provider_name": {
+                        "type": "string"
+                    },
+                    "provider_namespace": {
+                        "type": "string"
+                    },
+                    "shasum_verified": {
+                        "type": "boolean"
+                    },
+                    "synced_at": {
+                        "type": "string"
+                    },
+                    "type": {
+                        "description": "provider | terraform",
+                        "type": "string"
+                    },
+                    "version": {
+                        "type": "string"
+                    }
+                }
+            },
+            "models.VersionApprovalActionRequest": {
+                "type": "object",
+                "properties": {
+                    "notes": {
+                        "type": "string"
+                    }
+                }
+            },
+            "models.VersionApprovalBulkRequest": {
+                "type": "object",
+                "required": [
+                    "ids"
+                ],
+                "properties": {
+                    "ids": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "notes": {
+                        "type": "string"
+                    }
+                }
+            },
+            "models.VersionApprovalBulkResponse": {
+                "type": "object",
+                "properties": {
+                    "approved": {
+                        "type": "integer"
+                    },
+                    "failures": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "rejected": {
+                        "type": "integer"
+                    }
+                }
+            },
+            "models.VersionApprovalEvent": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string"
+                    },
+                    "auto_approve_rule": {
+                        "type": "string"
+                    },
+                    "created_at": {
+                        "type": "string"
+                    },
+                    "id": {
+                        "type": "string"
+                    },
+                    "notes": {
+                        "type": "string"
+                    },
+                    "performed_by_name": {
+                        "type": "string"
+                    }
+                }
+            },
+            "models.VersionApprovalListResponse": {
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/models.VersionApproval"
+                        }
+                    },
+                    "total": {
+                        "type": "integer"
                     }
                 }
             },

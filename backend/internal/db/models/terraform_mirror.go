@@ -26,6 +26,8 @@ type TerraformMirrorConfig struct {
 	GPGVerify         bool       `json:"gpg_verify" db:"gpg_verify"`
 	StableOnly        bool       `json:"stable_only" db:"stable_only"` // exclude pre-release versions when true
 	SyncIntervalHours int        `json:"sync_interval_hours" db:"sync_interval_hours"`
+	RequiresApproval  bool       `json:"requires_approval" db:"requires_approval"`            // Gate newly synced versions behind admin approval
+	AutoApproveRules  *string    `json:"auto_approve_rules,omitempty" db:"auto_approve_rules"` // JSONB: AutoApproveRules; NULL = manual approval only
 	LastSyncAt        *time.Time `json:"last_sync_at,omitempty" db:"last_sync_at"`
 	LastSyncStatus    *string    `json:"last_sync_status,omitempty" db:"last_sync_status"`
 	LastSyncError     *string    `json:"last_sync_error,omitempty" db:"last_sync_error"`
@@ -46,6 +48,7 @@ type TerraformVersion struct {
 	SyncStatus   string     `json:"sync_status" db:"sync_status"` // pending|syncing|synced|failed|partial
 	SyncError    *string    `json:"sync_error,omitempty" db:"sync_error"`
 	SyncedAt     *time.Time `json:"synced_at,omitempty" db:"synced_at"`
+	ApprovalStatus *string  `json:"approval_status,omitempty" db:"approval_status"` // NULL|pending_approval|approved|rejected
 	CreatedAt    time.Time  `json:"created_at" db:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at" db:"updated_at"`
 
@@ -110,6 +113,8 @@ type CreateTerraformMirrorConfigRequest struct {
 	StableOnly        *bool    `json:"stable_only,omitempty"`
 	Enabled           *bool    `json:"enabled,omitempty"`
 	SyncIntervalHours *int     `json:"sync_interval_hours,omitempty" binding:"omitempty,min=1"`
+	RequiresApproval  *bool    `json:"requires_approval,omitempty"`
+	AutoApproveRules  *string  `json:"auto_approve_rules,omitempty"` // JSON: AutoApproveRules
 }
 
 // UpdateTerraformMirrorConfigRequest is the request body for PUT /api/v1/admin/terraform-mirrors/:id.
@@ -124,6 +129,8 @@ type UpdateTerraformMirrorConfigRequest struct {
 	StableOnly        *bool    `json:"stable_only,omitempty"`
 	Enabled           *bool    `json:"enabled,omitempty"`
 	SyncIntervalHours *int     `json:"sync_interval_hours,omitempty" binding:"omitempty,min=1"`
+	RequiresApproval  *bool    `json:"requires_approval,omitempty"`
+	AutoApproveRules  *string  `json:"auto_approve_rules,omitempty"` // JSON: AutoApproveRules
 }
 
 // TerraformMirrorConfigListResponse wraps a list of mirror configs.

@@ -38,6 +38,13 @@ func NewHandler(repo *repositories.TerraformMirrorRepository, storageBackend sto
 	return &Handler{repo: repo, storageBackend: storageBackend, auditRepo: auditRepo}
 }
 
+// approvalVisible reports whether a version's approval_status permits exposing
+// it to clients. NULL (not gated) and "approved" are visible; pending and
+// rejected versions are hidden.
+func approvalVisible(status *string) bool {
+	return status == nil || *status == models.VersionApprovalStatusApproved
+}
+
 // resolveConfig looks up the mirror config by name from the :name path parameter.
 // Returns the config and true on success; writes an HTTP error response and returns false on failure.
 func (h *Handler) resolveConfig(c *gin.Context) (*models.TerraformMirrorConfig, bool) {
@@ -122,10 +129,18 @@ func (h *Handler) ListVersions(c *gin.Context) {
 		return
 	}
 
+	// Hide versions gated behind a pending/rejected approval.
+	visible := versions[:0]
+	for _, v := range versions {
+		if approvalVisible(v.ApprovalStatus) {
+			visible = append(visible, v)
+		}
+	}
+
 	c.Header("Cache-Control", "public, max-age=300") // 5-minute public cache
 	c.JSON(http.StatusOK, models.TerraformVersionListResponse{
-		Versions:   versions,
-		TotalCount: len(versions),
+		Versions:   visible,
+		TotalCount: len(visible),
 	})
 }
 
@@ -196,7 +211,7 @@ func (h *Handler) GetVersion(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to query version"})
 		return
 	}
-	if version == nil || version.SyncStatus == "pending" {
+	if version == nil || version.SyncStatus == "pending" || !approvalVisible(version.ApprovalStatus) {
 		c.JSON(http.StatusNotFound, gin.H{"errors": []string{"Version not found or not yet synced"}})
 		return
 	}
@@ -259,7 +274,7 @@ func (h *Handler) DownloadBinary(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to query version"})
 		return
 	}
-	if version == nil {
+	if version == nil || !approvalVisible(version.ApprovalStatus) {
 		c.JSON(http.StatusNotFound, gin.H{"errors": []string{"Version not found"}})
 		return
 	}

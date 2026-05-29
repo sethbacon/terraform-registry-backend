@@ -161,6 +161,72 @@ func TestListVersions_Success(t *testing.T) {
 	assert.EqualValues(t, 1, resp["total_count"])
 }
 
+// versionColsWithApproval extends versionCols with the approval_status column
+// so tests can drive the version approval gate.
+var versionColsWithApproval = append(append([]string{}, versionCols...), "approval_status")
+
+// TestListVersions_HidesPending verifies that versions still pending approval
+// (or rejected) are filtered out of the public version listing, while ungated
+// and approved versions pass through.
+func TestListVersions_HidesPending(t *testing.T) {
+	mock, r := newRouter(t, nil)
+
+	pending := "pending_approval"
+	approved := "approved"
+	rows := sqlmock.NewRows(versionColsWithApproval).
+		AddRow(sampleVersionID, sampleConfigID, "1.9.0", true, false, nil,
+			"synced", nil, time.Now(), time.Now(), time.Now(), nil, nil, nil). // ungated -> visible
+		AddRow(sampleVersionID, sampleConfigID, "1.10.0", false, false, nil,
+			"synced", nil, time.Now(), time.Now(), time.Now(), nil, nil, approved). // approved -> visible
+		AddRow(sampleVersionID, sampleConfigID, "1.11.0", false, false, nil,
+			"synced", nil, time.Now(), time.Now(), time.Now(), nil, nil, pending) // pending -> hidden
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_mirror_configs.*WHERE name`).
+		WithArgs(sampleConfigName).
+		WillReturnRows(sampleConfigRow())
+	mock.ExpectQuery(`SELECT.*FROM terraform_versions.*WHERE config_id`).
+		WithArgs(sampleConfigID).
+		WillReturnRows(rows)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/"+sampleConfigName+"/versions", nil))
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var resp struct {
+		Versions []struct {
+			Version string `json:"version"`
+		} `json:"versions"`
+		TotalCount int `json:"total_count"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, 2, resp.TotalCount)
+	for _, v := range resp.Versions {
+		assert.NotEqual(t, "1.11.0", v.Version, "pending version must be hidden")
+	}
+}
+
+// TestGetVersion_PendingHidden verifies a single pending version returns 404.
+func TestGetVersion_PendingHidden(t *testing.T) {
+	mock, r := newRouter(t, nil)
+
+	pending := "pending_approval"
+	row := sqlmock.NewRows(versionColsWithApproval).AddRow(
+		sampleVersionID, sampleConfigID, "1.11.0", false, false, nil,
+		"synced", nil, time.Now(), time.Now(), time.Now(), nil, nil, pending,
+	)
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_mirror_configs.*WHERE name`).
+		WithArgs(sampleConfigName).
+		WillReturnRows(sampleConfigRow())
+	mock.ExpectQuery(`SELECT.*FROM terraform_versions.*WHERE config_id.*version`).
+		WithArgs(sampleConfigID, "1.11.0").
+		WillReturnRows(row)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/"+sampleConfigName+"/versions/1.11.0", nil))
+	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
 func TestListVersions_MirrorNotFound(t *testing.T) {
 	mock, r := newRouter(t, nil)
 

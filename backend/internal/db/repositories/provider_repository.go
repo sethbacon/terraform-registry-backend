@@ -317,8 +317,49 @@ func (r *ProviderRepository) GetVersion(ctx context.Context, providerID, version
 	return v, nil
 }
 
-// ListVersions retrieves all versions for a provider, sorted by semver (highest first)
+// GetVersionApprovalStatus returns the approval_status of the mirrored tracking
+// row for a provider version, or nil when the version is not mirrored (locally
+// uploaded) and therefore not subject to the approval gate. Callers treat a nil
+// status — and "approved" — as visible; "pending_approval"/"rejected" are gated.
+func (r *ProviderRepository) GetVersionApprovalStatus(ctx context.Context, providerVersionID string) (*string, error) {
+	var status *string
+	err := r.db.QueryRowContext(ctx,
+		`SELECT approval_status FROM mirrored_provider_versions WHERE provider_version_id = $1`,
+		providerVersionID,
+	).Scan(&status)
+	if err == sql.ErrNoRows {
+		return nil, nil // not mirrored -> not gated
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get version approval status: %w", err)
+	}
+	return status, nil
+}
+
+// approvalExclusionClause hides mirrored versions that are pending or rejected
+// under the approval gate. Locally-uploaded versions (no mirrored row) and
+// approved/ungated versions remain visible.
+const approvalExclusionClause = `
+		AND NOT EXISTS (
+		  SELECT 1 FROM mirrored_provider_versions mpv
+		  WHERE mpv.provider_version_id = pv.id
+		    AND mpv.approval_status IN ('pending_approval', 'rejected')
+		)`
+
+// ListVersions retrieves all versions for a provider, sorted by semver (highest first).
+// It includes versions regardless of approval status — use ListVisibleVersions for
+// the public protocol view that hides pending/rejected mirrored versions.
 func (r *ProviderRepository) ListVersions(ctx context.Context, providerID string) ([]*models.ProviderVersion, error) {
+	return r.listVersions(ctx, providerID, false)
+}
+
+// ListVisibleVersions retrieves versions visible to Terraform clients, hiding
+// any mirrored version still pending approval or rejected.
+func (r *ProviderRepository) ListVisibleVersions(ctx context.Context, providerID string) ([]*models.ProviderVersion, error) {
+	return r.listVersions(ctx, providerID, true)
+}
+
+func (r *ProviderRepository) listVersions(ctx context.Context, providerID string, onlyVisible bool) ([]*models.ProviderVersion, error) {
 	query := `
 		SELECT pv.id, pv.provider_id, pv.version, pv.protocols, pv.gpg_public_key,
 		       pv.shasums_url, pv.shasums_signature_url,
@@ -329,6 +370,9 @@ func (r *ProviderRepository) ListVersions(ctx context.Context, providerID string
 		LEFT JOIN users u ON pv.published_by = u.id
 		WHERE pv.provider_id = $1
 	`
+	if onlyVisible {
+		query += approvalExclusionClause
+	}
 
 	rows, err := r.db.QueryContext(ctx, query, providerID)
 	if err != nil {
@@ -384,8 +428,11 @@ func (r *ProviderRepository) ListVersions(ctx context.Context, providerID string
 
 // ListVersionsPaginated retrieves versions for a provider with limit/offset pagination and total count.
 func (r *ProviderRepository) ListVersionsPaginated(ctx context.Context, providerID string, limit, offset int) ([]*models.ProviderVersion, int, error) {
+	// The public protocol view hides mirrored versions pending or rejected
+	// under the approval gate (see approvalExclusionClause).
+
 	// Get total count
-	countQuery := `SELECT COUNT(*) FROM provider_versions WHERE provider_id = $1`
+	countQuery := `SELECT COUNT(*) FROM provider_versions pv WHERE pv.provider_id = $1` + approvalExclusionClause
 	var total int
 	if err := r.db.QueryRowContext(ctx, countQuery, providerID).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("failed to count provider versions: %w", err)
@@ -399,7 +446,7 @@ func (r *ProviderRepository) ListVersionsPaginated(ctx context.Context, provider
 		       COALESCE(pv.deprecated, false), pv.deprecated_at, pv.deprecation_message, pv.created_at
 		FROM provider_versions pv
 		LEFT JOIN users u ON pv.published_by = u.id
-		WHERE pv.provider_id = $1
+		WHERE pv.provider_id = $1` + approvalExclusionClause + `
 		ORDER BY pv.created_at DESC
 		LIMIT $2 OFFSET $3
 	`

@@ -96,8 +96,8 @@ func IndexHandler(db *sql.DB, _ *config.Config, pullThrough *services.PullThroug
 			}
 		}
 
-		// Get all versions for the provider
-		versions, err := providerRepo.ListVersions(c.Request.Context(), provider.ID)
+		// Get versions visible to clients (hides versions pending/rejected approval)
+		versions, err := providerRepo.ListVisibleVersions(c.Request.Context(), provider.ID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to list provider versions",
