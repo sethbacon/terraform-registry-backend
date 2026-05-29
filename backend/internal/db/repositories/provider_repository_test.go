@@ -1177,6 +1177,37 @@ func TestListVersionsPaginated_Success(t *testing.T) {
 	}
 }
 
+func TestListVisibleVersions_ExcludesGated(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+
+	protocols := []byte(`["6.0"]`)
+	// The query must carry the approval-exclusion NOT EXISTS clause.
+	mock.ExpectQuery(`SELECT.*FROM provider_versions pv.*NOT EXISTS.*mirrored_provider_versions.*approval_status`).
+		WithArgs("prov-1").
+		WillReturnRows(sqlmock.NewRows(provVersionListCols).
+			AddRow("ver-1", "prov-1", "1.0.0", protocols, "", "", "",
+				nil, nil, nil, nil, false, nil, nil, time.Now()))
+
+	versions, err := repo.ListVisibleVersions(context.Background(), "prov-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(versions) != 1 || versions[0].Version != "1.0.0" {
+		t.Fatalf("unexpected visible versions: %+v", versions)
+	}
+}
+
+func TestListVisibleVersions_QueryError(t *testing.T) {
+	repo, mock := newProviderRepo(t)
+	mock.ExpectQuery(`SELECT.*FROM provider_versions pv`).
+		WithArgs("prov-1").
+		WillReturnError(errDB)
+
+	if _, err := repo.ListVisibleVersions(context.Background(), "prov-1"); err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
 func TestListVersionsPaginated_CountError(t *testing.T) {
 	repo, mock := newProviderRepo(t)
 

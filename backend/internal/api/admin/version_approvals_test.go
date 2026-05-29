@@ -73,6 +73,49 @@ func TestVAHandler_List(t *testing.T) {
 	}
 }
 
+func TestVAHandler_List_DBError(t *testing.T) {
+	r, mock := newVersionApprovalRouter(t)
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM`).WillReturnError(sqlmock.ErrCancelled)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/admin/version-approvals", nil))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", w.Code)
+	}
+}
+
+func TestVAHandler_PendingCount_DBError(t *testing.T) {
+	r, mock := newVersionApprovalRouter(t)
+	mock.ExpectQuery(`SELECT`).WillReturnError(sqlmock.ErrCancelled)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/admin/version-approvals/pending-count", nil))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", w.Code)
+	}
+}
+
+func TestVAHandler_Events_InvalidID(t *testing.T) {
+	r, _ := newVersionApprovalRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/admin/version-approvals/not-a-uuid/events", nil))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestVAHandler_Events_DBError(t *testing.T) {
+	r, mock := newVersionApprovalRouter(t)
+	id := uuid.New()
+	mock.ExpectQuery(`FROM version_approval_events`).WithArgs(id).WillReturnError(sqlmock.ErrCancelled)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/admin/version-approvals/"+id.String()+"/events", nil))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", w.Code)
+	}
+}
+
 func TestVAHandler_PendingCount(t *testing.T) {
 	r, mock := newVersionApprovalRouter(t)
 	mock.ExpectQuery(`SELECT`).
@@ -164,6 +207,31 @@ func TestVAHandler_BulkApprove(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	if resp.Approved != 2 || len(resp.Failures) != 0 {
 		t.Fatalf("unexpected bulk response: %+v", resp)
+	}
+}
+
+func TestVAHandler_BulkReject(t *testing.T) {
+	r, mock := newVersionApprovalRouter(t)
+	id := uuid.New()
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`UPDATE mirrored_provider_versions SET approval_status`).
+		WithArgs(id, "rejected").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO version_approval_events`).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	payload, _ := json.Marshal(map[string]interface{}{"ids": []string{id.String()}, "notes": "superseded"})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/admin/version-approvals/bulk-reject", bytes.NewReader(payload)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp models.VersionApprovalBulkResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.Rejected != 1 || len(resp.Failures) != 0 {
+		t.Fatalf("unexpected bulk reject response: %+v", resp)
 	}
 }
 

@@ -63,6 +63,25 @@ func TestVersionApprovalList_Success(t *testing.T) {
 	}
 }
 
+func TestVersionApprovalList_TypeFilters(t *testing.T) {
+	// Each type filter narrows the inner query to a single branch; exercise both
+	// plus the default UNION to cover innerQuery.
+	for _, typ := range []string{"provider", "terraform", ""} {
+		t.Run("type="+typ, func(t *testing.T) {
+			repo, mock := newVersionApprovalRepo(t)
+			mock.ExpectQuery(`SELECT COUNT\(\*\) FROM`).
+				WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+			mock.ExpectQuery(`SELECT \* FROM`).
+				WillReturnRows(sqlmock.NewRows(versionApprovalCols))
+
+			_, _, err := repo.List(context.Background(), VersionApprovalFilter{Type: typ, ConfigID: uuid.New().String()})
+			if err != nil {
+				t.Fatalf("unexpected error for type %q: %v", typ, err)
+			}
+		})
+	}
+}
+
 func TestVersionApprovalList_Empty(t *testing.T) {
 	repo, mock := newVersionApprovalRepo(t)
 
