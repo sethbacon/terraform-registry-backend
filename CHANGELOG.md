@@ -7,6 +7,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0](https://github.com/sethbacon/terraform-registry-backend/compare/v1.3.4...v1.4.0) (2026-05-29)
+
+
+### Features
+
+* **api-test:** report live-spec endpoint coverage ([#433](https://github.com/sethbacon/terraform-registry-backend/issues/433)) ([d47c1b3](https://github.com/sethbacon/terraform-registry-backend/commit/d47c1b3c4c1a0ede6a65477f2682a76109c69d7a))
+* **mirror:** version approval gate for provider and terraform mirrors ([#431](https://github.com/sethbacon/terraform-registry-backend/issues/431)) ([4223c4b](https://github.com/sethbacon/terraform-registry-backend/commit/4223c4b3f9f6a44789df0c2f97f331be05a3cc50))
+
 ## [1.3.4](https://github.com/sethbacon/terraform-registry-backend/compare/v1.3.3...v1.3.4) (2026-05-29)
 
 
