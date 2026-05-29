@@ -551,6 +551,18 @@ func (r *MirrorRepository) CreateMirroredProviderVersion(ctx context.Context, mp
 	return nil
 }
 
+// UpdateMirroredProviderVersionGPGStatus sets gpg_verified on a mirrored provider version.
+func (r *MirrorRepository) UpdateMirroredProviderVersionGPGStatus(ctx context.Context, id uuid.UUID, gpgVerified bool) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE mirrored_provider_versions SET gpg_verified = $2 WHERE id = $1`,
+		id, gpgVerified,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update mirrored provider version GPG status: %w", err)
+	}
+	return nil
+}
+
 // GetMirroredProviderVersion retrieves a specific mirrored version
 func (r *MirrorRepository) GetMirroredProviderVersion(ctx context.Context, mirroredProviderID uuid.UUID, version string) (*models.MirroredProviderVersion, error) {
 	query := `
