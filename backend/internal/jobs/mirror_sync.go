@@ -538,42 +538,49 @@ func (j *MirrorSyncJob) syncProvider(ctx context.Context, upstreamClient mirror.
 				}
 			}
 
-			// Backfill GPG key and re-verify signature if the stored key is empty or expired.
-			if existingVersion.GPGPublicKey == "" || !mirror.HasUsableGPGKey(existingVersion.GPGPublicKey) {
-				if len(version.Platforms) > 0 {
-					p0 := version.Platforms[0]
-					if pkgInfo, pkgErr := upstreamClient.GetProviderPackage(ctx, namespace, providerName, version.Version, p0.OS, p0.Arch); pkgErr == nil {
-						if len(pkgInfo.SigningKeys.GPGPublicKeys) > 0 {
-							resolved := mirror.ResolveExpiredGPGKey(pkgInfo.SigningKeys.GPGPublicKeys[0].ASCIIArmor)
-							if resolved != "" {
-								if err := j.providerRepo.UpdateVersionGPGKey(ctx, existingVersion.ID, resolved); err != nil {
-									log.Printf("Warning: failed to backfill GPG key for %s/%s@%s: %v", namespace, providerName, version.Version, err)
-								} else {
-									log.Printf("Backfilled GPG key for %s/%s@%s", namespace, providerName, version.Version)
-								}
+			// Backfill GPG key if the stored value is empty or expired.
+			needsGPGKeyBackfill := existingVersion.GPGPublicKey == "" || !mirror.HasUsableGPGKey(existingVersion.GPGPublicKey)
+
+			// Check if gpg_verified needs backfilling.
+			needsGPGVerifyBackfill := false
+			var trackingRecord *models.MirroredProviderVersion
+			if mirroredProvider != nil {
+				versionUUID, _ := uuid.Parse(existingVersion.ID)
+				if t, tErr := j.mirrorRepo.GetMirroredProviderVersionByVersionID(ctx, versionUUID); tErr == nil && t != nil && !t.GPGVerified {
+					needsGPGVerifyBackfill = true
+					trackingRecord = t
+				}
+			}
+
+			if (needsGPGKeyBackfill || needsGPGVerifyBackfill) && len(version.Platforms) > 0 {
+				p0 := version.Platforms[0]
+				if pkgInfo, pkgErr := upstreamClient.GetProviderPackage(ctx, namespace, providerName, version.Version, p0.OS, p0.Arch); pkgErr == nil {
+					if needsGPGKeyBackfill && len(pkgInfo.SigningKeys.GPGPublicKeys) > 0 {
+						resolved := mirror.ResolveExpiredGPGKey(pkgInfo.SigningKeys.GPGPublicKeys[0].ASCIIArmor)
+						if resolved != "" {
+							if err := j.providerRepo.UpdateVersionGPGKey(ctx, existingVersion.ID, resolved); err != nil {
+								log.Printf("Warning: failed to backfill GPG key for %s/%s@%s: %v", namespace, providerName, version.Version, err)
+							} else {
+								log.Printf("Backfilled GPG key for %s/%s@%s", namespace, providerName, version.Version)
 							}
 						}
+					}
 
-						// Re-verify GPG signature and update the tracking record.
-						if mirroredProvider != nil {
-							versionUUID, _ := uuid.Parse(existingVersion.ID)
-							if tracking, tErr := j.mirrorRepo.GetMirroredProviderVersionByVersionID(ctx, versionUUID); tErr == nil && tracking != nil && !tracking.GPGVerified {
-								shasumContent, _ := upstreamClient.DownloadFile(ctx, pkgInfo.SHASumsURL)
-								sigContent, _ := upstreamClient.DownloadFile(ctx, pkgInfo.SHASumsSignatureURL)
-								if len(shasumContent) > 0 && len(sigContent) > 0 {
-									var resolvedKeys []string
-									for _, gpgKey := range pkgInfo.SigningKeys.GPGPublicKeys {
-										if gpgKey.ASCIIArmor != "" {
-											resolvedKeys = append(resolvedKeys, mirror.ResolveExpiredGPGKey(gpgKey.ASCIIArmor))
-										}
-									}
-									if result := verifyGPGSignature(shasumContent, sigContent, resolvedKeys); result.Verified {
-										if err := j.mirrorRepo.UpdateMirroredProviderVersionGPGStatus(ctx, tracking.ID, true); err != nil {
-											log.Printf("Warning: failed to update gpg_verified for %s/%s@%s: %v", namespace, providerName, version.Version, err)
-										} else {
-											log.Printf("Backfilled gpg_verified for %s/%s@%s", namespace, providerName, version.Version)
-										}
-									}
+					if needsGPGVerifyBackfill && trackingRecord != nil {
+						shasumContent, _ := upstreamClient.DownloadFile(ctx, pkgInfo.SHASumsURL)
+						sigContent, _ := upstreamClient.DownloadFile(ctx, pkgInfo.SHASumsSignatureURL)
+						if len(shasumContent) > 0 && len(sigContent) > 0 {
+							var resolvedKeys []string
+							for _, gpgKey := range pkgInfo.SigningKeys.GPGPublicKeys {
+								if gpgKey.ASCIIArmor != "" {
+									resolvedKeys = append(resolvedKeys, mirror.ResolveExpiredGPGKey(gpgKey.ASCIIArmor))
+								}
+							}
+							if result := verifyGPGSignature(shasumContent, sigContent, resolvedKeys); result.Verified {
+								if err := j.mirrorRepo.UpdateMirroredProviderVersionGPGStatus(ctx, trackingRecord.ID, true); err != nil {
+									log.Printf("Warning: failed to update gpg_verified for %s/%s@%s: %v", namespace, providerName, version.Version, err)
+								} else {
+									log.Printf("Backfilled gpg_verified for %s/%s@%s", namespace, providerName, version.Version)
 								}
 							}
 						}
