@@ -514,6 +514,18 @@ func (r *ProviderRepository) UpdateVersionSignatureStorage(ctx context.Context, 
 	return nil
 }
 
+// UpdateVersionGPGKey sets the gpg_public_key for an existing provider version.
+func (r *ProviderRepository) UpdateVersionGPGKey(ctx context.Context, versionID string, gpgKey string) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE provider_versions SET gpg_public_key = $2 WHERE id = $1`,
+		versionID, gpgKey,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update provider version GPG key: %w", err)
+	}
+	return nil
+}
+
 // UndeprecateVersion removes the deprecated status from a provider version
 func (r *ProviderRepository) UndeprecateVersion(ctx context.Context, versionID string) error {
 	query := `
