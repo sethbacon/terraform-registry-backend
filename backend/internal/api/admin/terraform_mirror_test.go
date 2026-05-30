@@ -570,6 +570,25 @@ func TestTMUpdateConfig_Success(t *testing.T) {
 	}
 }
 
+func TestTMUpdateConfig_RequiresApprovalPersisted(t *testing.T) {
+	mock, r := newTerraformMirrorRouter(t)
+	mock.ExpectQuery("SELECT.*FROM terraform_mirror_configs WHERE id").
+		WillReturnRows(sampleTMCRow())
+	mock.ExpectExec("UPDATE terraform_mirror_configs SET").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/terraform-mirrors/"+knownUUID,
+		jsonBody(map[string]interface{}{"requires_approval": true})))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	if got := getJSON(w)["requires_approval"]; got != true {
+		t.Errorf("requires_approval = %v, want true (toggle dropped by handler)", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // GetStatus success test
 // ---------------------------------------------------------------------------

@@ -95,6 +95,11 @@ func (h *TerraformMirrorHandler) CreateConfig(c *gin.Context) {
 		return
 	}
 
+	requiresApproval := false
+	if req.RequiresApproval != nil {
+		requiresApproval = *req.RequiresApproval
+	}
+
 	cfg := &models.TerraformMirrorConfig{
 		Name:              req.Name,
 		Description:       req.Description,
@@ -106,6 +111,8 @@ func (h *TerraformMirrorHandler) CreateConfig(c *gin.Context) {
 		GPGVerify:         gpgVerify,
 		StableOnly:        stableOnly,
 		SyncIntervalHours: syncIntervalHours,
+		RequiresApproval:  requiresApproval,
+		AutoApproveRules:  req.AutoApproveRules,
 	}
 
 	if createErr := h.repo.Create(c.Request.Context(), cfg); createErr != nil {
@@ -305,6 +312,12 @@ func (h *TerraformMirrorHandler) UpdateConfig(c *gin.Context) {
 	}
 	if req.VersionFilter != nil {
 		cfg.VersionFilter = req.VersionFilter
+	}
+	if req.RequiresApproval != nil {
+		cfg.RequiresApproval = *req.RequiresApproval
+	}
+	if req.AutoApproveRules != nil {
+		cfg.AutoApproveRules = req.AutoApproveRules
 	}
 
 	if updateErr := h.repo.Update(c.Request.Context(), cfg); updateErr != nil {
