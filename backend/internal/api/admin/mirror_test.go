@@ -170,6 +170,31 @@ func TestMirrorCreate_Success(t *testing.T) {
 	}
 }
 
+func TestMirrorCreate_RequiresApprovalPersisted(t *testing.T) {
+	mock, r := newMirrorRouter(t)
+	mock.ExpectQuery("SELECT.*FROM mirror_configurations WHERE name").
+		WillReturnRows(sqlmock.NewRows(mirrorCfgCols))
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}))
+	mock.ExpectExec("INSERT INTO mirror_configurations").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/mirrors",
+		jsonBody(map[string]interface{}{
+			"name":                  "gated-mirror",
+			"upstream_registry_url": "https://registry.terraform.io",
+			"requires_approval":     true,
+		})))
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+	}
+	if got := getJSON(w)["requires_approval"]; got != true {
+		t.Errorf("requires_approval = %v, want true (toggle dropped by handler)", got)
+	}
+}
+
 func TestMirrorCreate_InsertDBError(t *testing.T) {
 	mock, r := newMirrorRouter(t)
 	mock.ExpectQuery("SELECT.*FROM mirror_configurations WHERE name").
@@ -325,6 +350,25 @@ func TestMirrorUpdate_Success(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestMirrorUpdate_RequiresApprovalPersisted(t *testing.T) {
+	mock, r := newMirrorRouter(t)
+	mock.ExpectQuery("SELECT.*FROM mirror_configurations WHERE id").
+		WillReturnRows(sampleMirrorCfgRow())
+	mock.ExpectExec("UPDATE mirror_configurations SET name").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/mirrors/"+knownUUID,
+		jsonBody(map[string]interface{}{"requires_approval": true})))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	if got := getJSON(w)["requires_approval"]; got != true {
+		t.Errorf("requires_approval = %v, want true (toggle dropped by handler)", got)
 	}
 }
 

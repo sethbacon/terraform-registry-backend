@@ -161,6 +161,11 @@ func (h *MirrorHandler) CreateMirrorConfig(c *gin.Context) {
 		pullThroughTTL = *req.PullThroughCacheTTLHours
 	}
 
+	requiresApproval := false
+	if req.RequiresApproval != nil {
+		requiresApproval = *req.RequiresApproval
+	}
+
 	config := &models.MirrorConfiguration{
 		ID:                       uuid.New(),
 		Name:                     req.Name,
@@ -173,6 +178,8 @@ func (h *MirrorHandler) CreateMirrorConfig(c *gin.Context) {
 		PlatformFilter:           platformFilter,
 		Enabled:                  enabled,
 		SyncIntervalHours:        syncInterval,
+		RequiresApproval:         requiresApproval,
+		AutoApproveRules:         req.AutoApproveRules,
 		PullThroughEnabled:       pullThroughEnabled,
 		PullThroughCacheTTLHours: pullThroughTTL,
 		CreatedAt:                time.Now(),
@@ -396,6 +403,14 @@ func (h *MirrorHandler) UpdateMirrorConfig(c *gin.Context) {
 
 	if req.PullThroughCacheTTLHours != nil {
 		config.PullThroughCacheTTLHours = *req.PullThroughCacheTTLHours
+	}
+
+	if req.RequiresApproval != nil {
+		config.RequiresApproval = *req.RequiresApproval
+	}
+
+	if req.AutoApproveRules != nil {
+		config.AutoApproveRules = req.AutoApproveRules
 	}
 
 	if err := h.mirrorRepo.Update(c.Request.Context(), config); err != nil {
