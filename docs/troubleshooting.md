@@ -521,6 +521,56 @@ rate(mirror_sync_errors_total[1h])
 histogram_quantile(0.95, rate(mirror_sync_duration_seconds_bucket[1h]))
 ```
 
+### Mirrored Version Synced but Not Visible to Clients
+
+A version shows as synced in the admin UI, but `terraform init` can't find it, it
+is missing from the version listing / network mirror `index.json`, or `latest`
+won't advance to it.
+
+This is expected when the mirror has **Require approval for new versions**
+enabled: newly synced versions enter `pending_approval` and are hidden from all
+client-facing endpoints (listing, `index.json`, and the provider/Terraform
+binary download endpoints — a direct download of a pending or rejected version
+returns 404) until an administrator approves them. See
+[Version Approval](version-approval.md) for the full feature behaviour.
+
+**Diagnose:**
+
+- Admin → **Version Approvals**, or list the gated versions directly:
+
+  ```bash
+  curl -H "Authorization: Bearer $API_KEY" \
+    "$REGISTRY/api/v1/admin/version-approvals?status=pending_approval"
+  ```
+
+- The dashboard badge count comes from `GET /api/v1/admin/version-approvals/pending-count`.
+
+**Fix:**
+
+- Approve the version (Admin → Version Approvals → **Approve**, or
+  `PUT /api/v1/admin/version-approvals/{id}/approve`). Approving a Terraform
+  binary version also recomputes `latest`.
+- Or disable **Require approval** on the mirror config — note this only affects
+  *future* syncs; versions already `pending_approval` stay pending until acted on.
+- `rejected` versions are hidden permanently by design; re-approve them via the
+  same endpoint if that was a mistake.
+
+### Versions Stay Pending Despite Auto-Approve Rules
+
+If a mirror has `auto_approve_rules` configured but versions still land in
+`pending_approval`:
+
+- Rules are evaluated at **sync time**. `delay_hours` cannot match on first sight
+  (the version's age is ~0); it only auto-approves on a later sync once the
+  version has aged past the threshold.
+- For **Terraform binary** mirrors, GPG verification happens per-platform *after*
+  version discovery, so the `gpg_verified` rule does not fire at discovery time —
+  use `patch_only`, `semver_constraint`, or `delay_hours`, or approve manually.
+- With `"mode": "all"`, every rule must match; a single non-matching rule (or an
+  unknown rule type, which fails closed) leaves the version pending.
+- Invalid `auto_approve_rules` JSON is treated as "no rules" and the version is
+  held for manual review.
+
 ---
 
 ## Frontend Issues
