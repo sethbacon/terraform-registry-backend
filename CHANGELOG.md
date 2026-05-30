@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.2](https://github.com/sethbacon/terraform-registry-backend/compare/v1.4.1...v1.4.2) (2026-05-30)
+
+
+### Bug Fixes
+
+* **mirror:** persist requires_approval and auto_approve_rules from API ([#436](https://github.com/sethbacon/terraform-registry-backend/issues/436)) ([3ac4d4d](https://github.com/sethbacon/terraform-registry-backend/commit/3ac4d4df42bb1ef375efbb418540761c4303fc2b))
+
 ## [1.4.1](https://github.com/sethbacon/terraform-registry-backend/compare/v1.4.0...v1.4.1) (2026-05-30)
 
 
