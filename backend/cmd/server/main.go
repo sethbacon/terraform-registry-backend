@@ -56,6 +56,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/sethbacon/terraform-suite-identity/identity"
 	"github.com/terraform-registry/terraform-registry/internal/api"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
@@ -158,6 +159,17 @@ func serve(cfg *config.Config) error {
 
 	// Begin exporting DB pool statistics to Prometheus.
 	telemetry.StartDBStatsCollector(database)
+
+	// Run identity schema migrations first when enabled (shared identity
+	// component, ADR 002). Off by default so production behaviour is unchanged
+	// until explicitly enabled; mirrors the TFR_SECURITY_TLS_ENABLED env flag.
+	if identityMigrationsEnabled() {
+		log.Println("Running identity schema migrations...")
+		if err := identity.RunMigrations(database, "up"); err != nil {
+			return fmt.Errorf("failed to run identity migrations: %w", err)
+		}
+		log.Println("Identity schema migrations completed successfully")
+	}
 
 	// Run migrations automatically on startup
 	log.Println("Running database migrations...")
@@ -391,6 +403,13 @@ func handleSetupToken(repo *repositories.OIDCConfigRepository) error {
 	return nil
 }
 
+// identityMigrationsEnabled reports whether the shared identity schema migrations
+// (terraform-suite-identity, ADR 002) should run. Off by default; enable with
+// TFR_IDENTITY_MIGRATIONS_ENABLED=true. Additive and reversible.
+func identityMigrationsEnabled() bool {
+	return os.Getenv("TFR_IDENTITY_MIGRATIONS_ENABLED") == "true"
+}
+
 func runMigrations(cfg *config.Config, direction string) error {
 	// Connect to database
 	database, err := db.Connect(cfg.Database.GetDSN(), cfg.Database.MaxConnections, cfg.Database.MinIdleConnections)
@@ -400,6 +419,13 @@ func runMigrations(cfg *config.Config, direction string) error {
 	defer database.Close()
 
 	log.Printf("Running migrations: %s", direction) // #nosec G706 -- logged value is application-internal (config string, integer, or application-constructed path); not raw user-controlled request input
+
+	// Apply identity schema migrations first when enabled (ADR 002).
+	if identityMigrationsEnabled() {
+		if err := identity.RunMigrations(database, direction); err != nil {
+			return fmt.Errorf("identity migration failed: %w", err)
+		}
+	}
 
 	// Run migrations
 	if err := db.RunMigrations(database, direction); err != nil {
