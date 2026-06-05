@@ -28,18 +28,16 @@ func makeTestIDToken(claimsJSON string) *extoidc.IDToken {
 // newMockOIDCProvider constructs an OIDCProvider directly without network calls,
 // pointing OAuth2 endpoints at an unreachable URL so error paths work correctly.
 func newMockOIDCProvider() *OIDCProvider {
-	return &OIDCProvider{
-		config: &oauth2.Config{
-			ClientID:     "test-client",
-			ClientSecret: "test-secret",
-			RedirectURL:  "http://localhost/callback",
-			Scopes:       []string{"openid"},
-			Endpoint: oauth2.Endpoint{
-				AuthURL:  "https://provider.example.com/auth",
-				TokenURL: "http://127.0.0.1:1/token", // port 1: always refused
-			},
+	return NewOIDCProviderForTest(&oauth2.Config{
+		ClientID:     "test-client",
+		ClientSecret: "test-secret",
+		RedirectURL:  "http://localhost/callback",
+		Scopes:       []string{"openid"},
+		Endpoint: oauth2.Endpoint{
+			AuthURL:  "https://provider.example.com/auth",
+			TokenURL: "http://127.0.0.1:1/token", // port 1: always refused
 		},
-	}
+	})
 }
 
 func TestNewOIDCProvider_Disabled(t *testing.T) {
