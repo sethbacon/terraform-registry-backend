@@ -140,7 +140,11 @@ var AppCryptoMode = "standard"
 
 // NewRouter creates and configures the Gin router.
 // coverage:skip:integration-only — wires all repos, jobs, and services together; tested via E2E
-func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices) {
+// identityDB backs identity data access (users, organizations, API keys, OIDC
+// config, audit logs, role templates, revoked tokens). It equals db unless the
+// identity-schema cutover is enabled, in which case it targets the shared
+// identity schema (feature tables fall back to public via search_path).
+func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *BackgroundServices) {
 	router := gin.New()
 
 	// Initialize storage backend
@@ -150,21 +154,25 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	}
 	log.Printf("Initialized storage backend: %s", cfg.Storage.DefaultBackend)
 
-	// Initialize repositories
-	userRepo := repositories.NewUserRepository(db)
-	apiKeyRepo := repositories.NewAPIKeyRepository(db)
+	// Identity repositories use identityDB so they follow the configured identity
+	// schema; feature repositories below stay on db (public schema).
+	userRepo := repositories.NewUserRepository(identityDB)
+	apiKeyRepo := repositories.NewAPIKeyRepository(identityDB)
 	moduleRepo := repositories.NewModuleRepository(db)
 	providerRepo := repositories.NewProviderRepository(db)
-	auditRepo := repositories.NewAuditRepository(db)
-	orgRepo := repositories.NewOrganizationRepository(db)
-	tokenRepo := repositories.NewTokenRepository(db)
+	auditRepo := repositories.NewAuditRepository(identityDB)
+	orgRepo := repositories.NewOrganizationRepository(identityDB)
+	tokenRepo := repositories.NewTokenRepository(identityDB)
 
-	// Wrap *sql.DB with sqlx for SCM and mirror repositories
+	// Wrap *sql.DB with sqlx for SCM and mirror repositories (public) and identity
+	// data access (the identity schema when the cutover is enabled).
 	sqlxDB := sqlx.NewDb(db, "postgres")
+	identitySqlxDB := sqlx.NewDb(identityDB, "postgres")
 	scmRepo := repositories.NewSCMRepository(sqlxDB)
 	mirrorRepo := repositories.NewMirrorRepository(sqlxDB)
 	storageConfigRepo := repositories.NewStorageConfigRepository(sqlxDB)
-	oidcConfigRepo := repositories.NewOIDCConfigRepository(sqlxDB)
+	// OIDC-config CRUD follows the identity schema; setup-wizard state stays public.
+	oidcConfigRepo := repositories.NewOIDCConfigRepositoryWithIdentity(sqlxDB, identitySqlxDB)
 
 	providerDocsRepo := repositories.NewProviderDocsRepository(db)
 	scanRepo := repositories.NewModuleScanRepository(db)
@@ -544,7 +552,7 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 	}
 
 	var authHandlers *admin.AuthHandlers
-	authHandlers, err = admin.NewAuthHandlers(cfg, db, oidcConfigRepo, tokenRepo, oidcStateStore)
+	authHandlers, err = admin.NewAuthHandlers(cfg, identityDB, oidcConfigRepo, tokenRepo, oidcStateStore)
 	if err != nil {
 		log.Fatalf("Failed to initialize auth handlers: %v", err)
 	}
@@ -576,10 +584,14 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 		}
 	}
 
-	apiKeyHandlers := admin.NewAPIKeyHandlers(cfg, db)
-	userHandlers := admin.NewUserHandlers(cfg, db)
-	orgHandlers := admin.NewOrganizationHandlers(cfg, db)
-	statsHandlers := admin.NewStatsHandler(sqlxDB, &cfg.Scanning)
+	// Identity-backed admin handlers use the identity connection (their internal
+	// identity repos / raw identity SQL then follow the identity schema). The org
+	// handler's namespace cascade and the stats handler's feature-table counts
+	// fall back to public via the identity connection's search_path.
+	apiKeyHandlers := admin.NewAPIKeyHandlers(cfg, identityDB)
+	userHandlers := admin.NewUserHandlers(cfg, identityDB)
+	orgHandlers := admin.NewOrganizationHandlers(cfg, identityDB)
+	statsHandlers := admin.NewStatsHandler(identitySqlxDB, &cfg.Scanning)
 	mirrorHandlers := admin.NewMirrorHandler(mirrorRepo, orgRepo, providerRepo)
 	mirrorHandlers.SetSyncJob(mirrorSyncJob) // Connect sync job for manual triggers
 
@@ -595,14 +607,15 @@ func NewRouter(cfg *config.Config, db *sql.DB) (*gin.Engine, *BackgroundServices
 
 	// GDPR data-subject handlers (Article 15/17/20). Registered under
 	// /api/v1/admin/users/:id/{export,erase} below.
-	userSvc := services.NewUserService(db)
+	userSvc := services.NewUserService(identityDB)
 	gdprHandlers := admin.NewGDPRHandlers(userSvc)
 
-	rbacRepo := repositories.NewRBACRepository(sqlxDB)
+	// Role-template CRUD follows the identity schema; mirror methods stay public.
+	rbacRepo := repositories.NewRBACRepositoryWithIdentity(sqlxDB, identitySqlxDB)
 	rbacHandlers := admin.NewRBACHandlers(rbacRepo)
 
 	// Initialize audit log handlers
-	auditLogHandlers := admin.NewAuditLogHandlers(db)
+	auditLogHandlers := admin.NewAuditLogHandlers(identityDB)
 
 	// Initialize SCM publisher service (needed by scmLinkingHandler)
 	scmPublisher := services.NewSCMPublisher(scmRepo, moduleRepo, storageBackend, tokenCipher).

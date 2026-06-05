@@ -1087,6 +1087,14 @@ func (c *DatabaseConfig) GetDSN() string {
 	)
 }
 
+// GetDSNWithSearchPath returns the DSN with the connection's search_path set, so
+// unqualified table names resolve against the given schemas in order. Used to
+// route identity data access at the dedicated identity schema while feature
+// tables fall back to public.
+func (c *DatabaseConfig) GetDSNWithSearchPath(searchPath string) string {
+	return c.GetDSN() + fmt.Sprintf(" options='-c search_path=%s'", searchPath)
+}
+
 // GetAddress returns the server address in host:port format
 func (c *ServerConfig) GetAddress() string {
 	return fmt.Sprintf("%s:%d", c.Host, c.Port)
