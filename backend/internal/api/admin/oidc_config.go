@@ -44,7 +44,7 @@ func (h *OIDCConfigAdminHandlers) GetActiveOIDCConfig(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, cfg.ToResponse())
+	c.JSON(http.StatusOK, models.OIDCConfigToResponse(cfg))
 }
 
 // @Summary      Update OIDC group mapping settings
@@ -79,7 +79,7 @@ func (h *OIDCConfigAdminHandlers) UpdateGroupMapping(c *gin.Context) {
 		return
 	}
 
-	if err := cfg.SetGroupMappingConfig(input.GroupClaimName, input.GroupMappings, input.DefaultRole); err != nil {
+	if err := cfg.SetGroupMappingConfig(input.GroupClaimName, models.ToIdentityGroupMappings(input.GroupMappings), input.DefaultRole); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to encode group mapping"})
 		return
 	}
@@ -96,5 +96,5 @@ func (h *OIDCConfigAdminHandlers) UpdateGroupMapping(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, updated.ToResponse())
+	c.JSON(http.StatusOK, models.OIDCConfigToResponse(updated))
 }

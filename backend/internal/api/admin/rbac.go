@@ -33,7 +33,7 @@ func NewRBACHandlers(rbacRepo *repositories.RBACRepository) *RBACHandlers {
 // @Tags         RBAC
 // @Security     Bearer
 // @Produce      json
-// @Success      200  {array}   models.RoleTemplate
+// @Success      200  {array}   models.RoleTemplateView
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/admin/role-templates [get]
@@ -55,7 +55,7 @@ func (h *RBACHandlers) ListRoleTemplates(c *gin.Context) {
 // @Security     Bearer
 // @Produce      json
 // @Param        id  path  string  true  "Role template ID (UUID)"
-// @Success      200  {object}  models.RoleTemplate
+// @Success      200  {object}  models.RoleTemplateView
 // @Failure      400  {object}  map[string]interface{}  "Invalid role template ID"
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
 // @Failure      404  {object}  map[string]interface{}  "Role template not found"
@@ -100,7 +100,7 @@ type CreateRoleTemplateRequest struct {
 // @Accept       json
 // @Produce      json
 // @Param        body  body  CreateRoleTemplateRequest  true  "Role template"
-// @Success      201  {object}  models.RoleTemplate
+// @Success      201  {object}  models.RoleTemplateView
 // @Failure      400  {object}  map[string]interface{}  "Invalid request"
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
 // @Failure      409  {object}  map[string]interface{}  "Role template with this name already exists"
@@ -153,7 +153,7 @@ func (h *RBACHandlers) CreateRoleTemplate(c *gin.Context) {
 // @Produce      json
 // @Param        id    path  string                    true  "Role template ID (UUID)"
 // @Param        body  body  CreateRoleTemplateRequest  true  "Updated role template"
-// @Success      200  {object}  models.RoleTemplate
+// @Success      200  {object}  models.RoleTemplateView
 // @Failure      400  {object}  map[string]interface{}  "Invalid request or ID"
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
 // @Failure      403  {object}  map[string]interface{}  "Cannot modify system role templates"

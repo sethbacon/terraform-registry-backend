@@ -112,6 +112,129 @@ func TestSetSetupCompleted_Error(t *testing.T) {
 	}
 }
 
+func TestHasPendingFeatureSetup(t *testing.T) {
+	repo, mock := newOIDCConfigRepo(t)
+	mock.ExpectQuery("SELECT setup_completed AND").
+		WillReturnRows(sqlmock.NewRows([]string{"pending"}).AddRow(true))
+	pending, err := repo.HasPendingFeatureSetup(context.Background())
+	if err != nil || !pending {
+		t.Fatalf("HasPendingFeatureSetup = (%v, %v), want (true, nil)", pending, err)
+	}
+}
+
+func TestGetScanningConfigured(t *testing.T) {
+	repo, mock := newOIDCConfigRepo(t)
+	mock.ExpectQuery("SELECT scanning_configured FROM system_settings").
+		WillReturnRows(sqlmock.NewRows([]string{"scanning_configured"}).AddRow(true))
+	got, err := repo.GetScanningConfigured(context.Background())
+	if err != nil || !got {
+		t.Fatalf("GetScanningConfigured = (%v, %v), want (true, nil)", got, err)
+	}
+}
+
+func TestSetScanningConfig(t *testing.T) {
+	repo, mock := newOIDCConfigRepo(t)
+	mock.ExpectExec("UPDATE system_settings SET").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	if err := repo.SetScanningConfig(context.Background(), []byte(`{"enabled":true}`)); err != nil {
+		t.Fatalf("SetScanningConfig: %v", err)
+	}
+}
+
+func TestGetScanningConfig(t *testing.T) {
+	repo, mock := newOIDCConfigRepo(t)
+	mock.ExpectQuery("SELECT scanning_config FROM system_settings").
+		WillReturnRows(sqlmock.NewRows([]string{"scanning_config"}).AddRow([]byte(`{"enabled":true}`)))
+	got, err := repo.GetScanningConfig(context.Background())
+	if err != nil || string(got) != `{"enabled":true}` {
+		t.Fatalf("GetScanningConfig = (%s, %v)", got, err)
+	}
+}
+
+func TestSetLDAPConfig(t *testing.T) {
+	repo, mock := newOIDCConfigRepo(t)
+	mock.ExpectExec("UPDATE system_settings SET").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	if err := repo.SetLDAPConfig(context.Background(), []byte(`{"host":"ldap"}`)); err != nil {
+		t.Fatalf("SetLDAPConfig: %v", err)
+	}
+}
+
+func TestGetLDAPConfig(t *testing.T) {
+	repo, mock := newOIDCConfigRepo(t)
+	mock.ExpectQuery("SELECT ldap_config FROM system_settings").
+		WillReturnRows(sqlmock.NewRows([]string{"ldap_config"}).AddRow([]byte(`{"host":"ldap"}`)))
+	got, err := repo.GetLDAPConfig(context.Background())
+	if err != nil || string(got) != `{"host":"ldap"}` {
+		t.Fatalf("GetLDAPConfig = (%s, %v)", got, err)
+	}
+}
+
+func TestSetAuthMethod(t *testing.T) {
+	repo, mock := newOIDCConfigRepo(t)
+	mock.ExpectExec("UPDATE system_settings SET auth_method").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	if err := repo.SetAuthMethod(context.Background(), "ldap"); err != nil {
+		t.Fatalf("SetAuthMethod: %v", err)
+	}
+}
+
+func TestGetScanningConfig_NoRows(t *testing.T) {
+	repo, mock := newOIDCConfigRepo(t)
+	mock.ExpectQuery("SELECT scanning_config FROM system_settings").
+		WillReturnError(sql.ErrNoRows)
+	got, err := repo.GetScanningConfig(context.Background())
+	if err != nil || got != nil {
+		t.Fatalf("GetScanningConfig no-rows = (%v, %v), want (nil, nil)", got, err)
+	}
+}
+
+func TestGetScanningConfig_Error(t *testing.T) {
+	repo, mock := newOIDCConfigRepo(t)
+	mock.ExpectQuery("SELECT scanning_config FROM system_settings").
+		WillReturnError(errOIDCDB)
+	if _, err := repo.GetScanningConfig(context.Background()); err == nil {
+		t.Error("expected error")
+	}
+}
+
+func TestGetLDAPConfig_NoRows(t *testing.T) {
+	repo, mock := newOIDCConfigRepo(t)
+	mock.ExpectQuery("SELECT ldap_config FROM system_settings").
+		WillReturnError(sql.ErrNoRows)
+	got, err := repo.GetLDAPConfig(context.Background())
+	if err != nil || got != nil {
+		t.Fatalf("GetLDAPConfig no-rows = (%v, %v), want (nil, nil)", got, err)
+	}
+}
+
+func TestGetLDAPConfig_Error(t *testing.T) {
+	repo, mock := newOIDCConfigRepo(t)
+	mock.ExpectQuery("SELECT ldap_config FROM system_settings").
+		WillReturnError(errOIDCDB)
+	if _, err := repo.GetLDAPConfig(context.Background()); err == nil {
+		t.Error("expected error")
+	}
+}
+
+func TestSetScanningConfig_Error(t *testing.T) {
+	repo, mock := newOIDCConfigRepo(t)
+	mock.ExpectExec("UPDATE system_settings SET").
+		WillReturnError(errOIDCDB)
+	if err := repo.SetScanningConfig(context.Background(), []byte(`{}`)); err == nil {
+		t.Error("expected error")
+	}
+}
+
+func TestSetAuthMethod_Error(t *testing.T) {
+	repo, mock := newOIDCConfigRepo(t)
+	mock.ExpectExec("UPDATE system_settings SET auth_method").
+		WillReturnError(errOIDCDB)
+	if err := repo.SetAuthMethod(context.Background(), "ldap"); err == nil {
+		t.Error("expected error")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // GetSetupTokenHash
 // ---------------------------------------------------------------------------

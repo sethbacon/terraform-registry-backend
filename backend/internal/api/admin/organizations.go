@@ -331,7 +331,15 @@ func (h *OrganizationHandlers) UpdateOrganizationHandler() gin.HandlerFunc {
 				})
 				return
 			}
-			if err := h.orgRepo.RenameWithCascade(c.Request.Context(), orgID, org.Name, newName); err != nil {
+			if err := h.orgRepo.Rename(c.Request.Context(), orgID, newName); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"error": "Failed to rename organization",
+				})
+				return
+			}
+			// Cascade the new name to the registry's denormalized module/provider
+			// namespaces on the domain connection (identity rename is done above).
+			if err := repositories.CascadeOrganizationRename(c.Request.Context(), h.db, orgID, org.Name, newName); err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{
 					"error": "Failed to rename organization",
 				})

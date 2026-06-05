@@ -3514,7 +3514,7 @@
                                 "schema": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/components/schemas/models.RoleTemplate"
+                                        "$ref": "#/components/schemas/models.RoleTemplateView"
                                     }
                                 }
                             }
@@ -3572,7 +3572,7 @@
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/models.RoleTemplate"
+                                    "$ref": "#/components/schemas/models.RoleTemplateView"
                                 }
                             }
                         }
@@ -3653,7 +3653,7 @@
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/models.RoleTemplate"
+                                    "$ref": "#/components/schemas/models.RoleTemplateView"
                                 }
                             }
                         }
@@ -3743,7 +3743,7 @@
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/models.RoleTemplate"
+                                    "$ref": "#/components/schemas/models.RoleTemplateView"
                                 }
                             }
                         }
@@ -18295,7 +18295,7 @@
                     }
                 }
             },
-            "models.RoleTemplate": {
+            "models.RoleTemplateView": {
                 "type": "object",
                 "properties": {
                     "created_at": {

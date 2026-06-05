@@ -266,16 +266,17 @@ func TestUpdateOrganization_RenameSuccess(t *testing.T) {
 	// 2. GetByName uniqueness check — new name is available
 	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
 		WillReturnRows(emptyOrgRow())
-	// 3. RenameWithCascade transaction
-	mock.ExpectBegin()
+	// 3. Rename (identity) — single UPDATE, no transaction
 	mock.ExpectExec("UPDATE organizations SET name").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	// 4. Cascade to denormalized module/provider namespaces (domain) — own transaction
+	mock.ExpectBegin()
 	mock.ExpectExec("UPDATE modules SET namespace").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("UPDATE providers SET namespace").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectCommit()
-	// 4. Regular Update for remaining fields (display_name / idp_type)
+	// 5. Regular Update for remaining fields (display_name / idp_type)
 	mock.ExpectExec("UPDATE organizations SET display_name").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 

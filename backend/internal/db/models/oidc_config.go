@@ -1,6 +1,7 @@
-// Package models - oidc_config.go defines the OIDCConfig model for OIDC provider
-// configuration stored encrypted in the database. Follows the same pattern as
-// StorageConfig: sensitive fields use _encrypted suffix and are hidden from JSON.
+// Package models - oidc_config.go aliases the persisted OIDCConfig identity type
+// from the shared module and keeps the registry's API/setup DTOs (request,
+// response, LDAP, setup status) app-side. ToResponse becomes a free function
+// because methods cannot be attached to an aliased type.
 package models
 
 import (
@@ -9,31 +10,40 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	identitymodels "github.com/sethbacon/terraform-suite-identity/identity/models"
 )
 
-// OIDCConfig holds OIDC provider configuration stored in the database
-type OIDCConfig struct {
-	ID                    uuid.UUID       `db:"id" json:"id"`
-	Name                  string          `db:"name" json:"name"`
-	ProviderType          string          `db:"provider_type" json:"provider_type"`
-	IssuerURL             string          `db:"issuer_url" json:"issuer_url"`
-	ClientID              string          `db:"client_id" json:"client_id"`
-	ClientSecretEncrypted string          `db:"client_secret_encrypted" json:"-"` // Never expose
-	RedirectURL           string          `db:"redirect_url" json:"redirect_url"`
-	Scopes                json.RawMessage `db:"scopes" json:"scopes"`
-	IsActive              bool            `db:"is_active" json:"is_active"`
-	ExtraConfig           json.RawMessage `db:"extra_config" json:"extra_config,omitempty"`
-	CreatedAt             time.Time       `db:"created_at" json:"created_at"`
-	UpdatedAt             time.Time       `db:"updated_at" json:"updated_at"`
-	CreatedBy             uuid.NullUUID   `db:"created_by" json:"created_by,omitempty"`
-	UpdatedBy             uuid.NullUUID   `db:"updated_by" json:"updated_by,omitempty"`
-}
+// OIDCConfig holds OIDC provider configuration stored in the database.
+type OIDCConfig = identitymodels.OIDCConfig
 
-// OIDCGroupMapping maps a single IdP group claim value to an organization and role template.
+// OIDCGroupMapping maps a single IdP group claim value to an organization and role
+// template. It mirrors the identity type but is defined locally so swagger can
+// document it (swag cannot resolve type aliases into the external identity
+// module). Convert with ToIdentityGroupMappings / fromIdentityGroupMappings.
 type OIDCGroupMapping struct {
 	Group        string `json:"group"`
 	Organization string `json:"organization"`
 	Role         string `json:"role"`
+}
+
+// ToIdentityGroupMappings converts API/registry group mappings to the identity
+// model type accepted by OIDCConfig.SetGroupMappingConfig.
+func ToIdentityGroupMappings(in []OIDCGroupMapping) []identitymodels.OIDCGroupMapping {
+	out := make([]identitymodels.OIDCGroupMapping, len(in))
+	for i, m := range in {
+		out[i] = identitymodels.OIDCGroupMapping{Group: m.Group, Organization: m.Organization, Role: m.Role}
+	}
+	return out
+}
+
+// fromIdentityGroupMappings converts identity group mappings to the local type.
+func fromIdentityGroupMappings(in []identitymodels.OIDCGroupMapping) []OIDCGroupMapping {
+	out := make([]OIDCGroupMapping, len(in))
+	for i, m := range in {
+		out[i] = OIDCGroupMapping{Group: m.Group, Organization: m.Organization, Role: m.Role}
+	}
+	return out
 }
 
 // OIDCConfigInput is used for creating/updating OIDC configuration via the API
@@ -94,48 +104,8 @@ type OIDCConfigResponse struct {
 	UpdatedBy      *uuid.UUID             `json:"updated_by,omitempty"`
 }
 
-// groupMappingExtra is the shape of the group-mapping keys inside ExtraConfig.
-type groupMappingExtra struct {
-	GroupClaimName string             `json:"group_claim_name"`
-	GroupMappings  []OIDCGroupMapping `json:"group_mappings"`
-	DefaultRole    string             `json:"default_role"`
-}
-
-// GetGroupMappingConfig reads group mapping settings from ExtraConfig.
-func (c *OIDCConfig) GetGroupMappingConfig() (claimName string, mappings []OIDCGroupMapping, defaultRole string) {
-	if len(c.ExtraConfig) == 0 {
-		return
-	}
-	var extra groupMappingExtra
-	if err := json.Unmarshal(c.ExtraConfig, &extra); err != nil {
-		return
-	}
-	return extra.GroupClaimName, extra.GroupMappings, extra.DefaultRole
-}
-
-// SetGroupMappingConfig stores group mapping settings into ExtraConfig, preserving
-// any unrelated keys that may already be present.
-func (c *OIDCConfig) SetGroupMappingConfig(claimName string, mappings []OIDCGroupMapping, defaultRole string) error {
-	// Decode existing extra config to preserve unknown keys.
-	existing := make(map[string]interface{})
-	if len(c.ExtraConfig) > 0 {
-		if err := json.Unmarshal(c.ExtraConfig, &existing); err != nil {
-			return err
-		}
-	}
-	existing["group_claim_name"] = claimName
-	existing["group_mappings"] = mappings
-	existing["default_role"] = defaultRole
-	b, err := json.Marshal(existing)
-	if err != nil {
-		return err
-	}
-	c.ExtraConfig = json.RawMessage(b)
-	return nil
-}
-
-// ToResponse converts an OIDCConfig to a safe API response (no secrets)
-func (c *OIDCConfig) ToResponse() *OIDCConfigResponse {
+// OIDCConfigToResponse converts an OIDCConfig to a safe API response (no secrets).
+func OIDCConfigToResponse(c *OIDCConfig) *OIDCConfigResponse {
 	resp := &OIDCConfigResponse{
 		ID:           c.ID,
 		Name:         c.Name,
@@ -159,7 +129,9 @@ func (c *OIDCConfig) ToResponse() *OIDCConfigResponse {
 	// Parse extra config from JSONB — expose group mapping as first-class fields
 	if len(c.ExtraConfig) > 0 {
 		_ = json.Unmarshal(c.ExtraConfig, &resp.ExtraConfig) // nolint:errcheck
-		resp.GroupClaimName, resp.GroupMappings, resp.DefaultRole = c.GetGroupMappingConfig()
+		var mappings []identitymodels.OIDCGroupMapping
+		resp.GroupClaimName, mappings, resp.DefaultRole = c.GetGroupMappingConfig()
+		resp.GroupMappings = fromIdentityGroupMappings(mappings)
 	}
 
 	if c.CreatedBy.Valid {
@@ -170,18 +142,6 @@ func (c *OIDCConfig) ToResponse() *OIDCConfigResponse {
 	}
 
 	return resp
-}
-
-// GetScopes parses and returns the scopes as a string slice
-func (c *OIDCConfig) GetScopes() []string {
-	var scopes []string
-	if len(c.Scopes) > 0 {
-		_ = json.Unmarshal(c.Scopes, &scopes) // nolint:errcheck
-	}
-	if len(scopes) == 0 {
-		return []string{"openid", "email", "profile"}
-	}
-	return scopes
 }
 
 // SetupStatus represents the enhanced setup status response

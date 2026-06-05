@@ -1,26 +1,15 @@
-// Package models - role_template.go defines the RoleTemplate model for named permission sets
-// used in RBAC, along with the predefined system role templates (viewer, publisher, etc.).
+// Package models - role_template.go aliases the RoleTemplate type from the shared
+// identity module and keeps the registry's predefined role→scope mapping. The
+// role→scope mapping is the one piece of identity that is app-specific; the
+// shared module is app-agnostic about scope contents.
 package models
 
-import (
-	"time"
+import identitymodels "github.com/sethbacon/terraform-suite-identity/identity/models"
 
-	"github.com/google/uuid"
-)
+// RoleTemplate is a named set of RBAC scopes assignable to organization members.
+type RoleTemplate = identitymodels.RoleTemplate
 
-// RoleTemplate represents a predefined set of scopes for common use cases
-type RoleTemplate struct {
-	ID          uuid.UUID `db:"id" json:"id"`
-	Name        string    `db:"name" json:"name"`
-	DisplayName string    `db:"display_name" json:"display_name"`
-	Description *string   `db:"description" json:"description,omitempty"`
-	Scopes      []string  `db:"scopes" json:"scopes"`
-	IsSystem    bool      `db:"is_system" json:"is_system"`
-	CreatedAt   time.Time `db:"created_at" json:"created_at"`
-	UpdatedAt   time.Time `db:"updated_at" json:"updated_at"`
-}
-
-// PredefinedRoleTemplates returns the default role templates
+// PredefinedRoleTemplates returns the registry's default role templates.
 func PredefinedRoleTemplates() []RoleTemplate {
 	viewerDesc := "Read-only access to modules, providers, mirrors, organizations, and SCM configurations"
 	publisherDesc := "Can upload and manage modules and providers"
