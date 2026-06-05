@@ -2798,7 +2798,7 @@
                         "schema": {
                             "type": "array",
                             "items": {
-                                "$ref": "#/definitions/models.RoleTemplate"
+                                "$ref": "#/definitions/models.RoleTemplateView"
                             }
                         }
                     },
@@ -2850,7 +2850,7 @@
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/models.RoleTemplate"
+                            "$ref": "#/definitions/models.RoleTemplateView"
                         }
                     },
                     "400": {
@@ -2912,7 +2912,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.RoleTemplate"
+                            "$ref": "#/definitions/models.RoleTemplateView"
                         }
                     },
                     "400": {
@@ -2984,7 +2984,7 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/models.RoleTemplate"
+                            "$ref": "#/definitions/models.RoleTemplateView"
                         }
                     },
                     "400": {
@@ -15245,7 +15245,7 @@
                 }
             }
         },
-        "models.RoleTemplate": {
+        "models.RoleTemplateView": {
             "type": "object",
             "properties": {
                 "created_at": {

@@ -216,7 +216,7 @@ func TestSetGroupMappingConfig_RoundTrip(t *testing.T) {
 		{Group: "admins", Organization: "acme", Role: "admin"},
 		{Group: "viewers", Organization: "acme", Role: "readonly"},
 	}
-	if err := cfg.SetGroupMappingConfig("groups", mappings, "viewer"); err != nil {
+	if err := cfg.SetGroupMappingConfig("groups", ToIdentityGroupMappings(mappings), "viewer"); err != nil {
 		t.Fatalf("SetGroupMappingConfig error: %v", err)
 	}
 
@@ -295,9 +295,9 @@ func TestGetGroupMappingConfig_InvalidJSON(t *testing.T) {
 func TestSetGroupMappingConfig_OverwritesPrevious(t *testing.T) {
 	cfg := &OIDCConfig{}
 	// Set initial config
-	_ = cfg.SetGroupMappingConfig("groups", []OIDCGroupMapping{{Group: "old", Organization: "org", Role: "r"}}, "old-default")
+	_ = cfg.SetGroupMappingConfig("groups", ToIdentityGroupMappings([]OIDCGroupMapping{{Group: "old", Organization: "org", Role: "r"}}), "old-default")
 	// Overwrite
-	_ = cfg.SetGroupMappingConfig("roles", []OIDCGroupMapping{{Group: "new", Organization: "org2", Role: "admin"}}, "new-default")
+	_ = cfg.SetGroupMappingConfig("roles", ToIdentityGroupMappings([]OIDCGroupMapping{{Group: "new", Organization: "org2", Role: "admin"}}), "new-default")
 
 	cn, mappings, dr := cfg.GetGroupMappingConfig()
 	if cn != "roles" {

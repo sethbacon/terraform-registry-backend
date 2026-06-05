@@ -79,7 +79,7 @@ func (h *OIDCConfigAdminHandlers) UpdateGroupMapping(c *gin.Context) {
 		return
 	}
 
-	if err := cfg.SetGroupMappingConfig(input.GroupClaimName, input.GroupMappings, input.DefaultRole); err != nil {
+	if err := cfg.SetGroupMappingConfig(input.GroupClaimName, models.ToIdentityGroupMappings(input.GroupMappings), input.DefaultRole); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to encode group mapping"})
 		return
 	}

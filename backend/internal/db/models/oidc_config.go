@@ -14,12 +14,37 @@ import (
 	identitymodels "github.com/sethbacon/terraform-suite-identity/identity/models"
 )
 
-type (
-	// OIDCConfig holds OIDC provider configuration stored in the database.
-	OIDCConfig = identitymodels.OIDCConfig
-	// OIDCGroupMapping maps a single IdP group claim value to an organization and role template.
-	OIDCGroupMapping = identitymodels.OIDCGroupMapping
-)
+// OIDCConfig holds OIDC provider configuration stored in the database.
+type OIDCConfig = identitymodels.OIDCConfig
+
+// OIDCGroupMapping maps a single IdP group claim value to an organization and role
+// template. It mirrors the identity type but is defined locally so swagger can
+// document it (swag cannot resolve type aliases into the external identity
+// module). Convert with ToIdentityGroupMappings / fromIdentityGroupMappings.
+type OIDCGroupMapping struct {
+	Group        string `json:"group"`
+	Organization string `json:"organization"`
+	Role         string `json:"role"`
+}
+
+// ToIdentityGroupMappings converts API/registry group mappings to the identity
+// model type accepted by OIDCConfig.SetGroupMappingConfig.
+func ToIdentityGroupMappings(in []OIDCGroupMapping) []identitymodels.OIDCGroupMapping {
+	out := make([]identitymodels.OIDCGroupMapping, len(in))
+	for i, m := range in {
+		out[i] = identitymodels.OIDCGroupMapping{Group: m.Group, Organization: m.Organization, Role: m.Role}
+	}
+	return out
+}
+
+// fromIdentityGroupMappings converts identity group mappings to the local type.
+func fromIdentityGroupMappings(in []identitymodels.OIDCGroupMapping) []OIDCGroupMapping {
+	out := make([]OIDCGroupMapping, len(in))
+	for i, m := range in {
+		out[i] = OIDCGroupMapping{Group: m.Group, Organization: m.Organization, Role: m.Role}
+	}
+	return out
+}
 
 // OIDCConfigInput is used for creating/updating OIDC configuration via the API
 type OIDCConfigInput struct {
@@ -104,7 +129,9 @@ func OIDCConfigToResponse(c *OIDCConfig) *OIDCConfigResponse {
 	// Parse extra config from JSONB — expose group mapping as first-class fields
 	if len(c.ExtraConfig) > 0 {
 		_ = json.Unmarshal(c.ExtraConfig, &resp.ExtraConfig) // nolint:errcheck
-		resp.GroupClaimName, resp.GroupMappings, resp.DefaultRole = c.GetGroupMappingConfig()
+		var mappings []identitymodels.OIDCGroupMapping
+		resp.GroupClaimName, mappings, resp.DefaultRole = c.GetGroupMappingConfig()
+		resp.GroupMappings = fromIdentityGroupMappings(mappings)
 	}
 
 	if c.CreatedBy.Valid {
