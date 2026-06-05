@@ -10,17 +10,36 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+
+	identitystore "github.com/sethbacon/terraform-suite-identity/identity/store"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 )
 
-// OIDCConfigRepository handles database operations for OIDC configuration
+// OIDCConfigRepository handles OIDC configuration plus the registry's setup-wizard
+// state. Setup-wizard methods run on the registry's domain connection
+// (system_settings); OIDC-config CRUD is delegated to the shared identity store
+// so it follows the identity schema.
 type OIDCConfigRepository struct {
-	db *sqlx.DB
+	db   *sqlx.DB
+	oidc *identitystore.OIDCConfigRepository
 }
 
-// NewOIDCConfigRepository creates a new OIDC configuration repository
+// NewOIDCConfigRepository creates a new OIDC configuration repository whose
+// OIDC-config CRUD uses the same connection as the setup-wizard methods. Use
+// NewOIDCConfigRepositoryWithIdentity to route OIDC-config CRUD at the dedicated
+// identity pool (identity-schema cutover).
 func NewOIDCConfigRepository(db *sqlx.DB) *OIDCConfigRepository {
-	return &OIDCConfigRepository{db: db}
+	return NewOIDCConfigRepositoryWithIdentity(db, db)
+}
+
+// NewOIDCConfigRepositoryWithIdentity creates a new OIDC configuration
+// repository. db is the registry's domain connection (system_settings);
+// identityDB backs OIDC-config CRUD (the shared identity store).
+func NewOIDCConfigRepositoryWithIdentity(db, identityDB *sqlx.DB) *OIDCConfigRepository {
+	return &OIDCConfigRepository{
+		db:   db,
+		oidc: identitystore.NewOIDCConfigRepository(identityDB),
+	}
 }
 
 // === System Settings Extensions for Setup Wizard ===
@@ -278,103 +297,44 @@ func (r *OIDCConfigRepository) SetAuthMethod(ctx context.Context, method string)
 	return err
 }
 
-// === OIDC Configuration CRUD ===
+// === OIDC Configuration CRUD (delegated to the shared identity store) ===
 
-// CreateOIDCConfig creates a new OIDC configuration
+// CreateOIDCConfig creates a new OIDC configuration.
 func (r *OIDCConfigRepository) CreateOIDCConfig(ctx context.Context, config *models.OIDCConfig) error {
-	query := `
-		INSERT INTO oidc_config (
-			id, name, provider_type, issuer_url, client_id, client_secret_encrypted,
-			redirect_url, scopes, is_active, extra_config,
-			created_at, updated_at, created_by, updated_by
-		) VALUES (
-			$1, $2, $3, $4, $5, $6,
-			$7, $8, $9, $10,
-			$11, $12, $13, $14
-		)`
-
-	_, err := r.db.ExecContext(ctx, query,
-		config.ID, config.Name, config.ProviderType, config.IssuerURL, config.ClientID,
-		config.ClientSecretEncrypted,
-		config.RedirectURL, config.Scopes, config.IsActive, config.ExtraConfig,
-		config.CreatedAt, config.UpdatedAt, config.CreatedBy, config.UpdatedBy,
-	)
-	return err
+	return r.oidc.CreateOIDCConfig(ctx, config)
 }
 
-// GetActiveOIDCConfig retrieves the currently active OIDC configuration
+// GetActiveOIDCConfig retrieves the currently active OIDC configuration.
 func (r *OIDCConfigRepository) GetActiveOIDCConfig(ctx context.Context) (*models.OIDCConfig, error) {
-	var config models.OIDCConfig
-	query := `SELECT * FROM oidc_config WHERE is_active = true LIMIT 1`
-	err := r.db.GetContext(ctx, &config, query)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	return &config, err
+	return r.oidc.GetActiveOIDCConfig(ctx)
 }
 
-// GetOIDCConfig retrieves an OIDC configuration by ID
+// GetOIDCConfig retrieves an OIDC configuration by ID.
 func (r *OIDCConfigRepository) GetOIDCConfig(ctx context.Context, id uuid.UUID) (*models.OIDCConfig, error) {
-	var config models.OIDCConfig
-	query := `SELECT * FROM oidc_config WHERE id = $1`
-	err := r.db.GetContext(ctx, &config, query, id)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	return &config, err
+	return r.oidc.GetOIDCConfig(ctx, id)
 }
 
-// ListOIDCConfigs lists all OIDC configurations
+// ListOIDCConfigs lists all OIDC configurations.
 func (r *OIDCConfigRepository) ListOIDCConfigs(ctx context.Context) ([]*models.OIDCConfig, error) {
-	var configs []*models.OIDCConfig
-	query := `SELECT * FROM oidc_config ORDER BY created_at DESC`
-	err := r.db.SelectContext(ctx, &configs, query)
-	return configs, err
+	return r.oidc.ListOIDCConfigs(ctx)
 }
 
-// DeleteOIDCConfig deletes an OIDC configuration
+// DeleteOIDCConfig deletes an OIDC configuration.
 func (r *OIDCConfigRepository) DeleteOIDCConfig(ctx context.Context, id uuid.UUID) error {
-	query := `DELETE FROM oidc_config WHERE id = $1`
-	_, err := r.db.ExecContext(ctx, query, id)
-	return err
+	return r.oidc.DeleteOIDCConfig(ctx, id)
 }
 
 // UpdateOIDCConfigExtraConfig updates only the extra_config column (used for group mapping settings).
 func (r *OIDCConfigRepository) UpdateOIDCConfigExtraConfig(ctx context.Context, id uuid.UUID, extraConfig []byte) error {
-	query := `UPDATE oidc_config SET extra_config = $1, updated_at = $2 WHERE id = $3`
-	_, err := r.db.ExecContext(ctx, query, extraConfig, time.Now(), id)
-	return err
+	return r.oidc.UpdateOIDCConfigExtraConfig(ctx, id, extraConfig)
 }
 
-// DeactivateAllOIDCConfigs sets is_active=false for all configurations
+// DeactivateAllOIDCConfigs sets is_active=false for all configurations.
 func (r *OIDCConfigRepository) DeactivateAllOIDCConfigs(ctx context.Context) error {
-	query := `UPDATE oidc_config SET is_active = false, updated_at = $1`
-	_, err := r.db.ExecContext(ctx, query, time.Now())
-	return err
+	return r.oidc.DeactivateAllOIDCConfigs(ctx)
 }
 
-// ActivateOIDCConfig activates a specific configuration (deactivates others first)
+// ActivateOIDCConfig activates a specific configuration (deactivates others first).
 func (r *OIDCConfigRepository) ActivateOIDCConfig(ctx context.Context, id uuid.UUID) error {
-	tx, err := r.db.BeginTxx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback() // nolint:errcheck
-
-	// Deactivate all configs
-	_, err = tx.ExecContext(ctx, `UPDATE oidc_config SET is_active = false, updated_at = $1`, time.Now())
-	if err != nil {
-		return err
-	}
-
-	// Activate the specified config
-	_, err = tx.ExecContext(ctx,
-		`UPDATE oidc_config SET is_active = true, updated_at = $1 WHERE id = $2`,
-		time.Now(), id,
-	)
-	if err != nil {
-		return err
-	}
-
-	return tx.Commit()
+	return r.oidc.ActivateOIDCConfig(ctx, id)
 }

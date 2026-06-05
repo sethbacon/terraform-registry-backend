@@ -1,16 +1,9 @@
-// Package models - organization.go defines the Organization model representing a tenant
-// namespace in the registry with a URL-safe name and human-readable display name.
+// Package models - organization.go aliases the Organization type from the shared
+// identity module. The registry's per-org IdP binding (idp_type/idp_name) is part
+// of the canonical identity model.
 package models
 
-import "time"
+import identitymodels "github.com/sethbacon/terraform-suite-identity/identity/models"
 
-// Organization represents an organization/namespace in the registry
-type Organization struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`         // URL-safe name (used in namespaces)
-	DisplayName string    `json:"display_name"` // Human-readable display name
-	IdpType     *string   `json:"idp_type"`     // Bound IdP type: "oidc", "saml", "ldap", or nil (no restriction)
-	IdpName     *string   `json:"idp_name"`     // Bound IdP name within the type (e.g., SAML IdP name)
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
-}
+// Organization represents an organization/namespace (tenant).
+type Organization = identitymodels.Organization

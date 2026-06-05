@@ -300,7 +300,7 @@ func (h *Handlers) SaveOIDCConfig(c *gin.Context) {
 		slog.Info("setup: OIDC provider activated", "issuer", input.IssuerURL)
 	}
 
-	c.JSON(http.StatusOK, oidcCfg.ToResponse())
+	c.JSON(http.StatusOK, models.OIDCConfigToResponse(oidcCfg))
 }
 
 // @Summary      Test storage configuration

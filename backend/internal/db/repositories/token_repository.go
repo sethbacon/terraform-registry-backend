@@ -1,43 +1,11 @@
+// Package repositories - token_repository.go aliases the TokenRepository (JWT
+// revocation over revoked_tokens) from the shared identity store.
 package repositories
 
-import (
-	"context"
-	"database/sql"
-	"time"
-)
+import identitystore "github.com/sethbacon/terraform-suite-identity/identity/store"
 
-// TokenRepository handles JWT revocation database operations
-type TokenRepository struct {
-	db *sql.DB
-}
+// TokenRepository handles JWT revocation database operations.
+type TokenRepository = identitystore.TokenRepository
 
-// NewTokenRepository creates a new TokenRepository
-func NewTokenRepository(db *sql.DB) *TokenRepository {
-	return &TokenRepository{db: db}
-}
-
-// RevokeToken adds a JTI to the revocation list
-func (r *TokenRepository) RevokeToken(ctx context.Context, jti, userID string, expiresAt time.Time) error {
-	query := `
-		INSERT INTO revoked_tokens (jti, user_id, expires_at)
-		VALUES ($1, $2, $3)
-		ON CONFLICT (jti) DO NOTHING
-	`
-	_, err := r.db.ExecContext(ctx, query, jti, userID, expiresAt)
-	return err
-}
-
-// IsTokenRevoked checks whether a JTI has been revoked
-func (r *TokenRepository) IsTokenRevoked(ctx context.Context, jti string) (bool, error) {
-	query := `SELECT EXISTS(SELECT 1 FROM revoked_tokens WHERE jti = $1)`
-	var exists bool
-	err := r.db.QueryRowContext(ctx, query, jti).Scan(&exists)
-	return exists, err
-}
-
-// CleanupExpiredRevocations removes entries whose tokens have already expired
-func (r *TokenRepository) CleanupExpiredRevocations(ctx context.Context) error {
-	query := `DELETE FROM revoked_tokens WHERE expires_at < NOW()`
-	_, err := r.db.ExecContext(ctx, query)
-	return err
-}
+// NewTokenRepository constructs a TokenRepository over the given connection.
+var NewTokenRepository = identitystore.NewTokenRepository

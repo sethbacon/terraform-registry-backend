@@ -5,132 +5,72 @@ package repositories
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+
+	identitystore "github.com/sethbacon/terraform-suite-identity/identity/store"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 )
 
-// RBACRepository handles database operations for RBAC features
+// RBACRepository handles database operations for RBAC features. Mirror approval
+// and policy methods run on the registry's domain connection; role-template CRUD
+// is delegated to the shared identity store so it follows the identity schema.
 type RBACRepository struct {
-	db *sqlx.DB
+	db            *sqlx.DB
+	roleTemplates *identitystore.RoleTemplateRepository
 }
 
-// NewRBACRepository creates a new RBAC repository
+// NewRBACRepository creates a new RBAC repository whose role-template access uses
+// the same connection as the mirror methods. Use NewRBACRepositoryWithIdentity to
+// route role templates at the dedicated identity pool (identity-schema cutover).
 func NewRBACRepository(db *sqlx.DB) *RBACRepository {
-	return &RBACRepository{db: db}
+	return NewRBACRepositoryWithIdentity(db, db)
+}
+
+// NewRBACRepositoryWithIdentity creates a new RBAC repository. db is the
+// registry's domain connection (mirror tables); identityDB backs role-template
+// access (the shared identity store).
+func NewRBACRepositoryWithIdentity(db, identityDB *sqlx.DB) *RBACRepository {
+	return &RBACRepository{
+		db:            db,
+		roleTemplates: identitystore.NewRoleTemplateRepository(identityDB),
+	}
 }
 
 // ============================================================================
-// Role Templates
+// Role Templates (delegated to the shared identity store)
 // ============================================================================
 
-// ListRoleTemplates returns all role templates
+// ListRoleTemplates returns all role templates.
 func (r *RBACRepository) ListRoleTemplates(ctx context.Context) ([]*models.RoleTemplate, error) {
-	query := `SELECT id, name, display_name, description, scopes, is_system, created_at, updated_at
-			  FROM role_templates ORDER BY name`
-
-	rows, err := r.db.QueryxContext(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var templates []*models.RoleTemplate
-	for rows.Next() {
-		var t models.RoleTemplate
-		var scopesJSON []byte
-		if err := rows.Scan(&t.ID, &t.Name, &t.DisplayName, &t.Description, &scopesJSON, &t.IsSystem, &t.CreatedAt, &t.UpdatedAt); err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal(scopesJSON, &t.Scopes); err != nil {
-			return nil, err
-		}
-		templates = append(templates, &t)
-	}
-
-	return templates, rows.Err()
+	return r.roleTemplates.ListRoleTemplates(ctx)
 }
 
-// GetRoleTemplate retrieves a role template by ID
+// GetRoleTemplate retrieves a role template by ID.
 func (r *RBACRepository) GetRoleTemplate(ctx context.Context, id uuid.UUID) (*models.RoleTemplate, error) {
-	query := `SELECT id, name, display_name, description, scopes, is_system, created_at, updated_at
-			  FROM role_templates WHERE id = $1`
-
-	var t models.RoleTemplate
-	var scopesJSON []byte
-	err := r.db.QueryRowxContext(ctx, query, id).Scan(&t.ID, &t.Name, &t.DisplayName, &t.Description, &scopesJSON, &t.IsSystem, &t.CreatedAt, &t.UpdatedAt)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if err := json.Unmarshal(scopesJSON, &t.Scopes); err != nil {
-		return nil, err
-	}
-
-	return &t, nil
+	return r.roleTemplates.GetRoleTemplate(ctx, id)
 }
 
-// GetRoleTemplateByName retrieves a role template by name
+// GetRoleTemplateByName retrieves a role template by name.
 func (r *RBACRepository) GetRoleTemplateByName(ctx context.Context, name string) (*models.RoleTemplate, error) {
-	query := `SELECT id, name, display_name, description, scopes, is_system, created_at, updated_at
-			  FROM role_templates WHERE name = $1`
-
-	var t models.RoleTemplate
-	var scopesJSON []byte
-	err := r.db.QueryRowxContext(ctx, query, name).Scan(&t.ID, &t.Name, &t.DisplayName, &t.Description, &scopesJSON, &t.IsSystem, &t.CreatedAt, &t.UpdatedAt)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if err := json.Unmarshal(scopesJSON, &t.Scopes); err != nil {
-		return nil, err
-	}
-
-	return &t, nil
+	return r.roleTemplates.GetRoleTemplateByName(ctx, name)
 }
 
-// CreateRoleTemplate creates a new role template
+// CreateRoleTemplate creates a new role template.
 func (r *RBACRepository) CreateRoleTemplate(ctx context.Context, template *models.RoleTemplate) error {
-	scopesJSON, err := json.Marshal(template.Scopes)
-	if err != nil {
-		return err
-	}
-
-	query := `INSERT INTO role_templates (id, name, display_name, description, scopes, is_system, created_at, updated_at)
-			  VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
-
-	_, err = r.db.ExecContext(ctx, query,
-		template.ID, template.Name, template.DisplayName, template.Description, scopesJSON, template.IsSystem, template.CreatedAt, template.UpdatedAt)
-	return err
+	return r.roleTemplates.CreateRoleTemplate(ctx, template)
 }
 
-// UpdateRoleTemplate updates an existing role template
+// UpdateRoleTemplate updates an existing role template.
 func (r *RBACRepository) UpdateRoleTemplate(ctx context.Context, template *models.RoleTemplate) error {
-	scopesJSON, err := json.Marshal(template.Scopes)
-	if err != nil {
-		return err
-	}
-
-	query := `UPDATE role_templates SET display_name = $2, description = $3, scopes = $4, updated_at = $5
-			  WHERE id = $1 AND is_system = false`
-
-	_, err = r.db.ExecContext(ctx, query,
-		template.ID, template.DisplayName, template.Description, scopesJSON, time.Now())
-	return err
+	return r.roleTemplates.UpdateRoleTemplate(ctx, template)
 }
 
-// DeleteRoleTemplate deletes a role template (only non-system templates)
+// DeleteRoleTemplate deletes a role template (only non-system templates).
 func (r *RBACRepository) DeleteRoleTemplate(ctx context.Context, id uuid.UUID) error {
-	query := `DELETE FROM role_templates WHERE id = $1 AND is_system = false`
-	_, err := r.db.ExecContext(ctx, query, id)
-	return err
+	return r.roleTemplates.DeleteRoleTemplate(ctx, id)
 }
 
 // ============================================================================

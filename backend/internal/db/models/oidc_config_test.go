@@ -27,7 +27,7 @@ func TestOIDCConfig_ToResponse_BasicFields(t *testing.T) {
 		UpdatedAt:    now,
 	}
 
-	resp := cfg.ToResponse()
+	resp := OIDCConfigToResponse(cfg)
 
 	if resp.ID != id {
 		t.Errorf("ID = %v, want %v", resp.ID, id)
@@ -54,7 +54,7 @@ func TestOIDCConfig_ToResponse_BasicFields(t *testing.T) {
 
 func TestOIDCConfig_ToResponse_DefaultScopes(t *testing.T) {
 	cfg := &OIDCConfig{}
-	resp := cfg.ToResponse()
+	resp := OIDCConfigToResponse(cfg)
 
 	if len(resp.Scopes) != 3 {
 		t.Fatalf("default scopes length = %d, want 3", len(resp.Scopes))
@@ -74,7 +74,7 @@ func TestOIDCConfig_ToResponse_CustomScopes(t *testing.T) {
 		Scopes: scopesJSON,
 	}
 
-	resp := cfg.ToResponse()
+	resp := OIDCConfigToResponse(cfg)
 	if len(resp.Scopes) != 2 {
 		t.Fatalf("scopes length = %d, want 2", len(resp.Scopes))
 	}
@@ -89,7 +89,7 @@ func TestOIDCConfig_ToResponse_ExtraConfig(t *testing.T) {
 		ExtraConfig: extraJSON,
 	}
 
-	resp := cfg.ToResponse()
+	resp := OIDCConfigToResponse(cfg)
 	if resp.ExtraConfig == nil {
 		t.Fatal("ExtraConfig should not be nil")
 	}
@@ -100,7 +100,7 @@ func TestOIDCConfig_ToResponse_ExtraConfig(t *testing.T) {
 
 func TestOIDCConfig_ToResponse_NilExtraConfig(t *testing.T) {
 	cfg := &OIDCConfig{}
-	resp := cfg.ToResponse()
+	resp := OIDCConfigToResponse(cfg)
 	if resp.ExtraConfig != nil {
 		t.Errorf("ExtraConfig should be nil for empty extra_config, got %v", resp.ExtraConfig)
 	}
@@ -113,7 +113,7 @@ func TestOIDCConfig_ToResponse_CreatedByUpdatedBy(t *testing.T) {
 		UpdatedBy: uuid.NullUUID{UUID: userID, Valid: true},
 	}
 
-	resp := cfg.ToResponse()
+	resp := OIDCConfigToResponse(cfg)
 	if resp.CreatedBy == nil || *resp.CreatedBy != userID {
 		t.Errorf("CreatedBy = %v, want %v", resp.CreatedBy, userID)
 	}
@@ -124,7 +124,7 @@ func TestOIDCConfig_ToResponse_CreatedByUpdatedBy(t *testing.T) {
 
 func TestOIDCConfig_ToResponse_NullCreatedByUpdatedBy(t *testing.T) {
 	cfg := &OIDCConfig{}
-	resp := cfg.ToResponse()
+	resp := OIDCConfigToResponse(cfg)
 	if resp.CreatedBy != nil {
 		t.Errorf("CreatedBy should be nil, got %v", resp.CreatedBy)
 	}
@@ -191,7 +191,7 @@ func TestOIDCConfig_ToResponse_NoSecrets(t *testing.T) {
 		ClientSecretEncrypted: "super-secret-encrypted-data",
 	}
 
-	resp := cfg.ToResponse()
+	resp := OIDCConfigToResponse(cfg)
 	// Ensure the response type has no secret field — this is a compile-time check.
 	// The OIDCConfigResponse struct simply omits ClientSecretEncrypted.
 	data, _ := json.Marshal(resp)
