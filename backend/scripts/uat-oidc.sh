@@ -56,4 +56,26 @@ echo "== 7. /auth/me without token rejected =="
 CODE=$(curl -sk $R -o /dev/null -w '%{http_code}' "$BE/api/v1/auth/me")
 [[ "$CODE" == "401" ]] && pass "no token -> 401" || fail "no token -> $CODE (expected 401)"
 
+echo "== 8. resolve org id via authenticated API =="
+ORGS=$(curl -sk $R "$BE/api/v1/organizations" -H "Authorization: Bearer $JWT")
+ORG=$(printf '%s' "$ORGS" | grep -o '"id":"[^"]*"' | head -1 | sed 's/.*"id":"//; s/"$//')
+[[ -n "$ORG" ]] || fail "could not resolve an org id from the API (resp: ${ORGS:0:120})"
+pass "org id: $ORG"
+
+echo "== 9. create API key (POST /api/v1/apikeys) =="
+CREATE=$(curl -sk $R -X POST "$BE/api/v1/apikeys" \
+  -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" \
+  -d "{\"name\":\"uat-r4\",\"organization_id\":\"$ORG\",\"scopes\":[\"organizations:read\"]}")
+APIKEY=$(printf '%s' "$CREATE" | grep -o '"key":"[^"]*"' | head -1 | sed 's/.*"key":"//; s/"$//')
+[[ "$APIKEY" == *_* ]] || fail "no key returned (resp: ${CREATE:0:160})"
+pass "API key created: ${APIKEY:0:10}..."
+
+echo "== 10. authenticate with the API key (scope-gated route) =="
+CODE=$(curl -sk $R -o /dev/null -w '%{http_code}' "$BE/api/v1/organizations" -H "Authorization: Bearer $APIKEY")
+[[ "$CODE" == "200" ]] && pass "valid API key -> 200" || fail "valid API key -> $CODE (expected 200)"
+
+echo "== 11. bogus API key rejected =="
+CODE=$(curl -sk $R -o /dev/null -w '%{http_code}' "$BE/api/v1/organizations" -H "Authorization: Bearer tfr_bogusbogusbogus")
+[[ "$CODE" == "401" ]] && pass "bogus API key -> 401" || fail "bogus API key -> $CODE (expected 401)"
+
 echo "ALL REGISTRY AUTH UAT CHECKS PASSED"
