@@ -64,6 +64,18 @@ func TestGetDSN(t *testing.T) {
 	}
 }
 
+func TestGetDSNWithSearchPath(t *testing.T) {
+	cfg := DatabaseConfig{
+		Host: "localhost", Port: 5432, User: "registry",
+		Password: "secret", Name: "terraform_registry", SSLMode: "disable",
+	}
+	got := cfg.GetDSNWithSearchPath("identity,public")
+	want := cfg.GetDSN() + " options='-c search_path=identity,public'"
+	if got != want {
+		t.Errorf("GetDSNWithSearchPath() = %q, want %q", got, want)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ServerConfig.GetAddress
 // ---------------------------------------------------------------------------

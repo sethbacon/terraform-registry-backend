@@ -235,11 +235,31 @@ func serve(cfg *config.Config) error {
 		}()
 	}
 
-	// Create router
-	router, bgServices := api.NewRouter(cfg, database)
+	// Determine the connection for identity data access. When the identity-schema
+	// cutover is enabled, open a dedicated pool whose search_path resolves identity
+	// tables against the shared identity schema (feature tables fall back to
+	// public). Otherwise identity data stays in the app's public schema.
+	identityDB := database
+	if identitySchemaEnabled() {
+		searchPath := identitySchemaName() + ",public"
+		idb, connErr := db.Connect(
+			cfg.Database.GetDSNWithSearchPath(searchPath),
+			cfg.Database.MaxConnections, cfg.Database.MinIdleConnections,
+		)
+		if connErr != nil {
+			return fmt.Errorf("failed to connect to identity schema: %w", connErr)
+		}
+		defer idb.Close()
+		identityDB = idb
+		slog.Info("identity schema cutover enabled", "search_path", searchPath)
+	}
 
-	// Start daily cleanup of expired JWT revocation entries
-	tokenRepo := repositories.NewTokenRepository(database)
+	// Create router
+	router, bgServices := api.NewRouter(cfg, database, identityDB)
+
+	// Start daily cleanup of expired JWT revocation entries (revoked_tokens is an
+	// identity table, so use the identity connection).
+	tokenRepo := repositories.NewTokenRepository(identityDB)
 	go func() {
 		ticker := time.NewTicker(24 * time.Hour)
 		defer ticker.Stop()
@@ -408,6 +428,23 @@ func handleSetupToken(repo *repositories.OIDCConfigRepository) error {
 // TFR_IDENTITY_MIGRATIONS_ENABLED=true. Additive and reversible.
 func identityMigrationsEnabled() bool {
 	return os.Getenv("TFR_IDENTITY_MIGRATIONS_ENABLED") == "true"
+}
+
+// identitySchemaEnabled reports whether identity data (users, organizations, API
+// keys, OIDC config, audit logs, role templates, revoked tokens) is read/written
+// from the dedicated shared identity schema instead of the app's public schema.
+// Off by default; enable with TFR_IDENTITY_SCHEMA_ENABLED=true. Requires the
+// identity migrations (TFR_IDENTITY_MIGRATIONS_ENABLED) to have run. Reversible.
+func identitySchemaEnabled() bool {
+	return os.Getenv("TFR_IDENTITY_SCHEMA_ENABLED") == "true"
+}
+
+// identitySchemaName returns the identity schema name (default "identity").
+func identitySchemaName() string {
+	if name := os.Getenv("TFR_IDENTITY_SCHEMA_NAME"); name != "" {
+		return name
+	}
+	return "identity"
 }
 
 func runMigrations(cfg *config.Config, direction string) error {
