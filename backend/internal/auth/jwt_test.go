@@ -11,7 +11,7 @@ import (
 // resetJWTSecret resets the package-level sync.Once so tests can set a fresh secret.
 // This is only safe to call from test code.
 func resetJWTSecret() {
-	jwtSecret = ""
+	currentSecret.Store(nil)
 	jwtSecretOnce = sync.Once{}
 	jwtSecretErr = nil
 	tokenManager = nil

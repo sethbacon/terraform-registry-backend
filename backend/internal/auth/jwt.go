@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -29,17 +30,28 @@ const jwtIssuer = "terraform-registry"
 type Claims = identityauth.Claims
 
 var (
-	// jwtSecret holds the current effective signing secret (env or file). It is
-	// kept in sync with the TokenManager's current secret so GetJWTSecret can
-	// report it for diagnostics and tests.
-	jwtSecret     string
 	jwtSecretOnce sync.Once
 	jwtSecretErr  error
+
+	// currentSecret holds the current effective signing secret (env or file). It
+	// is accessed atomically because the file watch updates it from a goroutine
+	// while requests read it via GetJWTSecret. Kept in sync with the
+	// TokenManager's current secret for diagnostics and tests.
+	currentSecret atomic.Pointer[string]
 
 	// tokenManager performs the actual signing/validation. Constructed once the
 	// secret is resolved; the file watch swaps its secret via RotateSecret.
 	tokenManager *identityauth.TokenManager
 )
+
+func storeSecret(s string) { currentSecret.Store(&s) }
+
+func loadSecret() string {
+	if p := currentSecret.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
 
 // isDevMode checks if we're in development mode (duplicated here to avoid import cycle)
 func isDevMode() bool {
@@ -67,6 +79,7 @@ func generateRandomSecret() (string, error) {
 func ValidateJWTSecret() error {
 	jwtSecretOnce.Do(func() {
 		secret := os.Getenv("TFR_JWT_SECRET")
+		var resolved string
 
 		if secret == "" {
 			if isDevMode() {
@@ -78,7 +91,7 @@ func ValidateJWTSecret() error {
 					jwtSecretErr = err
 					return
 				}
-				jwtSecret = randomSecret
+				resolved = randomSecret
 				log.Printf("WARNING: TFR_JWT_SECRET not set. Using auto-generated secret for development.")
 				log.Printf("WARNING: Sessions will not persist across restarts. Set TFR_JWT_SECRET for persistent sessions.")
 			} else {
@@ -92,10 +105,11 @@ func ValidateJWTSecret() error {
 			if len(secret) < 32 {
 				log.Printf("WARNING: TFR_JWT_SECRET is shorter than recommended 32 characters. Consider using a longer secret.")
 			}
-			jwtSecret = secret
+			resolved = secret
 		}
 
-		tokenManager = identityauth.NewTokenManager(jwtSecret, jwtIssuer)
+		storeSecret(resolved)
+		tokenManager = identityauth.NewTokenManager(resolved, jwtIssuer)
 	})
 
 	return jwtSecretErr
@@ -104,12 +118,12 @@ func ValidateJWTSecret() error {
 // GetJWTSecret retrieves the current effective JWT secret, validating lazily if
 // ValidateJWTSecret has not been called.
 func GetJWTSecret() string {
-	if jwtSecret == "" {
+	if loadSecret() == "" {
 		if err := ValidateJWTSecret(); err != nil {
 			panic(err)
 		}
 	}
-	return jwtSecret
+	return loadSecret()
 }
 
 // GenerateJWT creates a JWT for an authenticated user, delegating to the shared
@@ -139,8 +153,11 @@ func StartJWTSecretFileWatch(secretFilePath string, overlapDuration time.Duratio
 		overlapDuration = 5 * time.Minute
 	}
 
-	// Ensure the TokenManager exists (constructed from the env/dev secret).
+	// Ensure the TokenManager exists (constructed from the env/dev secret), then
+	// capture it so the watcher goroutine does not read the package-level
+	// pointer (which test resets may swap).
 	_ = GetJWTSecret()
+	tm := tokenManager
 
 	// Read the initial secret and make the file the source of truth. The env
 	// secret is dropped as a valid previous key (no tokens were signed with it
@@ -150,9 +167,9 @@ func StartJWTSecretFileWatch(secretFilePath string, overlapDuration time.Duratio
 		return nil, fmt.Errorf("failed to read JWT secret file %q: %w", secretFilePath, err)
 	}
 	secret := trimSecretBytes(data)
-	tokenManager.RotateSecret(secret)
-	tokenManager.ClearPreviousSecret()
-	jwtSecret = string(secret)
+	tm.RotateSecret(secret)
+	tm.ClearPreviousSecret()
+	storeSecret(string(secret))
 	slog.Info("JWT secret loaded from file", "path", secretFilePath, "length", len(secret))
 
 	watcher, err := fsnotify.NewWatcher()
@@ -186,15 +203,15 @@ func StartJWTSecretFileWatch(secretFilePath string, overlapDuration time.Duratio
 					}
 
 					// Skip if unchanged (fsnotify may fire multiple events per write).
-					if string(newSecret) == jwtSecret {
+					if string(newSecret) == loadSecret() {
 						continue
 					}
 
 					// Rotate: the outgoing secret stays valid for the overlap window.
-					tokenManager.RotateSecret(newSecret)
-					jwtSecret = string(newSecret)
+					tm.RotateSecret(newSecret)
+					storeSecret(string(newSecret))
 					time.AfterFunc(overlapDuration, func() {
-						tokenManager.ClearPreviousSecret()
+						tm.ClearPreviousSecret()
 						slog.Info("JWT previous secret cleared after overlap period")
 					})
 					slog.Info("JWT secret reloaded from file", "path", secretFilePath, "length", len(newSecret))
