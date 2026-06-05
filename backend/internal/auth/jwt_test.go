@@ -6,18 +6,15 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/golang-jwt/jwt/v5"
 )
 
 // resetJWTSecret resets the package-level sync.Once so tests can set a fresh secret.
 // This is only safe to call from test code.
 func resetJWTSecret() {
-	jwtSecret = ""
+	currentSecret.Store(nil)
 	jwtSecretOnce = sync.Once{}
 	jwtSecretErr = nil
-	jwtSecretPtr.Store(nil)
-	jwtPreviousSecretPtr.Store(nil)
+	tokenManager = nil
 }
 
 func TestMain(m *testing.M) {
@@ -184,47 +181,6 @@ func TestTrimSecretBytes(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// validateJWTWithSecret (direct)
-// ---------------------------------------------------------------------------
-
-func TestValidateJWTWithSecret(t *testing.T) {
-	resetJWTSecret()
-	t.Setenv("TFR_JWT_SECRET", "test-jwt-secret-that-is-32-chars-!")
-
-	token, err := GenerateJWT("user-1", "a@b.com", []string{"modules:read"}, time.Hour)
-	if err != nil {
-		t.Fatalf("GenerateJWT() error: %v", err)
-	}
-
-	t.Run("correct secret succeeds", func(t *testing.T) {
-		claims, err := validateJWTWithSecret(token, "test-jwt-secret-that-is-32-chars-!")
-		if err != nil {
-			t.Fatalf("validateJWTWithSecret() error: %v", err)
-		}
-		if claims.UserID != "user-1" {
-			t.Errorf("claims.UserID = %q, want %q", claims.UserID, "user-1")
-		}
-		if len(claims.Scopes) != 1 || claims.Scopes[0] != "modules:read" {
-			t.Errorf("claims.Scopes = %v, want [modules:read]", claims.Scopes)
-		}
-	})
-
-	t.Run("wrong secret fails", func(t *testing.T) {
-		_, err := validateJWTWithSecret(token, "wrong-secret-wrong-secret-wrong!")
-		if err == nil {
-			t.Error("validateJWTWithSecret() expected error with wrong secret")
-		}
-	})
-
-	t.Run("empty token fails", func(t *testing.T) {
-		_, err := validateJWTWithSecret("", "test-jwt-secret-that-is-32-chars-!")
-		if err == nil {
-			t.Error("validateJWTWithSecret() expected error with empty token")
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
 // StartJWTSecretFileWatch
 // ---------------------------------------------------------------------------
 
@@ -337,109 +293,6 @@ func TestStartJWTSecretFileWatch(t *testing.T) {
 			t.Errorf("GetJWTSecret() after empty update = %q, want original", got)
 		}
 	})
-}
-
-// ---------------------------------------------------------------------------
-// ValidateJWT with previous key fallback (manual atomic pointer setup)
-// ---------------------------------------------------------------------------
-
-func TestValidateJWT_PreviousKeyFallback(t *testing.T) {
-	resetJWTSecret()
-	t.Setenv("TFR_JWT_SECRET", "")
-
-	// Set up current key via atomic pointer
-	currentKey := []byte("current-secret-32-chars-exactly!")
-	jwtSecretPtr.Store(&currentKey)
-
-	// Generate a token with a different (previous) secret
-	prevKey := []byte("previous-secret-32-chars-exact!!")
-	jwtPreviousSecretPtr.Store(&prevKey)
-
-	// Manually create a token signed with the previous key
-	prevSecret := string(prevKey)
-	jwtSecretPtr.Store(&prevKey) // temporarily use prev key to sign
-	token, err := GenerateJWT("fallback-user", "fb@test.com", nil, time.Hour)
-	if err != nil {
-		t.Fatalf("GenerateJWT() error: %v", err)
-	}
-
-	// Now switch to current key, keeping previous
-	jwtSecretPtr.Store(&currentKey)
-	jwtPreviousSecretPtr.Store(&prevKey)
-	_ = prevSecret
-
-	// Token signed with previous key should validate via fallback
-	claims, err := ValidateJWT(token)
-	if err != nil {
-		t.Fatalf("ValidateJWT() with previous key fallback: %v", err)
-	}
-	if claims.UserID != "fallback-user" {
-		t.Errorf("claims.UserID = %q, want %q", claims.UserID, "fallback-user")
-	}
-
-	// Clear previous — now the old token should fail
-	jwtPreviousSecretPtr.Store(nil)
-	_, err = ValidateJWT(token)
-	if err == nil {
-		t.Error("ValidateJWT() expected error after previous key cleared")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// GetJWTSecret with file-watched key
-// ---------------------------------------------------------------------------
-
-func TestGetJWTSecret_FileWatchedKeyTakesPrecedence(t *testing.T) {
-	resetJWTSecret()
-	t.Setenv("TFR_JWT_SECRET", "env-secret-that-is-32-chars-ok!!")
-
-	// Without file watch, should use env
-	if err := ValidateJWTSecret(); err != nil {
-		t.Fatalf("ValidateJWTSecret() error: %v", err)
-	}
-	if got := GetJWTSecret(); got != "env-secret-that-is-32-chars-ok!!" {
-		t.Errorf("GetJWTSecret() = %q, want env secret", got)
-	}
-
-	// Set file-watched key — should take precedence
-	fileKey := []byte("file-watched-secret-32-chars-ok!")
-	jwtSecretPtr.Store(&fileKey)
-
-	if got := GetJWTSecret(); got != "file-watched-secret-32-chars-ok!" {
-		t.Errorf("GetJWTSecret() = %q, want file-watched secret", got)
-	}
-
-	// Clear file-watched key — should fall back to env
-	jwtSecretPtr.Store(nil)
-	if got := GetJWTSecret(); got != "env-secret-that-is-32-chars-ok!!" {
-		t.Errorf("GetJWTSecret() = %q, want env secret after clearing file ptr", got)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// validateJWTWithSecret edge cases
-// ---------------------------------------------------------------------------
-
-func TestValidateJWTWithSecret_WrongSigningMethod(t *testing.T) {
-	// Create a token signed with RSA (not HMAC) — the parser should reject it
-	token := jwt.NewWithClaims(jwt.SigningMethodNone, &Claims{
-		UserID: "user-1",
-		Email:  "a@b.com",
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-		},
-	})
-	// jwt.SigningMethodNone requires jwt.UnsafeAllowNoneSignatureType
-	tokenString, err := token.SignedString(jwt.UnsafeAllowNoneSignatureType)
-	if err != nil {
-		t.Fatalf("SignedString() error: %v", err)
-	}
-
-	_, err = validateJWTWithSecret(tokenString, "any-secret-32-chars-exactly-ok!!")
-	if err == nil {
-		t.Error("validateJWTWithSecret() expected error for none signing method")
-	}
 }
 
 // ---------------------------------------------------------------------------

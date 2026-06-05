@@ -1,9 +1,11 @@
-// Package auth - jwt.go handles JWT token creation, signing, and verification
-// using a shared secret, including lazy secret initialization and claims parsing.
+// Package auth - jwt.go resolves the JWT signing secret (from the environment or
+// a watched file) and delegates token creation/validation to the shared identity
+// TokenManager. The TokenManager owns signing, validation, JTI stamping and the
+// previous-key overlap during rotation; this file keeps the registry-specific
+// secret resolution and the fsnotify file watch that drives rotation.
 package auth
 
 import (
-	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -16,34 +18,39 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/golang-jwt/jwt/v5"
-	"github.com/google/uuid"
+
+	identityauth "github.com/sethbacon/terraform-suite-identity/identity/auth"
 )
 
+// jwtIssuer stamps the iss claim on tokens this service generates.
+const jwtIssuer = "terraform-registry"
+
+// Claims is the suite identity JWT claims type, re-exported so existing call
+// sites keep referring to auth.Claims. It carries a JTI used for revocation.
+type Claims = identityauth.Claims
+
 var (
-	// jwtSecret holds the validated JWT secret
-	jwtSecret     string
 	jwtSecretOnce sync.Once
 	jwtSecretErr  error
 
-	// jwtSecretPtr is the atomically-swappable signing key used when
-	// TFR_JWT_SECRET_FILE is configured.  When non-nil, GenerateJWT and
-	// ValidateJWT use this instead of the static jwtSecret.
-	jwtSecretPtr atomic.Pointer[[]byte]
+	// currentSecret holds the current effective signing secret (env or file). It
+	// is accessed atomically because the file watch updates it from a goroutine
+	// while requests read it via GetJWTSecret. Kept in sync with the
+	// TokenManager's current secret for diagnostics and tests.
+	currentSecret atomic.Pointer[string]
 
-	// jwtPreviousSecretPtr holds the previous signing key during the overlap
-	// period of a key rotation.  ValidateJWT tries the current key first,
-	// then falls back to this key if verification fails.
-	jwtPreviousSecretPtr atomic.Pointer[[]byte]
+	// tokenManager performs the actual signing/validation. Constructed once the
+	// secret is resolved; the file watch swaps its secret via RotateSecret.
+	tokenManager *identityauth.TokenManager
 )
 
-// Claims represents the JWT claims structure
-type Claims struct {
-	UserID string   `json:"user_id"`
-	Email  string   `json:"email"`
-	Scopes []string `json:"scopes,omitempty"`
-	JTI    string   `json:"jti"`
-	jwt.RegisteredClaims
+func storeSecret(s string) { currentSecret.Store(&s) }
+
+func loadSecret() string {
+	if p := currentSecret.Load(); p != nil {
+		return *p
+	}
+	return ""
 }
 
 // isDevMode checks if we're in development mode (duplicated here to avoid import cycle)
@@ -65,13 +72,14 @@ func generateRandomSecret() (string, error) {
 	return hex.EncodeToString(bytes), nil
 }
 
-// ValidateJWTSecret checks that the JWT secret is properly configured.
-// In production, this will fail if TFR_JWT_SECRET is not set.
-// In dev mode, it will generate a random secret and log a warning.
+// ValidateJWTSecret checks that the JWT secret is properly configured and
+// constructs the shared TokenManager. In production it fails if TFR_JWT_SECRET
+// is not set; in dev mode it generates a random ephemeral secret and warns.
 // Call this at application startup.
 func ValidateJWTSecret() error {
 	jwtSecretOnce.Do(func() {
 		secret := os.Getenv("TFR_JWT_SECRET")
+		var resolved string
 
 		if secret == "" {
 			if isDevMode() {
@@ -83,63 +91,85 @@ func ValidateJWTSecret() error {
 					jwtSecretErr = err
 					return
 				}
-				jwtSecret = randomSecret
+				resolved = randomSecret
 				log.Printf("WARNING: TFR_JWT_SECRET not set. Using auto-generated secret for development.")
 				log.Printf("WARNING: Sessions will not persist across restarts. Set TFR_JWT_SECRET for persistent sessions.")
 			} else {
 				// In production, fail fast
 				jwtSecretErr = errors.New("SECURITY ERROR: TFR_JWT_SECRET environment variable is required in production. " +
 					"Generate a secure secret with: openssl rand -hex 32")
+				return
 			}
-			return
+		} else {
+			// Validate secret length (minimum 32 characters recommended)
+			if len(secret) < 32 {
+				log.Printf("WARNING: TFR_JWT_SECRET is shorter than recommended 32 characters. Consider using a longer secret.")
+			}
+			resolved = secret
 		}
 
-		// Validate secret length (minimum 32 characters recommended)
-		if len(secret) < 32 {
-			log.Printf("WARNING: TFR_JWT_SECRET is shorter than recommended 32 characters. Consider using a longer secret.")
-		}
-
-		jwtSecret = secret
+		storeSecret(resolved)
+		tokenManager = identityauth.NewTokenManager(resolved, jwtIssuer)
 	})
 
 	return jwtSecretErr
 }
 
-// GetJWTSecret retrieves the validated JWT secret.
-// Panics if ValidateJWTSecret() hasn't been called or failed.
+// GetJWTSecret retrieves the current effective JWT secret, validating lazily if
+// ValidateJWTSecret has not been called.
 func GetJWTSecret() string {
-	// If a file-watched secret is active, use that
-	if ptr := jwtSecretPtr.Load(); ptr != nil {
-		return string(*ptr)
-	}
-	if jwtSecret == "" {
-		// If ValidateJWTSecret wasn't called, try to validate now
+	if loadSecret() == "" {
 		if err := ValidateJWTSecret(); err != nil {
 			panic(err)
 		}
 	}
-	return jwtSecret
+	return loadSecret()
 }
 
-// StartJWTSecretFileWatch begins watching the file at secretFilePath for
-// changes.  When the file is modified, the signing key is atomically swapped.
-// The previous key is kept for overlapDuration to allow in-flight tokens
-// signed with the old key to still validate.
+// GenerateJWT creates a JWT for an authenticated user, delegating to the shared
+// identity TokenManager. Scopes are embedded so the auth middleware can
+// authorize without a database round-trip; a unique JTI is stamped for revocation.
+func GenerateJWT(userID, email string, scopes []string, expiresIn time.Duration) (string, error) {
+	_ = GetJWTSecret() // ensure the secret is validated and the TokenManager exists
+	return tokenManager.Generate(userID, email, scopes, expiresIn)
+}
+
+// ValidateJWT parses and validates a JWT via the shared identity TokenManager.
+// During a key rotation overlap the TokenManager also tries the previous secret.
+func ValidateJWT(tokenString string) (*Claims, error) {
+	_ = GetJWTSecret()
+	return tokenManager.Validate(tokenString)
+}
+
+// StartJWTSecretFileWatch begins watching the file at secretFilePath for changes.
+// When the file is modified, the signing secret is rotated on the TokenManager;
+// the previous key remains valid for overlapDuration so in-flight tokens signed
+// with the old key still validate.
 //
-// This function should be called once at startup when TFR_JWT_SECRET_FILE is set.
-// It returns a stop function that should be called during shutdown.
+// Call this once at startup when TFR_JWT_SECRET_FILE is set. It returns a stop
+// function that should be called during shutdown.
 func StartJWTSecretFileWatch(secretFilePath string, overlapDuration time.Duration) (stop func(), err error) {
 	if overlapDuration <= 0 {
 		overlapDuration = 5 * time.Minute
 	}
 
-	// Read the initial secret
+	// Ensure the TokenManager exists (constructed from the env/dev secret), then
+	// capture it so the watcher goroutine does not read the package-level
+	// pointer (which test resets may swap).
+	_ = GetJWTSecret()
+	tm := tokenManager
+
+	// Read the initial secret and make the file the source of truth. The env
+	// secret is dropped as a valid previous key (no tokens were signed with it
+	// before the file loaded).
 	data, err := os.ReadFile(secretFilePath) // #nosec G304 -- path comes from server config, not user input
 	if err != nil {
 		return nil, fmt.Errorf("failed to read JWT secret file %q: %w", secretFilePath, err)
 	}
 	secret := trimSecretBytes(data)
-	jwtSecretPtr.Store(&secret)
+	tm.RotateSecret(secret)
+	tm.ClearPreviousSecret()
+	storeSecret(string(secret))
 	slog.Info("JWT secret loaded from file", "path", secretFilePath, "length", len(secret))
 
 	watcher, err := fsnotify.NewWatcher()
@@ -172,24 +202,18 @@ func StartJWTSecretFileWatch(secretFilePath string, overlapDuration time.Duratio
 						continue
 					}
 
-					// Skip if the new secret is identical to the current one
-					// (fsnotify may fire multiple events for a single write)
-					current := jwtSecretPtr.Load()
-					if current != nil && bytes.Equal(*current, newSecret) {
+					// Skip if unchanged (fsnotify may fire multiple events per write).
+					if string(newSecret) == loadSecret() {
 						continue
 					}
 
-					// Save current as previous for the overlap period
-					if current != nil {
-						jwtPreviousSecretPtr.Store(current)
-						// Schedule clearing the previous secret after the overlap
-						time.AfterFunc(overlapDuration, func() {
-							jwtPreviousSecretPtr.Store(nil)
-							slog.Info("JWT previous secret cleared after overlap period")
-						})
-					}
-
-					jwtSecretPtr.Store(&newSecret)
+					// Rotate: the outgoing secret stays valid for the overlap window.
+					tm.RotateSecret(newSecret)
+					storeSecret(string(newSecret))
+					time.AfterFunc(overlapDuration, func() {
+						tm.ClearPreviousSecret()
+						slog.Info("JWT previous secret cleared after overlap period")
+					})
 					slog.Info("JWT secret reloaded from file", "path", secretFilePath, "length", len(newSecret))
 				}
 			case watchErr, ok := <-watcher.Errors:
@@ -217,85 +241,4 @@ func trimSecretBytes(data []byte) []byte {
 	result := make([]byte, end)
 	copy(result, data[:end])
 	return result
-}
-
-// GenerateJWT creates a JWT token for an authenticated user.
-// Scopes are embedded in the token so the auth middleware can authorize
-// requests without a database round-trip on every request.
-func GenerateJWT(userID, email string, scopes []string, expiresIn time.Duration) (string, error) {
-	if expiresIn == 0 {
-		expiresIn = 1 * time.Hour // Default to 1 hour
-	}
-
-	claims := &Claims{
-		UserID: userID,
-		Email:  email,
-		Scopes: scopes,
-		JTI:    uuid.New().String(),
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(expiresIn)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			Issuer:    "terraform-registry",
-			Subject:   userID,
-			ID:        uuid.New().String(),
-		},
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	secret := GetJWTSecret()
-
-	tokenString, err := token.SignedString([]byte(secret))
-	if err != nil {
-		return "", err
-	}
-
-	return tokenString, nil
-}
-
-// ValidateJWT parses and validates a JWT token.
-// When a previous key is available (during key rotation overlap), validation
-// tries the current key first, then falls back to the previous key.
-func ValidateJWT(tokenString string) (*Claims, error) {
-	secret := GetJWTSecret()
-
-	claims, err := validateJWTWithSecret(tokenString, secret)
-	if err == nil {
-		return claims, nil
-	}
-
-	// Try previous secret during overlap period
-	if prevPtr := jwtPreviousSecretPtr.Load(); prevPtr != nil {
-		prevClaims, prevErr := validateJWTWithSecret(tokenString, string(*prevPtr))
-		if prevErr == nil {
-			return prevClaims, nil
-		}
-	}
-
-	return nil, err
-}
-
-// validateJWTWithSecret validates a JWT token against a specific secret.
-func validateJWTWithSecret(tokenString, secret string) (*Claims, error) {
-	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
-		// Validate signing method
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, errors.New("unexpected signing method")
-		}
-		return []byte(secret), nil
-	})
-
-	if err != nil {
-		return nil, err
-	}
-
-	if !token.Valid {
-		return nil, errors.New("invalid token")
-	}
-
-	claims, ok := token.Claims.(*Claims)
-	if !ok {
-		return nil, errors.New("invalid claims type")
-	}
-
-	return claims, nil
 }
