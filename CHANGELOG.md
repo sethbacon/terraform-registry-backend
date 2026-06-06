@@ -7,6 +7,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0](https://github.com/sethbacon/terraform-registry-backend/compare/v1.5.0...v2.0.0) (2026-06-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* **deps:** Cutover deployments have their feature-table FK targets changed from public.{users,organizations} to identity.{users,organizations}. This drops and recreates 22 constraints. Non-cutover deployments are unaffected (migration is a no-op).
+* Cutover deployments have their feature-table FK targets changed from public.{users,organizations} to identity.{users,organizations}. This drops and recreates 22 constraints. Non-cutover deployments are unaffected (migration is a no-op).
+
+### Features
+
+* repoint feature-table FKs to the identity schema ([#451](https://github.com/sethbacon/terraform-registry-backend/issues/451)) ([206e2b3](https://github.com/sethbacon/terraform-registry-backend/commit/206e2b3dc0c0e23268855ac5e86c63861261ee91))
+
+
+### Bug Fixes
+
+* **deps:** bump terraform-suite-identity to v0.11.1 ([#453](https://github.com/sethbacon/terraform-registry-backend/issues/453)) ([b886093](https://github.com/sethbacon/terraform-registry-backend/commit/b8860937bb29fe4151e9ed41e3e65bdf519925e9))
+
 ## [1.5.0](https://github.com/sethbacon/terraform-registry-backend/compare/v1.4.2...v1.5.0) (2026-06-06)
 
 
