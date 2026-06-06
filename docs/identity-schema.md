@@ -23,11 +23,11 @@ separate service. There is nothing extra to deploy.
 
 Two environment flags gate the feature, **both default `false`**:
 
-| Variable | Default | Effect |
-| -------- | ------- | ------ |
-| `TFR_IDENTITY_MIGRATIONS_ENABLED` | `false` | Run the shared identity migrations at startup (create/update the `identity` schema). Additive and safe; does **not** change runtime behaviour on its own. |
-| `TFR_IDENTITY_SCHEMA_ENABLED` | `false` | Route identity reads/writes at the `identity` schema (`search_path=identity,public`). Requires the schema to exist. |
-| `TFR_IDENTITY_SCHEMA_NAME` | `identity` | The schema name. |
+| Variable                          | Default    | Effect                                                                                                                                                    |
+| --------------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TFR_IDENTITY_MIGRATIONS_ENABLED` | `false`    | Run the shared identity migrations at startup (create/update the `identity` schema). Additive and safe; does **not** change runtime behaviour on its own. |
+| `TFR_IDENTITY_SCHEMA_ENABLED`     | `false`    | Route identity reads/writes at the `identity` schema (`search_path=identity,public`). Requires the schema to exist.                                       |
+| `TFR_IDENTITY_SCHEMA_NAME`        | `identity` | The schema name.                                                                                                                                          |
 
 Leaving both unset keeps the registry on `public` — the supported standalone path.
 
@@ -43,43 +43,34 @@ reversible — turning it off routes identity access back to `public`.
 
 ---
 
-## ⚠️ Known limitation — cross-schema foreign keys
+## Cross-schema foreign keys (resolved in backend 2.0)
 
 > **Read this before enabling the cutover on a registry with module/provider data.**
 
-The cutover routes **identity** data to the `identity` schema, but the registry's
-**feature** tables still reference identity by foreign key in `public`:
+The cutover routes **identity** data to the `identity` schema. In backend 2.0, migration
+`000038_feature_fk_to_identity` automatically repoints the registry's **feature**-table
+foreign keys from `public.{users,organizations}` to `identity.{users,organizations}`.
+This is guarded — it only executes when the `identity` schema exists (cutover deployments)
+and is a no-op otherwise. It is idempotent and fully reversible (the `.down.sql` repoints
+back to `public`).
 
-```
-modules.created_by      → public.users(id)
-modules.organization_id → public.organizations(id)
-providers.created_by    → public.users(id)
-providers.organization_id → public.organizations(id)
-... (and similar on version_approvals, etc.)
-```
+After the migration, feature writes by users/orgs created **after** the cutover work
+correctly — the FK now resolves against `identity.users` / `identity.organizations`
+where those rows live.
 
-After the cutover, a user or organization **created in the `identity` schema** does not
-exist in `public.users` / `public.organizations`. A feature write that references such a
-row (for example, a newly-onboarded user publishing their first module) will therefore
-fail its foreign-key check.
+### Caveats
 
-Consequences:
+1. **Non-default schema name.** If you set `TFR_IDENTITY_SCHEMA_NAME` to something other
+   than `identity`, the migration's hardcoded schema literal will not match. Edit the
+   `.up.sql` and `.down.sql` files to replace `identity.` with your custom schema name
+   before applying.
 
-- ✅ **Identity / auth flows work fully** — login, sessions, API keys, audit logs, role
-  templates, OIDC config. These are internal to the identity schema.
-- ✅ Feature writes by users/orgs that **existed before the cutover** (and were copied to
-  `identity`, so the same UUID is still present in `public`) continue to work.
-- ⚠️ Feature writes that reference a user/org **created after the cutover** fail.
-
-Making feature writes work for newly-created identity entities requires migrating the
-feature-table foreign keys to reference `identity.{users,organizations}`. That migration
-is **not** included here — it is planned as a fast-follow (backend 2.0). Until then, enable
-the cutover only where this is acceptable:
-
-- **new / greenfield deployments** evaluating the shared identity store, or
-- deployments where you have migrated the feature-table FKs yourself.
-
-For a standalone registry with active publishing, **stay on the default (`public`) schema.**
+2. **Identity enabled after initial migration.** If you enable
+   `TFR_IDENTITY_MIGRATIONS_ENABLED` on a deployment whose app migrations already ran
+   (i.e. migration 000038 already executed as a no-op), golang-migrate will not re-run
+   it. In this case, run the body of `000038_feature_fk_to_identity.up.sql` manually
+   against the database — the SQL is safe to execute by hand (idempotent
+   `DROP CONSTRAINT IF EXISTS` + `ADD CONSTRAINT`).
 
 ---
 
