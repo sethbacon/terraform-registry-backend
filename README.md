@@ -23,6 +23,7 @@ This repository contains the backend API, database migrations, and deployment in
 - **OIDC Integration** — Generic OIDC provider support for SSO
 - **Azure AD / Entra ID** — Native Azure Active Directory integration
 - **Role-Based Access Control (RBAC)** — Fine-grained permissions with organization roles
+- **Shared Identity (optional)** — Can share one identity store with the rest of the Terraform suite via a dedicated `identity` schema; off by default and self-contained otherwise. See the [Shared Identity Schema guide](docs/identity-schema.md).
 
 ### Multi-Tenancy
 

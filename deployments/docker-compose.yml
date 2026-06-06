@@ -60,6 +60,10 @@ services:
       TFR_MULTI_TENANCY_ENABLED: "false"
       TFR_MULTI_TENANCY_DEFAULT_ORGANIZATION: default
 
+      # Shared identity schema (optional, OFF by default; see docs/identity-schema.md).
+      # TFR_IDENTITY_MIGRATIONS_ENABLED: "true"
+      # TFR_IDENTITY_SCHEMA_ENABLED: "true"
+
       # Security - TLS is terminated by nginx; backend listens plain HTTP on the internal network
       TFR_SECURITY_TLS_ENABLED: "false"
       TFR_SECURITY_RATE_LIMITING_ENABLED: "true"

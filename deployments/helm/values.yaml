@@ -46,7 +46,13 @@ backend:
   #     labelSelector:
   #       matchLabels:
   #         app.kubernetes.io/component: backend
-  # -- Additional environment variables
+  # -- Additional environment variables. To share one identity store across the
+  #    Terraform suite (optional, off by default — see docs/identity-schema.md):
+  #    extraEnv:
+  #      - name: TFR_IDENTITY_MIGRATIONS_ENABLED
+  #        value: "true"
+  #      - name: TFR_IDENTITY_SCHEMA_ENABLED
+  #        value: "true"
   extraEnv: []
   # -- Additional volume mounts
   extraVolumeMounts: []
