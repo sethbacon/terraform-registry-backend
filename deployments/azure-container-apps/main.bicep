@@ -132,6 +132,9 @@ resource backendApp 'Microsoft.App/containerApps@2023-05-01' = {
           env: [
             { name: 'TFR_SERVER_HOST', value: '0.0.0.0' }
             { name: 'TFR_SERVER_PORT', value: '8080' }
+            // Shared identity schema (optional, OFF by default; see docs/identity-schema.md).
+            // { name: 'TFR_IDENTITY_MIGRATIONS_ENABLED', value: 'true' }
+            // { name: 'TFR_IDENTITY_SCHEMA_ENABLED', value: 'true' }
             { name: 'TFR_SERVER_BASE_URL', value: !empty(customDomain) ? 'https://${customDomain}' : 'https://${environmentName}-frontend.${containerAppEnv.properties.defaultDomain}' }
             { name: 'TFR_DATABASE_HOST', value: databaseHost }
             { name: 'TFR_DATABASE_PORT', value: '5432' }

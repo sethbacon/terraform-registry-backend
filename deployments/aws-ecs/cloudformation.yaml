@@ -504,6 +504,11 @@ Resources:
               Value: '0.0.0.0'
             - Name: TFR_SERVER_PORT
               Value: '8080'
+            # Shared identity schema (optional, OFF by default; see docs/identity-schema.md).
+            # - Name: TFR_IDENTITY_MIGRATIONS_ENABLED
+            #   Value: 'true'
+            # - Name: TFR_IDENTITY_SCHEMA_ENABLED
+            #   Value: 'true'
             - Name: TFR_SERVER_BASE_URL
               Value: !If
                 - HasDomain

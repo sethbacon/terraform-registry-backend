@@ -45,6 +45,9 @@ For example, `database.host` in YAML becomes `TFR_DATABASE_HOST` as an env var.
 | `TFR_AUTH_OIDC_ENABLED`                              | bool     | `false`                 | No         | Enable generic OIDC                                                 |
 | `TFR_AUTH_AZURE_AD_ENABLED`                          | bool     | `false`                 | No         | Enable Azure AD / Entra ID                                          |
 | `TFR_MULTI_TENANCY_ENABLED`                          | bool     | `false`                 | No         | Enable multi-organization mode                                      |
+| `TFR_IDENTITY_MIGRATIONS_ENABLED`                    | bool     | `false`                 | No         | Run the shared identity-schema migrations ([guide](identity-schema.md)) |
+| `TFR_IDENTITY_SCHEMA_ENABLED`                        | bool     | `false`                 | No         | Route identity at the shared `identity` schema ([guide](identity-schema.md)) |
+| `TFR_IDENTITY_SCHEMA_NAME`                           | string   | `identity`              | No         | Identity schema name                                                |
 | `TFR_LOGGING_LEVEL`                                  | string   | `info`                  | No         | `debug`, `info`, `warn`, `error`                                    |
 | `TFR_LOGGING_FORMAT`                                 | string   | `json`                  | No         | `json`, `text`                                                      |
 | `TFR_TELEMETRY_ENABLED`                              | bool     | `true`                  | No         | Enable telemetry subsystem                                          |
@@ -443,6 +446,28 @@ Suitable for teams that don't need separate permission boundaries.
 **Multi-tenant mode** (`enabled: true`): Each organization has isolated modules,
 providers, and member lists. Users must be added to an organization to access its resources.
 Use this when hosting the registry for multiple independent teams or customers.
+
+---
+
+## Shared Identity Schema
+
+**Optional and off by default.** The registry can serve its identity tables from a
+dedicated, shared `identity` PostgreSQL schema (the `terraform-suite-identity` component)
+so that it and the other suite apps share one identity store. By default the registry is
+fully self-contained — identity lives in its own `public` schema and there is nothing
+extra to deploy.
+
+These are environment-only flags (not in `config.yaml`):
+
+```bash
+TFR_IDENTITY_MIGRATIONS_ENABLED=false   # create/update the shared identity schema
+TFR_IDENTITY_SCHEMA_ENABLED=false       # route identity reads/writes there
+TFR_IDENTITY_SCHEMA_NAME=identity       # schema name
+```
+
+> Enabling the cutover on a registry with existing module/provider data has a cross-schema
+> foreign-key consideration. **Read [`identity-schema.md`](identity-schema.md)** for the
+> full rollout, verification, rollback, and the known limitation before turning it on.
 
 ---
 

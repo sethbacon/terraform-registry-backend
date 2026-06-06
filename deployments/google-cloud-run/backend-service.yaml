@@ -87,6 +87,11 @@ spec:
               value: "PROJECT_ID"
             - name: TFR_AUTH_API_KEYS_ENABLED
               value: "true"
+            # Shared identity schema (optional, OFF by default; see docs/identity-schema.md).
+            # - name: TFR_IDENTITY_MIGRATIONS_ENABLED
+            #   value: "true"
+            # - name: TFR_IDENTITY_SCHEMA_ENABLED
+            #   value: "true"
             - name: TFR_LOGGING_LEVEL
               value: "info"
             - name: TFR_LOGGING_FORMAT
