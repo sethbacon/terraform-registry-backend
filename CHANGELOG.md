@@ -7,6 +7,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0](https://github.com/sethbacon/terraform-registry-backend/compare/v1.4.2...v1.5.0) (2026-06-06)
+
+
+### Features
+
+* **identity:** identity-schema cutover behind a flag ([#448](https://github.com/sethbacon/terraform-registry-backend/issues/448)) ([5edf015](https://github.com/sethbacon/terraform-registry-backend/commit/5edf01534d56b8c6469a6a520af88ccfeae642aa))
+* integrate shared identity migrations (feature-flagged) ([#439](https://github.com/sethbacon/terraform-registry-backend/issues/439)) ([6258902](https://github.com/sethbacon/terraform-registry-backend/commit/6258902f16c6ae5dc9cad8ce1a46579372fa0fb2)), closes [#438](https://github.com/sethbacon/terraform-registry-backend/issues/438)
+
+
+### Documentation
+
+* document the shared identity schema and clean up redundant tests ([#449](https://github.com/sethbacon/terraform-registry-backend/issues/449)) ([18d8a10](https://github.com/sethbacon/terraform-registry-backend/commit/18d8a1025e0f0f3440618f5738a6a9f2fd79e222))
+
+
+### Refactor
+
+* **auth:** delegate API key gen/validation to the identity module ([#443](https://github.com/sethbacon/terraform-registry-backend/issues/443)) ([4cb4012](https://github.com/sethbacon/terraform-registry-backend/commit/4cb4012411dac2ad447bbff6c6996036bd3202e1))
+* **auth:** delegate JWT to the identity TokenManager ([#445](https://github.com/sethbacon/terraform-registry-backend/issues/445)) ([ea247cb](https://github.com/sethbacon/terraform-registry-backend/commit/ea247cbeba362501059c92fd29c1b18c2783a747))
+* **auth:** delegate OIDC provider to the identity module ([#446](https://github.com/sethbacon/terraform-registry-backend/issues/446)) ([4cb2751](https://github.com/sethbacon/terraform-registry-backend/commit/4cb2751ebd4cb5edb5d953cc537c909a6f02689a))
+* **auth:** delegate scope-checking to the identity module ([#442](https://github.com/sethbacon/terraform-registry-backend/issues/442)) ([441c996](https://github.com/sethbacon/terraform-registry-backend/commit/441c9961fb12c2331e79e0eb6919bb19233ab043))
+* **identity:** delegate the identity data layer to the shared module ([#447](https://github.com/sethbacon/terraform-registry-backend/issues/447)) ([b5a6a6f](https://github.com/sethbacon/terraform-registry-backend/commit/b5a6a6f8af8fe14d0c9246b715a81817d6882d72))
+
 ## [1.4.2](https://github.com/sethbacon/terraform-registry-backend/compare/v1.4.1...v1.4.2) (2026-05-30)
 
 
