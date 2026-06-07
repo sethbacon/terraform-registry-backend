@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0](https://github.com/sethbacon/terraform-registry-backend/compare/v2.1.0...v2.2.0) (2026-06-07)
+
+
+### Features
+
+* **identity:** seed app role scopes into identity schema on cutover ([#462](https://github.com/sethbacon/terraform-registry-backend/issues/462)) ([0a3a91c](https://github.com/sethbacon/terraform-registry-backend/commit/0a3a91c63133b875895a1c99aec76bdf5a66943e)), closes [#461](https://github.com/sethbacon/terraform-registry-backend/issues/461)
+
 ## [2.1.0](https://github.com/sethbacon/terraform-registry-backend/compare/v2.0.2...v2.1.0) (2026-06-07)
 
 
