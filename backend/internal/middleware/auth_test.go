@@ -241,10 +241,10 @@ func newTestAPIKeyRepo(t *testing.T) (*repositories.APIKeyRepository, sqlmock.Sq
 	return repositories.NewAPIKeyRepository(db), mock
 }
 
-// GetAPIKeysByPrefix uses 11 columns (no user_name join)
+// GetAPIKeysByPrefix uses 12 columns (no user_name join)
 var apiKeyPrefixCols = []string{
 	"id", "user_id", "organization_id", "name", "description",
-	"key_hash", "key_prefix", "scopes", "expires_at", "last_used_at", "created_at",
+	"key_hash", "key_prefix", "scopes", "expires_at", "last_used_at", "expiry_notification_sent_at", "created_at",
 }
 
 func TestAuthenticateAPIKey_DBError(t *testing.T) {
@@ -282,7 +282,7 @@ func TestAuthenticateAPIKey_KeyDoesNotMatch(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM api_keys.*WHERE.*key_prefix").
 		WillReturnRows(sqlmock.NewRows(apiKeyPrefixCols).AddRow(
 			"key-1", "user-1", "org-1", "Test Key", nil, badHash, "prefix",
-			[]byte(`["read"]`), nil, nil, time.Now(),
+			[]byte(`["read"]`), nil, nil, nil, time.Now(),
 		))
 
 	key, err := authenticateAPIKey(context.Background(), "some-key", "prefix", repo)
@@ -313,7 +313,7 @@ func TestAuthenticateAPIKey_KeyMatches(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM api_keys.*WHERE.*key_prefix").
 		WillReturnRows(sqlmock.NewRows(apiKeyPrefixCols).AddRow(
 			"key-1", "user-1", "org-1", "Test Key", nil, validHash, "prefix",
-			[]byte(`["read"]`), nil, nil, time.Now(),
+			[]byte(`["read"]`), nil, nil, nil, time.Now(),
 		))
 
 	key, err := authenticateAPIKey(context.Background(), providedKey, "prefix", repo)
@@ -384,7 +384,7 @@ func TestAuthMiddleware_ExpiredAPIKey(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM api_keys.*WHERE.*key_prefix").
 		WillReturnRows(sqlmock.NewRows(apiKeyPrefixCols).AddRow(
 			"key-1", "user-1", "org-1", "Test Key", nil, validHash, "tfr_test_",
-			[]byte(`["read"]`), &expiredAt, nil, time.Now(),
+			[]byte(`["read"]`), &expiredAt, nil, nil, time.Now(),
 		))
 
 	w := httptest.NewRecorder()
@@ -525,7 +525,7 @@ func TestAuthMiddleware_APIKeyWithUser(t *testing.T) {
 	apiKeyMock.ExpectQuery("SELECT.*FROM api_keys.*WHERE.*key_prefix").
 		WillReturnRows(sqlmock.NewRows(apiKeyPrefixCols).AddRow(
 			"key-1", &userID, "org-1", "Test Key", nil, validHash, "tfr_apikey",
-			[]byte(`["modules:read"]`), nil, nil, time.Now(),
+			[]byte(`["modules:read"]`), nil, nil, nil, time.Now(),
 		))
 
 	// userRepo.GetUserByID loads the user linked to the API key
@@ -620,7 +620,7 @@ func TestOptionalAuthMiddleware_APIKey_Valid_SetsContext(t *testing.T) {
 	apiKeyMock.ExpectQuery("SELECT.*FROM api_keys.*WHERE.*key_prefix").
 		WillReturnRows(sqlmock.NewRows(apiKeyPrefixCols).AddRow(
 			"key-2", &userID, "org-1", "CI Key", nil, validHash, "tfr_optio",
-			[]byte(`["modules:read"]`), nil, nil, time.Now(),
+			[]byte(`["modules:read"]`), nil, nil, nil, time.Now(),
 		))
 
 	userMock.ExpectQuery("SELECT.*FROM users WHERE id").
@@ -655,7 +655,7 @@ func TestOptionalAuthMiddleware_APIKey_Expired_PassesThrough(t *testing.T) {
 	apiKeyMock.ExpectQuery("SELECT.*FROM api_keys.*WHERE.*key_prefix").
 		WillReturnRows(sqlmock.NewRows(apiKeyPrefixCols).AddRow(
 			"key-3", &userID, "org-1", "Expired Key", nil, validHash, "tfr_expir",
-			[]byte(`["modules:read"]`), &expiredAt, nil, time.Now(),
+			[]byte(`["modules:read"]`), &expiredAt, nil, nil, time.Now(),
 		))
 
 	w := httptest.NewRecorder()
