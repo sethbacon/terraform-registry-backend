@@ -18,12 +18,12 @@ import (
 
 var akCols = []string{
 	"id", "user_id", "organization_id", "name", "description",
-	"key_hash", "key_prefix", "scopes", "expires_at", "last_used_at", "created_at",
+	"key_hash", "key_prefix", "scopes", "expires_at", "last_used_at", "expiry_notification_sent_at", "created_at",
 }
 
 var akListCols = []string{
 	"id", "user_id", "organization_id", "name", "description",
-	"key_hash", "key_prefix", "scopes", "expires_at", "last_used_at", "created_at", "user_name",
+	"key_hash", "key_prefix", "scopes", "expires_at", "last_used_at", "expiry_notification_sent_at", "created_at", "user_name",
 }
 
 var memberRoleCols = []string{
@@ -38,7 +38,7 @@ var testAdminRoleScopes = []byte(`["admin"]`)
 func sampleAKRow() *sqlmock.Rows {
 	return sqlmock.NewRows(akCols).
 		AddRow("key-1", "user-1", "org-1", "CI Key", nil, "hashedkey", "tfr_abc123",
-			testKeyScopes, nil, nil, time.Now())
+			testKeyScopes, nil, nil, nil, time.Now())
 }
 
 func emptyAKRows() *sqlmock.Rows {
@@ -48,7 +48,7 @@ func emptyAKRows() *sqlmock.Rows {
 func sampleAKListRow() *sqlmock.Rows {
 	return sqlmock.NewRows(akListCols).
 		AddRow("key-1", "user-1", "org-1", "CI Key", nil, "hashedkey", "tfr_abc123",
-			testKeyScopes, nil, nil, time.Now(), nil)
+			testKeyScopes, nil, nil, nil, time.Now(), nil)
 }
 
 func sampleMemberRoleRow() *sqlmock.Rows {

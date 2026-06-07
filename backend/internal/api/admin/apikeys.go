@@ -133,6 +133,7 @@ func (h *APIKeyHandlers) ListAPIKeysHandler() gin.HandlerFunc {
 		for _, k := range keys {
 			var expiresAt interface{}
 			var lastUsed interface{}
+			var expiryNotifSentAt interface{}
 
 			if k.ExpiresAt != nil {
 				expiresAt = k.ExpiresAt.Format(time.RFC3339)
@@ -146,22 +147,29 @@ func (h *APIKeyHandlers) ListAPIKeysHandler() gin.HandlerFunc {
 				lastUsed = nil
 			}
 
+			if k.ExpiryNotificationSentAt != nil {
+				expiryNotifSentAt = k.ExpiryNotificationSentAt.Format(time.RFC3339)
+			} else {
+				expiryNotifSentAt = nil
+			}
+
 			desc := ""
 			if k.Description != nil {
 				desc = *k.Description
 			}
 
 			resp = append(resp, gin.H{
-				"id":           k.ID,
-				"user_id":      k.UserID,
-				"user_name":    k.UserName,
-				"name":         k.Name,
-				"description":  desc,
-				"key_prefix":   k.KeyPrefix,
-				"scopes":       k.Scopes,
-				"expires_at":   expiresAt,
-				"last_used_at": lastUsed,
-				"created_at":   k.CreatedAt.Format(time.RFC3339),
+				"id":                          k.ID,
+				"user_id":                     k.UserID,
+				"user_name":                   k.UserName,
+				"name":                        k.Name,
+				"description":                 desc,
+				"key_prefix":                  k.KeyPrefix,
+				"scopes":                      k.Scopes,
+				"expires_at":                  expiresAt,
+				"last_used_at":                lastUsed,
+				"expiry_notification_sent_at": expiryNotifSentAt,
+				"created_at":                  k.CreatedAt.Format(time.RFC3339),
 			})
 		}
 
