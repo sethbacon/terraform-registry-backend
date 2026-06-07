@@ -7,6 +7,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0](https://github.com/sethbacon/terraform-registry-backend/compare/v2.0.2...v2.1.0) (2026-06-07)
+
+
+### Features
+
+* **api-key:** include expiry_notification_sent_at in API key responses ([48c0706](https://github.com/sethbacon/terraform-registry-backend/commit/48c070639af029f26d70b1a91a43fdcf1aeed2bf)), closes [#456](https://github.com/sethbacon/terraform-registry-backend/issues/456)
+
+
+### Bug Fixes
+
+* **deps:** bump terraform-suite-identity to v0.12.0 ([a8973eb](https://github.com/sethbacon/terraform-registry-backend/commit/a8973ebeb31c4f21599502fe9719a98a108e0125))
+
 ## [2.0.2](https://github.com/sethbacon/terraform-registry-backend/compare/v2.0.1...v2.0.2) (2026-06-07)
 
 
