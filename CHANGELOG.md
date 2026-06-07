@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.1](https://github.com/sethbacon/terraform-registry-backend/compare/v2.0.0...v2.0.1) (2026-06-06)
+
+
+### Bug Fixes
+
+* **deps:** bump terraform-suite-identity to v0.11.2 ([#454](https://github.com/sethbacon/terraform-registry-backend/issues/454)) ([b50fde2](https://github.com/sethbacon/terraform-registry-backend/commit/b50fde2ddb4051a66efc073449f29a4c14f239d3))
+
 ## [2.0.0](https://github.com/sethbacon/terraform-registry-backend/compare/v1.5.0...v2.0.0) (2026-06-06)
 
 
