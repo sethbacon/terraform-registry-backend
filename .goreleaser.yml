@@ -46,12 +46,12 @@ builds:
 
 archives:
   - id: terraform-registry-binaries
-    builds: [terraform-registry]
+    ids: [terraform-registry]
     formats: [binary]
     name_template: "terraform-registry-{{ .Os }}-{{ .Arch }}"
 
   - id: registry-import-binaries
-    builds: [registry-import]
+    ids: [registry-import]
     formats: [binary]
     name_template: "registry-import-{{ .Os }}-{{ .Arch }}"
 
