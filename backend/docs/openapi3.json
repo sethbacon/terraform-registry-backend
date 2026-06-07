@@ -15666,6 +15666,9 @@
                     "expires_at": {
                         "type": "string"
                     },
+                    "expiry_notification_sent_at": {
+                        "type": "string"
+                    },
                     "id": {
                         "type": "string"
                     },
