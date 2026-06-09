@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -1941,6 +1942,229 @@ func TestApplySAMLGroupMappings_NothingConfigured(t *testing.T) {
 	}
 
 	if err := h.applySAMLGroupMappings(context.Background(), "user-1", []string{"x"}); err != nil {
+		t.Errorf("expected nil error, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// LDAP entry point — same reconcile semantics via applyLDAPGroupMappings.
+// LDAP group DNs are matched case-insensitively (matching
+// ldappkg.MatchGroupMappings); the adapter lowercases both the configured
+// GroupDNs and the user's DNs before delegating to reconcileGroupMemberships.
+// ---------------------------------------------------------------------------
+
+// newLDAPHandler builds an AuthHandlers wired only with what the LDAP group
+// reconcile needs, avoiding NewProvider (no live LDAP server in tests).
+func newLDAPHandler(db *sql.DB, cfg *config.Config) *AuthHandlers {
+	return &AuthHandlers{
+		cfg:        cfg,
+		db:         db,
+		orgRepo:    repositories.NewOrganizationRepository(db),
+		stateStore: auth.NewMemoryStateStore(time.Hour),
+	}
+}
+
+// LDAP: user loses their only mapped group DN → membership REVOKED.
+func TestApplyLDAPGroupMappings_LosesGroup_Revokes(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.LDAP.GroupMappings = []config.LDAPGroupMapping{
+		{GroupDN: "cn=admins,ou=groups,dc=example,dc=com", Organization: "acme", Role: "admin"},
+	}
+	h := newLDAPHandler(db, cfg)
+
+	expectOrgByName(mock, "acme", "org-acme")
+	expectIsMember(mock, "org-acme", "user-1", "rt-admin")
+	expectRemoveMember(mock)
+
+	// User now has an unrelated DN that maps to nothing.
+	err := h.applyLDAPGroupMappings(context.Background(), "user-1",
+		[]string{"cn=unrelated,ou=groups,dc=example,dc=com"})
+	if err != nil {
+		t.Fatalf("applyLDAPGroupMappings: unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// LDAP: user's DN changes to one mapping a different role in the same org → role UPDATED.
+func TestApplyLDAPGroupMappings_GroupChanges_UpdatesRole(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.LDAP.GroupMappings = []config.LDAPGroupMapping{
+		{GroupDN: "cn=admins,ou=groups,dc=example,dc=com", Organization: "acme", Role: "admin"},
+		{GroupDN: "cn=viewers,ou=groups,dc=example,dc=com", Organization: "acme", Role: "viewer"},
+	}
+	h := newLDAPHandler(db, cfg)
+
+	// User now has the viewers DN (was admins) → desired role viewer.
+	expectOrgByName(mock, "acme", "org-acme")
+	expectIsMember(mock, "org-acme", "user-1", "rt-admin")
+	expectUpdateMember(mock, "viewer", "rt-viewer")
+
+	err := h.applyLDAPGroupMappings(context.Background(), "user-1",
+		[]string{"cn=viewers,ou=groups,dc=example,dc=com"})
+	if err != nil {
+		t.Fatalf("applyLDAPGroupMappings: unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// LDAP: case-insensitive DN matching — a differently-cased DN still matches the
+// configured mapping (reproducing ldappkg.MatchGroupMappings) and upserts.
+func TestApplyLDAPGroupMappings_CaseInsensitiveDN_Matches(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	// Configured DN uses lowercase; the user presents a mixed/upper-case DN.
+	cfg.Auth.LDAP.GroupMappings = []config.LDAPGroupMapping{
+		{GroupDN: "cn=admins,ou=groups,dc=example,dc=com", Organization: "acme", Role: "admin"},
+	}
+	h := newLDAPHandler(db, cfg)
+
+	expectOrgByName(mock, "acme", "org-acme")
+	expectNotMember(mock)
+	expectAddMember(mock, "admin", "rt-admin")
+
+	err := h.applyLDAPGroupMappings(context.Background(), "user-1",
+		[]string{"CN=Admins,OU=Groups,DC=Example,DC=Com"})
+	if err != nil {
+		t.Fatalf("applyLDAPGroupMappings: unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// LDAP: manual membership in an UNMANAGED org → PRESERVED. Only the managed org
+// is ever queried, so a manual membership elsewhere cannot be revoked.
+func TestApplyLDAPGroupMappings_UnmanagedOrg_Preserved(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.LDAP.GroupMappings = []config.LDAPGroupMapping{
+		{GroupDN: "cn=admins,ou=groups,dc=example,dc=com", Organization: "acme", Role: "admin"},
+	}
+	h := newLDAPHandler(db, cfg)
+
+	// Only managed org "acme" reconciled; user not a member, no matching DN → no-op.
+	expectOrgByName(mock, "acme", "org-acme")
+	expectNotMember(mock)
+
+	err := h.applyLDAPGroupMappings(context.Background(), "user-1",
+		[]string{"cn=unrelated,ou=groups,dc=example,dc=com"})
+	if err != nil {
+		t.Fatalf("applyLDAPGroupMappings: unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// LDAP: default_role first-login-only — existing member not overwritten.
+func TestApplyLDAPGroupMappings_DefaultRole_FirstLoginOnly(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.LDAP.DefaultRole = "viewer"
+	h := newLDAPHandler(db, cfg)
+
+	// GetDefaultOrganization → found; user is already a member → no write at all.
+	expectOrgByName(mock, "default", "org-default")
+	expectIsMember(mock, "org-default", "user-1", "rt-manual")
+
+	err := h.applyLDAPGroupMappings(context.Background(), "user-1",
+		[]string{"cn=anything,ou=groups,dc=example,dc=com"})
+	if err != nil {
+		t.Fatalf("applyLDAPGroupMappings: unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// LDAP: default_role SKIPPED when the default org is itself IdP-managed.
+func TestApplyLDAPGroupMappings_DefaultRole_SkippedWhenDefaultOrgManaged(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	// A mapping references the "default" org, making it IdP-managed.
+	cfg.Auth.LDAP.GroupMappings = []config.LDAPGroupMapping{
+		{GroupDN: "cn=admins,ou=groups,dc=example,dc=com", Organization: "default", Role: "admin"},
+	}
+	cfg.Auth.LDAP.DefaultRole = "viewer"
+	h := newLDAPHandler(db, cfg)
+
+	// Managed reconcile of "default": user currently a member, no matching DN → REVOKE.
+	expectOrgByName(mock, "default", "org-default")
+	expectIsMember(mock, "org-default", "user-1", "rt-admin")
+	expectRemoveMember(mock)
+
+	// default-role fallback resolves the default org, recognises it as IdP-managed,
+	// and returns WITHOUT re-adding the user (no membership check, no INSERT/UPDATE).
+	expectOrgByName(mock, "default", "org-default")
+
+	err := h.applyLDAPGroupMappings(context.Background(), "user-1",
+		[]string{"cn=not-admins,ou=groups,dc=example,dc=com"})
+	if err != nil {
+		t.Fatalf("applyLDAPGroupMappings: unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// LDAP: multiple DNs mapping to the SAME org → deterministic single desired role.
+// The first mapping in config order whose DN the user has wins.
+func TestApplyLDAPGroupMappings_MultipleDNsSameOrg_Deterministic(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.LDAP.GroupMappings = []config.LDAPGroupMapping{
+		{GroupDN: "cn=admins,ou=groups,dc=example,dc=com", Organization: "acme", Role: "admin"},
+		{GroupDN: "cn=devs,ou=groups,dc=example,dc=com", Organization: "acme", Role: "editor"},
+	}
+	h := newLDAPHandler(db, cfg)
+
+	// User has BOTH DNs. First config mapping (admins → admin) must win.
+	expectOrgByName(mock, "acme", "org-acme")
+	expectNotMember(mock)
+	expectAddMember(mock, "admin", "rt-admin")
+
+	err := h.applyLDAPGroupMappings(context.Background(), "user-1", []string{
+		"cn=devs,ou=groups,dc=example,dc=com",
+		"cn=admins,ou=groups,dc=example,dc=com",
+	})
+	if err != nil {
+		t.Fatalf("applyLDAPGroupMappings: unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// LDAP: nothing configured → no-op (no DB calls).
+func TestApplyLDAPGroupMappings_NothingConfigured(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	h := newLDAPHandler(db, cfg)
+
+	if err := h.applyLDAPGroupMappings(context.Background(), "user-1",
+		[]string{"cn=x,ou=groups,dc=example,dc=com"}); err != nil {
 		t.Errorf("expected nil error, got %v", err)
 	}
 }
