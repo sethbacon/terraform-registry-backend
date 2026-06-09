@@ -7,6 +7,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.1](https://github.com/sethbacon/terraform-registry-backend/compare/v2.2.0...v2.2.1) (2026-06-09)
+
+
+### Bug Fixes
+
+* **auth:** deprovision group-mapped roles when a user loses the IdP group ([#470](https://github.com/sethbacon/terraform-registry-backend/issues/470)) ([7cb5299](https://github.com/sethbacon/terraform-registry-backend/commit/7cb529994bcb078ac8a3a8b84b727d333512f414))
+* **auth:** deprovision LDAP group-mapped roles when a user loses the group ([#473](https://github.com/sethbacon/terraform-registry-backend/issues/473)) ([0b6d550](https://github.com/sethbacon/terraform-registry-backend/commit/0b6d5505b54de070d036772260f1e9e2c9379399))
+* **deps:** bump Go to 1.26.4 to resolve stdlib advisories ([#468](https://github.com/sethbacon/terraform-registry-backend/issues/468)) ([7401a61](https://github.com/sethbacon/terraform-registry-backend/commit/7401a617d0a6a84be575bb14b6250458677e8c1c))
+
 ## [2.2.0](https://github.com/sethbacon/terraform-registry-backend/compare/v2.1.0...v2.2.0) (2026-06-07)
 
 
