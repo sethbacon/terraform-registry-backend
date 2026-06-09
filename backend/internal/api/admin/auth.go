@@ -816,89 +816,26 @@ func (h *AuthHandlers) resolveGroupMappingConfig(ctx context.Context) (claimName
 	return h.cfg.Auth.OIDC.GroupClaimName, h.cfg.Auth.OIDC.GroupMappings, h.cfg.Auth.OIDC.DefaultRole
 }
 
-// applyGroupMappings resolves the user's IdP groups against the configured
-// group_mappings and upserts their org memberships accordingly.
-//
-// Logic per configured mapping:
-//   - If the user belongs to the mapped group → ensure they are a member of the
-//     mapped organization with the mapped role (insert or update).
-//   - Memberships created by a previous login are updated if the role changed.
-//
-// If no mapping matches any of the user's groups but default_role is set, the
-// user is added to (or kept in) the default organization with that role.
-//
-// Groups/orgs not mentioned in any mapping are left untouched so that manually
-// assigned memberships are not wiped by an unrelated login.
+// groupMapping is the provider-agnostic shape of a single group-to-role mapping.
+// OIDC (config.OIDCGroupMapping) and SAML (config.SAMLGroupMapping) both carry
+// the identical {Group, Organization, Role} triple, so the reconcile logic is
+// shared and adapts each provider's slice into this type.
+type groupMapping struct {
+	Group        string
+	Organization string
+	Role         string
+}
+
+// applyGroupMappings resolves the user's OIDC IdP groups against the configured
+// group_mappings and reconciles their org memberships. See
+// reconcileGroupMemberships for the full reconciliation semantics.
 func (h *AuthHandlers) applyGroupMappings(ctx context.Context, userID string, groups []string) error {
 	_, mappings, defaultRole := h.resolveGroupMappingConfig(ctx)
-	if len(mappings) == 0 && defaultRole == "" {
-		return nil
+	gm := make([]groupMapping, len(mappings))
+	for i, m := range mappings {
+		gm[i] = groupMapping{Group: m.Group, Organization: m.Organization, Role: m.Role}
 	}
-
-	// Build a set of the user's groups for O(1) lookup.
-	groupSet := make(map[string]struct{}, len(groups))
-	for _, g := range groups {
-		groupSet[g] = struct{}{}
-	}
-
-	matched := false
-
-	for _, mapping := range mappings {
-		if _, ok := groupSet[mapping.Group]; !ok {
-			continue
-		}
-		matched = true
-
-		org, err := h.orgRepo.GetByName(ctx, mapping.Organization)
-		if err != nil || org == nil {
-			slog.Warn("OIDC group mapping: organization not found", "org", mapping.Organization, "group", mapping.Group)
-			continue
-		}
-
-		isMember, _, err := h.orgRepo.CheckMembership(ctx, org.ID, userID)
-		if err != nil {
-			return fmt.Errorf("check membership org=%s user=%s: %w", org.ID, userID, err)
-		}
-
-		if isMember {
-			if err := h.orgRepo.UpdateMemberRole(ctx, org.ID, userID, mapping.Role); err != nil {
-				return fmt.Errorf("update member role org=%s user=%s role=%s: %w", org.ID, userID, mapping.Role, err)
-			}
-		} else {
-			if err := h.orgRepo.AddMemberWithParams(ctx, org.ID, userID, mapping.Role); err != nil {
-				return fmt.Errorf("add member org=%s user=%s role=%s: %w", org.ID, userID, mapping.Role, err)
-			}
-		}
-
-		slog.Info("OIDC group mapping applied", "user_id", userID, "group", mapping.Group, "org", mapping.Organization, "role", mapping.Role)
-	}
-
-	// Fall back to defaultRole in the default organization when nothing matched.
-	if !matched && defaultRole != "" {
-		org, err := h.orgRepo.GetDefaultOrganization(ctx)
-		if err != nil || org == nil {
-			return fmt.Errorf("default organization not found for default_role fallback: %w", err)
-		}
-
-		isMember, _, err := h.orgRepo.CheckMembership(ctx, org.ID, userID)
-		if err != nil {
-			return fmt.Errorf("check membership default org user=%s: %w", userID, err)
-		}
-
-		if isMember {
-			if err := h.orgRepo.UpdateMemberRole(ctx, org.ID, userID, defaultRole); err != nil {
-				return fmt.Errorf("update default role user=%s role=%s: %w", userID, defaultRole, err)
-			}
-		} else {
-			if err := h.orgRepo.AddMemberWithParams(ctx, org.ID, userID, defaultRole); err != nil {
-				return fmt.Errorf("add default member user=%s role=%s: %w", userID, defaultRole, err)
-			}
-		}
-
-		slog.Info("OIDC default role applied", "user_id", userID, "role", defaultRole)
-	}
-
-	return nil
+	return h.reconcileGroupMemberships(ctx, userID, groups, gm, defaultRole, "OIDC")
 }
 
 // applySAMLGroupMappings applies SAML group-to-role mappings for a user.
@@ -906,63 +843,134 @@ func (h *AuthHandlers) applyGroupMappings(ctx context.Context, userID string, gr
 func (h *AuthHandlers) applySAMLGroupMappings(ctx context.Context, userID string, groups []string) error {
 	mappings := h.cfg.Auth.SAML.GroupMappings
 	defaultRole := h.cfg.Auth.SAML.DefaultRole
+	gm := make([]groupMapping, len(mappings))
+	for i, m := range mappings {
+		gm[i] = groupMapping{Group: m.Group, Organization: m.Organization, Role: m.Role}
+	}
+	return h.reconcileGroupMemberships(ctx, userID, groups, gm, defaultRole, "SAML")
+}
+
+// reconcileGroupMemberships reconciles a user's organization memberships against
+// the IdP groups carried by their signature-verified login token. It is shared
+// by the OIDC and SAML callback paths; provider names the log source ("OIDC" or
+// "SAML").
+//
+// Every organization referenced by a configured mapping is treated as
+// IdP-authoritative and is reconciled on every login:
+//
+//  1. The desired role per managed org is computed from the user's *current*
+//     groups. When several current groups map to the same org, the first
+//     matching mapping in configuration order wins (deterministic).
+//  2. For each managed org: if a current group maps to it the membership is
+//     upserted (added if absent, role updated if changed); if no current group
+//     maps to it the membership is REVOKED (removed) when the user is currently
+//     a member — this is the deprovisioning step.
+//  3. Organizations not referenced by any mapping are left untouched, so
+//     manually granted memberships in unmanaged orgs persist across logins.
+//  4. The default_role fallback is first-login-only: the user is added to the
+//     default org with default_role only when they are not already a member
+//     (existing roles are never overwritten). It is skipped entirely when the
+//     default org is itself IdP-managed (already reconciled in step 2).
+//
+// Groups originate solely from the verified token and mappings are
+// admin-configured, preserving the existing trust model.
+func (h *AuthHandlers) reconcileGroupMemberships(ctx context.Context, userID string, groups []string, mappings []groupMapping, defaultRole, provider string) error {
 	if len(mappings) == 0 && defaultRole == "" {
 		return nil
 	}
 
+	// Set of the user's current groups for O(1) lookup.
 	groupSet := make(map[string]struct{}, len(groups))
 	for _, g := range groups {
 		groupSet[g] = struct{}{}
 	}
 
-	matched := false
-	for _, mapping := range mappings {
-		if _, ok := groupSet[mapping.Group]; !ok {
-			continue
-		}
-		matched = true
+	// Compute the desired role per managed org from current groups, and the full
+	// set of managed orgs. A "managed org" is any org named in a mapping; it is
+	// reconciled (and possibly revoked) below even when no current group maps to
+	// it. Iterating mappings in configuration order makes the desired-role choice
+	// deterministic: the first mapping for an org whose group the user currently
+	// has wins.
+	managedOrgs := make([]string, 0, len(mappings)) // preserves config order, deduped
+	seenManaged := make(map[string]struct{}, len(mappings))
+	desiredRole := make(map[string]string, len(mappings)) // org name -> role
 
-		org, err := h.orgRepo.GetByName(ctx, mapping.Organization)
-		if err != nil || org == nil {
-			slog.Warn("SAML group mapping: organization not found", "org", mapping.Organization, "group", mapping.Group)
+	for _, m := range mappings {
+		if _, ok := seenManaged[m.Organization]; !ok {
+			seenManaged[m.Organization] = struct{}{}
+			managedOrgs = append(managedOrgs, m.Organization)
+		}
+		if _, hasGroup := groupSet[m.Group]; !hasGroup {
 			continue
 		}
+		// First matching mapping (config order) sets the desired role for the org.
+		if _, already := desiredRole[m.Organization]; !already {
+			desiredRole[m.Organization] = m.Role
+		}
+	}
+
+	// Reconcile each managed org. Track resolved org IDs so the default-role
+	// fallback can detect when the default org is itself IdP-managed.
+	managedOrgIDs := make(map[string]struct{}, len(managedOrgs))
+
+	for _, orgName := range managedOrgs {
+		org, err := h.orgRepo.GetByName(ctx, orgName)
+		if err != nil || org == nil {
+			slog.Warn(provider+" group mapping: organization not found", "org", orgName)
+			continue
+		}
+		managedOrgIDs[org.ID] = struct{}{}
 
 		isMember, _, err := h.orgRepo.CheckMembership(ctx, org.ID, userID)
 		if err != nil {
 			return fmt.Errorf("check membership org=%s user=%s: %w", org.ID, userID, err)
 		}
-		if isMember {
-			if err := h.orgRepo.UpdateMemberRole(ctx, org.ID, userID, mapping.Role); err != nil {
-				return fmt.Errorf("update member role org=%s user=%s role=%s: %w", org.ID, userID, mapping.Role, err)
+
+		role, wanted := desiredRole[orgName]
+		switch {
+		case wanted && isMember:
+			if err := h.orgRepo.UpdateMemberRole(ctx, org.ID, userID, role); err != nil {
+				return fmt.Errorf("update member role org=%s user=%s role=%s: %w", org.ID, userID, role, err)
 			}
-		} else {
-			if err := h.orgRepo.AddMemberWithParams(ctx, org.ID, userID, mapping.Role); err != nil {
-				return fmt.Errorf("add member org=%s user=%s role=%s: %w", org.ID, userID, mapping.Role, err)
+			slog.Info(provider+" group mapping applied", "user_id", userID, "org", orgName, "role", role)
+		case wanted && !isMember:
+			if err := h.orgRepo.AddMemberWithParams(ctx, org.ID, userID, role); err != nil {
+				return fmt.Errorf("add member org=%s user=%s role=%s: %w", org.ID, userID, role, err)
 			}
+			slog.Info(provider+" group mapping applied", "user_id", userID, "org", orgName, "role", role)
+		case !wanted && isMember:
+			// No current group maps to this managed org → deprovision.
+			if err := h.orgRepo.RemoveMember(ctx, org.ID, userID); err != nil {
+				return fmt.Errorf("revoke member org=%s user=%s: %w", org.ID, userID, err)
+			}
+			slog.Info(provider+" group mapping revoked", "user_id", userID, "org", orgName)
+		default:
+			// Not wanted and not a member → nothing to do.
 		}
-		slog.Info("SAML group mapping applied", "user_id", userID, "group", mapping.Group, "org", mapping.Organization, "role", mapping.Role)
 	}
 
-	if !matched && defaultRole != "" {
+	// default_role fallback — first-login-only. Add the user to the default org
+	// with default_role only if they are not already a member. Skip entirely when
+	// the default org is itself IdP-managed (already reconciled above).
+	if defaultRole != "" {
 		org, err := h.orgRepo.GetDefaultOrganization(ctx)
 		if err != nil || org == nil {
-			return fmt.Errorf("default organization not found for SAML default_role fallback: %w", err)
+			return fmt.Errorf("default organization not found for default_role fallback: %w", err)
 		}
+		if _, isManaged := managedOrgIDs[org.ID]; isManaged {
+			return nil
+		}
+
 		isMember, _, err := h.orgRepo.CheckMembership(ctx, org.ID, userID)
 		if err != nil {
 			return fmt.Errorf("check membership default org user=%s: %w", userID, err)
 		}
-		if isMember {
-			if err := h.orgRepo.UpdateMemberRole(ctx, org.ID, userID, defaultRole); err != nil {
-				return fmt.Errorf("update default role user=%s role=%s: %w", userID, defaultRole, err)
-			}
-		} else {
+		if !isMember {
 			if err := h.orgRepo.AddMemberWithParams(ctx, org.ID, userID, defaultRole); err != nil {
 				return fmt.Errorf("add default member user=%s role=%s: %w", userID, defaultRole, err)
 			}
+			slog.Info(provider+" default role applied", "user_id", userID, "role", defaultRole)
 		}
-		slog.Info("SAML default role applied", "user_id", userID, "role", defaultRole)
 	}
 
 	return nil

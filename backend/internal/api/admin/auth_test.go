@@ -889,7 +889,18 @@ func TestApplyGroupMappings_DefaultRoleFallback(t *testing.T) {
 	cfg.Auth.OIDC.DefaultRole = "viewer"
 	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 
-	// No group matches → falls through to default role
+	// No current group matches → managed org "acme" is reconciled (user is not a
+	// member, so it is a no-op), then the default-role fallback adds the user to
+	// the unmanaged default org.
+
+	// Managed org reconcile: GetByName("acme") → found
+	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
+		WithArgs("acme").
+		WillReturnRows(sqlmock.NewRows(authOrgCols).
+			AddRow("org-acme", "acme", "Acme Corp", nil, nil, time.Now(), time.Now()))
+	// CheckMembership(acme) → not a member → nothing to revoke
+	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
+		WillReturnRows(sqlmock.NewRows(authMemberCols))
 
 	// GetDefaultOrganization → GetByName("default") → found
 	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
@@ -897,7 +908,7 @@ func TestApplyGroupMappings_DefaultRoleFallback(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(authOrgCols).
 			AddRow("org-default", "default", "Default Org", nil, nil, time.Now(), time.Now()))
 
-	// CheckMembership → GetMember → not found
+	// CheckMembership(default) → not found
 	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
 		WillReturnRows(sqlmock.NewRows(authMemberCols))
 
@@ -1107,8 +1118,9 @@ func TestApplyGroupMappings_DefaultRole_OrgNotFound(t *testing.T) {
 	}
 }
 
-func TestApplyGroupMappings_DefaultRole_UpdateMember(t *testing.T) {
-	// Existing member → UpdateMemberRole path in default-role fallback
+func TestApplyGroupMappings_DefaultRole_ExistingMemberNotOverwritten(t *testing.T) {
+	// First-login-only default_role: an existing member's manually-granted role
+	// must NOT be overwritten by the default-role fallback on subsequent logins.
 	db, mock, _ := sqlmock.New()
 	defer db.Close()
 
@@ -1122,19 +1134,12 @@ func TestApplyGroupMappings_DefaultRole_UpdateMember(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(authOrgCols).
 			AddRow("org-default", "default", "Default", nil, nil, time.Now(), time.Now()))
 
-	// CheckMembership → is member (returns a row)
+	// CheckMembership → is member (returns a row) → fallback is a no-op.
 	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
 		WillReturnRows(sqlmock.NewRows(authMemberCols).
-			AddRow("org-default", "user-1", "rt-1", time.Now()))
+			AddRow("org-default", "user-1", "rt-manual", time.Now()))
 
-	// UpdateMemberRole → role template lookup
-	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
-		WithArgs("editor").
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-editor"))
-
-	// UpdateMemberRole → UPDATE
-	mock.ExpectExec("UPDATE organization_members").
-		WillReturnResult(sqlmock.NewResult(1, 1))
+	// No role-template lookup and no UPDATE/INSERT must follow.
 
 	err := h.applyGroupMappings(context.Background(), "user-1", []string{"other"})
 	if err != nil {
@@ -1518,5 +1523,424 @@ func TestExchangeTokenHandler_ValidCookie(t *testing.T) {
 		if c.Name == "tfr_auth_token" && c.MaxAge != -1 {
 			t.Errorf("cookie MaxAge = %d, want -1 (cleared)", c.MaxAge)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// reconcileGroupMemberships — deprovisioning & first-login default-role
+// (issue #467). Exercised through both the OIDC (applyGroupMappings) and SAML
+// (applySAMLGroupMappings) entry points.
+// ---------------------------------------------------------------------------
+
+// expectOrgByName queues a GetByName lookup that returns a single org row.
+func expectOrgByName(mock sqlmock.Sqlmock, name, orgID string) {
+	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
+		WithArgs(name).
+		WillReturnRows(sqlmock.NewRows(authOrgCols).
+			AddRow(orgID, name, name, nil, nil, time.Now(), time.Now()))
+}
+
+// expectIsMember queues a CheckMembership lookup that reports the user as a member.
+func expectIsMember(mock sqlmock.Sqlmock, orgID, userID, roleID string) {
+	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
+		WillReturnRows(sqlmock.NewRows(authMemberCols).
+			AddRow(orgID, userID, roleID, time.Now()))
+}
+
+// expectNotMember queues a CheckMembership lookup that reports no membership.
+func expectNotMember(mock sqlmock.Sqlmock) {
+	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
+		WillReturnRows(sqlmock.NewRows(authMemberCols))
+}
+
+// expectAddMember queues the role-template lookup + INSERT done by AddMemberWithParams.
+func expectAddMember(mock sqlmock.Sqlmock, roleName, roleID string) {
+	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
+		WithArgs(roleName).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(roleID))
+	mock.ExpectExec("INSERT INTO organization_members").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+}
+
+// expectUpdateMember queues the role-template lookup + UPDATE done by UpdateMemberRole.
+func expectUpdateMember(mock sqlmock.Sqlmock, roleName, roleID string) {
+	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
+		WithArgs(roleName).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(roleID))
+	mock.ExpectExec("UPDATE organization_members").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+}
+
+// expectRemoveMember queues the DELETE done by RemoveMember (deprovisioning).
+func expectRemoveMember(mock sqlmock.Sqlmock) {
+	mock.ExpectExec("DELETE FROM organization_members").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+}
+
+// User loses their only mapped group → membership is REVOKED from that org.
+func TestReconcile_LosesGroup_RevokesMembership(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
+		{Group: "admins", Organization: "acme", Role: "admin"},
+	}
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
+
+	// Managed org acme: user is currently a member but no longer has the group.
+	expectOrgByName(mock, "acme", "org-acme")
+	expectIsMember(mock, "org-acme", "user-1", "rt-admin")
+	expectRemoveMember(mock)
+
+	// User now has an unrelated group that maps to nothing.
+	err := h.applyGroupMappings(context.Background(), "user-1", []string{"some-other-group"})
+	if err != nil {
+		t.Fatalf("applyGroupMappings: unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// User's group changes to one mapping a different role in the same org → role UPDATED.
+func TestReconcile_GroupChanges_UpdatesRole(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
+		{Group: "admins", Organization: "acme", Role: "admin"},
+		{Group: "viewers", Organization: "acme", Role: "viewer"},
+	}
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
+
+	// acme is managed; the user now has "viewers" (was "admins") → desired role viewer.
+	expectOrgByName(mock, "acme", "org-acme")
+	expectIsMember(mock, "org-acme", "user-1", "rt-admin")
+	expectUpdateMember(mock, "viewer", "rt-viewer")
+
+	err := h.applyGroupMappings(context.Background(), "user-1", []string{"viewers"})
+	if err != nil {
+		t.Fatalf("applyGroupMappings: unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// User keeps the group → membership preserved with the correct role (UPDATE to same role).
+func TestReconcile_KeepsGroup_PreservesMembership(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
+		{Group: "admins", Organization: "acme", Role: "admin"},
+	}
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
+
+	expectOrgByName(mock, "acme", "org-acme")
+	expectIsMember(mock, "org-acme", "user-1", "rt-admin")
+	expectUpdateMember(mock, "admin", "rt-admin")
+
+	err := h.applyGroupMappings(context.Background(), "user-1", []string{"admins"})
+	if err != nil {
+		t.Fatalf("applyGroupMappings: unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// Manual membership in an UNMANAGED org (no mapping references it) → PRESERVED.
+// The only mapping references "acme"; the user's manual membership in "other-org"
+// must never be touched, so the reconcile only queries the managed org.
+func TestReconcile_UnmanagedOrg_Preserved(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
+		{Group: "admins", Organization: "acme", Role: "admin"},
+	}
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
+
+	// Only the managed org "acme" is reconciled. The user is not a member and has
+	// no matching group → no-op. No query is ever issued for the unmanaged org,
+	// so a manual membership there cannot be revoked.
+	expectOrgByName(mock, "acme", "org-acme")
+	expectNotMember(mock)
+
+	err := h.applyGroupMappings(context.Background(), "user-1", []string{"unrelated"})
+	if err != nil {
+		t.Fatalf("applyGroupMappings: unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// default_role does NOT overwrite an existing member's manually-set role
+// (first-login-only) when the default org is unmanaged.
+func TestReconcile_DefaultRole_FirstLoginOnly(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	// No mappings → default org is unmanaged.
+	cfg.Auth.OIDC.DefaultRole = "viewer"
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
+
+	// GetDefaultOrganization → found; user is already a member → no write at all.
+	expectOrgByName(mock, "default", "org-default")
+	expectIsMember(mock, "org-default", "user-1", "rt-manual")
+
+	err := h.applyGroupMappings(context.Background(), "user-1", []string{"whatever"})
+	if err != nil {
+		t.Fatalf("applyGroupMappings: unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// default_role is applied on first login (user not yet a member of default org).
+func TestReconcile_DefaultRole_FirstLoginAdds(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.OIDC.DefaultRole = "viewer"
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
+
+	expectOrgByName(mock, "default", "org-default")
+	expectNotMember(mock)
+	expectAddMember(mock, "viewer", "rt-viewer")
+
+	err := h.applyGroupMappings(context.Background(), "user-1", []string{"whatever"})
+	if err != nil {
+		t.Fatalf("applyGroupMappings: unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// default_role is SKIPPED when the default org is itself IdP-managed (referenced
+// by a mapping). The managed reconcile is the single source of truth for it.
+func TestReconcile_DefaultRole_SkippedWhenDefaultOrgManaged(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	// A mapping references the "default" org, making it IdP-managed.
+	cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
+		{Group: "admins", Organization: "default", Role: "admin"},
+	}
+	cfg.Auth.OIDC.DefaultRole = "viewer"
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
+
+	// Managed reconcile of "default": user currently a member, no matching group
+	// → REVOKE.
+	expectOrgByName(mock, "default", "org-default")
+	expectIsMember(mock, "org-default", "user-1", "rt-admin")
+	expectRemoveMember(mock)
+
+	// The default-role fallback resolves the default org, recognises it as
+	// IdP-managed, and returns WITHOUT re-adding the user (no membership check,
+	// no INSERT/UPDATE). The org row resolves to the same ID reconciled above.
+	expectOrgByName(mock, "default", "org-default")
+
+	err := h.applyGroupMappings(context.Background(), "user-1", []string{"not-admins"})
+	if err != nil {
+		t.Fatalf("applyGroupMappings: unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// Multiple groups mapping to the SAME org → deterministic single desired role.
+// The first mapping in config order whose group the user has wins.
+func TestReconcile_MultipleGroupsSameOrg_Deterministic(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
+		{Group: "admins", Organization: "acme", Role: "admin"},
+		{Group: "devs", Organization: "acme", Role: "editor"},
+	}
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
+
+	// User has BOTH groups. First config mapping (admins → admin) must win.
+	expectOrgByName(mock, "acme", "org-acme")
+	expectNotMember(mock)
+	expectAddMember(mock, "admin", "rt-admin")
+
+	err := h.applyGroupMappings(context.Background(), "user-1", []string{"devs", "admins"})
+	if err != nil {
+		t.Fatalf("applyGroupMappings: unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// Multiple managed orgs reconciled in a single login: one upserted, one revoked.
+func TestReconcile_MultipleManagedOrgs_MixedActions(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
+		{Group: "admins", Organization: "acme", Role: "admin"},
+		{Group: "ops", Organization: "platform", Role: "operator"},
+	}
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
+
+	// acme: has group → add member.
+	expectOrgByName(mock, "acme", "org-acme")
+	expectNotMember(mock)
+	expectAddMember(mock, "admin", "rt-admin")
+	// platform: no group, currently a member → revoke.
+	expectOrgByName(mock, "platform", "org-platform")
+	expectIsMember(mock, "org-platform", "user-1", "rt-operator")
+	expectRemoveMember(mock)
+
+	err := h.applyGroupMappings(context.Background(), "user-1", []string{"admins"})
+	if err != nil {
+		t.Fatalf("applyGroupMappings: unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// RemoveMember DB error during deprovisioning is surfaced.
+func TestReconcile_RevokeError_Surfaced(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
+		{Group: "admins", Organization: "acme", Role: "admin"},
+	}
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
+
+	expectOrgByName(mock, "acme", "org-acme")
+	expectIsMember(mock, "org-acme", "user-1", "rt-admin")
+	mock.ExpectExec("DELETE FROM organization_members").WillReturnError(errDB)
+
+	err := h.applyGroupMappings(context.Background(), "user-1", []string{"not-admins"})
+	if err == nil {
+		t.Error("expected error from RemoveMember failure, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SAML entry point — same reconcile semantics via applySAMLGroupMappings.
+// ---------------------------------------------------------------------------
+
+// SAML: user loses their only mapped group → membership REVOKED.
+func TestApplySAMLGroupMappings_LosesGroup_Revokes(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.SAML.GroupMappings = []config.SAMLGroupMapping{
+		{Group: "saml-admins", Organization: "acme", Role: "admin"},
+	}
+	h := &AuthHandlers{
+		cfg:        cfg,
+		db:         db,
+		orgRepo:    repositories.NewOrganizationRepository(db),
+		stateStore: auth.NewMemoryStateStore(time.Hour),
+	}
+
+	expectOrgByName(mock, "acme", "org-acme")
+	expectIsMember(mock, "org-acme", "user-1", "rt-admin")
+	expectRemoveMember(mock)
+
+	err := h.applySAMLGroupMappings(context.Background(), "user-1", []string{"unrelated"})
+	if err != nil {
+		t.Fatalf("applySAMLGroupMappings: unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// SAML: user keeps the group → membership upserted with the mapped role.
+func TestApplySAMLGroupMappings_KeepsGroup_Upserts(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.SAML.GroupMappings = []config.SAMLGroupMapping{
+		{Group: "saml-admins", Organization: "acme", Role: "admin"},
+	}
+	h := &AuthHandlers{
+		cfg:        cfg,
+		db:         db,
+		orgRepo:    repositories.NewOrganizationRepository(db),
+		stateStore: auth.NewMemoryStateStore(time.Hour),
+	}
+
+	expectOrgByName(mock, "acme", "org-acme")
+	expectNotMember(mock)
+	expectAddMember(mock, "admin", "rt-admin")
+
+	err := h.applySAMLGroupMappings(context.Background(), "user-1", []string{"saml-admins"})
+	if err != nil {
+		t.Fatalf("applySAMLGroupMappings: unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// SAML: default_role first-login-only — existing member not overwritten.
+func TestApplySAMLGroupMappings_DefaultRole_FirstLoginOnly(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.SAML.DefaultRole = "viewer"
+	h := &AuthHandlers{
+		cfg:        cfg,
+		db:         db,
+		orgRepo:    repositories.NewOrganizationRepository(db),
+		stateStore: auth.NewMemoryStateStore(time.Hour),
+	}
+
+	expectOrgByName(mock, "default", "org-default")
+	expectIsMember(mock, "org-default", "user-1", "rt-manual")
+
+	err := h.applySAMLGroupMappings(context.Background(), "user-1", []string{"anything"})
+	if err != nil {
+		t.Fatalf("applySAMLGroupMappings: unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// SAML: nothing configured → no-op (no DB calls).
+func TestApplySAMLGroupMappings_NothingConfigured(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	h := &AuthHandlers{
+		cfg:        cfg,
+		db:         db,
+		orgRepo:    repositories.NewOrganizationRepository(db),
+		stateStore: auth.NewMemoryStateStore(time.Hour),
+	}
+
+	if err := h.applySAMLGroupMappings(context.Background(), "user-1", []string{"x"}); err != nil {
+		t.Errorf("expected nil error, got %v", err)
 	}
 }
