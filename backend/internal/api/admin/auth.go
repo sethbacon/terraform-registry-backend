@@ -1285,61 +1285,21 @@ func (h *AuthHandlers) LDAPLoginHandler() gin.HandlerFunc {
 	}
 }
 
-// applyLDAPGroupMappings applies LDAP group DN-to-role mappings for a user.
+// applyLDAPGroupMappings reconciles LDAP group DN-to-role mappings for a user,
+// delegating to the shared reconcileGroupMemberships. LDAP DNs are matched
+// case-insensitively (matching ldappkg.MatchGroupMappings), so DNs are
+// lowercased into the provider-agnostic groupMapping before reconciliation.
 func (h *AuthHandlers) applyLDAPGroupMappings(ctx context.Context, userID string, groupDNs []string) error {
-	matched := ldappkg.MatchGroupMappings(groupDNs, h.cfg.Auth.LDAP.GroupMappings)
-	defaultRole := h.cfg.Auth.LDAP.DefaultRole
-	if len(matched) == 0 && defaultRole == "" {
-		return nil
+	mappings := h.cfg.Auth.LDAP.GroupMappings
+	gm := make([]groupMapping, len(mappings))
+	for i, m := range mappings {
+		gm[i] = groupMapping{Group: strings.ToLower(m.GroupDN), Organization: m.Organization, Role: m.Role}
 	}
-
-	anyMatched := false
-	for _, mapping := range matched {
-		anyMatched = true
-		org, err := h.orgRepo.GetByName(ctx, mapping.Organization)
-		if err != nil || org == nil {
-			slog.Warn("LDAP group mapping: organization not found", "org", mapping.Organization, "group_dn", mapping.GroupDN)
-			continue
-		}
-
-		isMember, _, err := h.orgRepo.CheckMembership(ctx, org.ID, userID)
-		if err != nil {
-			return fmt.Errorf("check membership org=%s user=%s: %w", org.ID, userID, err)
-		}
-		if isMember {
-			if err := h.orgRepo.UpdateMemberRole(ctx, org.ID, userID, mapping.Role); err != nil {
-				return fmt.Errorf("update member role: %w", err)
-			}
-		} else {
-			if err := h.orgRepo.AddMemberWithParams(ctx, org.ID, userID, mapping.Role); err != nil {
-				return fmt.Errorf("add member: %w", err)
-			}
-		}
-		slog.Info("LDAP group mapping applied", "user_id", userID, "group_dn", mapping.GroupDN, "org", mapping.Organization, "role", mapping.Role)
+	groups := make([]string, len(groupDNs))
+	for i, dn := range groupDNs {
+		groups[i] = strings.ToLower(dn)
 	}
-
-	if !anyMatched && defaultRole != "" {
-		org, err := h.orgRepo.GetDefaultOrganization(ctx)
-		if err != nil || org == nil {
-			return fmt.Errorf("default organization not found for LDAP default_role fallback: %w", err)
-		}
-		isMember, _, err := h.orgRepo.CheckMembership(ctx, org.ID, userID)
-		if err != nil {
-			return fmt.Errorf("check membership default org user=%s: %w", userID, err)
-		}
-		if isMember {
-			if err := h.orgRepo.UpdateMemberRole(ctx, org.ID, userID, defaultRole); err != nil {
-				return fmt.Errorf("update default role: %w", err)
-			}
-		} else {
-			if err := h.orgRepo.AddMemberWithParams(ctx, org.ID, userID, defaultRole); err != nil {
-				return fmt.Errorf("add default member: %w", err)
-			}
-		}
-		slog.Info("LDAP default role applied", "user_id", userID, "role", defaultRole)
-	}
-
-	return nil
+	return h.reconcileGroupMemberships(ctx, userID, groups, gm, h.cfg.Auth.LDAP.DefaultRole, "LDAP")
 }
 
 // @Summary      Identity group mappings
