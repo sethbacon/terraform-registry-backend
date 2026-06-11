@@ -626,3 +626,172 @@ func TestGitHubDownloadBinaryStream_NonOKStatus(t *testing.T) {
 		t.Fatal("expected error for non-200 response, got nil")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Bare binary regex (OPA-style assets)
+// ---------------------------------------------------------------------------
+
+func TestBareBinaryRE(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		match   bool
+		product string
+		os      string
+		arch    string
+	}{
+		{"opa linux amd64", "opa_linux_amd64", true, "opa", "linux", "amd64"},
+		{"opa darwin arm64", "opa_darwin_arm64", true, "opa", "darwin", "arm64"},
+		{"opa windows exe", "opa_windows_amd64.exe", true, "opa", "windows", "amd64"},
+		{"opa static variant skipped", "opa_linux_amd64_static", true, "opa", "linux", "amd64"},
+		{"zip file should not match", "opentofu_1.9.0_linux_amd64.zip", false, "", "", ""},
+		{"sha256sums should not match", "opa_0.70.0_SHA256SUMS", false, "", "", ""},
+		{"sidecar sha should not match", "opa_linux_amd64.sha256", false, "", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := bareBinaryRE.FindStringSubmatch(tt.input)
+			got := m != nil
+			if got != tt.match {
+				t.Errorf("bareBinaryRE.MatchString(%q) = %v, want %v", tt.input, got, tt.match)
+				return
+			}
+			if got && tt.product != "" {
+				if m[1] != tt.product {
+					t.Errorf("product = %q, want %q", m[1], tt.product)
+				}
+				if m[2] != tt.os {
+					t.Errorf("os = %q, want %q", m[2], tt.os)
+				}
+				if m[3] != tt.arch {
+					t.Errorf("arch = %q, want %q", m[3], tt.arch)
+				}
+			}
+		})
+	}
+}
+
+func TestPerFileSHA256RE(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		match    bool
+		basename string
+	}{
+		{"opa sidecar", "opa_linux_amd64.sha256", true, "opa_linux_amd64"},
+		{"opa exe sidecar", "opa_windows_amd64.exe.sha256", true, "opa_windows_amd64.exe"},
+		{"not a sidecar", "opa_linux_amd64", false, ""},
+		{"zip file", "opentofu_1.9.0_linux_amd64.zip", false, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := perFileSHA256RE.FindStringSubmatch(tt.input)
+			got := m != nil
+			if got != tt.match {
+				t.Errorf("perFileSHA256RE.MatchString(%q) = %v, want %v", tt.input, got, tt.match)
+				return
+			}
+			if got && tt.basename != "" {
+				if m[1] != tt.basename {
+					t.Errorf("basename = %q, want %q", m[1], tt.basename)
+				}
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// parseRelease with bare binaries (OPA-style)
+// ---------------------------------------------------------------------------
+
+func TestParseRelease_BareBinaries(t *testing.T) {
+	c := &GitHubReleasesClient{
+		Owner:       "open-policy-agent",
+		Repo:        "opa",
+		ProductName: "opa",
+	}
+
+	rel := gitHubRelease{
+		TagName: "v0.70.0",
+		Assets: []gitHubAsset{
+			{Name: "opa_linux_amd64", BrowserDownloadURL: "https://github.com/open-policy-agent/opa/releases/download/v0.70.0/opa_linux_amd64"},
+			{Name: "opa_darwin_arm64", BrowserDownloadURL: "https://github.com/open-policy-agent/opa/releases/download/v0.70.0/opa_darwin_arm64"},
+			{Name: "opa_windows_amd64.exe", BrowserDownloadURL: "https://github.com/open-policy-agent/opa/releases/download/v0.70.0/opa_windows_amd64.exe"},
+			{Name: "opa_linux_amd64.sha256", BrowserDownloadURL: "https://github.com/open-policy-agent/opa/releases/download/v0.70.0/opa_linux_amd64.sha256"},
+			{Name: "opa_darwin_arm64.sha256", BrowserDownloadURL: "https://github.com/open-policy-agent/opa/releases/download/v0.70.0/opa_darwin_arm64.sha256"},
+			{Name: "opa_windows_amd64.exe.sha256", BrowserDownloadURL: "https://github.com/open-policy-agent/opa/releases/download/v0.70.0/opa_windows_amd64.exe.sha256"},
+		},
+	}
+
+	vi, ok := c.parseRelease(rel)
+	if !ok {
+		t.Fatal("parseRelease returned ok=false for OPA release")
+	}
+	if vi.Version != "0.70.0" {
+		t.Errorf("Version = %q, want 0.70.0", vi.Version)
+	}
+	if len(vi.Builds) != 3 {
+		t.Errorf("Builds count = %d, want 3", len(vi.Builds))
+	}
+	if vi.SHASumsURL != "" {
+		t.Errorf("SHASumsURL = %q, want empty (OPA has no combined file)", vi.SHASumsURL)
+	}
+	if len(vi.PerFileSHAURLs) != 3 {
+		t.Errorf("PerFileSHAURLs count = %d, want 3", len(vi.PerFileSHAURLs))
+	}
+	if _, ok := vi.PerFileSHAURLs["opa_linux_amd64"]; !ok {
+		t.Error("PerFileSHAURLs missing entry for opa_linux_amd64")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FetchSHASums fallback to per-file .sha256 sidecars
+// ---------------------------------------------------------------------------
+
+func TestGitHubFetchSHASums_PerFileFallback(t *testing.T) {
+	const product = "opa"
+	const version = "0.70.0"
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/releases/tags/") {
+			rel := gitHubRelease{
+				TagName: "v" + version,
+				Assets: []gitHubAsset{
+					{Name: "opa_linux_amd64", BrowserDownloadURL: "https://example.com/opa_linux_amd64"},
+					{Name: "opa_darwin_arm64", BrowserDownloadURL: "https://example.com/opa_darwin_arm64"},
+					{Name: "opa_linux_amd64.sha256", BrowserDownloadURL: "https://example.com/opa_linux_amd64.sha256"},
+					{Name: "opa_darwin_arm64.sha256", BrowserDownloadURL: "https://example.com/opa_darwin_arm64.sha256"},
+				},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(rel)
+			return
+		}
+		// Serve .sha256 sidecar content
+		if strings.HasSuffix(r.URL.Path, "opa_linux_amd64.sha256") {
+			_, _ = w.Write([]byte("aabbccdd11223344  opa_linux_amd64\n"))
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "opa_darwin_arm64.sha256") {
+			_, _ = w.Write([]byte("eeff009988776655  opa_darwin_arm64\n"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	client := newTestGitHubClient(ts, "open-policy-agent", "opa", product)
+	parsed, raw, err := client.FetchSHASums(context.Background(), version)
+	if err != nil {
+		t.Fatalf("FetchSHASums error: %v", err)
+	}
+	if len(parsed) != 2 {
+		t.Errorf("parsed map size = %d, want 2", len(parsed))
+	}
+	if parsed["opa_linux_amd64"] != "aabbccdd11223344" {
+		t.Errorf("parsed[opa_linux_amd64] = %q, want aabbccdd11223344", parsed["opa_linux_amd64"])
+	}
+	if len(raw) == 0 {
+		t.Error("raw bytes should not be empty")
+	}
+}

@@ -125,6 +125,17 @@ func NewGitHubReleasesClient(upstreamURL, productName string) (*GitHubReleasesCl
 // e.g. opentofu_1.9.0_linux_amd64.zip
 var binaryZipRE = regexp.MustCompile(`^(.+?)_([^_]+)_([^_]+)_([^_]+)\.zip$`)
 
+// bareBinaryRE matches bare binaries without version in filename:
+//
+//	{product}_{os}_{arch}       e.g. opa_linux_amd64
+//	{product}_{os}_{arch}.exe   e.g. opa_windows_amd64.exe
+//
+// Used by projects like OPA that publish unversioned binaries per release.
+var bareBinaryRE = regexp.MustCompile(`^(.+?)_([a-z]+)_([a-z0-9]+?)(?:_static)?(?:\.exe)?$`)
+
+// perFileSHA256RE matches per-file SHA256 sidecar files: {filename}.sha256
+var perFileSHA256RE = regexp.MustCompile(`^(.+)\.sha256$`)
+
 // sha256sumsRE matches: {product}_{version}_SHA256SUMS (no extension)
 var sha256sumsRE = regexp.MustCompile(`^(.+?)_([^_]+)_SHA256SUMS$`)
 
@@ -212,6 +223,8 @@ func (c *GitHubReleasesClient) parseRelease(rel gitHubRelease) (TerraformVersion
 	var builds []TerraformReleaseBuild
 	var sha256sumsURL string
 	var sha256sumsSigURL string
+	// perFileSHAs maps binary filename → download URL for its .sha256 sidecar.
+	perFileSHAs := make(map[string]string)
 
 	for _, asset := range rel.Assets {
 		name := asset.Name
@@ -220,7 +233,6 @@ func (c *GitHubReleasesClient) parseRelease(rel gitHubRelease) (TerraformVersion
 		// Binary zip?
 		if m := binaryZipRE.FindStringSubmatch(name); m != nil {
 			product, _, osName, arch := m[1], m[2], m[3], m[4]
-			// Only accept assets belonging to our product (e.g. "opentofu_…")
 			if !strings.EqualFold(product, c.ProductName) {
 				continue
 			}
@@ -232,6 +244,12 @@ func (c *GitHubReleasesClient) parseRelease(rel gitHubRelease) (TerraformVersion
 				Filename: name,
 				URL:      url,
 			})
+			continue
+		}
+
+		// Per-file .sha256 sidecar? (e.g. opa_linux_amd64.sha256)
+		if m := perFileSHA256RE.FindStringSubmatch(name); m != nil {
+			perFileSHAs[m[1]] = url
 			continue
 		}
 
@@ -250,39 +268,109 @@ func (c *GitHubReleasesClient) parseRelease(rel gitHubRelease) (TerraformVersion
 			}
 			continue
 		}
+
+		// Bare binary? (e.g. opa_linux_amd64, opa_windows_amd64.exe)
+		if m := bareBinaryRE.FindStringSubmatch(name); m != nil {
+			product, osName, arch := m[1], m[2], m[3]
+			if !strings.EqualFold(product, c.ProductName) {
+				continue
+			}
+			builds = append(builds, TerraformReleaseBuild{
+				Name:     product,
+				Version:  version,
+				OS:       osName,
+				Arch:     arch,
+				Filename: name,
+				URL:      url,
+			})
+			continue
+		}
 	}
 
 	if len(builds) == 0 {
 		return TerraformVersionInfo{}, false
 	}
 
-	return TerraformVersionInfo{
+	vi := TerraformVersionInfo{
 		Version:          version,
 		SHASumsURL:       sha256sumsURL,
 		SHASumsSignature: sha256sumsSigURL,
 		Builds:           builds,
-	}, true
+	}
+	// Attach per-file SHA URLs so FetchSHASums can fall back to them.
+	if len(perFileSHAs) > 0 && sha256sumsURL == "" {
+		vi.PerFileSHAURLs = perFileSHAs
+	}
+
+	return vi, true
 }
 
 // ----- FetchSHASums ---------------------------------------------------------
 
 // FetchSHASums downloads the SHA256SUMS asset for a specific version from
 // GitHub and returns parsed filename→sha256 map plus the raw bytes.
-// It first calls ListVersions to locate the asset URL for the given version.
+// If no combined SHA256SUMS file exists (e.g. OPA), it falls back to fetching
+// individual .sha256 sidecar files for each binary asset.
 func (c *GitHubReleasesClient) FetchSHASums(ctx context.Context, version string) (map[string]string, []byte, error) {
 	sumsURL, err := c.findSHA256SumsURL(ctx, version)
 	if err != nil {
 		return nil, nil, err
 	}
-	if sumsURL == "" {
-		return nil, nil, fmt.Errorf("no SHA256SUMS asset found for version %s in %s/%s", version, c.Owner, c.Repo)
+
+	// Combined SHA256SUMS file found — use it directly.
+	if sumsURL != "" {
+		raw, fetchErr := c.fetchURL(ctx, sumsURL, 1<<20) // 1 MB cap
+		if fetchErr != nil {
+			return nil, nil, fmt.Errorf("failed to fetch SHA256SUMS for %s: %w", version, fetchErr)
+		}
+		return ParseSHASums(raw), raw, nil
 	}
 
-	raw, err := c.fetchURL(ctx, sumsURL, 1<<20) // 1 MB cap
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to fetch SHA256SUMS for %s: %w", version, err)
+	// No combined file — try per-file .sha256 sidecars (OPA pattern).
+	return c.fetchPerFileSHASums(ctx, version)
+}
+
+// fetchPerFileSHASums fetches individual .sha256 sidecar files for a release
+// and synthesizes a combined filename→sha256 map.
+func (c *GitHubReleasesClient) fetchPerFileSHASums(ctx context.Context, version string) (map[string]string, []byte, error) {
+	// Fetch the release to find .sha256 assets.
+	var rel gitHubRelease
+	var found bool
+	for _, tag := range []string{"v" + version, version} {
+		r, fetchErr := c.fetchReleaseByTag(ctx, tag)
+		if fetchErr == nil {
+			rel = r
+			found = true
+			break
+		}
 	}
-	return ParseSHASums(raw), raw, nil
+	if !found {
+		return nil, nil, fmt.Errorf("no release found for version %s in %s/%s", version, c.Owner, c.Repo)
+	}
+
+	sums := make(map[string]string)
+	var combined strings.Builder
+
+	for _, asset := range rel.Assets {
+		m := perFileSHA256RE.FindStringSubmatch(asset.Name)
+		if m == nil {
+			continue
+		}
+		binaryFilename := m[1]
+		raw, fetchErr := c.fetchURL(ctx, asset.BrowserDownloadURL, 256)
+		if fetchErr != nil {
+			continue
+		}
+		hash := strings.TrimSpace(strings.Fields(string(raw))[0])
+		sums[binaryFilename] = hash
+		combined.WriteString(hash + "  " + binaryFilename + "\n")
+	}
+
+	if len(sums) == 0 {
+		return nil, nil, fmt.Errorf("no SHA256SUMS or .sha256 sidecar files found for version %s in %s/%s", version, c.Owner, c.Repo)
+	}
+
+	return sums, []byte(combined.String()), nil
 }
 
 // FetchSHASumsSignature downloads the GPG signature for the SHA256SUMS file
