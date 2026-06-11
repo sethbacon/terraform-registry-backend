@@ -297,8 +297,9 @@ Enable debug logging (`TFR_LOGGING_LEVEL=debug`) to see the raw OIDC discovery d
 
 ### JWT Token Expired
 
-Browser sessions expire based on the JWT `exp` claim (default: 24 hours). The frontend
-should redirect to login automatically. If it does not, clear local storage:
+Browser sessions expire based on the JWT `exp` claim (4 hours; the session
+cookie shares the same lifetime). The frontend should redirect to login
+automatically. If it does not, clear local storage:
 
 ```javascript
 // In the browser console

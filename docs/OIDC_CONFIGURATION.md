@@ -664,7 +664,8 @@ openssl rand -hex 32
 
 ### 6. Token Expiration
 
-- Use reasonable JWT expiration times (24 hours typical)
+- Browser session JWTs (and their cookies) live for 4 hours; the frontend
+  silently refreshes before expiry
 - API keys should have optional expiration dates
 - Implement token refresh mechanism for long-lived sessions
 - Monitor for and invalidate compromised tokens
