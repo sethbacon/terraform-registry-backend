@@ -951,6 +951,12 @@ func productNameForTool(tool string) string {
 	switch strings.ToLower(tool) {
 	case "opentofu":
 		return "opentofu"
+	case "packer":
+		return "packer"
+	case "sentinel":
+		return "sentinel"
+	case "opa":
+		return "opa"
 	default:
 		return "terraform"
 	}
@@ -988,7 +994,7 @@ func gpgKeyForTool(tool string) string {
 		}
 	}
 	switch strings.ToLower(tool) {
-	case "terraform":
+	case "terraform", "packer", "sentinel":
 		return mirror.HashiCorpReleasesGPGKey
 	case "opentofu":
 		return mirror.OpenTofuReleasesGPGKey
