@@ -38,6 +38,7 @@ For example, `database.host` in YAML becomes `TFR_DATABASE_HOST` as an env var.
 | `TFR_SERVER_BASE_URL`                                | string   | `http://localhost:8080` | Yes        | Public URL (used in redirect and download URLs)                     |
 | `TFR_SERVER_READ_TIMEOUT`                            | duration | `30s`                   | No         | HTTP read timeout                                                   |
 | `TFR_SERVER_WRITE_TIMEOUT`                           | duration | `30s`                   | No         | HTTP write timeout                                                  |
+| `TFR_SERVER_TRUSTED_PROXIES`                         | list     | `[]`                    | No         | Trusted reverse-proxy CIDRs for `X-Forwarded-For` (empty = none)    |
 | `TFR_STORAGE_DEFAULT_BACKEND`                        | string   | `local`                 | No         | `local`, `azure`, `s3`, `gcs`                                       |
 | `TFR_JWT_SECRET`                                     | string   | —                       | Yes (prod) | JWT signing secret, min 32 chars                                    |
 | `ENCRYPTION_KEY`                                     | string   | —                       | Yes        | 32-byte key for SCM OAuth token encryption                          |
@@ -156,6 +157,7 @@ server:
   base_url: https://registry.example.com   # IMPORTANT: must be the public URL
   read_timeout: 30s
   write_timeout: 30s
+  trusted_proxies: []   # CIDRs/IPs of reverse proxies allowed to set X-Forwarded-For
 ```
 
 ### Why `base_url` Matters
@@ -164,6 +166,21 @@ server:
 module download redirect targets and provider download URLs. If this is set incorrectly,
 `terraform init` will follow broken redirects and fail. Always set this to the public
 hostname that Terraform clients will reach (e.g., the load balancer or ingress URL).
+
+### `trusted_proxies` and Client IP
+
+**`TFR_SERVER_TRUSTED_PROXIES`** — Comma-separated CIDR ranges (or IPs) of the reverse
+proxies/load balancers in front of the registry. The client IP — used for rate limiting,
+the binary-mirror IP allowlist, setup-token throttling, and audit logging — is taken from
+the `X-Forwarded-For` header **only** when the immediate connection comes from one of these
+ranges.
+
+The default is empty, which **trusts no proxy**: the client IP is the direct connection
+address and forwarded headers are ignored. This is the secure default — it prevents a
+client from spoofing `X-Forwarded-For` to bypass IP-based controls. **Reverse-proxied
+deployments must set this** to their proxy CIDR(s) (e.g. `["10.0.0.0/8"]` or
+`["127.0.0.1"]`); otherwise every request appears to originate from the proxy and per-IP
+rate limiting collapses all clients into one bucket.
 
 ---
 
@@ -294,6 +311,7 @@ auth:
       - openid
       - email
       - profile
+    require_verified_email: true   # reject logins whose IdP has not verified the email
 
   azure_ad:
     enabled: false
@@ -301,10 +319,35 @@ auth:
     client_id: ${AZURE_CLIENT_ID}
     client_secret: ${AZURE_CLIENT_SECRET}
     redirect_url: https://registry.example.com/auth/azure/callback
+    require_verified_email: true   # see note below — Entra ID often omits this claim
 ```
 
 For detailed OIDC provider setup (Azure AD, Okta, Keycloak, Auth0, Google Workspace),
 see [OIDC Configuration](oidc_configuration.md).
+
+### Email Verification and Account Linking
+
+The email address asserted by an identity provider is the anchor used to match and link
+accounts, so the registry hardens it in two ways:
+
+- **`TFR_AUTH_OIDC_REQUIRE_VERIFIED_EMAIL`** / **`TFR_AUTH_AZURE_AD_REQUIRE_VERIFIED_EMAIL`**
+  (both default `true`) — a login is rejected unless the ID token asserts
+  `email_verified=true`. An ID token that explicitly sets `email_verified=false` is always
+  rejected regardless of this flag. When the flag is `true` and the claim is **absent**, the
+  login is also rejected.
+
+  > **Entra ID / Azure AD note:** v2.0 tokens frequently omit `email_verified`. If your tenant
+  > does not emit it, add it as an optional claim or set
+  > `TFR_AUTH_AZURE_AD_REQUIRE_VERIFIED_EMAIL=false` (only do this if your tenant's emails are
+  > verified out-of-band).
+
+- **Cross-provider account-link guard (always on)** — the registry will not rebind an existing
+  account to a different provider identity by email match. Email-based linking is allowed only
+  for pre-provisioned accounts (no provider subject yet) or a repeat login with the same
+  subject. A login asserting an email already bound to a *different* subject is rejected. This
+  prevents an attacker who can assert a victim's email through a second provider from taking
+  over the victim's account. A genuine subject change (e.g. an IdP re-import) requires an admin
+  to clear the stored subject first.
 
 ---
 
