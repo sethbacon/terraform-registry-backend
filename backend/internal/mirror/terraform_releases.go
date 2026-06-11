@@ -265,6 +265,10 @@ type TerraformVersionInfo struct {
 	SHASumsSignature  string
 	SHASumsSignatures []string
 	Builds            []TerraformReleaseBuild
+	// PerFileSHAURLs maps binary filename → .sha256 sidecar download URL.
+	// Populated by GitHubReleasesClient for projects (like OPA) that publish
+	// individual .sha256 files instead of a combined SHA256SUMS.
+	PerFileSHAURLs map[string]string
 }
 
 // ----- Index fetching -------------------------------------------------------

@@ -36,6 +36,8 @@ var scannerPackage = map[string][2]string{
 var binaryRepoURL = map[string]string{
 	"terraform": "https://github.com/hashicorp/terraform",
 	"opentofu":  "https://github.com/opentofu/opentofu",
+	"packer":    "https://github.com/hashicorp/packer",
+	"opa":       "https://github.com/open-policy-agent/opa",
 }
 
 // batchSize is the maximum number of queries per OSV /v1/querybatch call.

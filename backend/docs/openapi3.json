@@ -17574,6 +17574,9 @@
                         "enum": [
                             "terraform",
                             "opentofu",
+                            "packer",
+                            "sentinel",
+                            "opa",
                             "custom"
                         ]
                     },
@@ -19054,6 +19057,9 @@
                         "enum": [
                             "terraform",
                             "opentofu",
+                            "packer",
+                            "sentinel",
+                            "opa",
                             "custom"
                         ]
                     },
