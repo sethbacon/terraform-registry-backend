@@ -138,10 +138,16 @@ gcloud run deploy terraform-registry-backend \
 
 # Deploy frontend
 echo "==> Deploying frontend service..."
+# BACKEND_URL activates the image's nginx-ecs template (envsubst entrypoint),
+# which proxies /api and the Terraform protocol paths to the backend service.
+# Without it the baked config targets compose's backend:8080 — unresolvable on
+# Cloud Run, so nginx would fail at startup.
+BACKEND_URL=$(gcloud run services describe terraform-registry-backend --region="$REGION" --format="value(status.url)")
 gcloud run deploy terraform-registry-frontend \
   --image="$FRONTEND_IMAGE" \
   --region="$REGION" \
   --platform=managed \
+  --set-env-vars="BACKEND_URL=${BACKEND_URL}" \
   --port=80 \
   --cpu=0.5 \
   --memory=256Mi \
@@ -153,7 +159,6 @@ gcloud run deploy terraform-registry-frontend \
   --quiet
 
 # Get URLs
-BACKEND_URL=$(gcloud run services describe terraform-registry-backend --region="$REGION" --format="value(status.url)")
 FRONTEND_URL=$(gcloud run services describe terraform-registry-frontend --region="$REGION" --format="value(status.url)")
 
 echo ""
@@ -163,6 +168,6 @@ echo "    Frontend URL: ${FRONTEND_URL}"
 echo ""
 echo "Next steps:"
 echo "  1. Update TFR_SERVER_BASE_URL on the backend to match the frontend URL or custom domain"
-echo "  2. Configure nginx in the frontend image to proxy API requests to the backend URL"
+echo "  2. (Done automatically) frontend proxies API paths to ${BACKEND_URL} via BACKEND_URL"
 echo "  3. (Optional) Set up a custom domain: gcloud run domain-mappings create --service=terraform-registry-frontend --domain=${CUSTOM_DOMAIN:-registry.example.com}"
 echo "  4. Verify: curl ${FRONTEND_URL}/"
