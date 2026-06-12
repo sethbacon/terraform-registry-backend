@@ -236,6 +236,14 @@ resource frontendApp 'Microsoft.App/containerApps@2023-05-01' = {
             cpu: json('0.25')
             memory: '0.5Gi'
           }
+          env: [
+            // Activates the image's nginx-ecs template (envsubst entrypoint):
+            // the baked default config targets the compose-era hostname
+            // backend:8080, which cannot resolve on ACA — nginx would fail at
+            // startup. The template proxies /api and protocol paths to the
+            // backend's internal ingress instead.
+            { name: 'BACKEND_URL', value: 'https://${backendApp.properties.configuration.ingress.fqdn}' }
+          ]
           probes: [
             {
               type: 'Liveness'
