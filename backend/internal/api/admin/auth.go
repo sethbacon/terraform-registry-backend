@@ -302,6 +302,7 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 		var sub, email, name string
 		var err error
 		var oidcGroups []string // populated for OIDC logins when group_claim_name is configured
+		var emailVerified *bool
 
 		// Exchange code for tokens based on provider
 		switch sessionState.ProviderType {
@@ -340,6 +341,8 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 				callbackError("user_info_failed", "Failed to extract user information from the ID token.")
 				return
 			}
+
+			emailVerified = emailVerifiedClaim(idToken)
 
 			// Extract group claims for role mapping.
 			// DB config group mapping settings take precedence over env/file config.
@@ -381,6 +384,8 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 				return
 			}
 
+			emailVerified = emailVerifiedClaim(idToken)
+
 		default:
 			// Check for SAML provider type ("saml" or "saml:<idp_name>")
 			if sessionState.ProviderType == "saml" || strings.HasPrefix(sessionState.ProviderType, "saml:") {
@@ -394,6 +399,14 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 		}
 
 		// Get or create user
+		if err := enforceEmailVerified(emailVerified, h.cfg.Auth.OIDC.RequireVerifiedEmail); err != nil {
+			callbackError("email_not_verified", err.Error())
+			return
+		}
+		if err := h.guardEmailRebind(ctx, sub, email); err != nil {
+			callbackError("email_bound", err.Error())
+			return
+		}
 		user, err := h.userRepo.GetOrCreateUserByOIDC(ctx, sub, email, name)
 		if err != nil {
 			callbackError("user_creation_failed", "Failed to look up or create your account.")
@@ -1102,6 +1115,11 @@ func (h *AuthHandlers) SAMLACSHandler() gin.HandlerFunc {
 
 		ctx := context.Background()
 
+		if err := h.guardEmailRebind(ctx, sub, userInfo.Email); err != nil {
+			callbackError("email_bound", err.Error())
+			return
+		}
+
 		// Get or create user (reuse the OIDC path — sub is unique per IdP)
 		user, err := h.userRepo.GetOrCreateUserByOIDC(ctx, sub, userInfo.Email, userInfo.Name)
 		if err != nil {
@@ -1237,6 +1255,11 @@ func (h *AuthHandlers) LDAPLoginHandler() gin.HandlerFunc {
 
 		// Use the LDAP DN as the unique subject identifier
 		sub := fmt.Sprintf("ldap:%s", userInfo.DN)
+
+		if err := h.guardEmailRebind(ctx, sub, userInfo.Email); err != nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+			return
+		}
 
 		user, err := h.userRepo.GetOrCreateUserByOIDC(ctx, sub, userInfo.Email, userInfo.Name)
 		if err != nil {
