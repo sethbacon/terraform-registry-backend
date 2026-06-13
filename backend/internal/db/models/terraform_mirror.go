@@ -26,7 +26,7 @@ type TerraformMirrorConfig struct {
 	GPGVerify         bool       `json:"gpg_verify" db:"gpg_verify"`
 	StableOnly        bool       `json:"stable_only" db:"stable_only"` // exclude pre-release versions when true
 	SyncIntervalHours int        `json:"sync_interval_hours" db:"sync_interval_hours"`
-	RequiresApproval  bool       `json:"requires_approval" db:"requires_approval"`            // Gate newly synced versions behind admin approval
+	RequiresApproval  bool       `json:"requires_approval" db:"requires_approval"`             // Gate newly synced versions behind admin approval
 	AutoApproveRules  *string    `json:"auto_approve_rules,omitempty" db:"auto_approve_rules"` // JSONB: AutoApproveRules; NULL = manual approval only
 	LastSyncAt        *time.Time `json:"last_sync_at,omitempty" db:"last_sync_at"`
 	LastSyncStatus    *string    `json:"last_sync_status,omitempty" db:"last_sync_status"`
@@ -39,18 +39,18 @@ type TerraformMirrorConfig struct {
 
 // TerraformVersion represents a single Terraform/OpenTofu release version within a mirror config.
 type TerraformVersion struct {
-	ID           uuid.UUID  `json:"id" db:"id"`
-	ConfigID     uuid.UUID  `json:"config_id" db:"config_id"`
-	Version      string     `json:"version" db:"version"`
-	IsLatest     bool       `json:"is_latest" db:"is_latest"`
-	IsDeprecated bool       `json:"is_deprecated" db:"is_deprecated"`
-	ReleaseDate  *time.Time `json:"release_date,omitempty" db:"release_date"`
-	SyncStatus   string     `json:"sync_status" db:"sync_status"` // pending|syncing|synced|failed|partial
-	SyncError    *string    `json:"sync_error,omitempty" db:"sync_error"`
-	SyncedAt     *time.Time `json:"synced_at,omitempty" db:"synced_at"`
-	ApprovalStatus *string  `json:"approval_status,omitempty" db:"approval_status"` // NULL|pending_approval|approved|rejected
-	CreatedAt    time.Time  `json:"created_at" db:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at" db:"updated_at"`
+	ID             uuid.UUID  `json:"id" db:"id"`
+	ConfigID       uuid.UUID  `json:"config_id" db:"config_id"`
+	Version        string     `json:"version" db:"version"`
+	IsLatest       bool       `json:"is_latest" db:"is_latest"`
+	IsDeprecated   bool       `json:"is_deprecated" db:"is_deprecated"`
+	ReleaseDate    *time.Time `json:"release_date,omitempty" db:"release_date"`
+	SyncStatus     string     `json:"sync_status" db:"sync_status"` // pending|syncing|synced|failed|partial
+	SyncError      *string    `json:"sync_error,omitempty" db:"sync_error"`
+	SyncedAt       *time.Time `json:"synced_at,omitempty" db:"synced_at"`
+	ApprovalStatus *string    `json:"approval_status,omitempty" db:"approval_status"` // NULL|pending_approval|approved|rejected
+	CreatedAt      time.Time  `json:"created_at" db:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at" db:"updated_at"`
 
 	// Storage keys for the per-version GPG-verified SHA256SUMS file and its
 	// detached signature. NULL until the sync job has uploaded them. Used by
