@@ -1392,7 +1392,7 @@ func versionHandler(cfg *config.Config) gin.HandlerFunc {
 func LoggerMiddleware(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
-		path := c.Request.URL.Path
+		path := redactSensitivePath(c.Request.URL.Path)
 		query := c.Request.URL.RawQuery
 
 		c.Next()
