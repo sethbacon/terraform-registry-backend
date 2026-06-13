@@ -170,8 +170,6 @@ func TestRefreshHandler_NotAuthenticated(t *testing.T) {
 // RefreshHandler — with user in context
 // ---------------------------------------------------------------------------
 
-var authUserCols = []string{"id", "email", "name", "oidc_sub", "created_at", "updated_at"}
-
 func TestRefreshHandler_UserNotFound(t *testing.T) {
 	_, mock, _ := newAuthRouter(t)
 	db, mock2, _ := sqlmock.New()

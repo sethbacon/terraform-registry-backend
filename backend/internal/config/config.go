@@ -333,12 +333,13 @@ type OIDCGroupMapping struct {
 
 // OIDCConfig holds generic OIDC provider configuration
 type OIDCConfig struct {
-	Enabled      bool     `mapstructure:"enabled"`
-	IssuerURL    string   `mapstructure:"issuer_url"`
-	ClientID     string   `mapstructure:"client_id"`
-	ClientSecret string   `mapstructure:"client_secret"`
-	RedirectURL  string   `mapstructure:"redirect_url"`
-	Scopes       []string `mapstructure:"scopes"`
+	Enabled              bool     `mapstructure:"enabled"`
+	IssuerURL            string   `mapstructure:"issuer_url"`
+	ClientID             string   `mapstructure:"client_id"`
+	ClientSecret         string   `mapstructure:"client_secret"`
+	RedirectURL          string   `mapstructure:"redirect_url"`
+	Scopes               []string `mapstructure:"scopes"`
+	RequireVerifiedEmail bool     `mapstructure:"require_verified_email"`
 
 	// Group-to-role mapping — optional. When set, the IdP group claim is read
 	// on every login and used to assign (or update) the user's org membership.
@@ -680,6 +681,7 @@ func bindEnvVars(v *viper.Viper) error {
 		"auth.oidc.client_secret",
 		"auth.oidc.redirect_url",
 		"auth.oidc.scopes",
+		"auth.oidc.require_verified_email",
 		"auth.oidc.group_claim_name",
 		"auth.oidc.group_mappings",
 		"auth.oidc.default_role",
@@ -866,6 +868,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.api_keys.prefix", "tfr_")
 	v.SetDefault("auth.oidc.enabled", false)
 	v.SetDefault("auth.oidc.scopes", []string{"openid", "email", "profile"})
+	v.SetDefault("auth.oidc.require_verified_email", true)
 	v.SetDefault("auth.azure_ad.enabled", false)
 
 	// Multi-tenancy defaults
