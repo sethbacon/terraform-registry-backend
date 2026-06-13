@@ -69,7 +69,7 @@ type AutoApproveRules struct {
 // row's own UUID (mirrored_provider_versions.id or terraform_versions.id).
 type VersionApproval struct {
 	ID                uuid.UUID `json:"id" db:"id"`
-	Type              string    `json:"type" db:"type"`             // provider | terraform
+	Type              string    `json:"type" db:"type"` // provider | terraform
 	Version           string    `json:"version" db:"version"`
 	ApprovalStatus    string    `json:"approval_status" db:"approval_status"`
 	ProviderNamespace *string   `json:"provider_namespace,omitempty" db:"provider_namespace"`

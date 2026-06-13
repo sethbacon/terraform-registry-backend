@@ -83,8 +83,8 @@ type CreateMirrorConfigRequest struct {
 	PlatformFilter           []string `json:"platform_filter,omitempty"`                                        // List of "os/arch" strings (e.g. ["linux/amd64", "windows/amd64"])
 	Enabled                  *bool    `json:"enabled,omitempty"`                                                // Default: true
 	SyncIntervalHours        *int     `json:"sync_interval_hours,omitempty" binding:"omitempty,min=1"`          // Default: 24
-	RequiresApproval         *bool    `json:"requires_approval,omitempty"`                                     // Default: false
-	AutoApproveRules         *string  `json:"auto_approve_rules,omitempty"`                                    // JSON: AutoApproveRules
+	RequiresApproval         *bool    `json:"requires_approval,omitempty"`                                      // Default: false
+	AutoApproveRules         *string  `json:"auto_approve_rules,omitempty"`                                     // JSON: AutoApproveRules
 	PullThroughEnabled       *bool    `json:"pull_through_enabled,omitempty"`                                   // Default: false
 	PullThroughCacheTTLHours *int     `json:"pull_through_cache_ttl_hours,omitempty" binding:"omitempty,min=1"` // Default: 24
 }

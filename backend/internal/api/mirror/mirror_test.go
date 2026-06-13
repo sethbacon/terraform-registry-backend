@@ -32,7 +32,8 @@ var mirrorProvCols = []string{
 
 // Column ordering mirrors the production SELECT in provider_repository.go
 // (gpg_public_key, shasums_url, shasums_signature_url,
-//  shasum_storage_key, shasum_signature_storage_key, published_by, ...).
+//
+//	shasum_storage_key, shasum_signature_storage_key, published_by, ...).
 var mirrorVersionCols = []string{
 	"id", "provider_id", "version", "protocols",
 	"gpg_public_key", "shasums_url", "shasums_signature_url",
