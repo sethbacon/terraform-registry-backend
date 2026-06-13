@@ -42,6 +42,7 @@ type Config struct {
 	Policy          PolicyConfig          `mapstructure:"policy"`
 	CVE             CVEConfig             `mapstructure:"cve"`
 	ReleasesGPGKeys ReleasesGPGKeysConfig `mapstructure:"releases_gpg_keys"`
+	Suite           SuiteConfig           `mapstructure:"suite"`
 }
 
 // AuditRetentionConfig controls the background audit log cleanup job.
@@ -204,6 +205,13 @@ type ServerConfig struct {
 	ReadTimeout     time.Duration `mapstructure:"read_timeout"`
 	WriteTimeout    time.Duration `mapstructure:"write_timeout"`
 	DefaultLanguage string        `mapstructure:"default_language"`
+}
+
+// SuiteConfig configures optional runtime coupling to the sibling Suite app.
+// SiblingURL empty (the default) = fully standalone; nothing is polled.
+type SuiteConfig struct {
+	SiblingURL   string        `mapstructure:"sibling_url"`   // TFR_SUITE_SIBLING_URL, e.g. https://tfstate.brunswick.com
+	PollInterval time.Duration `mapstructure:"poll_interval"` // TFR_SUITE_POLL_INTERVAL, default 60s
 }
 
 // GetPublicURL returns the public-facing URL used for OAuth callbacks and external redirects.
@@ -758,6 +766,10 @@ func bindEnvVars(v *viper.Viper) error {
 		// Webhooks
 		"webhooks.max_retries",
 		"webhooks.retry_interval_mins",
+
+		// Suite
+		"suite.sibling_url",
+		"suite.poll_interval",
 	}
 	for _, key := range keys {
 		if err := v.BindEnv(key); err != nil {
@@ -945,6 +957,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("releases_gpg_keys.expiry_warning_days", 60)
 	v.SetDefault("releases_gpg_keys.hashicorp_url", "https://www.hashicorp.com/.well-known/pgp-key.txt")
 	v.SetDefault("releases_gpg_keys.opentofu_url", "https://opentofu.org/.well-known/pgp-key.txt")
+
+	// Suite runtime discovery
+	v.SetDefault("suite.sibling_url", "")
+	v.SetDefault("suite.poll_interval", 60*time.Second)
 }
 
 // expandEnv expands environment variables in the format ${VAR_NAME}
