@@ -205,6 +205,9 @@ type ServerConfig struct {
 	ReadTimeout     time.Duration `mapstructure:"read_timeout"`
 	WriteTimeout    time.Duration `mapstructure:"write_timeout"`
 	DefaultLanguage string        `mapstructure:"default_language"`
+	// TrustedProxies lists CIDRs/IPs of reverse proxies allowed to set
+	// X-Forwarded-For. Empty (default) = trust no proxy.
+	TrustedProxies []string `mapstructure:"trusted_proxies"`
 }
 
 // SuiteConfig configures optional runtime coupling to the sibling Suite app.
@@ -653,6 +656,7 @@ func bindEnvVars(v *viper.Viper) error {
 		"server.read_timeout",
 		"server.write_timeout",
 		"server.default_language",
+		"server.trusted_proxies",
 
 		// Storage
 		"storage.default_backend",
@@ -849,6 +853,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.read_timeout", "30s")
 	v.SetDefault("server.write_timeout", "30s")
 	v.SetDefault("server.default_language", "en")
+	v.SetDefault("server.trusted_proxies", []string{})
 
 	// Redis defaults (empty host = disabled, in-memory fallback used)
 	v.SetDefault("redis.host", "")
