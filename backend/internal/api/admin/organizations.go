@@ -467,6 +467,11 @@ func (h *OrganizationHandlers) AddMemberHandler() gin.HandlerFunc {
 			return
 		}
 
+		if chk := h.checkRoleAssignment(c, req.RoleTemplateID); !chk.allowed {
+			c.JSON(chk.status, gin.H{"error": "role assignment not permitted"})
+			return
+		}
+
 		// Check if organization exists
 		org, err := h.orgRepo.GetByID(c.Request.Context(), orgID)
 		if err != nil {
@@ -562,6 +567,11 @@ func (h *OrganizationHandlers) UpdateMemberHandler() gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error": "Invalid request: " + err.Error(),
 			})
+			return
+		}
+
+		if chk := h.checkRoleAssignment(c, req.RoleTemplateID); !chk.allowed {
+			c.JSON(chk.status, gin.H{"error": "role assignment not permitted"})
 			return
 		}
 
