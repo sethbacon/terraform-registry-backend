@@ -29,6 +29,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
+	"github.com/sethbacon/terraform-suite-identity/identity/suite"
 	"github.com/terraform-registry/terraform-registry/docs"
 	"github.com/terraform-registry/terraform-registry/internal/api/admin"
 	"github.com/terraform-registry/terraform-registry/internal/api/advisories"
@@ -796,6 +797,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 
 		// Public search endpoints (no auth required, but rate limited)
 		// These allow public discovery of modules and providers without authentication
+		var suiteClient *suite.DiscoveryClient
 		publicGroup := apiV1.Group("")
 		publicGroup.Use(middleware.RateLimitMiddleware(generalRateLimiter))
 		{
@@ -809,7 +811,12 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 			// login page can render branded colors/logo before sign-in.
 			uiThemeHandlers := uitheme.NewHandlers(sqlxDB)
 			publicGroup.GET("/ui/theme", uiThemeHandlers.GetTheme())
+
+			// Suite runtime discovery (Phase 0)
+			publicGroup.GET("/suite/manifest", suiteManifestHandler(cfg))
+			publicGroup.GET("/ui/config", uiConfigHandler(func() *suite.DiscoveryClient { return suiteClient }))
 		}
+		suiteClient = startSuiteDiscovery(cfg)
 
 		// Public detail endpoints — no auth required; optional auth populates user context if a
 		// token is present (used by the frontend to conditionally show management actions).
