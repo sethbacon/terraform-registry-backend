@@ -146,6 +146,9 @@ var AppCryptoMode = "standard"
 // identity schema (feature tables fall back to public via search_path).
 func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *BackgroundServices) {
 	router := gin.New()
+	if err := router.SetTrustedProxies(cfg.Server.TrustedProxies); err != nil {
+		log.Fatalf("invalid trusted_proxies config: %v", err)
+	}
 
 	// Initialize storage backend
 	storageBackend, err := storage.NewStorage(cfg)
