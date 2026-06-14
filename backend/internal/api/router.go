@@ -817,7 +817,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 
 			// Suite runtime discovery (Phase 0)
 			publicGroup.GET("/suite/manifest", suiteManifestHandler(cfg))
-			publicGroup.GET("/ui/config", uiConfigHandler(func() *suite.DiscoveryClient { return suiteClient }))
+			publicGroup.GET("/ui/config", uiConfigHandler(cfg, func() *suite.DiscoveryClient { return suiteClient }))
 		}
 		suiteClient = startSuiteDiscovery(cfg)
 

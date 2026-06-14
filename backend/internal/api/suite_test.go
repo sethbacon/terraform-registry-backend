@@ -72,7 +72,7 @@ func TestSuiteManifestHandler_PublicURLFallsBackToBaseURL(t *testing.T) {
 
 func TestUIConfigHandler_NoSibling(t *testing.T) {
 	r := gin.New()
-	r.GET("/api/v1/ui/config", uiConfigHandler(func() *suite.DiscoveryClient { return nil }))
+	r.GET("/api/v1/ui/config", uiConfigHandler(&config.Config{}, func() *suite.DiscoveryClient { return nil }))
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/ui/config", nil))
@@ -116,7 +116,7 @@ func TestUIConfigHandler_ActiveSibling(t *testing.T) {
 	}
 
 	r := gin.New()
-	r.GET("/api/v1/ui/config", uiConfigHandler(func() *suite.DiscoveryClient { return dc }))
+	r.GET("/api/v1/ui/config", uiConfigHandler(&config.Config{}, func() *suite.DiscoveryClient { return dc }))
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/ui/config", nil))
@@ -154,7 +154,7 @@ func TestUIConfigHandler_UnreachableSibling(t *testing.T) {
 	dc.Start(ctxThatCancelsImmediately())
 
 	r := gin.New()
-	r.GET("/api/v1/ui/config", uiConfigHandler(func() *suite.DiscoveryClient { return dc }))
+	r.GET("/api/v1/ui/config", uiConfigHandler(&config.Config{}, func() *suite.DiscoveryClient { return dc }))
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/ui/config", nil))
@@ -179,6 +179,63 @@ func TestStartSuiteDiscovery_NilWhenNoSiblingURL(t *testing.T) {
 	cfg := &config.Config{}
 	if dc := startSuiteDiscovery(cfg); dc != nil {
 		t.Error("expected nil when SiblingURL is empty")
+	}
+}
+
+func TestUIConfigHandler_ForwardsIdentityBlock(t *testing.T) {
+	sibling := suite.Manifest{
+		SchemaVersion: suite.SchemaVersionV1,
+		App:           "terraform-state-manager",
+		PublicURL:     "https://tfstate.example.com",
+		Identity:      suite.IdentityInfo{Issuer: "terraform-state-manager", SharedStore: true, Schema: "identity"},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(sibling)
+	}))
+	defer srv.Close()
+
+	self := suite.Manifest{SchemaVersion: suite.SchemaVersionV1, App: "terraform-registry"}
+	dc := suite.NewDiscoveryClient(srv.URL, self, time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go dc.Start(ctx)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if st, _ := dc.Snapshot(); st == suite.StateActive {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	decodeSibling := func(cfg *config.Config) map[string]any {
+		r := gin.New()
+		r.GET("/api/v1/ui/config", uiConfigHandler(cfg, func() *suite.DiscoveryClient { return dc }))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/ui/config", nil))
+		var resp struct {
+			Sibling map[string]any `json:"sibling"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		return resp.Sibling
+	}
+
+	// issuer is always forwarded; sharedStore is true only when THIS app also
+	// asserts the shared store (seamless SSO).
+	shared := decodeSibling(&config.Config{Suite: config.SuiteConfig{IdentitySharedStore: true}})
+	if shared["issuer"] != "terraform-state-manager" {
+		t.Errorf("issuer = %v, want terraform-state-manager", shared["issuer"])
+	}
+	if shared["sharedStore"] != true {
+		t.Errorf("sharedStore = %v, want true (both apps assert it)", shared["sharedStore"])
+	}
+
+	// This app does NOT assert the shared store → keep the hint even though the
+	// sibling claims one (the AND).
+	notShared := decodeSibling(&config.Config{})
+	if notShared["sharedStore"] != false {
+		t.Errorf("sharedStore = %v, want false (this app does not assert it)", notShared["sharedStore"])
 	}
 }
 
