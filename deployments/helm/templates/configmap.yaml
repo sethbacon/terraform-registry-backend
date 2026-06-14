@@ -51,6 +51,8 @@ data:
   TFR_AUTH_API_KEYS_ENABLED: {{ .Values.auth.apiKeys.enabled | quote }}
   TFR_AUTH_API_KEYS_PREFIX: {{ .Values.auth.apiKeys.prefix | quote }}
   TFR_AUTH_OIDC_ENABLED: {{ .Values.auth.oidc.enabled | quote }}
+  # Shared verified-email gate (governs both OIDC and Azure AD callbacks)
+  TFR_AUTH_OIDC_REQUIRE_VERIFIED_EMAIL: {{ .Values.auth.oidc.requireVerifiedEmail | quote }}
   {{- if .Values.auth.oidc.enabled }}
   TFR_AUTH_OIDC_ISSUER_URL: {{ .Values.auth.oidc.issuerUrl | quote }}
   TFR_AUTH_OIDC_CLIENT_ID: {{ .Values.auth.oidc.clientId | quote }}
