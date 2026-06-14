@@ -7,6 +7,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.0](https://github.com/sethbacon/terraform-registry-backend/compare/v2.3.0...v2.4.0) (2026-06-14)
+
+
+### Features
+
+* **identity:** support a separable identity database DSN ([#492](https://github.com/sethbacon/terraform-registry-backend/issues/492)) ([1a3875f](https://github.com/sethbacon/terraform-registry-backend/commit/1a3875f6c09b2507f5f7c1ec7b103b7401b083ed))
+* **suite:** advertise and forward the identity shared-store signal ([#494](https://github.com/sethbacon/terraform-registry-backend/issues/494)) ([bb9a9b2](https://github.com/sethbacon/terraform-registry-backend/commit/bb9a9b28d7a48dd214896986ff1ae377fba4e7d7))
+
+
+### Bug Fixes
+
+* **identity:** gate system-role seeding on suite.role_seed_owner ([#491](https://github.com/sethbacon/terraform-registry-backend/issues/491)) ([5890c48](https://github.com/sethbacon/terraform-registry-backend/commit/5890c48f69209f3462b1e1e1a163b89fa2f0559f))
+
 ## [2.3.0](https://github.com/sethbacon/terraform-registry-backend/compare/v2.2.2...v2.3.0) (2026-06-14)
 
 
