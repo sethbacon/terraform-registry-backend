@@ -215,6 +215,20 @@ type ServerConfig struct {
 type SuiteConfig struct {
 	SiblingURL   string        `mapstructure:"sibling_url"`   // TFR_SUITE_SIBLING_URL, e.g. https://tfstate.brunswick.com
 	PollInterval time.Duration `mapstructure:"poll_interval"` // TFR_SUITE_POLL_INTERVAL, default 60s
+	// RoleSeedOwner controls which app seeds the shared identity schema's system
+	// role templates. "self" (default) = this app seeds its own store, matching
+	// standalone behavior. When two apps share one identity database, exactly one
+	// must own the seed ("registry" or "tsm"); otherwise they overwrite each
+	// other's role scopes on every restart.
+	RoleSeedOwner string `mapstructure:"role_seed_owner"` // TFR_SUITE_ROLE_SEED_OWNER: self|registry|tsm
+}
+
+// ShouldSeedRoles reports whether this app (identified by app, e.g. "registry")
+// should seed system role templates given the configured RoleSeedOwner. "self"
+// (the default) means every app seeds its own store; otherwise only the named
+// owner seeds, so a shared identity database is written by exactly one app.
+func (s SuiteConfig) ShouldSeedRoles(app string) bool {
+	return s.RoleSeedOwner == "self" || s.RoleSeedOwner == app
 }
 
 // GetPublicURL returns the public-facing URL used for OAuth callbacks and external redirects.
@@ -774,6 +788,7 @@ func bindEnvVars(v *viper.Viper) error {
 		// Suite
 		"suite.sibling_url",
 		"suite.poll_interval",
+		"suite.role_seed_owner",
 	}
 	for _, key := range keys {
 		if err := v.BindEnv(key); err != nil {
@@ -966,6 +981,7 @@ func setDefaults(v *viper.Viper) {
 	// Suite runtime discovery
 	v.SetDefault("suite.sibling_url", "")
 	v.SetDefault("suite.poll_interval", 60*time.Second)
+	v.SetDefault("suite.role_seed_owner", "self")
 }
 
 // expandEnv expands environment variables in the format ${VAR_NAME}
