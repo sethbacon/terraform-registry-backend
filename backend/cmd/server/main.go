@@ -259,12 +259,20 @@ func serve(cfg *config.Config) error {
 		// own domain scopes onto the system roles so non-admin roles behave the
 		// same as in the default public-schema configuration ("identity-core +
 		// app-extended"). Idempotent; no-op on steady-state restarts.
-		if err := repositories.SeedSystemRoleTemplates(
-			context.Background(), identityDB, models.PredefinedRoleTemplates(),
-		); err != nil {
-			return fmt.Errorf("failed to seed system role templates: %w", err)
+		// Under a shared identity database, exactly one app must own role-template
+		// seeding (suite.role_seed_owner) or the apps overwrite each other's role
+		// scopes on restart. Default "self" preserves standalone behavior.
+		if cfg.Suite.ShouldSeedRoles("registry") {
+			if err := repositories.SeedSystemRoleTemplates(
+				context.Background(), identityDB, models.PredefinedRoleTemplates(),
+			); err != nil {
+				return fmt.Errorf("failed to seed system role templates: %w", err)
+			}
+			slog.Info("system role templates seeded into identity schema")
+		} else {
+			slog.Info("skipping system role template seeding; another app owns it",
+				"role_seed_owner", cfg.Suite.RoleSeedOwner)
 		}
-		slog.Info("system role templates seeded into identity schema")
 	}
 
 	// Create router
