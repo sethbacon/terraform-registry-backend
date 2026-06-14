@@ -166,9 +166,22 @@ func serve(cfg *config.Config) error {
 	// until explicitly enabled; mirrors the TFR_SECURITY_TLS_ENABLED env flag.
 	if identityMigrationsEnabled() {
 		log.Println("Running identity schema migrations...")
-		if err := identity.RunMigrations(database, "up"); err != nil {
+		// Run against the identity database (defaults to the app DB). Identity
+		// migrations are schema-qualified (identity.*), so a plain connection
+		// suffices; a dedicated connection lets identity live in a separate database
+		// (TFR_IDENTITY_DATABASE_*) without coupling to the app pool.
+		identityMigrateDB, mErr := db.Connect(
+			cfg.IdentityDatabase.GetDSN(),
+			cfg.IdentityDatabase.MaxConnections, cfg.IdentityDatabase.MinIdleConnections,
+		)
+		if mErr != nil {
+			return fmt.Errorf("failed to connect to identity database: %w", mErr)
+		}
+		if err := identity.RunMigrations(identityMigrateDB, "up"); err != nil {
+			_ = identityMigrateDB.Close()
 			return fmt.Errorf("failed to run identity migrations: %w", err)
 		}
+		_ = identityMigrateDB.Close()
 		log.Println("Identity schema migrations completed successfully")
 	}
 
@@ -244,8 +257,8 @@ func serve(cfg *config.Config) error {
 	if identitySchemaEnabled() {
 		searchPath := identitySchemaName() + ",public"
 		idb, connErr := db.Connect(
-			cfg.Database.GetDSNWithSearchPath(searchPath),
-			cfg.Database.MaxConnections, cfg.Database.MinIdleConnections,
+			cfg.IdentityDatabase.GetDSNWithSearchPath(searchPath),
+			cfg.IdentityDatabase.MaxConnections, cfg.IdentityDatabase.MinIdleConnections,
 		)
 		if connErr != nil {
 			return fmt.Errorf("failed to connect to identity schema: %w", connErr)

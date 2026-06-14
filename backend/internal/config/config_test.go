@@ -667,3 +667,61 @@ func TestLoad_RoleSeedOwnerEnvOverride(t *testing.T) {
 		t.Errorf("Suite.RoleSeedOwner = %q, want registry (TFR_SUITE_ROLE_SEED_OWNER override)", cfg.Suite.RoleSeedOwner)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// IdentityDatabase fallback
+// ---------------------------------------------------------------------------
+
+func TestLoad_IdentityDatabaseDefaultsToAppDB(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// Unset → the identity database is byte-for-byte the app database.
+	if cfg.IdentityDatabase != cfg.Database {
+		t.Errorf("IdentityDatabase = %+v, want == Database %+v", cfg.IdentityDatabase, cfg.Database)
+	}
+}
+
+func TestLoad_IdentityDatabasePartialOverride(t *testing.T) {
+	// Override only host + database name; everything else inherits the app DB —
+	// the common "shared identity DB on the same server" case.
+	t.Setenv("TFR_IDENTITY_DATABASE_HOST", "identity.db.internal")
+	t.Setenv("TFR_IDENTITY_DATABASE_NAME", "terraform_suite_identity")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.IdentityDatabase.Host != "identity.db.internal" {
+		t.Errorf("IdentityDatabase.Host = %q, want identity.db.internal", cfg.IdentityDatabase.Host)
+	}
+	if cfg.IdentityDatabase.Name != "terraform_suite_identity" {
+		t.Errorf("IdentityDatabase.Name = %q, want terraform_suite_identity", cfg.IdentityDatabase.Name)
+	}
+	if cfg.IdentityDatabase.User != cfg.Database.User {
+		t.Errorf("IdentityDatabase.User = %q, want inherited %q", cfg.IdentityDatabase.User, cfg.Database.User)
+	}
+	if cfg.IdentityDatabase.Port != cfg.Database.Port {
+		t.Errorf("IdentityDatabase.Port = %d, want inherited %d", cfg.IdentityDatabase.Port, cfg.Database.Port)
+	}
+	if cfg.IdentityDatabase.SSLMode != cfg.Database.SSLMode {
+		t.Errorf("IdentityDatabase.SSLMode = %q, want inherited %q", cfg.IdentityDatabase.SSLMode, cfg.Database.SSLMode)
+	}
+}
+
+func TestLoad_IdentityDatabasePasswordFallbackExpanded(t *testing.T) {
+	// The fallback runs AFTER expandEnv, so an inherited password is the expanded
+	// value (not the literal ${VAR}).
+	t.Setenv("REG_CONFIG_TEST_DBPASS", "s3cr3t-pw")
+	t.Setenv("TFR_DATABASE_PASSWORD", "${REG_CONFIG_TEST_DBPASS}")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Database.Password != "s3cr3t-pw" {
+		t.Fatalf("Database.Password = %q, want expanded s3cr3t-pw", cfg.Database.Password)
+	}
+	if cfg.IdentityDatabase.Password != "s3cr3t-pw" {
+		t.Errorf("IdentityDatabase.Password = %q, want inherited+expanded s3cr3t-pw", cfg.IdentityDatabase.Password)
+	}
+}

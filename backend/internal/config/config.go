@@ -24,9 +24,14 @@ import (
 type Config struct {
 	Server   ServerConfig   `mapstructure:"server"`
 	Database DatabaseConfig `mapstructure:"database"`
-	Redis    RedisConfig    `mapstructure:"redis"`
-	Storage  StorageConfig  `mapstructure:"storage"`
-	Auth     AuthConfig     `mapstructure:"auth"`
+	// IdentityDatabase optionally points the identity schema at a separate/shared
+	// database. Any unset field falls back to Database, so fully unset = the app
+	// database (standalone default). Set TFR_IDENTITY_DATABASE_* to share one
+	// identity store across the suite.
+	IdentityDatabase DatabaseConfig `mapstructure:"identity_database"`
+	Redis            RedisConfig    `mapstructure:"redis"`
+	Storage          StorageConfig  `mapstructure:"storage"`
+	Auth             AuthConfig     `mapstructure:"auth"`
 	// ApiDocs holds OpenAPI/Swagger metadata that can be overridden at deploy-time
 	ApiDocs         ApiDocsConfig         `mapstructure:"api_docs"`
 	MultiTenancy    MultiTenancyConfig    `mapstructure:"multi_tenancy"`
@@ -662,6 +667,14 @@ func bindEnvVars(v *viper.Viper) error {
 		"database.ssl_mode",
 		"database.max_connections",
 		"database.min_idle_connections",
+		"identity_database.host",
+		"identity_database.port",
+		"identity_database.name",
+		"identity_database.user",
+		"identity_database.password",
+		"identity_database.ssl_mode",
+		"identity_database.max_connections",
+		"identity_database.min_idle_connections",
 
 		// Server
 		"server.host",
@@ -844,6 +857,7 @@ func Load(configPath string) (*Config, error) {
 
 	// Expand environment variables in sensitive fields
 	cfg.Database.Password = expandEnv(cfg.Database.Password)
+	cfg.IdentityDatabase.Password = expandEnv(cfg.IdentityDatabase.Password)
 	cfg.Redis.Password = expandEnv(cfg.Redis.Password)
 	cfg.Storage.Azure.AccountKey = expandEnv(cfg.Storage.Azure.AccountKey)
 	cfg.Storage.S3.AccessKeyID = expandEnv(cfg.Storage.S3.AccessKeyID)
@@ -851,6 +865,10 @@ func Load(configPath string) (*Config, error) {
 	cfg.Auth.OIDC.ClientSecret = expandEnv(cfg.Auth.OIDC.ClientSecret)
 	cfg.Auth.AzureAD.ClientSecret = expandEnv(cfg.Auth.AzureAD.ClientSecret)
 	cfg.Notifications.SMTP.Password = expandEnv(cfg.Notifications.SMTP.Password)
+
+	// Identity database inherits any unset field from the app database. Runs after
+	// expandEnv so an inherited password is the expanded value.
+	cfg.resolveIdentityDatabase()
 
 	// Validate configuration
 	if err := cfg.Validate(); err != nil {
@@ -889,6 +907,17 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("database.ssl_mode", "require")
 	v.SetDefault("database.max_connections", 25)
 	v.SetDefault("database.min_idle_connections", 5)
+
+	// Identity database — empty defaults so each field falls back to the app
+	// database (above) unless TFR_IDENTITY_DATABASE_* overrides it.
+	v.SetDefault("identity_database.host", "")
+	v.SetDefault("identity_database.port", 0)
+	v.SetDefault("identity_database.name", "")
+	v.SetDefault("identity_database.user", "")
+	v.SetDefault("identity_database.password", "")
+	v.SetDefault("identity_database.ssl_mode", "")
+	v.SetDefault("identity_database.max_connections", 0)
+	v.SetDefault("identity_database.min_idle_connections", 0)
 
 	// Storage defaults
 	v.SetDefault("storage.default_backend", "local")
@@ -1133,6 +1162,38 @@ func (c *DatabaseConfig) GetDSN() string {
 // tables fall back to public.
 func (c *DatabaseConfig) GetDSNWithSearchPath(searchPath string) string {
 	return c.GetDSN() + fmt.Sprintf(" options='-c search_path=%s'", searchPath)
+}
+
+// resolveIdentityDatabase fills any unset IdentityDatabase field from the primary
+// Database, so an operator can point identity at a different host or database name
+// while inheriting the rest (port, user, password, ssl_mode, pool sizing). Fully
+// unset → identical to Database (the standalone default).
+func (c *Config) resolveIdentityDatabase() {
+	id := &c.IdentityDatabase
+	if id.Host == "" {
+		id.Host = c.Database.Host
+	}
+	if id.Port == 0 {
+		id.Port = c.Database.Port
+	}
+	if id.Name == "" {
+		id.Name = c.Database.Name
+	}
+	if id.User == "" {
+		id.User = c.Database.User
+	}
+	if id.Password == "" {
+		id.Password = c.Database.Password
+	}
+	if id.SSLMode == "" {
+		id.SSLMode = c.Database.SSLMode
+	}
+	if id.MaxConnections == 0 {
+		id.MaxConnections = c.Database.MaxConnections
+	}
+	if id.MinIdleConnections == 0 {
+		id.MinIdleConnections = c.Database.MinIdleConnections
+	}
 }
 
 // GetAddress returns the server address in host:port format
