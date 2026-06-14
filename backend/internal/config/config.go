@@ -226,6 +226,11 @@ type SuiteConfig struct {
 	// must own the seed ("registry" or "tsm"); otherwise they overwrite each
 	// other's role scopes on every restart.
 	RoleSeedOwner string `mapstructure:"role_seed_owner"` // TFR_SUITE_ROLE_SEED_OWNER: self|registry|tsm
+	// IdentitySharedStore is an operator assertion that THIS app uses the shared
+	// identity store + single IdP. It is advertised in the manifest; the SPA drops
+	// the "you may need to sign in" hint only when both this app AND the sibling
+	// assert it. Default false. Env: TFR_SUITE_IDENTITY_SHARED_STORE.
+	IdentitySharedStore bool `mapstructure:"identity_shared_store"`
 }
 
 // ShouldSeedRoles reports whether this app (identified by app, e.g. "registry")
@@ -802,6 +807,7 @@ func bindEnvVars(v *viper.Viper) error {
 		"suite.sibling_url",
 		"suite.poll_interval",
 		"suite.role_seed_owner",
+		"suite.identity_shared_store",
 	}
 	for _, key := range keys {
 		if err := v.BindEnv(key); err != nil {
@@ -1011,6 +1017,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("suite.sibling_url", "")
 	v.SetDefault("suite.poll_interval", 60*time.Second)
 	v.SetDefault("suite.role_seed_owner", "self")
+	v.SetDefault("suite.identity_shared_store", false)
 }
 
 // expandEnv expands environment variables in the format ${VAR_NAME}
