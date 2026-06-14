@@ -7,6 +7,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0](https://github.com/sethbacon/terraform-registry-backend/compare/v2.2.2...v2.3.0) (2026-06-14)
+
+
+### Features
+
+* **suite:** add runtime discovery contract (Phase 0) ([#483](https://github.com/sethbacon/terraform-registry-backend/issues/483)) ([2ccfeb4](https://github.com/sethbacon/terraform-registry-backend/commit/2ccfeb41a1a76264f010a4c77841f38eec1c7fa8))
+
+
+### Bug Fixes
+
+* **helm:** activate CSP nonce in frontend nginx configmap ([#490](https://github.com/sethbacon/terraform-registry-backend/issues/490)) ([25b08a3](https://github.com/sethbacon/terraform-registry-backend/commit/25b08a3278a24d652c6adef510352150ac266e49))
+* **helm:** allow disabling OIDC require_verified_email via values ([#489](https://github.com/sethbacon/terraform-registry-backend/issues/489)) ([883ce0d](https://github.com/sethbacon/terraform-registry-backend/commit/883ce0def662fdfc2a56eb25e3cba07b51db5055))
+* **server:** restrict trusted proxies to prevent X-Forwarded-For spoofing ([#484](https://github.com/sethbacon/terraform-registry-backend/issues/484)) ([0d6da01](https://github.com/sethbacon/terraform-registry-backend/commit/0d6da0162f8c86b1938d1c834a7d75cb5632aa2a))
+
+
+### Security
+
+* enforce verified email and block cross-provider account rebind ([#485](https://github.com/sethbacon/terraform-registry-backend/issues/485)) ([8e13242](https://github.com/sethbacon/terraform-registry-backend/commit/8e132428fa702bcf899fdba8e9463f2d32a7a9af))
+* redact webhook secrets from request logs ([#487](https://github.com/sethbacon/terraform-registry-backend/issues/487)) ([7398a65](https://github.com/sethbacon/terraform-registry-backend/commit/7398a651a03c8e62c609e3f7291e7621ed2b8a99))
+
 ## [2.2.2](https://github.com/sethbacon/terraform-registry-backend/compare/v2.2.1...v2.2.2) (2026-06-11)
 
 
