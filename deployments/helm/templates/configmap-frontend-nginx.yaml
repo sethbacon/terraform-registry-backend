@@ -21,6 +21,17 @@ data:
         add_header Referrer-Policy "strict-origin-when-cross-origin" always;
         add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
 
+        # Content-Security-Policy with a per-request nonce. The frontend image's
+        # index.html ships a __CSP_NONCE__ placeholder that main.tsx feeds to
+        # emotion's cache; sub_filter swaps it for nginx's $request_id so injected
+        # styles satisfy the policy. The image bakes this into its own nginx.conf,
+        # but in-cluster this ConfigMap's default.conf replaces it — so it must be
+        # repeated here or the served CSP/nonce is lost.
+        set $csp_nonce $request_id;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'nonce-$csp_nonce'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none';" always;
+        sub_filter_once on;
+        sub_filter '__CSP_NONCE__' '$csp_nonce';
+
         location / {
             try_files $uri $uri/ /index.html;
         }
