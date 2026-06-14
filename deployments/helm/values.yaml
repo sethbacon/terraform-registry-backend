@@ -149,6 +149,11 @@ auth:
       - openid
       - email
       - profile
+    # -- Reject SSO logins whose token lacks email_verified (or sets it false).
+    # Governs BOTH oidc and azureAd callbacks. Default true for security. SET
+    # FALSE for Entra/Azure AD, which omits email_verified — otherwise login
+    # fails with email_not_verified.
+    requireVerifiedEmail: true
   azureAd:
     enabled: false
     tenantId: ""
