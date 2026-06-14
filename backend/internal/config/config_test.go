@@ -621,3 +621,49 @@ func TestScanningConfig_DefaultInstallDir(t *testing.T) {
 		t.Errorf("Scanning.InstallDir = %q, want /app/scanners", cfg.Scanning.InstallDir)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// SuiteConfig.RoleSeedOwner / ShouldSeedRoles
+// ---------------------------------------------------------------------------
+
+func TestSuiteConfig_ShouldSeedRoles(t *testing.T) {
+	cases := []struct {
+		owner string
+		app   string
+		want  bool
+	}{
+		{"self", "registry", true},     // standalone default: every app seeds its own
+		{"registry", "registry", true}, // this app is the designated owner
+		{"tsm", "registry", false},     // sibling owns the shared seed → skip
+		{"self", "tsm", true},          // "self" is app-agnostic
+		{"", "registry", false},        // unset (shouldn't happen post-default) → not owner
+	}
+	for _, c := range cases {
+		if got := (SuiteConfig{RoleSeedOwner: c.owner}).ShouldSeedRoles(c.app); got != c.want {
+			t.Errorf("ShouldSeedRoles(owner=%q, app=%q) = %v, want %v", c.owner, c.app, got, c.want)
+		}
+	}
+}
+
+func TestLoad_RoleSeedOwnerDefault(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Suite.RoleSeedOwner != "self" {
+		t.Errorf("default Suite.RoleSeedOwner = %q, want self", cfg.Suite.RoleSeedOwner)
+	}
+}
+
+func TestLoad_RoleSeedOwnerEnvOverride(t *testing.T) {
+	// Proves suite.role_seed_owner is in the bindEnvVars whitelist — without that
+	// entry registry's explicit-bind loader would not pick up the env var.
+	t.Setenv("TFR_SUITE_ROLE_SEED_OWNER", "registry")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Suite.RoleSeedOwner != "registry" {
+		t.Errorf("Suite.RoleSeedOwner = %q, want registry (TFR_SUITE_ROLE_SEED_OWNER override)", cfg.Suite.RoleSeedOwner)
+	}
+}
