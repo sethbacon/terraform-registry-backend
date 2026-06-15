@@ -41,3 +41,32 @@ func canonicalHost(raw string) string {
 	}
 	return net.JoinHostPort(host, port)
 }
+
+// canonicalHostSet builds the de-duplicated set of canonical host identities
+// this registry presents for the suite "Consumed by" join: its public-URL host,
+// its base-URL host, and any operator-configured aliases (vanity CNAMEs,
+// split-horizon DNS, or a portless variant of a non-default-port public URL).
+// Empty/unparseable entries are dropped. Including both the public and base
+// hosts heals the common reverse-proxy case where authors still address the
+// base host even though public_url is set.
+func canonicalHostSet(publicURL, baseURL string, aliases []string) []string {
+	seen := map[string]struct{}{}
+	out := []string{}
+	add := func(raw string) {
+		ch := canonicalHost(raw)
+		if ch == "" {
+			return
+		}
+		if _, dup := seen[ch]; dup {
+			return
+		}
+		seen[ch] = struct{}{}
+		out = append(out, ch)
+	}
+	add(publicURL)
+	add(baseURL)
+	for _, a := range aliases {
+		add(a)
+	}
+	return out
+}

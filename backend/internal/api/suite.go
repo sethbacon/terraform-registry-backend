@@ -99,20 +99,18 @@ func startSuiteDiscovery(cfg *config.Config) *suite.DiscoveryClient {
 // @Failure      401  {object}  map[string]interface{}  "Authentication required"
 // @Router       /api/v1/suite/modules/{namespace}/{name}/{system}/consumers [get]
 func moduleConsumersHandler(getClient func() *suite.DiscoveryClient, cfg *config.Config) gin.HandlerFunc {
-	// registryHost is THIS registry's own public host — the key the sibling matches
-	// "consumed by" on, so it never false-joins against public-registry modules.
-	// Canonicalized so it compares like-for-like against the host TSM captured
-	// from the module source address (case/port/trailing-dot folded).
-	registryHost := ""
-	if u, err := url.Parse(cfg.Server.GetPublicURL()); err == nil {
-		registryHost = canonicalHost(u.Host)
-	}
+	// hosts is THIS registry's set of canonical host identities the sibling
+	// matches "consumed by" on: its public host, its base/discovery host, and any
+	// operator-configured aliases (TFR_SERVER_HOST_ALIASES) for vanity-CNAME or
+	// port-asymmetry deployments. Canonicalized + de-duped so the join compares
+	// like-for-like against the host TSM captured from the module source address.
+	hosts := canonicalHostSet(cfg.Server.GetPublicURL(), cfg.Server.BaseURL, cfg.Server.HostAliases)
 	httpClient := &http.Client{Timeout: 2 * time.Second}
 
 	return func(c *gin.Context) {
 		empty := gin.H{"consumers": []any{}, "total": 0}
 		dc := getClient()
-		if dc == nil || registryHost == "" || cfg.Suite.SiblingToken == "" {
+		if dc == nil || len(hosts) == 0 || cfg.Suite.SiblingToken == "" {
 			c.JSON(http.StatusOK, empty)
 			return
 		}
@@ -123,9 +121,17 @@ func moduleConsumersHandler(getClient func() *suite.DiscoveryClient, cfg *config
 		}
 
 		moduleAddr := c.Param("namespace") + "/" + c.Param("name") + "/" + c.Param("system")
-		target := strings.TrimRight(m.PublicURL, "/") +
-			"/api/v1/consumers?host=" + url.QueryEscape(registryHost) +
-			"&module=" + url.QueryEscape(moduleAddr)
+		// Emit every acceptable host as a repeated &host= param; the sibling
+		// matches a state if its captured host is any of them.
+		var sb strings.Builder
+		sb.WriteString(strings.TrimRight(m.PublicURL, "/"))
+		sb.WriteString("/api/v1/consumers?module=")
+		sb.WriteString(url.QueryEscape(moduleAddr))
+		for _, h := range hosts {
+			sb.WriteString("&host=")
+			sb.WriteString(url.QueryEscape(h))
+		}
+		target := sb.String()
 
 		req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, target, nil)
 		if err != nil {
