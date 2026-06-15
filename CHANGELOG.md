@@ -7,6 +7,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.0](https://github.com/sethbacon/terraform-registry-backend/compare/v2.4.0...v2.5.0) (2026-06-15)
+
+
+### Features
+
+* **suite:** emit canonical host-alias set for the consumers join ([#499](https://github.com/sethbacon/terraform-registry-backend/issues/499)) ([1fbbb91](https://github.com/sethbacon/terraform-registry-backend/commit/1fbbb91fe022d70a2d5d95ed6f5bb08f1d6f44c5))
+* **suite:** server-proxy module consumers for the "Consumed by" panel ([#495](https://github.com/sethbacon/terraform-registry-backend/issues/495)) ([c0dec8f](https://github.com/sethbacon/terraform-registry-backend/commit/c0dec8f6da84a00f37c566b5c20ed516cb400abf))
+
+
+### Bug Fixes
+
+* **suite:** align service discovery with the consumers join host ([#498](https://github.com/sethbacon/terraform-registry-backend/issues/498)) ([3f86bbf](https://github.com/sethbacon/terraform-registry-backend/commit/3f86bbf5fce62d22d384e86311fc8390e5b8b3ed))
+
+
+### Documentation
+
+* **suite:** document module consumers route in swagger ([#497](https://github.com/sethbacon/terraform-registry-backend/issues/497)) ([a88e7dd](https://github.com/sethbacon/terraform-registry-backend/commit/a88e7dd1683d2fec199a578a90279c57b40b2e42))
+
+
+### Refactor
+
+* **suite:** adopt shared suite.CanonicalHost (drop local copy) ([#500](https://github.com/sethbacon/terraform-registry-backend/issues/500)) ([2e106a6](https://github.com/sethbacon/terraform-registry-backend/commit/2e106a6e340b872a4bd42066598bb5befc918847))
+
 ## [2.4.0](https://github.com/sethbacon/terraform-registry-backend/compare/v2.3.0...v2.4.0) (2026-06-14)
 
 
