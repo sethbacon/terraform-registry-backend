@@ -231,6 +231,11 @@ type SuiteConfig struct {
 	// the "you may need to sign in" hint only when both this app AND the sibling
 	// assert it. Default false. Env: TFR_SUITE_IDENTITY_SHARED_STORE.
 	IdentitySharedStore bool `mapstructure:"identity_shared_store"`
+	// SiblingToken is the shared secret sent (X-Suite-Service-Token) when this app
+	// server-proxies a cross-app read to the sibling (the "Consumed by" panel calls
+	// the sibling TSM's /consumers). Empty (default) leaves the proxy inert; set it
+	// to the SAME value as the sibling's TSM_SUITE_SERVICE_TOKEN.
+	SiblingToken string `mapstructure:"sibling_token"` // TFR_SUITE_SIBLING_TOKEN
 }
 
 // ShouldSeedRoles reports whether this app (identified by app, e.g. "registry")
@@ -808,6 +813,7 @@ func bindEnvVars(v *viper.Viper) error {
 		"suite.poll_interval",
 		"suite.role_seed_owner",
 		"suite.identity_shared_store",
+		"suite.sibling_token",
 	}
 	for _, key := range keys {
 		if err := v.BindEnv(key); err != nil {
@@ -1018,6 +1024,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("suite.poll_interval", 60*time.Second)
 	v.SetDefault("suite.role_seed_owner", "self")
 	v.SetDefault("suite.identity_shared_store", false)
+	v.SetDefault("suite.sibling_token", "")
 }
 
 // expandEnv expands environment variables in the format ${VAR_NAME}
