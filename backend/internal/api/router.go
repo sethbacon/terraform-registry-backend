@@ -1367,13 +1367,21 @@ func readinessHandler(db *sql.DB, storageBackend storage.Storage) gin.HandlerFun
 // @Produce      json
 // @Success      200  {object}  api.ServiceDiscoveryResponse
 // @Router       /.well-known/terraform.json [get]
-// serviceDiscoveryHandler implements Terraform service discovery
+// serviceDiscoveryHandler implements Terraform service discovery.
+//
+// The endpoint URLs are built from GetPublicURL() (public_url, falling back to
+// base_url) rather than base_url directly. This is the host Terraform resolves
+// "source = HOST/ns/name/system" against and that the State Manager captures for
+// the suite "Consumed by" join, so it must match the join key the suite proxy
+// emits (also GetPublicURL-derived). In the default deploy public_url is empty
+// and this is byte-for-byte identical to the previous base_url output.
 func serviceDiscoveryHandler(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		publicURL := cfg.Server.GetPublicURL()
 		c.JSON(http.StatusOK, gin.H{
-			"modules.v1":   cfg.Server.BaseURL + "/v1/modules/",
-			"providers.v1": cfg.Server.BaseURL + "/v1/providers/",
-			"oci.v1":       cfg.Server.BaseURL + "/v2/",
+			"modules.v1":   publicURL + "/v1/modules/",
+			"providers.v1": publicURL + "/v1/providers/",
+			"oci.v1":       publicURL + "/v2/",
 		})
 	}
 }

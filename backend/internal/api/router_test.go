@@ -208,6 +208,35 @@ func TestServiceDiscoveryHandler(t *testing.T) {
 	}
 }
 
+// TestServiceDiscoveryHandler_UsesPublicURL is a load-bearing regression guard:
+// in a reverse-proxied deploy (public_url != base_url) service discovery MUST
+// advertise the public_url host, because that is the host Terraform resolves
+// "source = HOST/..." against and that the suite "Consumed by" join keys on. If
+// this ever reverts to base_url, the join silently returns empty with no error
+// in proxied deployments. Do not "simplify" this back to cfg.Server.BaseURL.
+func TestServiceDiscoveryHandler_UsesPublicURL(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Server.BaseURL = "http://registry.internal:8080" // internal listen address
+	cfg.Server.PublicURL = "https://registry.example.com" // externally reachable URL
+
+	r := gin.New()
+	r.GET("/.well-known/terraform.json", serviceDiscoveryHandler(cfg))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/.well-known/terraform.json", nil))
+
+	var body map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body["modules.v1"] != "https://registry.example.com/v1/modules/" {
+		t.Errorf("modules.v1 = %v, want the public_url host (not base_url)", body["modules.v1"])
+	}
+	if body["providers.v1"] != "https://registry.example.com/v1/providers/" {
+		t.Errorf("providers.v1 = %v, want the public_url host (not base_url)", body["providers.v1"])
+	}
+}
+
 // ---------------------------------------------------------------------------
 // versionHandler
 // ---------------------------------------------------------------------------
