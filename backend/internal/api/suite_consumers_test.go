@@ -123,6 +123,45 @@ func TestModuleConsumers_ProxiesActiveSibling(t *testing.T) {
 	}
 }
 
+// TestModuleConsumers_EmitsHostAliasSet proves the registry forwards its full
+// canonical host-identity set (public host + base host + operator aliases,
+// de-duped) as repeated &host= params so a vanity-CNAME / split-horizon
+// deployment still joins.
+func TestModuleConsumers_EmitsHostAliasSet(t *testing.T) {
+	var gotHosts []string
+	manifest := suite.Manifest{SchemaVersion: suite.SchemaVersionV1, App: "terraform-state-manager"}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/v1/consumers") {
+			gotHosts = r.URL.Query()["host"]
+			_ = json.NewEncoder(w).Encode(map[string]any{"consumers": []map[string]any{}, "total": 0})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(manifest)
+	}))
+	defer srv.Close()
+	manifest.PublicURL = srv.URL
+	dc := activeClient(t, srv.URL)
+
+	cfg := &config.Config{}
+	cfg.Server.PublicURL = "https://registry.example.com"
+	cfg.Server.BaseURL = "http://registry.internal:8080"
+	cfg.Server.HostAliases = []string{"tf.example.com", "REGISTRY.example.com"} // alias + dup-of-public
+	cfg.Suite.SiblingToken = "s3cr3t"
+	if code, _ := getConsumers(mountConsumers(cfg, dc)); code != http.StatusOK {
+		t.Fatalf("status = %d", code)
+	}
+
+	want := map[string]bool{"registry.example.com": true, "registry.internal:8080": true, "tf.example.com": true}
+	if len(gotHosts) != len(want) {
+		t.Fatalf("emitted hosts = %v, want the 3-host deduped set %v", gotHosts, want)
+	}
+	for _, h := range gotHosts {
+		if !want[h] {
+			t.Errorf("unexpected emitted host %q (set %v)", h, gotHosts)
+		}
+	}
+}
+
 func TestModuleConsumers_SiblingErrorReturnsEmpty(t *testing.T) {
 	manifest := suite.Manifest{SchemaVersion: suite.SchemaVersionV1, App: "terraform-state-manager"}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -213,6 +213,13 @@ type ServerConfig struct {
 	// TrustedProxies lists CIDRs/IPs of reverse proxies allowed to set
 	// X-Forwarded-For. Empty (default) = trust no proxy.
 	TrustedProxies []string `mapstructure:"trusted_proxies"`
+	// HostAliases lists additional hostnames this registry is reachable under
+	// (e.g. a vanity CNAME, or a portless variant of a non-default-port
+	// public_url) beyond public_url/base_url. Used only to widen the suite
+	// "Consumed by" join key set so states that reference an alias still match.
+	// Empty (default) = just public_url + base_url. TFR_SERVER_HOST_ALIASES,
+	// comma-separated.
+	HostAliases []string `mapstructure:"host_aliases"`
 }
 
 // SuiteConfig configures optional runtime coupling to the sibling Suite app.
@@ -695,6 +702,7 @@ func bindEnvVars(v *viper.Viper) error {
 		"server.write_timeout",
 		"server.default_language",
 		"server.trusted_proxies",
+		"server.host_aliases",
 
 		// Storage
 		"storage.default_backend",
@@ -901,6 +909,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.write_timeout", "30s")
 	v.SetDefault("server.default_language", "en")
 	v.SetDefault("server.trusted_proxies", []string{})
+	v.SetDefault("server.host_aliases", []string{})
 
 	// Redis defaults (empty host = disabled, in-memory fallback used)
 	v.SetDefault("redis.host", "")
