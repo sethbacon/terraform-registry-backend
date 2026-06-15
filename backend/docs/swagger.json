@@ -10446,6 +10446,62 @@
                 }
             }
         },
+        "/api/v1/suite/modules/{namespace}/{name}/{system}/consumers": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Server-proxies a \"Consumed by\" lookup to the sibling Suite app (Terraform State Manager): which managed states reference this module. Returns an empty list when the sibling is unconfigured, unreachable, or the shared suite service token is unset, so the registry stays fully standalone. Always responds 200.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Suite"
+                ],
+                "summary": "List module consumers (suite)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Module namespace",
+                        "name": "namespace",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Module name",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Target system (e.g. aws, azurerm)",
+                        "name": "system",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Consuming states (rows forwarded opaquely from the sibling) and total count",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Authentication required",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/ui/theme": {
             "get": {
                 "description": "Returns the white-label theme configuration consumed by the frontend ThemeContext. Public — no authentication required so the login page can brand itself before sign-in. Returns 404 when nothing has been configured; the frontend then falls back to its built-in defaults.",
