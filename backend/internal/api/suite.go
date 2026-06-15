@@ -101,9 +101,11 @@ func startSuiteDiscovery(cfg *config.Config) *suite.DiscoveryClient {
 func moduleConsumersHandler(getClient func() *suite.DiscoveryClient, cfg *config.Config) gin.HandlerFunc {
 	// registryHost is THIS registry's own public host — the key the sibling matches
 	// "consumed by" on, so it never false-joins against public-registry modules.
+	// Canonicalized so it compares like-for-like against the host TSM captured
+	// from the module source address (case/port/trailing-dot folded).
 	registryHost := ""
 	if u, err := url.Parse(cfg.Server.GetPublicURL()); err == nil {
-		registryHost = u.Host
+		registryHost = canonicalHost(u.Host)
 	}
 	httpClient := &http.Client{Timeout: 2 * time.Second}
 
