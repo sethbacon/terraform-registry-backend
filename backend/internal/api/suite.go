@@ -86,6 +86,18 @@ func startSuiteDiscovery(cfg *config.Config) *suite.DiscoveryClient {
 // list whenever the sibling is absent/unreachable, the sibling token is
 // unconfigured, or anything fails — so the panel simply hides and the registry
 // stays fully standalone. 2s timeout; never blocks the page.
+//
+// @Summary      List module consumers (suite)
+// @Description  Server-proxies a "Consumed by" lookup to the sibling Suite app (Terraform State Manager): which managed states reference this module. Returns an empty list when the sibling is unconfigured, unreachable, or the shared suite service token is unset, so the registry stays fully standalone. Always responds 200.
+// @Tags         Suite
+// @Security     Bearer
+// @Produce      json
+// @Param        namespace  path  string  true  "Module namespace"
+// @Param        name       path  string  true  "Module name"
+// @Param        system     path  string  true  "Target system (e.g. aws, azurerm)"
+// @Success      200  {object}  map[string]interface{}  "Consuming states (rows forwarded opaquely from the sibling) and total count"
+// @Failure      401  {object}  map[string]interface{}  "Authentication required"
+// @Router       /api/v1/suite/modules/{namespace}/{name}/{system}/consumers [get]
 func moduleConsumersHandler(getClient func() *suite.DiscoveryClient, cfg *config.Config) gin.HandlerFunc {
 	// registryHost is THIS registry's own public host — the key the sibling matches
 	// "consumed by" on, so it never false-joins against public-registry modules.
