@@ -847,6 +847,13 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 			authenticatedGroup.POST("/auth/refresh", authHandlers.RefreshHandler())
 			authenticatedGroup.GET("/auth/me", authHandlers.MeHandler())
 
+			// Suite coupling: "Consumed by" — which sibling-app states use this
+			// module. Server-proxied to the sibling (2s timeout, [] on any failure),
+			// auth-required so internal state/source names aren't exposed anonymously.
+			// Namespaced under /suite to avoid the /modules/:version wildcard.
+			authenticatedGroup.GET("/suite/modules/:namespace/:name/:system/consumers",
+				moduleConsumersHandler(func() *suite.DiscoveryClient { return suiteClient }, cfg))
+
 			// Stats endpoints (require auth)
 			authenticatedGroup.GET("/admin/stats/dashboard", statsHandlers.GetDashboardStats)
 

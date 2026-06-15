@@ -2,7 +2,11 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"net/url"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/sethbacon/terraform-suite-identity/identity/suite"
@@ -11,6 +15,11 @@ import (
 )
 
 const suiteIssuer = "terraform-registry"
+
+// suiteServiceTokenHeader is the header the sibling expects for server-to-server
+// cross-app reads (it gates the sibling's /consumers). Defined locally so this
+// package needs no dependency on the sibling's middleware package.
+const suiteServiceTokenHeader = "X-Suite-Service-Token" // #nosec G101 -- HTTP header name, not a credential
 
 func buildSuiteManifest(cfg *config.Config) suite.Manifest {
 	pub := cfg.Server.PublicURL
@@ -70,4 +79,71 @@ func startSuiteDiscovery(cfg *config.Config) *suite.DiscoveryClient {
 	dc := suite.NewDiscoveryClient(cfg.Suite.SiblingURL, buildSuiteManifest(cfg), cfg.Suite.PollInterval)
 	go dc.Start(context.Background())
 	return dc
+}
+
+// moduleConsumersHandler server-proxies the "Consumed by" lookup to the sibling
+// Suite app (TSM): which states consume this registry module. It returns an empty
+// list whenever the sibling is absent/unreachable, the sibling token is
+// unconfigured, or anything fails — so the panel simply hides and the registry
+// stays fully standalone. 2s timeout; never blocks the page.
+func moduleConsumersHandler(getClient func() *suite.DiscoveryClient, cfg *config.Config) gin.HandlerFunc {
+	// registryHost is THIS registry's own public host — the key the sibling matches
+	// "consumed by" on, so it never false-joins against public-registry modules.
+	registryHost := ""
+	if u, err := url.Parse(cfg.Server.GetPublicURL()); err == nil {
+		registryHost = u.Host
+	}
+	httpClient := &http.Client{Timeout: 2 * time.Second}
+
+	return func(c *gin.Context) {
+		empty := gin.H{"consumers": []any{}, "total": 0}
+		dc := getClient()
+		if dc == nil || registryHost == "" || cfg.Suite.SiblingToken == "" {
+			c.JSON(http.StatusOK, empty)
+			return
+		}
+		state, m := dc.Snapshot()
+		if state != suite.StateActive || m == nil || m.PublicURL == "" {
+			c.JSON(http.StatusOK, empty)
+			return
+		}
+
+		moduleAddr := c.Param("namespace") + "/" + c.Param("name") + "/" + c.Param("system")
+		target := strings.TrimRight(m.PublicURL, "/") +
+			"/api/v1/consumers?host=" + url.QueryEscape(registryHost) +
+			"&module=" + url.QueryEscape(moduleAddr)
+
+		req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, target, nil)
+		if err != nil {
+			c.JSON(http.StatusOK, empty)
+			return
+		}
+		req.Header.Set(suiteServiceTokenHeader, cfg.Suite.SiblingToken)
+
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			c.JSON(http.StatusOK, empty)
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			c.JSON(http.StatusOK, empty)
+			return
+		}
+
+		// Forward the sibling's rows opaquely (RawMessage) — the registry does not
+		// reinterpret TSM's consumer shape.
+		var body struct {
+			Consumers []json.RawMessage `json:"consumers"`
+			Total     int               `json:"total"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			c.JSON(http.StatusOK, empty)
+			return
+		}
+		if body.Consumers == nil {
+			body.Consumers = []json.RawMessage{}
+		}
+		c.JSON(http.StatusOK, gin.H{"consumers": body.Consumers, "total": body.Total})
+	}
 }
