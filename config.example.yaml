@@ -198,3 +198,31 @@ cve:
   poll_binaries: true
   poll_providers: true
   poll_scanner: true
+
+# Audit logging — records security-relevant write operations (uploads, deletes,
+# permission changes). Always written to the database; optionally SHIPPED to
+# external destinations (SIEM / log aggregator) or FEDERATED to a sibling suite
+# app. Shippers are a structured list, so they live here in config.yaml (env
+# vars cannot express a list of structs).
+audit:
+  enabled: true
+  # log_read_operations: false   # also log GETs (verbose)
+  # log_failed_requests: false   # also log 4xx/5xx responses
+  shippers: []
+  # Suite audit federation: ship each entry to a sibling Terraform State Manager
+  # so its admin Audit Log shows a unified, cross-app trail. Requires a SHARED
+  # identity store (TSM accepts federation only under sharedStore — its
+  # audit.ingest.v1 capability) and the same shared suite token on both apps
+  # (this app's TFR_SUITE_SIBLING_TOKEN == TSM's TSM_SUITE_SERVICE_TOKEN).
+  # No code change — this reuses the built-in webhook shipper. Replace the empty
+  # list above with: see docs/suite-audit-federation.md.
+  #  - enabled: true
+  #    type: webhook   # webhook | syslog | file
+  #    webhook:
+  #      url: https://tsm.example.com/api/v1/audit/ingest
+  #      headers:
+  #        X-Suite-Service-Token: ${TFR_SUITE_SIBLING_TOKEN}
+  #        X-Suite-Source-App: terraform-registry
+  #      timeout_secs: 5
+  #      batch_size: 0           # 0 = ship each entry immediately (no batching)
+  #      flush_interval_secs: 0
