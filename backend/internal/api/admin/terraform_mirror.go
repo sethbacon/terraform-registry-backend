@@ -76,7 +76,9 @@ func (h *TerraformMirrorHandler) CreateConfig(c *gin.Context) {
 	if req.GPGVerify != nil {
 		gpgVerify = *req.GPGVerify
 	}
-	stableOnly := false
+	// Default new mirrors to stable-only so pre-release (alpha/beta/rc) versions
+	// are excluded unless an operator opts in. Explicit false in the request is honored.
+	stableOnly := true
 	if req.StableOnly != nil {
 		stableOnly = *req.StableOnly
 	}
@@ -95,7 +97,9 @@ func (h *TerraformMirrorHandler) CreateConfig(c *gin.Context) {
 		return
 	}
 
-	requiresApproval := false
+	// Default new mirrors to require approval so newly synced versions enter
+	// pending_approval until reviewed. Explicit false in the request is honored.
+	requiresApproval := true
 	if req.RequiresApproval != nil {
 		requiresApproval = *req.RequiresApproval
 	}
