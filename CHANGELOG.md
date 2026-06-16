@@ -7,6 +7,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.1](https://github.com/sethbacon/terraform-registry-backend/compare/v2.5.0...v2.5.1) (2026-06-16)
+
+
+### Bug Fixes
+
+* **helm:** map-derive the frontend CSP nonce (configmap parity) ([#504](https://github.com/sethbacon/terraform-registry-backend/issues/504)) ([70f864e](https://github.com/sethbacon/terraform-registry-backend/commit/70f864e54455d39508f0eee1b197ed8e425527a3))
+
+
+### Documentation
+
+* **suite:** document audit federation to the State Manager ([#502](https://github.com/sethbacon/terraform-registry-backend/issues/502)) ([2e46d56](https://github.com/sethbacon/terraform-registry-backend/commit/2e46d56689f1b4cf1c4968461f527f4a038647ca))
+
 ## [2.5.0](https://github.com/sethbacon/terraform-registry-backend/compare/v2.4.0...v2.5.0) (2026-06-15)
 
 
