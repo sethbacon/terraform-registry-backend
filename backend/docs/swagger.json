@@ -3751,7 +3751,7 @@
                         "Bearer": []
                     }
                 ],
-                "description": "Returns the current cached upstream release-signing GPG key and embedded snapshot state for each supported tool (terraform, opentofu). The response includes the fingerprint, expiry, and a pre-computed status against the configured warning threshold so UIs can render a glance-level view without re-deriving the rules.",
+                "description": "Returns the current cached upstream release-signing GPG key and embedded snapshot state for each configured binary mirror. Binaries that share the HashiCorp releases key (terraform, packer, sentinel) each report that key's state; opentofu reports its own; binaries without a managed signing key (e.g. opa) are listed with an explicit \"none\" source. The response includes the fingerprint, expiry, and a pre-computed status against the configured warning threshold so UIs can render a glance-level view without re-deriving the rules.",
                 "produces": [
                     "application/json"
                 ],
