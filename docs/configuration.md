@@ -632,6 +632,30 @@ over config file values and supports runtime changes without restart.
 
 ---
 
+## Audit Log Shipping
+
+Beyond the database trail, the backend can ship each audit entry to external
+destinations (SIEM, log aggregator) or **federate** it to a sibling Terraform
+State Manager so both apps share one unified Audit Log. Shippers are a structured
+list, configured in `config.yaml` (environment variables cannot express a list of
+structs):
+
+```yaml
+audit:
+  enabled: true
+  shippers:
+    - enabled: true
+      type: webhook   # webhook | syslog | file
+      webhook:
+        url: https://siem.example.com/ingest
+        headers: { Authorization: "Bearer ${SIEM_TOKEN}" }
+```
+
+For the suite cross-app unified audit trail, see
+[Suite Audit Federation](suite-audit-federation.md).
+
+---
+
 ## Audit Log Retention
 
 The backend can automatically delete audit log entries older than a configurable
