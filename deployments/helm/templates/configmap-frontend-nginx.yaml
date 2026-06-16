@@ -7,6 +7,16 @@ metadata:
     {{- include "terraform-registry.labels" . | nindent 4 }}
 data:
   default.conf: |
+    # Derive the per-request CSP nonce ONCE. A map variable is evaluated lazily
+    # and cached for the whole request — surviving the try_files internal redirect
+    # to /index.html — so the CSP header and the sub_filter body rewrite see the
+    # SAME value. A plain `set $csp_nonce $request_id` re-runs in the rewrite phase
+    # after that redirect and yields a SECOND, different id, so the header nonce
+    # and the <meta>/emotion nonce disagree and the browser blocks every style.
+    map $request_id $csp_nonce {
+        default $request_id;
+    }
+
     server {
         listen 8080;
         server_name _;
@@ -21,15 +31,17 @@ data:
         add_header Referrer-Policy "strict-origin-when-cross-origin" always;
         add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
 
-        # Content-Security-Policy with a per-request nonce. The frontend image's
-        # index.html ships a __CSP_NONCE__ placeholder that main.tsx feeds to
-        # emotion's cache; sub_filter swaps it for nginx's $request_id so injected
-        # styles satisfy the policy. The image bakes this into its own nginx.conf,
-        # but in-cluster this ConfigMap's default.conf replaces it — so it must be
-        # repeated here or the served CSP/nonce is lost.
-        set $csp_nonce $request_id;
+        # Content-Security-Policy with a per-request nonce ($csp_nonce, from the
+        # map above). index.html ships a __CSP_NONCE__ placeholder that main.tsx
+        # feeds to emotion's cache, and sub_filter swaps it for the same nonce so
+        # injected styles satisfy the policy. The image bakes this into its own
+        # nginx.conf, but in-cluster this ConfigMap's default.conf replaces it — so
+        # it must be repeated here or the served CSP/nonce is lost.
         add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'nonce-$csp_nonce'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none';" always;
-        sub_filter_once on;
+        # Replace EVERY __CSP_NONCE__ (once off), not just the first, so the
+        # placeholder always reaches the <meta> tag main.tsx reads even if an
+        # earlier occurrence (e.g. an HTML comment) precedes it.
+        sub_filter_once off;
         sub_filter '__CSP_NONCE__' '$csp_nonce';
 
         location / {
