@@ -327,6 +327,12 @@ jobs:
             --set config.databasePassword=password \
             --set config.encryptionKey=00000000000000000000000000000000
 
+      - name: CSP nonce guard (frontend header == <meta>)
+        # Renders the frontend nginx ConfigMap, serves it with nginx, and asserts
+        # the CSP response-header nonce equals the served <meta> nonce — guarding
+        # the regression that rendered the SPA unstyled under the strict CSP.
+        run: bash deployments/helm/verify-csp-nonce.sh
+
       - name: Kustomize validate (dev overlay)
         run: kubectl kustomize deployments/kubernetes/overlays/dev > /dev/null
 
