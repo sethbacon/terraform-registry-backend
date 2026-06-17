@@ -28,9 +28,41 @@ func (s *stubReleasesRepo) Get(_ context.Context, tool string) (*models.Releases
 	return s.rows[tool], nil
 }
 
+// stubMirrorLister is a configurable test double for mirrorConfigLister.
+type stubMirrorLister struct {
+	configs []models.TerraformMirrorConfig
+	err     error
+}
+
+func (s *stubMirrorLister) ListAll(_ context.Context) ([]models.TerraformMirrorConfig, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.configs, nil
+}
+
+// mirrorListerForTools builds a stub lister with one config per named tool.
+func mirrorListerForTools(tools ...string) *stubMirrorLister {
+	configs := make([]models.TerraformMirrorConfig, 0, len(tools))
+	for _, tool := range tools {
+		configs = append(configs, models.TerraformMirrorConfig{Tool: tool})
+	}
+	return &stubMirrorLister{configs: configs}
+}
+
+// defaultMirrorLister lists terraform + opentofu, matching the historical
+// always-on pair so existing tests exercise both signing-key rows.
+func defaultMirrorLister() *stubMirrorLister {
+	return mirrorListerForTools("terraform", "opentofu")
+}
+
 func newReleasesGPGRouter(t *testing.T, repo releasesGPGKeyRepo, cfg config.ReleasesGPGKeysConfig) *gin.Engine {
+	return newReleasesGPGRouterWithMirrors(t, repo, defaultMirrorLister(), cfg)
+}
+
+func newReleasesGPGRouterWithMirrors(t *testing.T, repo releasesGPGKeyRepo, mirrors mirrorConfigLister, cfg config.ReleasesGPGKeysConfig) *gin.Engine {
 	t.Helper()
-	h := NewReleasesGPGKeysHandler(repo, cfg)
+	h := NewReleasesGPGKeysHandler(repo, mirrors, cfg)
 	r := gin.New()
 	r.GET("/admin/terraform-mirrors/releases-gpg-keys", h.GetReleasesGPGKeys)
 	return r
@@ -249,7 +281,9 @@ func TestReleasesGPGKeys_DBError_Returns500(t *testing.T) {
 	}
 }
 
-func TestReleasesGPGKeys_BothToolsAlwaysReturned(t *testing.T) {
+// When terraform and opentofu are both configured, both signing-key rows are
+// returned. Rows now follow the configured binaries rather than a fixed list.
+func TestReleasesGPGKeys_ConfiguredToolsReturned(t *testing.T) {
 	repo := &stubReleasesRepo{rows: map[string]*models.ReleasesGPGKey{}}
 	r := newReleasesGPGRouter(t, repo, defaultReleasesCfg())
 
@@ -260,6 +294,108 @@ func TestReleasesGPGKeys_BothToolsAlwaysReturned(t *testing.T) {
 	}
 	if !seen["terraform"] || !seen["opentofu"] {
 		t.Errorf("expected both terraform and opentofu in response, got %+v", seen)
+	}
+}
+
+// Only binaries that are actually configured produce a row.
+func TestReleasesGPGKeys_OnlyConfiguredBinariesReturned(t *testing.T) {
+	repo := &stubReleasesRepo{rows: map[string]*models.ReleasesGPGKey{}}
+	r := newReleasesGPGRouterWithMirrors(t, repo, mirrorListerForTools("opentofu"), defaultReleasesCfg())
+
+	_, body := invokeAndDecode(t, r)
+	if len(body.Keys) != 1 {
+		t.Fatalf("expected 1 key (opentofu only), got %d: %+v", len(body.Keys), body.Keys)
+	}
+	if body.Keys[0].Tool != "opentofu" {
+		t.Errorf("tool = %q, want opentofu", body.Keys[0].Tool)
+	}
+}
+
+// terraform, packer and sentinel all verify against the HashiCorp releases key,
+// so each configured one gets its own row backed by that same embedded key.
+func TestReleasesGPGKeys_SharedHashiCorpKeyPerBinary(t *testing.T) {
+	repo := &stubReleasesRepo{rows: map[string]*models.ReleasesGPGKey{}}
+	r := newReleasesGPGRouterWithMirrors(t, repo, mirrorListerForTools("packer", "sentinel"), defaultReleasesCfg())
+
+	_, body := invokeAndDecode(t, r)
+	if len(body.Keys) != 2 {
+		t.Fatalf("expected 2 keys, got %d", len(body.Keys))
+	}
+	hcInfo, err := mirror.ParseReleasesKey(mirror.HashiCorpReleasesGPGKey)
+	if err != nil {
+		t.Fatalf("parse embedded: %v", err)
+	}
+	for _, tool := range []string{"packer", "sentinel"} {
+		row := findTool(t, body, tool)
+		if row.Embedded == nil {
+			t.Fatalf("%s: expected embedded HashiCorp key block", tool)
+		}
+		if row.Embedded.Fingerprint != hcInfo.PrimaryFingerprint {
+			t.Errorf("%s: fingerprint = %q, want HashiCorp %q", tool, row.Embedded.Fingerprint, hcInfo.PrimaryFingerprint)
+		}
+		if row.EffectiveSource != "embedded" {
+			t.Errorf("%s: effective source = %q, want embedded", tool, row.EffectiveSource)
+		}
+	}
+}
+
+// opa has no managed signing key yet: it is still listed (it is configured) but
+// with an explicit "none" source and "unknown" status, and no key blocks.
+func TestReleasesGPGKeys_UnmanagedBinaryHasNoneSource(t *testing.T) {
+	repo := &stubReleasesRepo{rows: map[string]*models.ReleasesGPGKey{}}
+	r := newReleasesGPGRouterWithMirrors(t, repo, mirrorListerForTools("opa"), defaultReleasesCfg())
+
+	_, body := invokeAndDecode(t, r)
+	if len(body.Keys) != 1 {
+		t.Fatalf("expected 1 key (opa), got %d", len(body.Keys))
+	}
+	opa := findTool(t, body, "opa")
+	if opa.EffectiveSource != "none" {
+		t.Errorf("effective source = %q, want none", opa.EffectiveSource)
+	}
+	if opa.Status != "unknown" {
+		t.Errorf("status = %q, want unknown", opa.Status)
+	}
+	if opa.Cache != nil || opa.Embedded != nil {
+		t.Errorf("expected no cache/embedded for opa, got cache=%v embedded=%v", opa.Cache, opa.Embedded)
+	}
+}
+
+// Nothing configured => empty response (the UI shows its no-data state).
+func TestReleasesGPGKeys_NoConfiguredBinaries_EmptyResponse(t *testing.T) {
+	repo := &stubReleasesRepo{rows: map[string]*models.ReleasesGPGKey{}}
+	r := newReleasesGPGRouterWithMirrors(t, repo, mirrorListerForTools(), defaultReleasesCfg())
+
+	_, body := invokeAndDecode(t, r)
+	if len(body.Keys) != 0 {
+		t.Fatalf("expected 0 keys when nothing configured, got %d", len(body.Keys))
+	}
+}
+
+// Two mirrors for the same tool collapse to a single signing-key row.
+func TestReleasesGPGKeys_DuplicateToolDeduped(t *testing.T) {
+	repo := &stubReleasesRepo{rows: map[string]*models.ReleasesGPGKey{}}
+	lister := &stubMirrorLister{configs: []models.TerraformMirrorConfig{
+		{Tool: "terraform"}, {Tool: "terraform"},
+	}}
+	r := newReleasesGPGRouterWithMirrors(t, repo, lister, defaultReleasesCfg())
+
+	_, body := invokeAndDecode(t, r)
+	if len(body.Keys) != 1 {
+		t.Fatalf("expected 1 deduped terraform row, got %d", len(body.Keys))
+	}
+}
+
+// A failure listing configured mirrors surfaces as a 500.
+func TestReleasesGPGKeys_MirrorListError_Returns500(t *testing.T) {
+	repo := &stubReleasesRepo{rows: map[string]*models.ReleasesGPGKey{}}
+	lister := &stubMirrorLister{err: errors.New("db down")}
+	r := newReleasesGPGRouterWithMirrors(t, repo, lister, defaultReleasesCfg())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/admin/terraform-mirrors/releases-gpg-keys", nil))
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
 	}
 }
 

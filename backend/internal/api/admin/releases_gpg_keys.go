@@ -14,6 +14,8 @@ import (
 	"context"
 	"math"
 	"net/http"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -29,23 +31,66 @@ type releasesGPGKeyRepo interface {
 	Get(ctx context.Context, tool string) (*models.ReleasesGPGKey, error)
 }
 
+// mirrorConfigLister is the subset of the Terraform mirror repository used to
+// discover which binaries are actually configured, so the endpoint only
+// surfaces signing-key rows for those binaries.
+type mirrorConfigLister interface {
+	ListAll(ctx context.Context) ([]models.TerraformMirrorConfig, error)
+}
+
 // ReleasesGPGKeysHandler exposes the GET /api/v1/admin/releases-gpg-keys
 // endpoint. It mirrors the embedded snapshot + cache lookup logic from
 // ReleasesKeyRefreshJob, but as a pure read so the UI can show the same
 // effective state the mirror sync uses.
 type ReleasesGPGKeysHandler struct {
-	repo releasesGPGKeyRepo
-	cfg  config.ReleasesGPGKeysConfig
+	repo    releasesGPGKeyRepo
+	mirrors mirrorConfigLister
+	cfg     config.ReleasesGPGKeysConfig
 }
 
 // NewReleasesGPGKeysHandler constructs a ReleasesGPGKeysHandler.
-func NewReleasesGPGKeysHandler(repo releasesGPGKeyRepo, cfg config.ReleasesGPGKeysConfig) *ReleasesGPGKeysHandler {
-	return &ReleasesGPGKeysHandler{repo: repo, cfg: cfg}
+func NewReleasesGPGKeysHandler(repo releasesGPGKeyRepo, mirrors mirrorConfigLister, cfg config.ReleasesGPGKeysConfig) *ReleasesGPGKeysHandler {
+	return &ReleasesGPGKeysHandler{repo: repo, mirrors: mirrors, cfg: cfg}
 }
 
-// supportedReleasesGPGTools is the canonical iteration order — keep stable so
-// API consumers can rely on the ordering of the response array.
-var supportedReleasesGPGTools = []string{"terraform", "opentofu"}
+// releasesKeyFamily maps a configured binary tool to the signing-key "family"
+// it verifies against: the cache/embedded lookup key, and whether a managed key
+// exists at all. terraform, packer and sentinel are all signed by the same
+// HashiCorp releases key, so they share the "terraform" cache/embedded entry;
+// opentofu has its own key. Everything else (e.g. opa, custom) has no managed
+// signing key yet, so its row is surfaced with an explicit "none" source.
+func releasesKeyFamily(tool string) (keyTool string, hasManagedKey bool) {
+	switch strings.ToLower(tool) {
+	case "terraform", "packer", "sentinel":
+		return "terraform", true
+	case "opentofu":
+		return "opentofu", true
+	default:
+		return "", false
+	}
+}
+
+// configuredTools returns the distinct configured binary tools in a
+// deterministic (sorted) order. Two mirrors for the same tool collapse to one
+// signing-key row, since the key is per-tool, not per-config.
+func (h *ReleasesGPGKeysHandler) configuredTools(ctx context.Context) ([]string, error) {
+	configs, err := h.mirrors.ListAll(ctx)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool, len(configs))
+	tools := make([]string, 0, len(configs))
+	for _, cfg := range configs {
+		tool := strings.ToLower(strings.TrimSpace(cfg.Tool))
+		if tool == "" || seen[tool] {
+			continue
+		}
+		seen[tool] = true
+		tools = append(tools, tool)
+	}
+	sort.Strings(tools)
+	return tools, nil
+}
 
 // ReleasesGPGKeyCacheView is the cache-side block in the response. Embedded
 // in the per-tool object; nil when no row has been persisted yet.
@@ -85,7 +130,7 @@ type ReleasesGPGKeysResponse struct {
 }
 
 // @Summary      Get release signing key cache + expiry state
-// @Description  Returns the current cached upstream release-signing GPG key and embedded snapshot state for each supported tool (terraform, opentofu). The response includes the fingerprint, expiry, and a pre-computed status against the configured warning threshold so UIs can render a glance-level view without re-deriving the rules.
+// @Description  Returns the current cached upstream release-signing GPG key and embedded snapshot state for each configured binary mirror. Binaries that share the HashiCorp releases key (terraform, packer, sentinel) each report that key's state; opentofu reports its own; binaries without a managed signing key (e.g. opa) are listed with an explicit "none" source. The response includes the fingerprint, expiry, and a pre-computed status against the configured warning threshold so UIs can render a glance-level view without re-deriving the rules.
 // @Tags         Terraform Mirror
 // @Security     Bearer
 // @Produce      json
@@ -101,8 +146,14 @@ func (h *ReleasesGPGKeysHandler) GetReleasesGPGKeys(c *gin.Context) {
 		warningDays = 60
 	}
 
-	out := make([]ReleasesGPGKeyStatusView, 0, len(supportedReleasesGPGTools))
-	for _, tool := range supportedReleasesGPGTools {
+	tools, err := h.configuredTools(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list configured mirrors: " + err.Error()})
+		return
+	}
+
+	out := make([]ReleasesGPGKeyStatusView, 0, len(tools))
+	for _, tool := range tools {
 		view, err := h.buildToolView(c.Request.Context(), tool, now, warningDays)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load releases key state: " + err.Error()})
@@ -121,9 +172,18 @@ func (h *ReleasesGPGKeysHandler) buildToolView(ctx context.Context, tool string,
 		Tool:              tool,
 		ExpiryWarningDays: warningDays,
 		Status:            "unknown",
+		EffectiveSource:   "none",
 	}
 
-	cacheRow, err := h.repo.Get(ctx, tool)
+	// Binaries without a managed signing key (e.g. opa, custom) are still listed
+	// so operators can see they are configured, but with an explicit "none"
+	// source and "unknown" status — there is no key to report on yet.
+	keyTool, hasManagedKey := releasesKeyFamily(tool)
+	if !hasManagedKey {
+		return view, nil
+	}
+
+	cacheRow, err := h.repo.Get(ctx, keyTool)
 	if err != nil {
 		return view, err
 	}
@@ -141,7 +201,7 @@ func (h *ReleasesGPGKeysHandler) buildToolView(ctx context.Context, tool string,
 		}
 	}
 
-	embedded := embeddedKeyArmoredForTool(tool)
+	embedded := embeddedKeyArmoredForTool(keyTool)
 	if embedded != "" {
 		if info, parseErr := mirror.ParseReleasesKey(embedded); parseErr == nil {
 			view.Embedded = &ReleasesGPGKeyEmbeddedView{
