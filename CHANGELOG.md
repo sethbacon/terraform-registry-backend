@@ -7,6 +7,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.2](https://github.com/sethbacon/terraform-registry-backend/compare/v2.5.1...v2.5.2) (2026-06-17)
+
+
+### Bug Fixes
+
+* **audit:** log binary-mirror admin actions as binary_mirror ([#506](https://github.com/sethbacon/terraform-registry-backend/issues/506)) ([#514](https://github.com/sethbacon/terraform-registry-backend/issues/514)) ([7ef61d1](https://github.com/sethbacon/terraform-registry-backend/commit/7ef61d1712a607975beb1cae22e39760e86639f3))
+* default new binary mirrors to stable-only and requires-approval ([#510](https://github.com/sethbacon/terraform-registry-backend/issues/510)) ([8eecb68](https://github.com/sethbacon/terraform-registry-backend/commit/8eecb68b47a330f8d2bb25548c1210c797e3c21e)), closes [#508](https://github.com/sethbacon/terraform-registry-backend/issues/508)
+* **mirror:** surface OPA as unsigned-upstream, not a silent GPG skip ([#509](https://github.com/sethbacon/terraform-registry-backend/issues/509)) ([#513](https://github.com/sethbacon/terraform-registry-backend/issues/513)) ([d8a4b2f](https://github.com/sethbacon/terraform-registry-backend/commit/d8a4b2fc4ec6c1322529d7284750c051a04a1f17))
+* show release signing-key rows per configured binary mirror ([#511](https://github.com/sethbacon/terraform-registry-backend/issues/511)) ([63db335](https://github.com/sethbacon/terraform-registry-backend/commit/63db33538c372443d941b17963f995e88696b946))
+
 ## [2.5.1](https://github.com/sethbacon/terraform-registry-backend/compare/v2.5.0...v2.5.1) (2026-06-16)
 
 
