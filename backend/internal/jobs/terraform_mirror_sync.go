@@ -477,7 +477,16 @@ func (j *TerraformMirrorSyncJob) syncVersionBinaries(
 				}
 			}
 		} else {
-			log.Printf("[terraform-mirror] GPG verify enabled but no key for tool %q — skipping GPG check", cfg.Tool)
+			if mirror.IsUnsignedUpstreamTool(cfg.Tool) {
+				// OPA (and any other unsigned-upstream tool) publishes no release
+				// signature — only per-file SHA-256 checksums, already fetched into
+				// `sums` and checked per binary below. Integrity is verified;
+				// authenticity cannot be. Surface this honestly rather than as a
+				// missing-key warning (the admin signing-keys view shows the same).
+				log.Printf("[terraform-mirror] %s publishes no release signature; verifying %s by checksum only (no GPG)", cfg.Tool, version)
+			} else {
+				log.Printf("[terraform-mirror] GPG verify enabled but no key for tool %q — skipping GPG check", cfg.Tool)
+			}
 		}
 	}
 

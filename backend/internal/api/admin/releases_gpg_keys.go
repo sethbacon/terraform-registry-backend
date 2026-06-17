@@ -121,7 +121,7 @@ type ReleasesGPGKeyStatusView struct {
 	Embedded          *ReleasesGPGKeyEmbeddedView `json:"embedded"`
 	EffectiveSource   string                      `json:"effective_source"` // "cache" | "embedded"
 	ExpiryWarningDays int                         `json:"expiry_warning_days"`
-	Status            string                      `json:"status"` // "ok" | "warn" | "expired" | "unknown"
+	Status            string                      `json:"status"` // "ok" | "warn" | "expired" | "unknown" | "unsigned"
 }
 
 // ReleasesGPGKeysResponse is the top-level response envelope.
@@ -130,7 +130,7 @@ type ReleasesGPGKeysResponse struct {
 }
 
 // @Summary      Get release signing key cache + expiry state
-// @Description  Returns the current cached upstream release-signing GPG key and embedded snapshot state for each configured binary mirror. Binaries that share the HashiCorp releases key (terraform, packer, sentinel) each report that key's state; opentofu reports its own; binaries without a managed signing key (e.g. opa) are listed with an explicit "none" source. The response includes the fingerprint, expiry, and a pre-computed status against the configured warning threshold so UIs can render a glance-level view without re-deriving the rules.
+// @Description  Returns the current cached upstream release-signing GPG key and embedded snapshot state for each configured binary mirror. Binaries that share the HashiCorp releases key (terraform, packer, sentinel) each report that key's state; opentofu reports its own. Binaries whose upstream publishes no release signature (e.g. opa — checksum-only) are listed with an explicit "none" source and an "unsigned" status, so operators can see they are verified by checksum but not by signature (distinct from "unknown"). The response includes the fingerprint, expiry, and a pre-computed status against the configured warning threshold so UIs can render a glance-level view without re-deriving the rules.
 // @Tags         Terraform Mirror
 // @Security     Bearer
 // @Produce      json
@@ -180,6 +180,15 @@ func (h *ReleasesGPGKeysHandler) buildToolView(ctx context.Context, tool string,
 	// source and "unknown" status — there is no key to report on yet.
 	keyTool, hasManagedKey := releasesKeyFamily(tool)
 	if !hasManagedKey {
+		// OPA-style tools publish no release signature at all (only per-file
+		// SHA-256 checksums), so mirror sync verifies them by checksum and can't
+		// check authenticity. Mark them "unsigned" so the UI shows an intentional
+		// "unsigned upstream" state rather than "unknown" — which reads like
+		// missing data or a misconfiguration. Genuinely unclassified tools (no
+		// managed key and not known-unsigned) keep the default "unknown".
+		if mirror.IsUnsignedUpstreamTool(tool) {
+			view.Status = "unsigned"
+		}
 		return view, nil
 	}
 
