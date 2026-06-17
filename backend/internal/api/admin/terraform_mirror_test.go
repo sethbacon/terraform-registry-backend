@@ -206,6 +206,93 @@ func TestTMCreateConfig_Success(t *testing.T) {
 	}
 }
 
+// When stable_only and requires_approval are omitted from the request, the
+// handler must default both to true (safe-by-default new mirrors). The INSERT
+// arg positions are $10 = stable_only and $12 = requires_approval.
+func TestTMCreateConfig_DefaultsStableOnlyAndApproval(t *testing.T) {
+	mock, r := newTerraformMirrorRouter(t)
+	mock.ExpectQuery("SELECT.*FROM terraform_mirror_configs WHERE name").
+		WillReturnRows(emptyTMCRows())
+	mock.ExpectQuery("INSERT INTO terraform_mirror_configs").
+		WithArgs(
+			sqlmock.AnyArg(), // id
+			sqlmock.AnyArg(), // name
+			sqlmock.AnyArg(), // description
+			sqlmock.AnyArg(), // tool
+			sqlmock.AnyArg(), // enabled
+			sqlmock.AnyArg(), // upstream_url
+			sqlmock.AnyArg(), // platform_filter
+			sqlmock.AnyArg(), // version_filter
+			sqlmock.AnyArg(), // gpg_verify
+			true,             // stable_only -> default true
+			sqlmock.AnyArg(), // sync_interval_hours
+			true,             // requires_approval -> default true
+			sqlmock.AnyArg(), // auto_approve_rules
+			sqlmock.AnyArg(), // created_at
+			sqlmock.AnyArg(), // updated_at
+		).
+		WillReturnRows(sampleTMCRow())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/terraform-mirrors",
+		jsonBody(map[string]interface{}{
+			"name":         "my-mirror",
+			"tool":         "terraform",
+			"upstream_url": "https://releases.hashicorp.com",
+		})))
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations (defaults not applied?): %v", err)
+	}
+}
+
+// An explicit stable_only=false / requires_approval=false in the request must
+// be honored and not overridden by the new defaults.
+func TestTMCreateConfig_ExplicitFalseOverridesDefaults(t *testing.T) {
+	mock, r := newTerraformMirrorRouter(t)
+	mock.ExpectQuery("SELECT.*FROM terraform_mirror_configs WHERE name").
+		WillReturnRows(emptyTMCRows())
+	mock.ExpectQuery("INSERT INTO terraform_mirror_configs").
+		WithArgs(
+			sqlmock.AnyArg(), // id
+			sqlmock.AnyArg(), // name
+			sqlmock.AnyArg(), // description
+			sqlmock.AnyArg(), // tool
+			sqlmock.AnyArg(), // enabled
+			sqlmock.AnyArg(), // upstream_url
+			sqlmock.AnyArg(), // platform_filter
+			sqlmock.AnyArg(), // version_filter
+			sqlmock.AnyArg(), // gpg_verify
+			false,            // stable_only -> explicit false honored
+			sqlmock.AnyArg(), // sync_interval_hours
+			false,            // requires_approval -> explicit false honored
+			sqlmock.AnyArg(), // auto_approve_rules
+			sqlmock.AnyArg(), // created_at
+			sqlmock.AnyArg(), // updated_at
+		).
+		WillReturnRows(sampleTMCRow())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/terraform-mirrors",
+		jsonBody(map[string]interface{}{
+			"name":              "my-mirror",
+			"tool":              "terraform",
+			"upstream_url":      "https://releases.hashicorp.com",
+			"stable_only":       false,
+			"requires_approval": false,
+		})))
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations (explicit false not honored?): %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ListConfigs tests
 // ---------------------------------------------------------------------------
