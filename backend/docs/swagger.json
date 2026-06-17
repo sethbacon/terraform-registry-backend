@@ -3751,7 +3751,7 @@
                         "Bearer": []
                     }
                 ],
-                "description": "Returns the current cached upstream release-signing GPG key and embedded snapshot state for each configured binary mirror. Binaries that share the HashiCorp releases key (terraform, packer, sentinel) each report that key's state; opentofu reports its own; binaries without a managed signing key (e.g. opa) are listed with an explicit \"none\" source. The response includes the fingerprint, expiry, and a pre-computed status against the configured warning threshold so UIs can render a glance-level view without re-deriving the rules.",
+                "description": "Returns the current cached upstream release-signing GPG key and embedded snapshot state for each configured binary mirror. Binaries that share the HashiCorp releases key (terraform, packer, sentinel) each report that key's state; opentofu reports its own. Binaries whose upstream publishes no release signature (e.g. opa — checksum-only) are listed with an explicit \"none\" source and an \"unsigned\" status, so operators can see they are verified by checksum but not by signature (distinct from \"unknown\"). The response includes the fingerprint, expiry, and a pre-computed status against the configured warning threshold so UIs can render a glance-level view without re-deriving the rules.",
                 "produces": [
                     "application/json"
                 ],
@@ -13808,7 +13808,7 @@
                     "type": "integer"
                 },
                 "status": {
-                    "description": "\"ok\" | \"warn\" | \"expired\" | \"unknown\"",
+                    "description": "\"ok\" | \"warn\" | \"expired\" | \"unknown\" | \"unsigned\"",
                     "type": "string"
                 },
                 "tool": {

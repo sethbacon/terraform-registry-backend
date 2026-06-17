@@ -339,9 +339,11 @@ func TestReleasesGPGKeys_SharedHashiCorpKeyPerBinary(t *testing.T) {
 	}
 }
 
-// opa has no managed signing key yet: it is still listed (it is configured) but
-// with an explicit "none" source and "unknown" status, and no key blocks.
-func TestReleasesGPGKeys_UnmanagedBinaryHasNoneSource(t *testing.T) {
+// opa publishes no release signature (checksum-only). It is still listed (it is
+// configured) with an explicit "none" source, no key blocks, and an "unsigned"
+// status — so operators see it is verified by checksum but not by signature,
+// distinct from a missing-data "unknown".
+func TestReleasesGPGKeys_UnsignedUpstreamBinaryHasUnsignedStatus(t *testing.T) {
 	repo := &stubReleasesRepo{rows: map[string]*models.ReleasesGPGKey{}}
 	r := newReleasesGPGRouterWithMirrors(t, repo, mirrorListerForTools("opa"), defaultReleasesCfg())
 
@@ -353,11 +355,28 @@ func TestReleasesGPGKeys_UnmanagedBinaryHasNoneSource(t *testing.T) {
 	if opa.EffectiveSource != "none" {
 		t.Errorf("effective source = %q, want none", opa.EffectiveSource)
 	}
-	if opa.Status != "unknown" {
-		t.Errorf("status = %q, want unknown", opa.Status)
+	if opa.Status != "unsigned" {
+		t.Errorf("status = %q, want unsigned", opa.Status)
 	}
 	if opa.Cache != nil || opa.Embedded != nil {
 		t.Errorf("expected no cache/embedded for opa, got cache=%v embedded=%v", opa.Cache, opa.Embedded)
+	}
+}
+
+// A configured tool that is neither key-managed nor known-unsigned keeps the
+// default "unknown" status — the "unsigned" marker is reserved for tools we know
+// publish no signature (opa), not for unclassified ones.
+func TestReleasesGPGKeys_UnclassifiedToolIsUnknown(t *testing.T) {
+	repo := &stubReleasesRepo{rows: map[string]*models.ReleasesGPGKey{}}
+	r := newReleasesGPGRouterWithMirrors(t, repo, mirrorListerForTools("futuretool"), defaultReleasesCfg())
+
+	_, body := invokeAndDecode(t, r)
+	row := findTool(t, body, "futuretool")
+	if row.EffectiveSource != "none" {
+		t.Errorf("effective source = %q, want none", row.EffectiveSource)
+	}
+	if row.Status != "unknown" {
+		t.Errorf("status = %q, want unknown", row.Status)
 	}
 }
 
