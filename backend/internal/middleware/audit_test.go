@@ -176,6 +176,10 @@ func TestAuditMiddleware_ResourceTypeDetection(t *testing.T) {
 		{"/api/v1/organizations/some-id", "organization"},
 		{"/api/v1/organizations/some-id/members", "organization"},
 		{"/api/v1/admin/mirrors/y", "mirror"},
+		// The hosted binary-mirror admin API (mounted under /admin/terraform-mirror*)
+		// and the forward-compat /admin/binary-mirror prefix both audit as "binary_mirror".
+		{"/api/v1/admin/terraform-mirrors/some-id", "binary_mirror"},
+		{"/api/v1/admin/binary-mirror/x", "binary_mirror"},
 		{"/other/z", "unknown"},
 	}
 
