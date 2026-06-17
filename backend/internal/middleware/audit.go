@@ -193,9 +193,15 @@ func getResourceType(c *gin.Context) string {
 		return "scanning"
 	case strings.HasPrefix(fullPath, "/api/v1/admin/approvals"):
 		return "approval"
-	case strings.HasPrefix(fullPath, "/api/v1/admin/terraform-mirror"):
-		return "terraform_mirror"
-	case strings.HasPrefix(fullPath, "/api/v1/admin/binary-mirror"):
+	// The hosted binary-mirror admin API lives under /admin/terraform-mirror*
+	// (the original route prefix) but mirrors ALL binaries — terraform, opentofu,
+	// opa, packer, sentinel — so its audit resource_type reads "binary_mirror".
+	// The /admin/binary-mirror prefix is folded in for forward-compat (no such
+	// route is mounted today). Historical rows already written as
+	// "terraform_mirror" are intentionally left as-is for audit-trail integrity;
+	// only go-forward labels change.
+	case strings.HasPrefix(fullPath, "/api/v1/admin/terraform-mirror"),
+		strings.HasPrefix(fullPath, "/api/v1/admin/binary-mirror"):
 		return "binary_mirror"
 	case strings.HasPrefix(fullPath, "/api/v1/admin/policies"):
 		return "policy"
