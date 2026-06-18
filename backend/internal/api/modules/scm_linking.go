@@ -13,6 +13,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/scm"
+	"github.com/terraform-registry/terraform-registry/internal/scm/appcreds"
 	"github.com/terraform-registry/terraform-registry/internal/services"
 )
 
@@ -23,6 +24,7 @@ type SCMLinkingHandler struct {
 	tokenCipher *crypto.TokenCipher
 	publicURL   string
 	publisher   *services.SCMPublisher
+	minter      appcreds.SharedMinter
 }
 
 // NewSCMLinkingHandler creates a new SCM linking handler
@@ -34,6 +36,78 @@ func NewSCMLinkingHandler(scmRepo *repositories.SCMRepository, moduleRepo *repos
 		publicURL:   publicURL,
 		publisher:   publisher,
 	}
+}
+
+// WithMinter wires in the shared app-credential minter used by providers in an
+// app auth mode (entra_app/github_app). Returns the handler for chaining.
+func (h *SCMLinkingHandler) WithMinter(minter appcreds.SharedMinter) *SCMLinkingHandler {
+	h.minter = minter
+	return h
+}
+
+// connectorAndToken builds an SCM connector for a provider and resolves an access
+// token for it. Providers in an app auth mode (entra_app/github_app) mint the
+// shared, admin-managed credential; legacy oauth_user providers use the requesting
+// user's stored personal token. For an oauth_user provider with no stored token
+// for the user, the returned token is nil (with a nil error) so best-effort
+// callers can treat the operation as a no-op.
+func (h *SCMLinkingHandler) connectorAndToken(ctx context.Context, provider *scm.SCMProviderRecord, userID uuid.UUID) (scm.Connector, *scm.OAuthToken, error) {
+	clientSecret, err := h.tokenCipher.Open(provider.ClientSecretEncrypted)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to decrypt client secret")
+	}
+	baseURL := ""
+	if provider.BaseURL != nil {
+		baseURL = *provider.BaseURL
+	}
+	tenantID := ""
+	if provider.TenantID != nil {
+		tenantID = *provider.TenantID
+	}
+	connector, err := scm.BuildConnector(&scm.ConnectorSettings{
+		Kind:            provider.ProviderType,
+		InstanceBaseURL: baseURL,
+		ClientID:        provider.ClientID,
+		ClientSecret:    clientSecret,
+		CallbackURL:     fmt.Sprintf("%s/api/v1/scm-providers/%s/oauth/callback", h.publicURL, provider.ID),
+		TenantID:        tenantID,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create connector")
+	}
+
+	// App-mode: shared credential, no per-user token needed.
+	if provider.AuthMode == scm.AuthModeEntraApp || provider.AuthMode == scm.AuthModeGitHubApp {
+		if h.minter == nil {
+			return nil, nil, fmt.Errorf("shared app credentials not available")
+		}
+		token, mErr := h.minter.MintProviderToken(ctx, provider)
+		if mErr != nil {
+			return nil, nil, fmt.Errorf("failed to mint shared token: %w", mErr)
+		}
+		return connector, token, nil
+	}
+
+	// Legacy oauth_user: requesting user's stored token (may be absent).
+	tokenRecord, err := h.scmRepo.GetUserToken(ctx, userID, provider.ID)
+	if err != nil || tokenRecord == nil {
+		return connector, nil, nil
+	}
+	accessToken, err := h.tokenCipher.Open(tokenRecord.AccessTokenEncrypted)
+	if err != nil {
+		return connector, nil, nil
+	}
+	token := &scm.OAuthToken{
+		AccessToken: accessToken,
+		TokenType:   tokenRecord.TokenType,
+		ExpiresAt:   tokenRecord.ExpiresAt,
+	}
+	if tokenRecord.RefreshTokenEncrypted != nil {
+		if rt, rErr := h.tokenCipher.Open(*tokenRecord.RefreshTokenEncrypted); rErr == nil {
+			token.RefreshToken = rt
+		}
+	}
+	return connector, token, nil
 }
 
 type LinkSCMRequest struct {
@@ -186,50 +260,22 @@ func (h *SCMLinkingHandler) LinkModuleToSCM(c *gin.Context) {
 	webhookRegistered := false
 	userID, uidErr := getUserIDFromContext(c)
 	if uidErr == nil {
-		tokenRecord, tokErr := h.scmRepo.GetUserToken(c.Request.Context(), userID, providerID)
-		if tokErr == nil && tokenRecord != nil {
-			if accessToken, decErr := h.tokenCipher.Open(tokenRecord.AccessTokenEncrypted); decErr == nil {
-				if clientSecret, csErr := h.tokenCipher.Open(provider.ClientSecretEncrypted); csErr == nil {
-					baseURL := ""
-					if provider.BaseURL != nil {
-						baseURL = *provider.BaseURL
-					}
-					tenantID := ""
-					if provider.TenantID != nil {
-						tenantID = *provider.TenantID
-					}
-					connector, connErr := scm.BuildConnector(&scm.ConnectorSettings{
-						Kind:            provider.ProviderType,
-						InstanceBaseURL: baseURL,
-						ClientID:        provider.ClientID,
-						ClientSecret:    clientSecret,
-						CallbackURL:     fmt.Sprintf("%s/api/v1/scm-providers/%s/oauth/callback", h.publicURL, providerID),
-						TenantID:        tenantID,
-					})
-					if connErr == nil {
-						token := &scm.OAuthToken{
-							AccessToken: accessToken,
-							TokenType:   tokenRecord.TokenType,
-							ExpiresAt:   tokenRecord.ExpiresAt,
-						}
-						hookInfo, regErr := connector.RegisterWebhook(c.Request.Context(), token, req.RepositoryOwner, req.RepositoryName, scm.WebhookSetup{
-							CallbackURL:   webhookCallbackURL,
-							SharedSecret:  provider.WebhookSecret,
-							EventTypes:    []string{"push"},
-							ActiveOnSetup: true,
-						})
-						if regErr == nil && hookInfo != nil {
-							webhookRegistered = true
-							link.WebhookID = &hookInfo.ExternalID
-							link.WebhookEnabled = true
-							if updErr := h.scmRepo.UpdateModuleSourceRepo(c.Request.Context(), link); updErr != nil {
-								slog.Warn("webhook registered but failed to persist state", "link_id", linkID, "webhook_id", hookInfo.ExternalID, "error", updErr)
-							}
-						} else if regErr != nil {
-							slog.Warn("auto-register webhook failed", "provider_type", provider.ProviderType, "owner", req.RepositoryOwner, "repo", req.RepositoryName, "error", regErr)
-						}
-					}
+		if connector, token, connErr := h.connectorAndToken(c.Request.Context(), provider, userID); connErr == nil && token != nil {
+			hookInfo, regErr := connector.RegisterWebhook(c.Request.Context(), token, req.RepositoryOwner, req.RepositoryName, scm.WebhookSetup{
+				CallbackURL:   webhookCallbackURL,
+				SharedSecret:  provider.WebhookSecret,
+				EventTypes:    []string{"push"},
+				ActiveOnSetup: true,
+			})
+			if regErr == nil && hookInfo != nil {
+				webhookRegistered = true
+				link.WebhookID = &hookInfo.ExternalID
+				link.WebhookEnabled = true
+				if updErr := h.scmRepo.UpdateModuleSourceRepo(c.Request.Context(), link); updErr != nil {
+					slog.Warn("webhook registered but failed to persist state", "link_id", linkID, "webhook_id", hookInfo.ExternalID, "error", updErr)
 				}
+			} else if regErr != nil {
+				slog.Warn("auto-register webhook failed", "provider_type", provider.ProviderType, "owner", req.RepositoryOwner, "repo", req.RepositoryName, "error", regErr)
 			}
 		}
 	}
@@ -359,38 +405,9 @@ func (h *SCMLinkingHandler) UnlinkModuleFromSCM(c *gin.Context) {
 		provider, provErr := h.scmRepo.GetProvider(c.Request.Context(), link.SCMProviderID)
 		userID, uidErr := getUserIDFromContext(c)
 		if provErr == nil && provider != nil && uidErr == nil {
-			tokenRecord, tokErr := h.scmRepo.GetUserToken(c.Request.Context(), userID, link.SCMProviderID)
-			if tokErr == nil && tokenRecord != nil {
-				if accessToken, decErr := h.tokenCipher.Open(tokenRecord.AccessTokenEncrypted); decErr == nil {
-					clientSecret, csErr := h.tokenCipher.Open(provider.ClientSecretEncrypted)
-					if csErr == nil {
-						baseURL := ""
-						if provider.BaseURL != nil {
-							baseURL = *provider.BaseURL
-						}
-						tenantID := ""
-						if provider.TenantID != nil {
-							tenantID = *provider.TenantID
-						}
-						connector, connErr := scm.BuildConnector(&scm.ConnectorSettings{
-							Kind:            provider.ProviderType,
-							InstanceBaseURL: baseURL,
-							ClientID:        provider.ClientID,
-							ClientSecret:    clientSecret,
-							CallbackURL:     fmt.Sprintf("%s/api/v1/scm-providers/%s/oauth/callback", h.publicURL, link.SCMProviderID),
-							TenantID:        tenantID,
-						})
-						if connErr == nil {
-							token := &scm.OAuthToken{
-								AccessToken: accessToken,
-								TokenType:   tokenRecord.TokenType,
-								ExpiresAt:   tokenRecord.ExpiresAt,
-							}
-							if rmErr := connector.RemoveWebhook(c.Request.Context(), token, link.RepositoryOwner, link.RepositoryName, *link.WebhookID); rmErr != nil {
-								slog.Warn("failed to remove webhook", "webhook_id", *link.WebhookID, "owner", link.RepositoryOwner, "repo", link.RepositoryName, "error", rmErr)
-							}
-						}
-					}
+			if connector, token, connErr := h.connectorAndToken(c.Request.Context(), provider, userID); connErr == nil && token != nil {
+				if rmErr := connector.RemoveWebhook(c.Request.Context(), token, link.RepositoryOwner, link.RepositoryName, *link.WebhookID); rmErr != nil {
+					slog.Warn("failed to remove webhook", "webhook_id", *link.WebhookID, "owner", link.RepositoryOwner, "repo", link.RepositoryName, "error", rmErr)
 				}
 			}
 		}
@@ -483,6 +500,23 @@ func (h *SCMLinkingHandler) TriggerManualSync(c *gin.Context) {
 	provider, err := h.scmRepo.GetProvider(c.Request.Context(), link.SCMProviderID)
 	if err != nil || provider == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "provider not found"})
+		return
+	}
+
+	// App-mode providers use the shared, admin-managed credential — no per-user
+	// connection is required to trigger a sync.
+	if provider.AuthMode == scm.AuthModeEntraApp || provider.AuthMode == scm.AuthModeGitHubApp {
+		connector, token, connErr := h.connectorAndToken(c.Request.Context(), provider, uuid.Nil)
+		if connErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": connErr.Error()})
+			return
+		}
+		go func() {
+			if syncErr := h.publisher.TriggerManualSync(context.Background(), link, connector, token); syncErr != nil {
+				slog.Warn("manual sync failed", "module_id", moduleID, "error", syncErr)
+			}
+		}()
+		c.JSON(http.StatusAccepted, gin.H{"message": "sync triggered"})
 		return
 	}
 
@@ -668,41 +702,9 @@ func (h *SCMLinkingHandler) detectDefaultBranch(ctx context.Context, c *gin.Cont
 	if err != nil {
 		return "main"
 	}
-	tokenRecord, err := h.scmRepo.GetUserToken(ctx, userID, provider.ID)
-	if err != nil || tokenRecord == nil {
+	connector, token, err := h.connectorAndToken(ctx, provider, userID)
+	if err != nil || token == nil {
 		return "main"
-	}
-	accessToken, err := h.tokenCipher.Open(tokenRecord.AccessTokenEncrypted)
-	if err != nil {
-		return "main"
-	}
-	clientSecret, err := h.tokenCipher.Open(provider.ClientSecretEncrypted)
-	if err != nil {
-		return "main"
-	}
-	baseURL := ""
-	if provider.BaseURL != nil {
-		baseURL = *provider.BaseURL
-	}
-	tenantID := ""
-	if provider.TenantID != nil {
-		tenantID = *provider.TenantID
-	}
-	connector, err := scm.BuildConnector(&scm.ConnectorSettings{
-		Kind:            provider.ProviderType,
-		InstanceBaseURL: baseURL,
-		ClientID:        provider.ClientID,
-		ClientSecret:    clientSecret,
-		CallbackURL:     fmt.Sprintf("%s/api/v1/scm-providers/%s/oauth/callback", h.publicURL, provider.ID),
-		TenantID:        tenantID,
-	})
-	if err != nil {
-		return "main"
-	}
-	token := &scm.OAuthToken{
-		AccessToken: accessToken,
-		TokenType:   tokenRecord.TokenType,
-		ExpiresAt:   tokenRecord.ExpiresAt,
 	}
 	sourceRepo, err := connector.FetchRepository(ctx, token, owner, repoName)
 	if err != nil || sourceRepo == nil || sourceRepo.DefaultBranch == "" {

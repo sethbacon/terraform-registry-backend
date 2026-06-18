@@ -25,6 +25,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/scm"
+	"github.com/terraform-registry/terraform-registry/internal/scm/appcreds"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 	"github.com/terraform-registry/terraform-registry/internal/validation"
 )
@@ -39,6 +40,7 @@ type SCMPublisher struct {
 	scanRepo       *repositories.ModuleScanRepository // optional: queue scans after publish
 	moduleDocsRepo *repositories.ModuleDocsRepository // optional: store terraform-docs after publish
 	scanningCfg    *config.ScanningConfig             // optional: scan feature flags
+	sharedMinter   appcreds.SharedMinter              // optional: shared app-credential token minter
 }
 
 // NewSCMPublisher creates a new SCM publisher
@@ -65,6 +67,53 @@ func (p *SCMPublisher) WithScanQueue(scanRepo *repositories.ModuleScanRepository
 func (p *SCMPublisher) WithModuleDocs(docsRepo *repositories.ModuleDocsRepository) *SCMPublisher {
 	p.moduleDocsRepo = docsRepo
 	return p
+}
+
+// WithSharedMinter wires in the shared app-credential minter so providers in an
+// app auth mode (entra_app/github_app) resolve a shared, admin-managed token
+// instead of the module creator's personal OAuth token.
+func (p *SCMPublisher) WithSharedMinter(minter appcreds.SharedMinter) *SCMPublisher {
+	p.sharedMinter = minter
+	return p
+}
+
+// resolveSourceToken resolves the token used to download repository archives.
+// Providers in an app auth mode mint the shared, admin-managed credential;
+// legacy oauth_user providers fall back to the module creator's stored personal
+// token. Returns nil (download proceeds unauthenticated) for public repos or when
+// no credential is available.
+func (p *SCMPublisher) resolveSourceToken(ctx context.Context, createdBy *string, providerID uuid.UUID) *scm.OAuthToken {
+	if p.sharedMinter != nil {
+		if provider, err := p.scmRepo.GetProvider(ctx, providerID); err == nil && provider != nil {
+			if provider.AuthMode == scm.AuthModeEntraApp || provider.AuthMode == scm.AuthModeGitHubApp {
+				if token, mErr := p.sharedMinter.MintProviderToken(ctx, provider); mErr == nil {
+					return token
+				}
+				return nil
+			}
+		}
+	}
+
+	if createdBy == nil {
+		return nil
+	}
+	createdByUUID, parseErr := uuid.Parse(*createdBy)
+	if parseErr != nil {
+		return nil
+	}
+	tokenRecord, tokenErr := p.scmRepo.GetUserToken(ctx, createdByUUID, providerID)
+	if tokenErr != nil || tokenRecord == nil {
+		return nil
+	}
+	accessToken, decryptErr := p.tokenCipher.Open(tokenRecord.AccessTokenEncrypted)
+	if decryptErr != nil {
+		return nil
+	}
+	return &scm.OAuthToken{
+		AccessToken: accessToken,
+		TokenType:   tokenRecord.TokenType,
+		ExpiresAt:   tokenRecord.ExpiresAt,
+	}
 }
 
 // ProcessTagPush processes a tag push webhook and publishes a new version
@@ -113,22 +162,10 @@ func (p *SCMPublisher) ProcessTagPush(ctx context.Context, logID uuid.UUID, modu
 		return
 	}
 
-	// Resolve OAuth token so downloads from private repos work.
-	// Fall back to nil (unauthenticated) when the module owner has no stored token.
-	var oauthToken *scm.OAuthToken
-	if module.CreatedBy != nil {
-		if createdByUUID, parseErr := uuid.Parse(*module.CreatedBy); parseErr == nil {
-			if tokenRecord, tokenErr := p.scmRepo.GetUserToken(ctx, createdByUUID, moduleSourceRepo.SCMProviderID); tokenErr == nil && tokenRecord != nil {
-				if accessToken, decryptErr := p.tokenCipher.Open(tokenRecord.AccessTokenEncrypted); decryptErr == nil {
-					oauthToken = &scm.OAuthToken{
-						AccessToken: accessToken,
-						TokenType:   tokenRecord.TokenType,
-						ExpiresAt:   tokenRecord.ExpiresAt,
-					}
-				}
-			}
-		}
-	}
+	// Resolve a token so downloads from private repos work. App-mode providers
+	// (entra_app/github_app) use the shared, admin-managed credential; legacy
+	// oauth_user providers fall back to the module creator's personal token.
+	oauthToken := p.resolveSourceToken(ctx, module.CreatedBy, moduleSourceRepo.SCMProviderID)
 
 	// Publish the module version (download, upload, create DB record)
 	versionID, err := p.publishModuleVersion(ctx, connector, oauthToken, moduleSourceRepo, hook, version)

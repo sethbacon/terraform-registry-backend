@@ -274,6 +274,72 @@ func TestSCMDeleteProvider_Success(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Provider token cache (shared app credentials)
+// ---------------------------------------------------------------------------
+
+var scmProviderTokenCols = []string{
+	"scm_provider_id", "access_token_encrypted", "token_type", "expires_at", "updated_at",
+}
+
+func TestSCMGetProviderToken_Found(t *testing.T) {
+	repo, mock := newSCMRepo(t)
+	id := uuid.New()
+	exp := time.Now().Add(time.Hour)
+	mock.ExpectQuery("SELECT.*FROM scm_provider_tokens WHERE scm_provider_id").
+		WillReturnRows(sqlmock.NewRows(scmProviderTokenCols).
+			AddRow(id, "enc-token", "Bearer", exp, time.Now()))
+
+	tok, err := repo.GetProviderToken(context.Background(), id)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tok == nil || tok.AccessTokenEncrypted != "enc-token" {
+		t.Fatalf("token = %+v, want enc-token", tok)
+	}
+}
+
+func TestSCMGetProviderToken_NotFound(t *testing.T) {
+	repo, mock := newSCMRepo(t)
+	mock.ExpectQuery("SELECT.*FROM scm_provider_tokens WHERE scm_provider_id").
+		WillReturnRows(sqlmock.NewRows(scmProviderTokenCols))
+
+	tok, err := repo.GetProviderToken(context.Background(), uuid.New())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tok != nil {
+		t.Errorf("token = %+v, want nil", tok)
+	}
+}
+
+func TestSCMUpsertProviderToken_Success(t *testing.T) {
+	repo, mock := newSCMRepo(t)
+	exp := time.Now().Add(time.Hour)
+	mock.ExpectExec("INSERT INTO scm_provider_tokens").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	rec := &scm.SCMProviderTokenRecord{
+		SCMProviderID:        uuid.New(),
+		AccessTokenEncrypted: "enc",
+		TokenType:            "Bearer",
+		ExpiresAt:            &exp,
+	}
+	if err := repo.UpsertProviderToken(context.Background(), rec); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSCMDeleteProviderToken_Success(t *testing.T) {
+	repo, mock := newSCMRepo(t)
+	mock.ExpectExec("DELETE FROM scm_provider_tokens").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	if err := repo.DeleteProviderToken(context.Background(), uuid.New()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // SaveUserToken
 // ---------------------------------------------------------------------------
 
