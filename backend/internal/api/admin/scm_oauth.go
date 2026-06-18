@@ -15,6 +15,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/scm"
+	"github.com/terraform-registry/terraform-registry/internal/scm/appcreds"
 )
 
 // SCMOAuthHandlers handles SCM OAuth flows
@@ -23,6 +24,7 @@ type SCMOAuthHandlers struct {
 	scmRepo     *repositories.SCMRepository
 	userRepo    *repositories.UserRepository
 	tokenCipher *crypto.TokenCipher
+	minter      appcreds.SharedMinter
 }
 
 // NewSCMOAuthHandlers creates a new SCM OAuth handlers instance
@@ -33,6 +35,13 @@ func NewSCMOAuthHandlers(cfg *config.Config, scmRepo *repositories.SCMRepository
 		userRepo:    userRepo,
 		tokenCipher: tokenCipher,
 	}
+}
+
+// WithMinter wires in the shared app-credential minter used by providers in an
+// app auth mode (entra_app/github_app). Returns the handler for chaining.
+func (h *SCMOAuthHandlers) WithMinter(minter appcreds.SharedMinter) *SCMOAuthHandlers {
+	h.minter = minter
+	return h
 }
 
 // @Summary      Initiate SCM OAuth
@@ -607,6 +616,29 @@ func (h *SCMOAuthHandlers) ListRepositories(c *gin.Context) {
 		return
 	}
 
+	// App-mode providers use the shared, admin-managed credential, so the user can
+	// browse repositories without a personal connection.
+	if provider.AuthMode == scm.AuthModeEntraApp || provider.AuthMode == scm.AuthModeGitHubApp {
+		connector, token, _, sErr := h.buildConnectorWithSharedToken(c.Request.Context(), provider)
+		if sErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": sErr.Error()})
+			return
+		}
+		search := c.Query("search")
+		var repos *scm.RepoListResult
+		if search != "" {
+			repos, err = connector.SearchRepositories(c.Request.Context(), token, search, scm.DefaultPagination())
+		} else {
+			repos, err = connector.FetchRepositories(c.Request.Context(), token, scm.DefaultPagination())
+		}
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to list repositories: %v", err)})
+			return
+		}
+		writeRepositoryList(c, repos)
+		return
+	}
+
 	// Get user's token for this provider
 	tokenRecord, err := h.scmRepo.GetUserToken(c.Request.Context(), userID, providerID)
 	if err != nil || tokenRecord == nil {
@@ -745,6 +777,11 @@ func (h *SCMOAuthHandlers) ListRepositories(c *gin.Context) {
 	}
 
 	// Convert to frontend-friendly format
+	writeRepositoryList(c, repos)
+}
+
+// writeRepositoryList writes a repository list in the frontend-friendly response shape.
+func writeRepositoryList(c *gin.Context, repos *scm.RepoListResult) {
 	repositories := make([]gin.H, len(repos.Repos))
 	for i, repo := range repos.Repos {
 		repositories[i] = gin.H{
@@ -759,7 +796,6 @@ func (h *SCMOAuthHandlers) ListRepositories(c *gin.Context) {
 			"private":        repo.Private,
 		}
 	}
-
 	c.JSON(http.StatusOK, gin.H{"repositories": repositories})
 }
 
@@ -966,6 +1002,12 @@ func (h *SCMOAuthHandlers) buildConnectorWithToken(ctx context.Context, provider
 		return nil, nil, nil, fmt.Errorf("provider not found")
 	}
 
+	// App-mode providers use the shared, admin-managed credential, so the
+	// requesting user does not need a personal connection to browse repositories.
+	if provider.AuthMode == scm.AuthModeEntraApp || provider.AuthMode == scm.AuthModeGitHubApp {
+		return h.buildConnectorWithSharedToken(ctx, provider)
+	}
+
 	// Get user's token for this provider
 	tokenRecord, err := h.scmRepo.GetUserToken(ctx, userID, providerID)
 	if err != nil || tokenRecord == nil {
@@ -1038,6 +1080,44 @@ func (h *SCMOAuthHandlers) buildConnectorWithToken(ctx context.Context, provider
 	}
 
 	return connector, token, tokenRecord, nil
+}
+
+// buildConnectorWithSharedToken builds a connector and mints the shared app token
+// for a provider in an app auth mode (entra_app/github_app). No per-user token is
+// involved, so the returned SCMUserTokenRecord is nil.
+func (h *SCMOAuthHandlers) buildConnectorWithSharedToken(ctx context.Context, provider *scm.SCMProviderRecord) (scm.Connector, *scm.OAuthToken, *scm.SCMUserTokenRecord, error) {
+	if h.minter == nil {
+		return nil, nil, nil, fmt.Errorf("shared app credentials not available")
+	}
+	token, err := h.minter.MintProviderToken(ctx, provider)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to mint shared token: %w", err)
+	}
+
+	clientSecret, err := h.tokenCipher.Open(provider.ClientSecretEncrypted)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to decrypt client secret")
+	}
+	baseURL := ""
+	if provider.BaseURL != nil {
+		baseURL = *provider.BaseURL
+	}
+	tenantID := ""
+	if provider.TenantID != nil {
+		tenantID = *provider.TenantID
+	}
+	connector, err := scm.BuildConnector(&scm.ConnectorSettings{
+		Kind:            provider.ProviderType,
+		InstanceBaseURL: baseURL,
+		ClientID:        provider.ClientID,
+		ClientSecret:    clientSecret,
+		CallbackURL:     fmt.Sprintf("%s/api/v1/scm-providers/%s/oauth/callback", h.cfg.Server.GetPublicURL(), provider.ID),
+		TenantID:        tenantID,
+	})
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to create connector")
+	}
+	return connector, token, nil, nil
 }
 func splitString(s, sep string) []string {
 	if s == "" {

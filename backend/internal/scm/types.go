@@ -3,9 +3,20 @@
 package scm
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
+)
+
+// SCM provider authentication modes. AuthModeOAuthUser is the legacy per-user
+// OAuth flow (one token per user per provider). AuthModeEntraApp and
+// AuthModeGitHubApp are shared, admin-managed app credentials minted on demand
+// and used by every user's linking and all background syncs.
+const (
+	AuthModeOAuthUser = "oauth_user"
+	AuthModeEntraApp  = "entra_app"
+	AuthModeGitHubApp = "github_app"
 )
 
 // ProviderType represents the type of SCM provider
@@ -162,9 +173,44 @@ type SCMProvider struct {
 	ClientID              string       `json:"client_id" db:"client_id"`
 	ClientSecretEncrypted string       `json:"-" db:"client_secret_encrypted"`
 	WebhookSecret         string       `json:"-" db:"webhook_secret"`
-	IsActive              bool         `json:"is_active" db:"is_active"`
-	CreatedAt             time.Time    `json:"created_at" db:"created_at"`
-	UpdatedAt             time.Time    `json:"updated_at" db:"updated_at"`
+	// AuthMode selects how the provider authenticates for shared, headless
+	// access: "oauth_user" (legacy per-user OAuth), "entra_app" (Microsoft Entra
+	// app registration, Azure DevOps) or "github_app" (GitHub App).
+	AuthMode               string    `json:"auth_mode" db:"auth_mode"`
+	GitHubAppID            *string   `json:"github_app_id,omitempty" db:"github_app_id"`
+	GitHubInstallationID   *string   `json:"github_installation_id,omitempty" db:"github_installation_id"`
+	EncryptedAppPrivateKey *string   `json:"-" db:"encrypted_app_private_key"`
+	IsActive               bool      `json:"is_active" db:"is_active"`
+	CreatedAt              time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt              time.Time `json:"updated_at" db:"updated_at"`
+}
+
+// MarshalJSON renders an SCMProvider for API responses. Encrypted secrets (the
+// client secret and the GitHub App private key) are never emitted; instead
+// has_client_secret / has_app_private_key booleans report whether each is set,
+// so the UI can show "configured" without ever receiving the secret.
+func (p SCMProvider) MarshalJSON() ([]byte, error) {
+	type providerAlias SCMProvider
+	return json.Marshal(struct {
+		providerAlias
+		HasClientSecret  bool `json:"has_client_secret"`
+		HasAppPrivateKey bool `json:"has_app_private_key"`
+	}{
+		providerAlias:    providerAlias(p),
+		HasClientSecret:  p.ClientSecretEncrypted != "",
+		HasAppPrivateKey: p.EncryptedAppPrivateKey != nil && *p.EncryptedAppPrivateKey != "",
+	})
+}
+
+// SCMProviderToken is the cached shared app token for a provider (auth_mode
+// entra_app or github_app). It is re-mintable from the provider's stored app
+// secrets, so this row is a cache, not a source of truth.
+type SCMProviderToken struct {
+	SCMProviderID        uuid.UUID  `json:"scm_provider_id" db:"scm_provider_id"`
+	AccessTokenEncrypted string     `json:"-" db:"access_token_encrypted"`
+	TokenType            string     `json:"token_type" db:"token_type"`
+	ExpiresAt            *time.Time `json:"expires_at,omitempty" db:"expires_at"`
+	UpdatedAt            time.Time  `json:"updated_at" db:"updated_at"`
 }
 
 // SCMOAuthToken represents a user's OAuth token for an SCM provider
@@ -278,6 +324,7 @@ type IncomingHook = WebhookEvent
 
 // Database record type aliases for repository compatibility
 type SCMProviderRecord = SCMProvider
+type SCMProviderTokenRecord = SCMProviderToken
 type SCMUserTokenRecord = SCMOAuthToken
 type ModuleSourceRepoRecord = ModuleSCMRepo
 type SCMWebhookLogRecord = SCMWebhookEvent

@@ -11396,6 +11396,88 @@
                 }
             }
         },
+        "/api/v1/scm-providers/{id}/verify": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Mint a shared app token for a provider in an app auth mode (entra_app or github_app) to confirm the configured credentials are valid. Returns the token expiry on success. Requires admin scope.",
+                "tags": [
+                    "SCM Providers"
+                ],
+                "summary": "Verify SCM provider app credentials",
+                "parameters": [
+                    {
+                        "description": "SCM provider ID (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "{ ok, expires_at }",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid provider ID or provider not in an app auth mode",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Provider not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Failed to mint a token from the identity provider",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/setup/admin": {
             "post": {
                 "security": [
@@ -16092,6 +16174,13 @@
                     "provider_type"
                 ],
                 "properties": {
+                    "app_private_key": {
+                        "type": "string"
+                    },
+                    "auth_mode": {
+                        "description": "AuthMode selects the authentication model: \"oauth_user\" (default, legacy\nper-user OAuth), \"entra_app\" (Microsoft Entra app registration for Azure\nDevOps) or \"github_app\" (GitHub App). The app modes use a single shared,\nadmin-managed credential.",
+                        "type": "string"
+                    },
                     "base_url": {
                         "type": "string"
                     },
@@ -16099,6 +16188,12 @@
                         "type": "string"
                     },
                     "client_secret": {
+                        "type": "string"
+                    },
+                    "github_app_id": {
+                        "type": "string"
+                    },
+                    "github_installation_id": {
                         "type": "string"
                     },
                     "name": {
@@ -17080,6 +17175,13 @@
             "admin.UpdateSCMProviderRequest": {
                 "type": "object",
                 "properties": {
+                    "app_private_key": {
+                        "type": "string"
+                    },
+                    "auth_mode": {
+                        "description": "App-credential fields. Setting AppPrivateKey to \"\" clears the stored key.",
+                        "type": "string"
+                    },
                     "base_url": {
                         "type": "string"
                     },
@@ -17087,6 +17189,12 @@
                         "type": "string"
                     },
                     "client_secret": {
+                        "type": "string"
+                    },
+                    "github_app_id": {
+                        "type": "string"
+                    },
+                    "github_installation_id": {
                         "type": "string"
                     },
                     "is_active": {
@@ -19908,6 +20016,10 @@
             "scm.SCMProviderRecord": {
                 "type": "object",
                 "properties": {
+                    "auth_mode": {
+                        "description": "AuthMode selects how the provider authenticates for shared, headless\naccess: \"oauth_user\" (legacy per-user OAuth), \"entra_app\" (Microsoft Entra\napp registration, Azure DevOps) or \"github_app\" (GitHub App).",
+                        "type": "string"
+                    },
                     "base_url": {
                         "type": "string"
                     },
@@ -19915,6 +20027,12 @@
                         "type": "string"
                     },
                     "created_at": {
+                        "type": "string"
+                    },
+                    "github_app_id": {
+                        "type": "string"
+                    },
+                    "github_installation_id": {
                         "type": "string"
                     },
                     "id": {

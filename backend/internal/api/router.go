@@ -50,6 +50,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/jobs"
 	"github.com/terraform-registry/terraform-registry/internal/middleware"
 	"github.com/terraform-registry/terraform-registry/internal/policy"
+	"github.com/terraform-registry/terraform-registry/internal/scm/appcreds"
 	"github.com/terraform-registry/terraform-registry/internal/services"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 
@@ -621,10 +622,15 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// Initialize audit log handlers
 	auditLogHandlers := admin.NewAuditLogHandlers(identityDB)
 
+	// Shared app-credential minter (Entra app / GitHub App) for providers opted
+	// into an app auth mode; scmRepo provides the token-cache store.
+	sharedMinter := appcreds.NewMinter(tokenCipher, scmRepo)
+
 	// Initialize SCM publisher service (needed by scmLinkingHandler)
 	scmPublisher := services.NewSCMPublisher(scmRepo, moduleRepo, storageBackend, tokenCipher).
 		WithScanQueue(scanRepo, &cfg.Scanning).
-		WithModuleDocs(moduleDocsRepo)
+		WithModuleDocs(moduleDocsRepo).
+		WithSharedMinter(sharedMinter)
 
 	// Initialize and start the webhook retry job (no-op when max_retries=0)
 	webhookRetryJob := jobs.NewWebhookRetryJob(&cfg.Webhooks, scmRepo, moduleRepo, scmPublisher, tokenCipher)
@@ -638,9 +644,9 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	log.Println("CVE poll job started")
 
 	// Initialize SCM handlers with the already-created repositories and token cipher
-	scmProviderHandlers := admin.NewSCMProviderHandlers(cfg, scmRepo, orgRepo, tokenCipher)
-	scmOAuthHandlers := admin.NewSCMOAuthHandlers(cfg, scmRepo, userRepo, tokenCipher)
-	scmLinkingHandler := modules.NewSCMLinkingHandler(scmRepo, moduleRepo, tokenCipher, cfg.Server.BaseURL, scmPublisher)
+	scmProviderHandlers := admin.NewSCMProviderHandlers(cfg, scmRepo, orgRepo, tokenCipher).WithMinter(sharedMinter)
+	scmOAuthHandlers := admin.NewSCMOAuthHandlers(cfg, scmRepo, userRepo, tokenCipher).WithMinter(sharedMinter)
+	scmLinkingHandler := modules.NewSCMLinkingHandler(scmRepo, moduleRepo, tokenCipher, cfg.Server.BaseURL, scmPublisher).WithMinter(sharedMinter)
 
 	// Initialize storage configuration handlers
 	storageHandlers := admin.NewStorageHandlers(cfg, storageConfigRepo, tokenCipher)
@@ -1035,6 +1041,9 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 				scmProvidersGroup.POST("", middleware.RequireScope(auth.ScopeSCMManage), scmProviderHandlers.CreateProvider)
 				scmProvidersGroup.PUT("/:id", middleware.RequireScope(auth.ScopeSCMManage), scmProviderHandlers.UpdateProvider)
 				scmProvidersGroup.DELETE("/:id", middleware.RequireScope(auth.ScopeSCMManage), scmProviderHandlers.DeleteProvider)
+
+				// Verify shared app credentials by minting a token (app auth modes only)
+				scmProvidersGroup.POST("/:id/verify", middleware.RequireScope(auth.ScopeSCMManage), scmProviderHandlers.VerifyProvider)
 
 				// OAuth flow endpoints require scm:manage
 				scmProvidersGroup.GET("/:id/oauth/authorize", middleware.RequireScope(auth.ScopeSCMManage), scmOAuthHandlers.InitiateOAuth)

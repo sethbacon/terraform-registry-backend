@@ -478,6 +478,10 @@ from the JWT secret because OAuth tokens have different sensitivity and lifetime
 If this key is lost, all SCM connections will need to be re-authorized -- the encrypted tokens
 cannot be recovered.
 
+> To avoid per-user OAuth entirely, a provider can use a shared, admin-managed app
+> credential (Microsoft Entra app for Azure DevOps, GitHub App for GitHub). See
+> [SCM Shared App Credentials](deployment/scm-shared-app-credentials.md).
+
 #### Zero-Downtime Key Rotation
 
 To rotate the encryption key without invalidating existing encrypted tokens, set the previous
