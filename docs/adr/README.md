@@ -22,11 +22,13 @@ An Architecture Decision Record captures an important architectural decision mad
 | [003](003-storage-backend-abstraction.md)   | Storage Backend Abstraction       | Accepted   |
 | [004](004-jwt-plus-apikey-dual-auth.md)     | JWT + API Key Dual Authentication | Accepted   |
 | [005](005-fire-and-forget-webhooks.md)      | Fire-and-Forget Webhooks          | Accepted   |
-| [006](006-in-memory-rate-limiting.md)       | In-Memory Rate Limiting           | Superseded |
+| [006](006-in-memory-rate-limiting.md)       | In-Memory Rate Limiting           | Superseded by Redis-backed rate limiting (Phase 1.1) |
 | [007](007-setup-wizard-one-time-token.md)   | Setup Wizard One-Time Token       | Accepted   |
 | [008](008-module-scanning-architecture.md)  | Module Scanning Architecture      | Accepted   |
 | [009](009-network-mirror-protocol.md)       | Network Mirror Protocol           | Accepted   |
 | [010](010-binary-mirror-custom-protocol.md) | Binary Mirror Custom Protocol     | Accepted   |
+| [011](011-version-approval-gate.md)         | Version Approval Gate for Mirrors | Accepted   |
+| [0011](0011-password-hashing.md)            | Password and API Key Hashing      | Accepted   |
 
 ## Creating a New ADR
 

@@ -33,7 +33,20 @@ This document catalogs all database migrations, their reversibility, and rollbac
 | 000024 | `module_deprecation`                   | ✅ Yes         | Drops deprecation columns; existing deprecation data lost |
 | 000025 | `org_idp_binding`                      | ✅ Yes         | Drops IdP binding columns; IdP associations lost          |
 | 000026 | `org_quotas`                           | ✅ Yes         | Drops quota tables; quota config and usage data lost      |
+| 000027 | `setup_ldap`                           | ✅ Yes         | Drops LDAP setup columns from `system_settings`           |
+| 000028 | `module_version_replacement_source`    | ✅ Yes         | Drops replacement-source column                           |
+| 000029 | `webhook_approval_tokens`              | ✅ Yes         | Drops the approval-tokens table                           |
+| 000030 | `scan_execution_log`                   | ✅ Yes         | Drops scan execution-log column                           |
+| 000031 | `backfill_scanner_name`                | ⚠️ No-op down  | Data backfill; the down migration cannot meaningfully revert it |
+| 000032 | `cve_advisories`                       | ✅ Yes         | Drops the CVE advisory tables                             |
+| 000033 | `ui_theme_config`                      | ✅ Yes         | Drops the UI theme config table                           |
+| 000034 | `terraform_version_signature_storage`  | ✅ Yes         | Drops Terraform-version signature storage-key columns     |
+| 000035 | `provider_version_signature_storage`   | ✅ Yes         | Drops provider-version signature storage-key columns      |
 | 000036 | `releases_gpg_keys`                    | ✅ Yes         | Drops the cached upstream-key table; cache is rebuilt on next refresh tick |
+| 000037 | `version_approval`                      | ✅ Yes         | Drops approval columns/indexes and the `version_approval_events` table; approval state lost |
+| 000038 | `feature_fk_to_identity`               | ✅ Yes         | Reverts feature-table FKs to `public.{users,organizations}`; no-op when the `identity` schema is absent |
+| 000039 | `add_packer_sentinel_opa_tools`        | ⚠️ Conditional | Restores the original tool CHECK constraint; the down fails if rows use `packer`/`sentinel`/`opa` |
+| 000040 | `terraform_mirror_default_stable_approval` | ✅ Yes     | Reverts column defaults; existing rows are not modified   |
 
 ## How to Run Migrations
 
@@ -83,11 +96,31 @@ migrate -path backend/internal/db/migrations \
   -database "postgres://user:pass@host:5432/terraform_registry?sslmode=disable" \
   force 23
 
-# Or use the fix-migration helper
-go run ./cmd/fix-migration --version 23
+# Or use the fix-migration helper, which clears the dirty flag automatically
+# (pass --dry-run to only report the current migration state)
+go run ./cmd/fix-migration
 ```
 
 ## Rollback Procedures by Version Upgrade
+
+### Rolling back 1.0.0 → 0.10.x
+
+The 1.0.0 line adds migrations 027–040 on top of the 0.10.0 schema (which ended at
+migration 026). To return to 0.10.x, roll back to migration 026:
+
+```bash
+# 1. Stop the 1.0.0 backend
+# 2. Roll back migrations 027–040 (one version at a time)
+migrate ... goto 26
+# 3. Deploy 0.10.x
+# 4. Verify: curl /health
+```
+
+**Data loss:** LDAP setup config, CVE advisories, UI theme config, scan execution
+logs, signature storage keys, and all version-approval state (including the
+`version_approval_events` table) are dropped. Migration 039's down also fails if any
+`terraform_mirror_configs` rows use the `packer`/`sentinel`/`opa` tools — update or
+remove those rows before rolling back past 039.
 
 ### Rolling back 0.10.0 → 0.9.x
 

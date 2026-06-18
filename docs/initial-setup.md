@@ -116,7 +116,7 @@ export SETUP_TOKEN_FILE=/tmp/setup-token.txt
 
 1. Navigate to `https://your-registry/setup`
 2. Enter the setup token from the server logs
-3. Follow the 5-step wizard:
+3. Follow the 6-step wizard:
    - **Step 1: Authenticate** — Paste the setup token
    - **Step 2: OIDC Provider** — Configure your identity provider
    - **Step 3: Storage Backend** — Configure module/provider storage
@@ -148,10 +148,15 @@ Response:
   "setup_completed": false,
   "storage_configured": false,
   "oidc_configured": false,
+  "ldap_configured": false,
+  "auth_method": "",
   "admin_configured": false,
   "setup_required": true
 }
 ```
+
+`auth_method` reports the configured authentication method (`oidc` or `ldap`)
+once one is saved; `ldap_configured` mirrors `oidc_configured` for the LDAP path.
 
 ### 3. Test OIDC Configuration
 
@@ -184,6 +189,51 @@ curl -X POST https://your-registry/api/v1/setup/oidc \
     "scopes": ["openid", "email", "profile"]
   }'
 ```
+
+### 4b. Configure LDAP (alternative to OIDC)
+
+LDAP is a first-class authentication option equal to OIDC — configure **either**
+OIDC (steps 3–4) **or** LDAP, not both. Test the connection first, then save:
+
+```bash
+# Test the LDAP connection / bind
+curl -X POST https://your-registry/api/v1/setup/ldap/test \
+  -H "Authorization: SetupToken tfr_setup_YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "host": "ldap.example.com",
+    "port": 636,
+    "use_tls": true,
+    "bind_dn": "cn=registry,ou=svc,dc=example,dc=com",
+    "bind_password": "YOUR_BIND_PASSWORD",
+    "base_dn": "ou=users,dc=example,dc=com",
+    "user_filter": "(uid=%s)",
+    "user_attr_email": "mail",
+    "user_attr_name": "cn",
+    "group_base_dn": "ou=groups,dc=example,dc=com",
+    "group_filter": "(member=%s)",
+    "group_member_attr": "member"
+  }'
+
+# Save the LDAP configuration
+curl -X POST https://your-registry/api/v1/setup/ldap \
+  -H "Authorization: SetupToken tfr_setup_YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "host": "ldap.example.com",
+    "port": 636,
+    "use_tls": true,
+    "bind_dn": "cn=registry,ou=svc,dc=example,dc=com",
+    "bind_password": "YOUR_BIND_PASSWORD",
+    "base_dn": "ou=users,dc=example,dc=com",
+    "user_filter": "(uid=%s)"
+  }'
+```
+
+Required fields: `host`, `bind_dn`, `bind_password`, `base_dn`, `user_filter`.
+Use `use_tls: true` for LDAPS (port 636) or `start_tls: true` for StartTLS on the
+plain port. The group fields enable group-to-role mapping. After saving, the
+setup-status response reports `auth_method: "ldap"` and `ldap_configured: true`.
 
 ### 5. Test Storage Configuration
 

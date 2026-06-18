@@ -89,7 +89,7 @@ Key settings for air-gapped deployments:
 ```yaml
 server:
   host: "0.0.0.0"
-  port: 5000
+  port: 8080
   tls:
     enabled: true
     cert_file: "/certs/server.crt"
@@ -101,9 +101,9 @@ database:
   name: "terraform_registry"
 
 storage:
-  type: "filesystem"          # or s3 with internal MinIO/Ceph
-  filesystem:
-    path: "/data/modules"
+  default_backend: "local"    # or s3 with internal MinIO/Ceph
+  local:
+    base_path: "/data/modules"
 
 auth:
   oidc:
@@ -248,14 +248,22 @@ volumeMounts:
 
 To mirror modules from an **internal** upstream registry (e.g., another Terraform Registry instance or Artifactory):
 
-```yaml
-# config.yaml
-pull_through:
-  enabled: true
-  upstream_url: "https://registry.internal.example.com"
-  # If the upstream requires authentication:
-  upstream_token: "${UPSTREAM_REGISTRY_TOKEN}"
+Pull-through / mirror caching is **database-backed mirror configuration**, not a static
+`config.yaml` block — there is no `pull_through` config key. Create a mirror via the admin
+API (`POST /api/v1/admin/mirrors`) or the admin UI, supplying the upstream registry URL and
+an optional credential:
+
+```bash
+curl -k -X POST https://localhost:8080/api/v1/admin/mirrors \
+  -H "Authorization: Bearer <ADMIN_API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "name": "internal-upstream",
+        "upstream_registry_url": "https://registry.internal.example.com"
+      }'
 ```
+
+See the admin mirror API in [API Reference](api-reference.md) for the full request schema.
 
 ## Verification
 
@@ -263,7 +271,7 @@ After deployment, verify the air-gapped installation:
 
 ```bash
 # 1. Health check
-curl -k https://localhost:5000/health
+curl -k https://localhost:8080/health
 
 # 2. Verify no outbound connections (from the host)
 # Watch network traffic — there should be zero external DNS lookups or connections
@@ -275,7 +283,12 @@ cd examples/module-consumer/
 terraform init
 
 # 4. Verify scanner works offline (if enabled)
-curl -k https://localhost:5000/api/v1/admin/scanning/status
+# The /api/v1/admin/scanning/status endpoint is auth-gated; for an unauthenticated
+# smoke test, confirm the bundled Trivy binary runs offline instead:
+trivy --version
+# (or, with an admin credential:)
+# curl -k -H "Authorization: Bearer <ADMIN_API_KEY>" \
+#   https://localhost:8080/api/v1/admin/scanning/status
 ```
 
 ## Updating an Air-Gapped Deployment
@@ -286,7 +299,7 @@ curl -k https://localhost:5000/api/v1/admin/scanning/status
 4. Load new images: `./load-images.sh`
 5. Run database migrations: the backend auto-migrates on startup.
 6. Restart services with the new image tags.
-7. Verify health: `curl -k https://localhost:5000/health`
+7. Verify health: `curl -k https://localhost:8080/health`
 
 See also: [Upgrade Guide](upgrade-guide.md) for version-specific migration notes.
 

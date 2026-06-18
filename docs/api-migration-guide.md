@@ -31,13 +31,14 @@ table:
 | Column | Type | Default | Description |
 | --- | --- | --- | --- |
 | `retry_count` | `INTEGER` | `0` | Number of retry attempts so far |
-| `max_retries` | `INTEGER` | `0` | Maximum retries allowed for this event |
+| `max_retries` | `INTEGER` | `3` | Maximum retries allowed for this event |
 | `next_retry_at` | `TIMESTAMP WITH TIME ZONE` | `NULL` | When the next retry should be attempted |
+| `last_error` | `TEXT` | `NULL` | Error message from the most recent failed attempt |
 
 **Impact on API consumers:**
 
 - Webhook event responses from `GET /api/v1/admin/webhooks/events` now include
-  `retry_count`, `max_retries`, and `next_retry_at` fields.
+  `retry_count`, `max_retries`, `next_retry_at`, and `last_error` fields.
 - Existing integrations that consume webhook event responses will see new fields but
   are not required to handle them. JSON consumers that ignore unknown fields are
   unaffected.
@@ -47,7 +48,8 @@ table:
 
 **Migration steps:** None required. Run database migrations (`migrate up`) and the new
 columns are added with safe defaults. Existing webhook events will have `retry_count=0`
-and `max_retries=0` (no retries for historical events).
+and `max_retries=3` (the column default), so historical/backfilled rows **are** eligible
+for retries.
 
 ---
 
@@ -132,7 +134,7 @@ New endpoints for marking module versions as deprecated:
 - Deprecated modules still appear in search results and version listings; clients
   should check the `deprecated` field to warn users.
 
-**Required scope:** `modules:publish`
+**Required scope:** `modules:write`
 
 **Migration steps:** None required. The new fields appear automatically after migration.
 
@@ -168,7 +170,7 @@ New endpoints for marking provider versions as deprecated:
 **Impact on API consumers:** Same as module deprecation -- new fields in responses,
 no breaking changes. Clients that ignore unknown fields are unaffected.
 
-**Required scope:** `providers:publish`
+**Required scope:** `providers:write`
 
 **Migration steps:** None required.
 

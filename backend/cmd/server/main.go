@@ -109,9 +109,45 @@ func run() error {
 	case "version":
 		fmt.Printf("Terraform Registry v%s (built %s)\n", Version, BuildDate)
 		return nil
+	case "upgrade":
+		return runUpgrade(configPath)
 	default:
-		return fmt.Errorf("unknown command: %s\nAvailable commands: serve, migrate, version", command)
+		return fmt.Errorf("unknown command: %s\nAvailable commands: serve, migrate, version, upgrade", command)
 	}
+}
+
+// runUpgrade dispatches the `upgrade` command's subcommands. Currently only
+// `upgrade preflight` is supported, which runs pre-upgrade validation via
+// RunUpgradePreflight (see upgrade.go). Flags are parsed from os.Args without a
+// cobra dependency to match the rest of the CLI surface.
+func runUpgrade(configPath string) error {
+	if len(os.Args) < 3 || os.Args[2] != "preflight" {
+		return fmt.Errorf("usage: %s upgrade preflight [--config <path>] [--verbose]", os.Args[0])
+	}
+
+	// Parse the documented flags. --config overrides the CONFIG_PATH env var;
+	// --verbose enables detailed output.
+	verbose := false
+	args := os.Args[3:]
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--verbose":
+			verbose = true
+		case "--config":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--config requires a path argument")
+			}
+			configPath = args[i+1]
+			i++
+		default:
+			return fmt.Errorf("unknown flag for 'upgrade preflight': %s", args[i])
+		}
+	}
+
+	if code := RunUpgradePreflight(configPath, verbose); code != 0 {
+		os.Exit(code)
+	}
+	return nil
 }
 
 func serve(cfg *config.Config) error {

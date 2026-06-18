@@ -7,7 +7,14 @@ This checklist tracks Swagger/OpenAPI annotation progress for all API endpoints 
 
 **Target**: 100% API coverage with Swagger annotations
 
-**Current Status**: ✅ 127/127 annotated (100%) — All Gin-router endpoints complete
+**Current Status**: ⚠️ Partial — this checklist is a manually-maintained subset and has
+drifted from the generated spec. The current `backend/docs/swagger.json` contains **211
+operations across 160 paths**. Numerous live routes are not listed here (e.g. `/v2/*` OCI,
+`/api/v1/admin/quotas`, `/api/v1/admin/advisories`, `/api/v1/admin/policy/*`,
+`/api/v1/ui/theme` & `/api/v1/ui/config`, `/api/v1/suite/*`, module reanalyze and
+module-level deprecate/undeprecate, version-approval bulk endpoints, GDPR export/erase,
+`/api/v1/dev/*`, and `/openapi3.json`). Treat the generated spec — not this file — as the
+source of truth, and regenerate this checklist before relying on it as an endpoint map.
 
 See the **Out-of-Band Endpoints** section at the bottom for observability endpoints that live
 on dedicated ports and are deliberately excluded from the OpenAPI spec.
@@ -23,7 +30,7 @@ on dedicated ports and are deliberately excluded from the OpenAPI spec.
 - [x] `POST /api/v1/auth/refresh` - Refresh JWT token
 - [x] `GET /api/v1/auth/me` - Get current user
 - [x] `GET /api/v1/auth/logout` - OIDC logout
-- [x] `POST /api/v1/auth/token/exchange` - Exchange token
+- [x] `GET /api/v1/auth/exchange-token` - Exchange token
 - [x] `GET /api/v1/auth/saml/metadata` - SAML SP metadata
 - [x] `POST /api/v1/auth/saml/acs` - SAML Assertion Consumer Service
 - [x] `GET /api/v1/auth/providers` - List authentication providers
@@ -312,10 +319,9 @@ complete operational coverage.
 ---
 
 ```txt
-Total Gin-router Endpoints: 127
-Annotated: 127
-Remaining: 0
-Completion: 100% ✅
+Generated spec (backend/docs/swagger.json): 211 operations / 160 paths
+This checklist (manually maintained subset, drifted): 127 entries
+NOTE: not 100% — regenerate from the router/swagger.json before using as an endpoint map.
 
 Out-of-Band Endpoints (not in OpenAPI spec):
   GET /metrics           (port 9090, Prometheus)
@@ -349,9 +355,9 @@ cd backend
 swag init -g cmd/server/main.go --outputTypes json
 ```
 
-Then visit `https://localhost/api-docs` to verify in the Swagger UI.
+Then visit `https://localhost/api-docs/` to verify in the Swagger UI.
 
 ---
 
-**Last Updated**: 2026-04-22
-**Status**: ✅ All 127 Gin-router endpoints annotated — 100% complete; out-of-band observability endpoints documented in-checklist
+**Last Updated**: 2026-04-22 (stale — predates spec growth to 211 operations)
+**Status**: ⚠️ Partial / drifted — this checklist lists 127 entries but the generated spec has 211 operations / 160 paths; regenerate before relying on it. Out-of-band observability endpoints are documented in-checklist.

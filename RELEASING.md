@@ -10,7 +10,7 @@ Releases are fully automated via `release-please.yml` and `release.yml`.
 2. **release-please maintains an open release PR** titled `chore(main): release X.Y.Z`.
    - It accumulates `CHANGELOG.md` entries from merged PR titles.
    - It bumps the version in `deployments/helm/Chart.yaml` (`appVersion` + `version`).
-   - `feat:` → minor bump, `fix:` / `perf:` / `security:` → patch bump, `feat!:` or `BREAKING CHANGE:` → major bump.
+   - `feat:` → minor bump, `fix:` / `perf:` → patch bump, `feat!:` or `BREAKING CHANGE:` → major bump.
    - The PR auto-updates as more commits land on `main`. Review it at any time to preview what will ship.
 
 3. **When ready to release**, review and squash-merge the release-please PR. That is the only required human action.

@@ -92,7 +92,7 @@ Terraform modules and providers. It comprises:
 | S-1 | Attacker impersonates a legitimate user via stolen API key | Backend auth           | API keys are bcrypt-hashed (cost ≥12); keys have expiry dates; rate limiting on auth endpoints; audit logging of all auth events | ✅ Implemented |
 | S-2 | Attacker forges OIDC/SAML tokens                           | Backend auth           | Token signature verification against IdP JWKS/metadata; issuer + audience validation; nonce/replay protection                    | ✅ Implemented |
 | S-3 | Attacker performs LDAP injection to bypass auth            | Backend LDAP connector | Parameterized LDAP queries with input escaping; bind DN validation                                                               | ✅ Implemented |
-| S-4 | Attacker hijacks session via XSS                           | Frontend               | httpOnly + Secure + SameSite=Strict cookies; CSP with nonces; no inline scripts                                                  | ✅ Implemented |
+| S-4 | Attacker hijacks session via XSS                           | Frontend               | httpOnly + Secure + SameSite=Lax cookies (Lax, not Strict, is required so the cookie survives the OIDC top-level redirect); CSP with nonces; no inline scripts | ✅ Implemented |
 | S-5 | DNS spoofing redirects IdP callbacks                       | Backend OIDC           | Strict redirect_uri validation; state parameter CSRF protection                                                                  | ✅ Implemented |
 
 ### 5.2 Tampering (T)
@@ -142,9 +142,14 @@ Terraform modules and providers. It comprises:
 | --- | ---------------------------------------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
 | E-1 | User escalates from read-only to admin               | Backend RBAC | Scope-based authorization on every endpoint; role templates are immutable after creation (admin audit); middleware enforces scope checks | ✅ Implemented |
 | E-2 | SCIM token used beyond provisioning scope            | Backend SCIM | SCIM tokens have dedicated `scim:provision` scope; cannot access module/provider endpoints                                               | ✅ Implemented |
-| E-3 | Container escape leads to host compromise            | Deployment   | Non-root container user; read-only root filesystem; dropped capabilities; seccomp/AppArmor profiles recommended in deployment docs       | ✅ Implemented |
+| E-3 | Container escape leads to host compromise            | Deployment   | Non-root container user; read-only root filesystem; dropped capabilities; seccomp/AppArmor profiles recommended in deployment docs       | ⚙️ Operator-configured |
 | E-4 | SQL injection leads to privilege escalation          | Backend      | Parameterized queries; DB user has minimum required grants (no SUPERUSER); separate migration user for DDL                               | ✅ Implemented |
 | E-5 | Path traversal in module/provider archive extraction | Backend      | Archive extraction validates paths; rejects entries with `..` components; temp directory isolation                                       | ✅ Implemented |
+
+> **Status legend:** ✅ Implemented = enforced by the application; ⚠️ Partial =
+> partially enforced; ⚙️ Operator-configured = the application ships safe defaults
+> and guidance, but full enforcement depends on deployment configuration (e.g.
+> seccomp/AppArmor profiles applied by the operator).
 
 ## 6. Assumptions
 

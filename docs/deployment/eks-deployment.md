@@ -18,7 +18,7 @@ Collect the values you captured during prerequisites:
 | `<IRSA_ROLE_NAME>` | `terraform-registry-irsa`                                                                                                              |
 | `<HOSTNAME>`       | Your public DNS name                                                                                                                   |
 | `<EMAIL>`          | Your ops email                                                                                                                         |
-| `<IMAGE_TAG>`      | `v0.8.2`                                                                                                                               |
+| `<IMAGE_TAG>`      | `v1.0.0` (current GA tag — see [`deployments/COMPATIBILITY.md`](../../deployments/COMPATIBILITY.md))                                    |
 
 ---
 
@@ -30,14 +30,18 @@ Collect the values you captured during prerequisites:
 cp deployments/helm/values-eks.yaml deployments/helm/values-eks-prod.yaml
 # Edit values-eks-prod.yaml — replace every <PLACEHOLDER>
 
+# Apply the SecretProviderClass FIRST (not in the Helm chart for EKS).
+# values-eks.yaml mounts the CSI secrets-store volume referencing this object;
+# if it does not exist yet, pods stay stuck in ContainerCreating (the volume
+# cannot mount) and `helm upgrade --wait` will time out.
+# Edit deployments/kubernetes/overlays/eks/secretproviderclass.yaml, then:
+kubectl create namespace terraform-registry --dry-run=client -o yaml | kubectl apply -f -
+kubectl apply -f deployments/kubernetes/overlays/eks/secretproviderclass.yaml -n terraform-registry
+
 helm upgrade --install terraform-registry ./deployments/helm \
   --namespace terraform-registry --create-namespace \
   -f deployments/helm/values-eks-prod.yaml \
   --wait --timeout 5m
-
-# Apply the SecretProviderClass separately (not in the Helm chart for EKS)
-# Edit deployments/kubernetes/overlays/eks/secretproviderclass.yaml, then:
-kubectl apply -f deployments/kubernetes/overlays/eks/secretproviderclass.yaml
 ```
 
 ### Option B: Kustomize

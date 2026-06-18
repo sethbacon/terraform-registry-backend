@@ -47,6 +47,16 @@ infrastructure code.
   versions.
 - Mirrors without the flag behave exactly as before, with zero filtering cost.
 
+## Enabling the gate
+
+The **Require approval** toggle maps to the `requires_approval` boolean on the
+mirror configuration (both provider mirrors and Terraform binary mirrors). The
+optional auto-approve rules described below live in the `auto_approve_rules`
+JSONB field on the same configuration. Both fields are set through the admin
+mirror API/UI rather than static config; see
+[configuration.md](configuration.md) for the mirror-configuration fields and the
+[API reference](api-reference.md) for the admin mirror endpoints.
+
 ## Auto-approve rules
 
 To avoid manual review of low-risk versions, a gated mirror can carry an

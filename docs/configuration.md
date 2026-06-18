@@ -72,6 +72,12 @@ For example, `database.host` in YAML becomes `TFR_DATABASE_HOST` as an env var.
 | `TFR_WEBHOOKS_RETRY_INTERVAL_MINS`                   | int      | `2`                     | No         | Minutes between webhook retries                                     |
 | `TFR_NOTIFICATIONS_ENABLED`                          | bool     | `false`                 | No         | Enable outbound email notifications                                 |
 
+> **Secrets are environment-only.** `TFR_JWT_SECRET`, `TFR_JWT_SECRET_FILE`,
+> `ENCRYPTION_KEY`, and `ENCRYPTION_KEY_PREVIOUS` are **not** part of the Viper config —
+> they have no YAML/struct field and are read directly via `os.Getenv` at startup. The
+> `TFR_<SECTION>_<FIELD>` ↔ YAML-key mapping rule above does **not** apply to them, and they
+> cannot be set in `config.yaml`. (`ENCRYPTION_KEY` intentionally has no `TFR_` prefix.)
+
 ---
 
 ## Redis (Optional)
@@ -146,6 +152,8 @@ database:
 
 `max_connections` controls the size of the connection pool. Set it to roughly `PostgreSQL max_connections / number_of_backend_instances`, leaving headroom for migrations and admin connections. A value of 25 per instance is a safe starting point.
 
+`min_idle_connections` (env `TFR_DATABASE_MIN_IDLE_CONNECTIONS`, default `5`) sets the minimum number of idle connections kept warm in the pool, so the first requests after an idle period do not pay the connection-establishment cost.
+
 ---
 
 ## Server
@@ -155,6 +163,8 @@ server:
   host: 0.0.0.0         # bind to all interfaces; use 127.0.0.1 to restrict to localhost
   port: 8080
   base_url: https://registry.example.com   # IMPORTANT: must be the public URL
+  public_url: ""        # optional; OAuth-facing URL when it differs from base_url
+  default_language: en  # default UI locale (see allowed list below)
   read_timeout: 30s
   write_timeout: 30s
   trusted_proxies: []   # CIDRs/IPs of reverse proxies allowed to set X-Forwarded-For
@@ -166,6 +176,21 @@ server:
 module download redirect targets and provider download URLs. If this is set incorrectly,
 `terraform init` will follow broken redirects and fail. Always set this to the public
 hostname that Terraform clients will reach (e.g., the load balancer or ingress URL).
+
+### `public_url` vs `base_url` (OAuth Redirects)
+
+**`TFR_SERVER_PUBLIC_URL`** is the externally-reachable URL used for OAuth
+callbacks/redirects (via `GetPublicURL()`). It is **optional**: when unset, it falls back
+to `base_url`. It only matters in reverse-proxied deployments where the internal listen
+address (`base_url`) differs from the URL registered with the OAuth provider as the
+redirect URI. If you hit an OIDC redirect-URI-mismatch and `base_url` alone is not the URL
+the IdP redirects back to, set `public_url` to the OAuth-registered URL.
+
+### `default_language`
+
+**`TFR_SERVER_DEFAULT_LANGUAGE`** (default `en`) sets the default UI locale. It is
+validated at startup against a fixed list of 10 locales — **`en`, `es`, `fr`, `de`, `ja`,
+`pt`, `nl`, `nb`, `zh`, `it`** — and an invalid value causes startup to fail.
 
 ### `trusted_proxies` and Client IP
 
@@ -319,27 +344,32 @@ auth:
     client_id: ${AZURE_CLIENT_ID}
     client_secret: ${AZURE_CLIENT_SECRET}
     redirect_url: https://registry.example.com/auth/azure/callback
-    require_verified_email: true   # see note below — Entra ID often omits this claim
 ```
 
+> **Note:** Email-verification enforcement (`require_verified_email`) is currently
+> implemented for the **generic OIDC provider only**. The dedicated `azure_ad`
+> provider has no `require_verified_email` field — see [Email Verification and
+> Account Linking](#email-verification-and-account-linking) below.
+
 For detailed OIDC provider setup (Azure AD, Okta, Keycloak, Auth0, Google Workspace),
-see [OIDC Configuration](oidc_configuration.md).
+see [OIDC Configuration](OIDC_CONFIGURATION.md).
 
 ### Email Verification and Account Linking
 
 The email address asserted by an identity provider is the anchor used to match and link
 accounts, so the registry hardens it in two ways:
 
-- **`TFR_AUTH_OIDC_REQUIRE_VERIFIED_EMAIL`** / **`TFR_AUTH_AZURE_AD_REQUIRE_VERIFIED_EMAIL`**
-  (both default `true`) — a login is rejected unless the ID token asserts
-  `email_verified=true`. An ID token that explicitly sets `email_verified=false` is always
-  rejected regardless of this flag. When the flag is `true` and the claim is **absent**, the
-  login is also rejected.
+- **`TFR_AUTH_OIDC_REQUIRE_VERIFIED_EMAIL`** (default `true`) — for the generic OIDC
+  provider, a login is rejected unless the ID token asserts `email_verified=true`. An ID
+  token that explicitly sets `email_verified=false` is always rejected regardless of this
+  flag. When the flag is `true` and the claim is **absent**, the login is also rejected.
 
-  > **Entra ID / Azure AD note:** v2.0 tokens frequently omit `email_verified`. If your tenant
-  > does not emit it, add it as an optional claim or set
-  > `TFR_AUTH_AZURE_AD_REQUIRE_VERIFIED_EMAIL=false` (only do this if your tenant's emails are
-  > verified out-of-band).
+  > **Scope note:** This enforcement applies to the **generic `oidc` provider only**. The
+  > dedicated `azure_ad` provider does **not** have a `require_verified_email` field, so there
+  > is no equivalent `TFR_AUTH_AZURE_AD_REQUIRE_VERIFIED_EMAIL` variable. If you need
+  > email-verification enforcement for Entra ID, configure it through the generic `oidc`
+  > provider (Entra ID is OIDC-compliant), and note that Entra v2.0 tokens frequently omit
+  > `email_verified` — add it as an optional claim if your tenant does not emit it.
 
 - **Cross-provider account-link guard (always on)** — the registry will not rebind an existing
   account to a different provider identity by email match. Email-based linking is allowed only
@@ -348,6 +378,63 @@ accounts, so the registry hardens it in two ways:
   prevents an attacker who can assert a victim's email through a second provider from taking
   over the victim's account. A genuine subject change (e.g. an IdP re-import) requires an admin
   to clear the stored subject first.
+
+### SAML 2.0
+
+The registry also acts as a SAML 2.0 Service Provider. SAML config is a list of
+structs (one or more IdPs), so it is set in `config.yaml`. The SP metadata and ACS
+endpoints are registered under `/api/v1/auth/saml/`.
+
+```yaml
+auth:
+  saml:
+    enabled: false
+    entity_id: https://registry.example.com/saml/metadata   # this SP's entity ID
+    acs_url: https://registry.example.com/api/v1/auth/saml/acs
+    cert_file: /etc/registry/saml-sp.crt   # SP signing cert
+    key_file: /etc/registry/saml-sp.key    # SP signing key
+    idps:
+      - name: corp-idp
+        metadata_url: https://idp.example.com/metadata   # or metadata_xml: "<inline XML>"
+    # Group-to-role mapping (same model as OIDC)
+    group_attribute_name: groups
+    default_role: viewer
+    group_mappings:
+      - group: registry-admins
+        organization: default
+        role: admin
+```
+
+### LDAP / Active Directory
+
+LDAP authentication exposes a direct login endpoint at **`POST /api/v1/auth/ldap/login`**.
+A service account (`bind_dn`/`bind_password`) is used to search for users.
+
+```yaml
+auth:
+  ldap:
+    enabled: false
+    host: ldap.example.com
+    port: 636
+    use_tls: true            # LDAPS on connect
+    start_tls: false         # or StartTLS on a plain port
+    insecure_skip_verify: false   # NOT recommended in production
+    bind_dn: "CN=svc-registry,OU=Service Accounts,DC=example,DC=com"
+    bind_password: ${LDAP_BIND_PASSWORD}
+    base_dn: "OU=Users,DC=example,DC=com"
+    user_filter: "(sAMAccountName=%s)"
+    user_attr_email: mail
+    user_attr_name: displayName
+    # Group lookup + role mapping
+    group_base_dn: "OU=Groups,DC=example,DC=com"
+    group_filter: "(member=%s)"
+    group_member_attr: member
+    default_role: viewer
+    group_mappings:
+      - group_dn: "CN=Registry Admins,OU=Groups,DC=example,DC=com"
+        organization: default
+        role: admin
+```
 
 ---
 
@@ -361,7 +448,7 @@ export TFR_JWT_SECRET=$(openssl rand -hex 32)
 
 The JWT secret signs authentication tokens. In production:
 
-- Minimum 32 characters. The server refuses to start without a sufficient secret when `TFR_DEV_MODE` is not set.
+- Minimum 32 characters. The server refuses to start without a sufficient secret when `DEV_MODE` is not set.
 - Store in a secrets manager (Azure Key Vault, AWS Secrets Manager, HashiCorp Vault), not in environment files checked into source control.
 
 #### File-Based Hot-Reload (Zero-Downtime Rotation)
@@ -417,8 +504,10 @@ security:
     allowed_methods: [GET, POST, PUT, DELETE, OPTIONS]
 ```
 
-Restrict `allowed_origins` to your actual frontend URL(s) in production. The default
-configuration includes `localhost` origins for development only.
+Restrict `allowed_origins` to your actual frontend URL(s) in production. The built-in
+default is `["*"]` (all origins) — this is permissive and **must be restricted in
+production**. (If `config.example.yaml` ships narrower example origins, those are example
+values, not the built-in default.)
 
 ### Rate Limiting
 
@@ -578,16 +667,20 @@ These fields are injected at runtime into the spec served by the backend.
 ## Dev Mode
 
 ```bash
-export TFR_DEV_MODE=true
+export DEV_MODE=true
 ```
+
+Dev mode is gated by the bare `DEV_MODE` env var (`true` or `1`); `NODE_ENV=development`
+also triggers it. Note `DEV_MODE` is intentionally **un-prefixed** (no `TFR_` prefix), the
+same as `ENCRYPTION_KEY`.
 
 Dev mode enables:
 
-- A bypass login endpoint (`POST /auth/dev/login`) that creates a session without OIDC
+- A bypass login endpoint (`POST /api/v1/dev/login`) that creates a session without OIDC
 - Relaxed JWT secret validation (allows short secrets)
 - Additional debug logging
 
-**Never set `TFR_DEV_MODE=true` in production.** The dev login endpoint allows anyone
+**Never set `DEV_MODE=true` in production.** The dev login endpoint allows anyone
 to authenticate as any user without credentials.
 
 ---
@@ -614,10 +707,10 @@ scanning:
 | Variable                          | Type     | Default         | Description                                                                                                                           |
 | --------------------------------- | -------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | `TFR_SCANNING_ENABLED`            | bool     | `false`         | Master toggle for the scanning feature.                                                                                               |
-| `TFR_SCANNING_TOOL`               | string   | —               | Scanner backend: `trivy`, `checkov`, `terrascan`, `snyk`, or `custom`.                                                                |
+| `TFR_SCANNING_TOOL`               | string   | `trivy`         | Scanner backend: `trivy`, `checkov`, `terrascan`, `snyk`, or `custom`.                                                                |
 | `TFR_SCANNING_BINARY_PATH`        | string   | —               | Absolute path to the scanner binary on the server.                                                                                    |
 | `TFR_SCANNING_EXPECTED_VERSION`   | string   | —               | Exact version string the binary must report. The job refuses to start if it doesn't match. Leave blank to disable pinning.            |
-| `TFR_SCANNING_SEVERITY_THRESHOLD` | string   | (all)           | Comma-separated severities to record: `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`. Blank records all.                                         |
+| `TFR_SCANNING_SEVERITY_THRESHOLD` | string   | `CRITICAL,HIGH,MEDIUM,LOW` | Comma-separated severities to record: `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`. The default lists all severities (record all); blank also records all. |
 | `TFR_SCANNING_TIMEOUT`            | duration | `5m`            | Maximum time a single scan may run.                                                                                                   |
 | `TFR_SCANNING_WORKER_COUNT`       | int      | `2`             | Concurrent scan workers.                                                                                                              |
 | `TFR_SCANNING_SCAN_INTERVAL_MINS` | int      | `5`             | How often the job polls for pending scans.                                                                                            |
@@ -795,3 +888,128 @@ artifacts:
 
 During migration, reads transparently fall back to the old backend for artifacts that
 have not yet been copied. No downtime is required.
+
+---
+
+## Binary Mirror Access Control
+
+Access control for the `/terraform/binaries` endpoint group (the binary-mirror
+IP allowlist referenced by `trusted_proxies` above).
+
+```yaml
+binary_mirror:
+  auth: none                # none | allowlist | mtls
+  allowlist:                # CIDR ranges allowed when auth=allowlist
+    - 10.0.0.0/8
+```
+
+| Mode        | Behaviour                                                                              |
+| ----------- | -------------------------------------------------------------------------------------- |
+| `none`      | No access control (default). Suitable for internal networks.                           |
+| `allowlist` | Allow only clients whose IP falls within one of the configured CIDR blocks.            |
+| `mtls`      | Require a verified TLS client certificate; the subject CN is logged (no scope check).  |
+
+When `auth=allowlist`, the client IP is resolved using the same `trusted_proxies` rules
+described in the Server section.
+
+---
+
+## Policy Engine (OPA / Rego)
+
+An optional OPA/Rego policy engine that can warn on or block actions. Disabled by
+default (no-op; all actions allowed).
+
+```yaml
+policy:
+  enabled: false
+  mode: warn                          # warn (log and continue) | block (reject)
+  bundle_url: ""                      # HTTP/HTTPS URL of the .tar.gz Rego bundle
+  bundle_refresh_interval: 0          # seconds between background bundle re-fetches; 0 = no refresh
+```
+
+---
+
+## CVE Polling (OSV.dev)
+
+Scheduled vulnerability polling against OSV.dev for advisories affecting Terraform/OpenTofu
+binaries, registered providers, and the configured scanner binary. Opt-in (disabled by
+default).
+
+```yaml
+cve:
+  enabled: false
+  interval_hours: 24                  # how often the poll job runs
+  osv_endpoint: https://api.osv.dev   # OSV.dev base URL
+  email_recipients: []                # addresses notified on new advisories (requires notifications.enabled)
+  poll_binaries: true
+  poll_providers: true
+  poll_scanner: true
+```
+
+---
+
+## mTLS (Client-Certificate Auth)
+
+Mutual TLS client authentication that maps a client certificate subject (CN or full DN)
+to scopes. Configured under `security.mtls`. Subject mappings are a list of structs and so
+must be set in `config.yaml` (env vars cannot express the list).
+
+```yaml
+security:
+  mtls:
+    enabled: false
+    client_ca_file: /etc/registry/client-ca.pem
+    mappings:
+      - subject: "CN=ci-runner"
+        scopes: ["modules:read", "providers:read"]
+```
+
+---
+
+## Per-Principal Rate-Limit Overrides
+
+Custom rate limits for a specific user or API key, under
+`security.rate_limiting.principal_overrides`. Keys are `user:<id>` or `apikey:<id>`. This
+is a map of structs and so must be set in `config.yaml`.
+
+```yaml
+security:
+  rate_limiting:
+    principal_overrides:
+      "user:00000000-0000-0000-0000-000000000001":
+        requests_per_minute: 1000
+        burst: 200
+```
+
+---
+
+## Identity Database
+
+Optionally points the identity schema at a separate or shared database. Any unset field
+falls back to the main `database` config, so a fully unset `identity_database` uses the app
+database (the standalone default). Set `TFR_IDENTITY_DATABASE_*` (same field names as
+`TFR_DATABASE_*`) to share one identity store across the suite.
+
+```yaml
+identity_database:
+  host: identity-db.example.com
+  port: 5432
+  name: identity
+  user: registry
+  password: ${IDENTITY_DB_PASSWORD}
+```
+
+---
+
+## Suite Coupling
+
+Optional runtime coupling to a sibling Suite app (Terraform State Manager). With
+`sibling_url` empty (the default) the registry is fully standalone and nothing is polled.
+
+| Variable                          | Type     | Default | Description                                                                                  |
+| --------------------------------- | -------- | ------- | -------------------------------------------------------------------------------------------- |
+| `TFR_SUITE_SIBLING_URL`           | string   | —       | Sibling app URL (e.g. `https://tfstate.example.com`). Empty = standalone.                    |
+| `TFR_SUITE_POLL_INTERVAL`         | duration | `60s`   | How often the sibling manifest is polled.                                                    |
+| `TFR_SUITE_ROLE_SEED_OWNER`       | string   | `self`  | Which app seeds shared identity role templates: `self`, `registry`, or `tsm`. With a shared identity DB, exactly one app must own the seed. |
+| `TFR_SUITE_IDENTITY_SHARED_STORE` | bool     | `false` | Operator assertion that this app uses the shared identity store + single IdP (advertised in the manifest). |
+| `TFR_SUITE_SIBLING_TOKEN`         | string   | —       | Shared secret (`X-Suite-Service-Token`) for cross-app reads (the "Consumed by" panel). Set to the same value as the sibling's service token. |

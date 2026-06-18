@@ -39,13 +39,14 @@ aws ecr get-login-password --region <AWS_REGION> | \
   docker login --username AWS \
   --password-stdin <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com
 
+# Use the current GA tag (v1.0.0) — see deployments/COMPATIBILITY.md
 docker tag terraform-registry-backend:latest \
-  <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/terraform-registry-backend:v0.8.2
-docker push <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/terraform-registry-backend:v0.8.2
+  <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/terraform-registry-backend:v1.0.0
+docker push <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/terraform-registry-backend:v1.0.0
 
 docker tag terraform-registry-frontend:latest \
-  <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/terraform-registry-frontend:v0.8.2
-docker push <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/terraform-registry-frontend:v0.8.2
+  <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/terraform-registry-frontend:v1.0.0
+docker push <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/terraform-registry-frontend:v1.0.0
 ```
 
 ### 2b. Amazon RDS for PostgreSQL
@@ -58,7 +59,10 @@ aws rds create-db-instance \
   --db-instance-identifier terraform-registry-db \
   --db-instance-class db.t3.medium \
   --engine postgres \
-  --engine-version 16.2 \
+  # Omit --engine-version to use the latest available 16.x, or run
+  # `aws rds describe-db-engine-versions --engine postgres` and pick an
+  # offered 16.x minor (AWS retires specific minors over time).
+  --engine-version 16 \
   --master-username registry \
   --master-user-password <STRONG_PASSWORD> \
   --db-name terraform_registry \

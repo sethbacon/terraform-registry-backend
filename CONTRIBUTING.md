@@ -180,7 +180,7 @@ Then rebuild the binary (the spec is embedded at compile time). Add or update th
 ## Database Migrations
 
 - **Never edit existing migration files.** The migration system treats file content as immutable.
-- Create a new numbered pair: `000029_description.up.sql` and `000029_description.down.sql`.
+- Create a new numbered pair using the next sequential number after the highest existing migration: `0000NN_description.up.sql` and `0000NN_description.down.sql`.
 - The down migration must fully reverse the up migration.
 - Test both directions before submitting:
 

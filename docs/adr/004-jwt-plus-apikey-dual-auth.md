@@ -22,7 +22,7 @@ The codebase implements both in `internal/auth/jwt.go` (JWT creation/validation 
 Support dual authentication: JWT tokens for human users and API keys for machine clients.
 
 - **JWT tokens** are issued after OIDC/Azure AD authentication. They carry `user_id`, `email`, `scopes`, and a `jti` (JWT ID) for revocation. Signed with `TFR_JWT_SECRET` using HMAC-SHA256.
-- **API keys** are prefixed strings (`tfr_*`) whose SHA-256 hash is stored in the `api_keys` table. They carry explicit scopes, optional expiration dates, and are tied to a creating user.
+- **API keys** are prefixed strings (`tfr_*`) whose bcrypt hash is stored in the `api_keys` table (see [ADR-0011](0011-password-hashing.md) for the hashing rationale). They carry explicit scopes, optional expiration dates, and are tied to a creating user.
 - **`Authorization` header** accepts both: `Bearer <jwt_token>` and `Bearer <api_key>`.
 - The `AuthMiddleware` attempts JWT validation first; if that fails, it looks up the key hash in the database. This ordering is intentional: JWT validation is a pure crypto operation (fast, no DB hit), while API key lookup requires a database query.
 - Both paths produce the same Gin context shape: `user_id`, `email`, `scopes` -- downstream handlers are authentication-scheme-agnostic.
