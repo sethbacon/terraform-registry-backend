@@ -12,6 +12,8 @@ The registry implements three HashiCorp Terraform protocols, plus a binary mirro
 - **Provider Network Mirror Protocol** — caching provider binaries from upstream registries
 - **Terraform Binary Mirror** — multi-config mirror for Terraform and OpenTofu release binaries, served at `/terraform/binaries/:name/`
 
+Beyond the Terraform protocols, the API package also exposes additional surfaces that have their own detailed docs: an **OCI** distribution endpoint group, **SCIM 2.0** user/group provisioning (gated by the dedicated `scim:provision` scope), and **security advisories** (CVE) endpoints. A security review scoping the full attack surface should account for these in addition to the protocol routes.
+
 Design goals: protocol correctness first, then security, then operational simplicity. The system is stateless at the application layer (all state lives in PostgreSQL and the configured storage backend), which makes horizontal scaling straightforward.
 
 ---
@@ -104,7 +106,9 @@ Handlers follow the **repository pattern**: they call repository methods (in `in
 
 ## Authentication Flow
 
-The system supports three credential types: **JWT** (for browser sessions), **API keys** (for automation), and **OIDC/Azure AD** (for SSO login flows).
+The system supports several credential types: **JWT** (for browser sessions), **API keys** (for automation), and SSO login flows via **OIDC/Azure AD**, **SAML**, **LDAP**, and **mTLS** (client-certificate) providers.
+
+Browser sessions do not use a `Bearer` header. After login the JWT is set as an **HttpOnly `tfr_auth_token` cookie** (inaccessible to page JavaScript), and the middleware tags such requests with `auth_method = jwt_cookie` so the **CSRF middleware** can require a `tfr_csrf` double-submit token on cookie-authenticated mutations. Programmatic clients send `Authorization: Bearer <token>` (JWT or API key) and bypass CSRF. The token-resolution order is: (1) `Authorization: Bearer` header — tried as JWT first, then API key; (2) `tfr_auth_token` cookie — tried as JWT only.
 
 ### Why JWT Is Tried First
 
@@ -167,22 +171,33 @@ Key scopes and their write-implies-read relationship:
 | `mirrors:manage` | Create/update/delete mirrors and trigger syncs (implies `mirrors:read`) |
 | `admin:*` | Full administrative access (implies all scopes) |
 
+### Shared identity module
+
+The core identity primitives — JWT issuance/validation (the `TokenManager`), API
+key generation/validation, and the generic scope-evaluation logic (wildcard
+`admin` + write-implies-read) — are owned by the shared
+`github.com/sethbacon/terraform-suite-identity` module. The files under
+`internal/auth` (`jwt.go`, `apikey.go`, `scopes.go`) are thin shims that delegate
+to that module, with the registry injecting its own registry-specific scope set
+and read/write pairs. So when looking for the implementation of these primitives,
+expect to find it in the shared suite-identity module rather than in this repo.
+
 ---
 
 ## Storage Abstraction
 
 ### Interface Design
 
-All storage backends implement the `storage.Backend` interface:
+All storage backends implement the `storage.Storage` interface:
 
 ```go
-type Backend interface {
-    Upload(ctx, path, reader, size, checksum) (UploadResult, error)
+type Storage interface {
+    Upload(ctx, path, reader, size) (*UploadResult, error)  // computes and returns the checksum
     Download(ctx, path) (io.ReadCloser, error)
     Delete(ctx, path) error
     GetURL(ctx, path, ttl) (string, error)  // returns a signed/presigned URL
     Exists(ctx, path) (bool, error)
-    GetMetadata(ctx, path) (FileMetadata, error)
+    GetMetadata(ctx, path) (*FileMetadata, error)
 }
 ```
 
@@ -195,13 +210,13 @@ Backends register themselves via Go's `init()` mechanism:
 ```go
 // In storage/s3/s3.go
 func init() {
-    factory.Register("s3", func(cfg *config.Config) (Backend, error) {
+    factory.Register("s3", func(cfg *config.Config) (Storage, error) {
         return NewS3Backend(cfg)
     })
 }
 ```
 
-The main package imports each backend with a blank import (`_ "github.com/.../storage/s3"`), which triggers `init()`. Adding a new backend requires only implementing the interface and registering in `init()` — no changes to the factory or main package are needed.
+The router package (`internal/api/router.go`) imports each backend with a blank import (`_ "github.com/.../storage/s3"`), which triggers `init()`. Adding a new backend requires only implementing the interface and registering in `init()` — no changes to the factory or main package are needed.
 
 ---
 
@@ -255,12 +270,20 @@ versions at sync time. See [version-approval.md](version-approval.md) and
 
 ## Background Jobs
 
-| Job | Interval | Purpose |
+| Job | Trigger | Purpose |
 | --- | --- | --- |
-| Mirror Sync | 10 minutes | Poll upstream registries and download new provider versions |
-| Tag Verifier | On webhook | Verify that SCM tags haven't moved since the version was published |
+| Mirror Sync (`mirror_sync.go`) | Periodic (configurable) | Poll upstream registries and download new provider versions |
+| Terraform Binary Mirror Sync (`terraform_mirror_sync.go`) | Periodic (configurable) | Keep enabled Terraform/OpenTofu binary mirrors current from their upstreams |
+| Tag Verifier (`tag_verifier.go`) | On webhook / periodic | Verify that SCM tags haven't moved since the version was published |
+| Module Scanner (`module_scanner_job.go`) | Periodic (`scan_interval_mins`) | Process pending module security scans (see [ADR 008](adr/008-module-scanning-architecture.md)) |
+| Webhook Retry (`webhook_retry_job.go`) | Periodic | Retry failed webhook deliveries with exponential backoff (see [ADR 005](adr/005-fire-and-forget-webhooks.md)) |
+| API Key Expiry Notifier (`api_key_expiry_notifier.go`) | Periodic | Email owners of API keys approaching expiry (once per key) |
+| CVE Poll (`cve_poll.go`) | Periodic | Query OSV.dev for advisories affecting binaries, providers, and the scanner |
+| Audit Cleanup (`audit_cleanup_job.go`) | Periodic | Delete audit-log entries older than the configured retention period |
+| Backup (`backup_job.go`) | Scheduled | Store encrypted `pg_dump` output in the configured object storage backend |
+| Releases Key Refresh (`releases_key_refresh_job.go`) | Periodic | Re-fetch tool release-signing GPG keys with fingerprint pinning |
 
-Jobs run in goroutines started at server startup. They use the same database connection pool as request handlers. Job panics are recovered and logged but do not crash the server.
+The list above is the full set of registered jobs (`internal/jobs/`). Jobs run in goroutines started at server startup. They use the same database connection pool as request handlers. Job panics are recovered and logged but do not crash the server.
 
 ---
 
@@ -300,13 +323,14 @@ Defense-in-depth layers, from outer to inner:
 1. **TLS** (at ingress) — encrypts all traffic
 2. **Rate limiting** — prevents brute-force and enumeration attacks
 3. **Input validation** — semver format, archive structure, path traversal prevention
-4. **Authentication** — JWT or API key required for all non-protocol endpoints
-5. **RBAC** — scope checking before any state mutation
-6. **Audit logging** — immutable record of all mutating actions
-7. **Bcrypt for API keys** — keys stored as bcrypt hashes; compromise of the database does not expose working keys
-8. **GPG verification** — all provider binaries are verified against the publisher's GPG public key
-9. **SHA256 checksums** — file integrity checked on upload and download
-10. **Commit SHA pinning** — SCM-linked versions are immutable by design
+4. **Authentication** — JWT (header or HttpOnly cookie), API key, or an SSO provider (OIDC/Azure AD/SAML/LDAP/mTLS) required for all non-protocol endpoints
+5. **CSRF protection** — cookie-authenticated (browser) mutations require a `tfr_csrf` double-submit token
+6. **RBAC** — scope checking before any state mutation
+7. **Audit logging** — immutable record of all mutating actions
+8. **Bcrypt for API keys** — keys stored as bcrypt hashes; compromise of the database does not expose working keys
+9. **GPG verification** — all provider binaries are verified against the publisher's GPG public key
+10. **SHA256 checksums** — file integrity checked on upload and download
+11. **Commit SHA pinning** — SCM-linked versions are immutable by design
 
 ### Swagger UI and Content Security Policy
 
@@ -325,7 +349,7 @@ The backend starts two additional `http.ServeMux` listeners beside the main Gin 
 | Port (default) | Surface | Config key |
 | --- | --- | --- |
 | `9090` | Prometheus `/metrics` (promhttp handler) | `TFR_TELEMETRY_METRICS_PROMETHEUS_PORT` |
-| `6060` | pprof `/debug/pprof/` | `TFR_TELEMETRY_PPROF_PORT` |
+| `6060` | pprof `/debug/pprof/` | `TFR_TELEMETRY_PROFILING_PORT` |
 
 Neither port is exposed through the public Nginx/load-balancer ingress. They are internal-only and should be firewalled to the monitoring network (Prometheus scraper, ops bastion).
 

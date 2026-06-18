@@ -80,7 +80,9 @@ storage:
     bucket: "<S3_BUCKET_NAME>"
     # Use IRSA (IAM Roles for Service Accounts) — no static credentials needed.
     # The pod's ServiceAccount role must have s3:GetObject, s3:PutObject, etc.
-    authMethod: "irsa"
+    # "default" uses the AWS default credential chain, which automatically
+    # consumes the IRSA web-identity token — no explicit IRSA auth method exists.
+    authMethod: "default"
     accessKeyId: ""
     secretAccessKey: ""
   persistence:

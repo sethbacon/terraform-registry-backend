@@ -7,7 +7,7 @@
 
 The registry needs rate limiting to protect against abuse, brute-force attacks on authentication endpoints, and resource exhaustion from misbehaving clients. Three tiers exist:
 
-1. **Auth endpoints** (10 req/min): Login, token exchange -- protects against credential stuffing.
+1. **Auth endpoints** (20 req/min): Login, token exchange -- protects against credential stuffing.
 2. **Upload endpoints** (30 req/min): Module/provider publishing -- protects storage backend.
 3. **General API** (200 req/min): All other endpoints -- protects database and compute.
 

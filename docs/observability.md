@@ -271,12 +271,13 @@ increase being zero during the expected notification window.
 | Property | Value                                                                                  |
 | -------- | -------------------------------------------------------------------------------------- |
 | Type     | Counter (CounterVec)                                                                   |
-| Labels   | `tier` (`individual` or `organization`), `key_type` (`user`, `apikey`, `ip`, or `org`) |
+| Labels   | `tier` (`individual`, `organization`, or `principal`), `key_type` (`user`, `apikey`, `ip`, or `org`) |
 | Source   | `internal/middleware/ratelimit.go`                                                     |
 | Updated  | Each time a request is rejected with HTTP 429                                          |
 
 Tracks every request rejected by the rate limiting middleware. The `tier` label
-distinguishes individual (per-user/IP) rejections from organization-level rejections.
+distinguishes individual (per-user/IP) rejections from organization-level rejections;
+the `principal` value is emitted when a per-user/per-key principal override is hit.
 Use `key_type` to identify whether rejections are hitting anonymous IP-based clients
 or authenticated users/API keys.
 
@@ -444,6 +445,57 @@ investigate slow queries holding connections open.
 
 ---
 
+### Publishing, Policy & Releases-Key Metrics
+
+#### `registry_module_publishes_total` / `registry_provider_publishes_total`
+
+| Property | Value                                                                        |
+| -------- | ---------------------------------------------------------------------------- |
+| Type     | Counter (CounterVec)                                                          |
+| Labels   | Modules: `namespace`, `system`. Providers: `namespace`, `type`               |
+| Source   | `internal/telemetry/metrics.go`                                              |
+| Updated  | Each time a module/provider version is published                             |
+
+Count published module and provider versions. Example: `increase(registry_provider_publishes_total[24h])`.
+
+#### `registry_policy_evaluations_total`
+
+| Property | Value                                                          |
+| -------- | -------------------------------------------------------------- |
+| Type     | Counter (CounterVec)                                           |
+| Labels   | `result` (`allowed`, `warn`, `blocked`)                        |
+| Source   | `internal/telemetry/metrics.go` (policy engine)               |
+| Updated  | After each policy evaluation                                   |
+
+Tracks OPA/Sentinel policy evaluations by outcome. Example: `rate(registry_policy_evaluations_total{result="blocked"}[5m])`.
+
+#### `terraform_registry_releases_key_refresh_total`
+
+| Property | Value                                                                                                    |
+| -------- | -------------------------------------------------------------------------------------------------------- |
+| Type     | Counter (CounterVec)                                                                                      |
+| Labels   | `tool`, `outcome` (`success`, `fingerprint_mismatch`, `fetch_failed`, `parse_failed`, `db_failed`, `skipped_unchanged`) |
+| Source   | Releases-key refresh job                                                                                  |
+| Updated  | On each refresh attempt                                                                                   |
+
+Counts release-signing GPG key refresh attempts. The `fingerprint_mismatch` outcome is a
+security-relevant alert signal — a refreshed key fingerprint no longer matches the
+expected value. Example: `increase(terraform_registry_releases_key_refresh_total{outcome="fingerprint_mismatch"}[1h])`.
+
+#### `terraform_registry_releases_key_expires_seconds`
+
+| Property | Value                                                       |
+| -------- | ----------------------------------------------------------- |
+| Type     | Gauge (GaugeVec)                                            |
+| Labels   | `tool`, `source` (`cache` or `embedded`)                    |
+| Source   | Releases-key refresh job                                    |
+| Updated  | On each refresh                                             |
+
+Seconds until the earliest signing-key expiry. Alert when within 30 days of expiry:
+`min by (tool) (terraform_registry_releases_key_expires_seconds) < 86400 * 30`.
+
+---
+
 ## PromQL Examples
 
 All examples assume the Prometheus job label is `job="terraform-registry"`.
@@ -578,7 +630,8 @@ increase(terraform_registry_audit_logs_cleaned_total{job="terraform-registry"}[2
 ## Recommended Alert Rules
 
 The Helm chart ships a ready-to-use PrometheusRule resource at
-`deployments/helm/templates/prometheusrule.yaml`. Enable it with:
+`deployments/helm/templates/prometheusrule.yaml`. It is **disabled by default**
+(`prometheusRule.enabled: false` in `values.yaml`); enable it with:
 
 ```yaml
 # values.yaml
@@ -752,17 +805,18 @@ cd deployments
 docker-compose --profile monitoring up -d
 
 # Grafana UI
-open http://localhost:3001   # admin / admin
+open http://localhost:3000   # admin / admin
 ```
 
 Prometheus is automatically added as a data source (URL: `http://prometheus:9090`).
 
 ### Importing a Dashboard
 
-1. Log into Grafana at `http://localhost:3001`
+1. Log into Grafana at `http://localhost:3000`
 2. Go to **Dashboards → Import**
-3. Paste the JSON from `deployments/grafana/terraform-registry.json` (if present) or
-   create a new dashboard with the queries below
+3. Paste the JSON from `deployments/observability/grafana-dashboard.json` (the same
+   dashboard the Helm chart ships via `deployments/helm/templates/grafana-dashboard.yaml`)
+   or create a new dashboard with the queries below
 
 ### Suggested Dashboard Panels
 

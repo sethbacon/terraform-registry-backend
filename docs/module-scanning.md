@@ -15,7 +15,7 @@ Scanning is **disabled by default**. The scanner binary must be installed on the
 4. For each pending record the job downloads the module archive from storage, extracts it to a temporary directory, and invokes the scanner binary.
 5. Results (severity counts and raw JSON output) are stored in the `module_scans` table.
 6. The temporary directory is deleted immediately after the scan completes.
-7. Results are visible in the UI (Security Scan panel on the module detail page) and via `GET /api/v1/admin/modules/{namespace}/{name}/{system}/versions/{version}/scan`.
+7. Results are visible in the UI (Security Scan panel on the module detail page) and via `GET /api/v1/modules/{namespace}/{name}/{system}/versions/{version}/scan`.
 
 ---
 
@@ -161,7 +161,7 @@ All options live under the `scanning:` key in `config.yaml` or use the `TFR_SCAN
 | `tool`               | `TFR_SCANNING_TOOL`               | string   | —       | Scanner backend: `trivy`, `checkov`, `terrascan`, `snyk`, or `custom`.                                                    |
 | `binary_path`        | `TFR_SCANNING_BINARY_PATH`        | string   | —       | Absolute path to the scanner executable on the server.                                                                    |
 | `expected_version`   | `TFR_SCANNING_EXPECTED_VERSION`   | string   | —       | If set, the job refuses to run if the installed binary reports a different version. Supply-chain protection.              |
-| `severity_threshold` | `TFR_SCANNING_SEVERITY_THRESHOLD` | string   | (all)   | Comma-separated list of severities to record, e.g. `CRITICAL,HIGH`. Findings below the threshold are omitted from counts. |
+| `severity_threshold` | `TFR_SCANNING_SEVERITY_THRESHOLD` | string   | `CRITICAL,HIGH,MEDIUM,LOW` | Comma-separated list of severities to record, e.g. `CRITICAL,HIGH`. The default lists all severities (record all). Findings below the threshold are omitted from counts. |
 | `timeout`            | `TFR_SCANNING_TIMEOUT`            | duration | `5m`    | Maximum time a single scan may run before it is killed.                                                                   |
 | `worker_count`       | `TFR_SCANNING_WORKER_COUNT`       | int      | `2`     | Number of scans to run concurrently.                                                                                      |
 | `scan_interval_mins` | `TFR_SCANNING_SCAN_INTERVAL_MINS` | int      | `5`     | How often (in minutes) the job polls for pending scans.                                                                   |
@@ -178,8 +178,13 @@ All options live under the `scanning:` key in `config.yaml` or use the `TFR_SCAN
 Trivy requires no authentication. The registry invokes:
 
 ```text
-trivy fs --format json --scanners vuln,secret,misconfig --exit-code 0 --quiet <dir>
+trivy fs --format json --scanners vuln,secret,misconfig --exit-code 0 --cache-dir <cache-dir> --quiet <dir>
 ```
+
+The `--cache-dir` is passed on both the scan and the version probe so Trivy never
+attempts to write to `~/.cache` on a read-only root filesystem (e.g. Kubernetes
+pods with `readOnlyRootFilesystem: true`). It honours `TRIVY_CACHE_DIR` if set,
+otherwise defaults to `<tmpdir>/trivy-cache`.
 
 **Air-gapped environments:** Trivy downloads its vulnerability database on first use. In air-gapped deployments, pre-populate the database:
 
@@ -435,7 +440,7 @@ Results are available in two places:
 
 ```bash
 curl -H "Authorization: Bearer $TOKEN" \
-  https://registry.example.com/api/v1/admin/modules/myorg/vpc/aws/versions/1.0.0/scan
+  https://registry.example.com/api/v1/modules/myorg/vpc/aws/versions/1.0.0/scan
 ```
 
 Response:
@@ -464,6 +469,19 @@ Response:
 | `clean`    | Scan completed with zero findings.              |
 | `findings` | Scan completed with one or more findings.       |
 | `error`    | Scan failed. Check `error_message` for details. |
+
+### Other scanning endpoints
+
+For scripting installs and monitoring, the following endpoints are also available:
+
+| Method | Path                                                                  | Scope           | Purpose                                  |
+| ------ | --------------------------------------------------------------------- | --------------- | ---------------------------------------- |
+| GET    | `/api/v1/modules/{namespace}/{name}/{system}/versions/{version}/scan` | `scanning:read` | Fetch the scan result for a version      |
+| GET    | `/api/v1/admin/scanning/config`                                       | `admin`         | Current scanning configuration           |
+| GET    | `/api/v1/admin/scanning/stats`                                        | `scanning:read` | Aggregate scan statistics                |
+| GET    | `/api/v1/admin/scanning/scans/{id}`                                   | `scanning:read` | Fetch a single scan record by ID         |
+| POST   | `/api/v1/admin/scanning/install`                                      | `admin`         | Trigger scanner auto-install             |
+| POST   | `/api/v1/setup/scanning/install`                                      | setup phase     | Install the scanner during initial setup |
 
 ---
 

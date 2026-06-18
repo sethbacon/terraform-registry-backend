@@ -273,7 +273,7 @@ operational complexity.
 | Encryption key residency     | Use a regional KMS key (e.g., AWS KMS in the target region)                                                |
 | Audit log retention          | Configure `audit_retention.retention_days` per regulation; use legal holds for investigation periods       |
 | Cross-border transfer        | Ensure replication targets are in permitted regions; document legal basis (e.g., SCCs, adequacy decisions) |
-| Data subject rights          | GDPR export/erasure endpoints available at `/admin/users/:id/export` and `/admin/users/:id/erase`          |
+| Data subject rights          | GDPR export/erasure endpoints available at `/api/v1/admin/users/:id/export` and `/api/v1/admin/users/:id/erase` |
 
 ---
 

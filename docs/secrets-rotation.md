@@ -135,10 +135,10 @@ The encryption key protects SCM OAuth tokens stored in the database. The backend
    - Trigger a tag push or verify the webhook integration is functional.
    - Check logs for decryption errors (there should be none).
 
-6. **(Optional) Re-encrypt all tokens** with the new key. This eliminates the dependency on the previous key. You can do this by:
+6. **(Optional) Re-encrypt all tokens** with the new key. This eliminates the dependency on the previous key. **Not yet available as a built-in command — a manual SQL/script step is required today.** Do this by:
    - Iterating all `scm_providers` rows with encrypted tokens.
    - Decrypting with the dual-key cipher and re-encrypting with only the current key.
-   - A future version of the registry will include a built-in admin command for this.
+   - A built-in admin command for this is not yet available; the dual-key fallback (above) is the supported zero-downtime path, and this re-encryption is optional cleanup.
 
 7. **Remove the previous key** once all tokens have been re-encrypted (or after a sufficient grace period):
 
@@ -179,7 +179,7 @@ OIDC client secrets are configured via `TFR_AUTH_OIDC_CLIENT_SECRET` (or `TFR_AU
 
    ```bash
    kubectl create secret generic registry-oidc-secrets \
-     --from-literal=OIDC_CLIENT_SECRET="new-secret-value" \
+     --from-literal=TFR_AUTH_OIDC_CLIENT_SECRET="new-secret-value" \
      --dry-run=client -o yaml | kubectl apply -f -
    ```
 

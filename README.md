@@ -20,6 +20,7 @@ This repository contains the backend API, database migrations, and deployment in
 ### Authentication & Authorization
 
 - **API Key Authentication** — Secure token-based access with scoped permissions
+- **Cookie-based JWT sessions** — Browser auth uses an HttpOnly `tfr_auth_token` cookie (never exposed to page JavaScript), protected by a `tfr_csrf` double-submit CSRF token
 - **OIDC Integration** — Generic OIDC provider support for SSO
 - **Azure AD / Entra ID** — Native Azure Active Directory integration
 - **Role-Based Access Control (RBAC)** — Fine-grained permissions with organization roles
@@ -74,7 +75,7 @@ the full matrix, recommended targets, and step-by-step instructions.
 
 ### Observability & CI/CD
 
-- **Prometheus Metrics** — Eleven named application metrics on a dedicated scrape port (default 9090)
+- **Prometheus Metrics** — A suite of named application metrics on a dedicated scrape port (default 9090); see [docs/observability.md](docs/observability.md) for the authoritative catalogue
 - **Structured Logging** — stdlib `slog` with JSON (production) and text (development) formats
 - **pprof Profiling** — Opt-in profiling server on a configurable port
 - **GitHub Actions CI/CD** — Build, vet, race-detector tests, gosec security scan, Docker build, multi-platform releases
@@ -88,11 +89,11 @@ the full matrix, recommended targets, and step-by-step instructions.
 | HTTP framework  | Gin                                                         |
 | Database        | PostgreSQL 14+ (16 recommended)                             |
 | Migrations      | `golang-migrate` (file-based, immutable numbered pairs)     |
-| Auth            | JWT (HS256), API keys, OIDC, Azure AD                       |
+| Auth            | HttpOnly cookie JWT sessions (HS256) + CSRF double-submit, API keys, OIDC, Azure AD |
 | Storage         | Local FS, Azure Blob, AWS S3 (+compatible), Google Cloud    |
 | SCM             | GitHub, Azure DevOps, GitLab, Bitbucket Data Center         |
 | Observability   | Prometheus metrics, `slog` JSON logs, pprof                 |
-| API docs        | Swagger 2.0 (swag annotations) → served at `/swagger`       |
+| API docs        | Swagger 2.0 (swag annotations) → UI at `/api-docs/` (spec at `/swagger.json`) |
 | Build / release | GoReleaser, GitHub Actions, cosign keyless, SLSA, syft SBOM |
 
 ## Architecture
@@ -134,7 +135,7 @@ cd terraform-registry-backend
 
 # Start all services (backend + postgres; frontend served separately)
 cd deployments
-docker-compose up -d
+docker compose up -d
 
 # Backend API: http://localhost:8080
 # PostgreSQL:  localhost:5432
@@ -223,7 +224,7 @@ curl -s http://localhost:9090/metrics | grep '^http_requests_total'
 
 ```bash
 cd deployments
-docker-compose --profile monitoring up -d
+docker compose --profile monitoring up -d
 # Prometheus UI: http://localhost:9091
 # Grafana:       http://localhost:3001  (admin / admin)
 ```
@@ -293,6 +294,7 @@ go build -o terraform-registry cmd/server/main.go
 ## Documentation
 
 - [Getting Started](docs/getting-started.md) — Quick-start tutorial for new users
+- [Initial Setup](docs/initial-setup.md) — First-run setup wizard (OIDC/LDAP, storage, admin)
 - [Architecture](docs/architecture.md) — System design and component interactions
 - [Architecture Decision Records](docs/adr/) — Key design decisions and rationale
 - [API Reference](docs/api-reference.md) — API documentation guide
@@ -300,6 +302,8 @@ go build -o terraform-registry cmd/server/main.go
 - [Configuration Reference](docs/configuration.md) — All `TFR_*` environment variables
 - [Deployment Guide](docs/deployment.md) — Production deployment for all platforms
 - [Kubernetes Cloud Guides](docs/deployment/README.md) — AKS, EKS, and GKE deployment guides
+- [Air-Gap Installation](docs/air-gap-install.md) — Offline/disconnected installation
+- [Upgrade Guide](docs/upgrade-guide.md) — Version upgrade procedures and preflight checks
 - [Capacity Planning](docs/capacity-planning.md) — Sizing guidance for production deployments
 - [Disaster Recovery](docs/disaster-recovery.md) — DR runbook and backup/restore procedures
 - [Observability Reference](docs/observability.md) — Prometheus metrics catalogue
@@ -308,9 +312,24 @@ go build -o terraform-registry cmd/server/main.go
 - [OIDC Configuration](docs/OIDC_CONFIGURATION.md) — SSO provider setup
 - [Module Security Scanning](docs/module-scanning.md) — Scanner setup (Trivy, Checkov, Terrascan, Snyk, custom)
 - [Module Documentation Extraction](docs/module-documentation.md) — Automatic extraction of inputs, outputs, and provider requirements
+- [Version Approval](docs/version-approval.md) — Version-level approval gate for mirrored providers
 - [Terraform CLI Configuration](docs/terraform-cli-configuration.md) — Configure the Terraform CLI to use this registry
-- [Releasing](RELEASING.md) — Release process and supply-chain verification
+
+### Suite / Coupling
+
+- [Shared Identity Schema](docs/identity-schema.md) — Sharing one identity store across the Terraform suite
+- [Suite Audit Federation](docs/suite-audit-federation.md) — Forwarding audit events to the suite ingest side
+
+### Security & Compliance
+
 - [Security](SECURITY.md) — Reporting vulnerabilities and supported versions
+- [Threat Model](docs/threat-model.md) — STRIDE threat model and mitigations
+- [Secrets Rotation](docs/secrets-rotation.md) — Rotating JWT/encryption/OAuth secrets
+- [Data Residency](docs/data-residency.md) — Regional data-residency and GDPR guidance
+
+### Project
+
+- [Releasing](RELEASING.md) — Release process and supply-chain verification
 - [Contributing](CONTRIBUTING.md) — How to contribute to this project
 - [Code of Conduct](CODE_OF_CONDUCT.md) — Community standards
 - [Changelog](CHANGELOG.md) — Version history and changes

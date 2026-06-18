@@ -48,7 +48,7 @@ ALB_IDENTITY_NAME="alb-controller-identity"
 # Application
 HOSTNAME="registry.company.com"          # Replace with your domain
 OPS_EMAIL="ops@company.com"
-IMAGE_TAG="v0.8.2"
+IMAGE_TAG="v1.0.0"   # current GA tag — see deployments/COMPATIBILITY.md
 ```
 
 ---

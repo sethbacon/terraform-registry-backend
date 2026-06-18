@@ -5,8 +5,8 @@ This document maps ISO 27001:2022 Annex A controls to Terraform Registry
 features, configurations, and evidence sources. It supports organizations
 seeking ISO 27001 certification that include the registry in their ISMS scope.
 
-**Last updated:** 2026-04-20
-**Applicable version:** 0.10.0+
+**Last updated:** 2026-06-17
+**Applicable version:** 1.0.0+
 
 ---
 

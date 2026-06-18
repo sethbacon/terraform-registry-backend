@@ -54,7 +54,7 @@ The preflight check validates:
 
    ```bash
    curl -s https://registry.example.com/health | jq
-   curl -s https://registry.example.com/api/v1/version | jq
+   curl -s https://registry.example.com/version | jq
    ```
 
 8. **Verify key functionality:**
@@ -102,7 +102,7 @@ If issues are found after upgrade:
 **Pre-flight:**
 
 ```bash
-./terraform-registry upgrade preflight --from 0.6 --to 0.7
+./terraform-registry upgrade preflight --config config.yaml
 ```
 
 **Rollback:** Migrations 000020–000023 are all reversible. Run `migrate down` to version 19 before deploying 0.6.x.
@@ -129,7 +129,7 @@ If issues are found after upgrade:
 **Pre-flight:**
 
 ```bash
-./terraform-registry upgrade preflight --from 0.7 --to 0.8
+./terraform-registry upgrade preflight --config config.yaml
 ```
 
 **Rollback:** Migrations 000024–000025 are reversible. Note: SAML/LDAP user records created during 0.8.0 operation will be orphaned on rollback.
@@ -142,13 +142,15 @@ If issues are found after upgrade:
 
 **Migrations:**
 
-- Per-org quota tables
-- Legal hold table for audit logs
+- `000026_org_quotas` — adds per-org quota tables
+
+> Note: Legal hold for audit logs is implemented in application code
+> (`backend/internal/audit/legal_hold.go`), not via a dedicated migration.
 
 **Pre-flight:**
 
 ```bash
-./terraform-registry upgrade preflight --from 0.8 --to 0.9
+./terraform-registry upgrade preflight --config config.yaml
 ```
 
 ### 0.9.x → 0.10.0
@@ -166,7 +168,7 @@ If issues are found after upgrade:
 **Pre-flight:**
 
 ```bash
-./terraform-registry upgrade preflight --from 0.9 --to 0.10
+./terraform-registry upgrade preflight --config config.yaml
 ```
 
 ---
@@ -177,40 +179,37 @@ If issues are found after upgrade:
 Usage: terraform-registry upgrade preflight [flags]
 
 Flags:
-  --config string     Path to config.yaml (default "config.yaml")
-  --from string       Current version (auto-detected from DB if omitted)
-  --to string         Target version (auto-detected from binary if omitted)
-  --verbose           Show detailed migration plan
-  --dry-run           Validate only, do not apply any changes
+  --config string     Path to config.yaml (overrides CONFIG_PATH; falls back to environment variables)
+  --verbose           Show the detail message for every check, not just warnings/failures
 
 Examples:
   terraform-registry upgrade preflight
-  terraform-registry upgrade preflight --from 0.7 --to 0.8 --verbose
+  terraform-registry upgrade preflight --config config.yaml --verbose
 ```
+
+The current/target versions and the pending-migration set are derived
+automatically: the current schema version is read from `schema_migrations`, and
+the target version is the binary's own build version. The command validates
+state and reports readiness; it never applies migrations (those run on the next
+`serve` startup), so there is no separate dry-run mode.
 
 ### Preflight Check Output
 
 ```text
 Terraform Registry — Upgrade Preflight
 =======================================
-Current version:  0.7.2
-Target version:   0.8.0
-Database:         connected (PostgreSQL 16.2)
-Schema version:   23
-Target schema:    25
+Binary version:   1.0.0
+Build date:       2026-04-29T00:00:00Z
 
-Pending migrations:
-  000024_module_deprecation.up.sql  [reversible]
-  000025_org_idp_binding.up.sql     [reversible]
+  ✓ Configuration
+  ✓ Database: Connected (PostgreSQL 16.2 ...)
+  ✓ PostgreSQL version: Version 16.x
+  ✓ Schema: Current schema version: 40
+  ✓ Encryption key: Present
+  ✓ Storage backend: Type: s3
+  ⚠ Redis: Not configured — required for multi-pod deployments
 
-Configuration checks:
-  ✓ Database connectivity
-  ✓ Storage backend accessible
-  ✓ Encryption key present
-  ⚠ Deprecated config: auth.oidc_issuer_url → use auth.oidc.issuer_url
-  ✓ Redis connectivity (required for multi-pod)
-
-Result: READY TO UPGRADE (1 warning)
+Result: READY TO UPGRADE (with warnings)
 ```
 
 ---

@@ -5,7 +5,7 @@ This document describes how to set up a local development environment, generate 
 
 ## Prerequisites
 
-- Go 1.24+
+- Go 1.26+
 - Docker & Docker Compose (for test environment)
 - Make (optional)
 
@@ -45,7 +45,7 @@ For frontend development and E2E setup, see [terraform-registry-frontend](https:
 
 ## Test Coverage
 
-CI enforces a minimum threshold on `go test ./... -coverprofile=coverage.out`. The build fails if total statement coverage drops below **65%**. The aspirational goal is **70%** ("good for production" per Graphite / Google's "commendable" benchmark).
+CI enforces a minimum threshold on filtered coverage from `go test ./internal/... ./pkg/... -race -coverprofile=coverage.out`. The build fails if total statement coverage drops below the hard floor of **80%**. The aspirational goal is **85%** (target by the Phase 5 / H5.2 milestone, per Graphite / Google's "commendable" benchmark).
 
 Component targets follow a risk-based approach:
 
@@ -61,15 +61,21 @@ Component targets follow a risk-based approach:
 
 ### Measure Coverage Locally
 
+To match CI exactly, run the same package set with `-race`, then apply the
+`coverfilter` step that excludes integration-only functions (those whose doc
+comment carries a `coverage:skip:` marker) from the denominator:
+
 ```bash
 cd backend
-go test ./internal/... -coverprofile=coverage.out -covermode=atomic
-# Total
-go tool cover -func=coverage.out | grep "^total:"
+go test ./internal/... ./pkg/... -race -coverprofile=coverage.out -covermode=atomic
+# Filter integration-only functions, mirroring CI
+go run ./scripts/coverfilter -in coverage.out -out coverage.filtered.out -root .
+# Total (this is the number CI compares against the 80% floor)
+go tool cover -func=coverage.filtered.out | grep "^total:"
 # HTML report (opens in browser)
-go tool cover -html=coverage.out
+go tool cover -html=coverage.filtered.out
 # Per-package sorted by coverage ascending (spot lowest-covered packages)
-go tool cover -func=coverage.out | grep -v "^total:" | awk '{print $NF, $0}' | sort -V
+go tool cover -func=coverage.filtered.out | grep -v "^total:" | awk '{print $NF, $0}' | sort -V
 ```
 
 ## Troubleshooting

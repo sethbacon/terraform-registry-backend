@@ -155,6 +155,38 @@ dd if=/dev/urandom bs=32 count=1 2>/dev/null | base64
 python3 -c "import secrets; print(secrets.token_hex(32))"
 ```
 
+### Group-to-Role Mapping
+
+When the IdP emits a groups claim (see each provider's section below for how to
+add one), the registry can map those groups to organization membership and role
+templates on every login. Three config keys under `auth.oidc` control this:
+
+- **`group_claim_name`** (`TFR_AUTH_OIDC_GROUP_CLAIM_NAME`) — the ID-token claim
+  that carries the user's groups (commonly `groups`).
+- **`group_mappings`** — a list of `{group, organization, role}` entries. Each
+  matched group assigns (or updates) the user's membership in that organization
+  with that role template.
+- **`default_role`** (`TFR_AUTH_OIDC_DEFAULT_ROLE`) — role template assigned when
+  no group matches. Leave empty to make unmatched users members with no role
+  template.
+
+```yaml
+auth:
+  oidc:
+    group_claim_name: "groups"
+    default_role: "viewer"
+    group_mappings:
+      - group: "registry-admins"
+        organization: "default"
+        role: "admin"
+      - group: "platform-team"
+        organization: "default"
+        role: "editor"
+```
+
+As with all OIDC settings, database-stored configuration (from the setup wizard)
+takes precedence over env/file values.
+
 ### Finding Your Issuer URL
 
 The OIDC issuer URL is the base endpoint for your identity provider. It should resolve to a `.well-known/openid-configuration` endpoint. Common formats:
@@ -170,6 +202,11 @@ To verify, append `/.well-known/openid-configuration` to the URL - it should ret
 ---
 
 ## Supported Providers
+
+The registry uses generic OIDC discovery (`coreos/go-oidc`), so **any
+OIDC-compliant provider is supported**. The providers below have step-by-step
+guides. In every case, request `openid`, `email`, and `profile` (plus `groups`
+when using group-based RBAC).
 
 ### Azure AD / Microsoft Entra ID
 
@@ -187,7 +224,7 @@ To verify, append `/.well-known/openid-configuration` to the URL - it should ret
 
 - **Maturity:** Production-ready
 - **Features:** Social login, multi-factor authentication, extensive integrations
-- **Scopes:** `openid`, `email`, `profile`, `identities`
+- **Scopes:** `openid`, `email`, `profile` (plus `groups` for RBAC)
 - **Protocol:** OAuth 2.0 + OIDC v1.0
 
 ### Okta
@@ -218,22 +255,13 @@ To verify, append `/.well-known/openid-configuration` to the URL - it should ret
 - **Scopes:** `openid`, `email`, `profile`
 - **Protocol:** OAuth 2.0 + OIDC v1.0
 
-### Okta Workforce Identity Cloud
-
-**Best for:** Customer identity and access management (CIAM)
-
-- **Maturity:** Production-ready
-- **Features:** Consumer identity, API access management, passwordless auth
-- **Scopes:** Customizable per application
-- **Protocol:** OAuth 2.0 + OIDC v1.0
-
 ### PingIdentity / Ping One
 
 **Best for:** Hybrid identity environments, legacy system integration
 
 - **Maturity:** Production-ready, enterprise-grade
 - **Features:** Multi-protocol support, risk assessment, device management
-- **Scopes:** `openid`, `email`, `profile`, `identities`
+- **Scopes:** `openid`, `email`, `profile` (plus `groups` for RBAC)
 - **Protocol:** OAuth 2.0 + OIDC v1.0
 
 ---
@@ -664,8 +692,8 @@ openssl rand -hex 32
 
 ### 6. Token Expiration
 
-- Browser session JWTs (and their cookies) live for 4 hours; the frontend
-  silently refreshes before expiry
+- Browser session JWTs (and their cookies) live for 24 hours (86400 seconds);
+  the frontend silently refreshes before expiry
 - API keys should have optional expiration dates
 - Implement token refresh mechanism for long-lived sessions
 - Monitor for and invalidate compromised tokens
