@@ -12,6 +12,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/scm"
+	"github.com/terraform-registry/terraform-registry/internal/scm/appcreds"
 )
 
 // SCMProviderHandlers handles SCM provider CRUD operations
@@ -20,6 +21,7 @@ type SCMProviderHandlers struct {
 	scmRepo     *repositories.SCMRepository
 	orgRepo     *repositories.OrganizationRepository
 	tokenCipher *crypto.TokenCipher
+	minter      appcreds.SharedMinter
 }
 
 // NewSCMProviderHandlers creates a new SCM provider handlers instance
@@ -30,6 +32,13 @@ func NewSCMProviderHandlers(cfg *config.Config, scmRepo *repositories.SCMReposit
 		orgRepo:     orgRepo,
 		tokenCipher: tokenCipher,
 	}
+}
+
+// WithMinter wires in the shared app-credential minter used by providers in an
+// app auth mode (entra_app/github_app). Returns the handler for chaining.
+func (h *SCMProviderHandlers) WithMinter(minter appcreds.SharedMinter) *SCMProviderHandlers {
+	h.minter = minter
+	return h
 }
 
 // CreateSCMProviderRequest represents the request to create a new SCM provider configuration.
@@ -44,6 +53,14 @@ type CreateSCMProviderRequest struct {
 	ClientID       string           `json:"client_id"`
 	ClientSecret   string           `json:"client_secret"`
 	WebhookSecret  string           `json:"webhook_secret,omitempty"`
+	// AuthMode selects the authentication model: "oauth_user" (default, legacy
+	// per-user OAuth), "entra_app" (Microsoft Entra app registration for Azure
+	// DevOps) or "github_app" (GitHub App). The app modes use a single shared,
+	// admin-managed credential.
+	AuthMode             string `json:"auth_mode,omitempty"`
+	GitHubAppID          string `json:"github_app_id,omitempty"`
+	GitHubInstallationID string `json:"github_installation_id,omitempty"`
+	AppPrivateKey        string `json:"app_private_key,omitempty"`
 }
 
 // UpdateSCMProviderRequest represents the request to update an existing SCM provider configuration.
@@ -56,6 +73,11 @@ type UpdateSCMProviderRequest struct {
 	ClientSecret  *string `json:"client_secret,omitempty"`
 	WebhookSecret *string `json:"webhook_secret,omitempty"`
 	IsActive      *bool   `json:"is_active,omitempty"`
+	// App-credential fields. Setting AppPrivateKey to "" clears the stored key.
+	AuthMode             *string `json:"auth_mode,omitempty"`
+	GitHubAppID          *string `json:"github_app_id,omitempty"`
+	GitHubInstallationID *string `json:"github_installation_id,omitempty"`
+	AppPrivateKey        *string `json:"app_private_key,omitempty"`
 }
 
 // @Summary      Create SCM provider
@@ -86,27 +108,86 @@ func (h *SCMProviderHandlers) CreateProvider(c *gin.Context) {
 		return
 	}
 
-	// PAT-based providers don't require OAuth credentials
-	if req.ProviderType.IsPATBased() {
-		if req.BaseURL == nil || *req.BaseURL == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "base_url is required for Bitbucket Data Center"})
+	// Resolve the auth mode (defaults to legacy per-user OAuth).
+	authMode := req.AuthMode
+	if authMode == "" {
+		authMode = scm.AuthModeOAuthUser
+	}
+
+	// app_private_key, when supplied for github_app, is encrypted separately.
+	var encryptedAppPrivateKey *string
+
+	switch authMode {
+	case scm.AuthModeOAuthUser:
+		// PAT-based providers don't require OAuth credentials
+		if req.ProviderType.IsPATBased() {
+			if req.BaseURL == nil || *req.BaseURL == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "base_url is required for Bitbucket Data Center"})
+				return
+			}
+			if req.ClientID == "" {
+				req.ClientID = "pat-auth"
+			}
+			if req.ClientSecret == "" {
+				req.ClientSecret = "not-applicable"
+			}
+		} else {
+			if req.ClientID == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "client_id is required for OAuth providers"})
+				return
+			}
+			if req.ClientSecret == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "client_secret is required for OAuth providers"})
+				return
+			}
+		}
+	case scm.AuthModeEntraApp:
+		// Microsoft Entra app registration (Azure DevOps): client-credentials grant.
+		if req.ProviderType != scm.ProviderAzureDevOps {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "entra_app auth is only supported for azuredevops providers"})
+			return
+		}
+		if req.TenantID == nil || *req.TenantID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "tenant_id is required for entra_app auth"})
 			return
 		}
 		if req.ClientID == "" {
-			req.ClientID = "pat-auth"
+			c.JSON(http.StatusBadRequest, gin.H{"error": "client_id is required for entra_app auth"})
+			return
 		}
 		if req.ClientSecret == "" {
-			req.ClientSecret = "not-applicable"
+			c.JSON(http.StatusBadRequest, gin.H{"error": "client_secret is required for entra_app auth"})
+			return
 		}
-	} else {
+	case scm.AuthModeGitHubApp:
+		// GitHub App: app JWT exchanged for an installation token.
+		if req.ProviderType != scm.ProviderGitHub {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "github_app auth is only supported for github providers"})
+			return
+		}
+		if req.GitHubAppID == "" || req.GitHubInstallationID == "" || req.AppPrivateKey == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "github_app_id, github_installation_id and app_private_key are required for github_app auth"})
+			return
+		}
+		if !appcreds.ValidRSAPrivateKey(req.AppPrivateKey) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "app_private_key is not a valid RSA private key (PKCS#1 or PKCS#8 PEM)"})
+			return
+		}
+		// The client_id/client_secret columns are NOT NULL but unused for GitHub
+		// App auth; store stable placeholders.
 		if req.ClientID == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "client_id is required for OAuth providers"})
+			req.ClientID = "github-app"
+		}
+		req.ClientSecret = "not-applicable"
+		enc, encErr := h.tokenCipher.Seal(req.AppPrivateKey)
+		if encErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt app private key"})
 			return
 		}
-		if req.ClientSecret == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "client_secret is required for OAuth providers"})
-			return
-		}
+		encryptedAppPrivateKey = &enc
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid auth_mode"})
+		return
 	}
 
 	// Encrypt client secret
@@ -148,18 +229,26 @@ func (h *SCMProviderHandlers) CreateProvider(c *gin.Context) {
 	}
 
 	provider := &scm.SCMProviderRecord{
-		ID:                    uuid.New(),
-		OrganizationID:        orgID,
-		ProviderType:          req.ProviderType,
-		Name:                  req.Name,
-		BaseURL:               req.BaseURL,
-		TenantID:              req.TenantID,
-		ClientID:              req.ClientID,
-		ClientSecretEncrypted: clientSecretEncrypted,
-		WebhookSecret:         req.WebhookSecret,
-		IsActive:              true,
-		CreatedAt:             time.Now(),
-		UpdatedAt:             time.Now(),
+		ID:                     uuid.New(),
+		OrganizationID:         orgID,
+		ProviderType:           req.ProviderType,
+		Name:                   req.Name,
+		BaseURL:                req.BaseURL,
+		TenantID:               req.TenantID,
+		ClientID:               req.ClientID,
+		ClientSecretEncrypted:  clientSecretEncrypted,
+		WebhookSecret:          req.WebhookSecret,
+		AuthMode:               authMode,
+		EncryptedAppPrivateKey: encryptedAppPrivateKey,
+		IsActive:               true,
+		CreatedAt:              time.Now(),
+		UpdatedAt:              time.Now(),
+	}
+	if req.GitHubAppID != "" {
+		provider.GitHubAppID = &req.GitHubAppID
+	}
+	if req.GitHubInstallationID != "" {
+		provider.GitHubInstallationID = &req.GitHubInstallationID
 	}
 
 	if err := h.scmRepo.CreateProvider(c.Request.Context(), provider); err != nil {
@@ -314,6 +403,62 @@ func (h *SCMProviderHandlers) UpdateProvider(c *gin.Context) {
 	if req.IsActive != nil {
 		provider.IsActive = *req.IsActive
 	}
+	if req.AuthMode != nil {
+		switch *req.AuthMode {
+		case scm.AuthModeOAuthUser, scm.AuthModeEntraApp, scm.AuthModeGitHubApp:
+			provider.AuthMode = *req.AuthMode
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid auth_mode"})
+			return
+		}
+	}
+	if req.GitHubAppID != nil {
+		if *req.GitHubAppID == "" {
+			provider.GitHubAppID = nil
+		} else {
+			provider.GitHubAppID = req.GitHubAppID
+		}
+	}
+	if req.GitHubInstallationID != nil {
+		if *req.GitHubInstallationID == "" {
+			provider.GitHubInstallationID = nil
+		} else {
+			provider.GitHubInstallationID = req.GitHubInstallationID
+		}
+	}
+	if req.AppPrivateKey != nil {
+		if *req.AppPrivateKey == "" {
+			provider.EncryptedAppPrivateKey = nil
+		} else {
+			if !appcreds.ValidRSAPrivateKey(*req.AppPrivateKey) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "app_private_key is not a valid RSA private key (PKCS#1 or PKCS#8 PEM)"})
+				return
+			}
+			enc, encErr := h.tokenCipher.Seal(*req.AppPrivateKey)
+			if encErr != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt app private key"})
+				return
+			}
+			provider.EncryptedAppPrivateKey = &enc
+		}
+	}
+
+	// Validate the resulting app-mode shape so we return 400 rather than letting a
+	// DB CHECK constraint surface as a 500.
+	switch provider.AuthMode {
+	case scm.AuthModeGitHubApp:
+		if provider.GitHubAppID == nil || *provider.GitHubAppID == "" ||
+			provider.GitHubInstallationID == nil || *provider.GitHubInstallationID == "" ||
+			provider.EncryptedAppPrivateKey == nil || *provider.EncryptedAppPrivateKey == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "github_app auth requires github_app_id, github_installation_id and app_private_key"})
+			return
+		}
+	case scm.AuthModeEntraApp:
+		if provider.TenantID == nil || *provider.TenantID == "" || provider.ClientID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "entra_app auth requires tenant_id and client_id"})
+			return
+		}
+	}
 
 	provider.UpdatedAt = time.Now()
 
@@ -321,6 +466,10 @@ func (h *SCMProviderHandlers) UpdateProvider(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update provider"})
 		return
 	}
+
+	// Credentials may have changed; drop any cached shared token so the next
+	// request re-mints with the new configuration.
+	_ = h.scmRepo.DeleteProviderToken(c.Request.Context(), providerID)
 
 	c.JSON(http.StatusOK, provider)
 }
@@ -352,4 +501,57 @@ func (h *SCMProviderHandlers) DeleteProvider(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "provider deleted"})
+}
+
+// @Summary      Verify SCM provider app credentials
+// @Description  Mint a shared app token for a provider in an app auth mode (entra_app or github_app) to confirm the configured credentials are valid. Returns the token expiry on success. Requires admin scope.
+// @Tags         SCM Providers
+// @Security     Bearer
+// @Produce      json
+// @Param        id  path  string  true  "SCM provider ID (UUID)"
+// @Success      200  {object}  map[string]interface{}  "{ ok, expires_at }"
+// @Failure      400  {object}  map[string]interface{}  "Invalid provider ID or provider not in an app auth mode"
+// @Failure      401  {object}  map[string]interface{}  "Unauthorized"
+// @Failure      404  {object}  map[string]interface{}  "Provider not found"
+// @Failure      502  {object}  map[string]interface{}  "Failed to mint a token from the identity provider"
+// @Router       /api/v1/scm-providers/{id}/verify [post]
+// VerifyProvider mints a shared app token to confirm the provider's app
+// credentials are valid.
+// POST /api/v1/scm-providers/:id/verify
+func (h *SCMProviderHandlers) VerifyProvider(c *gin.Context) {
+	providerIDStr := c.Param("id")
+	providerID, err := uuid.Parse(providerIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid provider ID"})
+		return
+	}
+
+	provider, err := h.scmRepo.GetProvider(c.Request.Context(), providerID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get provider"})
+		return
+	}
+	if provider == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "provider not found"})
+		return
+	}
+
+	if provider.AuthMode != scm.AuthModeEntraApp && provider.AuthMode != scm.AuthModeGitHubApp {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "verification is only available for providers in an app auth mode"})
+		return
+	}
+	if h.minter == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "shared app credentials not available"})
+		return
+	}
+
+	// Force a fresh mint so verification reflects the current stored credentials.
+	_ = h.scmRepo.DeleteProviderToken(c.Request.Context(), providerID)
+	token, err := h.minter.MintProviderToken(c.Request.Context(), provider)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"ok": false, "error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"ok": true, "expires_at": token.ExpiresAt})
 }

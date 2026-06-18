@@ -27,19 +27,25 @@ func NewSCMRepository(db *sqlx.DB) *SCMRepository {
 
 // CreateProvider creates a new SCM provider configuration
 func (r *SCMRepository) CreateProvider(ctx context.Context, provider *scm.SCMProviderRecord) error {
+	authMode := provider.AuthMode
+	if authMode == "" {
+		authMode = scm.AuthModeOAuthUser
+	}
 	query := `
 		INSERT INTO scm_providers (
 			id, organization_id, provider_type, name, base_url, tenant_id,
 			client_id, client_secret_encrypted, webhook_secret,
+			auth_mode, github_app_id, github_installation_id, encrypted_app_private_key,
 			is_active, created_at, updated_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
 		)`
 
 	_, err := r.db.ExecContext(ctx, query,
 		provider.ID, provider.OrganizationID, provider.ProviderType, provider.Name,
 		provider.BaseURL, provider.TenantID, provider.ClientID, provider.ClientSecretEncrypted,
-		provider.WebhookSecret, provider.IsActive, provider.CreatedAt, provider.UpdatedAt,
+		provider.WebhookSecret, authMode, provider.GitHubAppID, provider.GitHubInstallationID,
+		provider.EncryptedAppPrivateKey, provider.IsActive, provider.CreatedAt, provider.UpdatedAt,
 	)
 	return err
 }
@@ -87,17 +93,23 @@ func (r *SCMRepository) ListProviders(ctx context.Context, orgID uuid.UUID) ([]*
 
 // UpdateProvider updates an SCM provider configuration
 func (r *SCMRepository) UpdateProvider(ctx context.Context, provider *scm.SCMProviderRecord) error {
+	authMode := provider.AuthMode
+	if authMode == "" {
+		authMode = scm.AuthModeOAuthUser
+	}
 	query := `
 		UPDATE scm_providers SET
 			name = $2, base_url = $3, tenant_id = $4, client_id = $5,
 			client_secret_encrypted = $6, webhook_secret = $7,
-			is_active = $8, updated_at = $9
+			auth_mode = $8, github_app_id = $9, github_installation_id = $10,
+			encrypted_app_private_key = $11, is_active = $12, updated_at = $13
 		WHERE id = $1`
 
 	_, err := r.db.ExecContext(ctx, query,
 		provider.ID, provider.Name, provider.BaseURL, provider.TenantID, provider.ClientID,
 		provider.ClientSecretEncrypted, provider.WebhookSecret,
-		provider.IsActive, time.Now(),
+		authMode, provider.GitHubAppID, provider.GitHubInstallationID,
+		provider.EncryptedAppPrivateKey, provider.IsActive, time.Now(),
 	)
 	return err
 }
@@ -106,6 +118,44 @@ func (r *SCMRepository) UpdateProvider(ctx context.Context, provider *scm.SCMPro
 func (r *SCMRepository) DeleteProvider(ctx context.Context, id uuid.UUID) error {
 	query := `DELETE FROM scm_providers WHERE id = $1`
 	_, err := r.db.ExecContext(ctx, query, id)
+	return err
+}
+
+// Shared App Token Cache (auth_mode entra_app / github_app)
+
+// GetProviderToken retrieves the cached shared app token for a provider.
+// Returns nil when no token is cached.
+func (r *SCMRepository) GetProviderToken(ctx context.Context, providerID uuid.UUID) (*scm.SCMProviderTokenRecord, error) {
+	var token scm.SCMProviderTokenRecord
+	query := `SELECT * FROM scm_provider_tokens WHERE scm_provider_id = $1`
+	err := r.db.GetContext(ctx, &token, query, providerID)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return &token, err
+}
+
+// UpsertProviderToken stores (or replaces) the cached shared app token for a provider.
+func (r *SCMRepository) UpsertProviderToken(ctx context.Context, token *scm.SCMProviderTokenRecord) error {
+	query := `
+		INSERT INTO scm_provider_tokens (
+			scm_provider_id, access_token_encrypted, token_type, expires_at, updated_at
+		) VALUES (
+			$1, $2, $3, $4, NOW()
+		) ON CONFLICT (scm_provider_id) DO UPDATE SET
+			access_token_encrypted = $2, token_type = $3, expires_at = $4, updated_at = NOW()`
+
+	_, err := r.db.ExecContext(ctx, query,
+		token.SCMProviderID, token.AccessTokenEncrypted, token.TokenType, token.ExpiresAt,
+	)
+	return err
+}
+
+// DeleteProviderToken removes any cached shared app token for a provider, forcing
+// the next request to re-mint. Called when a provider's credentials change.
+func (r *SCMRepository) DeleteProviderToken(ctx context.Context, providerID uuid.UUID) error {
+	query := `DELETE FROM scm_provider_tokens WHERE scm_provider_id = $1`
+	_, err := r.db.ExecContext(ctx, query, providerID)
 	return err
 }
 
