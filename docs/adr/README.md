@@ -29,6 +29,7 @@ An Architecture Decision Record captures an important architectural decision mad
 | [010](010-binary-mirror-custom-protocol.md) | Binary Mirror Custom Protocol     | Accepted   |
 | [011](011-version-approval-gate.md)         | Version Approval Gate for Mirrors | Accepted   |
 | [0011](0011-password-hashing.md)            | Password and API Key Hashing      | Accepted   |
+| [012](012-shared-identity-component.md)     | Shared Identity Component         | Accepted   |
 
 ## Creating a New ADR
 
