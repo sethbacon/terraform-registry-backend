@@ -24,8 +24,10 @@ original `source_timestamp`, `auth_method`, and `status_code` in metadata).
 ## Preconditions
 
 Federation is only **coherent under a shared identity store**, and TSM enforces
-this — it accepts entries only when `sharedStore` is asserted (advertised as the
-`audit.ingest.v1` manifest capability) and rejects them otherwise:
+this — it accepts entries only when `sharedStore` is asserted (advertised by TSM,
+the ingest side, as the `audit.ingest.v1` manifest capability; the registry's own
+manifest advertises only `modules.v1`/`providers.v1`/`mirror.v1`/`oci.v1`) and
+rejects them otherwise:
 
 1. **Shared identity store.** Both apps point at one physical identity database
    (one host + one database name). Only then do the registry's `user_id` /

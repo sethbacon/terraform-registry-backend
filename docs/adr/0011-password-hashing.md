@@ -49,4 +49,4 @@ When increasing the cost factor in the future:
 - API key hashing uses `bcrypt.GenerateFromPassword([]byte(key), 12)`.
 - The `BcryptCost` constant is defined in `internal/auth/apikey.go` and must be used consistently (no hardcoded literals elsewhere).
 - Cost can be increased in a future ADR without a database migration — the upgrade-on-verify pattern handles it transparently.
-- If FIPS-140-3 compliance requires NIST-approved algorithms only, bcrypt is **not** FIPS-approved. The FIPS build variant (see ADR-0012) would need to switch to PBKDF2-SHA256 or Argon2 when a FIPS-validated implementation becomes available.
+- If FIPS-140-3 compliance requires NIST-approved algorithms only, bcrypt is **not** FIPS-approved. A future FIPS build variant would need to switch to PBKDF2-SHA256 or Argon2 when a FIPS-validated implementation becomes available.

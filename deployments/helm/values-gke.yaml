@@ -80,7 +80,7 @@ storage:
     bucket: "<GCS_BUCKET_NAME>"
     projectId: "<PROJECT_ID>"
     # Workload Identity provides credentials — no key file needed.
-    authMethod: "workload-identity"
+    authMethod: "workload_identity"
     credentialsFile: ""
   persistence:
     enabled: false

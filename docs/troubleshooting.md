@@ -50,7 +50,7 @@ Connected to localhost:5432/terraform_registry as registry
   schema_migrations               1
 
 === MIGRATION STATE ===
-  version=1  dirty=false
+  version=40  dirty=false
 
 === MODULES ===
   myorg/vpc/aws  (id: 3f2a…)
@@ -59,6 +59,10 @@ Connected to localhost:5432/terraform_registry as registry
 === PROVIDERS ===
   myorg/myprovider  (id: 7d4e…)
 ```
+
+> The reported migration `version` equals the highest applied migration number (currently
+> `40`), not `1`. See the
+> [migrations README](../backend/internal/db/migrations/README.md) for the per-version index.
 
 ### cmd/fix-migration — repair dirty migration state
 
@@ -135,7 +139,7 @@ go build -o api-test.exe ./cmd/api-test
 **Example output:**
 
 ```txt
-[PASS] #1   GET     /terraform.json                                          200  (1ms)
+[PASS] #1   GET     /.well-known/terraform.json                              200  (1ms)
 [PASS] #2   GET     /api/v1/admin/organizations                              200  (2ms)
 ...
 [SKIP] #47  GET     /api/v1/admin/tf-mirrors/:id/versions/:version → no synced version data available
@@ -214,20 +218,11 @@ go run cmd/server/main.go migrate up
 no migration files found
 ```
 
-The server looks for migrations in `backend/internal/db/migrations/`. Ensure the binary
-is run from the `backend/` directory or set the migration path explicitly.
-
-#### Version Mismatch After Consolidation
-
-If you ran the registry before Session 26 (when migrations were consolidated into a single
-file), reset the migration state:
-
-```sql
-TRUNCATE schema_migrations;
-INSERT INTO schema_migrations (version, dirty) VALUES (1, false);
-```
-
-Then restart the server — it will recognize the schema as current and skip re-applying.
+Migrations are **embedded into the binary** at build time via `go:embed` (see
+`backend/internal/db/db.go`) and loaded with `iofs` — there is no runtime filesystem
+lookup and no migration-path flag, so the working directory is irrelevant. This error
+indicates a corrupt or incorrectly-built binary (the embedded `migrations/*.sql` files are
+missing); rebuild from a clean checkout rather than adjusting paths.
 
 ### Slow Queries
 
@@ -268,8 +263,11 @@ export TFR_JWT_SECRET=$(openssl rand -hex 32)
 If you're in development and want to bypass this check:
 
 ```bash
-export TFR_DEV_MODE=true
+export DEV_MODE=true   # DEV_MODE=1 also works
 ```
+
+> Note: `DEV_MODE` is intentionally **not** `TFR_`-prefixed (same as `ENCRYPTION_KEY`).
+> Setting `TFR_DEV_MODE` has no effect.
 
 ### Invalid API Key
 
@@ -345,9 +343,11 @@ Or use the `EnsureContainer()` helper described in the admin storage configurati
 
 **Invalid SAS token:**
 
-SAS tokens have a configurable TTL. If downloads fail with `AuthenticationFailed`,
-increase `TFR_STORAGE_AZURE_SAS_TOKEN_EXPIRY` (default: `15m`). Large provider binaries
-on slow connections may need `1h` or more.
+The SAS-token TTL is **not** operator-configurable via an environment variable — it is
+passed programmatically by the download handler into `GetURL(ctx, path, ttl)`. There is no
+`TFR_STORAGE_AZURE_SAS_TOKEN_EXPIRY` setting. If large provider binaries fail with
+`AuthenticationFailed` on slow connections, the cause is usually clock skew between the
+host and Azure or an incorrect `account_key` rather than the TTL; verify those first.
 
 **Account key error:**
 
@@ -707,14 +707,14 @@ If this is zero when you expect notifications, check:
 
 - `TFR_NOTIFICATIONS_ENABLED=true` is set
 - `TFR_NOTIFICATIONS_SMTP_HOST` is reachable from the server (`telnet <host> 587`)
-- `TFR_NOTIFICATIONS_WARNING_DAYS` covers the keys approaching expiry
+- `TFR_NOTIFICATIONS_API_KEY_EXPIRY_WARNING_DAYS` covers the keys approaching expiry
 - Backend logs for `"failed to send expiry email"` lines (visible at `info` level)
 
 ### Metrics Endpoint Not Reachable
 
 If `curl http://localhost:9090/metrics` times out or returns connection refused:
 
-- `TFR_TELEMETRY_ENABLED` must be `true` (default)
+- `TFR_TELEMETRY_METRICS_ENABLED` must be `true` — this is the gate that actually starts the metrics listener (`TFR_TELEMETRY_ENABLED` is a separate global toggle and does **not** control whether the listener binds)
 - `TFR_TELEMETRY_METRICS_PROMETHEUS_PORT` defaults to `9090` — verify it matches your scrape config
 - The metrics listener binds to `0.0.0.0` but is intentionally **not** routed through the public Nginx ingress; access it directly on the internal network or via SSH tunnel
 - Check backend startup logs for `"metrics server started"` to confirm the listener came up

@@ -7,27 +7,15 @@ tools, and gives a conceptual overview of the API surface.
 
 ## Interactive API Documentation
 
-Two interactive viewers are available, both backed by the same OpenAPI 2.0 (Swagger) spec:
-
-### ReDoc — Browsing and Reading
-
-```url
-http(s)://your-registry/api-docs
-```
-
-ReDoc renders the full API spec as a clean, three-panel reference:
-
-- Left panel: endpoint index with search
-- Center panel: full endpoint documentation with parameters, request/response schemas
-- Right panel: request/response examples
-
-Supports dark and light mode. This is the best tool for reading and understanding the API.
+The backend serves Swagger UI, backed by the embedded OpenAPI 2.0 (Swagger) spec.
 
 ### Swagger UI — Interactive Testing
 
 ```url
 http(s)://your-registry/api-docs/
 ```
+
+(`/api-docs` without the trailing slash 301-redirects to `/api-docs/`.)
 
 Swagger UI allows you to make live API calls directly from the browser. To authenticate:
 
@@ -42,18 +30,21 @@ Swagger UI is served by the Go backend and reflects the exact version of the run
 
 ```url
 GET http(s)://your-registry/swagger.json
+GET http(s)://your-registry/openapi3.json
 ```
 
-Machine-readable OpenAPI 2.0 JSON. Use this to generate client SDKs, import into Postman,
-or integrate with API gateways. The spec includes runtime metadata (contact, license)
-configured via `TFR_API_DOCS_*` environment variables.
+`/swagger.json` is machine-readable OpenAPI 2.0 JSON. `/openapi3.json` is the OpenAPI 3
+conversion of the same spec, which downstream consumers (frontend typegen, provider
+`oapi-codegen`) use. Use either to generate client SDKs, import into Postman, or integrate
+with API gateways. The spec includes runtime metadata (contact, license) configured via
+`TFR_API_DOCS_*` environment variables.
 
 ---
 
 ## Authentication
 
 All admin and upload endpoints require a `Bearer` token. Terraform protocol endpoints
-(`/v1/modules/`, `/v1/providers/`, `/v1/mirror/`) are intentionally unauthenticated
+(`/v1/modules/`, `/v1/providers/`, `/terraform/providers/`) are intentionally unauthenticated
 to match the HashiCorp protocol specification — Terraform does not send credentials
 when fetching module/provider metadata.
 
@@ -66,13 +57,20 @@ curl -H "Authorization: Bearer tfr_your_api_key" \
 
 ### JWT (browser session)
 
-```bash
-# Login to obtain a JWT
-curl -X POST https://registry.example.com/auth/login \
-     -H "Content-Type: application/json" \
-     -d '{"email": "user@example.com", "password": "..."}'
+There is no local-password login. Browser sessions are established through your
+configured identity provider:
 
-# Use the returned token
+```bash
+# OIDC/Azure AD/SAML: GET redirects the browser to the IdP; the callback issues
+# an HttpOnly session cookie.
+#   GET /api/v1/auth/login?provider=oidc
+
+# LDAP: POST credentials to obtain a session
+curl -X POST https://registry.example.com/api/v1/auth/ldap/login \
+     -H "Content-Type: application/json" \
+     -d '{"username": "user", "password": "..."}'
+
+# Use the returned token (or session cookie) on subsequent calls
 curl -H "Authorization: Bearer eyJ..." \
      https://registry.example.com/api/v1/modules
 ```
@@ -81,7 +79,7 @@ curl -H "Authorization: Bearer eyJ..." \
 
 ## API Groups Overview
 
-The full endpoint list (104 endpoints) is in the interactive docs above. Here is a
+The full endpoint list is in the interactive docs above. Here is a
 conceptual map of the major groups:
 
 ### Terraform Protocol Endpoints (unauthenticated)
@@ -93,7 +91,7 @@ These endpoints implement the HashiCorp protocols that `terraform init` and `ter
 | Service Discovery | `/.well-known/terraform.json` | Declares module and provider endpoint bases |
 | Module Registry | `/v1/modules/` | List versions, download redirects |
 | Provider Registry | `/v1/providers/` | List versions, platform download info |
-| Network Mirror | `/v1/mirror/` | Provider index and version JSON for `terraform providers mirror` |
+| Network Mirror | `/terraform/providers/` | Provider index and version JSON for `terraform providers mirror` |
 | Binary Mirror Downloads | `/terraform/binaries/:name/` | List and download mirrored Terraform/OpenTofu binaries by config name |
 
 ### Admin API (authentication required)

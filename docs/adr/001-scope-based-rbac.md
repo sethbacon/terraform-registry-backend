@@ -12,7 +12,7 @@ The registry needs an authorization model that controls access to modules, provi
 
 Terraform registries serve diverse organizational structures. Some teams need a user who can publish modules but not manage mirrors. Others need CI/CD API keys with write access to a single namespace. Coarse roles like "Editor" cannot express these distinctions without either creating an explosion of specialized roles or granting overly broad permissions.
 
-The codebase defines permissions in `internal/auth/scopes.go` with 16 distinct scopes covering modules, providers, mirrors, users, organizations, SCM, API keys, audit, scanning, and an `admin` wildcard. Scopes are stored as string arrays on API keys and in JWT claims.
+The codebase defines permissions in `internal/auth/scopes.go` with 17 distinct scopes covering modules, providers, mirrors, users, organizations, SCM, API keys, audit, scanning, SCIM provisioning, and an `admin` wildcard. Scopes are stored as string arrays on API keys and in JWT claims.
 
 ## Decision
 

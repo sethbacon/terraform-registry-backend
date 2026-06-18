@@ -1,5 +1,11 @@
 # Roadmap: Version Approval for Mirrors
 
+> **Status: Implemented / Shipped.** This feature is fully implemented; see
+> [docs/version-approval.md](version-approval.md) for the user-facing guide. This
+> document is retained as the original planning record. The schema and endpoint
+> details below have been reconciled against the shipped migration
+> (`000037_version_approval.up.sql`).
+
 ## Summary
 
 Add a version-level approval gate to provider mirrors and terraform binary mirrors. When enabled, newly synced versions enter `pending_approval` state and are hidden from Terraform clients until an administrator approves them. This makes "latest" = "latest approved version."
@@ -21,6 +27,14 @@ Organizations need to vet mirrored provider versions before exposing them to dev
 Migration `000037_version_approval.up.sql`:
 
 ```sql
+-- Gate flag + optional auto-approve rules on each mirror-config table.
+ALTER TABLE mirror_configurations
+  ADD COLUMN requires_approval  BOOLEAN DEFAULT FALSE NOT NULL,
+  ADD COLUMN auto_approve_rules JSONB   DEFAULT NULL;
+ALTER TABLE terraform_mirror_configs
+  ADD COLUMN requires_approval  BOOLEAN DEFAULT FALSE NOT NULL,
+  ADD COLUMN auto_approve_rules JSONB   DEFAULT NULL;
+
 ALTER TABLE mirrored_provider_versions
   ADD COLUMN approval_status VARCHAR(20) DEFAULT NULL
     CHECK (approval_status IN ('pending_approval', 'approved', 'rejected'));
@@ -29,10 +43,12 @@ ALTER TABLE terraform_versions
   ADD COLUMN approval_status VARCHAR(20) DEFAULT NULL
     CHECK (approval_status IN ('pending_approval', 'approved', 'rejected'));
 
-ALTER TABLE mirror_configurations
-  ADD COLUMN auto_approve_rules JSONB DEFAULT NULL;
-ALTER TABLE terraform_mirror_configs
-  ADD COLUMN auto_approve_rules JSONB DEFAULT NULL;
+-- Partial indexes keep "pending count" and protocol filtering fast without
+-- penalising the common case (approval_status IS NULL).
+CREATE INDEX idx_mpv_approval_status
+  ON mirrored_provider_versions (approval_status) WHERE approval_status IS NOT NULL;
+CREATE INDEX idx_tfv_approval_status
+  ON terraform_versions (approval_status) WHERE approval_status IS NOT NULL;
 
 CREATE TABLE version_approval_events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

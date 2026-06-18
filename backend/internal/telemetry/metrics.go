@@ -220,7 +220,7 @@ var APIKeyExpiryNotificationsSentTotal = promauto.NewCounter(
 
 // RateLimitRejectionsTotal is a CounterVec with labels {tier, key_type} incremented
 // each time a request is rejected (HTTP 429) by the rate limiting middleware.
-// tier is "individual" or "organization"; key_type is "user", "apikey", "ip", or "org".
+// tier is "individual", "organization", or "principal"; key_type is "user", "apikey", "ip", or "org".
 //
 // Example PromQL queries:
 //   - Rejection rate by tier:     sum by (tier) (rate(rate_limit_rejections_total[5m]))

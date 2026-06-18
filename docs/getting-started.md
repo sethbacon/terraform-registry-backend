@@ -54,7 +54,9 @@ Expected output:
 ```json
 {
   "status": "healthy",
-  "database": "connected"
+  "time": "2026-01-01T00:00:00Z",
+  "version": "1.0.0",
+  "build_date": "2026-01-01T00:00:00Z"
 }
 ```
 
@@ -111,11 +113,9 @@ curl -s -X POST http://localhost:8080/api/v1/setup/storage \
   -H "Authorization: SetupToken ${SETUP_TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{
-    "backend": "local",
-    "local": {
-      "base_path": "/app/storage",
-      "serve_directly": true
-    }
+    "backend_type": "local",
+    "local_base_path": "/app/storage",
+    "local_serve_directly": true
   }' | jq .
 ```
 
@@ -126,12 +126,14 @@ curl -s -X POST http://localhost:8080/api/v1/setup/admin \
   -H "Authorization: SetupToken ${SETUP_TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{
-    "email": "admin@example.com",
-    "username": "admin"
+    "email": "admin@example.com"
   }' | jq .
 ```
 
-The response includes a JWT token for the new admin user.
+The response confirms the admin assignment (`message`, `email`, `organization`,
+`role`); it does **not** issue a JWT. The registry has no local-password login —
+the admin signs in through your configured IdP (OIDC/SAML/LDAP) to obtain a
+browser session.
 
 #### Step 4: Complete Setup
 
@@ -142,12 +144,18 @@ curl -s -X POST http://localhost:8080/api/v1/setup/complete \
 
 ### Create an API Key
 
-Using the admin JWT token from step 3:
+First obtain an admin session token. In production, log in through your IdP
+(OIDC/SAML/LDAP). For local development with `DEV_MODE=true`, the dev-login
+endpoint returns a JWT for the pre-seeded `admin@dev.local` user:
 
 ```bash
-export TOKEN="<jwt-token-from-step-3>"
+export TOKEN=$(curl -s -X POST http://localhost:8080/api/v1/dev/login | jq -r .token)
+```
 
-curl -s -X POST http://localhost:8080/api/v1/admin/api-keys \
+Then create the API key at `POST /api/v1/apikeys`:
+
+```bash
+curl -s -X POST http://localhost:8080/api/v1/apikeys \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{
@@ -192,20 +200,23 @@ cd /tmp && tar czf my-module.tar.gz -C my-module .
 Upload to the registry:
 
 ```bash
-curl -s -X POST "http://localhost:8080/api/v1/modules/myorg/my-module/generic/1.0.0/upload" \
+curl -s -X POST "http://localhost:8080/api/v1/modules" \
   -H "Authorization: Bearer ${API_KEY}" \
-  -F "module=@/tmp/my-module.tar.gz" | jq .
+  -F "namespace=myorg" \
+  -F "name=my-module" \
+  -F "system=generic" \
+  -F "version=1.0.0" \
+  -F "file=@/tmp/my-module.tar.gz" | jq .
 ```
 
-Expected output:
+Expected output (HTTP 201):
 
 ```json
 {
   "namespace": "myorg",
   "name": "my-module",
   "system": "generic",
-  "version": "1.0.0",
-  "status": "ok"
+  "version": "1.0.0"
 }
 ```
 
@@ -289,10 +300,17 @@ Provider publishing requires platform-specific binary archives and SHA256SUMS fi
 
 ```bash
 # Upload a provider binary for linux/amd64
-curl -s -X POST "http://localhost:8080/api/v1/providers/myorg/myprovider/1.0.0/linux/amd64/upload" \
+curl -s -X POST "http://localhost:8080/api/v1/providers" \
   -H "Authorization: Bearer ${API_KEY}" \
-  -F "binary=@terraform-provider-myprovider_1.0.0_linux_amd64.zip" \
-  -F "shasum=abc123def456..." | jq .
+  -F "namespace=myorg" \
+  -F "type=myprovider" \
+  -F "version=1.0.0" \
+  -F "os=linux" \
+  -F "arch=amd64" \
+  -F "file=@terraform-provider-myprovider_1.0.0_linux_amd64.zip" \
+  -F "shasums_file=@terraform-provider-myprovider_1.0.0_SHA256SUMS" \
+  -F "shasums_signature_file=@terraform-provider-myprovider_1.0.0_SHA256SUMS.sig" \
+  -F "gpg_public_key=@public-key.asc" | jq .
 ```
 
 ### Verify Provider Availability
@@ -330,15 +348,16 @@ curl -s -X POST "http://localhost:8080/api/v1/admin/mirrors" \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{
-    "hostname": "registry.terraform.io",
-    "namespace": "hashicorp",
-    "type": "aws",
-    "sync_enabled": true,
-    "sync_interval_mins": 60
+    "name": "public-hashicorp",
+    "upstream_registry_url": "https://registry.terraform.io",
+    "namespace_filter": ["hashicorp"],
+    "provider_filter": ["aws"],
+    "enabled": true,
+    "sync_interval_hours": 1
   }' | jq .
 ```
 
-This creates a mirror that syncs the `hashicorp/aws` provider from the public Terraform Registry every 60 minutes.
+This creates a mirror that syncs the `hashicorp/aws` provider from the public Terraform Registry every hour.
 
 ### Trigger an Initial Sync
 

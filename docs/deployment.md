@@ -177,21 +177,45 @@ helm install terraform-registry deployments/helm/ \
 
 Key values in `values.yaml` to override:
 
-| Value                     | Description                                     |
-| ------------------------- | ----------------------------------------------- |
-| `config.baseUrl`          | Public URL returned to Terraform CLI (required) |
-| `config.jwtSecret`        | JWT signing secret (required, min 32 chars)     |
-| `config.databasePassword` | PostgreSQL password                             |
-| `config.encryptionKey`    | SCM OAuth token encryption key                  |
-| `storage.backend`         | `local` \| `azure` \| `s3` \| `gcs`             |
-| `ingress.enabled`         | Enable ingress resource                         |
-| `ingress.hostname`        | Ingress hostname                                |
-| `ingress.tls.enabled`     | Enable TLS on ingress                           |
-| `backend.replicas`        | Number of backend replicas                      |
-| `autoscaling.enabled`     | Enable HPA                                      |
-| `frontend.enabled`        | Deploy frontend container                       |
+| Value                       | Description                                     |
+| --------------------------- | ----------------------------------------------- |
+| `server.baseUrl`            | Public URL returned to Terraform CLI (required) |
+| `security.jwtSecret`        | JWT signing secret (required, min 32 chars)     |
+| `externalDatabase.password` | PostgreSQL password                             |
+| `security.encryptionKey`    | SCM OAuth token encryption key                  |
+| `storage.backend`           | `local` \| `azure` \| `s3` \| `gcs`             |
+| `ingress.enabled`           | Enable ingress resource                         |
+| `ingress.hostname`          | Ingress hostname                                |
+| `ingress.tls.enabled`       | Enable TLS on ingress                           |
+| `backend.replicaCount`      | Number of backend replicas                      |
+| `autoscaling.enabled`       | Enable HPA                                      |
+| `frontend.enabled`          | Deploy frontend container                       |
 
 See `deployments/helm/values.yaml` for the full annotated values file.
+
+### Redis (HA / multi-replica)
+
+Redis is **required for any multi-pod deployment** that uses OIDC and/or rate
+limiting. When `redis.host` is set, rate limiting uses distributed GCRA in Redis
+and OIDC session state is stored in Redis. When `redis.host` is empty, the backend
+falls back to **in-memory** rate-limit and session stores — which is incorrect behind
+a load balancer with multiple pods: rate limits are enforced per-pod and OIDC logins
+fail intermittently when the callback lands on a different pod than the one that started
+the flow.
+
+Any guide that enables autoscaling or sets `autoscaling.minReplicas > 1` (the AKS/EKS/GKE
+overlays do) must also configure Redis:
+
+```yaml
+# values.yaml
+redis:
+  host: "redis.example.internal"
+  port: 6379
+  tls: true            # required for Azure Cache for Redis
+  existingSecret: ""   # secret containing REDIS_PASSWORD
+```
+
+See `deployments/helm/values.yaml` (the `redis:` block) for all available keys.
 
 ### Helm: Prometheus ServiceMonitor
 
@@ -404,12 +428,13 @@ Two URL configuration variables serve different purposes:
 | Variable                | Value                          | Purpose                                                                                                                |
 | ----------------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
 | `TFR_SERVER_BASE_URL`   | `https://registry.example.com` | Terraform protocol — embedded in discovery responses and module/provider download URLs that `terraform` CLI will fetch |
-| `TFR_SERVER_PUBLIC_URL` | `https://registry.example.com` | OAuth redirect URL — where the browser is sent after OIDC login completes                                              |
+| `TFR_SERVER_PUBLIC_URL` | `https://registry.example.com` | OAuth redirect URL — where the browser is sent after OIDC login completes. **Optional**; only needed when the public OAuth URL differs from `base_url` |
 
-In an ECS deployment behind an ALB both should be set to your public domain. If
-`TFR_SERVER_PUBLIC_URL` is omitted it falls back to `TFR_SERVER_BASE_URL`, which works
-as long as the backend's `base_url` is already the public URL. If you ever need to split
-them (e.g. different internal vs. external address) set both explicitly.
+In an ECS deployment behind an ALB, `TFR_SERVER_BASE_URL` should be set to your public
+domain. `TFR_SERVER_PUBLIC_URL` is optional: when omitted it falls back to
+`TFR_SERVER_BASE_URL` (via `GetPublicURL()`), which works as long as the backend's
+`base_url` is already the public URL. Only set it explicitly when you need to split the
+two (e.g. a different internal listen URL vs. the external OAuth-registered URL).
 
 ### ACM Certificate and Terraform Plan-Time Errors
 
@@ -440,12 +465,12 @@ The `local-exec` provisioner that triggers the seed task uses **PowerShell** (`i
 does not inherit the system `PATH` and cannot find `aws.exe`. If you are running Terraform
 from Linux or macOS, switch the interpreter back to `/bin/bash`.
 
-Log in with the dev admin at `POST /auth/dev/login`:
+Log in with the dev admin at `POST /api/v1/dev/login`. This endpoint requires
+`DEV_MODE=true` and the pre-seeded `admin@dev.local` user; it ignores any request
+body and always returns a JWT for that fixed user:
 
 ```bash
-curl -X POST https://registry.example.com/auth/dev/login \
-  -H "Content-Type: application/json" \
-  -d '{"email": "admin@dev.local", "password": "dev"}'
+curl -X POST https://registry.example.com/api/v1/dev/login
 ```
 
 ### Resources Created
@@ -600,19 +625,21 @@ See `variables.tf` in each directory for the full list of tunable parameters.
 
 ## Health Checks
 
-The backend exposes a health endpoint:
+The backend exposes two health endpoints:
 
 ```bash
 GET /health
-# Returns 200 OK with JSON:
-# {"status": "ok", "database": "ok", "storage": "ok"}
+# Liveness — pings the database. Returns 200 OK with JSON:
+# {"status": "healthy", "time": "...", "version": "...", "build_date": "..."}
+# On failure returns 503: {"status": "unhealthy", "error": "database connection failed"}
 
-# Or for just liveness (no dependency checks):
-GET /healthz
-# Returns 200 OK: {"status": "ok"}
+GET /ready
+# Readiness — checks DB + storage connectivity. Returns 200 OK with JSON:
+# {"ready": true, "checks": {"database": "healthy", "storage": "healthy"}, "time": "..."}
+# On failure returns 503: {"ready": false, "checks": {...}, "error": "..."}
 ```
 
-Use `/healthz` for Kubernetes liveness probes (lightweight process-alive check) and `/health` for readiness probes (checks DB + storage connectivity). A startup probe on `/healthz` with a higher failure threshold allows slow-starting pods to initialize without being killed.
+Use `/health` for Kubernetes liveness and startup probes (DB-ping process-alive check) and `/ready` for readiness probes (checks DB + storage connectivity). A startup probe on `/health` with a higher failure threshold allows slow-starting pods to initialize without being killed. The bundled Helm chart uses `/health` for startup and liveness probes and `/ready` for the readiness probe.
 
 ---
 
@@ -630,14 +657,14 @@ After deploying, initialize the registry:
    docker-compose exec backend terraform-registry migrate up
    ```
 
-2. **Create the first admin user** via the admin API or the admin setup endpoint:
+2. **Provision the first admin user.** Log in via your configured IdP (OIDC/SAML/LDAP);
+   admin assignment is handled by the setup wizard / group-mapping configuration — see
+   [Initial Setup](initial-setup.md). For local testing only, the dev-login endpoint
+   returns a JWT for the pre-seeded `admin@dev.local` user (requires `DEV_MODE=true` and
+   the seed script). It ignores any request body and always logs in that fixed user:
 
    ```bash
-   # The first user created via OIDC login is automatically an admin
-   # For API key-only setups, use the dev endpoint (requires DEV_MODE=true):
-   curl -X POST http://localhost:8080/auth/dev/login \
-     -H "Content-Type: application/json" \
-     -d '{"email": "admin@example.com", "name": "Admin"}'
+   curl -X POST http://localhost:8080/api/v1/dev/login
    ```
 
 3. **Configure storage** via Admin → Storage in the web UI (or via environment variables)
@@ -889,19 +916,19 @@ docker compose -f deployments/docker-compose.prod.yml logs --tail=50 backend
 #    image.tag: v<version>
 
 # 2. Dry-run first
-helm upgrade terraform-registry deployments/helm/terraform-registry \
+helm upgrade terraform-registry ./deployments/helm \
   --namespace registry \
   -f my-values.yaml \
   --dry-run
 
 # 3. Apply
-helm upgrade terraform-registry deployments/helm/terraform-registry \
+helm upgrade terraform-registry ./deployments/helm \
   --namespace registry \
   -f my-values.yaml \
   --wait --timeout=5m
 
 # 4. Verify rollout
-kubectl rollout status deployment/terraform-registry -n registry
+kubectl rollout status deployment/terraform-registry-backend -n registry
 kubectl get pods -n registry
 ```
 
@@ -949,11 +976,11 @@ curl -sf "http://localhost:9090/metrics" | grep '^http_requests_total'
 # API — list providers (unauthenticated, should return 401 or empty list)
 curl -s "${BASE}/v1/providers" | jq .
 
-# API — login endpoint
-curl -s "${BASE}/v1/auth/login"
+# API — login endpoint (GET; redirects to the configured IdP)
+curl -s "${BASE}/api/v1/auth/login"
 ```
 
-- [ ] `/health` returns `{"status":"ok"}` (HTTP 200)
+- [ ] `/health` returns `{"status":"healthy"}` (HTTP 200)
 - [ ] `/metrics` returns Prometheus text (HTTP 200)
 - [ ] API endpoints respond (correct HTTP codes even if auth-gated)
 - [ ] No 500 errors in application logs for the first 5 minutes post-deploy
@@ -982,7 +1009,7 @@ docker compose -f deployments/docker-compose.prod.yml \
 
 ```bash
 helm rollback terraform-registry -n registry
-kubectl rollout status deployment/terraform-registry -n registry
+kubectl rollout status deployment/terraform-registry-backend -n registry
 ```
 
 #### Rollback Standalone Binary
@@ -999,11 +1026,12 @@ sudo systemctl start terraform-registry
 > Rolling back a schema migration after writes have occurred can cause data loss.
 
 ```bash
-# Review migration state first
-terraform-registry migrate status
+# Inspect the current schema version (the migrate command has no `status`
+# subcommand; query the migrations table directly):
+psql "$DATABASE_URL" -c "SELECT version, dirty FROM schema_migrations;"
 
-# Roll back the last migration
-terraform-registry migrate down 1
+# Roll back the last migration (the `migrate down` command takes no count argument)
+terraform-registry migrate down
 ```
 
 - [ ] Rollback decision logged in the incident channel
