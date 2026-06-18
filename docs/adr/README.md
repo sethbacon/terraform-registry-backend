@@ -27,6 +27,7 @@ An Architecture Decision Record captures an important architectural decision mad
 | [008](008-module-scanning-architecture.md)  | Module Scanning Architecture      | Accepted   |
 | [009](009-network-mirror-protocol.md)       | Network Mirror Protocol           | Accepted   |
 | [010](010-binary-mirror-custom-protocol.md) | Binary Mirror Custom Protocol     | Accepted   |
+| [012](012-shared-identity-component.md)     | Shared Identity Component         | Accepted   |
 
 ## Creating a New ADR
 

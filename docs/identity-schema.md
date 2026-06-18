@@ -8,8 +8,8 @@ Terraform tooling suite (e.g. the state manager) share **one** identity store, s
 organization, or API key is the same across the suite.
 
 The identity layer lives in the [`terraform-suite-identity`](https://github.com/sethbacon/terraform-suite-identity)
-Go module (ADR 002). That module is a **library** linked into the registry binary — not a
-separate service. There is nothing extra to deploy.
+Go module ([ADR 012](adr/012-shared-identity-component.md)). That module is a **library**
+linked into the registry binary — not a separate service. There is nothing extra to deploy.
 
 ---
 
@@ -127,4 +127,4 @@ to `public` to remain visible.
 ## See also
 
 - `docs/configuration.md` — the full environment-variable reference.
-- ADR 002 (shared identity component) in the registry and state-manager repositories.
+- [ADR 012](adr/012-shared-identity-component.md) (shared identity component) in the registry and state-manager repositories.
