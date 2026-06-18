@@ -7,6 +7,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.3](https://github.com/sethbacon/terraform-registry-backend/compare/v2.5.2...v2.5.3) (2026-06-18)
+
+
+### Bug Fixes
+
+* align backend docs with the code, fix EKS/GKE authMethod, wire up upgrade preflight ([#517](https://github.com/sethbacon/terraform-registry-backend/issues/517)) ([da41e0c](https://github.com/sethbacon/terraform-registry-backend/commit/da41e0cac3c5f000ed9086405b92266aede67ca8))
+
+
+### Documentation
+
+* add shared-identity ADR (012) and canonical-host guide ([#518](https://github.com/sethbacon/terraform-registry-backend/issues/518)) ([56c40f1](https://github.com/sethbacon/terraform-registry-backend/commit/56c40f1972f1bb35f8047c32c837602231293ee6))
+* **plans:** add SCM shared app-credential migration plan ([#515](https://github.com/sethbacon/terraform-registry-backend/issues/515)) ([f1b6933](https://github.com/sethbacon/terraform-registry-backend/commit/f1b69338116f1d9708bf722f89ab80ee6f06a1c8))
+
 ## [2.5.2](https://github.com/sethbacon/terraform-registry-backend/compare/v2.5.1...v2.5.2) (2026-06-17)
 
 
