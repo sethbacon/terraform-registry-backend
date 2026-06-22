@@ -6,12 +6,12 @@ required Azure resources and ensure the AKS cluster has the necessary features e
 
 ## Required Tooling
 
-| Tool | Minimum Version | Install |
-|---|---|---|
-| Azure CLI (`az`) | 2.61.0 | `brew install azure-cli` or [docs.microsoft.com](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli) |
-| `kubectl` | 1.29+ | `az aks install-cli` |
-| `helm` | 3.12+ | `brew install helm` or [helm.sh](https://helm.sh/docs/intro/install/) |
-| `kustomize` | 5.0+ | `brew install kustomize` (optional — `kubectl apply -k` includes kustomize) |
+| Tool             | Minimum Version | Install                                                                                                         |
+| ---------------- | --------------- | --------------------------------------------------------------------------------------------------------------- |
+| Azure CLI (`az`) | 2.61.0          | `brew install azure-cli` or [docs.microsoft.com](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli) |
+| `kubectl`        | 1.29+           | `az aks install-cli`                                                                                            |
+| `helm`           | 3.12+           | `brew install helm` or [helm.sh](https://helm.sh/docs/intro/install/)                                           |
+| `kustomize`      | 5.0+            | `brew install kustomize` (optional — `kubectl apply -k` includes kustomize)                                     |
 
 ```bash
 az login
@@ -62,6 +62,57 @@ az postgres flexible-server db create \
 ```
 
 > **Note:** For sandbox testing with public access, use `--public-access 0.0.0.0` temporarily. For production, configure VNet integration and firewall rules.
+
+#### Alternative: in-cluster PostgreSQL with CloudNativePG
+
+The chart never bundles a database — it connects to whatever `externalDatabase.host`
+points at, so the database can live **outside or inside** the cluster. Managed Flexible
+Server (above) is the recommended, lowest-ops option. If you instead need PostgreSQL to
+**run inside AKS** (no managed service, in-cluster data residency, or cost control), run it
+with the [CloudNativePG](https://cloudnative-pg.io/) operator and point the chart at it.
+
+```bash
+# 1. Install the operator (mirror the image into your ACR for locked-down clusters)
+helm repo add cnpg https://cloudnative-pg.github.io/charts
+helm upgrade --install cnpg cnpg/cloudnative-pg \
+  --namespace cnpg-system --create-namespace
+
+# 2. Create a cluster (single instance shown; raise `instances` + add backups for production)
+kubectl apply -f - <<'EOF'
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: terraform-registry-pg
+  namespace: terraform-registry
+spec:
+  instances: 1
+  storage:
+    size: 32Gi
+    storageClass: managed-csi-premium   # block volume — do NOT use Azure Files for PGDATA
+  bootstrap:
+    initdb:
+      database: terraform_registry
+      owner: registry
+EOF
+```
+
+Then point the chart at the CloudNativePG read-write Service instead of a Flexible Server FQDN:
+
+```yaml
+externalDatabase:
+  host: "terraform-registry-pg-rw.terraform-registry.svc.cluster.local"
+  port: 5432
+  name: "terraform_registry"
+  user: "registry"
+  sslMode: "require"
+  existingSecret: "<db-secret>"   # wire in CloudNativePG's generated role password (its "-app" Secret)
+```
+
+**You take on what the managed service handled:** backups (configure CloudNativePG's
+Barman backup to Azure Blob for point-in-time recovery), minor/patch updates (bump the
+cluster `imageName`; the operator does a rolling update), and major-version upgrades
+(deliberate — never automatic). Always use a managed-disk (block) `storageClass`, never
+Azure Files, for `PGDATA`.
 
 ### 4. Azure Storage Account + Blob Container
 
@@ -211,13 +262,13 @@ certificate issuance (the ACME HTTP-01 challenge requires DNS resolution).
 
 The AKS cluster must have the following features enabled:
 
-| Feature | Flag | Notes |
-|---|---|---|
-| OIDC Issuer | `--enable-oidc-issuer` | Required for Workload Identity |
-| Workload Identity | `--enable-workload-identity` | Required for Key Vault CSI + Managed Identity |
-| Secrets Store CSI Driver | `--enable-addons azure-keyvault-secrets-provider` | Required for Key Vault secret sync |
-| Azure CNI Networking | `--network-plugin azure` (or `azure-overlay`) | Required for NetworkPolicy enforcement and AGfC |
-| ACR Attach | `--attach-acr <ACR_NAME>` | Grants AKS pull access to ACR without explicit pull secrets |
+| Feature                  | Flag                                              | Notes                                                       |
+| ------------------------ | ------------------------------------------------- | ----------------------------------------------------------- |
+| OIDC Issuer              | `--enable-oidc-issuer`                            | Required for Workload Identity                              |
+| Workload Identity        | `--enable-workload-identity`                      | Required for Key Vault CSI + Managed Identity               |
+| Secrets Store CSI Driver | `--enable-addons azure-keyvault-secrets-provider` | Required for Key Vault secret sync                          |
+| Azure CNI Networking     | `--network-plugin azure` (or `azure-overlay`)     | Required for NetworkPolicy enforcement and AGfC             |
+| ACR Attach               | `--attach-acr <ACR_NAME>`                         | Grants AKS pull access to ACR without explicit pull secrets |
 
 Check existing cluster features:
 
