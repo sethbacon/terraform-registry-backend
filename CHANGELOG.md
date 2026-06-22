@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.4](https://github.com/sethbacon/terraform-registry-backend/compare/v2.5.3...v2.5.4) (2026-06-22)
+
+
+### Documentation
+
+* **deployment:** add in-cluster PostgreSQL (CloudNativePG) option for AKS ([#520](https://github.com/sethbacon/terraform-registry-backend/issues/520)) ([8724fdd](https://github.com/sethbacon/terraform-registry-backend/commit/8724fddbc5942d4b693cc0b1974e5f08b0fb020a))
+
 ## [2.5.3](https://github.com/sethbacon/terraform-registry-backend/compare/v2.5.2...v2.5.3) (2026-06-18)
 
 
