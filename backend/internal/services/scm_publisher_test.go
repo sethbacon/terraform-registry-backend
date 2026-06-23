@@ -499,6 +499,29 @@ func TestDownloadAndPackage_GitHubWrapperWithExplicitSubpath(t *testing.T) {
 	}
 }
 
+// TestDownloadAndPackage_NoWrapperSingleModuleDir verifies that an archive with no
+// wrapper directory whose repository root IS a single module folder (e.g. Azure DevOps
+// downloads, and legacy modules whose early commits are just "terraform_<x>_module/" at
+// the root) resolves the configured subpath correctly. The previous unwrap heuristic
+// descended into that single top-level folder and then failed to find the subpath, which
+// silently dropped every such version on sync.
+func TestDownloadAndPackage_NoWrapperSingleModuleDir(t *testing.T) {
+	archiveData := makeTarGz(t, map[string]string{
+		"terraform_diagnostic_settings_module/main.tf":      `resource "azurerm_monitor_diagnostic_setting" "x" {}`,
+		"terraform_diagnostic_settings_module/variables.tf": `variable "name" {}`,
+	})
+
+	p := newTestPublisher(t)
+	connector := &mockConnector{archiveData: archiveData}
+
+	_, _, err := p.downloadAndPackage(context.Background(), connector, nil,
+		"Terraform", "terraform-azurerm-diagnostic-settings", "abc123",
+		"terraform_diagnostic_settings_module")
+	if err != nil {
+		t.Fatalf("single-folder repo (no wrapper) should resolve, got: %v", err)
+	}
+}
+
 // TestDownloadAndPackage_SubpathNotFound verifies that a configured module_path
 // that does not exist inside the archive returns a clear error.
 func TestDownloadAndPackage_SubpathNotFound(t *testing.T) {
