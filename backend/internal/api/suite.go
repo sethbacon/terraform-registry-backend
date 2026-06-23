@@ -120,6 +120,14 @@ func moduleConsumersHandler(getClient func() *suite.DiscoveryClient, cfg *config
 			return
 		}
 
+		// siblingURL is the trusted origin advertised via discovery — the single
+		// host the outbound request below is permitted to reach.
+		siblingURL, err := url.Parse(m.PublicURL)
+		if err != nil || siblingURL.Host == "" {
+			c.JSON(http.StatusOK, empty)
+			return
+		}
+
 		moduleAddr := c.Param("namespace") + "/" + c.Param("name") + "/" + c.Param("system")
 		// Emit every acceptable host as a repeated &host= param; the sibling
 		// matches a state if its captured host is any of them.
@@ -133,7 +141,18 @@ func moduleConsumersHandler(getClient func() *suite.DiscoveryClient, cfg *config
 		}
 		target := sb.String()
 
-		req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, target, nil)
+		// Defense-in-depth against request forgery (CodeQL go/request-forgery):
+		// the user-provided path params are QueryEscape'd into the query string
+		// above and cannot influence the request authority, but assert explicitly
+		// that the resolved target stays on the trusted sibling origin before
+		// dialing it.
+		parsed, err := url.Parse(target)
+		if err != nil || parsed.Scheme != siblingURL.Scheme || parsed.Host != siblingURL.Host {
+			c.JSON(http.StatusOK, empty)
+			return
+		}
+
+		req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, parsed.String(), nil)
 		if err != nil {
 			c.JSON(http.StatusOK, empty)
 			return
