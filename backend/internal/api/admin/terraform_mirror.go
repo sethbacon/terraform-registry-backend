@@ -14,6 +14,7 @@ import (
 
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/storage"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -26,8 +27,9 @@ type TerraformMirrorSyncJobInterface interface {
 
 // TerraformMirrorHandler handles admin endpoints for the Terraform binary mirror.
 type TerraformMirrorHandler struct {
-	repo    *repositories.TerraformMirrorRepository
-	syncJob TerraformMirrorSyncJobInterface
+	repo           *repositories.TerraformMirrorRepository
+	syncJob        TerraformMirrorSyncJobInterface
+	storageBackend storage.Storage
 }
 
 // NewTerraformMirrorHandler creates a new TerraformMirrorHandler.
@@ -38,6 +40,36 @@ func NewTerraformMirrorHandler(repo *repositories.TerraformMirrorRepository) *Te
 // SetSyncJob attaches the live sync job so handlers can trigger manual syncs.
 func (h *TerraformMirrorHandler) SetSyncJob(syncJob TerraformMirrorSyncJobInterface) {
 	h.syncJob = syncJob
+}
+
+// SetStorageBackend attaches the object-storage backend so deleting a version
+// also removes its stored binaries. When unset, deletes only touch the database.
+func (h *TerraformMirrorHandler) SetStorageBackend(s storage.Storage) {
+	h.storageBackend = s
+}
+
+// deleteVersionArtifacts best-effort removes a version's stored binaries from
+// object storage: every platform package plus the version's SHA256SUMS and
+// detached signature. Storage errors are intentionally swallowed — a dangling
+// metadata row is worse than an orphaned blob (which can be swept later), so a
+// storage failure must never block the database delete. No-op when no storage
+// backend is configured.
+func (h *TerraformMirrorHandler) deleteVersionArtifacts(ctx context.Context, v *models.TerraformVersion) {
+	if h.storageBackend == nil || v == nil {
+		return
+	}
+	if platforms, listErr := h.repo.ListPlatformsForVersion(ctx, v.ID); listErr == nil {
+		for _, p := range platforms {
+			if p.StorageKey != nil && *p.StorageKey != "" {
+				_ = h.storageBackend.Delete(ctx, *p.StorageKey)
+			}
+		}
+	}
+	for _, key := range []*string{v.SumsStorageKey, v.SigStorageKey} {
+		if key != nil && *key != "" {
+			_ = h.storageBackend.Delete(ctx, *key)
+		}
+	}
 }
 
 // ---- POST /api/v1/admin/terraform-mirrors ----------------------------------
@@ -335,7 +367,7 @@ func (h *TerraformMirrorHandler) UpdateConfig(c *gin.Context) {
 // ---- DELETE /api/v1/admin/terraform-mirrors/:id -----------------------------
 
 // @Summary      Delete Terraform mirror configuration
-// @Description  Deletes a Terraform binary mirror config and all its associated versions/history. Requires mirrors:manage scope.
+// @Description  Deletes a Terraform binary mirror config, all its associated versions/history, and the stored binaries for every version (each platform package plus per-version SHA256SUMS and detached signatures) from object storage. Requires mirrors:manage scope.
 // @Tags         Terraform Mirror
 // @Security     Bearer
 // @Produce      json
@@ -359,6 +391,18 @@ func (h *TerraformMirrorHandler) DeleteConfig(c *gin.Context) {
 	if cfg == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Mirror config not found"})
 		return
+	}
+
+	// Remove every version's stored binaries before deleting the config. The DB
+	// delete cascades the version/platform rows, but object-storage blobs are not
+	// FK-managed, so without this they would be orphaned. Best-effort.
+	if h.storageBackend != nil {
+		ctx := c.Request.Context()
+		if versions, listErr := h.repo.ListVersions(ctx, id, false); listErr == nil {
+			for i := range versions {
+				h.deleteVersionArtifacts(ctx, &versions[i])
+			}
+		}
 	}
 
 	if delErr := h.repo.Delete(c.Request.Context(), id); delErr != nil {
@@ -528,7 +572,7 @@ func (h *TerraformMirrorHandler) GetVersion(c *gin.Context) {
 // ---- DELETE /api/v1/admin/terraform-mirrors/:id/versions/:version ----------
 
 // @Summary      Delete a mirrored Terraform version
-// @Description  Removes a version and its platform records. Stored binaries are not deleted from storage. Requires mirrors:manage scope.
+// @Description  Removes a version, its platform records, and the stored binaries (each platform package plus the version's SHA256SUMS and detached signature) from object storage. Requires mirrors:manage scope.
 // @Tags         Terraform Mirror
 // @Security     Bearer
 // @Produce      json
@@ -556,6 +600,9 @@ func (h *TerraformMirrorHandler) DeleteVersion(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Version not found"})
 		return
 	}
+
+	// Remove the stored artifacts before the database rows (best-effort).
+	h.deleteVersionArtifacts(c.Request.Context(), v)
 
 	if delErr := h.repo.DeleteVersion(c.Request.Context(), v.ID); delErr != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete version: " + delErr.Error()})

@@ -431,6 +431,81 @@ func TestTMDeleteConfig_Success(t *testing.T) {
 	}
 }
 
+// When a storage backend is attached, deleting a config removes the stored
+// binaries for every version it owns (each platform package plus per-version
+// SHA256SUMS and detached signature) before the cascading database delete.
+func TestTMDeleteConfig_DeletesBinaries(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	repo := repositories.NewTerraformMirrorRepository(sqlx.NewDb(db, "sqlmock"))
+	store := &mockStorage{}
+	h := NewTerraformMirrorHandler(repo)
+	h.SetStorageBackend(store)
+	r := gin.New()
+	r.DELETE("/terraform-mirrors/:id", h.DeleteConfig)
+
+	// GetByID -> the config being deleted.
+	mock.ExpectQuery("SELECT.*FROM terraform_mirror_configs WHERE id").
+		WillReturnRows(sampleTMCRow())
+	// ListVersions -> two synced versions, each with stored SHA256SUMS + signature.
+	versionCols := []string{
+		"id", "config_id", "version", "is_latest", "is_deprecated", "release_date",
+		"sync_status", "sync_error", "synced_at", "created_at", "updated_at",
+		"sums_storage_key", "sig_storage_key", "approval_status",
+	}
+	mock.ExpectQuery("SELECT.*FROM terraform_versions WHERE config_id").
+		WillReturnRows(sqlmock.NewRows(versionCols).
+			AddRow(knownUUID, knownUUID, "1.7.0", true, false, nil,
+				"synced", nil, nil, time.Now(), time.Now(),
+				"tf/1.7.0/SHA256SUMS", "tf/1.7.0/SHA256SUMS.sig", "approved").
+			AddRow(knownUUID, knownUUID, "1.6.0", false, false, nil,
+				"synced", nil, nil, time.Now(), time.Now(),
+				"tf/1.6.0/SHA256SUMS", "tf/1.6.0/SHA256SUMS.sig", "approved"))
+	// ListPlatformsForVersion -> one stored binary per version (queried in list order).
+	mock.ExpectQuery("SELECT.*FROM terraform_version_platforms WHERE version_id").
+		WillReturnRows(sqlmock.NewRows(tmPlatformCols).
+			AddRow(knownUUID, knownUUID, "linux", "amd64", "u", "f1", "h1",
+				"tf/1.7.0/linux/amd64/terraform_1.7.0_linux_amd64.zip", "s3", true, true,
+				"synced", nil, nil, time.Now(), time.Now()))
+	mock.ExpectQuery("SELECT.*FROM terraform_version_platforms WHERE version_id").
+		WillReturnRows(sqlmock.NewRows(tmPlatformCols).
+			AddRow(knownUUID, knownUUID, "linux", "amd64", "u", "f2", "h2",
+				"tf/1.6.0/linux/amd64/terraform_1.6.0_linux_amd64.zip", "s3", true, true,
+				"synced", nil, nil, time.Now(), time.Now()))
+	mock.ExpectExec("DELETE FROM terraform_mirror_configs WHERE id").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/terraform-mirrors/"+knownUUID, nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+
+	want := []string{
+		"tf/1.7.0/linux/amd64/terraform_1.7.0_linux_amd64.zip",
+		"tf/1.7.0/SHA256SUMS",
+		"tf/1.7.0/SHA256SUMS.sig",
+		"tf/1.6.0/linux/amd64/terraform_1.6.0_linux_amd64.zip",
+		"tf/1.6.0/SHA256SUMS",
+		"tf/1.6.0/SHA256SUMS.sig",
+	}
+	for _, key := range want {
+		found := false
+		for _, d := range store.deleted {
+			if d == key {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected storage Delete(%q); got %v", key, store.deleted)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // TriggerSync tests
 // ---------------------------------------------------------------------------
@@ -804,6 +879,70 @@ func TestTMMirrorDeleteVersion_Success(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// When a storage backend is attached, deleting a version also removes the stored
+// platform packages plus the version's SHA256SUMS and detached signature.
+func TestTMMirrorDeleteVersion_DeletesBinaries(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	repo := repositories.NewTerraformMirrorRepository(sqlx.NewDb(db, "sqlmock"))
+	store := &mockStorage{}
+	h := NewTerraformMirrorHandler(repo)
+	h.SetStorageBackend(store)
+	r := gin.New()
+	r.DELETE("/terraform-mirrors/:id/versions/:version", h.DeleteVersion)
+
+	// GetVersionByString -> a synced version that has stored SHA256SUMS + signature.
+	mock.ExpectQuery("SELECT.*FROM terraform_versions WHERE config_id.*AND version").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "config_id", "version", "is_latest", "is_deprecated", "release_date",
+			"sync_status", "sync_error", "synced_at", "created_at", "updated_at",
+			"sums_storage_key", "sig_storage_key", "approval_status",
+		}).AddRow(
+			knownUUID, knownUUID, "1.7.0", true, false, nil,
+			"synced", nil, nil, time.Now(), time.Now(),
+			"terraform-binaries/1.7.0/SHA256SUMS", "terraform-binaries/1.7.0/SHA256SUMS.sig", "approved",
+		))
+	// ListPlatformsForVersion -> two stored platform binaries.
+	mock.ExpectQuery("SELECT.*FROM terraform_version_platforms WHERE version_id").
+		WillReturnRows(sqlmock.NewRows(tmPlatformCols).
+			AddRow(knownUUID, knownUUID, "linux", "amd64", "u", "f1", "h1",
+				"terraform-binaries/1.7.0/linux/amd64/terraform_1.7.0_linux_amd64.zip", "s3", true, true,
+				"synced", nil, nil, time.Now(), time.Now()).
+			AddRow(knownUUID, knownUUID, "windows", "amd64", "u", "f2", "h2",
+				"terraform-binaries/1.7.0/windows/amd64/terraform_1.7.0_windows_amd64.zip", "s3", true, true,
+				"synced", nil, nil, time.Now(), time.Now()))
+	mock.ExpectExec("DELETE FROM terraform_versions WHERE id").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/terraform-mirrors/"+knownUUID+"/versions/1.7.0", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+
+	want := []string{
+		"terraform-binaries/1.7.0/linux/amd64/terraform_1.7.0_linux_amd64.zip",
+		"terraform-binaries/1.7.0/windows/amd64/terraform_1.7.0_windows_amd64.zip",
+		"terraform-binaries/1.7.0/SHA256SUMS",
+		"terraform-binaries/1.7.0/SHA256SUMS.sig",
+	}
+	for _, key := range want {
+		found := false
+		for _, d := range store.deleted {
+			if d == key {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected storage Delete(%q); got %v", key, store.deleted)
+		}
 	}
 }
 
