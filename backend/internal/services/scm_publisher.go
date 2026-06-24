@@ -204,33 +204,43 @@ func (p *SCMPublisher) downloadAndPackage(ctx context.Context, connector scm.Con
 		return "", "", fmt.Errorf("extraction failed: %w", err)
 	}
 
-	// Unwrap the single root directory that GitHub/GitLab inject into their
-	// archive downloads (e.g. "terraform-azurerm-vm-91b78b65.../"). This must
-	// happen unconditionally before applying subpath. The previous approach only
-	// triggered when os.Stat returned IsNotExist, but when subpath is "/" (the
-	// default), filepath.Join(tempDir, "/") resolves to tempDir itself (which
-	// always exists), so the wrapper-detection fallback never fired.
-	baseDir := tempDir
-	if entries, err := os.ReadDir(tempDir); err == nil && len(entries) == 1 && entries[0].IsDir() {
-		baseDir = filepath.Join(tempDir, entries[0].Name())
-	}
-
-	// Resolve the configured module subpath within the repo root.
-	// filepath.Clean("/") == "/" and filepath.Join(base, ".") == base, so
-	// normalise "/" → "." to get the repo root when no subpath is configured.
+	// Resolve the module within the extracted archive. GitHub/GitLab wrap the repo in a
+	// single "<repo>-<sha>/" directory and the subpath must be resolved inside that wrapper.
+	// Azure DevOps does NOT wrap, and a legacy module whose repository root is a single
+	// "<module>/" folder also presents as one top-level directory but must NOT be unwrapped
+	// (descending into it then loses the subpath). So resolve the subpath against the
+	// extracted root first and only fall back to a lone top-level directory if the module is
+	// not valid at the root. Each candidate is validated, so we pick the one that actually
+	// holds a module regardless of whether the provider wrapped the archive.
 	cleanSubpath := filepath.Clean(subpath)
 	if cleanSubpath == "/" {
 		cleanSubpath = "."
 	}
-	modulePath := filepath.Join(baseDir, cleanSubpath)
 
-	if _, err := os.Stat(modulePath); os.IsNotExist(err) {
-		return "", "", fmt.Errorf("module path %q not found in repository", subpath)
+	candidates := []string{tempDir}
+	if entries, err := os.ReadDir(tempDir); err == nil && len(entries) == 1 && entries[0].IsDir() {
+		candidates = append(candidates, filepath.Join(tempDir, entries[0].Name()))
 	}
 
-	// Validate module structure
-	if err := p.validateModuleStructure(modulePath); err != nil {
-		return "", "", fmt.Errorf("invalid module structure: %w", err)
+	var modulePath string
+	var validateErr error
+	for _, base := range candidates {
+		cand := filepath.Join(base, cleanSubpath)
+		if st, err := os.Stat(cand); err != nil || !st.IsDir() {
+			continue
+		}
+		if err := p.validateModuleStructure(cand); err != nil {
+			validateErr = err
+			continue
+		}
+		modulePath = cand
+		break
+	}
+	if modulePath == "" {
+		if validateErr != nil {
+			return "", "", fmt.Errorf("invalid module structure: %w", validateErr)
+		}
+		return "", "", fmt.Errorf("module path %q not found in repository", subpath)
 	}
 
 	// Create new tarball with commit SHA manifest
