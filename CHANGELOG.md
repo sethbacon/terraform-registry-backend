@@ -7,6 +7,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.5](https://github.com/sethbacon/terraform-registry-backend/compare/v2.5.4...v2.5.5) (2026-06-24)
+
+
+### Bug Fixes
+
+* resolve module subpath against archive root before unwrapping ([#524](https://github.com/sethbacon/terraform-registry-backend/issues/524)) ([c751d2c](https://github.com/sethbacon/terraform-registry-backend/commit/c751d2cdd0b5589bdb54b1a95a2e4a6c4e1984d0))
+* **suite:** confine module-consumers proxy to the trusted sibling host ([#522](https://github.com/sethbacon/terraform-registry-backend/issues/522)) ([5a9acdf](https://github.com/sethbacon/terraform-registry-backend/commit/5a9acdf8ebffb2546887714f72b296b7888f39c3))
+
 ## [2.5.4](https://github.com/sethbacon/terraform-registry-backend/compare/v2.5.3...v2.5.4) (2026-06-22)
 
 
