@@ -21,6 +21,7 @@ import (
 
 type mockStorage struct {
 	deleteErr error
+	deleted   []string
 }
 
 func (m *mockStorage) Upload(_ context.Context, _ string, _ io.Reader, _ int64) (*storage.UploadResult, error) {
@@ -29,7 +30,10 @@ func (m *mockStorage) Upload(_ context.Context, _ string, _ io.Reader, _ int64) 
 func (m *mockStorage) Download(_ context.Context, _ string) (io.ReadCloser, error) {
 	return nil, nil
 }
-func (m *mockStorage) Delete(_ context.Context, _ string) error { return m.deleteErr }
+func (m *mockStorage) Delete(_ context.Context, path string) error {
+	m.deleted = append(m.deleted, path)
+	return m.deleteErr
+}
 func (m *mockStorage) GetURL(_ context.Context, _ string, _ time.Duration) (string, error) {
 	return "", nil
 }
