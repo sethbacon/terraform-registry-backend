@@ -3929,7 +3929,7 @@
                         "Bearer": []
                     }
                 ],
-                "description": "Deletes a Terraform binary mirror config and all its associated versions/history. Requires mirrors:manage scope.",
+                "description": "Deletes a Terraform binary mirror config, all its associated versions/history, and the stored binaries for every version (each platform package plus per-version SHA256SUMS and detached signatures) from object storage. Requires mirrors:manage scope.",
                 "produces": [
                     "application/json"
                 ],
@@ -4294,7 +4294,7 @@
                         "Bearer": []
                     }
                 ],
-                "description": "Removes a version and its platform records. Stored binaries are not deleted from storage. Requires mirrors:manage scope.",
+                "description": "Removes a version, its platform records, and the stored binaries (each platform package plus the version's SHA256SUMS and detached signature) from object storage. Requires mirrors:manage scope.",
                 "produces": [
                     "application/json"
                 ],
