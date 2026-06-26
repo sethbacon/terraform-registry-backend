@@ -7,6 +7,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.6](https://github.com/sethbacon/terraform-registry-backend/compare/v2.5.5...v2.5.6) (2026-06-26)
+
+
+### Bug Fixes
+
+* **suite:** build the module-consumers proxy URL with net/url ([#526](https://github.com/sethbacon/terraform-registry-backend/issues/526)) ([21992bc](https://github.com/sethbacon/terraform-registry-backend/commit/21992bc1505c7823c5833fa97827395b0acc8e09))
+* **terraform-mirror:** delete stored binaries when removing versions or configs ([#525](https://github.com/sethbacon/terraform-registry-backend/issues/525)) ([579a13c](https://github.com/sethbacon/terraform-registry-backend/commit/579a13cd19cd05ad01da95fa9ec18000578d65d5))
+
 ## [2.5.5](https://github.com/sethbacon/terraform-registry-backend/compare/v2.5.4...v2.5.5) (2026-06-24)
 
 
