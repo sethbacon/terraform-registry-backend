@@ -129,30 +129,28 @@ func moduleConsumersHandler(getClient func() *suite.DiscoveryClient, cfg *config
 		}
 
 		moduleAddr := c.Param("namespace") + "/" + c.Param("name") + "/" + c.Param("system")
-		// Emit every acceptable host as a repeated &host= param; the sibling
+
+		// Build the outbound URL structurally from the trusted sibling origin
+		// (siblingURL, parsed from the discovery-advertised PublicURL). The
+		// user-provided module address and the registry's own host set are
+		// attached only as escaped query parameters via net/url, so they cannot
+		// influence the request scheme/host/path — the request authority is
+		// fixed to the sibling by construction. (Resolves CodeQL
+		// go/request-forgery: structured net/url construction confines the
+		// untrusted input to the query component instead of concatenating it
+		// into the URL string, which the taint analysis cannot localize.)
+		target := *siblingURL
+		target.Path = strings.TrimRight(siblingURL.Path, "/") + "/api/v1/consumers"
+		// Emit every acceptable host as a repeated host= param; the sibling
 		// matches a state if its captured host is any of them.
-		var sb strings.Builder
-		sb.WriteString(strings.TrimRight(m.PublicURL, "/"))
-		sb.WriteString("/api/v1/consumers?module=")
-		sb.WriteString(url.QueryEscape(moduleAddr))
+		q := url.Values{}
+		q.Set("module", moduleAddr)
 		for _, h := range hosts {
-			sb.WriteString("&host=")
-			sb.WriteString(url.QueryEscape(h))
+			q.Add("host", h)
 		}
-		target := sb.String()
+		target.RawQuery = q.Encode()
 
-		// Defense-in-depth against request forgery (CodeQL go/request-forgery):
-		// the user-provided path params are QueryEscape'd into the query string
-		// above and cannot influence the request authority, but assert explicitly
-		// that the resolved target stays on the trusted sibling origin before
-		// dialing it.
-		parsed, err := url.Parse(target)
-		if err != nil || parsed.Scheme != siblingURL.Scheme || parsed.Host != siblingURL.Host {
-			c.JSON(http.StatusOK, empty)
-			return
-		}
-
-		req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, parsed.String(), nil)
+		req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, target.String(), nil)
 		if err != nil {
 			c.JSON(http.StatusOK, empty)
 			return
