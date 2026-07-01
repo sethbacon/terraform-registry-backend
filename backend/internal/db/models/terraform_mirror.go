@@ -105,7 +105,7 @@ type TerraformSyncHistory struct {
 type CreateTerraformMirrorConfigRequest struct {
 	Name              string   `json:"name" binding:"required,min=1,max=255"`
 	Description       *string  `json:"description,omitempty"`
-	Tool              string   `json:"tool" binding:"required,oneof=terraform opentofu packer sentinel opa custom"`
+	Tool              string   `json:"tool" binding:"required,oneof=terraform opentofu packer sentinel opa terraform-docs custom"`
 	UpstreamURL       string   `json:"upstream_url" binding:"required,url"`
 	PlatformFilter    []string `json:"platform_filter,omitempty"`
 	VersionFilter     *string  `json:"version_filter,omitempty"`
@@ -121,7 +121,7 @@ type CreateTerraformMirrorConfigRequest struct {
 type UpdateTerraformMirrorConfigRequest struct {
 	Name              *string  `json:"name,omitempty" binding:"omitempty,min=1,max=255"`
 	Description       *string  `json:"description,omitempty"`
-	Tool              *string  `json:"tool,omitempty" binding:"omitempty,oneof=terraform opentofu packer sentinel opa custom"`
+	Tool              *string  `json:"tool,omitempty" binding:"omitempty,oneof=terraform opentofu packer sentinel opa terraform-docs custom"`
 	UpstreamURL       *string  `json:"upstream_url,omitempty" binding:"omitempty,url"`
 	PlatformFilter    []string `json:"platform_filter,omitempty"`
 	VersionFilter     *string  `json:"version_filter,omitempty"`

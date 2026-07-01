@@ -17,6 +17,8 @@
 //   - Binary zips matching the pattern  {product}_{version}_{os}_{arch}.zip
 //   - SHA256SUMS file matching          {product}_{version}_SHA256SUMS
 //   - GPG signature matching            {product}_{version}_SHA256SUMS.sig   (or .72D7468F.sig)
+//   - Hyphenated archives matching      {product}-v{version}-{os}-{arch}.tar.gz|.zip  (terraform-docs)
+//   - Combined checksum file matching   {product}-v{version}.sha256sum                (terraform-docs)
 package mirror
 
 import (
@@ -142,6 +144,23 @@ var sha256sumsRE = regexp.MustCompile(`^(.+?)_([^_]+)_SHA256SUMS$`)
 // sha256sumsSigRE matches: {product}_{version}_SHA256SUMS.sig  (or .*.sig)
 var sha256sumsSigRE = regexp.MustCompile(`^(.+?)_([^_]+)_SHA256SUMS\..*sig$`)
 
+// tfDocsArchiveRE matches hyphen-delimited, version-prefixed release archives:
+//
+//	{product}-v{version}-{os}-{arch}.tar.gz   e.g. terraform-docs-v0.24.0-linux-amd64.tar.gz
+//	{product}-v{version}-{os}-{arch}.zip      e.g. terraform-docs-v0.24.0-windows-amd64.zip
+//
+// Used by terraform-docs, whose assets are hyphen-delimited (not underscore) and
+// shipped as .tar.gz / .zip archives rather than bare {product}_{os}_{arch} files.
+// The product prefix is still validated against c.ProductName by the caller, so
+// the greedy leading group cannot cross-match another tool's assets.
+var tfDocsArchiveRE = regexp.MustCompile(`^(.+)-v([0-9][^-\s]*)-([a-z0-9]+)-([a-z0-9]+)\.(?:tar\.gz|zip)$`)
+
+// tfDocsSumsRE matches a single combined checksum file that carries the version
+// in its name with a ".sha256sum" suffix: {product}-v{version}.sha256sum
+// e.g. terraform-docs-v0.24.0.sha256sum. Its body is the standard
+// "<sha256>  <filename>" format parsed by ParseSHASums.
+var tfDocsSumsRE = regexp.MustCompile(`^(.+)-v([0-9][^-\s]*)\.sha256sum$`)
+
 // ----- ListVersions ---------------------------------------------------------
 
 // ListVersions fetches all (non-draft) releases from GitHub and returns them
@@ -247,6 +266,23 @@ func (c *GitHubReleasesClient) parseRelease(rel gitHubRelease) (TerraformVersion
 			continue
 		}
 
+		// Hyphenated, version-prefixed archive? (e.g. terraform-docs-v0.24.0-linux-amd64.tar.gz)
+		if m := tfDocsArchiveRE.FindStringSubmatch(name); m != nil {
+			product, osName, arch := m[1], m[3], m[4]
+			if !strings.EqualFold(product, c.ProductName) {
+				continue
+			}
+			builds = append(builds, TerraformReleaseBuild{
+				Name:     product,
+				Version:  version,
+				OS:       osName,
+				Arch:     arch,
+				Filename: name,
+				URL:      url,
+			})
+			continue
+		}
+
 		// Per-file .sha256 sidecar? (e.g. opa_linux_amd64.sha256)
 		if m := perFileSHA256RE.FindStringSubmatch(name); m != nil {
 			perFileSHAs[m[1]] = url
@@ -255,6 +291,14 @@ func (c *GitHubReleasesClient) parseRelease(rel gitHubRelease) (TerraformVersion
 
 		// SHA256SUMS file?
 		if m := sha256sumsRE.FindStringSubmatch(name); m != nil {
+			if strings.EqualFold(m[1], c.ProductName) {
+				sha256sumsURL = url
+			}
+			continue
+		}
+
+		// Combined ".sha256sum" checksum file? (e.g. terraform-docs-v0.24.0.sha256sum)
+		if m := tfDocsSumsRE.FindStringSubmatch(name); m != nil {
 			if strings.EqualFold(m[1], c.ProductName) {
 				sha256sumsURL = url
 			}
@@ -411,7 +455,7 @@ func (c *GitHubReleasesClient) DownloadBinaryStream(ctx context.Context, downloa
 // ----- helpers --------------------------------------------------------------
 
 func (c *GitHubReleasesClient) findSHA256SumsURL(ctx context.Context, version string) (string, error) {
-	return c.findAssetURL(ctx, version, sha256sumsRE)
+	return c.findAssetURL(ctx, version, sha256sumsRE, tfDocsSumsRE)
 }
 
 func (c *GitHubReleasesClient) findSHA256SumsSigURL(ctx context.Context, version string) (string, error) {
@@ -420,8 +464,9 @@ func (c *GitHubReleasesClient) findSHA256SumsSigURL(ctx context.Context, version
 
 // findAssetURL fetches the specific release by tag (tries with and without
 // leading "v") and returns the browser_download_url of the first asset whose
-// name matches re and whose product prefix matches c.ProductName.
-func (c *GitHubReleasesClient) findAssetURL(ctx context.Context, version string, re *regexp.Regexp) (string, error) {
+// name matches any of the supplied regexes and whose product prefix (capture
+// group 1) matches c.ProductName.
+func (c *GitHubReleasesClient) findAssetURL(ctx context.Context, version string, res ...*regexp.Regexp) (string, error) {
 	// GitHub tags may use "v1.9.0" or "1.9.0" — try both.
 	for _, tag := range []string{"v" + version, version} {
 		rel, err := c.fetchReleaseByTag(ctx, tag)
@@ -429,9 +474,11 @@ func (c *GitHubReleasesClient) findAssetURL(ctx context.Context, version string,
 			continue
 		}
 		for _, asset := range rel.Assets {
-			if m := re.FindStringSubmatch(asset.Name); m != nil {
-				if strings.EqualFold(m[1], c.ProductName) {
-					return asset.BrowserDownloadURL, nil
+			for _, re := range res {
+				if m := re.FindStringSubmatch(asset.Name); m != nil {
+					if strings.EqualFold(m[1], c.ProductName) {
+						return asset.BrowserDownloadURL, nil
+					}
 				}
 			}
 		}

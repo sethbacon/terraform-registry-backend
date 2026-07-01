@@ -309,6 +309,157 @@ func TestSHA256SumsSigRE(t *testing.T) {
 	}
 }
 
+func TestTfDocsArchiveRE(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		product string
+		version string
+		os      string
+		arch    string
+		match   bool
+	}{
+		{"linux amd64 tar.gz", "terraform-docs-v0.24.0-linux-amd64.tar.gz", "terraform-docs", "0.24.0", "linux", "amd64", true},
+		{"darwin arm64 tar.gz", "terraform-docs-v0.24.0-darwin-arm64.tar.gz", "terraform-docs", "0.24.0", "darwin", "arm64", true},
+		{"freebsd arm tar.gz", "terraform-docs-v0.19.0-freebsd-arm.tar.gz", "terraform-docs", "0.19.0", "freebsd", "arm", true},
+		{"windows amd64 zip", "terraform-docs-v0.24.0-windows-amd64.zip", "terraform-docs", "0.24.0", "windows", "amd64", true},
+		// Must NOT match underscore-delimited, bare, or non-archive assets.
+		{"opentofu underscore zip", "opentofu_1.9.0_linux_amd64.zip", "", "", "", "", false},
+		{"opa bare binary", "opa_linux_amd64", "", "", "", "", false},
+		{"combined sha256sum", "terraform-docs-v0.24.0.sha256sum", "", "", "", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := tfDocsArchiveRE.FindStringSubmatch(tt.input)
+			if tt.match {
+				if m == nil {
+					t.Fatalf("tfDocsArchiveRE did not match %q", tt.input)
+				}
+				if m[1] != tt.product || m[2] != tt.version || m[3] != tt.os || m[4] != tt.arch {
+					t.Errorf("groups = [%q %q %q %q], want [%q %q %q %q]",
+						m[1], m[2], m[3], m[4], tt.product, tt.version, tt.os, tt.arch)
+				}
+			} else if m != nil {
+				t.Errorf("tfDocsArchiveRE unexpectedly matched %q", tt.input)
+			}
+		})
+	}
+}
+
+func TestTfDocsSumsRE(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		product string
+		match   bool
+	}{
+		{"combined sha256sum", "terraform-docs-v0.24.0.sha256sum", "terraform-docs", true},
+		{"archive tar.gz", "terraform-docs-v0.24.0-linux-amd64.tar.gz", "", false},
+		{"per-file sha256", "opa_linux_amd64.sha256", "", false},
+		{"underscore SHA256SUMS", "opentofu_1.9.0_SHA256SUMS", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := tfDocsSumsRE.FindStringSubmatch(tt.input)
+			if tt.match {
+				if m == nil {
+					t.Fatalf("tfDocsSumsRE did not match %q", tt.input)
+				}
+				if m[1] != tt.product {
+					t.Errorf("product = %q, want %q", m[1], tt.product)
+				}
+			} else if m != nil {
+				t.Errorf("tfDocsSumsRE unexpectedly matched %q", tt.input)
+			}
+		})
+	}
+}
+
+// TestTerraformDocsAssets_NoCrossMatch guards against the terraform-docs asset
+// names being accidentally consumed by the underscore-oriented regexes (which
+// would mis-parse them). The two naming schemes must stay mutually exclusive.
+func TestTerraformDocsAssets_NoCrossMatch(t *testing.T) {
+	if binaryZipRE.MatchString("terraform-docs-v0.24.0-windows-amd64.zip") {
+		t.Error("binaryZipRE must not match the hyphenated terraform-docs zip")
+	}
+	if bareBinaryRE.MatchString("terraform-docs-v0.24.0-linux-amd64.tar.gz") {
+		t.Error("bareBinaryRE must not match a terraform-docs archive")
+	}
+	if perFileSHA256RE.MatchString("terraform-docs-v0.24.0.sha256sum") {
+		t.Error("perFileSHA256RE must not match the combined .sha256sum file")
+	}
+	if sha256sumsRE.MatchString("terraform-docs-v0.24.0.sha256sum") {
+		t.Error("sha256sumsRE must not match the .sha256sum file")
+	}
+}
+
+// TestParseRelease_TerraformDocs verifies the terraform-docs release layout
+// (hyphenated .tar.gz/.zip archives + a single combined .sha256sum file) parses
+// into builds with the combined checksum file recorded as SHASumsURL and no
+// signature (terraform-docs is unsigned upstream).
+func TestParseRelease_TerraformDocs(t *testing.T) {
+	c := &GitHubReleasesClient{
+		Owner:       "terraform-docs",
+		Repo:        "terraform-docs",
+		ProductName: "terraform-docs",
+	}
+
+	rel := gitHubRelease{
+		TagName: "v0.24.0",
+		Assets: []gitHubAsset{
+			{Name: "terraform-docs-v0.24.0-linux-amd64.tar.gz", BrowserDownloadURL: "https://github.com/terraform-docs/terraform-docs/releases/download/v0.24.0/terraform-docs-v0.24.0-linux-amd64.tar.gz"},
+			{Name: "terraform-docs-v0.24.0-darwin-arm64.tar.gz", BrowserDownloadURL: "https://github.com/terraform-docs/terraform-docs/releases/download/v0.24.0/terraform-docs-v0.24.0-darwin-arm64.tar.gz"},
+			{Name: "terraform-docs-v0.24.0-windows-amd64.zip", BrowserDownloadURL: "https://github.com/terraform-docs/terraform-docs/releases/download/v0.24.0/terraform-docs-v0.24.0-windows-amd64.zip"},
+			{Name: "terraform-docs-v0.24.0.sha256sum", BrowserDownloadURL: "https://github.com/terraform-docs/terraform-docs/releases/download/v0.24.0/terraform-docs-v0.24.0.sha256sum"},
+		},
+	}
+
+	vi, ok := c.parseRelease(rel)
+	if !ok {
+		t.Fatal("parseRelease returned ok=false, expected true")
+	}
+	if vi.Version != "0.24.0" {
+		t.Errorf("Version = %q, want 0.24.0", vi.Version)
+	}
+	if len(vi.Builds) != 3 {
+		t.Fatalf("Builds count = %d, want 3", len(vi.Builds))
+	}
+	if vi.SHASumsURL == "" {
+		t.Error("SHASumsURL should be set from the .sha256sum asset")
+	}
+	if vi.SHASumsSignature != "" {
+		t.Error("SHASumsSignature should be empty (terraform-docs is unsigned)")
+	}
+
+	var foundLinux bool
+	for _, b := range vi.Builds {
+		if b.OS == "linux" && b.Arch == "amd64" {
+			foundLinux = true
+			if b.Filename != "terraform-docs-v0.24.0-linux-amd64.tar.gz" {
+				t.Errorf("linux/amd64 filename = %q", b.Filename)
+			}
+		}
+	}
+	if !foundLinux {
+		t.Error("expected a linux/amd64 build")
+	}
+}
+
+// TestParseRelease_TerraformDocsWrongProductSkipped ensures archives whose
+// product prefix does not match the configured product are ignored.
+func TestParseRelease_TerraformDocsWrongProductSkipped(t *testing.T) {
+	c := &GitHubReleasesClient{ProductName: "terraform-docs"}
+	rel := gitHubRelease{
+		TagName: "v0.24.0",
+		Assets: []gitHubAsset{
+			{Name: "some-other-tool-v0.24.0-linux-amd64.tar.gz", BrowserDownloadURL: "https://example.com/x.tar.gz"},
+		},
+	}
+	if _, ok := c.parseRelease(rel); ok {
+		t.Error("parseRelease should return ok=false when no assets match the product")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Redirect transport: rewrites any host → test server
 // ---------------------------------------------------------------------------

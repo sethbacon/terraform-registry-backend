@@ -966,6 +966,8 @@ func productNameForTool(tool string) string {
 		return "sentinel"
 	case "opa":
 		return "opa"
+	case "terraform-docs":
+		return "terraform-docs"
 	default:
 		return "terraform"
 	}
