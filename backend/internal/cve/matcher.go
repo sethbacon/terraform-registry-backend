@@ -34,10 +34,11 @@ var scannerPackage = map[string][2]string{
 
 // binaryRepoURL maps a tool name to the canonical GitHub repo URL used in OSV GIT queries.
 var binaryRepoURL = map[string]string{
-	"terraform": "https://github.com/hashicorp/terraform",
-	"opentofu":  "https://github.com/opentofu/opentofu",
-	"packer":    "https://github.com/hashicorp/packer",
-	"opa":       "https://github.com/open-policy-agent/opa",
+	"terraform":      "https://github.com/hashicorp/terraform",
+	"opentofu":       "https://github.com/opentofu/opentofu",
+	"packer":         "https://github.com/hashicorp/packer",
+	"opa":            "https://github.com/open-policy-agent/opa",
+	"terraform-docs": "https://github.com/terraform-docs/terraform-docs",
 }
 
 // batchSize is the maximum number of queries per OSV /v1/querybatch call.

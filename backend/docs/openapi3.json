@@ -17752,6 +17752,7 @@
                             "packer",
                             "sentinel",
                             "opa",
+                            "terraform-docs",
                             "custom"
                         ]
                     },
@@ -19235,6 +19236,7 @@
                             "packer",
                             "sentinel",
                             "opa",
+                            "terraform-docs",
                             "custom"
                         ]
                     },

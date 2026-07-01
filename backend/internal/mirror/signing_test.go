@@ -3,8 +3,9 @@ package mirror
 import "testing"
 
 func TestIsUnsignedUpstreamTool(t *testing.T) {
-	// OPA is unsigned upstream; matching is case-insensitive and trims space.
-	for _, tool := range []string{"opa", "OPA", "Opa", " opa "} {
+	// OPA and terraform-docs are unsigned upstream; matching is case-insensitive
+	// and trims space.
+	for _, tool := range []string{"opa", "OPA", "Opa", " opa ", "terraform-docs", "Terraform-Docs", " terraform-docs "} {
 		if !IsUnsignedUpstreamTool(tool) {
 			t.Errorf("IsUnsignedUpstreamTool(%q) = false, want true", tool)
 		}

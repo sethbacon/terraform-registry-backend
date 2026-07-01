@@ -40,6 +40,18 @@ func TestProductNameForTool_Unknown(t *testing.T) {
 	}
 }
 
+func TestProductNameForTool_TerraformDocs(t *testing.T) {
+	if got := productNameForTool("terraform-docs"); got != "terraform-docs" {
+		t.Errorf("got %q, want %q", got, "terraform-docs")
+	}
+}
+
+func TestProductNameForTool_TerraformDocsUpperCase(t *testing.T) {
+	if got := productNameForTool("Terraform-Docs"); got != "terraform-docs" {
+		t.Errorf("got %q, want %q", got, "terraform-docs")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // gpgKeyForTool
 // ---------------------------------------------------------------------------
@@ -75,6 +87,15 @@ func TestGPGKeyForTool_Unknown(t *testing.T) {
 	key := gpgKeyForTool("something-else")
 	if key != "" {
 		t.Errorf("expected empty key for unknown tool, got non-empty")
+	}
+}
+
+func TestGPGKeyForTool_TerraformDocs(t *testing.T) {
+	// terraform-docs publishes no GPG signatures (checksum-only upstream), so it
+	// must return an empty key; sync then verifies by SHA-256 checksum only.
+	SetReleasesKeyResolver(nil)
+	if key := gpgKeyForTool("terraform-docs"); key != "" {
+		t.Errorf("expected empty GPG key for terraform-docs, got non-empty")
 	}
 }
 

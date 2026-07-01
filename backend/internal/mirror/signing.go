@@ -11,9 +11,25 @@ import "strings"
 //
 // OPA (open-policy-agent/opa) is the canonical case: its GitHub releases ship
 // opa_<os>_<arch> binaries each with a sibling opa_<os>_<arch>.sha256, and no
-// .sig / SHA256SUMS / cosign artifacts.
+// .sig / SHA256SUMS / cosign signature artifacts attached to the release.
+//
+// Nuance (verified 2026-06-28): recent OPA releases (v1.18.0+) do carry an
+// out-of-band GitHub Artifact Attestation — a Sigstore-signed in-toto statement
+// (predicate https://in-toto.io/attestation/release/v0.2) served from GitHub's
+// attestation API, not as a release asset. It is NOT GPG and NOT SLSA build
+// provenance (the default `gh attestation verify` provenance lookup 404s), so it
+// does not change the checksum-only handling here; attestation-based authenticity
+// would be a separate future enhancement, not a GPG key to embed.
+//
+// terraform-docs (terraform-docs/terraform-docs) is a second case (verified
+// 2026-06-30): its GitHub releases ship terraform-docs-v<ver>-<os>-<arch>.tar.gz
+// (and .zip for windows) archives plus a single combined
+// terraform-docs-v<ver>.sha256sum checksum file, with no .sig / cosign / SLSA
+// provenance artifacts. Integrity is verified against that checksum file;
+// authenticity cannot be, exactly as with OPA.
 var unsignedUpstreamTools = map[string]bool{
-	"opa": true,
+	"opa":            true,
+	"terraform-docs": true,
 }
 
 // IsUnsignedUpstreamTool reports whether the given tool's upstream publishes no

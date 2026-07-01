@@ -284,7 +284,7 @@ func (r *CVERepository) ListAllBinaryCandidates(ctx context.Context) ([]BinaryCa
 		FROM terraform_versions tv
 		JOIN terraform_mirror_configs c ON c.id = tv.config_id
 		WHERE c.enabled = true
-		  AND c.tool IN ('terraform', 'opentofu', 'packer', 'sentinel', 'opa')
+		  AND c.tool IN ('terraform', 'opentofu', 'packer', 'sentinel', 'opa', 'terraform-docs')
 		  AND tv.is_deprecated = false
 		  AND tv.sync_status = 'synced'
 		ORDER BY c.tool, tv.version
