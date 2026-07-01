@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.0](https://github.com/sethbacon/terraform-registry-backend/compare/v2.5.6...v2.6.0) (2026-07-01)
+
+
+### Features
+
+* **mirror:** add terraform-docs as a first-class binary mirror tool ([#529](https://github.com/sethbacon/terraform-registry-backend/issues/529)) ([26d0962](https://github.com/sethbacon/terraform-registry-backend/commit/26d0962c8357f3f24f6440d8ba3dd27e6e969e3e))
+
 ## [2.5.6](https://github.com/sethbacon/terraform-registry-backend/compare/v2.5.5...v2.5.6) (2026-06-26)
 
 
