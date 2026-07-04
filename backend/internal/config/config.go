@@ -219,6 +219,32 @@ type ScannerAutoUpdateConfig struct {
 	AutoApproveRules string `mapstructure:"auto_approve_rules"`
 }
 
+// ScanningConfigDB is the JSON shape persisted in system_settings.scanning_config.
+// It is exported so the setup wizard, the startup reload, the activation
+// reconciler, and the admin auto-update PUT handler all agree on the same shape
+// (a prior ad-hoc anonymous struct in the activation path omitted AutoUpdate,
+// silently wiping persisted auto-update settings on every activation).
+type ScanningConfigDB struct {
+	Enabled           bool                `json:"enabled"`
+	Tool              string              `json:"tool"`
+	BinaryPath        string              `json:"binary_path"`
+	ExpectedVersion   string              `json:"expected_version"`
+	SeverityThreshold string              `json:"severity_threshold"`
+	TimeoutSecs       int                 `json:"timeout_secs"`
+	WorkerCount       int                 `json:"worker_count"`
+	ScanIntervalMins  int                 `json:"scan_interval_mins"`
+	InstallDir        string              `json:"install_dir"`
+	AutoUpdate        ScannerAutoUpdateDB `json:"auto_update"`
+}
+
+// ScannerAutoUpdateDB is the JSON shape of ScanningConfigDB.AutoUpdate.
+type ScannerAutoUpdateDB struct {
+	Enabled          bool   `json:"enabled"`
+	IntervalHours    int    `json:"interval_hours"`
+	RequiresApproval bool   `json:"requires_approval"`
+	AutoApproveRules string `json:"auto_approve_rules,omitempty"`
+}
+
 // ServerConfig holds HTTP server configuration
 type ServerConfig struct {
 	Host            string        `mapstructure:"host"`

@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -42,6 +43,8 @@ type ScannerUpdateJob struct {
 	download     installer.InstallFunc
 	stopChan     chan struct{}
 	manualCh     chan struct{}
+	mu           sync.Mutex
+	started      bool
 }
 
 // NewScannerUpdateJob constructs a ScannerUpdateJob. check and download default to
@@ -92,6 +95,16 @@ func (j *ScannerUpdateJob) Start(ctx context.Context) {
 		return
 	}
 
+	j.mu.Lock()
+	if j.started {
+		j.mu.Unlock()
+		log.Println("[scanner-update] already running, ignoring duplicate Start")
+		return
+	}
+	j.started = true
+	stopChan := j.stopChan // capture under mutex; Stop() may replace the field concurrently
+	j.mu.Unlock()
+
 	intervalHours := j.scanCfg.AutoUpdate.IntervalHours
 	if intervalHours <= 0 {
 		intervalHours = 24
@@ -116,11 +129,14 @@ func (j *ScannerUpdateJob) Start(ctx context.Context) {
 			log.Println("[scanner-update] manual trigger received")
 			j.runCheck(ctx)
 			j.reconcileActivations(ctx)
-		case <-j.stopChan:
+		case <-stopChan:
 			log.Println("[scanner-update] stopped")
 			return
 		case <-ctx.Done():
 			log.Println("[scanner-update] context cancelled")
+			j.mu.Lock()
+			j.started = false
+			j.mu.Unlock()
 			return
 		}
 	}
@@ -135,9 +151,17 @@ func (j *ScannerUpdateJob) TriggerCheck() {
 	}
 }
 
-// Stop signals the background loop to exit.
+// Stop signals the background loop to exit. Safe to call multiple times and
+// safe to call when the job was never started; a subsequent Start() can run
+// again since the stop channel is replaced with a fresh one.
 func (j *ScannerUpdateJob) Stop() {
-	close(j.stopChan)
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.started {
+		close(j.stopChan)
+		j.stopChan = make(chan struct{}) // fresh channel so Start() can be called again
+		j.started = false
+	}
 }
 
 // runCheck queries upstream for the latest release of the configured tool and,
@@ -297,17 +321,7 @@ func (j *ScannerUpdateJob) Activate(ctx context.Context, v *models.ScannerBinary
 	j.scanCfg.BinaryPath = *v.BinaryPath
 	j.scanCfg.ExpectedVersion = v.Version
 
-	persisted := struct {
-		Enabled           bool   `json:"enabled"`
-		Tool              string `json:"tool"`
-		BinaryPath        string `json:"binary_path"`
-		ExpectedVersion   string `json:"expected_version"`
-		SeverityThreshold string `json:"severity_threshold"`
-		TimeoutSecs       int    `json:"timeout_secs"`
-		WorkerCount       int    `json:"worker_count"`
-		ScanIntervalMins  int    `json:"scan_interval_mins"`
-		InstallDir        string `json:"install_dir"`
-	}{
+	persisted := config.ScanningConfigDB{
 		Enabled:           j.scanCfg.Enabled,
 		Tool:              j.scanCfg.Tool,
 		BinaryPath:        j.scanCfg.BinaryPath,
@@ -317,6 +331,12 @@ func (j *ScannerUpdateJob) Activate(ctx context.Context, v *models.ScannerBinary
 		WorkerCount:       j.scanCfg.WorkerCount,
 		ScanIntervalMins:  j.scanCfg.ScanIntervalMins,
 		InstallDir:        j.scanCfg.InstallDir,
+		AutoUpdate: config.ScannerAutoUpdateDB{
+			Enabled:          j.scanCfg.AutoUpdate.Enabled,
+			IntervalHours:    j.scanCfg.AutoUpdate.IntervalHours,
+			RequiresApproval: j.scanCfg.AutoUpdate.RequiresApproval,
+			AutoApproveRules: j.scanCfg.AutoUpdate.AutoApproveRules,
+		},
 	}
 	jsonBytes, err := json.Marshal(persisted)
 	if err != nil {

@@ -277,6 +277,22 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 			}
 		}
 	}
+	// Always reload persisted auto-update settings, even when scanning itself is
+	// enabled via env/YAML (the gate above only covers the scanning.enabled
+	// toggle). Without this, admin-configured auto-update settings would never
+	// take effect at boot in that case.
+	if scanConfigJSON, err := oidcConfigRepo.GetScanningConfig(context.Background()); err == nil && scanConfigJSON != nil {
+		var dbCfg config.ScanningConfigDB
+		if err := json.Unmarshal(scanConfigJSON, &dbCfg); err != nil {
+			log.Printf("scanner startup: failed to parse persisted scanning config for auto-update reload: %v", err)
+		} else {
+			cfg.Scanning.AutoUpdate.Enabled = dbCfg.AutoUpdate.Enabled
+			cfg.Scanning.AutoUpdate.IntervalHours = dbCfg.AutoUpdate.IntervalHours
+			cfg.Scanning.AutoUpdate.RequiresApproval = dbCfg.AutoUpdate.RequiresApproval
+			cfg.Scanning.AutoUpdate.AutoApproveRules = dbCfg.AutoUpdate.AutoApproveRules
+		}
+	}
+
 	moduleScannerJob := jobs.NewModuleScannerJob(&cfg.Scanning, scanRepo, moduleRepo, storageBackend)
 	go func() {
 		if err := moduleScannerJob.Start(context.Background()); err != nil {
@@ -1006,6 +1022,10 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 			authenticatedGroup.GET("/admin/scanning/latest",
 				middleware.RequireScope(auth.ScopeScanningRead),
 				admin.GetScannerLatestHandler(&cfg.Scanning))
+			scanningAutoUpdateHandler := admin.NewScanningAutoUpdateHandler(&cfg.Scanning, oidcConfigRepo, scannerUpdateJob)
+			authenticatedGroup.PUT("/admin/scanning/auto-update",
+				middleware.RequireScope(auth.ScopeAdmin),
+				scanningAutoUpdateHandler.Put)
 
 			// Notifications (SMTP) admin endpoints
 			authenticatedGroup.GET("/admin/notifications/config",
