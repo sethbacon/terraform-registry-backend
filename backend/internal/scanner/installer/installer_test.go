@@ -104,6 +104,67 @@ func setupTestServer(t *testing.T, version string, archiveName, checksumsName st
 	return server, spec
 }
 
+// setupTestServerFull is like setupTestServer but optionally serves a signature asset
+// and/or sets the archive asset's GitHub `digest` field. Pass "" for checksumsName to
+// omit the checksums asset entirely (for UseAssetDigest-style tools like checkov);
+// pass "" for sigName to omit the signature asset.
+func setupTestServerFull(t *testing.T, version string, archiveName, checksumsName, sigName string, archiveData, checksumsData, sigData []byte, archiveDigest string) (*httptest.Server, AssetSpec) {
+	t.Helper()
+
+	mux := http.NewServeMux()
+	server := httptest.NewTLSServer(mux)
+	t.Cleanup(server.Close)
+
+	assets := []ghAsset{
+		{Name: archiveName, BrowserDownloadURL: server.URL + "/assets/" + archiveName, Digest: archiveDigest},
+	}
+	if checksumsName != "" {
+		assets = append(assets, ghAsset{Name: checksumsName, BrowserDownloadURL: server.URL + "/assets/" + checksumsName})
+	}
+	if sigName != "" {
+		assets = append(assets, ghAsset{Name: sigName, BrowserDownloadURL: server.URL + "/assets/" + sigName})
+	}
+	release := ghRelease{TagName: "v" + version, Assets: assets}
+
+	mux.HandleFunc("/releases/latest", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(release)
+	})
+	mux.HandleFunc("/releases/tags/", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(release)
+	})
+	mux.HandleFunc("/assets/"+archiveName, func(w http.ResponseWriter, r *http.Request) {
+		w.Write(archiveData)
+	})
+	if checksumsName != "" {
+		mux.HandleFunc("/assets/"+checksumsName, func(w http.ResponseWriter, r *http.Request) {
+			w.Write(checksumsData)
+		})
+	}
+	if sigName != "" {
+		mux.HandleFunc("/assets/"+sigName, func(w http.ResponseWriter, r *http.Request) {
+			w.Write(sigData)
+		})
+	}
+
+	spec := AssetSpec{
+		LatestReleaseAPI: server.URL + "/releases/latest",
+		VersionedAPI:     server.URL + "/releases/tags/v%s",
+		AssetPattern:     mustCompile(t, `^`+regexp_escape(archiveName)+`$`),
+		BinaryInArchive:  "trivy",
+		ArchiveFormat:    "tar.gz",
+	}
+	if checksumsName != "" {
+		spec.ChecksumsPattern = mustCompile(t, `^`+regexp_escape(checksumsName)+`$`)
+	} else {
+		spec.UseAssetDigest = true
+	}
+	if sigName != "" {
+		spec.SignaturePattern = mustCompile(t, `^`+regexp_escape(sigName)+`$`)
+	}
+
+	return server, spec
+}
+
 func regexp_escape(s string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(s, ".", `\.`), "+", `\+`)
 }
@@ -729,5 +790,191 @@ func TestHandle_InstallerError(t *testing.T) {
 	}
 	if !strings.Contains(msg, "checksum") {
 		t.Errorf("message should mention checksum: %s", msg)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase C: CheckLatest, DownloadVerified, digest verification, signature hook
+// ---------------------------------------------------------------------------
+
+func TestCheckLatest_ReturnsLatestVersionAndURLs(t *testing.T) {
+	archiveName := "trivy_0.53.0_Linux-64bit.tar.gz"
+	checksumsName := "trivy_0.53.0_checksums.txt"
+	archive := buildTarGz(t, map[string][]byte{"trivy": stubBinary})
+	checksums := []byte(checksumLine(archive, archiveName) + "\n")
+
+	server, spec := setupTestServer(t, "0.53.0", archiveName, checksumsName, archive, checksums)
+
+	platform := runtime.GOOS + "/" + runtime.GOARCH
+	origCatalog := Catalog["trivy"]
+	Catalog["trivy"] = map[string]AssetSpec{platform: spec}
+	t.Cleanup(func() { Catalog["trivy"] = origCatalog })
+
+	info, err := CheckLatest(context.Background(), InstallConfig{HTTPClient: server.Client()}, "trivy")
+	if err != nil {
+		t.Fatalf("CheckLatest: %v", err)
+	}
+	if info.LatestVersion != "0.53.0" {
+		t.Errorf("LatestVersion = %q, want 0.53.0", info.LatestVersion)
+	}
+	if info.ArchiveURL == "" {
+		t.Error("ArchiveURL empty")
+	}
+	if info.ChecksumsURL == "" {
+		t.Error("ChecksumsURL empty")
+	}
+	if info.SignatureSupported {
+		t.Error("SignatureSupported should be false when spec.Signature.Type is unset")
+	}
+}
+
+func TestDownloadVerified_WritesVersionedDir_NoSymlink(t *testing.T) {
+	archiveName := "trivy_0.54.0_Linux-64bit.tar.gz"
+	checksumsName := "trivy_0.54.0_checksums.txt"
+	archive := buildTarGz(t, map[string][]byte{"trivy": stubBinary})
+	checksums := []byte(checksumLine(archive, archiveName) + "\n")
+
+	server, spec := setupTestServer(t, "0.54.0", archiveName, checksumsName, archive, checksums)
+
+	platform := runtime.GOOS + "/" + runtime.GOARCH
+	origCatalog := Catalog["trivy"]
+	Catalog["trivy"] = map[string]AssetSpec{platform: spec}
+	t.Cleanup(func() { Catalog["trivy"] = origCatalog })
+
+	installDir := t.TempDir()
+	result, err := DownloadVerified(context.Background(), InstallConfig{
+		InstallDir: installDir,
+		HTTPClient: server.Client(),
+	}, "trivy", "0.54.0")
+	if err != nil {
+		t.Fatalf("DownloadVerified: %v", err)
+	}
+	if result.Version != "0.54.0" {
+		t.Errorf("version = %q, want 0.54.0", result.Version)
+	}
+	if !strings.Contains(result.BinaryPath, "trivy-0.54.0") {
+		t.Errorf("BinaryPath = %q, want to contain trivy-0.54.0", result.BinaryPath)
+	}
+
+	symlinkPath := filepath.Join(installDir, "trivy")
+	if _, statErr := os.Lstat(symlinkPath); statErr == nil {
+		t.Errorf("symlink %q should not exist after DownloadVerified", symlinkPath)
+	} else if !os.IsNotExist(statErr) {
+		t.Errorf("unexpected error checking symlink: %v", statErr)
+	}
+
+	if runtime.GOOS != "windows" {
+		info, statErr := os.Stat(result.BinaryPath)
+		if statErr != nil {
+			t.Fatalf("Stat: %v", statErr)
+		}
+		if info.Mode()&0o111 == 0 {
+			t.Error("binary is not executable")
+		}
+	}
+}
+
+func TestDownloadExtract_AssetDigest_Success(t *testing.T) {
+	archiveName := "trivy_0.55.0_Linux-64bit.tar.gz"
+	archive := buildTarGz(t, map[string][]byte{"trivy": stubBinary})
+	h := sha256.Sum256(archive)
+	digest := "sha256:" + hex.EncodeToString(h[:])
+
+	server, spec := setupTestServerFull(t, "0.55.0", archiveName, "", "", archive, nil, nil, digest)
+
+	platform := runtime.GOOS + "/" + runtime.GOARCH
+	origCatalog := Catalog["trivy"]
+	Catalog["trivy"] = map[string]AssetSpec{platform: spec}
+	t.Cleanup(func() { Catalog["trivy"] = origCatalog })
+
+	result, err := Install(context.Background(), InstallConfig{
+		InstallDir: t.TempDir(),
+		HTTPClient: server.Client(),
+	}, "trivy", "0.55.0")
+	if err != nil {
+		t.Fatalf("Install (asset-digest verification): %v", err)
+	}
+	if result.Version != "0.55.0" {
+		t.Errorf("version = %q, want 0.55.0", result.Version)
+	}
+}
+
+func TestDownloadExtract_AssetDigest_Mismatch(t *testing.T) {
+	archiveName := "trivy_0.55.0_Linux-64bit.tar.gz"
+	archive := buildTarGz(t, map[string][]byte{"trivy": stubBinary})
+	wrongDigest := "sha256:" + strings.Repeat("aa", 32)
+
+	server, spec := setupTestServerFull(t, "0.55.0", archiveName, "", "", archive, nil, nil, wrongDigest)
+
+	platform := runtime.GOOS + "/" + runtime.GOARCH
+	origCatalog := Catalog["trivy"]
+	Catalog["trivy"] = map[string]AssetSpec{platform: spec}
+	t.Cleanup(func() { Catalog["trivy"] = origCatalog })
+
+	_, err := Install(context.Background(), InstallConfig{
+		InstallDir: t.TempDir(),
+		HTTPClient: server.Client(),
+	}, "trivy", "0.55.0")
+	if err == nil || !strings.Contains(err.Error(), "checksum") {
+		t.Errorf("expected checksum mismatch error, got: %v", err)
+	}
+}
+
+func TestInstall_BareChecksumsFile_Matches(t *testing.T) {
+	// Mirrors the real terrascan catalog fix: a bare "checksums.txt" (no tool/version
+	// prefix) must match the fixed ChecksumsPattern.
+	archiveName := "terrascan_1.19.9_Linux_x86_64.tar.gz"
+	checksumsName := "checksums.txt"
+	archive := buildTarGz(t, map[string][]byte{"trivy": stubBinary})
+	checksums := []byte(checksumLine(archive, archiveName) + "\n")
+
+	server, spec := setupTestServer(t, "1.19.9", archiveName, checksumsName, archive, checksums)
+	spec.ChecksumsPattern = mustCompile(t, `^(terrascan_[\d.]+_)?checksums\.txt$`)
+
+	platform := runtime.GOOS + "/" + runtime.GOARCH
+	origCatalog := Catalog["trivy"]
+	Catalog["trivy"] = map[string]AssetSpec{platform: spec}
+	t.Cleanup(func() { Catalog["trivy"] = origCatalog })
+
+	result, err := Install(context.Background(), InstallConfig{
+		InstallDir: t.TempDir(),
+		HTTPClient: server.Client(),
+	}, "trivy", "1.19.9")
+	if err != nil {
+		t.Fatalf("Install (bare checksums.txt): %v", err)
+	}
+	if result.Version != "1.19.9" {
+		t.Errorf("version = %q, want 1.19.9", result.Version)
+	}
+}
+
+func TestInstall_SigstoreSignature_DoesNotBlock_SetsSignatureType(t *testing.T) {
+	archiveName := "trivy_0.56.0_Linux-64bit.tar.gz"
+	checksumsName := "trivy_0.56.0_checksums.txt"
+	sigName := "trivy_0.56.0_checksums.txt.sigstore.json"
+	archive := buildTarGz(t, map[string][]byte{"trivy": stubBinary})
+	checksums := []byte(checksumLine(archive, archiveName) + "\n")
+	sigBundle := []byte(`{"mediaType":"application/vnd.dev.sigstore.bundle+json;version=0.1"}`)
+
+	server, spec := setupTestServerFull(t, "0.56.0", archiveName, checksumsName, sigName, archive, checksums, sigBundle, "")
+	spec.Signature = SignatureSpec{Type: "sigstore"}
+
+	platform := runtime.GOOS + "/" + runtime.GOARCH
+	origCatalog := Catalog["trivy"]
+	Catalog["trivy"] = map[string]AssetSpec{platform: spec}
+	t.Cleanup(func() { Catalog["trivy"] = origCatalog })
+
+	result, err := Install(context.Background(), InstallConfig{
+		InstallDir: t.TempDir(),
+		HTTPClient: server.Client(),
+	}, "trivy", "0.56.0")
+	if err != nil {
+		t.Fatalf("Install should not fail on unimplemented sigstore verification: %v", err)
+	}
+	if result.SignatureVerified {
+		t.Error("SignatureVerified should be false (sigstore verification not implemented yet)")
+	}
+	if result.SignatureType != "sigstore" {
+		t.Errorf("SignatureType = %q, want sigstore", result.SignatureType)
 	}
 }

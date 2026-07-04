@@ -950,6 +950,9 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 			authenticatedGroup.POST("/admin/scanning/install",
 				middleware.RequireScope(auth.ScopeAdmin),
 				admin.InstallScannerHandler(&cfg.Scanning, nil))
+			authenticatedGroup.GET("/admin/scanning/latest",
+				middleware.RequireScope(auth.ScopeScanningRead),
+				admin.GetScannerLatestHandler(&cfg.Scanning))
 
 			// API Keys management - self-service for own keys
 			// Users can manage their own API keys without api_keys:manage scope

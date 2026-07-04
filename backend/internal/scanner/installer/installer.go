@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -22,6 +23,8 @@ import (
 	"time"
 
 	goversion "github.com/hashicorp/go-version"
+	"github.com/terraform-registry/terraform-registry/internal/mirror"
+	"github.com/terraform-registry/terraform-registry/internal/validation"
 )
 
 // Size caps to prevent zip-bomb / decompression-bomb DoS.
@@ -47,6 +50,12 @@ type Result struct {
 	Version    string `json:"version"`
 	Sha256     string `json:"sha256"`
 	SourceURL  string `json:"source_url"`
+	// SignatureVerified indicates whether an additional cryptographic signature
+	// (beyond the mandatory SHA256 checksum) was verified for this artifact.
+	SignatureVerified bool `json:"signature_verified"`
+	// SignatureType is "none", "gpg", or "sigstore" — the signature scheme configured
+	// for this tool, regardless of whether SignatureVerified is true.
+	SignatureType string `json:"signature_type,omitempty"`
 }
 
 // Typed errors for common failure modes.
@@ -74,6 +83,9 @@ type ghAsset struct {
 	Name               string `json:"name"`
 	BrowserDownloadURL string `json:"browser_download_url"`
 	Size               int64  `json:"size"`
+	// Digest is GitHub's reported content digest, e.g. "sha256:<hex>". Used for tools
+	// (e.g. checkov) whose releases publish no separate checksums file/asset.
+	Digest string `json:"digest"`
 }
 
 // Install resolves, downloads, verifies, and installs a scanner binary.
@@ -108,77 +120,15 @@ func Install(ctx context.Context, cfg InstallConfig, tool, pinnedVersion string)
 	version := strings.TrimPrefix(release.TagName, "v")
 
 	// 4. Find matching assets.
-	var archiveAsset, checksumsAsset *ghAsset
-	for i := range release.Assets {
-		a := &release.Assets[i]
-		if archiveAsset == nil && spec.AssetPattern.MatchString(a.Name) {
-			archiveAsset = a
-		}
-		if checksumsAsset == nil && spec.ChecksumsPattern.MatchString(a.Name) {
-			checksumsAsset = a
-		}
-	}
-	if archiveAsset == nil || checksumsAsset == nil {
+	archiveAsset, checksumsAsset, sigAsset := matchAssets(spec, release)
+	if archiveAsset == nil || (checksumsAsset == nil && !spec.UseAssetDigest) {
 		return nil, fmt.Errorf("%w: tool=%s version=%s os=%s arch=%s", ErrAssetNotFound, tool, version, runtime.GOOS, runtime.GOARCH)
 	}
 
-	// 5. Validate HTTPS-only.
-	if !strings.HasPrefix(archiveAsset.BrowserDownloadURL, "https://") {
-		return nil, fmt.Errorf("%w: %s", ErrNonHTTPS, archiveAsset.BrowserDownloadURL)
-	}
-	if !strings.HasPrefix(checksumsAsset.BrowserDownloadURL, "https://") {
-		return nil, fmt.Errorf("%w: %s", ErrNonHTTPS, checksumsAsset.BrowserDownloadURL)
-	}
-
-	// Create a temp dir for downloads.
-	tmpDir, err := os.MkdirTemp(cfg.InstallDir, "tmp-install-")
-	if err != nil {
-		return nil, fmt.Errorf("create temp dir: %w", err)
-	}
-	defer os.RemoveAll(tmpDir) // always clean up temp
-
-	// 6. Download archive with size cap.
-	archivePath := filepath.Join(tmpDir, archiveAsset.Name)
-	archiveHash, err := downloadFile(ctx, client, archiveAsset.BrowserDownloadURL, archivePath, maxArchiveSize)
+	// 5-9. Download, verify (checksum + optional signature), and extract.
+	targetBinary, sha256hex, sourceURL, sigVerified, sigType, err := downloadExtract(ctx, client, cfg, spec, tool, version, archiveAsset, checksumsAsset, sigAsset)
 	if err != nil {
 		return nil, err
-	}
-
-	// Download checksums file.
-	checksumsPath := filepath.Join(tmpDir, checksumsAsset.Name)
-	_, err = downloadFile(ctx, client, checksumsAsset.BrowserDownloadURL, checksumsPath, maxChecksumsSize)
-	if err != nil {
-		return nil, fmt.Errorf("download checksums: %w", err)
-	}
-
-	// 7. Verify checksum.
-	if err := verifyChecksum(checksumsPath, archiveAsset.Name, archiveHash); err != nil {
-		return nil, err
-	}
-
-	// 8. Extract binary from archive.
-	versionDir := filepath.Join(cfg.InstallDir, tool+"-"+version)
-	if err := os.MkdirAll(versionDir, 0o755); err != nil { // #nosec G301 -- scanner binary directory needs execute permission
-		return nil, fmt.Errorf("create version dir: %w", err)
-	}
-
-	targetBinary := filepath.Join(versionDir, filepath.Base(spec.BinaryInArchive))
-	switch spec.ArchiveFormat {
-	case "tar.gz":
-		err = extractFromTarGz(archivePath, spec.BinaryInArchive, targetBinary)
-	case "zip":
-		err = extractFromZip(archivePath, spec.BinaryInArchive, targetBinary)
-	default:
-		err = fmt.Errorf("unsupported archive format: %s", spec.ArchiveFormat)
-	}
-	if err != nil {
-		os.RemoveAll(versionDir) // #nosec G104 -- best-effort cleanup on extraction failure
-		return nil, err
-	}
-
-	// 9. Make executable.
-	if err := os.Chmod(targetBinary, 0o755); err != nil { // #nosec G302 -- scanner binary must be executable
-		return nil, fmt.Errorf("chmod: %w", err)
 	}
 
 	// 10. Atomically swap symlink.
@@ -188,10 +138,283 @@ func Install(ctx context.Context, cfg InstallConfig, tool, pinnedVersion string)
 	}
 
 	return &Result{
-		BinaryPath: symlinkPath,
-		Version:    version,
-		Sha256:     hex.EncodeToString(archiveHash),
-		SourceURL:  archiveAsset.BrowserDownloadURL,
+		BinaryPath:        symlinkPath,
+		Version:           version,
+		Sha256:            sha256hex,
+		SourceURL:         sourceURL,
+		SignatureVerified: sigVerified,
+		SignatureType:     sigType,
+	}, nil
+}
+
+// matchAssets locates the archive, checksums, and (optional) signature assets for a
+// release given a catalog spec. Signature matching only occurs when spec.SignaturePattern
+// is set.
+func matchAssets(spec AssetSpec, release *ghRelease) (archive, checksums, sig *ghAsset) {
+	for i := range release.Assets {
+		a := &release.Assets[i]
+		if archive == nil && spec.AssetPattern.MatchString(a.Name) {
+			archive = a
+		}
+		if checksums == nil && spec.ChecksumsPattern != nil && spec.ChecksumsPattern.MatchString(a.Name) {
+			checksums = a
+		}
+		if sig == nil && spec.SignaturePattern != nil && spec.SignaturePattern.MatchString(a.Name) {
+			sig = a
+		}
+	}
+	return archive, checksums, sig
+}
+
+// downloadExtract downloads the matched archive (and checksums/signature assets),
+// verifies its integrity, and extracts the target binary to the versioned install
+// path {cfg.InstallDir}/{tool}-{version}/{basename(spec.BinaryInArchive)}. It is
+// shared by Install and DownloadVerified; neither creates/updates the {tool} symlink.
+func downloadExtract(ctx context.Context, client *http.Client, cfg InstallConfig, spec AssetSpec, tool, version string, archiveAsset, checksumsAsset, sigAsset *ghAsset) (versionedBinaryPath, sha256hex, sourceURL string, sigVerified bool, sigType string, err error) {
+	// Validate HTTPS-only.
+	if !strings.HasPrefix(archiveAsset.BrowserDownloadURL, "https://") {
+		return "", "", "", false, "", fmt.Errorf("%w: %s", ErrNonHTTPS, archiveAsset.BrowserDownloadURL)
+	}
+	if checksumsAsset != nil && !strings.HasPrefix(checksumsAsset.BrowserDownloadURL, "https://") {
+		return "", "", "", false, "", fmt.Errorf("%w: %s", ErrNonHTTPS, checksumsAsset.BrowserDownloadURL)
+	}
+
+	// Create a temp dir for downloads.
+	tmpDir, mkErr := os.MkdirTemp(cfg.InstallDir, "tmp-install-")
+	if mkErr != nil {
+		return "", "", "", false, "", fmt.Errorf("create temp dir: %w", mkErr)
+	}
+	defer os.RemoveAll(tmpDir) // always clean up temp
+
+	// Download archive with size cap.
+	archivePath := filepath.Join(tmpDir, archiveAsset.Name)
+	archiveHash, dlErr := downloadFile(ctx, client, archiveAsset.BrowserDownloadURL, archivePath, maxArchiveSize)
+	if dlErr != nil {
+		return "", "", "", false, "", dlErr
+	}
+
+	// Verify integrity: either a checksums file/asset or the GitHub asset digest.
+	var checksumsData []byte
+	switch {
+	case checksumsAsset != nil:
+		checksumsPath := filepath.Join(tmpDir, checksumsAsset.Name)
+		if _, dlErr := downloadFile(ctx, client, checksumsAsset.BrowserDownloadURL, checksumsPath, maxChecksumsSize); dlErr != nil {
+			return "", "", "", false, "", fmt.Errorf("download checksums: %w", dlErr)
+		}
+		if verErr := verifyChecksum(checksumsPath, archiveAsset.Name, archiveHash); verErr != nil {
+			return "", "", "", false, "", verErr
+		}
+		checksumsData, _ = os.ReadFile(checksumsPath) // #nosec G304 -- path is inside InstallDir temp directory
+	case spec.UseAssetDigest:
+		if verErr := verifyAssetDigest(archiveAsset.Digest, archiveHash); verErr != nil {
+			return "", "", "", false, "", verErr
+		}
+	}
+
+	// Optional signature verification (additive; never blocks except a genuine gpg failure).
+	verified, verSigType, sigErr := verifyArtifactSignature(ctx, client, spec, sigAsset, checksumsData)
+	if sigErr != nil {
+		return "", "", "", false, "", sigErr
+	}
+
+	// Extract binary from archive.
+	versionDir := filepath.Join(cfg.InstallDir, tool+"-"+version)
+	if mkErr := os.MkdirAll(versionDir, 0o755); mkErr != nil { // #nosec G301 -- scanner binary directory needs execute permission
+		return "", "", "", false, "", fmt.Errorf("create version dir: %w", mkErr)
+	}
+
+	targetBinary := filepath.Join(versionDir, filepath.Base(spec.BinaryInArchive))
+	var extractErr error
+	switch spec.ArchiveFormat {
+	case "tar.gz":
+		extractErr = extractFromTarGz(archivePath, spec.BinaryInArchive, targetBinary)
+	case "zip":
+		extractErr = extractFromZip(archivePath, spec.BinaryInArchive, targetBinary)
+	default:
+		extractErr = fmt.Errorf("unsupported archive format: %s", spec.ArchiveFormat)
+	}
+	if extractErr != nil {
+		os.RemoveAll(versionDir) // #nosec G104 -- best-effort cleanup on extraction failure
+		return "", "", "", false, "", extractErr
+	}
+
+	// Make executable.
+	if chmodErr := os.Chmod(targetBinary, 0o755); chmodErr != nil { // #nosec G302 -- scanner binary must be executable
+		return "", "", "", false, "", fmt.Errorf("chmod: %w", chmodErr)
+	}
+
+	return targetBinary, hex.EncodeToString(archiveHash), archiveAsset.BrowserDownloadURL, verified, verSigType, nil
+}
+
+// verifyAssetDigest verifies archiveHash against the GitHub asset's reported `digest`
+// field (e.g. "sha256:<hex>"), used for tools that publish no checksums file/asset.
+func verifyAssetDigest(digest string, archiveHash []byte) error {
+	const prefix = "sha256:"
+	if !strings.HasPrefix(digest, prefix) {
+		return fmt.Errorf("%w: asset digest missing or not sha256 (%q)", ErrChecksumMismatch, digest)
+	}
+	expected, err := hex.DecodeString(strings.TrimPrefix(digest, prefix))
+	if err != nil {
+		return fmt.Errorf("%w: malformed asset digest %q", ErrChecksumMismatch, digest)
+	}
+	if subtle.ConstantTimeCompare(expected, archiveHash) != 1 {
+		return fmt.Errorf("%w: expected %s, got %s", ErrChecksumMismatch, hex.EncodeToString(expected), hex.EncodeToString(archiveHash))
+	}
+	return nil
+}
+
+// verifyArtifactSignature optionally verifies a release's signature per spec.Signature.
+// SHA256 checksum verification is mandatory and handled by the caller before this is
+// invoked; this is additive: a genuine "gpg" verification failure blocks the install,
+// but "sigstore" is not yet implemented and never blocks (logs a one-line notice).
+func verifyArtifactSignature(ctx context.Context, client *http.Client, spec AssetSpec, sig *ghAsset, checksums []byte) (verified bool, sigType string, err error) {
+	switch spec.Signature.Type {
+	case "", "none":
+		return false, "none", nil
+	case "gpg":
+		if sig == nil {
+			return false, "gpg", fmt.Errorf("gpg signature verification configured but no signature asset found")
+		}
+		if !strings.HasPrefix(sig.BrowserDownloadURL, "https://") {
+			return false, "gpg", fmt.Errorf("%w: %s", ErrNonHTTPS, sig.BrowserDownloadURL)
+		}
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, sig.BrowserDownloadURL, nil)
+		if reqErr != nil {
+			return false, "gpg", reqErr
+		}
+		resp, doErr := client.Do(req)
+		if doErr != nil {
+			return false, "gpg", doErr
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return false, "gpg", fmt.Errorf("download signature: HTTP %d", resp.StatusCode)
+		}
+		sigBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, maxChecksumsSize))
+		if readErr != nil {
+			return false, "gpg", readErr
+		}
+		key, _, keyErr := mirror.FetchReleasesKey(ctx, client, spec.Signature.KeyURL, spec.Signature.Fingerprint)
+		if keyErr != nil {
+			return false, "gpg", fmt.Errorf("fetch signing key: %w", keyErr)
+		}
+		if verErr := validation.VerifySignature(key, checksums, sigBytes); verErr != nil {
+			return false, "gpg", fmt.Errorf("signature verification failed: %w", verErr)
+		}
+		return true, "gpg", nil
+	case "sigstore":
+		log.Printf("scanner installer: Sigstore signature verification is not implemented yet; skipping (tracked as a follow-up)")
+		return false, "sigstore", nil
+	default:
+		return false, spec.Signature.Type, nil
+	}
+}
+
+// LatestInfo describes the latest available upstream release for a scanner tool on
+// the current server OS/arch, without downloading anything.
+type LatestInfo struct {
+	Tool               string `json:"tool"`
+	LatestVersion      string `json:"latest_version"`
+	ArchiveURL         string `json:"archive_url"`
+	ChecksumsURL       string `json:"checksums_url,omitempty"`
+	SignatureURL       string `json:"signature_url,omitempty"`
+	SignatureSupported bool   `json:"signature_supported"`
+}
+
+// CheckLatest queries the upstream GitHub release for the latest version of tool
+// available for the current server OS/arch. It does not download or install anything.
+func CheckLatest(ctx context.Context, cfg InstallConfig, tool string) (*LatestInfo, error) {
+	if cfg.Timeout == 0 {
+		cfg.Timeout = 5 * time.Minute
+	}
+	client := cfg.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: cfg.Timeout}
+	}
+
+	spec, ok := Lookup(tool, runtime.GOOS, runtime.GOARCH)
+	if !ok {
+		if !Supports(tool) {
+			return nil, fmt.Errorf("%w: %s (supported: %v)", ErrUnsupportedTool, tool, SupportedTools())
+		}
+		return nil, fmt.Errorf("%w: %s on %s/%s", ErrUnsupportedPlatform, tool, runtime.GOOS, runtime.GOARCH)
+	}
+
+	release, err := resolveRelease(ctx, client, spec, "")
+	if err != nil {
+		return nil, fmt.Errorf("resolve release: %w", err)
+	}
+	version := strings.TrimPrefix(release.TagName, "v")
+
+	archiveAsset, checksumsAsset, sigAsset := matchAssets(spec, release)
+	if archiveAsset == nil || (checksumsAsset == nil && !spec.UseAssetDigest) {
+		return nil, fmt.Errorf("%w: tool=%s version=%s os=%s arch=%s", ErrAssetNotFound, tool, version, runtime.GOOS, runtime.GOARCH)
+	}
+
+	info := &LatestInfo{
+		Tool:               tool,
+		LatestVersion:      version,
+		ArchiveURL:         archiveAsset.BrowserDownloadURL,
+		SignatureSupported: spec.Signature.Type == "gpg" || spec.Signature.Type == "sigstore",
+	}
+	if checksumsAsset != nil {
+		info.ChecksumsURL = checksumsAsset.BrowserDownloadURL
+	}
+	if sigAsset != nil {
+		info.SignatureURL = sigAsset.BrowserDownloadURL
+	}
+	return info, nil
+}
+
+// DownloadVerified resolves, downloads, verifies, and extracts a scanner binary to its
+// versioned install path {cfg.InstallDir}/{tool}-{version}/{basename} WITHOUT creating
+// or replacing the {cfg.InstallDir}/{tool} symlink — i.e. the binary is present on disk
+// but not activated. This is the "present-but-inactive" path for the pending-approval
+// update flow; Install remains the one-step download+activate entry point.
+func DownloadVerified(ctx context.Context, cfg InstallConfig, tool, pinnedVersion string) (*Result, error) {
+	if cfg.Timeout == 0 {
+		cfg.Timeout = 5 * time.Minute
+	}
+	client := cfg.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: cfg.Timeout}
+	}
+
+	if err := ensureWritableDir(cfg.InstallDir); err != nil {
+		return nil, err
+	}
+
+	spec, ok := Lookup(tool, runtime.GOOS, runtime.GOARCH)
+	if !ok {
+		if !Supports(tool) {
+			return nil, fmt.Errorf("%w: %s (supported: %v)", ErrUnsupportedTool, tool, SupportedTools())
+		}
+		return nil, fmt.Errorf("%w: %s on %s/%s", ErrUnsupportedPlatform, tool, runtime.GOOS, runtime.GOARCH)
+	}
+
+	release, err := resolveRelease(ctx, client, spec, pinnedVersion)
+	if err != nil {
+		return nil, fmt.Errorf("resolve release: %w", err)
+	}
+	version := strings.TrimPrefix(release.TagName, "v")
+
+	archiveAsset, checksumsAsset, sigAsset := matchAssets(spec, release)
+	if archiveAsset == nil || (checksumsAsset == nil && !spec.UseAssetDigest) {
+		return nil, fmt.Errorf("%w: tool=%s version=%s os=%s arch=%s", ErrAssetNotFound, tool, version, runtime.GOOS, runtime.GOARCH)
+	}
+
+	targetBinary, sha256hex, sourceURL, sigVerified, sigType, err := downloadExtract(ctx, client, cfg, spec, tool, version, archiveAsset, checksumsAsset, sigAsset)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Result{
+		BinaryPath:        targetBinary,
+		Version:           version,
+		Sha256:            sha256hex,
+		SourceURL:         sourceURL,
+		SignatureVerified: sigVerified,
+		SignatureType:     sigType,
 	}, nil
 }
 
