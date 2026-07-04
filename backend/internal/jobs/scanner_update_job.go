@@ -350,7 +350,11 @@ func (j *ScannerUpdateJob) Activate(ctx context.Context, v *models.ScannerBinary
 
 	if j.scannerJob != nil {
 		_ = j.scannerJob.Stop()
-		go func() {
+		// ModuleScannerJob is a long-lived daemon (indefinite polling loop). Its restart
+		// must outlive the caller's ctx — which, via the admin install+activate handler,
+		// is the HTTP request context and would cancel the job the moment the request
+		// returns. context.Background() is therefore intentional here, not a leak.
+		go func() { // #nosec G118 -- long-lived daemon restart must not inherit the request-scoped caller ctx
 			if err := j.scannerJob.Start(context.Background()); err != nil {
 				log.Printf("[scanner-update] scanner job failed to restart after activation: %v", err)
 			}
