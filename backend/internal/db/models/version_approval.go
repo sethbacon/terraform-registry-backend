@@ -32,14 +32,16 @@ const (
 const (
 	VersionApprovalTypeProvider  = "provider"
 	VersionApprovalTypeTerraform = "terraform"
+	VersionApprovalTypeScanner   = "scanner"
 )
 
 // VersionApprovalEvent is one row of the version_approval_events audit table.
-// Exactly one of MirroredProviderVersionID / TerraformVersionID is set.
+// Exactly one of MirroredProviderVersionID / TerraformVersionID / ScannerBinaryVersionID is set.
 type VersionApprovalEvent struct {
 	ID                        uuid.UUID  `json:"id" db:"id"`
 	MirroredProviderVersionID *uuid.UUID `json:"-" db:"mirrored_provider_version_id"`
 	TerraformVersionID        *uuid.UUID `json:"-" db:"terraform_version_id"`
+	ScannerBinaryVersionID    *uuid.UUID `json:"-" db:"scanner_binary_version_id"`
 	Action                    string     `json:"action" db:"action"`
 	PerformedBy               *uuid.UUID `json:"-" db:"performed_by"`
 	PerformedByName           *string    `json:"performed_by_name,omitempty" db:"performed_by_name"`

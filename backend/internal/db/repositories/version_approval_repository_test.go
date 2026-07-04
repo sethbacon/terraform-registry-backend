@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,7 +67,7 @@ func TestVersionApprovalList_Success(t *testing.T) {
 func TestVersionApprovalList_TypeFilters(t *testing.T) {
 	// Each type filter narrows the inner query to a single branch; exercise both
 	// plus the default UNION to cover innerQuery.
-	for _, typ := range []string{"provider", "terraform", ""} {
+	for _, typ := range []string{"provider", "terraform", "scanner", ""} {
 		t.Run("type="+typ, func(t *testing.T) {
 			repo, mock := newVersionApprovalRepo(t)
 			mock.ExpectQuery(`SELECT COUNT\(\*\) FROM`).
@@ -79,6 +80,22 @@ func TestVersionApprovalList_TypeFilters(t *testing.T) {
 				t.Fatalf("unexpected error for type %q: %v", typ, err)
 			}
 		})
+	}
+}
+
+func TestInnerQuery_Scanner(t *testing.T) {
+	q := innerQuery(models.VersionApprovalTypeScanner)
+	if !strings.Contains(q, "scanner_binary_versions") {
+		t.Fatalf("expected innerQuery(scanner) to reference scanner_binary_versions, got: %s", q)
+	}
+}
+
+func TestInnerQuery_Default_IncludesAllBranches(t *testing.T) {
+	q := innerQuery("")
+	for _, table := range []string{"mirrored_provider_versions", "terraform_versions", "scanner_binary_versions"} {
+		if !strings.Contains(q, table) {
+			t.Fatalf("expected default innerQuery to reference %s, got: %s", table, q)
+		}
 	}
 }
 
@@ -185,6 +202,33 @@ func TestVersionApprovalSetStatus_Terraform(t *testing.T) {
 	}
 }
 
+func TestVersionApprovalSetStatus_Scanner(t *testing.T) {
+	repo, mock := newVersionApprovalRepo(t)
+	id := uuid.New()
+
+	mock.ExpectBegin()
+	// Provider and terraform updates affect no rows -> fall through to scanner.
+	mock.ExpectExec(`UPDATE mirrored_provider_versions SET approval_status`).
+		WithArgs(id, "approved").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`UPDATE terraform_versions SET approval_status`).
+		WithArgs(id, "approved").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`UPDATE scanner_binary_versions SET approval_status`).
+		WithArgs(id, "approved").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO version_approval_events`).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	if err := repo.SetStatus(context.Background(), id, "approved", nil, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
 func TestVersionApprovalSetStatus_NotFound(t *testing.T) {
 	repo, mock := newVersionApprovalRepo(t)
 	id := uuid.New()
@@ -193,6 +237,8 @@ func TestVersionApprovalSetStatus_NotFound(t *testing.T) {
 	mock.ExpectExec(`UPDATE mirrored_provider_versions SET approval_status`).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(`UPDATE terraform_versions SET approval_status`).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`UPDATE scanner_binary_versions SET approval_status`).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectRollback()
 
