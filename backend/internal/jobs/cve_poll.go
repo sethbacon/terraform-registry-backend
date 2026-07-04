@@ -56,7 +56,7 @@ func NewCVEPollJob(
 		auditRepo: auditRepo,
 		cveCfg:    cveCfg,
 		notifCfg:  notifCfg,
-		mailer:    notify.New(notifCfg.SMTP),
+		mailer:    notify.New(&notifCfg.SMTP),
 		stopChan:  make(chan struct{}),
 		manualCh:  make(chan struct{}, 1),
 	}

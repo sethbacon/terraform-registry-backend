@@ -14,12 +14,17 @@ import (
 )
 
 // Mailer sends plain-text notification emails using the configured SMTP server.
+// cfg is held by pointer so that a runtime configuration update (e.g. via the
+// admin notifications API) is observed by background jobs without recreating
+// the Mailer.
 type Mailer struct {
-	cfg config.SMTPConfig
+	cfg *config.SMTPConfig
 }
 
-// New constructs a Mailer for the given SMTP configuration.
-func New(cfg config.SMTPConfig) *Mailer {
+// New constructs a Mailer for the given SMTP configuration. cfg is stored by
+// reference; callers should pass a pointer to the live config struct (e.g.
+// &cfg.Notifications.SMTP) so runtime updates are reflected in Send.
+func New(cfg *config.SMTPConfig) *Mailer {
 	return &Mailer{cfg: cfg}
 }
 
@@ -29,6 +34,9 @@ func New(cfg config.SMTPConfig) *Mailer {
 // plain smtp.SendMail is used.
 // coverage:skip:integration-only — calls smtp.SendMail / TLS dial; requires live SMTP.
 func (m *Mailer) Send(to []string, subject, body string) error {
+	if m.cfg == nil {
+		return fmt.Errorf("mailer: nil smtp config")
+	}
 	headers := fmt.Sprintf(
 		"From: %s\r\nTo: %s\r\nSubject: %s\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n",
 		m.cfg.From, strings.Join(to, ", "), subject,

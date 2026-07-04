@@ -44,7 +44,7 @@ func NewAPIKeyExpiryNotifier(
 		apiKeyRepo: apiKeyRepo,
 		userRepo:   userRepo,
 		cfg:        cfg,
-		mailer:     notify.New(cfg.SMTP),
+		mailer:     notify.New(&cfg.SMTP),
 		interval:   time.Duration(hours) * time.Hour,
 		stopChan:   make(chan struct{}),
 	}

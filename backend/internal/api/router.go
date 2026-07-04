@@ -326,6 +326,39 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		}
 	}
 
+	// Reload persisted notifications config from the database (if present),
+	// applying it on top of the YAML/env defaults. This mirrors the scanning
+	// config reload above; it must run after tokenCipher is constructed since
+	// the stored SMTP password is encrypted. Fields are set in place on
+	// cfg.Notifications (never reassigned) so jobs holding &cfg.Notifications
+	// observe the reloaded values.
+	if njson, err := oidcConfigRepo.GetNotificationsConfig(context.Background()); err == nil && njson != nil {
+		var dbc admin.NotificationsConfigDB
+		if err := json.Unmarshal(njson, &dbc); err != nil {
+			log.Printf("notifications startup: failed to parse persisted config: %v", err)
+		} else {
+			cfg.Notifications.Enabled = dbc.Enabled
+			cfg.Notifications.SMTP.Host = dbc.SMTP.Host
+			cfg.Notifications.SMTP.Port = dbc.SMTP.Port
+			cfg.Notifications.SMTP.Username = dbc.SMTP.Username
+			cfg.Notifications.SMTP.From = dbc.SMTP.From
+			cfg.Notifications.SMTP.UseTLS = dbc.SMTP.UseTLS
+			if dbc.SMTP.PasswordEncrypted != "" {
+				if pw, derr := tokenCipher.Open(dbc.SMTP.PasswordEncrypted); derr == nil {
+					cfg.Notifications.SMTP.Password = pw
+				} else {
+					log.Printf("notifications startup: failed to decrypt persisted smtp password: %v", derr)
+				}
+			}
+			if dbc.APIKeyExpiryWarningDays > 0 {
+				cfg.Notifications.APIKeyExpiryWarningDays = dbc.APIKeyExpiryWarningDays
+			}
+			if dbc.APIKeyExpiryCheckIntervalHours > 0 {
+				cfg.Notifications.APIKeyExpiryCheckIntervalHours = dbc.APIKeyExpiryCheckIntervalHours
+			}
+		}
+	}
+
 	// Add middleware
 	router.Use(gin.Recovery())
 	router.Use(middleware.RequestIDMiddleware())
@@ -665,6 +698,9 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// Initialize storage configuration handlers
 	storageHandlers := admin.NewStorageHandlers(cfg, storageConfigRepo, tokenCipher)
 
+	// Initialize notifications configuration handlers
+	notificationsHandler := admin.NewNotificationsHandler(&cfg.Notifications, oidcConfigRepo, tokenCipher, &cfg.CVE)
+
 	// Initialize OIDC admin configuration handlers
 	oidcAdminHandlers := admin.NewOIDCConfigAdminHandlers(oidcConfigRepo)
 
@@ -970,6 +1006,17 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 			authenticatedGroup.GET("/admin/scanning/latest",
 				middleware.RequireScope(auth.ScopeScanningRead),
 				admin.GetScannerLatestHandler(&cfg.Scanning))
+
+			// Notifications (SMTP) admin endpoints
+			authenticatedGroup.GET("/admin/notifications/config",
+				middleware.RequireScope(auth.ScopeAdmin),
+				notificationsHandler.GetConfig)
+			authenticatedGroup.PUT("/admin/notifications/config",
+				middleware.RequireScope(auth.ScopeAdmin),
+				notificationsHandler.PutConfig)
+			authenticatedGroup.POST("/admin/notifications/test",
+				middleware.RequireScope(auth.ScopeAdmin),
+				notificationsHandler.TestEmail)
 
 			// API Keys management - self-service for own keys
 			// Users can manage their own API keys without api_keys:manage scope

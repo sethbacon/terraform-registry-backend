@@ -72,7 +72,7 @@ func NewScannerUpdateJob(
 		approvalRepo: approvalRepo,
 		oidcCfgRepo:  oidcCfgRepo,
 		scannerJob:   scannerJob,
-		mailer:       notify.New(notifCfg.SMTP),
+		mailer:       notify.New(&notifCfg.SMTP),
 		check:        check,
 		download:     download,
 		stopChan:     make(chan struct{}),
