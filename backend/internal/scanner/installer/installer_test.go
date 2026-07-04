@@ -8,6 +8,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -948,33 +950,177 @@ func TestInstall_BareChecksumsFile_Matches(t *testing.T) {
 	}
 }
 
-func TestInstall_SigstoreSignature_DoesNotBlock_SetsSignatureType(t *testing.T) {
+// setupSigstoreCatalog is a shared helper for the sigstore verification tests below:
+// it stands up a test server serving an archive+checksums+sigstore-bundle asset trio
+// for trivy, swaps it into the Catalog for the current platform, and restores the
+// original entry via t.Cleanup.
+func setupSigstoreCatalog(t *testing.T, withSigAsset bool) (*httptest.Server, []byte /* checksums */) {
+	t.Helper()
 	archiveName := "trivy_0.56.0_Linux-64bit.tar.gz"
 	checksumsName := "trivy_0.56.0_checksums.txt"
 	sigName := "trivy_0.56.0_checksums.txt.sigstore.json"
+	if !withSigAsset {
+		sigName = ""
+	}
 	archive := buildTarGz(t, map[string][]byte{"trivy": stubBinary})
 	checksums := []byte(checksumLine(archive, archiveName) + "\n")
 	sigBundle := []byte(`{"mediaType":"application/vnd.dev.sigstore.bundle+json;version=0.1"}`)
 
 	server, spec := setupTestServerFull(t, "0.56.0", archiveName, checksumsName, sigName, archive, checksums, sigBundle, "")
-	spec.Signature = SignatureSpec{Type: "sigstore"}
+	spec.Signature = SignatureSpec{
+		Type:     "sigstore",
+		Identity: "https://github.com/aquasecurity/trivy/.github/workflows/reusable-release.yaml@refs/tags/v%s",
+		Issuer:   "https://token.actions.githubusercontent.com",
+	}
 
 	platform := runtime.GOOS + "/" + runtime.GOARCH
 	origCatalog := Catalog["trivy"]
 	Catalog["trivy"] = map[string]AssetSpec{platform: spec}
 	t.Cleanup(func() { Catalog["trivy"] = origCatalog })
 
+	return server, checksums
+}
+
+// stubSigstoreVerify overrides the package-level sigstoreVerify seam for the duration
+// of a test, restoring the real implementation via t.Cleanup.
+func stubSigstoreVerify(t *testing.T, fn func(bundleJSON, artifact []byte, identity, issuer string) error) {
+	t.Helper()
+	orig := sigstoreVerify
+	sigstoreVerify = fn
+	t.Cleanup(func() { sigstoreVerify = orig })
+}
+
+func TestInstall_SigstoreSignature_Off_Skips(t *testing.T) {
+	server, _ := setupSigstoreCatalog(t, true)
+	stubSigstoreVerify(t, func([]byte, []byte, string, string) error {
+		t.Fatal("sigstoreVerify should not be called when mode is off")
+		return nil
+	})
+
 	result, err := Install(context.Background(), InstallConfig{
-		InstallDir: t.TempDir(),
-		HTTPClient: server.Client(),
+		InstallDir:    t.TempDir(),
+		HTTPClient:    server.Client(),
+		SignatureMode: "off",
 	}, "trivy", "0.56.0")
 	if err != nil {
-		t.Fatalf("Install should not fail on unimplemented sigstore verification: %v", err)
+		t.Fatalf("Install: %v", err)
 	}
 	if result.SignatureVerified {
-		t.Error("SignatureVerified should be false (sigstore verification not implemented yet)")
+		t.Error("SignatureVerified should be false when mode is off")
 	}
 	if result.SignatureType != "sigstore" {
 		t.Errorf("SignatureType = %q, want sigstore", result.SignatureType)
 	}
 }
+
+func TestInstall_SigstoreSignature_Enforce_VerifierSuccess_SetsVerifiedTrue(t *testing.T) {
+	server, _ := setupSigstoreCatalog(t, true)
+	stubSigstoreVerify(t, func([]byte, []byte, string, string) error { return nil })
+
+	result, err := Install(context.Background(), InstallConfig{
+		InstallDir:    t.TempDir(),
+		HTTPClient:    server.Client(),
+		SignatureMode: "enforce",
+	}, "trivy", "0.56.0")
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if !result.SignatureVerified {
+		t.Error("SignatureVerified should be true when the verifier succeeds")
+	}
+	if result.SignatureType != "sigstore" {
+		t.Errorf("SignatureType = %q, want sigstore", result.SignatureType)
+	}
+}
+
+func TestInstall_SigstoreSignature_Enforce_VerifierMismatch_FailsClosed(t *testing.T) {
+	server, _ := setupSigstoreCatalog(t, true)
+	stubSigstoreVerify(t, func([]byte, []byte, string, string) error {
+		return errors.New("certificate identity mismatch")
+	})
+
+	installDir := t.TempDir()
+	_, err := Install(context.Background(), InstallConfig{
+		InstallDir:    installDir,
+		HTTPClient:    server.Client(),
+		SignatureMode: "enforce",
+	}, "trivy", "0.56.0")
+	if err == nil {
+		t.Fatal("expected Install to fail closed on a sigstore signature mismatch")
+	}
+
+	if _, statErr := os.Stat(filepath.Join(installDir, "trivy-0.56.0")); !os.IsNotExist(statErr) {
+		t.Errorf("expected no leftover versioned install dir, stat err = %v", statErr)
+	}
+}
+
+func TestInstall_SigstoreSignature_Warn_VerifierMismatch_DoesNotBlock(t *testing.T) {
+	server, _ := setupSigstoreCatalog(t, true)
+	stubSigstoreVerify(t, func([]byte, []byte, string, string) error {
+		return errors.New("certificate identity mismatch")
+	})
+
+	result, err := Install(context.Background(), InstallConfig{
+		InstallDir:    t.TempDir(),
+		HTTPClient:    server.Client(),
+		SignatureMode: "warn",
+	}, "trivy", "0.56.0")
+	if err != nil {
+		t.Fatalf("Install should not fail in warn mode: %v", err)
+	}
+	if result.SignatureVerified {
+		t.Error("SignatureVerified should be false when the verifier reports a mismatch")
+	}
+}
+
+func TestInstall_SigstoreSignature_TrustRootUnavailable_DoesNotBlock(t *testing.T) {
+	server, _ := setupSigstoreCatalog(t, true)
+	stubSigstoreVerify(t, func([]byte, []byte, string, string) error {
+		return fmt.Errorf("%w: no network", errTrustRootUnavailable)
+	})
+
+	result, err := Install(context.Background(), InstallConfig{
+		InstallDir:    t.TempDir(),
+		HTTPClient:    server.Client(),
+		SignatureMode: "enforce",
+	}, "trivy", "0.56.0")
+	if err != nil {
+		t.Fatalf("Install should not fail when the trust root is unavailable: %v", err)
+	}
+	if result.SignatureVerified {
+		t.Error("SignatureVerified should be false when the trust root is unavailable")
+	}
+}
+
+func TestInstall_SigstoreSignature_NoSigAsset_DoesNotBlock(t *testing.T) {
+	// Older releases (pre-v0.68.1 for trivy) publish no Sigstore bundle at all.
+	server, _ := setupSigstoreCatalog(t, false)
+	stubSigstoreVerify(t, func([]byte, []byte, string, string) error {
+		t.Fatal("sigstoreVerify should not be called when no signature asset is present")
+		return nil
+	})
+
+	result, err := Install(context.Background(), InstallConfig{
+		InstallDir:    t.TempDir(),
+		HTTPClient:    server.Client(),
+		SignatureMode: "enforce",
+	}, "trivy", "0.56.0")
+	if err != nil {
+		t.Fatalf("Install should not fail when the release has no signature asset: %v", err)
+	}
+	if result.SignatureVerified {
+		t.Error("SignatureVerified should be false when no signature asset is present")
+	}
+	if result.SignatureType != "sigstore" {
+		t.Errorf("SignatureType = %q, want sigstore", result.SignatureType)
+	}
+}
+
+// NOTE: a hermetic-but-real end-to-end test (an actual sigstore bundle verified
+// against a real or embedded trusted root) is intentionally not included here: it
+// would require either live network access to fetch the Sigstore TUF trusted root,
+// or an embedded trust root plus a fixture bundle signed with a certificate whose
+// validity window has since expired (Fulcio certs are short-lived), making it flaky
+// over time. To add one later, record a real bundle fixture + pin a fake clock (or
+// embed a trust root snapshot) so verification always evaluates at a time within the
+// fixture certificate's validity window.

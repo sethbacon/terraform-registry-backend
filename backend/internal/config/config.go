@@ -201,6 +201,14 @@ type ScanningConfig struct {
 	InstallDir string `mapstructure:"install_dir"`
 	// AutoUpdate configures the scheduled scanner version-check job (Phase D).
 	AutoUpdate ScannerAutoUpdateConfig `mapstructure:"auto_update"`
+	// SignatureVerification controls how the installer's optional cryptographic
+	// signature check (on top of the mandatory SHA256 checksum) affects installs:
+	// "off" skips it entirely, "warn" verifies and records the result but never
+	// blocks, and "enforce" (default) fails the install on a definitive signature/
+	// identity mismatch. Tools with no signature scheme (spec.Signature.Type ==
+	// "none") or releases with no signature asset (e.g. pre-v0.68.1 trivy) are never
+	// blocked regardless of this setting — SHA256 verification already applies.
+	SignatureVerification string `mapstructure:"signature_verification"`
 }
 
 // ScannerAutoUpdateConfig controls the scheduled job that checks upstream for newer
@@ -851,6 +859,7 @@ func bindEnvVars(v *viper.Viper) error {
 		"scanning.version_args",
 		"scanning.scan_args",
 		"scanning.output_format",
+		"scanning.signature_verification",
 		"scanning.auto_update.enabled",
 		"scanning.auto_update.interval_hours",
 		"scanning.auto_update.requires_approval",
@@ -1051,6 +1060,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("scanning.worker_count", 2)
 	v.SetDefault("scanning.scan_interval_mins", 5)
 	v.SetDefault("scanning.install_dir", "/app/scanners")
+	v.SetDefault("scanning.signature_verification", "enforce")
 	v.SetDefault("scanning.auto_update.enabled", false)
 	v.SetDefault("scanning.auto_update.interval_hours", 24)
 	v.SetDefault("scanning.auto_update.requires_approval", true)

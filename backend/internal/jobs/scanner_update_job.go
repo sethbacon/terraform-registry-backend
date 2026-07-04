@@ -195,7 +195,7 @@ func (j *ScannerUpdateJob) runCheck(ctx context.Context) {
 		return
 	}
 
-	res, err := j.download(ctx, installer.InstallConfig{InstallDir: j.scanCfg.InstallDir}, tool, latest.LatestVersion)
+	res, err := j.download(ctx, installer.InstallConfig{InstallDir: j.scanCfg.InstallDir, SignatureMode: j.scanCfg.SignatureVerification}, tool, latest.LatestVersion)
 	if err != nil {
 		log.Printf("[scanner-update] failed to download %s %s: %v", tool, latest.LatestVersion, err)
 		failed := &models.ScannerBinaryVersion{
