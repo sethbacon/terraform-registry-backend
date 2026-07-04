@@ -51,12 +51,13 @@ type SignatureSpec struct {
 	Fingerprint string
 }
 
-// trivySignature documents trivy's Sigstore keyless-signing provenance. Verification
-// of the Sigstore bundle itself is not implemented yet (tracked as a follow-up); the
-// generic signature hook logs a notice and never blocks the download for this type.
+// trivySignature documents trivy's Sigstore keyless-signing provenance. The checksums.txt
+// bundle's Fulcio certificate SAN identifies the REUSABLE workflow job (release.yaml calls
+// `uses: ./.github/workflows/reusable-release.yaml`, which is what actually runs goreleaser
+// and `cosign sign-blob --bundle`), not release.yaml itself.
 var trivySignature = SignatureSpec{
 	Type:     "sigstore",
-	Identity: "https://github.com/aquasecurity/trivy/.github/workflows/release.yaml@refs/tags/v%s",
+	Identity: "https://github.com/aquasecurity/trivy/.github/workflows/reusable-release.yaml@refs/tags/v%s",
 	Issuer:   "https://token.actions.githubusercontent.com",
 }
 

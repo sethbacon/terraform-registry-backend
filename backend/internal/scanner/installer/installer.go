@@ -32,6 +32,7 @@ const (
 	maxArchiveSize   = 500 << 20 // 500 MB
 	maxFileSize      = 200 << 20 // 200 MB per extracted file
 	maxChecksumsSize = 8 << 10   // 8 KB
+	maxSigBundleSize = 1 << 20   // 1 MB; a sigstore bundle (cert chain + inclusion proof) is a few KB-15KB
 )
 
 // InstallConfig holds parameters for an Install call.
@@ -42,6 +43,11 @@ type InstallConfig struct {
 	Timeout time.Duration
 	// HTTPClient is optional; default is http.Client{Timeout: 5m}.
 	HTTPClient *http.Client
+	// SignatureMode controls the optional cryptographic signature check (on top of
+	// the mandatory SHA256 checksum): "off" skips it, "warn" verifies and records
+	// the result but never blocks, "enforce" fails the install on a definitive
+	// signature/identity mismatch. Empty is treated as "enforce" (safe-by-default).
+	SignatureMode string
 }
 
 // Result describes a successful installation.
@@ -216,7 +222,7 @@ func downloadExtract(ctx context.Context, client *http.Client, cfg InstallConfig
 	}
 
 	// Optional signature verification (additive; never blocks except a genuine gpg failure).
-	verified, verSigType, sigErr := verifyArtifactSignature(ctx, client, spec, sigAsset, checksumsData)
+	verified, verSigType, sigErr := verifyArtifactSignature(ctx, client, spec, sigAsset, checksumsData, cfg.SignatureMode, version)
 	if sigErr != nil {
 		return "", "", "", false, "", sigErr
 	}
@@ -269,9 +275,10 @@ func verifyAssetDigest(digest string, archiveHash []byte) error {
 
 // verifyArtifactSignature optionally verifies a release's signature per spec.Signature.
 // SHA256 checksum verification is mandatory and handled by the caller before this is
-// invoked; this is additive: a genuine "gpg" verification failure blocks the install,
-// but "sigstore" is not yet implemented and never blocks (logs a one-line notice).
-func verifyArtifactSignature(ctx context.Context, client *http.Client, spec AssetSpec, sig *ghAsset, checksums []byte) (verified bool, sigType string, err error) {
+// invoked; this is additive. mode is the configured scanning.signature_verification
+// setting ("off"/"warn"/"enforce"); empty is treated as "enforce". version is the
+// resolved release version (without a "v" prefix), used to interpolate spec.Signature.Identity.
+func verifyArtifactSignature(ctx context.Context, client *http.Client, spec AssetSpec, sig *ghAsset, checksums []byte, mode, version string) (verified bool, sigType string, err error) {
 	switch spec.Signature.Type {
 	case "", "none":
 		return false, "none", nil
@@ -307,8 +314,61 @@ func verifyArtifactSignature(ctx context.Context, client *http.Client, spec Asse
 		}
 		return true, "gpg", nil
 	case "sigstore":
-		log.Printf("scanner installer: Sigstore signature verification is not implemented yet; skipping (tracked as a follow-up)")
-		return false, "sigstore", nil
+		if mode == "" {
+			mode = "enforce"
+		}
+		if mode == "off" {
+			return false, "sigstore", nil
+		}
+		if sig == nil {
+			// Older releases (pre-v0.68.1 for trivy) publish no Sigstore bundle at all.
+			// Never block on this; the mandatory SHA256 checksum check already applies.
+			log.Printf("scanner installer: no sigstore signature asset found (older release?); skipping signature verification")
+			return false, "sigstore", nil
+		}
+		if len(checksums) == 0 {
+			// Nothing to verify the bundle against (e.g. UseAssetDigest tools).
+			return false, "sigstore", nil
+		}
+		if !strings.HasPrefix(sig.BrowserDownloadURL, "https://") {
+			return false, "sigstore", fmt.Errorf("%w: %s", ErrNonHTTPS, sig.BrowserDownloadURL)
+		}
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, sig.BrowserDownloadURL, nil)
+		if reqErr != nil {
+			return false, "sigstore", reqErr
+		}
+		resp, doErr := client.Do(req)
+		if doErr != nil {
+			return false, "sigstore", doErr
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return false, "sigstore", fmt.Errorf("download signature bundle: HTTP %d", resp.StatusCode)
+		}
+		bundleBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, maxSigBundleSize))
+		if readErr != nil {
+			return false, "sigstore", readErr
+		}
+
+		identity := fmt.Sprintf(spec.Signature.Identity, version)
+		verErr := sigstoreVerify(bundleBytes, checksums, identity, spec.Signature.Issuer)
+		switch {
+		case verErr == nil:
+			return true, "sigstore", nil
+		case errors.Is(verErr, errTrustRootUnavailable):
+			// Infra failure (e.g. air-gapped, no TUF access) — never blocks; SHA256
+			// checksum verification (already mandatory) still applies.
+			log.Printf("scanner installer: sigstore trust root unavailable; falling back to SHA256-only: %v", verErr)
+			return false, "sigstore", nil
+		default:
+			// Definitive signature/identity mismatch.
+			log.Printf("scanner installer: sigstore signature verification failed: %v", verErr)
+			if mode == "enforce" {
+				return false, "sigstore", fmt.Errorf("sigstore signature verification failed: %w", verErr)
+			}
+			// mode == "warn": record but never block.
+			return false, "sigstore", nil
+		}
 	default:
 		return false, spec.Signature.Type, nil
 	}
