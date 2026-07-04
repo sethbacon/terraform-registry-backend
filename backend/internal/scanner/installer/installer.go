@@ -73,6 +73,10 @@ var (
 // InstallFunc is the handler-facing type alias so tests can inject a stub.
 type InstallFunc func(ctx context.Context, cfg InstallConfig, tool, pinnedVersion string) (*Result, error)
 
+// CheckFunc is the handler/job-facing type alias for CheckLatest so tests and
+// callers (e.g. ScannerUpdateJob) can inject a stub.
+type CheckFunc func(ctx context.Context, cfg InstallConfig, tool string) (*LatestInfo, error)
+
 // ghRelease is the subset of the GitHub release JSON we need.
 type ghRelease struct {
 	TagName string    `json:"tag_name"`

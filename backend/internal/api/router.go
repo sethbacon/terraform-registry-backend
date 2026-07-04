@@ -79,6 +79,7 @@ type BackgroundServices struct {
 	webhookRetryJob       *jobs.WebhookRetryJob
 	cvePollJob            *jobs.CVEPollJob
 	releasesKeyRefreshJob *jobs.ReleasesKeyRefreshJob
+	scannerUpdateJob      *jobs.ScannerUpdateJob
 	rateLimiters          []middleware.RateLimiterBackend
 	principalOverrides    *middleware.PrincipalOverrideLimiters
 }
@@ -111,6 +112,9 @@ func (bg *BackgroundServices) Shutdown() {
 	}
 	if bg.cvePollJob != nil {
 		bg.cvePollJob.Stop()
+	}
+	if bg.scannerUpdateJob != nil {
+		bg.scannerUpdateJob.Stop()
 	}
 	for _, rl := range bg.rateLimiters {
 		if rl != nil {
@@ -279,6 +283,15 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 			log.Printf("module scanner job failed to start: %v", err)
 		}
 	}()
+
+	// Initialize and start the scheduled scanner update-check job (no-op when
+	// scanning.auto_update.enabled=false). Discovers newer upstream scanner
+	// releases, files them into the version-approval workflow, and reconciles
+	// approved-but-inactive versions into the running scanner.
+	sbvRepo := repositories.NewScannerBinaryVersionRepository(sqlxDB)
+	scannerApprovalRepo := repositories.NewVersionApprovalRepository(sqlxDB)
+	scannerUpdateJob := jobs.NewScannerUpdateJob(&cfg.Scanning, &cfg.Notifications, &cfg.CVE, sbvRepo, scannerApprovalRepo, oidcConfigRepo, moduleScannerJob, nil, nil)
+	go scannerUpdateJob.Start(context.Background())
 
 	// Initialize and start the audit log cleanup job (no-op when retention_days=0)
 	auditCleanupJob := jobs.NewAuditCleanupJob(&cfg.AuditRetention, auditRepo)
@@ -947,9 +960,13 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 			authenticatedGroup.GET("/admin/scanning/scans/:id",
 				middleware.RequireScope(auth.ScopeScanningRead),
 				admin.GetScanByIDHandler(db))
+			installHandler := admin.NewScanningInstallHandler(&cfg.Scanning, nil, scannerUpdateJob, sbvRepo, scannerApprovalRepo)
 			authenticatedGroup.POST("/admin/scanning/install",
 				middleware.RequireScope(auth.ScopeAdmin),
-				admin.InstallScannerHandler(&cfg.Scanning, nil))
+				installHandler.Install())
+			authenticatedGroup.POST("/admin/scanning/check",
+				middleware.RequireScope(auth.ScopeAdmin),
+				admin.TriggerScannerCheckHandler(scannerUpdateJob))
 			authenticatedGroup.GET("/admin/scanning/latest",
 				middleware.RequireScope(auth.ScopeScanningRead),
 				admin.GetScannerLatestHandler(&cfg.Scanning))
@@ -1291,6 +1308,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		webhookRetryJob:       webhookRetryJob,
 		cvePollJob:            cvePollJob,
 		releasesKeyRefreshJob: releasesKeyRefreshJob,
+		scannerUpdateJob:      scannerUpdateJob,
 		rateLimiters:          collectRateLimiterBackends(authRateLimiter, generalRateLimiter, uploadRateLimiter, orgRateLimiter),
 		principalOverrides:    principalOverrides,
 	}
