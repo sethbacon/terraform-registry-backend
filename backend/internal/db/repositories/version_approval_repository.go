@@ -74,6 +74,19 @@ const terraformSelect = `
 	JOIN terraform_mirror_configs tmc ON tmc.id = tv.config_id
 	WHERE tv.approval_status IS NOT NULL`
 
+// scannerSelect is the scanner-binary-version branch. There is no mirror config
+// for a scanner tool, so mirror_config_name/id are fixed placeholder values.
+const scannerSelect = `
+	SELECT sbv.id AS id, 'scanner' AS type, sbv.version AS version,
+	       sbv.approval_status AS approval_status,
+	       NULL::text AS provider_namespace, NULL::text AS provider_name,
+	       'Security Scanner' AS mirror_config_name,
+	       '00000000-0000-0000-0000-000000000000'::uuid AS mirror_config_id,
+	       sbv.signature_verified AS gpg_verified, sbv.signature_verified AS shasum_verified,
+	       sbv.discovered_at AS synced_at
+	FROM scanner_binary_versions sbv
+	WHERE sbv.approval_status IS NOT NULL`
+
 // innerQuery builds the UNION-ALL subquery honouring the type filter.
 func innerQuery(typeFilter string) string {
 	switch typeFilter {
@@ -81,8 +94,10 @@ func innerQuery(typeFilter string) string {
 		return providerSelect
 	case models.VersionApprovalTypeTerraform:
 		return terraformSelect
+	case models.VersionApprovalTypeScanner:
+		return scannerSelect
 	default:
-		return providerSelect + "\nUNION ALL" + terraformSelect
+		return providerSelect + "\nUNION ALL" + terraformSelect + "\nUNION ALL" + scannerSelect
 	}
 }
 
@@ -139,7 +154,8 @@ func (r *VersionApprovalRepository) PendingCount(ctx context.Context) (int, erro
 	const q = `
 		SELECT
 		  (SELECT COUNT(*) FROM mirrored_provider_versions WHERE approval_status = $1) +
-		  (SELECT COUNT(*) FROM terraform_versions WHERE approval_status = $1)`
+		  (SELECT COUNT(*) FROM terraform_versions WHERE approval_status = $1) +
+		  (SELECT COUNT(*) FROM scanner_binary_versions WHERE approval_status = $1)`
 	var count int
 	if err := r.db.QueryRowContext(ctx, q, models.VersionApprovalStatusPending).Scan(&count); err != nil {
 		return 0, fmt.Errorf("failed to count pending approvals: %w", err)
@@ -170,7 +186,7 @@ func (r *VersionApprovalRepository) SetStatus(ctx context.Context, id uuid.UUID,
 		return fmt.Errorf("failed to update provider version status: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n > 0 {
-		if err := insertEvent(ctx, tx, &id, nil, action, performedBy, notes, nil); err != nil {
+		if err := insertEvent(ctx, tx, &id, nil, nil, action, performedBy, notes, nil); err != nil {
 			return err
 		}
 		return tx.Commit()
@@ -183,19 +199,34 @@ func (r *VersionApprovalRepository) SetStatus(ctx context.Context, id uuid.UUID,
 	if err != nil {
 		return fmt.Errorf("failed to update terraform version status: %w", err)
 	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		if err := insertEvent(ctx, tx, nil, &id, nil, action, performedBy, notes, nil); err != nil {
+			return err
+		}
+		// A terraform approve/reject can change which version is "latest".
+		var configID uuid.UUID
+		if err := tx.GetContext(ctx, &configID, `SELECT config_id FROM terraform_versions WHERE id = $1`, id); err != nil {
+			return fmt.Errorf("failed to load config for latest recalc: %w", err)
+		}
+		if err := recalcTerraformLatest(ctx, tx, configID); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+
+	// Fall back to scanner binary versions. No is_latest or activation side
+	// effects here: activation is handled by the scanner update job's reconciler.
+	res, err = tx.ExecContext(ctx,
+		`UPDATE scanner_binary_versions SET approval_status = $2 WHERE id = $1 AND approval_status IS NOT NULL`,
+		id, newStatus)
+	if err != nil {
+		return fmt.Errorf("failed to update scanner binary version status: %w", err)
+	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		return sql.ErrNoRows
 	}
-	if err := insertEvent(ctx, tx, nil, &id, action, performedBy, notes, nil); err != nil {
-		return err
-	}
-	// A terraform approve/reject can change which version is "latest".
-	var configID uuid.UUID
-	if err := tx.GetContext(ctx, &configID, `SELECT config_id FROM terraform_versions WHERE id = $1`, id); err != nil {
-		return fmt.Errorf("failed to load config for latest recalc: %w", err)
-	}
-	if err := recalcTerraformLatest(ctx, tx, configID); err != nil {
+	if err := insertEvent(ctx, tx, nil, nil, &id, action, performedBy, notes, nil); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -215,12 +246,12 @@ func (r *VersionApprovalRepository) RecordEvent(ctx context.Context, ev *models.
 // newest first, resolving the performer's display name.
 func (r *VersionApprovalRepository) Events(ctx context.Context, versionID uuid.UUID) ([]models.VersionApprovalEvent, error) {
 	const q = `
-		SELECT e.id, e.mirrored_provider_version_id, e.terraform_version_id,
+		SELECT e.id, e.mirrored_provider_version_id, e.terraform_version_id, e.scanner_binary_version_id,
 		       e.action, e.performed_by, u.name AS performed_by_name,
 		       e.notes, e.auto_approve_rule, e.created_at
 		FROM version_approval_events e
 		LEFT JOIN users u ON u.id = e.performed_by
-		WHERE e.mirrored_provider_version_id = $1 OR e.terraform_version_id = $1
+		WHERE e.mirrored_provider_version_id = $1 OR e.terraform_version_id = $1 OR e.scanner_binary_version_id = $1
 		ORDER BY e.created_at DESC`
 
 	var events []models.VersionApprovalEvent
@@ -259,12 +290,12 @@ func recalcTerraformLatest(ctx context.Context, tx *sqlx.Tx, configID uuid.UUID)
 }
 
 // insertEvent inserts an approval event within a transaction.
-func insertEvent(ctx context.Context, tx *sqlx.Tx, mpvID, tfvID *uuid.UUID, action string, performedBy *uuid.UUID, notes *string, rule *string) error {
+func insertEvent(ctx context.Context, tx *sqlx.Tx, mpvID, tfvID, sbvID *uuid.UUID, action string, performedBy *uuid.UUID, notes *string, rule *string) error {
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO version_approval_events
-		  (mirrored_provider_version_id, terraform_version_id, action, performed_by, notes, auto_approve_rule)
-		VALUES ($1, $2, $3, $4, $5, $6)`,
-		mpvID, tfvID, action, performedBy, notes, rule)
+		  (mirrored_provider_version_id, terraform_version_id, scanner_binary_version_id, action, performed_by, notes, auto_approve_rule)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		mpvID, tfvID, sbvID, action, performedBy, notes, rule)
 	if err != nil {
 		return fmt.Errorf("failed to insert approval event: %w", err)
 	}
@@ -275,9 +306,9 @@ func insertEvent(ctx context.Context, tx *sqlx.Tx, mpvID, tfvID *uuid.UUID, acti
 func insertEventDB(ctx context.Context, db *sqlx.DB, ev *models.VersionApprovalEvent) error {
 	_, err := db.ExecContext(ctx, `
 		INSERT INTO version_approval_events
-		  (mirrored_provider_version_id, terraform_version_id, action, performed_by, notes, auto_approve_rule)
-		VALUES ($1, $2, $3, $4, $5, $6)`,
-		ev.MirroredProviderVersionID, ev.TerraformVersionID, ev.Action, ev.PerformedBy, ev.Notes, ev.AutoApproveRule)
+		  (mirrored_provider_version_id, terraform_version_id, scanner_binary_version_id, action, performed_by, notes, auto_approve_rule)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		ev.MirroredProviderVersionID, ev.TerraformVersionID, ev.ScannerBinaryVersionID, ev.Action, ev.PerformedBy, ev.Notes, ev.AutoApproveRule)
 	if err != nil {
 		return fmt.Errorf("failed to insert approval event: %w", err)
 	}

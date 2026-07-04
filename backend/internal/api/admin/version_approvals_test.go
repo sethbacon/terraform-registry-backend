@@ -174,6 +174,8 @@ func TestVAHandler_Reject_NotFound(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(`UPDATE terraform_versions SET approval_status`).
 		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`UPDATE scanner_binary_versions SET approval_status`).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectRollback()
 
 	w := httptest.NewRecorder()

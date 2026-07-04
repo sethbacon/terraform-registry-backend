@@ -191,6 +191,8 @@ func getResourceType(c *gin.Context) string {
 	case strings.HasPrefix(fullPath, "/api/v1/admin/scanning"),
 		strings.HasPrefix(fullPath, "/api/v1/admin/security-scanning"):
 		return "scanning"
+	case strings.HasPrefix(fullPath, "/api/v1/admin/notifications"):
+		return "notifications"
 	case strings.HasPrefix(fullPath, "/api/v1/admin/approvals"):
 		return "approval"
 	// The hosted binary-mirror admin API lives under /admin/terraform-mirror*

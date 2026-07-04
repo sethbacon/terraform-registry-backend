@@ -21,7 +21,7 @@ func jsonBodyAdmin(v interface{}) *bytes.Buffer {
 func TestInstallScannerHandler_BadJSON(t *testing.T) {
 	cfg := &config.ScanningConfig{InstallDir: "/tmp/test"}
 	r := gin.New()
-	r.POST("/install", InstallScannerHandler(cfg, nil))
+	r.POST("/install", NewScanningInstallHandler(cfg, nil, nil, nil, nil).Install())
 
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("POST", "/install", jsonBodyAdmin("not json{"))
@@ -36,7 +36,7 @@ func TestInstallScannerHandler_BadJSON(t *testing.T) {
 func TestInstallScannerHandler_UnsupportedTool(t *testing.T) {
 	cfg := &config.ScanningConfig{InstallDir: "/tmp/test"}
 	r := gin.New()
-	r.POST("/install", InstallScannerHandler(cfg, nil))
+	r.POST("/install", NewScanningInstallHandler(cfg, nil, nil, nil, nil).Install())
 
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("POST", "/install", jsonBodyAdmin(map[string]string{"tool": "snyk"}))
@@ -56,7 +56,7 @@ func TestInstallScannerHandler_UnsupportedTool(t *testing.T) {
 func TestInstallScannerHandler_EmptyInstallDir(t *testing.T) {
 	cfg := &config.ScanningConfig{InstallDir: ""}
 	r := gin.New()
-	r.POST("/install", InstallScannerHandler(cfg, nil))
+	r.POST("/install", NewScanningInstallHandler(cfg, nil, nil, nil, nil).Install())
 
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("POST", "/install", jsonBodyAdmin(map[string]string{"tool": "trivy"}))
@@ -80,7 +80,7 @@ func TestInstallScannerHandler_InstallerSuccess(t *testing.T) {
 	}
 
 	r := gin.New()
-	r.POST("/install", InstallScannerHandler(cfg, stub))
+	r.POST("/install", NewScanningInstallHandler(cfg, stub, nil, nil, nil).Install())
 
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("POST", "/install", jsonBodyAdmin(map[string]string{"tool": "trivy"}))
@@ -107,7 +107,7 @@ func TestInstallScannerHandler_InstallerError(t *testing.T) {
 	}
 
 	r := gin.New()
-	r.POST("/install", InstallScannerHandler(cfg, stub))
+	r.POST("/install", NewScanningInstallHandler(cfg, stub, nil, nil, nil).Install())
 
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("POST", "/install", jsonBodyAdmin(map[string]string{"tool": "trivy"}))

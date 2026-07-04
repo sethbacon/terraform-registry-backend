@@ -8,7 +8,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"net/smtp"
 	"strings"
 	"time"
 
@@ -17,6 +16,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/cve/osv"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/notify"
 )
 
 // digestThreshold is the minimum number of new advisories that triggers a single
@@ -30,6 +30,7 @@ type CVEPollJob struct {
 	auditRepo *repositories.AuditRepository
 	cveCfg    *config.CVEConfig
 	notifCfg  *config.NotificationsConfig
+	mailer    *notify.Mailer
 	stopChan  chan struct{}
 	manualCh  chan struct{}
 }
@@ -55,6 +56,7 @@ func NewCVEPollJob(
 		auditRepo: auditRepo,
 		cveCfg:    cveCfg,
 		notifCfg:  notifCfg,
+		mailer:    notify.New(&notifCfg.SMTP),
 		stopChan:  make(chan struct{}),
 		manualCh:  make(chan struct{}, 1),
 	}
@@ -256,21 +258,8 @@ func (j *CVEPollJob) sendDigestEmail(recipients []string, advisories []models.CV
 	return j.sendEmail(recipients, subject, strings.Join(lines, "\r\n"))
 }
 
-// sendEmail is a thin wrapper that delegates to the shared SMTP helper.
+// sendEmail is a thin wrapper that delegates to the shared mailer.
 // coverage:skip:integration-only — calls smtp.SendMail / TLS dial; requires live SMTP.
 func (j *CVEPollJob) sendEmail(to []string, subject, body string) error {
-	smtpCfg := &j.notifCfg.SMTP
-	headers := fmt.Sprintf(
-		"From: %s\r\nTo: %s\r\nSubject: %s\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n",
-		smtpCfg.From, strings.Join(to, ", "), subject,
-	)
-	msg := []byte(headers + body + "\r\n")
-
-	addr := fmt.Sprintf("%s:%d", smtpCfg.Host, smtpCfg.Port)
-	auth := smtp.PlainAuth("", smtpCfg.Username, smtpCfg.Password, smtpCfg.Host)
-
-	if smtpCfg.UseTLS {
-		return sendMailTLS(addr, smtpCfg.Host, auth, smtpCfg.From, to, msg)
-	}
-	return smtp.SendMail(addr, auth, smtpCfg.From, to, msg)
+	return j.mailer.Send(to, subject, body)
 }

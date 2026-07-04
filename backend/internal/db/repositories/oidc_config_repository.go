@@ -261,6 +261,34 @@ func (r *OIDCConfigRepository) GetScanningConfig(ctx context.Context) ([]byte, e
 	return configJSON, nil
 }
 
+// SetNotificationsConfig stores the notifications configuration JSON (SMTP password
+// MUST be encrypted by the caller before it reaches here) and marks notifications configured.
+func (r *OIDCConfigRepository) SetNotificationsConfig(ctx context.Context, configJSON []byte) error {
+	query := `
+		UPDATE system_settings SET
+			notifications_configured = true,
+			notifications_configured_at = NOW(),
+			notifications_config = $1,
+			updated_at = $2
+		WHERE id = 1`
+	_, err := r.db.ExecContext(ctx, query, configJSON, time.Now())
+	return err
+}
+
+// GetNotificationsConfig retrieves the notifications configuration JSON (may be nil).
+func (r *OIDCConfigRepository) GetNotificationsConfig(ctx context.Context) ([]byte, error) {
+	var configJSON []byte
+	query := `SELECT notifications_config FROM system_settings WHERE id = 1`
+	err := r.db.GetContext(ctx, &configJSON, query)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return configJSON, nil
+}
+
 // SetLDAPConfig stores the LDAP configuration JSON and marks LDAP as configured.
 // It also sets auth_method to 'ldap'.
 func (r *OIDCConfigRepository) SetLDAPConfig(ctx context.Context, configJSON []byte) error {

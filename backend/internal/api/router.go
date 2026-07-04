@@ -79,6 +79,7 @@ type BackgroundServices struct {
 	webhookRetryJob       *jobs.WebhookRetryJob
 	cvePollJob            *jobs.CVEPollJob
 	releasesKeyRefreshJob *jobs.ReleasesKeyRefreshJob
+	scannerUpdateJob      *jobs.ScannerUpdateJob
 	rateLimiters          []middleware.RateLimiterBackend
 	principalOverrides    *middleware.PrincipalOverrideLimiters
 }
@@ -111,6 +112,9 @@ func (bg *BackgroundServices) Shutdown() {
 	}
 	if bg.cvePollJob != nil {
 		bg.cvePollJob.Stop()
+	}
+	if bg.scannerUpdateJob != nil {
+		bg.scannerUpdateJob.Stop()
 	}
 	for _, rl := range bg.rateLimiters {
 		if rl != nil {
@@ -280,6 +284,15 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		}
 	}()
 
+	// Initialize and start the scheduled scanner update-check job (no-op when
+	// scanning.auto_update.enabled=false). Discovers newer upstream scanner
+	// releases, files them into the version-approval workflow, and reconciles
+	// approved-but-inactive versions into the running scanner.
+	sbvRepo := repositories.NewScannerBinaryVersionRepository(sqlxDB)
+	scannerApprovalRepo := repositories.NewVersionApprovalRepository(sqlxDB)
+	scannerUpdateJob := jobs.NewScannerUpdateJob(&cfg.Scanning, &cfg.Notifications, &cfg.CVE, sbvRepo, scannerApprovalRepo, oidcConfigRepo, moduleScannerJob, nil, nil)
+	go scannerUpdateJob.Start(context.Background())
+
 	// Initialize and start the audit log cleanup job (no-op when retention_days=0)
 	auditCleanupJob := jobs.NewAuditCleanupJob(&cfg.AuditRetention, auditRepo)
 	go func() {
@@ -310,6 +323,39 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		tokenCipher, err = crypto.NewTokenCipher([]byte(encryptionKey))
 		if err != nil {
 			log.Fatalf("Failed to initialize token cipher: %v", err)
+		}
+	}
+
+	// Reload persisted notifications config from the database (if present),
+	// applying it on top of the YAML/env defaults. This mirrors the scanning
+	// config reload above; it must run after tokenCipher is constructed since
+	// the stored SMTP password is encrypted. Fields are set in place on
+	// cfg.Notifications (never reassigned) so jobs holding &cfg.Notifications
+	// observe the reloaded values.
+	if njson, err := oidcConfigRepo.GetNotificationsConfig(context.Background()); err == nil && njson != nil {
+		var dbc admin.NotificationsConfigDB
+		if err := json.Unmarshal(njson, &dbc); err != nil {
+			log.Printf("notifications startup: failed to parse persisted config: %v", err)
+		} else {
+			cfg.Notifications.Enabled = dbc.Enabled
+			cfg.Notifications.SMTP.Host = dbc.SMTP.Host
+			cfg.Notifications.SMTP.Port = dbc.SMTP.Port
+			cfg.Notifications.SMTP.Username = dbc.SMTP.Username
+			cfg.Notifications.SMTP.From = dbc.SMTP.From
+			cfg.Notifications.SMTP.UseTLS = dbc.SMTP.UseTLS
+			if dbc.SMTP.PasswordEncrypted != "" {
+				if pw, derr := tokenCipher.Open(dbc.SMTP.PasswordEncrypted); derr == nil {
+					cfg.Notifications.SMTP.Password = pw
+				} else {
+					log.Printf("notifications startup: failed to decrypt persisted smtp password: %v", derr)
+				}
+			}
+			if dbc.APIKeyExpiryWarningDays > 0 {
+				cfg.Notifications.APIKeyExpiryWarningDays = dbc.APIKeyExpiryWarningDays
+			}
+			if dbc.APIKeyExpiryCheckIntervalHours > 0 {
+				cfg.Notifications.APIKeyExpiryCheckIntervalHours = dbc.APIKeyExpiryCheckIntervalHours
+			}
 		}
 	}
 
@@ -652,6 +698,9 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// Initialize storage configuration handlers
 	storageHandlers := admin.NewStorageHandlers(cfg, storageConfigRepo, tokenCipher)
 
+	// Initialize notifications configuration handlers
+	notificationsHandler := admin.NewNotificationsHandler(&cfg.Notifications, oidcConfigRepo, tokenCipher, &cfg.CVE)
+
 	// Initialize OIDC admin configuration handlers
 	oidcAdminHandlers := admin.NewOIDCConfigAdminHandlers(oidcConfigRepo)
 
@@ -947,9 +996,27 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 			authenticatedGroup.GET("/admin/scanning/scans/:id",
 				middleware.RequireScope(auth.ScopeScanningRead),
 				admin.GetScanByIDHandler(db))
+			installHandler := admin.NewScanningInstallHandler(&cfg.Scanning, nil, scannerUpdateJob, sbvRepo, scannerApprovalRepo)
 			authenticatedGroup.POST("/admin/scanning/install",
 				middleware.RequireScope(auth.ScopeAdmin),
-				admin.InstallScannerHandler(&cfg.Scanning, nil))
+				installHandler.Install())
+			authenticatedGroup.POST("/admin/scanning/check",
+				middleware.RequireScope(auth.ScopeAdmin),
+				admin.TriggerScannerCheckHandler(scannerUpdateJob))
+			authenticatedGroup.GET("/admin/scanning/latest",
+				middleware.RequireScope(auth.ScopeScanningRead),
+				admin.GetScannerLatestHandler(&cfg.Scanning))
+
+			// Notifications (SMTP) admin endpoints
+			authenticatedGroup.GET("/admin/notifications/config",
+				middleware.RequireScope(auth.ScopeAdmin),
+				notificationsHandler.GetConfig)
+			authenticatedGroup.PUT("/admin/notifications/config",
+				middleware.RequireScope(auth.ScopeAdmin),
+				notificationsHandler.PutConfig)
+			authenticatedGroup.POST("/admin/notifications/test",
+				middleware.RequireScope(auth.ScopeAdmin),
+				notificationsHandler.TestEmail)
 
 			// API Keys management - self-service for own keys
 			// Users can manage their own API keys without api_keys:manage scope
@@ -1288,6 +1355,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		webhookRetryJob:       webhookRetryJob,
 		cvePollJob:            cvePollJob,
 		releasesKeyRefreshJob: releasesKeyRefreshJob,
+		scannerUpdateJob:      scannerUpdateJob,
 		rateLimiters:          collectRateLimiterBackends(authRateLimiter, generalRateLimiter, uploadRateLimiter, orgRateLimiter),
 		principalOverrides:    principalOverrides,
 	}
