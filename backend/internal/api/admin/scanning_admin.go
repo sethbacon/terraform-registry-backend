@@ -15,16 +15,25 @@ import (
 
 // ScanningConfigResponse is the public view of the scanning config.
 type ScanningConfigResponse struct {
-	Enabled           bool    `json:"enabled"`
-	Tool              string  `json:"tool"`
-	ExpectedVersion   string  `json:"expected_version,omitempty"`
-	SeverityThreshold string  `json:"severity_threshold"`
-	Timeout           string  `json:"timeout"`
-	WorkerCount       int     `json:"worker_count"`
-	ScanIntervalMins  int     `json:"scan_interval_mins"`
-	BinaryPath        string  `json:"binary_path,omitempty"`
-	BinaryFound       bool    `json:"binary_found"`
-	DetectedVersion   *string `json:"detected_version,omitempty"`
+	Enabled           bool                       `json:"enabled"`
+	Tool              string                     `json:"tool"`
+	ExpectedVersion   string                     `json:"expected_version,omitempty"`
+	SeverityThreshold string                     `json:"severity_threshold"`
+	Timeout           string                     `json:"timeout"`
+	WorkerCount       int                        `json:"worker_count"`
+	ScanIntervalMins  int                        `json:"scan_interval_mins"`
+	BinaryPath        string                     `json:"binary_path,omitempty"`
+	BinaryFound       bool                       `json:"binary_found"`
+	DetectedVersion   *string                    `json:"detected_version,omitempty"`
+	AutoUpdate        ScanningAutoUpdateResponse `json:"auto_update"`
+}
+
+// ScanningAutoUpdateResponse is the public view of the scanner auto-update settings.
+type ScanningAutoUpdateResponse struct {
+	Enabled          bool   `json:"enabled"`
+	IntervalHours    int    `json:"interval_hours"`
+	RequiresApproval bool   `json:"requires_approval"`
+	AutoApproveRules string `json:"auto_approve_rules,omitempty"`
 }
 
 // ScanningStatsResponse aggregates scan counts by status and recent activity.
@@ -75,6 +84,12 @@ func GetScanningConfigHandler(cfg *config.ScanningConfig) gin.HandlerFunc {
 			WorkerCount:       cfg.WorkerCount,
 			ScanIntervalMins:  cfg.ScanIntervalMins,
 			BinaryPath:        cfg.BinaryPath,
+			AutoUpdate: ScanningAutoUpdateResponse{
+				Enabled:          cfg.AutoUpdate.Enabled,
+				IntervalHours:    cfg.AutoUpdate.IntervalHours,
+				RequiresApproval: cfg.AutoUpdate.RequiresApproval,
+				AutoApproveRules: cfg.AutoUpdate.AutoApproveRules,
+			},
 		}
 
 		if cfg.Enabled {

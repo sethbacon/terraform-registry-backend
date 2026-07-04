@@ -114,6 +114,57 @@ func TestResolveScannerApproval(t *testing.T) {
 	}
 }
 
+// TestScannerUpdateJob_RestartSafety proves Stop() is idempotent and that a
+// stopped job can be re-armed for a subsequent Start() (previously Stop() did
+// a one-shot close() with no reset, so a second Stop() panicked and
+// Start-after-Stop exited immediately on the already-closed channel). This
+// exercises the mutex/started/stopChan bookkeeping directly rather than
+// running the full check/reconcile loop, which needs live repos.
+func TestScannerUpdateJob_RestartSafety(t *testing.T) {
+	scanCfg := &config.ScanningConfig{
+		AutoUpdate: config.ScannerAutoUpdateConfig{Enabled: true},
+	}
+	job := newTestScannerUpdateJob(scanCfg)
+
+	// Stop() before any Start() must not panic (never started).
+	job.Stop()
+	if job.started {
+		t.Fatal("expected started=false after Stop() on a never-started job")
+	}
+
+	// Simulate what Start() does under the mutex without invoking the full
+	// check/reconcile loop.
+	job.mu.Lock()
+	job.started = true
+	job.mu.Unlock()
+
+	job.Stop()
+	if job.started {
+		t.Fatal("expected started=false after Stop()")
+	}
+
+	// A second Stop() call must not panic (previously: double-close panic).
+	job.Stop()
+
+	// stopChan must be a fresh, open channel after Stop() so Start() can run
+	// again (previously the closed channel would make the select's
+	// case <-stopChan fire immediately).
+	job.mu.Lock()
+	stopChan := job.stopChan
+	job.mu.Unlock()
+	select {
+	case <-stopChan:
+		t.Fatal("stopChan should be open (freshly reset) after Stop(), not already closed")
+	default:
+	}
+
+	// Re-arm and stop again to prove the cycle repeats without panicking.
+	job.mu.Lock()
+	job.started = true
+	job.mu.Unlock()
+	job.Stop()
+}
+
 func TestScannerUpdateJob_TriggerCheck_NonBlocking(t *testing.T) {
 	job := newTestScannerUpdateJob(&config.ScanningConfig{})
 
