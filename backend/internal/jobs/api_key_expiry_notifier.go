@@ -9,16 +9,14 @@ package jobs
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"log"
-	"net"
-	"net/smtp"
 	"strings"
 	"time"
 
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/notify"
 )
 
 // APIKeyExpiryNotifier periodically emails users whose API keys are about to expire.
@@ -26,6 +24,7 @@ type APIKeyExpiryNotifier struct {
 	apiKeyRepo *repositories.APIKeyRepository
 	userRepo   *repositories.UserRepository
 	cfg        *config.NotificationsConfig
+	mailer     *notify.Mailer
 	interval   time.Duration
 	stopChan   chan struct{}
 }
@@ -45,6 +44,7 @@ func NewAPIKeyExpiryNotifier(
 		apiKeyRepo: apiKeyRepo,
 		userRepo:   userRepo,
 		cfg:        cfg,
+		mailer:     notify.New(cfg.SMTP),
 		interval:   time.Duration(hours) * time.Hour,
 		stopChan:   make(chan struct{}),
 	}
@@ -161,65 +161,5 @@ func (n *APIKeyExpiryNotifier) sendExpiryEmail(toEmail, userName, keyName, keyPr
 		"— Terraform Registry",
 	}, "\r\n")
 
-	smtpCfg := &n.cfg.SMTP
-	headers := fmt.Sprintf(
-		"From: %s\r\nTo: %s\r\nSubject: %s\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n",
-		smtpCfg.From, toEmail, subject,
-	)
-	msg := []byte(headers + body + "\r\n")
-
-	addr := fmt.Sprintf("%s:%d", smtpCfg.Host, smtpCfg.Port)
-	auth := smtp.PlainAuth("", smtpCfg.Username, smtpCfg.Password, smtpCfg.Host)
-
-	if smtpCfg.UseTLS {
-		return sendMailTLS(addr, smtpCfg.Host, auth, smtpCfg.From, []string{toEmail}, msg)
-	}
-	return smtp.SendMail(addr, auth, smtpCfg.From, []string{toEmail}, msg)
-}
-
-// sendMailTLS connects via implicit TLS (port 465 / SMTPS) and sends a message.
-// Use this when UseTLS=true and the port is 465; for port 587 STARTTLS,
-// smtp.SendMail handles the upgrade automatically — but we call this path for
-// both so the config is unambiguous: UseTLS=true always means an encrypted connection.
-func sendMailTLS(addr, host string, auth smtp.Auth, from string, to []string, msg []byte) error {
-	tlsConfig := &tls.Config{
-		ServerName: host,
-		MinVersion: tls.VersionTLS12,
-	}
-
-	conn, err := tls.Dial("tcp", addr, tlsConfig)
-	if err != nil {
-		// Fall back to STARTTLS via the standard smtp.SendMail path (port 587 pattern)
-		return smtp.SendMail(addr, auth, from, to, msg)
-	}
-	defer conn.Close()
-
-	hostname, _, _ := net.SplitHostPort(addr)
-	c, err := smtp.NewClient(conn, hostname)
-	if err != nil {
-		return fmt.Errorf("smtp new client: %w", err)
-	}
-	defer c.Quit() //nolint:errcheck
-
-	if auth != nil {
-		if err := c.Auth(auth); err != nil {
-			return fmt.Errorf("smtp auth: %w", err)
-		}
-	}
-	if err := c.Mail(from); err != nil {
-		return fmt.Errorf("smtp MAIL FROM: %w", err)
-	}
-	for _, addr := range to {
-		if err := c.Rcpt(addr); err != nil {
-			return fmt.Errorf("smtp RCPT TO %s: %w", addr, err)
-		}
-	}
-	w, err := c.Data()
-	if err != nil {
-		return fmt.Errorf("smtp DATA: %w", err)
-	}
-	if _, err := w.Write(msg); err != nil {
-		return fmt.Errorf("smtp write: %w", err)
-	}
-	return w.Close()
+	return n.mailer.Send([]string{toEmail}, subject, body)
 }

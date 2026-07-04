@@ -180,6 +180,14 @@ scanning:
   # scan_args: ["scan", "--format", "json"]
   # output_format is only used when tool is "custom": "sarif" or "json"
   # output_format: sarif
+  # auto_update controls the scheduled job that checks upstream for newer scanner
+  # releases. Disabled by default; newly discovered versions are downloaded, verified,
+  # and filed as pending version approvals unless auto-approved.
+  # auto_update:
+  #   enabled: false
+  #   interval_hours: 24
+  #   requires_approval: true
+  #   auto_approve_rules: ""
 
 # CVE vulnerability polling — periodically queries OSV.dev for advisories affecting
 # Terraform/OpenTofu binaries, registered providers, and the configured scanner binary.

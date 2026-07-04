@@ -199,6 +199,24 @@ type ScanningConfig struct {
 	// Empty disables the auto-install endpoint; operators who prefer to pre-install
 	// scanners themselves can leave it unset.
 	InstallDir string `mapstructure:"install_dir"`
+	// AutoUpdate configures the scheduled scanner version-check job (Phase D).
+	AutoUpdate ScannerAutoUpdateConfig `mapstructure:"auto_update"`
+}
+
+// ScannerAutoUpdateConfig controls the scheduled job that checks upstream for newer
+// scanner releases. When enabled, newer versions are discovered, downloaded, verified,
+// and (unless auto-approved) filed as pending version approvals. Never installs
+// unattended unless an auto-approve rule matches.
+type ScannerAutoUpdateConfig struct {
+	// Enabled gates the scheduled scanner update-check job. Default false.
+	Enabled bool `mapstructure:"enabled"`
+	// IntervalHours is how often to check upstream for new versions. Default 24.
+	IntervalHours int `mapstructure:"interval_hours"`
+	// RequiresApproval gates newly discovered versions behind manual approval. Default true.
+	RequiresApproval bool `mapstructure:"requires_approval"`
+	// AutoApproveRules is a JSON document of auto-approve rules (same shape as mirror
+	// auto_approve_rules). Empty means no auto-approval. Default empty.
+	AutoApproveRules string `mapstructure:"auto_approve_rules"`
 }
 
 // ServerConfig holds HTTP server configuration
@@ -807,6 +825,10 @@ func bindEnvVars(v *viper.Viper) error {
 		"scanning.version_args",
 		"scanning.scan_args",
 		"scanning.output_format",
+		"scanning.auto_update.enabled",
+		"scanning.auto_update.interval_hours",
+		"scanning.auto_update.requires_approval",
+		"scanning.auto_update.auto_approve_rules",
 
 		// Audit retention
 		"audit_retention.retention_days",
@@ -1003,6 +1025,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("scanning.worker_count", 2)
 	v.SetDefault("scanning.scan_interval_mins", 5)
 	v.SetDefault("scanning.install_dir", "/app/scanners")
+	v.SetDefault("scanning.auto_update.enabled", false)
+	v.SetDefault("scanning.auto_update.interval_hours", 24)
+	v.SetDefault("scanning.auto_update.requires_approval", true)
 
 	// Audit retention defaults
 	v.SetDefault("audit_retention.retention_days", 90)
