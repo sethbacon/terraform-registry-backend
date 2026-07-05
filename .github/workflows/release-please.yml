@@ -22,8 +22,27 @@ jobs:
           private-key: ${{ secrets.RELEASE_DISPATCH_APP_KEY }}
 
       - name: Run release-please
+        id: release
         uses: googleapis/release-please-action@0dfd8538845b8e92600d271a895a5372865d4062 # v5
         with:
           token: ${{ steps.token.outputs.token }}
           config-file: .release-please-config.json
           manifest-file: .release-please-manifest.json
+
+      # When a release is cut, release-please creates a DRAFT GitHub Release and
+      # tag using the app token. A tag pushed by an app/bot token does not fire
+      # release.yml's `on: push: tags` trigger, so the draft would otherwise
+      # never be built or published (this is what stalled earlier releases).
+      # Explicitly dispatch release.yml against the new tag using the same app
+      # token — which, unlike the default GITHUB_TOKEN, is permitted to start
+      # workflow runs. release.yml uploads the built artifacts to the draft and
+      # publishes it, which in turn fires the `release: published` event that
+      # wiki-sync.yml listens for.
+      - name: Dispatch release build for the new tag
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          gh workflow run release.yml \
+            --repo "${{ github.repository }}" \
+            --ref "${{ steps.release.outputs.tag_name }}"
