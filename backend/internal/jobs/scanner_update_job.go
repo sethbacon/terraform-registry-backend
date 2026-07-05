@@ -89,6 +89,7 @@ func (j *ScannerUpdateJob) Name() string { return "scanner-update" }
 // Start begins the background update-check loop. It runs an initial check (plus
 // activation reconciliation) immediately on startup, then repeats on the
 // configured interval. The loop exits when ctx is cancelled or Stop() is called.
+// coverage:skip:integration-only — drives runCheck/reconcileActivations on a live ticker loop against a real GitHub release feed, DB, and SMTP; TestScannerUpdateJob_RestartSafety exercises the mu/started/stopChan bookkeeping directly without invoking the loop body.
 func (j *ScannerUpdateJob) Start(ctx context.Context) {
 	if !j.scanCfg.AutoUpdate.Enabled {
 		log.Println("[scanner-update] disabled (scanning.auto_update.enabled=false)")
@@ -168,6 +169,7 @@ func (j *ScannerUpdateJob) Stop() {
 // if newer than the active/expected version and not already discovered,
 // downloads+verifies it into a versioned present-but-inactive path, records it,
 // and notifies admins.
+// coverage:skip:integration-only — calls the live GitHub release check + download and the real ScannerBinaryVersionRepository; resolveScannerApproval (the pure decision logic it delegates to) is unit-tested independently.
 func (j *ScannerUpdateJob) runCheck(ctx context.Context) {
 	tool := j.scanCfg.Tool
 	if j.scanCfg.InstallDir == "" {
@@ -286,6 +288,7 @@ func (j *ScannerUpdateJob) resolveScannerApproval(version string, signatureVerif
 
 // reconcileActivations picks up approved-but-inactive scanner versions and
 // activates them.
+// coverage:skip:integration-only — requires a live ScannerBinaryVersionRepository (PostgreSQL) to list approved-inactive rows and drives Activate for each.
 func (j *ScannerUpdateJob) reconcileActivations(ctx context.Context) {
 	rows, err := j.sbvRepo.ListApprovedInactive(ctx)
 	if err != nil {
@@ -305,6 +308,7 @@ func (j *ScannerUpdateJob) reconcileActivations(ctx context.Context) {
 // version), persists it, restarts ModuleScannerJob, marks the version active,
 // and best-effort cleans up superseded versioned binaries for the tool. Shared
 // by the activation reconciler and the manual install+activate admin endpoint.
+// coverage:skip:integration-only — persists scanning config via a live OIDCConfigRepository (PostgreSQL), restarts a real ModuleScannerJob, and marks the version active via a live ScannerBinaryVersionRepository; exercised by the integration suite.
 func (j *ScannerUpdateJob) Activate(ctx context.Context, v *models.ScannerBinaryVersion) error {
 	if v.BinaryPath == nil {
 		return fmt.Errorf("scanner binary version %s (%s %s) has no binary_path", v.ID, v.Tool, v.Version)
@@ -374,6 +378,7 @@ func (j *ScannerUpdateJob) Activate(ctx context.Context, v *models.ScannerBinary
 // logged only. Only removes directories that match the {InstallDir}/{tool}-{version}
 // pattern used by installer.DownloadVerified, so an activated version's symlink
 // target (bare {InstallDir}/{tool}) is never touched.
+// coverage:skip:integration-only — requires a live ScannerBinaryVersionRepository (PostgreSQL) plus real filesystem directories under InstallDir; only ever called from Activate.
 func (j *ScannerUpdateJob) cleanupSuperseded(ctx context.Context, active *models.ScannerBinaryVersion) {
 	rows, err := j.sbvRepo.ListForTool(ctx, active.Tool)
 	if err != nil {
@@ -399,6 +404,7 @@ func (j *ScannerUpdateJob) cleanupSuperseded(ctx context.Context, active *models
 // notify sends an admin notification email about a newly discovered scanner
 // version, guarded by notifications being enabled/configured and recipients
 // being present. Never fails the caller; send errors are logged only.
+// coverage:skip:integration-only — calls the shared mailer, which requires live SMTP.
 func (j *ScannerUpdateJob) notify(_ context.Context, v *models.ScannerBinaryVersion, status *string) {
 	if j.notifCfg == nil || !j.notifCfg.Enabled || j.notifCfg.SMTP.Host == "" || len(j.cveCfg.EmailRecipients) == 0 {
 		return

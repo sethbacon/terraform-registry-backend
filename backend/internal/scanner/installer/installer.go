@@ -387,6 +387,7 @@ type LatestInfo struct {
 
 // CheckLatest queries the upstream GitHub release for the latest version of tool
 // available for the current server OS/arch. It does not download or install anything.
+// coverage:skip:integration-only — resolves a real upstream GitHub release via resolveRelease; matchAssets/verifyAssetDigest dispatch logic it shares with Install/DownloadVerified is unit-tested there. GetScannerLatestHandler_UpdateAvailable exercises the success path hermetically via a Catalog+DefaultTransport swap, but the Lookup-failure/asset-not-found branches still require network to reach.
 func CheckLatest(ctx context.Context, cfg InstallConfig, tool string) (*LatestInfo, error) {
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 5 * time.Minute
