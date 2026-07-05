@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.2](https://github.com/sethbacon/terraform-registry-backend/compare/v2.7.1...v2.7.2) (2026-07-05)
+
+
+### Bug Fixes
+
+* verify release authenticity via Sigstore/attestation, not just checksums ([#543](https://github.com/sethbacon/terraform-registry-backend/issues/543)) ([5d07e22](https://github.com/sethbacon/terraform-registry-backend/commit/5d07e2283144c443896eeb9109b0ad560a2fc8c6))
+
 ## [2.7.1](https://github.com/sethbacon/terraform-registry-backend/compare/v2.7.0...v2.7.1) (2026-07-05)
 
 
