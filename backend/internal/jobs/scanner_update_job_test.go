@@ -165,6 +165,13 @@ func TestScannerUpdateJob_RestartSafety(t *testing.T) {
 	job.Stop()
 }
 
+func TestScannerUpdateJob_Name(t *testing.T) {
+	job := newTestScannerUpdateJob(&config.ScanningConfig{})
+	if got := job.Name(); got != "scanner-update" {
+		t.Errorf("Name() = %q, want %q", got, "scanner-update")
+	}
+}
+
 func TestScannerUpdateJob_TriggerCheck_NonBlocking(t *testing.T) {
 	job := newTestScannerUpdateJob(&config.ScanningConfig{})
 

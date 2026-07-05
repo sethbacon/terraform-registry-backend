@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
@@ -82,6 +83,41 @@ func TestScanningAutoUpdateHandler_Put_InvalidAutoApproveRules(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400, body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestScanningAutoUpdateHandler_Put_MalformedJSON(t *testing.T) {
+	h, _, _ := newScanningAutoUpdateHandler(t)
+
+	w := httptest.NewRecorder()
+	r := gin.New()
+	r.PUT("/auto-update", h.Put)
+	req := httptest.NewRequest(http.MethodPut, "/auto-update", strings.NewReader("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestScanningAutoUpdateHandler_Put_SetScanningConfigError(t *testing.T) {
+	h, _, mock := newScanningAutoUpdateHandler(t)
+
+	mock.ExpectQuery("SELECT scanning_config FROM system_settings").
+		WillReturnRows(sqlmock.NewRows([]string{"scanning_config"}).AddRow(nil))
+	mock.ExpectExec("UPDATE system_settings").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r := gin.New()
+	r.PUT("/auto-update", h.Put)
+	body := `{"enabled":true,"interval_hours":12}`
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/auto-update", jsonBodyAdmin(json.RawMessage(body))))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500, body=%s", w.Code, w.Body.String())
 	}
 }
 

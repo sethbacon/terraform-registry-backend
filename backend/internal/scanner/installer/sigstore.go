@@ -28,6 +28,7 @@ var (
 // loadTrustedRoot lazily fetches and caches the Sigstore public-good trusted root via
 // TUF. The fetch happens at most once per process (sync.Once); a failure is cached too,
 // so a single offline/air-gapped attempt does not retry TUF on every subsequent install.
+// coverage:skip:integration-only — fetches the real Sigstore public-good trusted root over the network via TUF; no fixture/fake TUF mirror exists to exercise this hermetically.
 func loadTrustedRoot() (*root.TrustedRoot, error) {
 	trustedRootOnce.Do(func() {
 		client, err := tuf.New(tuf.DefaultOptions())
@@ -55,6 +56,7 @@ func loadTrustedRoot() (*root.TrustedRoot, error) {
 // (via errors.Is) when the Sigstore trust root/TUF infrastructure can't be loaded —
 // callers should treat that as infra-tolerant and fall back to SHA256-only — or any
 // other non-nil error on a definitive signature or identity verification failure.
+// coverage:skip:integration-only — verifies a real cosign Fulcio certificate chain against the live Sigstore trust root; Fulcio certs are short-lived, so a fixture-based bundle would need constant regeneration and would be flaky. installer_test.go's sigstoreVerify seam covers the calling code's dispatch/success/failure/warn/enforce branches with a stub.
 func verifySigstoreBundle(bundleJSON, artifact []byte, identity, issuer string) error {
 	tr, err := loadTrustedRoot()
 	if err != nil {

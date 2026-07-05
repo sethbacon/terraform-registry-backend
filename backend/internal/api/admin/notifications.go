@@ -287,6 +287,7 @@ func buildNotificationsConfigDB(input notificationsConfigInput, tokenCipher *cry
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
 // @Router       /api/v1/admin/notifications/test [post]
 // TestEmail sends a test notification email without persisting any configuration.
+// coverage:skip:integration-only — the success/failure result comes from a live mailer.Send (SMTP dial); the validation branches (missing recipients, missing host) are covered by TestNotificationsHandler_TestEmail_* without ever reaching Send.
 func (h *NotificationsHandler) TestEmail(c *gin.Context) {
 	ctx := c.Request.Context()
 
