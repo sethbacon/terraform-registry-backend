@@ -155,8 +155,9 @@ func TestNotificationsHandler_GetConfig_NoPassword(t *testing.T) {
 	if resp.PasswordConfigured {
 		t.Error("expected password_configured=false")
 	}
-	if strings.Contains(w.Body.String(), "password") == false {
-		// password_configured key is expected to be present; the raw password/ciphertext must not be.
+	// The password_configured key must be present, but the raw password / ciphertext must not be.
+	if !strings.Contains(w.Body.String(), "password_configured") {
+		t.Error("response should include the password_configured field")
 	}
 	if strings.Contains(strings.ToLower(w.Body.String()), "smtp_password_encrypted") {
 		t.Error("response must never include the encrypted password field")
