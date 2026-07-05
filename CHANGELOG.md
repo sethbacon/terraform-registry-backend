@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.1](https://github.com/sethbacon/terraform-registry-backend/compare/v2.7.0...v2.7.1) (2026-07-05)
+
+
+### Miscellaneous
+
+* First container image published for the 2.7.0 feature set. The 2.7.0 release build failed the coverage gate and never published an image, and its tag is now immutable; 2.7.1 re-releases the same admin scanner-update, notifications, and Sigstore/cosign verification features with restored >=80% test coverage ([#542](https://github.com/sethbacon/terraform-registry-backend/issues/542)). No runtime or API changes relative to 2.7.0.
+
 ## [2.7.0](https://github.com/sethbacon/terraform-registry-backend/compare/v2.6.0...v2.7.0) (2026-07-04)
 
 
