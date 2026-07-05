@@ -939,24 +939,41 @@ kubectl get pods -n registry
 #### Standalone Binary
 
 ```bash
-# 1. Download binary + verify checksum
+# 1. Download the binary, checksums, and the Sigstore signature bundle
 curl -LO https://github.com/sethbacon/terraform-registry-backend/releases/download/v<version>/terraform-registry-linux-amd64
 curl -LO https://github.com/sethbacon/terraform-registry-backend/releases/download/v<version>/checksums.txt
+curl -LO https://github.com/sethbacon/terraform-registry-backend/releases/download/v<version>/checksums.txt.sigstore.json
+
+# 2. Verify integrity — the binary matches the published checksum
 sha256sum --check --ignore-missing checksums.txt
 
-# 2. Replace binary
+# 3. Verify authenticity — the checksums file was signed by this repo's release
+#    workflow (keyless Sigstore). Integrity alone is not enough: an attacker who
+#    can swap the binary can swap checksums.txt too, so the signature is what
+#    proves the artifacts came from this project's pipeline.
+cosign verify-blob \
+  --bundle checksums.txt.sigstore.json \
+  --certificate-identity-regexp 'https://github\.com/sethbacon/terraform-registry-backend/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  checksums.txt
+
+# Alternatively, verify the downloaded binary's GitHub build-provenance attestation:
+#   gh attestation verify terraform-registry-linux-amd64 --repo sethbacon/terraform-registry-backend
+
+# 4. Replace binary
 sudo systemctl stop terraform-registry
 sudo install -m 755 terraform-registry-linux-amd64 /usr/local/bin/terraform-registry
 
-# 3. Run migrations
+# 5. Run migrations
 terraform-registry migrate up
 
-# 4. Restart service
+# 6. Restart service
 sudo systemctl start terraform-registry
 sudo systemctl status terraform-registry
 ```
 
-- [ ] Checksum verified before installing
+- [ ] Checksum verified before installing (integrity)
+- [ ] Sigstore signature or build-provenance attestation verified (authenticity)
 - [ ] Service started successfully (`active (running)`)
 - [ ] `journalctl -u terraform-registry -n 50` shows no ERROR lines
 
