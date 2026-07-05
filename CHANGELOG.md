@@ -7,6 +7,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.0](https://github.com/sethbacon/terraform-registry-backend/compare/v2.6.0...v2.7.0) (2026-07-04)
+
+
+### Features
+
+* admin-managed security scanner updates (backend) ([#531](https://github.com/sethbacon/terraform-registry-backend/issues/531)) ([10915d5](https://github.com/sethbacon/terraform-registry-backend/commit/10915d55e5352dc628231df200fdc0d33223c675))
+* **scanning:** admin view/edit of scanner auto-update settings ([#536](https://github.com/sethbacon/terraform-registry-backend/issues/536)) ([7a265e0](https://github.com/sethbacon/terraform-registry-backend/commit/7a265e0a8beef165cf34f7fcd2e1377d8b76b8bd))
+* **scanning:** Sigstore/cosign verification for Trivy scanner binaries ([#538](https://github.com/sethbacon/terraform-registry-backend/issues/538)) ([efa982d](https://github.com/sethbacon/terraform-registry-backend/commit/efa982de103ad261b1dc3ae0626a8bf6c69a6669))
+
+
+### Security
+
+* suppress G118 false positive on scanner job restart ([#540](https://github.com/sethbacon/terraform-registry-backend/issues/540)) ([d11097f](https://github.com/sethbacon/terraform-registry-backend/commit/d11097f5664b8037c7c5275330f21edfd9f94980))
+
 ## [2.6.0](https://github.com/sethbacon/terraform-registry-backend/compare/v2.5.6...v2.6.0) (2026-07-01)
 
 
