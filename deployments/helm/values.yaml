@@ -325,6 +325,49 @@ scanning:
   #    survive pod restarts. Leave empty to disable auto-install.
   installDir: "/app/scanners"
 
+# -- Dedicated scan-worker deployment for horizontally scaling module scanning.
+#    When enabled, the backend stops scanning in-process (the configmap sets
+#    TFR_SCANNING_EMBEDDED_WORKER=false) and these workers drain the shared
+#    scan queue instead. Requires scanning.enabled and, in practice,
+#    scanning.installDirPVC (a shared RWX PVC) so workers can read the scanner
+#    binary the backend installs. See docs/scanner-worker.md.
+scannerWorker:
+  # -- Deploy dedicated scan-worker pods
+  enabled: false
+  # -- Static replica count (ignored when keda.enabled is true)
+  replicaCount: 2
+  # -- Resource requests and limits (scanning is CPU/memory intensive)
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  # -- Additional environment variables for worker pods. backend.extraEnv is
+  #    always applied first so workers share the backend's storage/DB
+  #    credentials; these are appended after it.
+  extraEnv: []
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+  # -- KEDA event-driven autoscaling on the pending scan queue.
+  #    Requires the KEDA operator (https://keda.sh). When enabled, KEDA owns
+  #    the replica count (replicaCount is ignored) and can scale to zero.
+  keda:
+    enabled: false
+    # -- Target pending scans per replica (KEDA targetQueryValue)
+    targetPendingScans: 20
+    # -- Minimum replicas (0 enables scale-to-zero)
+    minReplicaCount: 0
+    # -- Maximum replicas
+    maxReplicaCount: 10
+    # -- How often (seconds) KEDA polls the queue depth
+    pollingInterval: 30
+    # -- Seconds to wait before scaling back down after the last trigger
+    cooldownPeriod: 300
+
 # -- Audit logging configuration
 audit:
   # -- Enable audit logging

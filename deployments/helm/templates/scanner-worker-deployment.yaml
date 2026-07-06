@@ -1,0 +1,139 @@
+{{- if and .Values.scanning.enabled .Values.scannerWorker.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "terraform-registry.fullname" . }}-scanner-worker
+  labels:
+    {{- include "terraform-registry.labels" . | nindent 4 }}
+    app.kubernetes.io/component: scanner-worker
+spec:
+  {{- if not .Values.scannerWorker.keda.enabled }}
+  # When KEDA is enabled the ScaledObject owns the replica count (and can scale
+  # to zero), so we omit replicas here to avoid fighting the autoscaler.
+  replicas: {{ .Values.scannerWorker.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "terraform-registry.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: scanner-worker
+  template:
+    metadata:
+      labels:
+        {{- include "terraform-registry.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: scanner-worker
+        # Azure Workload Identity: label is required on the pod for the
+        # mutating webhook to inject the OIDC federated token volume.
+        # Safe to include on non-AKS clusters (label is ignored without the webhook).
+        azure.workload.identity/use: "true"
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "terraform-registry.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.backend.podSecurityContext | nindent 8 }}
+      containers:
+        - name: scanner-worker
+          image: {{ include "terraform-registry.backendImage" . }}
+          imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.backend.securityContext | nindent 12 }}
+          # Overrides the image CMD (["serve"]); keeps the ENTRYPOINT binary.
+          # scan-worker runs the scan queue drainer with no HTTP server.
+          args: ["scan-worker"]
+          envFrom:
+            - configMapRef:
+                name: {{ include "terraform-registry.fullname" . }}-config
+            - secretRef:
+                name: {{ include "terraform-registry.secretName" . }}
+          {{- if .Values.externalDatabase.existingSecret }}
+            - secretRef:
+                name: {{ .Values.externalDatabase.existingSecret }}
+          {{- end }}
+          {{- $workerEnv := concat (.Values.backend.extraEnv | default list) (.Values.scannerWorker.extraEnv | default list) }}
+          {{- with $workerEnv }}
+          # backend.extraEnv is applied so workers share the backend's storage
+          # and database credentials (e.g. storage account key secretKeyRef).
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.scannerWorker.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if eq .Values.storage.backend "local" }}
+            - name: storage
+              mountPath: {{ .Values.storage.local.basePath }}
+            {{- end }}
+            {{- if .Values.scanning.installDir }}
+            # Read-only: the backend (control plane) installs scanner binaries
+            # onto the shared PVC; workers only execute them.
+            - name: scanners
+              mountPath: {{ .Values.scanning.installDir }}
+              readOnly: true
+            {{- end }}
+            {{- if .Values.keyVault.enabled }}
+            - name: secrets-store
+              mountPath: /mnt/secrets-store
+              readOnly: true
+            {{- end }}
+            {{- with .Values.backend.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if eq .Values.storage.backend "local" }}
+        - name: storage
+          {{- if .Values.storage.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.storage.persistence.existingClaim | default (printf "%s-storage" (include "terraform-registry.fullname" .)) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- end }}
+        {{- if .Values.scanning.installDir }}
+        - name: scanners
+          {{- if .Values.scanning.installDirPVC }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.scanning.installDirPVC }}
+          {{- else }}
+          # NOTE: worker mode expects scanning.installDirPVC (a shared RWX PVC)
+          # so workers can see the binary the backend installed. An emptyDir here
+          # would be empty and the worker would have no scanner to run.
+          emptyDir: {}
+          {{- end }}
+        {{- end }}
+        {{- if .Values.keyVault.enabled }}
+        - name: secrets-store
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: {{ include "terraform-registry.fullname" . }}-secrets
+        {{- end }}
+        {{- with .Values.backend.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.scannerWorker.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.scannerWorker.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.scannerWorker.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.scannerWorker.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
