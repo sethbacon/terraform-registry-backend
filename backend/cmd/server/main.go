@@ -27,10 +27,12 @@
 // @tag.description  Prometheus metrics and profiling are served on a dedicated side-channel port (default: 9090) that is separate from the main API server. This keeps the scrape path off the public ingress and avoids rate-limiting middleware. Configure the port with TFR_TELEMETRY_METRICS_PROMETHEUS_PORT. The endpoint path is always GET /metrics. pprof (if enabled via TFR_TELEMETRY_PROFILING_ENABLED=true) is served on TFR_TELEMETRY_PROFILING_PORT (default: 6060) at the standard /debug/pprof/ paths. Neither endpoint is part of the OpenAPI spec because they are not served by the Gin router.
 
 // Package main is the entry point for the Terraform Registry server binary.
-// It dispatches three subcommands — serve, migrate, and version — via a simple
-// switch on os.Args so the binary's full CLI surface is readable in one place
-// without requiring a cobra dependency. The serve command runs auto-migration on
-// startup so freshly deployed containers never need a separate migration step.
+// It dispatches subcommands — serve, migrate, version, upgrade, and scan-worker —
+// via a simple switch on os.Args so the binary's full CLI surface is readable in
+// one place without requiring a cobra dependency. The serve command runs
+// auto-migration on startup so freshly deployed containers never need a separate
+// migration step. The scan-worker command runs only the module security scanner
+// loop so scanning can scale horizontally on dedicated pods.
 package main
 
 import (
@@ -63,6 +65,8 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/db"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/jobs"
+	"github.com/terraform-registry/terraform-registry/internal/storage"
 	"github.com/terraform-registry/terraform-registry/internal/telemetry"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -111,8 +115,10 @@ func run() error {
 		return nil
 	case "upgrade":
 		return runUpgrade(configPath)
+	case "scan-worker":
+		return scanWorker(cfg)
 	default:
-		return fmt.Errorf("unknown command: %s\nAvailable commands: serve, migrate, version, upgrade", command)
+		return fmt.Errorf("unknown command: %s\nAvailable commands: serve, migrate, version, upgrade, scan-worker", command)
 	}
 }
 
@@ -148,6 +154,74 @@ func runUpgrade(configPath string) error {
 		os.Exit(code)
 	}
 	return nil
+}
+
+// scanWorker runs the module security scanner loop as a standalone process,
+// decoupled from the API server so scanning can scale horizontally across
+// dedicated pods. The API server is expected to run with
+// scanning.embedded_worker=false (it still creates pending scans and installs
+// scanner binaries via the control plane), while one or more scan-worker
+// processes consume the shared module_version_scans queue. Claiming is race-safe
+// via an atomic UPDATE, so any number of workers can run concurrently.
+//
+// Unlike serve(), the worker does NOT run database migrations (the API server
+// owns the schema) and does NOT start the HTTP API, metrics endpoint, or
+// control-plane jobs. Scanning must be enabled via env/YAML config
+// (TFR_SCANNING_*); the worker forces scanning.embedded_worker=true for its own
+// process regardless of the API-server setting.
+func scanWorker(cfg *config.Config) error {
+	telemetry.SetupLogger(cfg.Logging.Format, cfg.Logging.Level)
+
+	// This process IS the scan worker: always run the scanner loop in-process,
+	// even when the shared config disables the embedded worker on the API server.
+	cfg.Scanning.EmbeddedWorker = true
+
+	if !cfg.Scanning.Enabled {
+		slog.Warn("scan-worker: scanning is disabled (scanning.enabled=false); the worker will idle until scanning is enabled via TFR_SCANNING_ENABLED / config")
+	}
+
+	// Connect to the database. The worker shares the API server's schema and must
+	// NOT run migrations (the API server owns migrations).
+	database, err := db.Connect(cfg.Database.GetDSN(), cfg.Database.MaxConnections, cfg.Database.MinIdleConnections)
+	if err != nil {
+		return fmt.Errorf("failed to connect to database: %w", err)
+	}
+	defer database.Close()
+	slog.Info("scan-worker: connected to database")
+
+	storageBackend, err := storage.NewStorage(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to initialize storage backend: %w", err)
+	}
+
+	scanRepo := repositories.NewModuleScanRepository(database)
+	moduleRepo := repositories.NewModuleRepository(database)
+	scannerJob := jobs.NewModuleScannerJob(&cfg.Scanning, scanRepo, moduleRepo, storageBackend)
+
+	// Handle SIGINT/SIGTERM for graceful shutdown (Kubernetes sends SIGTERM on
+	// pod termination). Cancelling ctx stops the scanner loop.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	slog.Info("scan-worker: starting", "version", Version, "build_date", BuildDate)
+
+	// Start blocks while the scan loop runs and returns nil early when the scanner
+	// is not yet ready (binary missing, version mismatch, or scanning disabled).
+	// In the not-ready case, wait and retry so the worker comes online
+	// automatically once the control plane installs the scanner binary on the
+	// shared volume, rather than crash-looping the pod.
+	for {
+		if err := scannerJob.Start(ctx); err != nil {
+			slog.Error("scan-worker: scanner loop error", "error", err)
+		}
+		select {
+		case <-ctx.Done():
+			slog.Info("scan-worker: shutting down")
+			return nil
+		case <-time.After(30 * time.Second):
+			slog.Info("scan-worker: scanner not ready, retrying")
+		}
+	}
 }
 
 func serve(cfg *config.Config) error {

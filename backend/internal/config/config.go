@@ -186,6 +186,12 @@ type ScanningConfig struct {
 	WorkerCount int `mapstructure:"worker_count"`
 	// ScanIntervalMins is how often the scanner job polls for pending scans (default 5).
 	ScanIntervalMins int `mapstructure:"scan_interval_mins"`
+	// EmbeddedWorker controls whether this process runs the module scanner loop
+	// in-process (default true). Set false on the API server when scans are handled
+	// by dedicated `scan-worker` pods; the scan-worker entrypoint forces it true so
+	// the same env/YAML can disable in-process scanning on the API server while the
+	// worker still runs.
+	EmbeddedWorker bool `mapstructure:"embedded_worker"`
 	// VersionArgs is the CLI arguments used to obtain the binary version string.
 	// Required when tool is "custom"; ignored otherwise.
 	VersionArgs []string `mapstructure:"version_args"`
@@ -856,6 +862,7 @@ func bindEnvVars(v *viper.Viper) error {
 		"scanning.timeout",
 		"scanning.worker_count",
 		"scanning.scan_interval_mins",
+		"scanning.embedded_worker",
 		"scanning.version_args",
 		"scanning.scan_args",
 		"scanning.output_format",
@@ -1059,6 +1066,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("scanning.timeout", 5*time.Minute)
 	v.SetDefault("scanning.worker_count", 2)
 	v.SetDefault("scanning.scan_interval_mins", 5)
+	v.SetDefault("scanning.embedded_worker", true)
 	v.SetDefault("scanning.install_dir", "/app/scanners")
 	v.SetDefault("scanning.signature_verification", "enforce")
 	v.SetDefault("scanning.auto_update.enabled", false)
