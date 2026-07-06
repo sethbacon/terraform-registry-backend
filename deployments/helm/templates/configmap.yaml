@@ -85,6 +85,9 @@ data:
   # Module security scanning
   TFR_SCANNING_ENABLED: {{ .Values.scanning.enabled | quote }}
   {{- if .Values.scanning.enabled }}
+  # When dedicated scan-workers are enabled, disable the backend's in-process
+  # scanner so the workers own the queue (workers force this on themselves).
+  TFR_SCANNING_EMBEDDED_WORKER: {{ not .Values.scannerWorker.enabled | quote }}
   TFR_SCANNING_TOOL: {{ .Values.scanning.tool | quote }}
   TFR_SCANNING_BINARY_PATH: {{ .Values.scanning.binaryPath | quote }}
   {{- if .Values.scanning.expectedVersion }}

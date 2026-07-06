@@ -1,0 +1,51 @@
+{{- if and .Values.scanning.enabled .Values.scannerWorker.enabled .Values.scannerWorker.keda.enabled }}
+{{- /*
+  Requires the KEDA operator (https://keda.sh) to be installed in the cluster.
+  KEDA scales the scanner-worker Deployment on the number of pending rows in
+  module_version_scans, and can scale to zero when the queue is empty.
+  The DB password is read from the same secret the app uses; host/port/user/db
+  come from externalDatabase values (mirrors the configmap).
+*/}}
+{{- $dbSecret := .Values.externalDatabase.existingSecret | default (include "terraform-registry.secretName" .) }}
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: {{ include "terraform-registry.fullname" . }}-scanner-worker-pg
+  labels:
+    {{- include "terraform-registry.labels" . | nindent 4 }}
+    app.kubernetes.io/component: scanner-worker
+spec:
+  secretTargetRef:
+    - parameter: password
+      name: {{ $dbSecret }}
+      key: TFR_DATABASE_PASSWORD
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "terraform-registry.fullname" . }}-scanner-worker
+  labels:
+    {{- include "terraform-registry.labels" . | nindent 4 }}
+    app.kubernetes.io/component: scanner-worker
+spec:
+  scaleTargetRef:
+    name: {{ include "terraform-registry.fullname" . }}-scanner-worker
+  pollingInterval: {{ .Values.scannerWorker.keda.pollingInterval }}
+  cooldownPeriod: {{ .Values.scannerWorker.keda.cooldownPeriod }}
+  minReplicaCount: {{ .Values.scannerWorker.keda.minReplicaCount }}
+  maxReplicaCount: {{ .Values.scannerWorker.keda.maxReplicaCount }}
+  triggers:
+    - type: postgresql
+      metadata:
+        host: {{ .Values.externalDatabase.host | quote }}
+        port: {{ .Values.externalDatabase.port | quote }}
+        userName: {{ .Values.externalDatabase.user | quote }}
+        dbName: {{ .Values.externalDatabase.name | quote }}
+        sslmode: {{ .Values.externalDatabase.sslMode | quote }}
+        # Scale on the depth of the pending scan queue. Desired replicas is
+        # approximately ceil(pending / targetQueryValue).
+        query: "SELECT count(*) FROM module_version_scans WHERE status = 'pending'"
+        targetQueryValue: {{ .Values.scannerWorker.keda.targetPendingScans | quote }}
+      authenticationRef:
+        name: {{ include "terraform-registry.fullname" . }}-scanner-worker-pg
+{{- end }}

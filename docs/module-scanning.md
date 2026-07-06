@@ -165,6 +165,7 @@ All options live under the `scanning:` key in `config.yaml` or use the `TFR_SCAN
 | `timeout`            | `TFR_SCANNING_TIMEOUT`            | duration | `5m`    | Maximum time a single scan may run before it is killed.                                                                   |
 | `worker_count`       | `TFR_SCANNING_WORKER_COUNT`       | int      | `2`     | Number of scans to run concurrently.                                                                                      |
 | `scan_interval_mins` | `TFR_SCANNING_SCAN_INTERVAL_MINS` | int      | `5`     | How often (in minutes) the job polls for pending scans.                                                                   |
+| `embedded_worker`    | `TFR_SCANNING_EMBEDDED_WORKER`    | bool     | `true`  | Run the scanner in-process in the backend. Set `false` when running dedicated [scan-worker pods](scanner-worker.md) so only the workers drain the queue. |
 | `version_args`       | `TFR_SCANNING_VERSION_ARGS`       | string[] | —       | **Custom tool only.** CLI arguments to retrieve the binary version, e.g. `["--version"]`.                                 |
 | `scan_args`          | `TFR_SCANNING_SCAN_ARGS`          | string[] | —       | **Custom tool only.** CLI arguments passed before the target directory, e.g. `["iac", "test", "--json"]`.                 |
 | `output_format`      | `TFR_SCANNING_OUTPUT_FORMAT`      | string   | —       | **Custom tool only.** How to parse the tool's output: `sarif` or `json`.                                                  |
