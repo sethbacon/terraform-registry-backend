@@ -5,10 +5,14 @@
 package jobs
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/db/models"
 )
 
 // newTestScannerUpdateJob builds a ScannerUpdateJob with only scanCfg populated,
@@ -25,6 +29,43 @@ func newTestScannerUpdateJob(scanCfg *config.ScanningConfig) *ScannerUpdateJob {
 		nil, // check (defaults to installer.CheckLatest, unused here)
 		nil, // download (defaults to installer.DownloadVerified, unused here)
 	)
+}
+
+func TestSupersededDirsToRemove(t *testing.T) {
+	installDir := t.TempDir()
+	activeID := uuid.New()
+	active := &models.ScannerBinaryVersion{ID: activeID, Tool: "trivy", Version: "0.72.0"}
+
+	activeDir := filepath.Join(installDir, "trivy-0.72.0")
+	supersededDir := filepath.Join(installDir, "trivy-0.71.0")
+	bp := func(s string) *string { return &s }
+
+	rows := []models.ScannerBinaryVersion{
+		// the active row itself — skipped by id
+		{ID: activeID, Tool: "trivy", Version: "0.72.0", BinaryPath: bp(filepath.Join(activeDir, "trivy"))},
+		// a stale DUPLICATE row for the active version with a different id — must be
+		// skipped by the active-version-dir guard (this is the incident scenario)
+		{ID: uuid.New(), Tool: "trivy", Version: "0.72.0", BinaryPath: bp(filepath.Join(activeDir, "trivy"))},
+		// a genuinely superseded version — removable
+		{ID: uuid.New(), Tool: "trivy", Version: "0.71.0", BinaryPath: bp(filepath.Join(supersededDir, "trivy"))},
+		// a row with no recorded binary path — skipped
+		{ID: uuid.New(), Tool: "trivy", Version: "0.70.0", BinaryPath: nil},
+		// the bare symlink path (dir is InstallDir, not a versioned dir) — skipped
+		{ID: uuid.New(), Tool: "trivy", Version: "sym", BinaryPath: bp(filepath.Join(installDir, "trivy"))},
+	}
+
+	got := supersededDirsToRemove(rows, active, installDir)
+
+	if len(got) != 1 || got[0] != supersededDir {
+		t.Fatalf("supersededDirsToRemove = %v, want [%s]", got, supersededDir)
+	}
+	// The active version's directory must never be scheduled for removal, even though
+	// a duplicate row referenced it with a different id.
+	for _, d := range got {
+		if d == activeDir {
+			t.Fatalf("active version dir %q must never be removed", activeDir)
+		}
+	}
 }
 
 func TestResolveScannerApproval(t *testing.T) {

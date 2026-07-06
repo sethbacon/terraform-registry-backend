@@ -6,7 +6,6 @@ package repositories
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"testing"
 	"time"
@@ -62,14 +61,30 @@ func TestScannerBinaryVersionRepository_Upsert_Inserted(t *testing.T) {
 	}
 }
 
-func TestScannerBinaryVersionRepository_Upsert_ConflictNoOp(t *testing.T) {
+func TestScannerBinaryVersionRepository_Upsert_ConflictReturnsExisting(t *testing.T) {
 	repo, mock := newScannerBinaryVersionRepo(t)
 
-	mock.ExpectQuery(`INSERT INTO scanner_binary_versions`).WillReturnError(sql.ErrNoRows)
+	// On a (tool, version) conflict the no-op UPDATE returns the EXISTING row, whose
+	// id differs from the caller's throwaway id. Upsert must overwrite v with that
+	// canonical row so callers reference the real id (a stale id previously caused
+	// approval-event FK violations and made cleanup delete the active version).
+	existingID := uuid.New()
+	now := time.Now()
+	rows := sqlmock.NewRows(scannerBinaryVersionCols).AddRow(
+		existingID, "trivy", "0.60.0", nil, nil, false, "",
+		"downloaded", nil, false, nil, now, now,
+	)
+	mock.ExpectQuery(`INSERT INTO scanner_binary_versions`).WillReturnRows(rows)
 
 	v := &models.ScannerBinaryVersion{ID: uuid.New(), Tool: "trivy", Version: "0.60.0"}
 	if err := repo.Upsert(context.Background(), v); err != nil {
-		t.Fatalf("expected nil error on conflict-do-nothing, got: %v", err)
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if v.ID != existingID {
+		t.Errorf("expected canonical existing id %s, got %s", existingID, v.ID)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
 	}
 }
 
