@@ -13,8 +13,9 @@ import (
 // Start() returns immediately without attempting to exec a binary.
 func newTestScannerJob(enabled bool, binaryPath string) *ModuleScannerJob {
 	cfg := &config.ScanningConfig{
-		Enabled:    enabled,
-		BinaryPath: binaryPath,
+		Enabled:        enabled,
+		EmbeddedWorker: true,
+		BinaryPath:     binaryPath,
 	}
 	return NewModuleScannerJob(cfg, nil, nil, nil)
 }
@@ -71,6 +72,24 @@ func TestModuleScannerJob_Start_Disabled(t *testing.T) {
 	job := newTestScannerJob(false, "")
 	if err := job.Start(context.Background()); err != nil {
 		t.Errorf("Start (disabled) error = %v", err)
+	}
+}
+
+func TestModuleScannerJob_Start_EmbeddedWorkerDisabled(t *testing.T) {
+	// Enabled with a binary path but the embedded worker turned off: Start must be
+	// a no-op because scans are handled by dedicated scan-worker pods. It must
+	// return before setting started (a true no-op, not a started loop).
+	cfg := &config.ScanningConfig{
+		Enabled:        true,
+		EmbeddedWorker: false,
+		BinaryPath:     "/nonexistent/path/to/scanner",
+	}
+	job := NewModuleScannerJob(cfg, nil, nil, nil)
+	if err := job.Start(context.Background()); err != nil {
+		t.Errorf("Start (embedded worker disabled) error = %v", err)
+	}
+	if job.started {
+		t.Error("Start (embedded worker disabled) should not set started")
 	}
 }
 

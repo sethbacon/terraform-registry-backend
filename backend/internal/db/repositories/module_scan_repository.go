@@ -100,6 +100,53 @@ func (r *ModuleScanRepository) ListPendingScans(ctx context.Context, limit int) 
 	return scans, rows.Err()
 }
 
+// ClaimPendingScans atomically claims up to limit pending scan records for the
+// calling worker, transitioning them from 'pending' to 'scanning' in a single
+// statement and returning the claimed rows. It uses FOR UPDATE SKIP LOCKED so
+// concurrent workers claim disjoint batches without blocking or racing on the
+// same rows, which lets scan workers scale horizontally without wasted
+// contention. The returned records are already marked 'scanning'; callers must
+// NOT call MarkScanning for them.
+func (r *ModuleScanRepository) ClaimPendingScans(ctx context.Context, limit int) ([]*models.ModuleScan, error) {
+	const q = `
+		UPDATE module_version_scans
+		SET status = 'scanning', updated_at = NOW()
+		WHERE id IN (
+			SELECT id FROM module_version_scans
+			WHERE status = 'pending'
+			ORDER BY created_at
+			LIMIT $1
+			FOR UPDATE SKIP LOCKED
+		)
+		RETURNING id, module_version_id, scanner, scanner_version, expected_version,
+		          status, scanned_at, critical_count, high_count, medium_count, low_count,
+		          raw_results, error_message, execution_log, created_at, updated_at
+	`
+	rows, err := r.db.QueryContext(ctx, q, limit)
+	if err != nil {
+		return nil, fmt.Errorf("claim pending scans: %w", err)
+	}
+	defer rows.Close()
+
+	var scans []*models.ModuleScan
+	for rows.Next() {
+		s := &models.ModuleScan{}
+		var rawResults []byte
+		if err := rows.Scan(
+			&s.ID, &s.ModuleVersionID, &s.Scanner, &s.ScannerVersion, &s.ExpectedVersion,
+			&s.Status, &s.ScannedAt, &s.CriticalCount, &s.HighCount, &s.MediumCount, &s.LowCount,
+			&rawResults, &s.ErrorMessage, &s.ExecutionLog, &s.CreatedAt, &s.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan row: %w", err)
+		}
+		if len(rawResults) > 0 {
+			s.RawResults = json.RawMessage(rawResults)
+		}
+		scans = append(scans, s)
+	}
+	return scans, rows.Err()
+}
+
 // MarkScanning transitions a pending scan to 'scanning'.
 // Uses a conditional UPDATE to prevent two workers from claiming the same record.
 // Returns ErrScanAlreadyClaimed if no rows are updated.

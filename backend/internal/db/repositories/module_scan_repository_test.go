@@ -114,6 +114,58 @@ func TestListPendingScans_DBError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// ClaimPendingScans
+// ---------------------------------------------------------------------------
+
+func TestClaimPendingScans_Success(t *testing.T) {
+	repo, mock := newScanRepo(t)
+	mock.ExpectQuery("UPDATE module_version_scans.*FOR UPDATE SKIP LOCKED").
+		WithArgs(4).
+		WillReturnRows(sampleScanRow())
+
+	scans, err := repo.ClaimPendingScans(context.Background(), 4)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(scans) != 1 {
+		t.Errorf("len(scans) = %d, want 1", len(scans))
+	}
+	if scans[0].ID != "scan-1" {
+		t.Errorf("scan ID = %q, want scan-1", scans[0].ID)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+func TestClaimPendingScans_Empty(t *testing.T) {
+	repo, mock := newScanRepo(t)
+	mock.ExpectQuery("UPDATE module_version_scans.*FOR UPDATE SKIP LOCKED").
+		WithArgs(4).
+		WillReturnRows(sqlmock.NewRows(scanCols))
+
+	scans, err := repo.ClaimPendingScans(context.Background(), 4)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(scans) != 0 {
+		t.Errorf("expected empty, got %d", len(scans))
+	}
+}
+
+func TestClaimPendingScans_DBError(t *testing.T) {
+	repo, mock := newScanRepo(t)
+	mock.ExpectQuery("UPDATE module_version_scans.*FOR UPDATE SKIP LOCKED").
+		WithArgs(4).
+		WillReturnError(errors.New("db error"))
+
+	_, err := repo.ClaimPendingScans(context.Background(), 4)
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // MarkScanning
 // ---------------------------------------------------------------------------
 
