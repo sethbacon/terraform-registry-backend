@@ -37,9 +37,16 @@ func (m *Mailer) Send(to []string, subject, body string) error {
 	if m.cfg == nil {
 		return fmt.Errorf("mailer: nil smtp config")
 	}
+	// Strip CR/LF from header-bound fields to prevent SMTP header (CRLF)
+	// injection: recipients, subject and From must each occupy a single line.
+	// The body is not header-bound, so it is delivered as-is after the blank line.
+	recipients := make([]string, len(to))
+	for i, addr := range to {
+		recipients[i] = sanitizeHeader(addr)
+	}
 	headers := fmt.Sprintf(
 		"From: %s\r\nTo: %s\r\nSubject: %s\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n",
-		m.cfg.From, strings.Join(to, ", "), subject,
+		sanitizeHeader(m.cfg.From), strings.Join(recipients, ", "), sanitizeHeader(subject),
 	)
 	msg := []byte(headers + body + "\r\n")
 
@@ -47,9 +54,16 @@ func (m *Mailer) Send(to []string, subject, body string) error {
 	auth := smtp.PlainAuth("", m.cfg.Username, m.cfg.Password, m.cfg.Host)
 
 	if m.cfg.UseTLS {
-		return sendMailTLS(addr, m.cfg.Host, auth, m.cfg.From, to, msg)
+		return sendMailTLS(addr, m.cfg.Host, auth, m.cfg.From, recipients, msg)
 	}
-	return smtp.SendMail(addr, auth, m.cfg.From, to, msg)
+	return smtp.SendMail(addr, auth, m.cfg.From, recipients, msg)
+}
+
+// sanitizeHeader removes CR and LF characters so a value cannot inject
+// additional SMTP headers (email header / CRLF injection). Per RFC 5322 a
+// header value must occupy a single line.
+func sanitizeHeader(s string) string {
+	return strings.NewReplacer("\r", "", "\n", "").Replace(s)
 }
 
 // sendMailTLS connects via implicit TLS (port 465 / SMTPS) and sends a message.

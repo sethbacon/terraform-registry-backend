@@ -950,6 +950,31 @@ func TestInstall_BareChecksumsFile_Matches(t *testing.T) {
 	}
 }
 
+// TestSafeChildPath verifies the path-traversal guard used when joining
+// remote-influenced download names and version tags onto a base directory.
+func TestSafeChildPath(t *testing.T) {
+	base := t.TempDir()
+
+	// Safe single-component names are accepted and stay within base.
+	for _, name := range []string{"trivy_0.56.0_Linux-64bit.tar.gz", "checksums.txt", "trivy-0.56.0"} {
+		got, err := safeChildPath(base, name)
+		if err != nil {
+			t.Errorf("safeChildPath(%q) unexpected error: %v", name, err)
+			continue
+		}
+		if want := filepath.Join(base, name); got != want {
+			t.Errorf("safeChildPath(%q) = %q, want %q", name, got, want)
+		}
+	}
+
+	// Traversal / separator / empty names are rejected with ErrUnsafePath.
+	for _, name := range []string{"", "..", "../evil", "a/b", `a\b`, "trivy-../../etc", "foo/../../bar"} {
+		if _, err := safeChildPath(base, name); !errors.Is(err, ErrUnsafePath) {
+			t.Errorf("safeChildPath(%q) error = %v, want ErrUnsafePath", name, err)
+		}
+	}
+}
+
 // setupSigstoreCatalog is a shared helper for the sigstore verification tests below:
 // it stands up a test server serving an archive+checksums+sigstore-bundle asset trio
 // for trivy, swaps it into the Catalog for the current platform, and restores the

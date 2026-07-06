@@ -38,3 +38,24 @@ func TestSend_NilConfig_ReturnsError(t *testing.T) {
 		t.Errorf("err = %q, want %q", err.Error(), "mailer: nil smtp config")
 	}
 }
+
+// TestSanitizeHeader verifies CR/LF are stripped so a crafted subject or
+// recipient cannot inject additional SMTP headers (email header injection).
+func TestSanitizeHeader(t *testing.T) {
+	tests := []struct {
+		name, in, want string
+	}{
+		{"plain", "Weekly digest", "Weekly digest"},
+		{"crlf header injection", "Subject\r\nBcc: victim@example.com", "SubjectBcc: victim@example.com"},
+		{"lf only", "line1\nline2", "line1line2"},
+		{"cr only", "a\rb", "ab"},
+		{"address injection", "user@example.com\r\nRCPT TO:<evil@x>", "user@example.comRCPT TO:<evil@x>"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sanitizeHeader(tt.in); got != tt.want {
+				t.Errorf("sanitizeHeader(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
