@@ -374,31 +374,48 @@ func (j *ScannerUpdateJob) Activate(ctx context.Context, v *models.ScannerBinary
 }
 
 // cleanupSuperseded best-effort removes versioned install directories for other
-// versions of the tool now that v is active. Never fails activation; errors are
-// logged only. Only removes directories that match the {InstallDir}/{tool}-{version}
-// pattern used by installer.DownloadVerified, so an activated version's symlink
-// target (bare {InstallDir}/{tool}) is never touched.
-// coverage:skip:integration-only — requires a live ScannerBinaryVersionRepository (PostgreSQL) plus real filesystem directories under InstallDir; only ever called from Activate.
+// versions of the tool now that active is the current version. Never fails
+// activation; errors are logged only. The set of directories to remove is decided
+// by supersededDirsToRemove (unit-tested); this method performs only the IO.
+// coverage:skip:integration-only — requires a live ScannerBinaryVersionRepository (PostgreSQL) plus real filesystem directories under InstallDir; only ever called from Activate. The removal decision is covered by TestSupersededDirsToRemove.
 func (j *ScannerUpdateJob) cleanupSuperseded(ctx context.Context, active *models.ScannerBinaryVersion) {
 	rows, err := j.sbvRepo.ListForTool(ctx, active.Tool)
 	if err != nil {
 		log.Printf("[scanner-update] cleanup: failed to list versions for %s: %v", active.Tool, err)
 		return
 	}
+	for _, dir := range supersededDirsToRemove(rows, active, j.scanCfg.InstallDir) {
+		if err := os.RemoveAll(dir); err != nil {
+			log.Printf("[scanner-update] cleanup: failed to remove superseded dir %s: %v", dir, err)
+		}
+	}
+}
 
-	versionedPrefix := filepath.Join(j.scanCfg.InstallDir, active.Tool+"-")
+// supersededDirsToRemove returns the versioned install directories safe to remove
+// now that active is the current version. A directory qualifies only when it
+// belongs to a different row, sits under the tool's versioned prefix
+// ({InstallDir}/{tool}-), and is NOT the active version's own directory. That last
+// guard is critical: a stale/duplicate row for the active version (a different id
+// pointing at the same versioned dir) must never cause the just-activated binary to
+// be deleted — the bug this guards against left an empty dir and a dangling symlink.
+func supersededDirsToRemove(rows []models.ScannerBinaryVersion, active *models.ScannerBinaryVersion, installDir string) []string {
+	versionedPrefix := filepath.Join(installDir, active.Tool+"-")
+	activeVersionDir := filepath.Join(installDir, active.Tool+"-"+active.Version)
+	var dirs []string
 	for _, row := range rows {
 		if row.ID == active.ID || row.BinaryPath == nil {
 			continue
 		}
 		dir := filepath.Dir(*row.BinaryPath)
+		if dir == activeVersionDir {
+			continue // never remove the active version's directory
+		}
 		if !strings.HasPrefix(dir, versionedPrefix) {
-			continue // not a versioned dir (e.g. the active symlink path) — never remove
+			continue // not a versioned dir (e.g. the active symlink path)
 		}
-		if err := os.RemoveAll(dir); err != nil {
-			log.Printf("[scanner-update] cleanup: failed to remove superseded dir %s: %v", dir, err)
-		}
+		dirs = append(dirs, dir)
 	}
+	return dirs
 }
 
 // notify sends an admin notification email about a newly discovered scanner

@@ -25,10 +25,15 @@ func NewScannerBinaryVersionRepository(db *sqlx.DB) *ScannerBinaryVersionReposit
 	return &ScannerBinaryVersionRepository{db: db}
 }
 
-// Upsert inserts a discovered version row, or does nothing if (tool, version)
-// already exists. Returns the resulting row (including generated fields).
-// approval_status is intentionally NOT touched on conflict: a re-discovery
-// must never reset an already-decided version back to pending.
+// Upsert inserts a discovered version row, or returns the existing row unchanged
+// when (tool, version) already exists. Either way v is populated with the
+// canonical row — including its real id and other generated fields — so callers
+// can safely reference v.ID afterwards. (A stale id previously caused
+// approval-event FK violations and made cleanup delete the active version.)
+// The ON CONFLICT clause performs a no-op UPDATE (tool = itself) solely so
+// RETURNING yields the existing row; no meaningful column is modified, and
+// approval_status in particular is never reset, so a re-discovery cannot move an
+// already-decided version back to pending.
 func (r *ScannerBinaryVersionRepository) Upsert(ctx context.Context, v *models.ScannerBinaryVersion) error {
 	if v.ID == uuid.Nil {
 		v.ID = uuid.New()
@@ -39,7 +44,7 @@ func (r *ScannerBinaryVersionRepository) Upsert(ctx context.Context, v *models.S
 			id, tool, version, source_url, sha256, signature_verified, signature_type,
 			sync_status, approval_status, is_active, binary_path
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-		ON CONFLICT (tool, version) DO NOTHING
+		ON CONFLICT (tool, version) DO UPDATE SET tool = EXCLUDED.tool
 		RETURNING id, tool, version, source_url, sha256, signature_verified, signature_type,
 		          sync_status, approval_status, is_active, binary_path, discovered_at, created_at
 	`
@@ -71,10 +76,6 @@ func (r *ScannerBinaryVersionRepository) Upsert(ctx context.Context, v *models.S
 		&v.DiscoveredAt,
 		&v.CreatedAt,
 	)
-	if err == sql.ErrNoRows {
-		// Conflict hit DO NOTHING: row already existed, nothing was returned.
-		return nil
-	}
 	if err != nil {
 		return fmt.Errorf("failed to upsert scanner binary version: %w", err)
 	}

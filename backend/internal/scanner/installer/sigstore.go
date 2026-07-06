@@ -31,7 +31,13 @@ var (
 // coverage:skip:integration-only — fetches the real Sigstore public-good trusted root over the network via TUF; no fixture/fake TUF mirror exists to exercise this hermetically.
 func loadTrustedRoot() (*root.TrustedRoot, error) {
 	trustedRootOnce.Do(func() {
-		client, err := tuf.New(tuf.DefaultOptions())
+		// DisableLocalCache lets the TUF client work on a read-only root filesystem
+		// (e.g. Kubernetes pods with readOnlyRootFilesystem: true). Without it the
+		// client tries to mkdir $HOME/.sigstore/tuf, which fails and silently
+		// disables Sigstore verification, falling back to SHA256-only.
+		opts := tuf.DefaultOptions()
+		opts.DisableLocalCache = true
+		client, err := tuf.New(opts)
 		if err != nil {
 			trustedRootErr = fmt.Errorf("create TUF client: %w", err)
 			return
