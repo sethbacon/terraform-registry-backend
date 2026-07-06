@@ -7,6 +7,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.0](https://github.com/sethbacon/terraform-registry-backend/compare/v2.7.3...v2.8.0) (2026-07-06)
+
+
+### Features
+
+* **helm:** dedicated scan-worker deployment with optional KEDA autoscaling ([#550](https://github.com/sethbacon/terraform-registry-backend/issues/550)) ([1c459ff](https://github.com/sethbacon/terraform-registry-backend/commit/1c459fff1479c4982080f5bf0c73f436eadf9f5a))
+* **scanning:** optional dedicated scan-worker mode for horizontal scaling ([#548](https://github.com/sethbacon/terraform-registry-backend/issues/548)) ([c7026ea](https://github.com/sethbacon/terraform-registry-backend/commit/c7026eac0b0fdeb1efa7f1be9a00291d3e090127))
+
 ## [2.7.3](https://github.com/sethbacon/terraform-registry-backend/compare/v2.7.2...v2.7.3) (2026-07-06)
 
 
