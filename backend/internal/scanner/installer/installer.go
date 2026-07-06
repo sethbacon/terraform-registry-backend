@@ -74,6 +74,7 @@ var (
 	ErrNonHTTPS              = errors.New("refusing to download from non-HTTPS URL")
 	ErrArchiveTooLarge       = errors.New("archive exceeds size cap")
 	ErrPathTraversal         = errors.New("archive contains a path-traversal entry")
+	ErrUnsafePath            = errors.New("unsafe path component in a download name or version")
 )
 
 // InstallFunc is the handler-facing type alias so tests can inject a stub.
@@ -180,6 +181,21 @@ func matchAssets(spec AssetSpec, release *ghRelease) (archive, checksums, sig *g
 // verifies its integrity, and extracts the target binary to the versioned install
 // path {cfg.InstallDir}/{tool}-{version}/{basename(spec.BinaryInArchive)}. It is
 // shared by Install and DownloadVerified; neither creates/updates the {tool} symlink.
+// safeChildPath joins name onto dir and guarantees the result stays within dir.
+// It rejects names containing path separators or parent references ("..") and
+// verifies containment, defending against path traversal from remote-influenced
+// values such as GitHub release asset names and version tags (go/path-injection).
+func safeChildPath(dir, name string) (string, error) {
+	if name == "" || strings.ContainsAny(name, `/\`) || strings.Contains(name, "..") {
+		return "", fmt.Errorf("%w: %q", ErrUnsafePath, name)
+	}
+	p := filepath.Join(dir, name)
+	if !strings.HasPrefix(p, filepath.Clean(dir)+string(os.PathSeparator)) {
+		return "", fmt.Errorf("%w: %q escapes %q", ErrUnsafePath, name, dir)
+	}
+	return p, nil
+}
+
 func downloadExtract(ctx context.Context, client *http.Client, cfg InstallConfig, spec AssetSpec, tool, version string, archiveAsset, checksumsAsset, sigAsset *ghAsset) (versionedBinaryPath, sha256hex, sourceURL string, sigVerified bool, sigType string, err error) {
 	// Validate HTTPS-only.
 	if !strings.HasPrefix(archiveAsset.BrowserDownloadURL, "https://") {
@@ -196,8 +212,12 @@ func downloadExtract(ctx context.Context, client *http.Client, cfg InstallConfig
 	}
 	defer os.RemoveAll(tmpDir) // always clean up temp
 
-	// Download archive with size cap.
-	archivePath := filepath.Join(tmpDir, archiveAsset.Name)
+	// Download archive with size cap. safeChildPath guards against a malicious
+	// release asset name escaping the temp dir (go/path-injection).
+	archivePath, pErr := safeChildPath(tmpDir, archiveAsset.Name)
+	if pErr != nil {
+		return "", "", "", false, "", pErr
+	}
 	archiveHash, dlErr := downloadFile(ctx, client, archiveAsset.BrowserDownloadURL, archivePath, maxArchiveSize)
 	if dlErr != nil {
 		return "", "", "", false, "", dlErr
@@ -207,7 +227,10 @@ func downloadExtract(ctx context.Context, client *http.Client, cfg InstallConfig
 	var checksumsData []byte
 	switch {
 	case checksumsAsset != nil:
-		checksumsPath := filepath.Join(tmpDir, checksumsAsset.Name)
+		checksumsPath, pErr := safeChildPath(tmpDir, checksumsAsset.Name)
+		if pErr != nil {
+			return "", "", "", false, "", fmt.Errorf("checksums: %w", pErr)
+		}
 		if _, dlErr := downloadFile(ctx, client, checksumsAsset.BrowserDownloadURL, checksumsPath, maxChecksumsSize); dlErr != nil {
 			return "", "", "", false, "", fmt.Errorf("download checksums: %w", dlErr)
 		}
@@ -227,8 +250,12 @@ func downloadExtract(ctx context.Context, client *http.Client, cfg InstallConfig
 		return "", "", "", false, "", sigErr
 	}
 
-	// Extract binary from archive.
-	versionDir := filepath.Join(cfg.InstallDir, tool+"-"+version)
+	// Extract binary from archive. safeChildPath guards against a malicious
+	// version tag escaping InstallDir (go/path-injection).
+	versionDir, pErr := safeChildPath(cfg.InstallDir, tool+"-"+version)
+	if pErr != nil {
+		return "", "", "", false, "", pErr
+	}
 	if mkErr := os.MkdirAll(versionDir, 0o755); mkErr != nil { // #nosec G301 -- scanner binary directory needs execute permission
 		return "", "", "", false, "", fmt.Errorf("create version dir: %w", mkErr)
 	}
