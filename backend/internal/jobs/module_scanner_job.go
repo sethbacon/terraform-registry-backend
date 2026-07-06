@@ -4,7 +4,6 @@ package jobs
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -58,6 +57,10 @@ func (j *ModuleScannerJob) Name() string { return "module-scanner" }
 func (j *ModuleScannerJob) Start(ctx context.Context) error {
 	if !j.cfg.Enabled {
 		slog.Info("module scanner: disabled (scanning.enabled=false)")
+		return nil
+	}
+	if !j.cfg.EmbeddedWorker {
+		slog.Info("module scanner: in-process scanning disabled (scanning.embedded_worker=false); scans are handled by dedicated scan-worker pods")
 		return nil
 	}
 	if j.cfg.BinaryPath == "" {
@@ -156,39 +159,42 @@ func (j *ModuleScannerJob) runScanCycle(ctx context.Context, s scanner.Scanner, 
 		workerCount = 2
 	}
 
-	pending, err := j.scanRepo.ListPendingScans(ctx, workerCount*2)
-	if err != nil {
-		slog.Error("module scanner: failed to list pending scans", "error", err)
-		return
-	}
-	if len(pending) == 0 {
-		return
-	}
+	// Drain the queue: keep atomically claiming and processing batches until no
+	// pending scans remain. ClaimPendingScans uses FOR UPDATE SKIP LOCKED, so when
+	// multiple scan-worker pods run concurrently they claim disjoint batches
+	// without contending on the same rows.
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		claimed, err := j.scanRepo.ClaimPendingScans(ctx, workerCount*2)
+		if err != nil {
+			slog.Error("module scanner: failed to claim pending scans", "error", err)
+			return
+		}
+		if len(claimed) == 0 {
+			return
+		}
 
-	sem := make(chan struct{}, workerCount)
-	var wg sync.WaitGroup
-	for _, scan := range pending {
-		scan := scan
-		sem <- struct{}{}
-		wg.Add(1)
-		safego.Go(func() {
-			defer func() { <-sem; wg.Done() }()
-			j.scanOne(ctx, s, scan.ID, scan.ModuleVersionID, version)
-		})
+		sem := make(chan struct{}, workerCount)
+		var wg sync.WaitGroup
+		for _, scan := range claimed {
+			scan := scan
+			sem <- struct{}{}
+			wg.Add(1)
+			safego.Go(func() {
+				defer func() { <-sem; wg.Done() }()
+				j.scanOne(ctx, s, scan.ID, scan.ModuleVersionID, version)
+			})
+		}
+		wg.Wait()
 	}
-	wg.Wait()
 }
 
 // coverage:skip:integration-only — requires real scanner binary, DB, and storage
 func (j *ModuleScannerJob) scanOne(ctx context.Context, s scanner.Scanner, scanID, moduleVersionID, actualVersion string) {
-	if err := j.scanRepo.MarkScanning(ctx, scanID); err != nil {
-		if errors.Is(err, repositories.ErrScanAlreadyClaimed) {
-			return // another worker got it first
-		}
-		slog.Error("module scanner: failed to mark scanning", "scan_id", scanID, "error", err)
-		return
-	}
-
+	// The scan record was already atomically claimed (status='scanning') by
+	// ClaimPendingScans in runScanCycle, so there is no MarkScanning step here.
 	mv, err := j.moduleRepo.GetVersionByID(ctx, moduleVersionID)
 	if err != nil || mv == nil {
 		_ = j.scanRepo.MarkError(ctx, scanID, "module version not found")

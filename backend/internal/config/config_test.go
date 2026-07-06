@@ -623,6 +623,45 @@ func TestScanningConfig_DefaultInstallDir(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// ScanningConfig — EmbeddedWorker default + env override
+// ---------------------------------------------------------------------------
+
+func TestScanningConfig_DefaultEmbeddedWorker(t *testing.T) {
+	// Clear any env that might override the default.
+	for _, key := range os.Environ() {
+		if strings.HasPrefix(key, "TFR_SCANNING_") {
+			parts := strings.SplitN(key, "=", 2)
+			os.Unsetenv(parts[0])
+		}
+	}
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Scanning.EmbeddedWorker {
+		t.Error("Scanning.EmbeddedWorker = false, want true (default: the API server runs the scanner in-process)")
+	}
+}
+
+func TestScanningConfig_EmbeddedWorkerEnvOverride(t *testing.T) {
+	for _, key := range os.Environ() {
+		if strings.HasPrefix(key, "TFR_SCANNING_") {
+			parts := strings.SplitN(key, "=", 2)
+			os.Unsetenv(parts[0])
+		}
+	}
+	t.Setenv("TFR_SCANNING_EMBEDDED_WORKER", "false")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Scanning.EmbeddedWorker {
+		t.Error("Scanning.EmbeddedWorker = true, want false (TFR_SCANNING_EMBEDDED_WORKER=false)")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // SuiteConfig.RoleSeedOwner / ShouldSeedRoles
 // ---------------------------------------------------------------------------
 
