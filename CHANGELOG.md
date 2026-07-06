@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.3](https://github.com/sethbacon/terraform-registry-backend/compare/v2.7.2...v2.7.3) (2026-07-06)
+
+
+### Bug Fixes
+
+* **scanning:** stop scanner update from deleting the just-installed binary ([#546](https://github.com/sethbacon/terraform-registry-backend/issues/546)) ([6f6ad14](https://github.com/sethbacon/terraform-registry-backend/commit/6f6ad148073e915427dc3b06173752f2b9903086))
+
 ## [2.7.2](https://github.com/sethbacon/terraform-registry-backend/compare/v2.7.1...v2.7.2) (2026-07-05)
 
 
