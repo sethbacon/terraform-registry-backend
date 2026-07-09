@@ -525,6 +525,52 @@ func TestGetEnhancedSetupStatus_PendingFeature(t *testing.T) {
 	}
 }
 
+// TestGetEnhancedSetupStatus_FullSchemaColumns guards the `SELECT * FROM
+// system_settings` scan against schema/struct drift. The other tests above mock
+// only a subset of columns, so they pass even when the SystemSettings struct is
+// missing a field for a real column (sqlx only errors on a returned column that
+// has no destination field). This test returns the COMPLETE column set produced
+// by all migrations — including the notifications columns added in migration
+// 000043 — so that a future migration adding a system_settings column without a
+// matching struct field fails here instead of only surfacing as a runtime 500 on
+// /api/v1/setup/status (regression: PR #531 / migration 000043; same class as PR #187).
+func TestGetEnhancedSetupStatus_FullSchemaColumns(t *testing.T) {
+	repo, mock := newOIDCConfigRepo(t)
+
+	// Every column present on system_settings after all migrations are applied.
+	settingsCols := []string{
+		"id", "storage_configured", "storage_configured_at", "storage_configured_by",
+		"setup_completed", "setup_token_hash", "oidc_configured", "pending_admin_email",
+		"scanning_configured", "scanning_configured_at", "scanning_config",
+		"audit_retention_days",
+		"auth_method", "ldap_configured", "ldap_configured_at", "ldap_config",
+		"notifications_configured", "notifications_configured_at", "notifications_config",
+		"created_at", "updated_at",
+	}
+	now := time.Now()
+	mock.ExpectQuery("SELECT.*FROM system_settings").
+		WillReturnRows(sqlmock.NewRows(settingsCols).AddRow(
+			1, true, now, nil,
+			true, nil, true, "admin@example.com",
+			true, now, nil,
+			30,
+			"oidc", false, nil, nil,
+			true, now, []byte(`{"smtp_host":"smtp.example.com"}`),
+			now, now,
+		))
+
+	status, err := repo.GetEnhancedSetupStatus(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error scanning full system_settings schema: %v", err)
+	}
+	if !status.SetupCompleted {
+		t.Error("expected SetupCompleted = true")
+	}
+	if status.AuthMethod != "oidc" {
+		t.Errorf("expected AuthMethod = oidc, got %q", status.AuthMethod)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // CreateOIDCConfig
 // ---------------------------------------------------------------------------

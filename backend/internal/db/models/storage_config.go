@@ -28,6 +28,12 @@ type SystemSettings struct {
 	LDAPConfigured   bool         `db:"ldap_configured" json:"ldap_configured"`
 	LDAPConfiguredAt sql.NullTime `db:"ldap_configured_at" json:"ldap_configured_at,omitempty"`
 	LDAPConfig       []byte       `db:"ldap_config" json:"ldap_config,omitempty"`
+	// Notifications/SMTP setup (migration 000043). These columns are read by the
+	// SELECT * queries in GetEnhancedSetupStatus / GetSystemSettings; sqlx (not in
+	// Unsafe mode) errors on any table column that has no struct field here.
+	NotificationsConfigured   bool         `db:"notifications_configured" json:"notifications_configured"`
+	NotificationsConfiguredAt sql.NullTime `db:"notifications_configured_at" json:"notifications_configured_at,omitempty"`
+	NotificationsConfig       []byte       `db:"notifications_config" json:"notifications_config,omitempty"`
 	// Audit retention (migration 000023)
 	AuditRetentionDays int       `db:"audit_retention_days" json:"audit_retention_days"`
 	CreatedAt          time.Time `db:"created_at" json:"created_at"`
