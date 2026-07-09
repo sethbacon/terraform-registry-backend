@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.2](https://github.com/sethbacon/terraform-registry-backend/compare/v2.8.1...v2.8.2) (2026-07-09)
+
+
+### Bug Fixes
+
+* map notifications columns in SystemSettings to fix setup/status 500 ([#553](https://github.com/sethbacon/terraform-registry-backend/issues/553)) ([6be6e90](https://github.com/sethbacon/terraform-registry-backend/commit/6be6e908a2c990a84b835655e64d227a2968b435))
+
 ## [2.8.1](https://github.com/sethbacon/terraform-registry-backend/compare/v2.8.0...v2.8.1) (2026-07-06)
 
 
