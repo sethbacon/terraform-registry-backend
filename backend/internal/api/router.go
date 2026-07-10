@@ -739,7 +739,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	policyAdminHandler := admin.NewPolicyHandler(policyEngine, cfg.Policy)
 
 	// Initialize SCM webhook handler
-	scmWebhookHandler := webhooks.NewSCMWebhookHandler(scmRepo, scmPublisher)
+	scmWebhookHandler := webhooks.NewSCMWebhookHandler(scmRepo, scmPublisher, tokenCipher)
 	approvalWebhookHandler := webhooks.NewApprovalHandler(rbacRepo)
 
 	// Initialize rate limiters (conditionally, based on config)
@@ -1211,8 +1211,8 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 			// Role Templates management
 			roleTemplatesGroup := authenticatedGroup.Group("/admin/role-templates")
 			{
-				roleTemplatesGroup.GET("", rbacHandlers.ListRoleTemplates)
-				roleTemplatesGroup.GET("/:id", rbacHandlers.GetRoleTemplate)
+				roleTemplatesGroup.GET("", middleware.RequireScope(auth.ScopeAdmin), rbacHandlers.ListRoleTemplates)
+				roleTemplatesGroup.GET("/:id", middleware.RequireScope(auth.ScopeAdmin), rbacHandlers.GetRoleTemplate)
 				roleTemplatesGroup.POST("", middleware.RequireScope(auth.ScopeAdmin), rbacHandlers.CreateRoleTemplate)
 				roleTemplatesGroup.PUT("/:id", middleware.RequireScope(auth.ScopeAdmin), rbacHandlers.UpdateRoleTemplate)
 				roleTemplatesGroup.DELETE("/:id", middleware.RequireScope(auth.ScopeAdmin), rbacHandlers.DeleteRoleTemplate)
@@ -1585,10 +1585,12 @@ func CORSMiddleware(cfg *config.Config) gin.HandlerFunc {
 				// Wildcard config but specific origin present —
 				// reflect origin WITHOUT credentials (safer than true wildcard)
 				c.Header("Access-Control-Allow-Origin", origin)
+				c.Header("Vary", "Origin")
 			} else {
 				// Specific origin match — credentials allowed
 				c.Header("Access-Control-Allow-Origin", origin)
 				c.Header("Access-Control-Allow-Credentials", "true")
+				c.Header("Vary", "Origin")
 			}
 			c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Accept, Authorization, X-Requested-With")
