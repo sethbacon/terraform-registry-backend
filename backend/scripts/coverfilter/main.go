@@ -39,7 +39,20 @@ func main() {
 	inPath := flag.String("in", "coverage.out", "input coverage profile")
 	outPath := flag.String("out", "coverage.filtered.out", "output coverage profile")
 	root := flag.String("root", ".", "module root to scan for source files")
+	list := flag.Bool("list", false, "list all coverage:skip: marked functions (for periodic manual review) and exit")
 	flag.Parse()
+
+	if *list {
+		markers, err := listSkipMarkers(*root)
+		if err != nil {
+			log.Fatalf("list skip markers: %v", err)
+		}
+		for _, m := range markers {
+			fmt.Println(m)
+		}
+		fmt.Fprintf(os.Stderr, "coverfilter: %d function(s) marked %s\n", len(markers), skipMarker)
+		return
+	}
 
 	skips, err := collectSkipRanges(*root)
 	if err != nil {
@@ -141,6 +154,65 @@ func collectSkipRanges(root string) (map[string][]skipRange, error) {
 		return nil
 	})
 	return result, err
+}
+
+// listSkipMarkers walks the module rooted at root and returns a
+// "path:line: funcName" entry for every function whose preceding doc comment
+// contains the integration-only marker. Intended for periodic manual review
+// (issue #566 finding [51]) so the exclusion list doesn't silently grow to
+// cover security-relevant code without anyone noticing — CI runs this in an
+// informational (non-gating) step and publishes the list to the job summary.
+func listSkipMarkers(root string) ([]string, error) {
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
+	var markers []string
+	fset := token.NewFileSet()
+
+	err = filepath.Walk(absRoot, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			name := info.Name()
+			if name == "vendor" || name == ".git" || name == "node_modules" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		f, perr := parser.ParseFile(fset, path, nil, parser.ParseComments)
+		if perr != nil {
+			return nil
+		}
+		for _, decl := range f.Decls {
+			fd, ok := decl.(*ast.FuncDecl)
+			if !ok || fd.Doc == nil {
+				continue
+			}
+			var hasMarker bool
+			for _, c := range fd.Doc.List {
+				if strings.Contains(c.Text, skipMarker) {
+					hasMarker = true
+					break
+				}
+			}
+			if !hasMarker {
+				continue
+			}
+			line := fset.Position(fd.Pos()).Line
+			rel, relErr := filepath.Rel(absRoot, path)
+			if relErr != nil {
+				rel = path
+			}
+			markers = append(markers, fmt.Sprintf("%s:%d: %s", filepath.ToSlash(rel), line, fd.Name.Name))
+		}
+		return nil
+	})
+	return markers, err
 }
 
 // shouldStrip returns true when the coverage block described by the given

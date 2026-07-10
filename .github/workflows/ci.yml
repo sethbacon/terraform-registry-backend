@@ -135,6 +135,21 @@ jobs:
           chmod +x scripts/check_package_coverage.sh
           ./scripts/check_package_coverage.sh
 
+      - name: "List coverage:skip: markers (informational)"
+        # Non-gating — coverage:skip: excludes a function from the unit-test coverage
+        # denominator with no automated check that the exclusion is genuine. This
+        # publishes the full list to the job summary each run so growth in the
+        # exclusion list is visible for periodic manual review (issue #566 [51]).
+        working-directory: backend
+        run: |
+          {
+            echo "## coverage:skip: marked functions"
+            echo ""
+            echo '```'
+            go run ./scripts/coverfilter -list -root .
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload Go coverage
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:

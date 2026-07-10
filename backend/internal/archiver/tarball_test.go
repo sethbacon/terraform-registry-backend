@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -148,6 +149,68 @@ func TestExtractTarGz_PathTraversal(t *testing.T) {
 		t.Error("expected path traversal error, got nil")
 	}
 }
+
+// Issue #566 finding [46]: the 100MB cumulative decompression cap was never
+// exercised by any test — assert a single entry exceeding it is rejected.
+func TestExtractTarGz_ExceedsExtractionCap(t *testing.T) {
+	oversized := bytes.Repeat([]byte("A"), maxExtractBytes+1)
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+	if err := tw.WriteHeader(&tar.Header{Name: "huge.bin", Mode: 0644, Size: int64(len(oversized))}); err != nil {
+		t.Fatalf("tar WriteHeader: %v", err)
+	}
+	if _, err := tw.Write(oversized); err != nil {
+		t.Fatalf("tar Write: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tar Close: %v", err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatalf("gzip Close: %v", err)
+	}
+
+	dest := t.TempDir()
+	err := ExtractTarGz(bytes.NewReader(buf.Bytes()), dest)
+	if err == nil {
+		t.Fatal("expected extraction-size-limit error, got nil")
+	}
+	if !strings.Contains(err.Error(), "extraction size limit") {
+		t.Errorf("error = %q, want it to mention the extraction size limit", err.Error())
+	}
+}
+
+// Issue #566 finding [46]: tar.TypeSymlink entries have no case in ExtractTarGz's
+// switch (no default), so they are silently no-op'd — assert that's actually true
+// and no symlink is ever created on disk, even one whose target would escape destDir.
+func TestExtractTarGz_SymlinkEntryIgnored(t *testing.T) {
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+	if err := tw.WriteHeader(&tar.Header{
+		Name:     "evil-link",
+		Typeflag: tar.TypeSymlink,
+		Linkname: "../../../etc/passwd",
+		Mode:     0777,
+	}); err != nil {
+		t.Fatalf("tar WriteHeader: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tar Close: %v", err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatalf("gzip Close: %v", err)
+	}
+
+	dest := t.TempDir()
+	if err := ExtractTarGz(bytes.NewReader(buf.Bytes()), dest); err != nil {
+		t.Fatalf("ExtractTarGz should not error on a symlink entry: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dest, "evil-link")); err == nil {
+		t.Error("symlink entry should not have been created on disk")
+	}
+}
+
 
 func TestExtractTarGz_FileContents(t *testing.T) {
 	const tfContent = `variable "region" { default = "us-east-1" }`
