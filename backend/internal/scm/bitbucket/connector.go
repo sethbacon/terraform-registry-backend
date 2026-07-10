@@ -280,7 +280,7 @@ func (c *BitbucketDCConnector) DownloadSourceArchive(ctx context.Context, creds 
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to download archive", err)
 	}
@@ -329,7 +329,7 @@ func (c *BitbucketDCConnector) RegisterWebhook(ctx context.Context, creds *scm.A
 	c.setAuthHeaders(req, creds)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to create webhook", err)
 	}
@@ -339,7 +339,7 @@ func (c *BitbucketDCConnector) RegisterWebhook(ctx context.Context, creds *scm.A
 		return nil, scm.WrapRemoteError(resp.StatusCode, "failed to create webhook", nil)
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&result); err != nil {
 		return nil, fmt.Errorf("bitbucket: decode webhook response: %w", err)
 	}
 
@@ -361,7 +361,7 @@ func (c *BitbucketDCConnector) RemoveWebhook(ctx context.Context, creds *scm.Acc
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return scm.WrapRemoteError(0, "failed to delete webhook", err)
 	}
@@ -466,7 +466,7 @@ func (c *BitbucketDCConnector) doJSON(ctx context.Context, creds *scm.AccessToke
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return scm.WrapRemoteError(0, "request failed", err)
 	}
@@ -483,7 +483,7 @@ func (c *BitbucketDCConnector) doJSON(ctx context.Context, creds *scm.AccessToke
 	}
 
 	if result != nil {
-		if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
+		if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(result); err != nil {
 			return fmt.Errorf("failed to decode response: %w", err)
 		}
 	}

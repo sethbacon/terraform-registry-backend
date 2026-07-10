@@ -568,7 +568,7 @@ func TestReadErrorBody_WithContent(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // redirectTransport redirects all HTTP(S) requests to a fixed base URL,
-// preserving the path and query — used to intercept http.DefaultClient calls
+// preserving the path and query — used to intercept scm.HTTPClient calls
 // that use hard-coded external URLs (e.g. Entra token endpoint).
 // ---------------------------------------------------------------------------
 
@@ -583,12 +583,12 @@ func (rt *redirectTransport) RoundTrip(req *http.Request) (*http.Response, error
 	return http.DefaultTransport.RoundTrip(redirected)
 }
 
-// withRedirectClient temporarily replaces http.DefaultTransport and restores it via t.Cleanup.
+// withRedirectClient temporarily replaces scm.HTTPClient's transport and restores it via t.Cleanup.
 func withRedirectClient(t *testing.T, srv *httptest.Server) {
 	t.Helper()
-	orig := http.DefaultClient.Transport
-	http.DefaultClient.Transport = &redirectTransport{base: srv.URL}
-	t.Cleanup(func() { http.DefaultClient.Transport = orig })
+	orig := scm.HTTPClient.Transport
+	scm.HTTPClient.Transport = &redirectTransport{base: srv.URL}
+	t.Cleanup(func() { scm.HTTPClient.Transport = orig })
 }
 
 // ---------------------------------------------------------------------------
