@@ -87,14 +87,14 @@ func (c *GitLabConnector) CompleteAuthorization(ctx context.Context, authCode st
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to exchange code", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(scm.LimitErrorBody(resp.Body))
 		return nil, scm.WrapRemoteError(resp.StatusCode, "oauth code exchange failed", fmt.Errorf("%s", body))
 	}
 
@@ -106,7 +106,7 @@ func (c *GitLabConnector) CompleteAuthorization(ctx context.Context, authCode st
 		Scope        string `json:"scope"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&result); err != nil {
 		return nil, fmt.Errorf("gitlab: decode token response: %w", err)
 	}
 
@@ -139,7 +139,7 @@ func (c *GitLabConnector) RenewToken(ctx context.Context, refreshToken string) (
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to refresh token", err)
 	}
@@ -156,7 +156,7 @@ func (c *GitLabConnector) RenewToken(ctx context.Context, refreshToken string) (
 		RefreshToken string `json:"refresh_token"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&result); err != nil {
 		return nil, fmt.Errorf("gitlab: decode refresh response: %w", err)
 	}
 
@@ -189,7 +189,7 @@ func (c *GitLabConnector) FetchRepositories(ctx context.Context, creds *scm.Acce
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch projects", err)
 	}
@@ -200,7 +200,7 @@ func (c *GitLabConnector) FetchRepositories(ctx context.Context, creds *scm.Acce
 	}
 
 	var glProjects []gitlabProject
-	if err := json.NewDecoder(resp.Body).Decode(&glProjects); err != nil {
+	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&glProjects); err != nil {
 		return nil, fmt.Errorf("gitlab: decode projects: %w", err)
 	}
 
@@ -228,7 +228,7 @@ func (c *GitLabConnector) FetchRepository(ctx context.Context, creds *scm.Access
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch project", err)
 	}
@@ -242,7 +242,7 @@ func (c *GitLabConnector) FetchRepository(ctx context.Context, creds *scm.Access
 	}
 
 	var glProject gitlabProject
-	if err := json.NewDecoder(resp.Body).Decode(&glProject); err != nil {
+	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&glProject); err != nil {
 		return nil, fmt.Errorf("gitlab: decode project: %w", err)
 	}
 
@@ -269,7 +269,7 @@ func (c *GitLabConnector) SearchRepositories(ctx context.Context, creds *scm.Acc
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "search failed", err)
 	}
@@ -280,7 +280,7 @@ func (c *GitLabConnector) SearchRepositories(ctx context.Context, creds *scm.Acc
 	}
 
 	var glProjects []gitlabProject
-	if err := json.NewDecoder(resp.Body).Decode(&glProjects); err != nil {
+	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&glProjects); err != nil {
 		return nil, fmt.Errorf("gitlab: decode search results: %w", err)
 	}
 
@@ -316,7 +316,7 @@ func (c *GitLabConnector) FetchBranches(ctx context.Context, creds *scm.AccessTo
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch branches", err)
 	}
@@ -335,7 +335,7 @@ func (c *GitLabConnector) FetchBranches(ctx context.Context, creds *scm.AccessTo
 		Default   bool `json:"default"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&glBranches); err != nil {
+	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&glBranches); err != nil {
 		return nil, fmt.Errorf("gitlab: decode branches: %w", err)
 	}
 
@@ -372,7 +372,7 @@ func (c *GitLabConnector) FetchTags(ctx context.Context, creds *scm.AccessToken,
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch tags", err)
 	}
@@ -393,7 +393,7 @@ func (c *GitLabConnector) FetchTags(ctx context.Context, creds *scm.AccessToken,
 		} `json:"commit"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&glTags); err != nil {
+	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&glTags); err != nil {
 		return nil, fmt.Errorf("gitlab: decode tags: %w", err)
 	}
 
@@ -422,7 +422,7 @@ func (c *GitLabConnector) FetchTagByName(ctx context.Context, creds *scm.AccessT
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch tag", err)
 	}
@@ -444,7 +444,7 @@ func (c *GitLabConnector) FetchTagByName(ctx context.Context, creds *scm.AccessT
 		} `json:"commit"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&glTag); err != nil {
+	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&glTag); err != nil {
 		return nil, fmt.Errorf("gitlab: decode tag: %w", err)
 	}
 
@@ -467,7 +467,7 @@ func (c *GitLabConnector) FetchCommit(ctx context.Context, creds *scm.AccessToke
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch commit", err)
 	}
@@ -490,7 +490,7 @@ func (c *GitLabConnector) FetchCommit(ctx context.Context, creds *scm.AccessToke
 		WebURL        string    `json:"web_url"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&glCommit); err != nil {
+	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&glCommit); err != nil {
 		return nil, fmt.Errorf("gitlab: decode commit: %w", err)
 	}
 
@@ -522,7 +522,7 @@ func (c *GitLabConnector) DownloadSourceArchive(ctx context.Context, creds *scm.
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to download archive", err)
 	}
@@ -557,7 +557,7 @@ func (c *GitLabConnector) RegisterWebhook(ctx context.Context, creds *scm.Access
 	}
 	c.setAuthHeaders(req, creds)
 	// #nosec G107 -- URL is sourced from admin-controlled SCM provider configuration; non-admin users cannot influence these code paths
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := scm.HTTPClient.Do(req)
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to create webhook", err)
 	}
@@ -568,7 +568,7 @@ func (c *GitLabConnector) RegisterWebhook(ctx context.Context, creds *scm.Access
 	var result struct {
 		ID int64 `json:"id"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&result); err != nil {
 		return nil, fmt.Errorf("gitlab: decode webhook response: %w", err)
 	}
 	return &scm.WebhookInfo{
@@ -589,7 +589,7 @@ func (c *GitLabConnector) RemoveWebhook(ctx context.Context, creds *scm.AccessTo
 	}
 	c.setAuthHeaders(req, creds)
 	// #nosec G107 -- URL is sourced from admin-controlled SCM provider configuration; non-admin users cannot influence these code paths
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := scm.HTTPClient.Do(req)
 	if err != nil {
 		return scm.WrapRemoteError(0, "failed to delete webhook", err)
 	}

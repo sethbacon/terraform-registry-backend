@@ -136,14 +136,14 @@ func (c *AzureDevOpsConnector) CompleteAuthorization(ctx context.Context, authCo
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	// #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := scm.HTTPClient.Do(req)
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to exchange code", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(scm.LimitErrorBody(resp.Body))
 		return nil, scm.WrapRemoteError(resp.StatusCode, "oauth code exchange failed", fmt.Errorf("%s", body))
 	}
 
@@ -155,7 +155,7 @@ func (c *AzureDevOpsConnector) CompleteAuthorization(ctx context.Context, authCo
 		Scope        string `json:"scope"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&result); err != nil {
 		return nil, fmt.Errorf("azuredevops: decode token response: %w", err)
 	}
 
@@ -188,7 +188,7 @@ func (c *AzureDevOpsConnector) RenewToken(ctx context.Context, refreshToken stri
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	// #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := scm.HTTPClient.Do(req)
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to refresh token", err)
 	}
@@ -205,7 +205,7 @@ func (c *AzureDevOpsConnector) RenewToken(ctx context.Context, refreshToken stri
 		RefreshToken string `json:"refresh_token"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&result); err != nil {
 		return nil, fmt.Errorf("azuredevops: decode refresh response: %w", err)
 	}
 
@@ -238,7 +238,7 @@ func (c *AzureDevOpsConnector) FetchRepositories(ctx context.Context, creds *scm
 		}
 		c.setAuthHeaders(req, creds)
 		// #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := scm.HTTPClient.Do(req)
 		if err != nil {
 			continue
 		}
@@ -247,7 +247,7 @@ func (c *AzureDevOpsConnector) FetchRepositories(ctx context.Context, creds *scm
 			Value []adoRepo `json:"value"`
 		}
 
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&result); err != nil {
 			_ = resp.Body.Close()
 			continue
 		}
@@ -273,7 +273,7 @@ func (c *AzureDevOpsConnector) FetchRepository(ctx context.Context, creds *scm.A
 	}
 	c.setAuthHeaders(req, creds)
 	// #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := scm.HTTPClient.Do(req)
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch repository", err)
 	}
@@ -287,7 +287,7 @@ func (c *AzureDevOpsConnector) FetchRepository(ctx context.Context, creds *scm.A
 	}
 
 	var adoRepo adoRepo
-	if err := json.NewDecoder(resp.Body).Decode(&adoRepo); err != nil {
+	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&adoRepo); err != nil {
 		return nil, fmt.Errorf("azuredevops: decode repository: %w", err)
 	}
 
@@ -325,7 +325,7 @@ func (c *AzureDevOpsConnector) FetchBranches(ctx context.Context, creds *scm.Acc
 	}
 	c.setAuthHeaders(req, creds)
 	// #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := scm.HTTPClient.Do(req)
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch branches", err)
 	}
@@ -342,7 +342,7 @@ func (c *AzureDevOpsConnector) FetchBranches(ctx context.Context, creds *scm.Acc
 		} `json:"value"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&result); err != nil {
 		return nil, fmt.Errorf("azuredevops: decode branches: %w", err)
 	}
 
@@ -370,7 +370,7 @@ func (c *AzureDevOpsConnector) FetchTags(ctx context.Context, creds *scm.AccessT
 	}
 	c.setAuthHeaders(req, creds)
 	// #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := scm.HTTPClient.Do(req)
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch tags", err)
 	}
@@ -395,7 +395,7 @@ func (c *AzureDevOpsConnector) FetchTags(ctx context.Context, creds *scm.AccessT
 		} `json:"value"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&result); err != nil {
 		return nil, fmt.Errorf("azuredevops: decode tags: %w", err)
 	}
 
@@ -441,7 +441,7 @@ func (c *AzureDevOpsConnector) FetchCommit(ctx context.Context, creds *scm.Acces
 	}
 	c.setAuthHeaders(req, creds)
 	// #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := scm.HTTPClient.Do(req)
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch commit", err)
 	}
@@ -465,7 +465,7 @@ func (c *AzureDevOpsConnector) FetchCommit(ctx context.Context, creds *scm.Acces
 		RemoteURL string `json:"remoteUrl"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&adoCommit); err != nil {
+	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&adoCommit); err != nil {
 		return nil, fmt.Errorf("azuredevops: decode commit: %w", err)
 	}
 
@@ -505,12 +505,12 @@ func (c *AzureDevOpsConnector) DownloadSourceArchive(ctx context.Context, creds 
 	}
 	c.setAuthHeaders(req, creds)
 	// #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := scm.HTTPClient.Do(req)
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to download archive", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(scm.LimitErrorBody(resp.Body))
 		_ = resp.Body.Close()
 		return nil, scm.WrapRemoteError(resp.StatusCode, fmt.Sprintf("failed to download archive: %s", string(body)), nil)
 	}
@@ -595,7 +595,7 @@ func (c *AzureDevOpsConnector) fetchRepoAndProjectIDs(ctx context.Context, creds
 	}
 	c.setAuthHeaders(req, creds)
 	// #nosec G107 -- URL is sourced from admin-controlled SCM provider configuration; non-admin users cannot influence these code paths
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := scm.HTTPClient.Do(req)
 	if err != nil {
 		return "", "", scm.WrapRemoteError(0, "failed to fetch repository IDs", err)
 	}
@@ -609,7 +609,7 @@ func (c *AzureDevOpsConnector) fetchRepoAndProjectIDs(ctx context.Context, creds
 			ID string `json:"id"`
 		} `json:"project"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&result); err != nil {
 		return "", "", fmt.Errorf("decode repository: %w", err)
 	}
 	return result.Project.ID, result.ID, nil
@@ -653,7 +653,7 @@ func (c *AzureDevOpsConnector) RegisterWebhook(ctx context.Context, creds *scm.A
 	}
 	c.setAuthHeaders(req, creds)
 	// #nosec G107 -- URL is sourced from admin-controlled SCM provider configuration; non-admin users cannot influence these code paths
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := scm.HTTPClient.Do(req)
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to create service hook subscription", err)
 	}
@@ -664,7 +664,7 @@ func (c *AzureDevOpsConnector) RegisterWebhook(ctx context.Context, creds *scm.A
 	var result struct {
 		ID string `json:"id"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&result); err != nil {
 		return nil, fmt.Errorf("azuredevops: decode subscription response: %w", err)
 	}
 	return &scm.WebhookInfo{
@@ -684,7 +684,7 @@ func (c *AzureDevOpsConnector) RemoveWebhook(ctx context.Context, creds *scm.Acc
 	}
 	c.setAuthHeaders(req, creds)
 	// #nosec G107 -- URL is sourced from admin-controlled SCM provider configuration; non-admin users cannot influence these code paths
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := scm.HTTPClient.Do(req)
 	if err != nil {
 		return scm.WrapRemoteError(0, "failed to delete service hook subscription", err)
 	}
@@ -803,7 +803,7 @@ func (c *AzureDevOpsConnector) fetchProjects(ctx context.Context, creds *scm.Acc
 	}
 	c.setAuthHeaders(req, creds)
 	// #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := scm.HTTPClient.Do(req)
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch projects", err)
 	}
@@ -824,7 +824,7 @@ func (c *AzureDevOpsConnector) fetchProjects(ctx context.Context, creds *scm.Acc
 		Value []adoProject `json:"value"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&result); err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to parse project list", err)
 	}
 
