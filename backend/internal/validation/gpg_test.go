@@ -2,6 +2,7 @@ package validation
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
@@ -79,6 +80,42 @@ func TestParseGPGPublicKey(t *testing.T) {
 		corrupted := "-----BEGIN PGP PUBLIC KEY BLOCK-----\nnotvalidbase64!!!\n-----END PGP PUBLIC KEY BLOCK-----\n"
 		if err := ParseGPGPublicKey(corrupted); err == nil {
 			t.Error("ParseGPGPublicKey() expected error for corrupted body, got nil")
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// ExtractKeyID
+// ---------------------------------------------------------------------------
+
+func TestExtractKeyID(t *testing.T) {
+	t.Run("valid generated key returns 16-char uppercase hex key ID", func(t *testing.T) {
+		armoredKey, entity := generateTestGPGEntity(t)
+		keyID, err := ExtractKeyID(armoredKey)
+		if err != nil {
+			t.Fatalf("ExtractKeyID() unexpected error: %v", err)
+		}
+		want := entity.PrimaryKey.KeyIdString()
+		if keyID != want {
+			t.Errorf("ExtractKeyID() = %q, want %q", keyID, want)
+		}
+		if len(keyID) != 16 {
+			t.Errorf("ExtractKeyID() length = %d, want 16", len(keyID))
+		}
+		if keyID != strings.ToUpper(keyID) {
+			t.Errorf("ExtractKeyID() = %q, want uppercase", keyID)
+		}
+	})
+
+	t.Run("empty key returns error", func(t *testing.T) {
+		if _, err := ExtractKeyID(""); err == nil {
+			t.Error("ExtractKeyID(\"\") expected error, got nil")
+		}
+	})
+
+	t.Run("invalid armored key returns error", func(t *testing.T) {
+		if _, err := ExtractKeyID("not a valid key"); err == nil {
+			t.Error("ExtractKeyID() expected error for invalid input, got nil")
 		}
 	})
 }

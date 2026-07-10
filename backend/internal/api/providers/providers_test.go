@@ -14,6 +14,8 @@ import (
 	"time"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
+	"github.com/ProtonMail/go-crypto/openpgp"
+	"github.com/ProtonMail/go-crypto/openpgp/armor"
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
@@ -1241,6 +1243,51 @@ func TestDownloadHandler_SuccessWithGPGKey(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "ascii_armor") {
 		t.Errorf("response should contain ascii_armor for GPG key; body: %s", w.Body.String())
+	}
+}
+
+// Issue #564 finding [33]: signing_keys.gpg_public_keys[].key_id must be populated
+// from the armored key's real long key ID, not left empty.
+func TestDownloadHandler_SuccessWithGPGKey_PopulatesKeyID(t *testing.T) {
+	entity, err := openpgp.NewEntity("Test User", "test", "test@example.com", nil)
+	if err != nil {
+		t.Fatalf("openpgp.NewEntity() error: %v", err)
+	}
+	var buf bytes.Buffer
+	w, err := armor.Encode(&buf, openpgp.PublicKeyType, nil)
+	if err != nil {
+		t.Fatalf("armor.Encode() error: %v", err)
+	}
+	if err := entity.Serialize(w); err != nil {
+		t.Fatalf("entity.Serialize() error: %v", err)
+	}
+	w.Close()
+	armoredKey := buf.String()
+	wantKeyID := entity.PrimaryKey.KeyIdString()
+
+	store := &mockStore{getURLResult: "https://example.com/provider.zip"}
+	mock, r := newDownloadRouter(t, store)
+
+	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow())
+	mock.ExpectQuery("SELECT.*FROM providers.*WHERE").WillReturnRows(sampleProviderRow())
+	mock.ExpectQuery("SELECT.*FROM provider_versions.*WHERE provider_id.*AND version").WillReturnRows(
+		sqlmock.NewRows(providerVersionGetCols).
+			AddRow("ver-1", "prov-1", "4.0.0", sampleProtocolsJSON,
+				armoredKey,
+				"", "",
+				nil, nil, // shasum_storage_key, shasum_signature_storage_key
+				nil, false, nil, nil, time.Now()),
+	)
+	mock.ExpectQuery("SELECT approval_status FROM mirrored_provider_versions").WillReturnRows(sqlmock.NewRows([]string{"approval_status"}).AddRow(nil))
+	mock.ExpectQuery("SELECT.*FROM provider_platforms.*WHERE provider_version_id").
+		WillReturnRows(samplePlatformRow())
+
+	w2 := doGET(r, "/v1/providers/hashicorp/aws/4.0.0/download/linux/amd64")
+	if w2.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", w2.Code, w2.Body.String())
+	}
+	if !strings.Contains(w2.Body.String(), `"key_id":"`+wantKeyID+`"`) {
+		t.Errorf("response should contain key_id %q; body: %s", wantKeyID, w2.Body.String())
 	}
 }
 
