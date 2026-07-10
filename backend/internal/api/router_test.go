@@ -216,7 +216,7 @@ func TestServiceDiscoveryHandler(t *testing.T) {
 // in proxied deployments. Do not "simplify" this back to cfg.Server.BaseURL.
 func TestServiceDiscoveryHandler_UsesPublicURL(t *testing.T) {
 	cfg := &config.Config{}
-	cfg.Server.BaseURL = "http://registry.internal:8080" // internal listen address
+	cfg.Server.BaseURL = "http://registry.internal:8080"  // internal listen address
 	cfg.Server.PublicURL = "https://registry.example.com" // externally reachable URL
 
 	r := gin.New()
@@ -400,7 +400,9 @@ type stubRateLimiterBackend struct{}
 
 var _ middleware.RateLimiterBackend = (*stubRateLimiterBackend)(nil)
 
-func (s *stubRateLimiterBackend) Allow(_ context.Context, _ string) (bool, error) { return true, nil }
+func (s *stubRateLimiterBackend) Allow(_ context.Context, _ string) (bool, int, error) {
+	return true, 100, nil
+}
 func (s *stubRateLimiterBackend) RemainingTokens(_ context.Context, _ string) (int, error) {
 	return 100, nil
 }

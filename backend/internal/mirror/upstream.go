@@ -31,6 +31,17 @@ type UpstreamRegistry struct {
 	DownloadClient *http.Client // For file downloads (longer timeout)
 }
 
+// maxUpstreamResponseBytes bounds the metadata responses read by the API client
+// (service discovery, version listings, package info). These are small JSON
+// documents in legitimate use; the cap guards against a misbehaving or
+// adversarial upstream registry returning an unbounded body that would
+// otherwise be fully buffered in memory via io.ReadAll/json.Decode.
+const maxUpstreamResponseBytes = 10 << 20 // 10 MB
+
+// maxUpstreamErrorBodyBytes bounds error-response bodies included in returned
+// error messages, matching the cap already used by DownloadFileStream's error path.
+const maxUpstreamErrorBodyBytes = 4096
+
 // NewUpstreamRegistry creates a new upstream registry client
 func NewUpstreamRegistry(baseURL string) *UpstreamRegistry {
 	return &UpstreamRegistry{
@@ -111,12 +122,12 @@ func (u *UpstreamRegistry) DiscoverServices(ctx context.Context) (*ServiceDiscov
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBodyBytes))
 		return nil, fmt.Errorf("discovery request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var discovery ServiceDiscoveryResponse
-	if err := json.NewDecoder(resp.Body).Decode(&discovery); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxUpstreamResponseBytes)).Decode(&discovery); err != nil {
 		return nil, fmt.Errorf("failed to decode discovery response: %w", err)
 	}
 
@@ -159,11 +170,11 @@ func (u *UpstreamRegistry) ListProviderVersions(ctx context.Context, namespace, 
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBodyBytes))
 		return nil, fmt.Errorf("versions request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamResponseBytes))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
@@ -210,12 +221,12 @@ func (u *UpstreamRegistry) GetProviderPackage(ctx context.Context, namespace, pr
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBodyBytes))
 		return nil, fmt.Errorf("package request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var packageResp ProviderPackageResponse
-	if err := json.NewDecoder(resp.Body).Decode(&packageResp); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxUpstreamResponseBytes)).Decode(&packageResp); err != nil {
 		return nil, fmt.Errorf("failed to decode package response: %w", err)
 	}
 
@@ -305,7 +316,7 @@ func (u *UpstreamRegistry) DownloadFileStream(ctx context.Context, fileURL strin
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBodyBytes))
 		resp.Body.Close()
 		return nil, fmt.Errorf("download failed with status %d: %s", resp.StatusCode, string(body))
 	}

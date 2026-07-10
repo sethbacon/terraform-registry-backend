@@ -159,6 +159,23 @@ func PlatformIndexHandler(db *sql.DB, cfg *config.Config, auditRepo *repositorie
 			}
 		}
 
+		// Enforce the version approval gate: a mirrored version still pending approval
+		// or rejected must not be resolvable here even by direct version reference — it
+		// is already hidden from IndexHandler's version listing and gated on the
+		// Provider Registry download endpoint. Return the same generic 404 as a
+		// missing version so the gate does not reveal that a hidden version exists.
+		approvalStatus, err := providerRepo.GetVersionApprovalStatus(c.Request.Context(), providerVersion.ID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to query provider version",
+			})
+			return
+		}
+		if approvalStatus != nil && *approvalStatus != models.VersionApprovalStatusApproved {
+			c.Data(http.StatusNotFound, "application/json", []byte(`{"errors":["provider version not found"]}`))
+			return
+		}
+
 		// Get all platforms for this version
 		platforms, err := providerRepo.ListPlatforms(c.Request.Context(), providerVersion.ID)
 		if err != nil {

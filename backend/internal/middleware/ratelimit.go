@@ -59,9 +59,16 @@ func UploadRateLimitConfig() RateLimitConfig {
 // Implementations include the in-memory token bucket (MemoryRateLimiter) and
 // the Redis-backed GCRA limiter (RedisRateLimiter).
 type RateLimiterBackend interface {
-	// Allow reports whether a request identified by key should be allowed.
-	Allow(ctx context.Context, key string) (bool, error)
-	// RemainingTokens returns the approximate number of tokens left for key.
+	// Allow reports whether a request identified by key should be allowed, along
+	// with the approximate remaining token count after this call. Callers should
+	// use this returned remaining value for response headers rather than making a
+	// separate RemainingTokens call, which for GCRA-based backends (Redis) would
+	// perform a second Allow probe and silently consume another unit of quota.
+	Allow(ctx context.Context, key string) (allowed bool, remaining int, err error)
+	// RemainingTokens returns the approximate number of tokens left for key. For
+	// the in-memory backend this is a non-consuming read; for the Redis backend
+	// it performs another GCRA probe and DOES consume quota, so prefer the
+	// remaining value returned by Allow when one is already available.
 	RemainingTokens(ctx context.Context, key string) (int, error)
 	// Close releases resources held by the backend (e.g. stop goroutines, close connections).
 	Close() error
@@ -145,7 +152,7 @@ func (rl *MemoryRateLimiter) Close() error {
 // Allow checks if a request from the given key should be allowed.
 // The context parameter satisfies the RateLimiterBackend interface; the
 // in-memory implementation does not use it.
-func (rl *MemoryRateLimiter) Allow(_ context.Context, key string) (bool, error) {
+func (rl *MemoryRateLimiter) Allow(_ context.Context, key string) (bool, int, error) {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
@@ -154,11 +161,12 @@ func (rl *MemoryRateLimiter) Allow(_ context.Context, key string) (bool, error) 
 
 	if !exists {
 		// New client, give them full burst
+		tokens := float64(rl.config.BurstSize) - 1
 		rl.entries[key] = &rateLimitEntry{
-			tokens:     float64(rl.config.BurstSize) - 1,
+			tokens:     tokens,
 			lastUpdate: now,
 		}
-		return true, nil
+		return true, int(tokens), nil
 	}
 
 	// Calculate tokens to add based on time elapsed
@@ -173,10 +181,10 @@ func (rl *MemoryRateLimiter) Allow(_ context.Context, key string) (bool, error) 
 	// Check if we have tokens available
 	if entry.tokens >= 1 {
 		entry.tokens--
-		return true, nil
+		return true, int(entry.tokens), nil
 	}
 
-	return false, nil
+	return false, int(entry.tokens), nil
 }
 
 // RemainingTokens returns how many tokens are left for a key.
@@ -213,7 +221,7 @@ func RateLimitMiddleware(backend RateLimiterBackend) gin.HandlerFunc {
 		// Determine the rate limit key
 		key := getRateLimitKey(c)
 
-		allowed, err := backend.Allow(c.Request.Context(), key)
+		allowed, remaining, err := backend.Allow(c.Request.Context(), key)
 		if err != nil {
 			slog.Warn("rate limiter backend error, allowing request", "error", err, "key", key)
 			c.Next()
@@ -221,7 +229,6 @@ func RateLimitMiddleware(backend RateLimiterBackend) gin.HandlerFunc {
 		}
 
 		if !allowed {
-			remaining, _ := backend.RemainingTokens(c.Request.Context(), key)
 			c.Header("X-RateLimit-Remaining", strconv.Itoa(remaining))
 			c.Header("Retry-After", "60")
 			telemetry.RateLimitRejectionsTotal.WithLabelValues(tierFromKey(key), keyTypeFromKey(key)).Inc()
@@ -233,7 +240,6 @@ func RateLimitMiddleware(backend RateLimiterBackend) gin.HandlerFunc {
 		}
 
 		// Add rate limit headers
-		remaining, _ := backend.RemainingTokens(c.Request.Context(), key)
 		c.Header("X-RateLimit-Remaining", strconv.Itoa(remaining))
 
 		c.Next()
@@ -255,7 +261,7 @@ func OrgRateLimitMiddleware(individual RateLimiterBackend, orgBackend RateLimite
 		key := getRateLimitKey(c)
 
 		// Individual check
-		allowed, err := individual.Allow(c.Request.Context(), key)
+		allowed, remaining, err := individual.Allow(c.Request.Context(), key)
 		if err != nil {
 			slog.Warn("rate limiter backend error, allowing request", "error", err, "key", key)
 			c.Next()
@@ -263,7 +269,6 @@ func OrgRateLimitMiddleware(individual RateLimiterBackend, orgBackend RateLimite
 		}
 
 		if !allowed {
-			remaining, _ := individual.RemainingTokens(c.Request.Context(), key)
 			c.Header("X-RateLimit-Remaining", strconv.Itoa(remaining))
 			c.Header("Retry-After", "60")
 			telemetry.RateLimitRejectionsTotal.WithLabelValues("individual", keyTypeFromKey(key)).Inc()
@@ -280,12 +285,11 @@ func OrgRateLimitMiddleware(individual RateLimiterBackend, orgBackend RateLimite
 				if id, ok := orgID.(string); ok && id != "" {
 					orgKey := "org:" + id
 
-					orgAllowed, orgErr := orgBackend.Allow(c.Request.Context(), orgKey)
+					orgAllowed, orgRemaining, orgErr := orgBackend.Allow(c.Request.Context(), orgKey)
 					if orgErr != nil {
 						slog.Warn("org rate limiter backend error, allowing request", "error", orgErr, "org_key", orgKey)
 					} else if !orgAllowed {
-						remaining, _ := orgBackend.RemainingTokens(c.Request.Context(), orgKey)
-						c.Header("X-RateLimit-Remaining", strconv.Itoa(remaining))
+						c.Header("X-RateLimit-Remaining", strconv.Itoa(orgRemaining))
 						c.Header("Retry-After", "60")
 						telemetry.RateLimitRejectionsTotal.WithLabelValues("organization", "org").Inc()
 						c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
@@ -298,7 +302,6 @@ func OrgRateLimitMiddleware(individual RateLimiterBackend, orgBackend RateLimite
 			}
 		}
 
-		remaining, _ := individual.RemainingTokens(c.Request.Context(), key)
 		c.Header("X-RateLimit-Remaining", strconv.Itoa(remaining))
 
 		c.Next()
@@ -362,7 +365,7 @@ func PrincipalRateLimitMiddleware(defaultBackend RateLimiterBackend, overrides *
 			}
 		}
 
-		allowed, err := backend.Allow(c.Request.Context(), key)
+		allowed, remaining, err := backend.Allow(c.Request.Context(), key)
 		if err != nil {
 			slog.Warn("rate limiter backend error, allowing request", "error", err, "key", key)
 			c.Next()
@@ -370,7 +373,6 @@ func PrincipalRateLimitMiddleware(defaultBackend RateLimiterBackend, overrides *
 		}
 
 		if !allowed {
-			remaining, _ := backend.RemainingTokens(c.Request.Context(), key)
 			c.Header("X-RateLimit-Remaining", strconv.Itoa(remaining))
 			c.Header("Retry-After", "60")
 			telemetry.RateLimitRejectionsTotal.WithLabelValues("principal", keyTypeFromKey(key)).Inc()
@@ -381,7 +383,6 @@ func PrincipalRateLimitMiddleware(defaultBackend RateLimiterBackend, overrides *
 			return
 		}
 
-		remaining, _ := backend.RemainingTokens(c.Request.Context(), key)
 		c.Header("X-RateLimit-Remaining", strconv.Itoa(remaining))
 
 		c.Next()
