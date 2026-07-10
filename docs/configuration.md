@@ -509,9 +509,10 @@ security:
 ```
 
 Restrict `allowed_origins` to your actual frontend URL(s) in production. The built-in
-default is `["*"]` (all origins) — this is permissive and **must be restricted in
-production**. (If `config.example.yaml` ships narrower example origins, those are example
-values, not the built-in default.)
+default is `[]` (no origins allowed — deny-by-default); browsers will be unable to read
+cross-origin responses via `fetch`/XHR until you explicitly list your frontend origin(s).
+(If `config.example.yaml` ships example origins, those are example values for local
+development, not the built-in default.)
 
 ### Rate Limiting
 

@@ -17,6 +17,12 @@ import (
 const (
 	// MaxArchiveSize is the maximum size for a module archive (100MB)
 	MaxArchiveSize = 100 * 1024 * 1024
+
+	// MaxArchiveEntries bounds the number of tar entries in an archive. Without this,
+	// an archive of millions of zero-byte file entries never trips MaxArchiveSize (which
+	// only tracks decompressed body bytes) while still exhausting inodes/metadata when
+	// later extracted. A ~1MB gzip can encode ~2M such entries.
+	MaxArchiveEntries = 100000
 )
 
 // ValidateArchive validates a tar.gz archive
@@ -51,6 +57,9 @@ func ValidateArchive(reader io.Reader, maxSize int64) error {
 		}
 
 		fileCount++
+		if fileCount > MaxArchiveEntries {
+			return fmt.Errorf("archive exceeds maximum entry count of %d", MaxArchiveEntries)
+		}
 
 		// Validate path before reading content
 		if err := validatePath(header.Name); err != nil {

@@ -17,14 +17,27 @@ import (
 // matches the 100 MB cap enforced by validation.ValidateArchive at upload time.
 const maxExtractBytes = 100 << 20 // 100 MB total
 
+// maxExtractEntries bounds the number of tar entries extracted. Without this, an
+// archive of millions of zero-byte file entries writes 0 body bytes (never tripping
+// maxExtractBytes) while still exhausting inodes/metadata on the extraction worker.
+// A ~1MB gzip can encode ~2M such entries, so this must be checked independently of
+// the byte cap. Matches the cap enforced by validation.ValidateArchive at upload time.
+const maxExtractEntries = 100000
+
+// maxCompressedInputBytes bounds the compressed (gzip) input stream itself, mirroring
+// validation.ValidateArchive's io.LimitReader wrap. Without this, ExtractTarGz would
+// read an unbounded compressed stream even though the decompressed output is capped.
+const maxCompressedInputBytes = 100 << 20 // 100 MB
+
 // ExtractTarGz extracts a gzipped tar archive from reader into destDir.
-// Enforces path traversal protection and a 100 MB cumulative extraction limit.
-// Returns an error on invalid archives.
+// Enforces path traversal protection, a 100 MB cumulative extraction limit, a
+// maximum entry count, and a compressed-input size cap. Returns an error on
+// invalid archives.
 func ExtractTarGz(reader io.Reader, destDir string) error {
 	if !filepath.IsAbs(destDir) {
 		return fmt.Errorf("destDir must be an absolute path, got: %s", destDir)
 	}
-	gzr, err := gzip.NewReader(reader)
+	gzr, err := gzip.NewReader(io.LimitReader(reader, maxCompressedInputBytes+1))
 	if err != nil {
 		return fmt.Errorf("open gzip: %w", err)
 	}
@@ -32,6 +45,7 @@ func ExtractTarGz(reader io.Reader, destDir string) error {
 
 	tr := tar.NewReader(gzr)
 	var totalWritten int64
+	var entryCount int
 	for {
 		header, err := tr.Next()
 		if err == io.EOF {
@@ -39,6 +53,11 @@ func ExtractTarGz(reader io.Reader, destDir string) error {
 		}
 		if err != nil {
 			return fmt.Errorf("read tar: %w", err)
+		}
+
+		entryCount++
+		if entryCount > maxExtractEntries {
+			return fmt.Errorf("archive exceeds maximum entry count of %d", maxExtractEntries)
 		}
 
 		// Prevent path traversal: resolve against destDir and verify containment

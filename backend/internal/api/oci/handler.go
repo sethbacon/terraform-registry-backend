@@ -13,8 +13,10 @@
 //
 // Authentication:
 //
-//	Read operations (HEAD, GET): governed by the optional auth middleware in router.go.
-//	Write operations (PUT manifest): not supported — use POST /api/v1/modules.
+//	Read operations (HEAD, GET) and write operations (PUT manifest) have no authentication
+//	or authorization middleware applied to the /v2 route group in router.go — this surface is
+//	fully public by design, consistent with the module/provider download protocol. PUT manifest
+//	is a stub that always returns 405 (see PutManifest), so it cannot be used for unauthenticated writes.
 package oci
 
 import (
