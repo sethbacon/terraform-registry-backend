@@ -36,6 +36,27 @@ func ParseGPGPublicKey(keyArmored string) error {
 	return nil
 }
 
+// ExtractKeyID parses an ASCII-armored GPG public key and returns its primary key's
+// long key ID as an uppercase 16-character hex string (RFC 4880 KeyIdString format,
+// e.g. "34365D9472D7468F"), matching the format HashiCorp's own registry uses for
+// signing_keys.gpg_public_keys[].key_id in the Provider Registry Protocol.
+func ExtractKeyID(keyArmored string) (string, error) {
+	if keyArmored == "" {
+		return "", fmt.Errorf("GPG public key cannot be empty")
+	}
+
+	keyReader := strings.NewReader(keyArmored)
+	entities, err := openpgp.ReadArmoredKeyRing(keyReader)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse GPG public key: %w", err)
+	}
+	if len(entities) == 0 || entities[0].PrimaryKey == nil {
+		return "", fmt.Errorf("GPG public key has no primary key")
+	}
+
+	return entities[0].PrimaryKey.KeyIdString(), nil
+}
+
 // VerifySignature verifies a GPG signature against data using the provided public key
 func VerifySignature(publicKeyArmored string, data []byte, signature []byte) error {
 	// Validate the public key format first
