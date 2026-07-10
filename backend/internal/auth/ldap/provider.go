@@ -65,6 +65,17 @@ func NewProvider(cfg *config.LDAPConfig) (*Provider, error) {
 		cfgCopy.GroupMemberAttr = "member"
 	}
 
+	// Issue #559 finding [6]: InsecureSkipVerify disables LDAPS/StartTLS server
+	// certificate verification, exposing the service-account bind password and
+	// every user's submitted password to on-path interception. It requires
+	// intentional misconfiguration (defaults to false), but there is otherwise
+	// no signal to an operator that this control is disabled.
+	if cfgCopy.InsecureSkipVerify {
+		slog.Warn("LDAP TLS certificate verification is DISABLED (insecure_skip_verify=true) — " +
+			"bind credentials and user passwords are exposed to on-path interception. " +
+			"This should never be set outside development; prefer distributing a custom CA bundle instead.")
+	}
+
 	return &Provider{
 		cfg: &cfgCopy,
 	}, nil

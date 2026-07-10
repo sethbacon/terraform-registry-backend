@@ -571,7 +571,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// Module Registry endpoints (v1) - Terraform Protocol
 	// These are public endpoints that support optional authentication
 	v1Modules := router.Group("/v1/modules")
-	v1Modules.Use(middleware.OptionalAuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo))
+	v1Modules.Use(middleware.OptionalAuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo))
 	{
 		v1Modules.GET("/:namespace/:name/:system/versions", modules.ListVersionsHandler(db, cfg))
 		v1Modules.GET("/:namespace/:name/:system/:version/download", modules.DownloadHandler(db, storageBackend, cfg, auditRepo))
@@ -583,7 +583,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// Provider Registry endpoints (v1)
 	// These are for the standard Provider Registry Protocol
 	v1Providers := router.Group("/v1/providers")
-	v1Providers.Use(middleware.OptionalAuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo))
+	v1Providers.Use(middleware.OptionalAuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo))
 	{
 		v1Providers.GET("/:namespace/:type/versions", providers.ListVersionsHandler(db, cfg))
 		v1Providers.GET("/:namespace/:type/:version/download/:os/:arch", providers.DownloadHandler(db, storageBackend, cfg, auditRepo))
@@ -904,7 +904,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		// Public detail endpoints — no auth required; optional auth populates user context if a
 		// token is present (used by the frontend to conditionally show management actions).
 		publicDetailGroup := apiV1.Group("")
-		publicDetailGroup.Use(middleware.OptionalAuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo))
+		publicDetailGroup.Use(middleware.OptionalAuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo))
 		publicDetailGroup.Use(middleware.RateLimitMiddleware(generalRateLimiter))
 		{
 			publicDetailGroup.GET("/modules/:namespace/:name/:system", moduleAdminHandlers.GetModule)

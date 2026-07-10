@@ -244,6 +244,19 @@ func serve(cfg *config.Config) error {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
+	// Issue #559 findings [5]/[11]: DEV_MODE unlocks unauthenticated admin-session
+	// minting (/api/v1/dev/login, /api/v1/dev/impersonate) gated only by this one
+	// environment variable. Defaults closed and also requires a seeded
+	// admin@dev.local account, but give operators a loud, unmissable signal if
+	// it's ever set, since there is no other startup-time indication.
+	if devMode := os.Getenv("DEV_MODE"); devMode == "true" || devMode == "1" {
+		log.Println("WARNING: ==========================================================")
+		log.Println("WARNING: DEV_MODE is enabled. Unauthenticated admin-session minting")
+		log.Println("WARNING: endpoints (/api/v1/dev/login, /api/v1/dev/impersonate) are")
+		log.Println("WARNING: ACTIVE. This must never be set in a production deployment.")
+		log.Println("WARNING: ==========================================================")
+	}
+
 	// Validate JWT secret configuration (fails in production if not set)
 	if err := auth.ValidateJWTSecret(); err != nil {
 		return fmt.Errorf("security configuration error: %w", err)

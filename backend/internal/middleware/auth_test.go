@@ -77,7 +77,7 @@ func newAuthRouter() *gin.Engine {
 // newOptionalAuthRouter builds a router with OptionalAuthMiddleware using nil repos.
 func newOptionalAuthRouter() *gin.Engine {
 	r := gin.New()
-	r.Use(OptionalAuthMiddleware(nil, nil, nil, nil))
+	r.Use(OptionalAuthMiddleware(nil, nil, nil, nil, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 	return r
 }
@@ -553,7 +553,7 @@ func TestOptionalAuthMiddleware_ValidJWT_SetsUser(t *testing.T) {
 	orgRepo, orgMock := newOrgRepo(t)
 
 	r := gin.New()
-	r.Use(OptionalAuthMiddleware(nil, userRepo, nil, orgRepo))
+	r.Use(OptionalAuthMiddleware(nil, userRepo, nil, orgRepo, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	token := generateTestJWT(t, "user-1")
@@ -575,12 +575,47 @@ func TestOptionalAuthMiddleware_ValidJWT_SetsUser(t *testing.T) {
 	}
 }
 
+// Issue #559 finding [4]: a revoked token must not silently grant identity on
+// the optional-auth path — assert it falls through as unauthenticated instead
+// of setting user context (unlike AuthMiddleware, which aborts with 401).
+func TestOptionalAuthMiddleware_JWTRevoked_ContinuesUnauthenticated(t *testing.T) {
+	userRepo, userMock := newUserRepo(t)
+	orgRepo, _ := newOrgRepo(t)
+	tokenRepo, tokenMock := newTokenRepo(t)
+
+	token := generateTestJWT(t, "user-1")
+
+	tokenMock.ExpectQuery("SELECT EXISTS").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+
+	var userWasSet bool
+	r := gin.New()
+	r.Use(OptionalAuthMiddleware(nil, userRepo, nil, orgRepo, tokenRepo))
+	r.GET("/", func(c *gin.Context) {
+		_, userWasSet = c.Get("user")
+		c.Status(http.StatusOK)
+	})
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 (optional auth always passes through)", w.Code)
+	}
+	if userWasSet {
+		t.Error("user should not be set in context for a revoked token")
+	}
+	_ = userMock // user lookup is not expected to run — revocation check short-circuits first
+}
+
 func TestOptionalAuthMiddleware_ValidJWT_UserNotFound_PassesThrough(t *testing.T) {
 	userRepo, userMock := newUserRepo(t)
 	orgRepo, _ := newOrgRepo(t)
 
 	r := gin.New()
-	r.Use(OptionalAuthMiddleware(nil, userRepo, nil, orgRepo))
+	r.Use(OptionalAuthMiddleware(nil, userRepo, nil, orgRepo, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	token := generateTestJWT(t, "nonexistent-user")
@@ -609,7 +644,7 @@ func TestOptionalAuthMiddleware_APIKey_Valid_SetsContext(t *testing.T) {
 	userRepo := repositories.NewUserRepository(userDB)
 
 	r := gin.New()
-	r.Use(OptionalAuthMiddleware(nil, userRepo, apiKeyRepo, nil))
+	r.Use(OptionalAuthMiddleware(nil, userRepo, apiKeyRepo, nil, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	token := "tfr_optional_test9"
@@ -643,7 +678,7 @@ func TestOptionalAuthMiddleware_APIKey_Expired_PassesThrough(t *testing.T) {
 	apiKeyRepo := repositories.NewAPIKeyRepository(apiKeyDB)
 
 	r := gin.New()
-	r.Use(OptionalAuthMiddleware(nil, nil, apiKeyRepo, nil))
+	r.Use(OptionalAuthMiddleware(nil, nil, apiKeyRepo, nil, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	token := "tfr_expired_key9"
@@ -675,7 +710,7 @@ func TestOptionalAuthMiddleware_APIKey_NoMatch_PassesThrough(t *testing.T) {
 	apiKeyRepo := repositories.NewAPIKeyRepository(apiKeyDB)
 
 	r := gin.New()
-	r.Use(OptionalAuthMiddleware(nil, nil, apiKeyRepo, nil))
+	r.Use(OptionalAuthMiddleware(nil, nil, apiKeyRepo, nil, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	// Return empty rows — no matching key

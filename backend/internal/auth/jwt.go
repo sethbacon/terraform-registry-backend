@@ -110,6 +110,15 @@ func ValidateJWTSecret() error {
 
 		storeSecret(resolved)
 		tokenManager = identityauth.NewTokenManager(resolved, jwtIssuer)
+		// Pin validation to this service's own issuer. Without this, Validate
+		// accepts a token bearing ANY iss claim as long as it is signed with the
+		// current secret — in a coupled suite deployment sharing TFR_JWT_SECRET
+		// with a sibling app (per ADR 012), that sibling's tokens (or a token
+		// crafted with a spoofed iss) would be silently accepted here (issue #559
+		// finding [0]). This does not add audience enforcement (the shared
+		// TokenManager has no audience support yet); that half of the finding
+		// requires a change to the terraform-suite-identity library itself.
+		tokenManager.SetAllowedIssuers([]string{jwtIssuer})
 	})
 
 	return jwtSecretErr
