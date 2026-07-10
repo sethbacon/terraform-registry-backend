@@ -68,25 +68,31 @@ func NewRedisRateLimiter(cfg *config.RedisConfig, rlCfg RateLimitConfig) (*Redis
 	}, nil
 }
 
-// Allow checks whether the request identified by key should be permitted.
-func (r *RedisRateLimiter) Allow(ctx context.Context, key string) (bool, error) {
+// Allow checks whether the request identified by key should be permitted, and
+// returns the remaining GCRA quota from the same probe. Callers should use this
+// remaining value directly (e.g. for the X-RateLimit-Remaining header) instead of
+// calling RemainingTokens afterward, which would perform a second Allow probe
+// against redis_rate and silently consume another unit of quota (redis_rate has
+// no peek-only operation).
+func (r *RedisRateLimiter) Allow(ctx context.Context, key string) (bool, int, error) {
 	res, err := r.limiter.Allow(ctx, key, r.limit)
 	if err != nil {
-		return false, fmt.Errorf("redis rate limiter: Allow error: %w", err)
+		return false, 0, fmt.Errorf("redis rate limiter: Allow error: %w", err)
 	}
-	return res.Allowed > 0, nil
+	return res.Allowed > 0, res.Remaining, nil
 }
 
-// RemainingTokens returns the approximate remaining capacity for key.
+// RemainingTokens returns the approximate remaining capacity for key. This
+// performs its own GCRA probe (redis_rate has no peek-only operation) and
+// therefore CONSUMES another unit of quota — it exists only for direct/manual
+// callers. The rate-limit middleware no longer calls this; it uses the
+// remaining value already returned by Allow to avoid double-consuming quota.
 func (r *RedisRateLimiter) RemainingTokens(ctx context.Context, key string) (int, error) {
 	res, err := r.limiter.Allow(ctx, key, redis_rate.Limit{
 		Rate:   r.limit.Rate,
 		Burst:  r.limit.Burst,
 		Period: r.limit.Period,
 	})
-	// We use AllowN with 0 to peek, but redis_rate doesn't have a peek function.
-	// Instead we return the Remaining field from the last Allow call.
-	// Since we already called Allow in the middleware, this is a rough approximation.
 	if err != nil {
 		return 0, err
 	}

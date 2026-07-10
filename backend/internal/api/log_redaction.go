@@ -1,6 +1,50 @@
 package api
 
-import "strings"
+import (
+	"net/url"
+	"strings"
+)
+
+// sensitiveQueryParams lists query-string keys that must never be logged verbatim.
+// OAuth/OIDC authorization codes and CSRF state values are single-use-but-replayable
+// bearer credentials during their validity window (e.g. GET /api/v1/auth/callback
+// and GET /api/v1/scm-providers/:id/oauth/callback both put these in the query
+// string), and log aggregation/SIEM pipelines may have broader read access than
+// the application itself.
+var sensitiveQueryParams = map[string]bool{
+	"code":          true,
+	"state":         true,
+	"token":         true,
+	"access_token":  true,
+	"refresh_token": true,
+	"id_token":      true,
+	"client_secret": true,
+	"api_key":       true,
+	"secret":        true,
+}
+
+// redactSensitiveQuery masks known-sensitive query parameter values before logging.
+// Malformed query strings are redacted wholesale rather than risk leaking them verbatim.
+func redactSensitiveQuery(rawQuery string) string {
+	if rawQuery == "" {
+		return rawQuery
+	}
+	values, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return "[REDACTED]"
+	}
+	redacted := false
+	for key := range values {
+		if sensitiveQueryParams[strings.ToLower(key)] {
+			values.Set(key, "[REDACTED]")
+			redacted = true
+		}
+	}
+	if !redacted {
+		return rawQuery
+	}
+	return values.Encode()
+}
 
 // redactSensitivePath masks secret URL segments before logging.
 //

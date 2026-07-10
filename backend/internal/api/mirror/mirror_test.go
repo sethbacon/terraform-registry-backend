@@ -1,6 +1,7 @@
 package mirror
 
 import (
+	"database/sql"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -348,6 +349,8 @@ func TestPlatformIndex_ListPlatformsDBError(t *testing.T) {
 		WillReturnRows(sampleMirrorAPIProvider())
 	mock.ExpectQuery("SELECT.*FROM provider_versions WHERE provider_id").
 		WillReturnRows(sampleMirrorVersionGetRow())
+	mock.ExpectQuery("SELECT.*approval_status.*FROM mirrored_provider_versions").
+		WillReturnError(sql.ErrNoRows)
 	mock.ExpectQuery("SELECT.*FROM provider_platforms.*WHERE provider_version_id").
 		WillReturnError(mirrorErrDB)
 
@@ -379,6 +382,8 @@ func TestPlatformIndex_StorageInitError(t *testing.T) {
 		WillReturnRows(sampleMirrorAPIProvider())
 	mock.ExpectQuery("SELECT.*FROM provider_versions WHERE provider_id").
 		WillReturnRows(sampleMirrorVersionGetRow())
+	mock.ExpectQuery("SELECT.*approval_status.*FROM mirrored_provider_versions").
+		WillReturnError(sql.ErrNoRows)
 	// ListPlatforms returns empty (still triggers storage init due to storageOnce.Do)
 	mock.ExpectQuery("SELECT.*FROM provider_platforms.*WHERE provider_version_id").
 		WillReturnRows(sqlmock.NewRows(mirrorPlatformCols))
@@ -412,6 +417,8 @@ func TestPlatformIndex_Success_EmptyPlatforms(t *testing.T) {
 		WillReturnRows(sampleMirrorAPIProvider())
 	mock.ExpectQuery("SELECT.*FROM provider_versions WHERE provider_id").
 		WillReturnRows(sampleMirrorVersionGetRow())
+	mock.ExpectQuery("SELECT.*approval_status.*FROM mirrored_provider_versions").
+		WillReturnError(sql.ErrNoRows)
 	mock.ExpectQuery("SELECT.*FROM provider_platforms.*WHERE provider_version_id").
 		WillReturnRows(sqlmock.NewRows(mirrorPlatformCols))
 
@@ -463,6 +470,8 @@ func TestPlatformIndex_Success_WithPlatforms(t *testing.T) {
 		WillReturnRows(sampleMirrorAPIProvider())
 	mock.ExpectQuery("SELECT.*FROM provider_versions WHERE provider_id").
 		WillReturnRows(sampleMirrorVersionGetRow())
+	mock.ExpectQuery("SELECT.*approval_status.*FROM mirrored_provider_versions").
+		WillReturnError(sql.ErrNoRows)
 
 	// Return two platforms — one with h1_hash, one without
 	h1Hash := "h1:abcdef1234567890abcdef1234567890abcdef1234567890"

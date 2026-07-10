@@ -64,6 +64,33 @@ func ServeFileHandler(storageBackend storage.Storage, cfg *config.Config, db *sq
 			return
 		}
 
+		// Enforce the mirrored-provider-version approval gate before streaming.
+		// Provider files follow the deterministic layout
+		// providers/{namespace}/{type}/{version}/{os}/{arch}/{filename}, so a client
+		// that can derive that layout for a pending/rejected mirrored version (already
+		// hidden from the JSON listing/download endpoints) could otherwise retrieve
+		// the raw archive directly through this route, bypassing the approval
+		// workflow entirely. Return the same "File not found" response as a
+		// genuinely missing file so the gate does not reveal that a hidden version
+		// exists.
+		if providerRepo != nil {
+			if ns, pt, ver, _, _, ok := parseProviderFilePath(filePath); ok {
+				if org, err := orgRepo.GetDefaultOrganization(c.Request.Context()); err == nil && org != nil {
+					if provider, err := providerRepo.GetProvider(c.Request.Context(), org.ID, ns, pt); err == nil && provider != nil {
+						if pv, err := providerRepo.GetVersion(c.Request.Context(), provider.ID, ver); err == nil && pv != nil {
+							status, err := providerRepo.GetVersionApprovalStatus(c.Request.Context(), pv.ID)
+							if err == nil && status != nil && *status != models.VersionApprovalStatusApproved {
+								c.JSON(http.StatusNotFound, gin.H{
+									"error": "File not found",
+								})
+								return
+							}
+						}
+					}
+				}
+			}
+		}
+
 		// Check if file exists
 		exists, err := storageBackend.Exists(c.Request.Context(), filePath)
 		if err != nil {

@@ -68,7 +68,7 @@ func TestRateLimiter_NewClientGetsFullBurst(t *testing.T) {
 	defer rl.Stop()
 
 	// First request from a new client always allowed
-	allowed, err := rl.Allow(context.Background(), "client-a")
+	allowed, _, err := rl.Allow(context.Background(), "client-a")
 	if err != nil {
 		t.Fatalf("Allow() unexpected error: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestRateLimiter_AllowsUpToBurstSize(t *testing.T) {
 	ctx := context.Background()
 	allowed := 0
 	for i := 0; i < burst+2; i++ {
-		ok, _ := rl.Allow(ctx, key)
+		ok, _, _ := rl.Allow(ctx, key)
 		if ok {
 			allowed++
 		}
@@ -103,7 +103,7 @@ func TestRateLimiter_TokensRefillOverTime(t *testing.T) {
 	key := "refill-test"
 	ctx := context.Background()
 	for {
-		ok, _ := rl.Allow(ctx, key)
+		ok, _, _ := rl.Allow(ctx, key)
 		if !ok {
 			break
 		}
@@ -111,7 +111,7 @@ func TestRateLimiter_TokensRefillOverTime(t *testing.T) {
 
 	time.Sleep(120 * time.Millisecond)
 
-	ok, err := rl.Allow(ctx, key)
+	ok, _, err := rl.Allow(ctx, key)
 	if err != nil {
 		t.Fatalf("Allow() error: %v", err)
 	}
@@ -126,13 +126,13 @@ func TestRateLimiter_DifferentKeysAreIndependent(t *testing.T) {
 
 	ctx := context.Background()
 	for {
-		ok, _ := rl.Allow(ctx, "key-a")
+		ok, _, _ := rl.Allow(ctx, "key-a")
 		if !ok {
 			break
 		}
 	}
 
-	ok, _ := rl.Allow(ctx, "key-b")
+	ok, _, _ := rl.Allow(ctx, "key-b")
 	if !ok {
 		t.Error("Allow() = false for independent key-b after exhausting key-a")
 	}
@@ -554,7 +554,7 @@ func TestPrincipalOverrideLimiters_OverrideUsed(t *testing.T) {
 
 	// high-volume user should be allowed many requests
 	for i := 0; i < 100; i++ {
-		ok, err := pol.overrides["user:high-volume"].Allow(context.Background(), "user:high-volume")
+		ok, _, err := pol.overrides["user:high-volume"].Allow(context.Background(), "user:high-volume")
 		if err != nil {
 			t.Fatalf("Allow error: %v", err)
 		}
@@ -565,12 +565,12 @@ func TestPrincipalOverrideLimiters_OverrideUsed(t *testing.T) {
 
 	// low-volume API key should be throttled quickly
 	for i := 0; i < 2; i++ {
-		ok, _ := pol.overrides["apikey:ci-key"].Allow(context.Background(), "apikey:ci-key")
+		ok, _, _ := pol.overrides["apikey:ci-key"].Allow(context.Background(), "apikey:ci-key")
 		if !ok {
 			t.Fatalf("expected allow at request %d for ci-key", i)
 		}
 	}
-	ok, _ := pol.overrides["apikey:ci-key"].Allow(context.Background(), "apikey:ci-key")
+	ok, _, _ := pol.overrides["apikey:ci-key"].Allow(context.Background(), "apikey:ci-key")
 	if ok {
 		t.Error("expected ci-key to be rate limited after burst")
 	}

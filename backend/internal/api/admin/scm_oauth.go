@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -208,7 +209,13 @@ func (h *SCMOAuthHandlers) HandleOAuthCallback(c *gin.Context) {
 	// Complete OAuth flow
 	oauthToken, err := connector.CompleteAuthorization(c.Request.Context(), code)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("OAuth flow failed: %v", err)})
+		// Log the detailed upstream error server-side only. The raw error can embed
+		// the SCM provider's unbounded token-endpoint response body (see
+		// scm.WrapRemoteError / APIError.Error()), and this callback is public and
+		// unauthenticated, so returning err.Error() verbatim would leak upstream
+		// diagnostic detail to an anonymous caller.
+		slog.Error("oauth code exchange failed", "provider_id", providerID, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "OAuth flow failed"})
 		return
 	}
 

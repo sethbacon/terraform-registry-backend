@@ -1516,7 +1516,7 @@ func LoggerMiddleware(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
 		path := redactSensitivePath(c.Request.URL.Path)
-		query := c.Request.URL.RawQuery
+		query := redactSensitiveQuery(c.Request.URL.RawQuery)
 
 		c.Next()
 

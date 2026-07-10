@@ -42,3 +42,49 @@ func TestRedactSensitivePath(t *testing.T) {
 		})
 	}
 }
+
+func TestRedactSensitiveQuery(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "empty query untouched",
+			in:   "",
+			want: "",
+		},
+		{
+			name: "oauth code and state redacted",
+			in:   "code=abc123&state=userid:providerid",
+			want: "code=%5BREDACTED%5D&state=%5BREDACTED%5D",
+		},
+		{
+			name: "client_secret redacted",
+			in:   "client_secret=s3cr3t",
+			want: "client_secret=%5BREDACTED%5D",
+		},
+		{
+			name: "non-sensitive params untouched",
+			in:   "page=2&limit=50",
+			want: "page=2&limit=50",
+		},
+		{
+			name: "mixed sensitive and non-sensitive",
+			in:   "page=2&token=tok_abc",
+			want: "page=2&token=%5BREDACTED%5D",
+		},
+		{
+			name: "malformed query redacted wholesale",
+			in:   "%zz",
+			want: "[REDACTED]",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := redactSensitiveQuery(tc.in); got != tc.want {
+				t.Errorf("redactSensitiveQuery(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
