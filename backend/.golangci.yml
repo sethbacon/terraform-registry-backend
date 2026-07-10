@@ -1,3 +1,5 @@
+version: "2"
+
 run:
   timeout: 5m
   modules-download-mode: readonly
@@ -9,21 +11,35 @@ linters:
     - govet
     - ineffassign
     - misspell
-    - gosimple
     - unused
   disable:
     - exhaustruct
     - wrapcheck
-
-linters-settings:
-  errcheck:
-    exclude-functions:
-      - (*github.com/gin-gonic/gin.Context).Error
-      - (*database/sql.Rows).Close
-      - (*database/sql.Stmt).Close
-
-issues:
-  exclude-rules:
-    - path: "_test\\.go"
-      linters:
-        - errcheck
+  settings:
+    errcheck:
+      exclude-functions:
+        - (*github.com/gin-gonic/gin.Context).Error
+        - (*database/sql.Rows).Close
+        - (*database/sql.Stmt).Close
+    staticcheck:
+      # v1 had separate `staticcheck` (SA* checks) and `gosimple` (S*/QF* checks)
+      # linters enabled, but never `stylecheck` (ST* checks). v2 merges all three
+      # into one `staticcheck` linter; explicitly exclude ST* to preserve the
+      # original enabled scope instead of picking up stylecheck findings for free.
+      checks:
+        - all
+        - "-ST*"
+  exclusions:
+    # v1's `issues.exclude-use-default` defaulted to true (this config never set it to
+    # false), so all of v1's built-in default exclude patterns were always active —
+    # including the one that suppresses "Error return value of .*Close is not checked".
+    # v2 makes that opt-in via presets; enable all four to preserve identical behavior.
+    presets:
+      - comments
+      - std-error-handling
+      - common-false-positives
+      - legacy
+    rules:
+      - path: "_test\\.go"
+        linters:
+          - errcheck

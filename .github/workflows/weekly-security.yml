@@ -54,6 +54,55 @@ jobs:
               labels: ['security', 'dependencies'],
             });
 
+  # ── govulncheck (reachability-aware scan) ─────────────
+  # OSV-Scanner flags every known-vulnerable version in go.sum regardless of whether
+  # this binary actually calls the vulnerable code path. govulncheck performs
+  # call-graph reachability analysis so genuinely exploitable findings aren't lost
+  # in the noise of unreachable transitive-dependency CVEs.
+  govulncheck:
+    name: govulncheck (reachability scan)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Set up Go toolchain
+        uses: ./.github/actions/setup-backend
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+
+      - name: Run govulncheck
+        id: govulncheck
+        working-directory: backend
+        continue-on-error: true
+        run: govulncheck ./...
+
+      - name: Create issue on new vulnerabilities
+        if: steps.govulncheck.outcome == 'failure'
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        with:
+          script: |
+            const title = `govulncheck: reachable vulnerabilities found — ${new Date().toISOString().slice(0,10)}`;
+            const body = [
+              '## govulncheck Vulnerability Report',
+              '',
+              `**Workflow run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              '',
+              'govulncheck found known vulnerabilities that are reachable from this codebase (call-graph analysis). Please review the workflow logs and update affected dependencies.',
+            ].join('\n');
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['security', 'dependencies'],
+            });
+
   # ── CodeQL Analysis ───────────────────────────────────
   codeql:
     name: CodeQL Analysis (Go)
@@ -105,7 +154,7 @@ jobs:
   notify-on-failure:
     name: Create issue on failure
     runs-on: ubuntu-latest
-    needs: [ ci, osv-scan, codeql, stale-dependabot ]
+    needs: [ci, osv-scan, govulncheck, codeql, stale-dependabot]
     if: failure() && github.event_name == 'schedule'
     permissions:
       issues: write

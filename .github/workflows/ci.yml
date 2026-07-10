@@ -45,14 +45,14 @@ jobs:
       - name: Lint
         run: |
           cd backend
-          go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
           golangci-lint run ./...
 
       - name: Install swag
         run: |
           mkdir -p $GITHUB_WORKSPACE/bin
           export GOBIN="$GITHUB_WORKSPACE/bin"
-          go install github.com/swaggo/swag/cmd/swag@latest
+          go install github.com/swaggo/swag/cmd/swag@v1.16.6
           echo "$GITHUB_WORKSPACE/bin" >> $GITHUB_PATH
 
       - name: Swagger generation (auto-commit if changed)
@@ -104,7 +104,8 @@ jobs:
         # require a live external dependency (DB, SCM, OIDC issuer, scanner,
         # upstream HTTP registry) to exercise and are covered by the
         # integration suite in cmd/api-test / docker-compose.test.yml.
-        run: go run ./scripts/coverfilter -in coverage.out -out coverage.filtered.out
+        run:
+          go run ./scripts/coverfilter -in coverage.out -out coverage.filtered.out
           -root .
 
       - name: Check coverage threshold
@@ -355,3 +356,34 @@ jobs:
       - name: Terraform validate (GCP)
         working-directory: deployments/terraform/gcp
         run: terraform init -backend=false && terraform validate
+
+  # ── CodeQL Analysis ───────────────────────────────────────────────────────
+  # Runs on every PR and push to main (not just the weekly schedule in
+  # weekly-security.yml) so vulnerable code can't reach main unscanned for up
+  # to a week; the weekly run remains as a defense-in-depth backstop.
+  codeql:
+    name: CodeQL Analysis (Go)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Set up Go toolchain
+        uses: ./.github/actions/setup-backend
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@dc73d59c2d7bd4f8194098a91219eeee6d8a1719 # v4
+        with:
+          languages: go
+
+      - name: Build for CodeQL
+        working-directory: backend
+        run: go build ./...
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@dc73d59c2d7bd4f8194098a91219eeee6d8a1719 # v4
+        with:
+          category: /language:go

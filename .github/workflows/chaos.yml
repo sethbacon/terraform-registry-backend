@@ -11,7 +11,8 @@ on:
         required: false
         default: "1h"
       scenario:
-        description: "Scenario to run (all, health-soak, api-soak, connection-storm,
+        description:
+          "Scenario to run (all, health-soak, api-soak, connection-storm,
           large-payload)"
         required: false
         default: "all"
@@ -20,6 +21,8 @@ jobs:
   chaos-test:
     runs-on: ubuntu-latest
     timeout-minutes: 1500 # 25 hours max for soak tests
+    permissions:
+      contents: read
 
     services:
       postgres:
