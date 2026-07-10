@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 
 	// Register SCM connectors so scm.BuildConnector works in tests
@@ -27,6 +28,19 @@ import (
 var webhookErrDB = errors.New("db error")
 
 const webhookTestUUID = "11111111-1111-1111-1111-111111111111"
+
+// testTokenCipher returns a TokenCipher backed by a fixed 32-byte key, used to
+// seal realistic ciphertext for client_secret_encrypted test fixtures so the
+// handler's tokenCipher.Open call exercises real decryption rather than
+// failing on a placeholder string.
+func testTokenCipher(t *testing.T) *crypto.TokenCipher {
+	t.Helper()
+	tc, err := crypto.NewTokenCipher([]byte("01234567890123456789012345678901"))
+	if err != nil {
+		t.Fatalf("crypto.NewTokenCipher: %v", err)
+	}
+	return tc
+}
 
 // ---------------------------------------------------------------------------
 // Column definitions (db tags from ModuleSCMRepo / SCMProvider structs)
@@ -94,7 +108,7 @@ func newWebhookRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 
 	sqlxDB := sqlx.NewDb(db, "sqlmock")
 	scmRepo := repositories.NewSCMRepository(sqlxDB)
-	h := NewSCMWebhookHandler(scmRepo, nil) // nil publisher OK for early-exit tests
+	h := NewSCMWebhookHandler(scmRepo, nil, testTokenCipher(t)) // nil publisher OK for early-exit tests
 
 	r := gin.New()
 	r.POST("/webhooks/scm/:module_source_repo_id/:secret", h.HandleWebhook)
@@ -199,12 +213,17 @@ func TestWebhook_GetProvider_NotFound(t *testing.T) {
 	}
 }
 
-func sampleProviderRow(id uuid.UUID, providerType string) *sqlmock.Rows {
+func sampleProviderRow(t *testing.T, id uuid.UUID, providerType string) *sqlmock.Rows {
+	t.Helper()
 	baseURL := "https://bitbucket.example.com"
+	encryptedSecret, err := testTokenCipher(t).Seal("test-client-secret")
+	if err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
 	return sqlmock.NewRows(scmProviderCols).AddRow(
 		id, uuid.New(), providerType, "Test Provider",
 		&baseURL, nil, "client-id",
-		"encrypted-secret", "", // empty webhook_secret
+		encryptedSecret, "", // empty webhook_secret
 		true, time.Now(), time.Now(),
 	)
 }
@@ -217,7 +236,7 @@ func TestWebhook_InvalidConnectorType(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM module_scm_repos WHERE id").
 		WillReturnRows(sampleModuleSourceRepoRow(providerID))
 	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
-		WillReturnRows(sampleProviderRow(providerID, "unknown_type"))
+		WillReturnRows(sampleProviderRow(t, providerID, "unknown_type"))
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/webhooks/scm/"+webhookTestUUID+"/secret123", nil))
@@ -255,7 +274,7 @@ func TestWebhook_InvalidConnectorTypeMismatch(t *testing.T) {
 		WillReturnRows(sampleModuleSourceRepoRowWithURL(providerID,
 			"https://registry.example.com/webhooks/scm/"+webhookTestUUID+"/secret123"))
 	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
-		WillReturnRows(sampleProviderRow(providerID, "unknown_provider_type"))
+		WillReturnRows(sampleProviderRow(t, providerID, "unknown_provider_type"))
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/webhooks/scm/"+webhookTestUUID+"/secret123", nil))
@@ -275,7 +294,7 @@ func TestWebhook_InvalidHMACSignature(t *testing.T) {
 		WillReturnRows(sampleModuleSourceRepoRowWithURL(providerID,
 			"https://registry.example.com/webhooks/scm/"+webhookTestUUID+"/secret123"))
 	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
-		WillReturnRows(sampleProviderRow(providerID, "bitbucket_dc"))
+		WillReturnRows(sampleProviderRow(t, providerID, "bitbucket_dc"))
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/webhooks/scm/"+webhookTestUUID+"/secret123", nil))
@@ -418,12 +437,17 @@ const testWebhookSecret = "test-webhook-secret-123"
 
 // sampleProviderRowWithSecret is like sampleProviderRow but sets a non-empty webhook_secret
 // so HMAC-based signature verification can pass.
-func sampleProviderRowWithSecret(id uuid.UUID, providerType, webhookSecret string) *sqlmock.Rows {
+func sampleProviderRowWithSecret(t *testing.T, id uuid.UUID, providerType, webhookSecret string) *sqlmock.Rows {
+	t.Helper()
 	baseURL := "https://bitbucket.example.com"
+	encryptedSecret, err := testTokenCipher(t).Seal("test-client-secret")
+	if err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
 	return sqlmock.NewRows(scmProviderCols).AddRow(
 		id, uuid.New(), providerType, "Test Provider",
 		&baseURL, nil, "client-id",
-		"encrypted-secret", webhookSecret,
+		encryptedSecret, webhookSecret,
 		true, time.Now(), time.Now(),
 	)
 }
@@ -446,7 +470,7 @@ func TestWebhook_ParseDeliveryError(t *testing.T) {
 		WillReturnRows(sampleModuleSourceRepoRowWithURL(providerID,
 			"https://registry.example.com/webhooks/scm/"+webhookTestUUID+"/secret123"))
 	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
-		WillReturnRows(sampleProviderRowWithSecret(providerID, "bitbucket_dc", testWebhookSecret))
+		WillReturnRows(sampleProviderRowWithSecret(t, providerID, "bitbucket_dc", testWebhookSecret))
 
 	req := httptest.NewRequest("POST", "/webhooks/scm/"+webhookTestUUID+"/secret123",
 		bytes.NewReader(payload))
@@ -470,7 +494,7 @@ func TestWebhook_CreateWebhookLogError(t *testing.T) {
 		WillReturnRows(sampleModuleSourceRepoRowWithURL(providerID,
 			"https://registry.example.com/webhooks/scm/"+webhookTestUUID+"/secret123"))
 	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
-		WillReturnRows(sampleProviderRowWithSecret(providerID, "bitbucket_dc", testWebhookSecret))
+		WillReturnRows(sampleProviderRowWithSecret(t, providerID, "bitbucket_dc", testWebhookSecret))
 	mock.ExpectExec("INSERT INTO scm_webhook_events").
 		WillReturnError(errors.New("db error"))
 
@@ -496,7 +520,7 @@ func TestWebhook_Success(t *testing.T) {
 		WillReturnRows(sampleModuleSourceRepoRowWithURL(providerID,
 			"https://registry.example.com/webhooks/scm/"+webhookTestUUID+"/secret123"))
 	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
-		WillReturnRows(sampleProviderRowWithSecret(providerID, "bitbucket_dc", testWebhookSecret))
+		WillReturnRows(sampleProviderRowWithSecret(t, providerID, "bitbucket_dc", testWebhookSecret))
 	mock.ExpectExec("INSERT INTO scm_webhook_events").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 

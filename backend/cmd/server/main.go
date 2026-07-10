@@ -38,6 +38,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
 	"fmt"
 	"log"
@@ -422,6 +423,7 @@ func serve(cfg *config.Config) error {
 		WriteTimeout:      cfg.Server.WriteTimeout,
 		ReadHeaderTimeout: 10 * time.Second,  // Prevents Slowloris attacks
 		IdleTimeout:       120 * time.Second, // Close idle keep-alive connections
+		TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12}, // Explicit floor instead of relying on crypto/tls defaults
 	}
 
 	// Start server in a goroutine

@@ -89,6 +89,18 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 			return
 		}
 
+		// Registry protocol paths are built from these segments — validate them the
+		// same way module upload does, so unvalidated identifiers never reach the
+		// DB or the storage key builder.
+		for field, val := range map[string]string{"namespace": namespace, "type": providerType} {
+			if err := validation.ValidateRegistrySegment(val); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": fmt.Sprintf("Invalid %s: %v", field, err),
+				})
+				return
+			}
+		}
+
 		// Validate semantic versioning
 		if err := validation.ValidateSemver(version); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{

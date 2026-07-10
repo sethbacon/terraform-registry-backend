@@ -15,6 +15,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/safego"
 	"github.com/terraform-registry/terraform-registry/internal/scm"
@@ -23,17 +24,19 @@ import (
 
 // SCMWebhookHandler handles incoming SCM webhooks
 type SCMWebhookHandler struct {
-	scmRepo    *repositories.SCMRepository
-	publisher  *services.SCMPublisher
-	connectors map[scm.ProviderType]scm.Connector
+	scmRepo     *repositories.SCMRepository
+	publisher   *services.SCMPublisher
+	connectors  map[scm.ProviderType]scm.Connector
+	tokenCipher *crypto.TokenCipher
 }
 
 // NewSCMWebhookHandler creates a new webhook handler
-func NewSCMWebhookHandler(scmRepo *repositories.SCMRepository, publisher *services.SCMPublisher) *SCMWebhookHandler {
+func NewSCMWebhookHandler(scmRepo *repositories.SCMRepository, publisher *services.SCMPublisher, tokenCipher *crypto.TokenCipher) *SCMWebhookHandler {
 	return &SCMWebhookHandler{
-		scmRepo:    scmRepo,
-		publisher:  publisher,
-		connectors: make(map[scm.ProviderType]scm.Connector),
+		scmRepo:     scmRepo,
+		publisher:   publisher,
+		connectors:  make(map[scm.ProviderType]scm.Connector),
+		tokenCipher: tokenCipher,
 	}
 }
 
@@ -115,11 +118,16 @@ func (h *SCMWebhookHandler) HandleWebhook(c *gin.Context) {
 	if provider.BaseURL != nil {
 		baseURL = *provider.BaseURL
 	}
+	clientSecret, err := h.tokenCipher.Open(provider.ClientSecretEncrypted)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to decrypt client secret"})
+		return
+	}
 	connector, err := scm.BuildConnector(&scm.ConnectorSettings{
 		Kind:            provider.ProviderType,
 		InstanceBaseURL: baseURL,
 		ClientID:        provider.ClientID,
-		ClientSecret:    provider.ClientSecretEncrypted, // Will need decryption
+		ClientSecret:    clientSecret,
 		CallbackURL:     "",
 	})
 	if err != nil {
