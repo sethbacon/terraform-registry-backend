@@ -373,8 +373,8 @@
 		}
 	],
 	"Stats": {
-		"files": 232,
-		"lines": 60462,
+		"files": 233,
+		"lines": 60519,
 		"nosec": 167,
 		"found": 23
 	},

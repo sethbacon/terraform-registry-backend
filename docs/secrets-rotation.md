@@ -113,6 +113,13 @@ The encryption key protects SCM OAuth tokens stored in the database. The backend
    echo "New key: $NEW_KEY"
    ```
 
+   `ENCRYPTION_KEY` is consumed directly as raw AES-256 key bytes — there is no
+   password-based key derivation. Always generate it with a CSPRNG as shown above;
+   never type a passphrase by hand. At startup the backend logs a `WARNING` if
+   `ENCRYPTION_KEY`'s estimated entropy looks low (e.g. a human-typed passphrase or a
+   repeated pattern) — treat that warning as a sign the key needs to be regenerated
+   and rotated.
+
 2. **Record the current key as the previous key.** Retrieve the current value of `ENCRYPTION_KEY` from your secrets manager.
 
 3. **Update the Kubernetes Secret** with both keys:

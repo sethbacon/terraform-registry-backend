@@ -323,6 +323,14 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	if encryptionKey == "" {
 		log.Fatal("ENCRYPTION_KEY environment variable must be set for SCM integration")
 	}
+	// ENCRYPTION_KEY is used directly as raw AES-256 key bytes (no KDF/hashing), so its
+	// real-world entropy determines the actual strength of the cipher. This is a
+	// heuristic warning only — it cannot prove or disprove true randomness — for
+	// operators who set ENCRYPTION_KEY to a human-typed passphrase instead of following
+	// the documented `openssl rand -hex 16` generation method (see docs/secrets-rotation.md).
+	if crypto.IsLikelyLowEntropySecret([]byte(encryptionKey)) {
+		log.Printf("WARNING: ENCRYPTION_KEY has low estimated entropy and may not have been generated with a CSPRNG. Generate one with: openssl rand -hex 16")
+	}
 	encryptionKeyPrevious := os.Getenv("ENCRYPTION_KEY_PREVIOUS")
 
 	// Initialize token cipher for encrypting OAuth tokens.
