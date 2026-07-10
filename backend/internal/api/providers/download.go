@@ -237,9 +237,13 @@ func DownloadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Con
 		gpgPublicKeys := []gin.H{}
 		if providerVersion.GPGPublicKey != "" {
 			gpgKey := resolveProviderGPGKey(providerVersion.GPGPublicKey)
+			keyID, err := validation.ExtractKeyID(gpgKey)
+			if err != nil {
+				slog.Warn("failed to extract GPG key_id for provider signing key", "namespace", namespace, "type", providerType, "error", err)
+			}
 			gpgPublicKeys = []gin.H{
 				{
-					"key_id":      "", // Could be extracted from GPG key if needed
+					"key_id":      keyID,
 					"ascii_armor": gpgKey,
 				},
 			}
