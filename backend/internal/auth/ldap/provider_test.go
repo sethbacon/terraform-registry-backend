@@ -69,6 +69,43 @@ func TestNewProvider_DefaultPorts(t *testing.T) {
 	}
 }
 
+// Issue #566 finding [49]: the InsecureSkipVerify TLS-bypass code path had no
+// test coverage in either direction.
+func TestProvider_TLSConfig_DefaultsToVerify(t *testing.T) {
+	cfg := &config.LDAPConfig{
+		Enabled:    true,
+		Host:       "ldap.example.com",
+		BaseDN:     "dc=example,dc=com",
+		BindDN:     "cn=admin,dc=example,dc=com",
+		UserFilter: "(uid=%s)",
+	}
+	p, err := NewProvider(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.tlsConfig().InsecureSkipVerify {
+		t.Error("InsecureSkipVerify should default to false")
+	}
+}
+
+func TestProvider_TLSConfig_InsecureSkipVerifyExplicit(t *testing.T) {
+	cfg := &config.LDAPConfig{
+		Enabled:            true,
+		Host:               "ldap.example.com",
+		BaseDN:             "dc=example,dc=com",
+		BindDN:             "cn=admin,dc=example,dc=com",
+		UserFilter:         "(uid=%s)",
+		InsecureSkipVerify: true,
+	}
+	p, err := NewProvider(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !p.tlsConfig().InsecureSkipVerify {
+		t.Error("InsecureSkipVerify should be true when explicitly set in config")
+	}
+}
+
 func TestNewProvider_DefaultAttributes(t *testing.T) {
 	cfg := &config.LDAPConfig{
 		Enabled:    true,

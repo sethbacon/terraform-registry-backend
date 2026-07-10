@@ -398,6 +398,35 @@ func TestSearchModules_Empty(t *testing.T) {
 	}
 }
 
+// Issue #566 finding [50]: no test ever passed a SQL-metacharacter-laden query
+// through SearchModules to lock in that whereClause's fmt.Sprintf only ever
+// builds placeholder numbers, never interpolates the value itself — sqlmock's
+// WithArgs only matches if the raw value is bound as a query argument; if a
+// future edit concatenated it into the SQL text instead, these expectations
+// would fail to match and the test would fail.
+func TestSearchModules_SQLMetacharacterQuery(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+	malicious := "foo' OR '1'='1"
+
+	mock.ExpectQuery("SELECT COUNT").
+		WithArgs("%" + malicious + "%").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery("SELECT.*FROM modules").
+		WithArgs("%"+malicious+"%", 10, 0).
+		WillReturnRows(sqlmock.NewRows(moduleSearchCols))
+
+	_, total, err := repo.SearchModules(context.Background(), "", malicious, "", "", 10, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 0 {
+		t.Errorf("total = %d, want 0", total)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations (value was not bound as a parameter): %v", err)
+	}
+}
+
 func TestSearchModules_WithOrgAndFilters(t *testing.T) {
 	repo, mock := newModuleRepo(t)
 	mock.ExpectQuery("SELECT COUNT").

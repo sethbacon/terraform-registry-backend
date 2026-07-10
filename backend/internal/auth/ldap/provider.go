@@ -119,14 +119,21 @@ func (p *Provider) Authenticate(username, password string) (*UserInfo, error) {
 	}, nil
 }
 
+// tlsConfig builds the tls.Config used for LDAPS/StartTLS connections from
+// the provider's configuration. Extracted from dial so InsecureSkipVerify's
+// wiring can be asserted directly in tests without opening a real connection.
+func (p *Provider) tlsConfig() *tls.Config {
+	return &tls.Config{
+		ServerName:         p.cfg.Host,
+		InsecureSkipVerify: p.cfg.InsecureSkipVerify, // #nosec G402 -- admin-configurable for dev environments
+	}
+}
+
 // dial creates a new LDAP connection with the configured TLS settings.
 func (p *Provider) dial() (*goldap.Conn, error) {
 	addr := fmt.Sprintf("%s:%d", p.cfg.Host, p.cfg.Port)
 
-	tlsConfig := &tls.Config{
-		ServerName:         p.cfg.Host,
-		InsecureSkipVerify: p.cfg.InsecureSkipVerify, // #nosec G402 -- admin-configurable for dev environments
-	}
+	tlsConfig := p.tlsConfig()
 
 	if p.cfg.UseTLS {
 		// LDAPS: TLS from the start

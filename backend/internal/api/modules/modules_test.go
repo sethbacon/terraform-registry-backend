@@ -552,6 +552,28 @@ func TestServeFileHandler_Success(t *testing.T) {
 	}
 }
 
+// Issue #566 finding [47]: the path-traversal guard on this unauthenticated,
+// unrated endpoint had zero attack-payload test coverage.
+func TestServeFileHandler_PathTraversal(t *testing.T) {
+	store := &mockStore{existsResult: true}
+	r := newServeRouter(t, store)
+
+	w := doGET(r, "/v1/files/../../etc/passwd")
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400; body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestServeFileHandler_DoubleSlashTraversal(t *testing.T) {
+	store := &mockStore{existsResult: true}
+	r := newServeRouter(t, store)
+
+	w := doGET(r, "/v1/files/a//b")
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400; body: %s", w.Code, w.Body.String())
+	}
+}
+
 // ---------------------------------------------------------------------------
 // UploadHandler test helpers
 // ---------------------------------------------------------------------------
