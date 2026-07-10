@@ -421,8 +421,8 @@ func serve(cfg *config.Config) error {
 		Handler:           router,
 		ReadTimeout:       cfg.Server.ReadTimeout,
 		WriteTimeout:      cfg.Server.WriteTimeout,
-		ReadHeaderTimeout: 10 * time.Second,  // Prevents Slowloris attacks
-		IdleTimeout:       120 * time.Second, // Close idle keep-alive connections
+		ReadHeaderTimeout: 10 * time.Second,                          // Prevents Slowloris attacks
+		IdleTimeout:       120 * time.Second,                         // Close idle keep-alive connections
 		TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12}, // Explicit floor instead of relying on crypto/tls defaults
 	}
 
