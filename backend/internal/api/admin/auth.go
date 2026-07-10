@@ -208,7 +208,7 @@ func (h *AuthHandlers) LoginHandler() gin.HandlerFunc {
 					})
 					return
 				}
-				redirectURL, err := sp.MakeAuthenticationRequest(state)
+				redirectURL, reqID, err := sp.MakeAuthenticationRequest(state)
 				if err != nil {
 					slog.Error("saml: failed to create AuthnRequest", "idp", idpName, "error", err)
 					c.JSON(http.StatusInternalServerError, gin.H{
@@ -217,7 +217,9 @@ func (h *AuthHandlers) LoginHandler() gin.HandlerFunc {
 					return
 				}
 				// Update session state with the specific IdP name for callback routing
+				// and bind the AuthnRequest ID so the ACS can enforce InResponseTo.
 				sessionState.ProviderType = "saml:" + idpName
+				sessionState.SAMLRequestID = reqID
 				_ = h.stateStore.Save(c.Request.Context(), state, sessionState, 10*time.Minute)
 				authURL = redirectURL.String()
 			} else {
@@ -1067,6 +1069,9 @@ func (h *AuthHandlers) SAMLACSHandler() gin.HandlerFunc {
 		// The RelayState may contain our session state key which includes the IdP name.
 		var provider *samlpkg.Provider
 		var idpName string
+		// possibleRequestIDs binds the assertion to an AuthnRequest this SP issued
+		// (SP-initiated). It stays empty only for genuine IdP-initiated responses.
+		var possibleRequestIDs []string
 
 		if relayState != "" {
 			// Try to load session state from relay state (which is our CSRF state token)
@@ -1076,6 +1081,9 @@ func (h *AuthHandlers) SAMLACSHandler() gin.HandlerFunc {
 				if strings.HasPrefix(sessionState.ProviderType, "saml:") {
 					idpName = strings.TrimPrefix(sessionState.ProviderType, "saml:")
 					provider = h.samlProviders[idpName]
+				}
+				if sessionState.SAMLRequestID != "" {
+					possibleRequestIDs = []string{sessionState.SAMLRequestID}
 				}
 			}
 		}
@@ -1094,15 +1102,43 @@ func (h *AuthHandlers) SAMLACSHandler() gin.HandlerFunc {
 			return
 		}
 
-		// Validate the SAML response
-		// For SP-initiated flows, we should validate against the request ID.
-		// For IdP-initiated flows, we pass empty possible request IDs.
-		possibleRequestIDs := []string{}
-		userInfo, err := provider.ValidateResponse(c.Request, possibleRequestIDs, h.cfg.Auth.SAML.GroupAttributeName)
+		// Reject unsolicited (IdP-initiated) responses unless the operator has
+		// explicitly enabled them. Without a bound request ID such a response is
+		// not tied to a login this SP initiated, enabling replay and login CSRF.
+		if len(possibleRequestIDs) == 0 && !provider.AllowIDPInitiated() {
+			slog.Warn("saml: rejected unsolicited response; IdP-initiated SSO is disabled", "idp", idpName)
+			callbackError("idp_initiated_disabled", "Unsolicited IdP-initiated SAML login is not enabled.")
+			return
+		}
+
+		// Validate the SAML response. When possibleRequestIDs is populated the
+		// crewjam SP enforces InResponseTo; for enabled IdP-initiated flows the
+		// binding is skipped and replay is mitigated by the cache below.
+		userInfo, assertionMeta, err := provider.ValidateResponse(c.Request, possibleRequestIDs, h.cfg.Auth.SAML.GroupAttributeName)
 		if err != nil {
 			slog.Error("saml: assertion validation failed", "idp", idpName, "error", err)
 			callbackError("assertion_invalid", "SAML assertion validation failed.")
 			return
+		}
+
+		// Assertion replay protection for IdP-initiated flows (no InResponseTo
+		// binding). Dedupe on the assertion ID until it expires (NotOnOrAfter).
+		if provider.AllowIDPInitiated() && assertionMeta != nil && assertionMeta.ID != "" {
+			ttl := time.Until(assertionMeta.NotOnOrAfter)
+			if ttl <= 0 || ttl > 15*time.Minute {
+				ttl = 15 * time.Minute
+			}
+			reserved, resErr := h.stateStore.Reserve(c.Request.Context(), "saml_assertion:"+assertionMeta.ID, ttl)
+			if resErr != nil {
+				slog.Error("saml: assertion replay check failed", "idp", idpName, "error", resErr)
+				callbackError("assertion_invalid", "SAML assertion validation failed.")
+				return
+			}
+			if !reserved {
+				slog.Warn("saml: rejected replayed assertion", "idp", idpName, "assertion_id", assertionMeta.ID)
+				callbackError("assertion_replayed", "This SAML assertion has already been used.")
+				return
+			}
 		}
 
 		if userInfo.Email == "" && userInfo.NameID == "" {

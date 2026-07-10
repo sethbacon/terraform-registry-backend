@@ -88,6 +88,22 @@ func (s *MemoryStateStore) Delete(_ context.Context, state string) error {
 	return nil
 }
 
+// Reserve atomically records key for the given TTL. It returns true when key
+// was newly created (first use) and false when a non-expired entry already
+// exists (a replay).
+func (s *MemoryStateStore) Reserve(_ context.Context, key string, ttl time.Duration) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e, ok := s.entries[key]; ok && time.Now().Before(e.expiresAt) {
+		return false, nil
+	}
+	s.entries[key] = &memoryEntry{
+		data:      &SessionState{State: key, CreatedAt: time.Now()},
+		expiresAt: time.Now().Add(ttl),
+	}
+	return true, nil
+}
+
 // Close stops the cleanup goroutine.
 func (s *MemoryStateStore) Close() error {
 	close(s.stopCh)

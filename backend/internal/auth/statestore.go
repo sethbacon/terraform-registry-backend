@@ -14,6 +14,10 @@ type SessionState struct {
 	CreatedAt    time.Time `json:"created_at"`
 	RedirectURL  string    `json:"redirect_url"`
 	ProviderType string    `json:"provider_type"` // "oidc", "azuread", or "saml"
+	// SAMLRequestID is the ID of the AuthnRequest issued for an SP-initiated
+	// SAML login. It is echoed back by the IdP as InResponseTo and validated
+	// at the ACS to bind the assertion to a request this SP actually made.
+	SAMLRequestID string `json:"saml_request_id,omitempty"`
 }
 
 // StateStore is the interface for OIDC session state persistence.
@@ -28,6 +32,12 @@ type StateStore interface {
 	// Delete removes a session state entry. Implementations should treat
 	// deleting a non-existent key as a no-op.
 	Delete(ctx context.Context, state string) error
+	// Reserve atomically records a single-use marker under key for the given
+	// TTL. It returns reserved=true when the key did not previously exist
+	// (first use) and reserved=false when the key was already present, which
+	// callers use to detect replays (e.g. an already-consumed SAML assertion
+	// ID). Implementations must perform the check-and-set atomically.
+	Reserve(ctx context.Context, key string, ttl time.Duration) (reserved bool, err error)
 	// Close releases resources held by the store (stop goroutines, close connections).
 	Close() error
 }

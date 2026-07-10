@@ -24,8 +24,9 @@ import (
 // Provider wraps a crewjam/saml ServiceProvider and exposes methods needed
 // by the auth handlers. One Provider instance is created per configured IdP.
 type Provider struct {
-	sp   saml.ServiceProvider
-	name string
+	sp                saml.ServiceProvider
+	name              string
+	allowIDPInitiated bool
 }
 
 // UserInfo holds the attributes extracted from a SAML assertion.
@@ -34,6 +35,17 @@ type UserInfo struct {
 	Email  string
 	Name   string
 	Groups []string
+}
+
+// AssertionMeta carries replay-relevant metadata extracted from a validated
+// assertion. It is used by the ACS handler to deduplicate assertion IDs when
+// IdP-initiated SSO is enabled (there is no InResponseTo binding in that flow).
+type AssertionMeta struct {
+	// ID is the SAML assertion ID (unique per issued assertion).
+	ID string
+	// NotOnOrAfter is the end of the assertion validity window; a replay-cache
+	// entry need only be retained until this time.
+	NotOnOrAfter time.Time
 }
 
 // NewProvider creates a SAML Service Provider for the given IdP configuration.
@@ -56,7 +68,7 @@ func NewProvider(cfg *config.SAMLConfig, idpCfg *config.SAMLIdPConfig) (*Provide
 	sp := saml.ServiceProvider{
 		EntityID:          entityID,
 		AcsURL:            *acsURL,
-		AllowIDPInitiated: true,
+		AllowIDPInitiated: cfg.AllowIDPInitiated,
 	}
 
 	// Load SP signing cert/key if provided
@@ -85,8 +97,9 @@ func NewProvider(cfg *config.SAMLConfig, idpCfg *config.SAMLIdPConfig) (*Provide
 	sp.IDPMetadata = idpMetadata
 
 	return &Provider{
-		sp:   sp,
-		name: idpCfg.Name,
+		sp:                sp,
+		name:              idpCfg.Name,
+		allowIDPInitiated: cfg.AllowIDPInitiated,
 	}, nil
 }
 
@@ -95,28 +108,38 @@ func (p *Provider) Name() string {
 	return p.name
 }
 
+// AllowIDPInitiated reports whether unsolicited IdP-initiated SSO responses are
+// accepted for this IdP. When false, only solicited SP-initiated responses
+// bound to a server-issued AuthnRequest ID (InResponseTo) are accepted.
+func (p *Provider) AllowIDPInitiated() bool {
+	return p.allowIDPInitiated
+}
+
 // GetMetadata returns the SP metadata XML for publishing to IdPs.
 func (p *Provider) GetMetadata() *saml.EntityDescriptor {
 	return p.sp.Metadata()
 }
 
 // MakeAuthenticationRequest creates a SAML AuthnRequest URL for SP-initiated login.
-func (p *Provider) MakeAuthenticationRequest(relayState string) (*url.URL, error) {
+// It returns the redirect URL and the generated AuthnRequest ID. The caller must
+// persist the request ID (keyed to the RelayState/state token) and supply it as
+// a possible request ID at the ACS so the assertion's InResponseTo is enforced.
+func (p *Provider) MakeAuthenticationRequest(relayState string) (*url.URL, string, error) {
 	authReq, err := p.sp.MakeAuthenticationRequest(
 		p.sp.GetSSOBindingLocation(saml.HTTPRedirectBinding),
 		saml.HTTPRedirectBinding,
 		saml.HTTPPostBinding,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("saml: failed to create AuthnRequest: %w", err)
+		return nil, "", fmt.Errorf("saml: failed to create AuthnRequest: %w", err)
 	}
 
 	redirectURL, err := authReq.Redirect(relayState, &p.sp)
 	if err != nil {
-		return nil, fmt.Errorf("saml: failed to build redirect URL: %w", err)
+		return nil, "", fmt.Errorf("saml: failed to build redirect URL: %w", err)
 	}
 
-	return redirectURL, nil
+	return redirectURL, authReq.ID, nil
 }
 
 // ParseResponse validates a SAML Response (from the ACS POST) and extracts user info.
@@ -137,14 +160,22 @@ func (p *Provider) ParseResponse(samlResponse string, groupAttr string) (*UserIn
 	return assertionInfo, nil
 }
 
-// ValidateResponse validates a SAML response from an HTTP request and returns user info.
-func (p *Provider) ValidateResponse(r *http.Request, possibleRequestIDs []string, groupAttr string) (*UserInfo, error) {
+// ValidateResponse validates a SAML response from an HTTP request and returns
+// user info plus replay-relevant assertion metadata. possibleRequestIDs must
+// contain the AuthnRequest ID issued for this login (SP-initiated); when the
+// provider does not allow IdP-initiated SSO, an empty list rejects the response.
+func (p *Provider) ValidateResponse(r *http.Request, possibleRequestIDs []string, groupAttr string) (*UserInfo, *AssertionMeta, error) {
 	assertion, err := p.sp.ParseResponse(r, possibleRequestIDs)
 	if err != nil {
-		return nil, fmt.Errorf("saml: failed to validate response: %w", err)
+		return nil, nil, fmt.Errorf("saml: failed to validate response: %w", err)
 	}
 
-	return extractUserInfo(assertion, groupAttr), nil
+	meta := &AssertionMeta{ID: assertion.ID}
+	if assertion.Conditions != nil {
+		meta.NotOnOrAfter = assertion.Conditions.NotOnOrAfter
+	}
+
+	return extractUserInfo(assertion, groupAttr), meta, nil
 }
 
 // extractUserInfo pulls user attributes from a validated SAML assertion.
