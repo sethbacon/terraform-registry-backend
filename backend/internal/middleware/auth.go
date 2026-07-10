@@ -201,7 +201,7 @@ func AuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, a
 }
 
 // OptionalAuthMiddleware - same as AuthMiddleware but doesn't abort if no auth
-func OptionalAuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, apiKeyRepo *repositories.APIKeyRepository, orgRepo *repositories.OrganizationRepository) gin.HandlerFunc {
+func OptionalAuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, apiKeyRepo *repositories.APIKeyRepository, orgRepo *repositories.OrganizationRepository, tokenRepo *repositories.TokenRepository) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var token string
 		var fromCookie bool
@@ -228,22 +228,32 @@ func OptionalAuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepos
 
 		// Try JWT first
 		if claims, err := auth.ValidateJWT(token); err == nil {
-			// JWT is valid, load user and set in context
-			user, err := userRepo.GetUserByID(c.Request.Context(), claims.UserID)
-			if err == nil && user != nil {
-				c.Set("user", user)
-				c.Set("user_id", user.ID)
-				if fromCookie {
-					c.Set("auth_method", "jwt_cookie")
-				} else {
-					c.Set("auth_method", "jwt")
+			// Check revocation — same check as AuthMiddleware, but a revoked
+			// token here means "continue as unauthenticated" rather than abort,
+			// since this middleware guards optionally-authenticated public
+			// registry-protocol endpoints (issue #559 finding [4]).
+			revoked := false
+			if claims.JTI != "" && tokenRepo != nil {
+				revoked, _ = tokenRepo.IsTokenRevoked(c.Request.Context(), claims.JTI)
+			}
+			if !revoked {
+				// JWT is valid, load user and set in context
+				user, err := userRepo.GetUserByID(c.Request.Context(), claims.UserID)
+				if err == nil && user != nil {
+					c.Set("user", user)
+					c.Set("user_id", user.ID)
+					if fromCookie {
+						c.Set("auth_method", "jwt_cookie")
+					} else {
+						c.Set("auth_method", "jwt")
+					}
+					// Use scopes embedded in JWT claims (avoids DB query per request)
+					scopes := claims.Scopes
+					if scopes == nil {
+						scopes = []string{}
+					}
+					c.Set("scopes", scopes)
 				}
-				// Use scopes embedded in JWT claims (avoids DB query per request)
-				scopes := claims.Scopes
-				if scopes == nil {
-					scopes = []string{}
-				}
-				c.Set("scopes", scopes)
 			}
 			c.Next()
 			return
