@@ -26,7 +26,7 @@ seeking ISO 27001 certification that include the registry in their ISMS scope.
 | A.5.24  | Incident management planning               | Security policy with response timelines                        | `SECURITY.md`                                           |
 | A.5.25  | Assessment of information security events  | Audit logging, scanner findings, rate-limit metrics            | Audit logs, Prometheus metrics                          |
 | A.5.26  | Response to incidents                      | Coordinated disclosure policy, CVE acknowledgment SLAs         | `SECURITY.md`                                           |
-| A.5.28  | Collection of evidence                     | Audit log export (NDJSON/OCSF), legal hold API                 | Audit export endpoint, legal-hold API                   |
+| A.5.28  | Collection of evidence                     | Audit log export (NDJSON/OCSF); legal hold store exists but is not yet wired to an API (planned) | Audit export endpoint; `backend/internal/audit/legal_hold.go` (not yet exposed via HTTP) |
 | A.5.29  | Information security during disruption     | DR documentation, backup procedures                            | `docs/disaster-recovery.md`                             |
 | A.5.30  | ICT readiness for business continuity      | DR drill runbook with RPO/RTO targets                          | `docs/disaster-recovery.md`, `scripts/dr-drill.sh`      |
 | A.5.33  | Protection of records                      | Audit log retention policy, append-only protection             | Audit retention config, DB grants                       |
@@ -56,7 +56,7 @@ application with no physical infrastructure requirements.
 | A.8.3   | Information access restriction          | RBAC with per-resource scopes, org-scoped data isolation          | Role templates, org middleware                     |
 | A.8.4   | Access to source code                   | GitHub repository access controls                                 | Repository settings                                |
 | A.8.5   | Secure authentication                   | OIDC/SAML/LDAP/mTLS, bcrypt hashing, MFA (IdP-enforced)           | Auth packages, `docs/adr/0011-password-hashing.md` |
-| A.8.6   | Capacity management                     | Per-org quotas, resource limit configuration                      | Quota system, deployment manifests                 |
+| A.8.6   | Capacity management                     | Per-org quota dashboard ships today; enforcement middleware (`QuotaChecker`) exists but is not yet wired to any request path (planned) | Quota dashboard endpoint; `backend/internal/middleware/quota.go` (not yet enforced) |
 | A.8.7   | Protection against malware              | Module security scanning (Trivy/Checkov), scanner version pinning | Scanning config, scanner job                       |
 | A.8.8   | Management of technical vulnerabilities | Dependabot, OSV scanner, gosec, Trivy image scan                  | CI workflows, scheduled scans                      |
 | A.8.9   | Configuration management                | Viper-based config with validation, env var layering              | `backend/internal/config/`                         |
@@ -66,7 +66,7 @@ application with no physical infrastructure requirements.
 | A.8.15  | Logging                                 | Structured audit logging to multiple destinations                 | `backend/internal/audit/shipper.go`                |
 | A.8.16  | Monitoring activities                   | Prometheus metrics, health endpoints, alert rules                 | `/metrics`, `/health`, Grafana dashboards          |
 | A.8.20  | Networks security                       | TLS on all connections, optional mTLS                             | Server TLS config, mTLS package                    |
-| A.8.24  | Use of cryptography                     | TLS 1.2+, AES encryption at rest, bcrypt, cosign signing          | Crypto config, FIPS build variant                  |
+| A.8.24  | Use of cryptography                     | TLS 1.2+, AES encryption at rest, cosign signing (FIPS build variant covers these paths); bcrypt credential hashing is NOT FIPS-approved (see ADR-0011) | Crypto config, FIPS build variant (TLS/AES/BoringCrypto only) |
 | A.8.25  | Secure development lifecycle            | CI/CD with lint, test, SAST, SCA, SBOM, signed releases           | CI workflows, `.goreleaser.yml`                    |
 | A.8.26  | Application security requirements       | Input validation, parameterized queries, CSRF protection          | Validation package, middleware                     |
 | A.8.27  | Secure system architecture              | Architecture documentation, ADRs                                  | `docs/architecture.md`, `docs/adr/`                |

@@ -1023,7 +1023,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("multi_tenancy.allow_public_signup", false)
 
 	// Security defaults
-	v.SetDefault("security.cors.allowed_origins", []string{"*"})
+	// allowed_origins defaults to deny-by-default (no origins allowed) rather than a
+	// wildcard: this is a multi-tenant registry where the admin API is reachable with
+	// a bearer token, which CORS does not protect the same way it protects cookies.
+	// Operators must explicitly opt in to the origin(s) their frontend is served from.
+	v.SetDefault("security.cors.allowed_origins", []string{})
 	v.SetDefault("security.cors.allowed_methods", []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"})
 	v.SetDefault("security.rate_limiting.enabled", true)
 	v.SetDefault("security.rate_limiting.requests_per_minute", 60)

@@ -14,6 +14,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/safego"
 )
 
 // AuditMiddleware logs authenticated actions to the database only (backward compatible)
@@ -119,7 +120,7 @@ func AuditMiddlewareWithShipper(auditRepo *repositories.AuditRepository, shipper
 		}
 
 		// Async log creation (non-blocking)
-		go func() {
+		safego.Go(func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
@@ -153,7 +154,7 @@ func AuditMiddlewareWithShipper(auditRepo *repositories.AuditRepository, shipper
 					slog.Error("failed to ship audit log", "error", err)
 				}
 			}
-		}()
+		})
 	}
 }
 

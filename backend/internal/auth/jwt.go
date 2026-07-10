@@ -53,13 +53,13 @@ func loadSecret() string {
 	return ""
 }
 
-// isDevMode checks if we're in development mode (duplicated here to avoid import cycle)
+// isDevMode checks if we're in development mode (duplicated here to avoid import cycle).
+// Gated solely on the application-specific DEV_MODE flag — NOT on NODE_ENV, which is a
+// generic Node.js-ecosystem convention an operator could set on this Go service by
+// mistake (e.g. a copied env file), silently bypassing the production fail-fast below.
 func isDevMode() bool {
 	devMode := os.Getenv("DEV_MODE")
-	nodeEnv := os.Getenv("NODE_ENV")
-
-	return devMode == "true" || devMode == "1" ||
-		nodeEnv == "development"
+	return devMode == "true" || devMode == "1"
 }
 
 // generateRandomSecret creates a cryptographically secure random secret.

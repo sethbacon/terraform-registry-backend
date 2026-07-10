@@ -23,6 +23,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/safego"
 )
 
 // AuthMiddleware validates authentication (JWT or API key).
@@ -166,11 +167,11 @@ func AuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, a
 			// Making it synchronous would add a DB write to every authenticated request,
 			// increasing P99 latency across all endpoints. The 5-second timeout prevents
 			// leaked goroutines if the DB is temporarily unreachable.
-			go func() {
+			safego.Go(func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 				_ = apiKeyRepo.UpdateLastUsed(ctx, apiKey.ID)
-			}()
+			})
 
 			// Set context values
 			c.Set("api_key", apiKey)
@@ -265,11 +266,11 @@ func OptionalAuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepos
 			// Check expiration
 			if apiKey.ExpiresAt == nil || time.Now().Before(*apiKey.ExpiresAt) {
 				// Update last used (async)
-				go func() {
+				safego.Go(func() {
 					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer cancel()
 					_ = apiKeyRepo.UpdateLastUsed(ctx, apiKey.ID)
-				}()
+				})
 
 				// Set context values
 				c.Set("api_key", apiKey)

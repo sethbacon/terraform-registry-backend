@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+
+	"github.com/terraform-registry/terraform-registry/internal/safego"
 )
 
 // Job is the interface all background jobs must implement.
@@ -30,11 +32,11 @@ func (r *Registry) Register(j Job) {
 func (r *Registry) StartAll(ctx context.Context) {
 	for _, j := range r.jobs {
 		j := j
-		go func() {
+		safego.Go(func() {
 			if err := j.Start(ctx); err != nil {
 				slog.Error("job failed to start", "job", j.Name(), "error", err)
 			}
-		}()
+		})
 	}
 }
 
