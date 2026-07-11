@@ -532,41 +532,22 @@ func (h *AuthHandlers) LogoutHandler() gin.HandlerFunc {
 	}
 }
 
-// @Summary      Exchange auth cookie for JWT
-// @Description  Reads the HttpOnly `tfr_auth_token` cookie set during the OIDC callback, validates it, returns the JWT in the response body, and clears the cookie. The frontend calls this endpoint on the /auth/callback page to move the token from the cookie into localStorage.
-// @Tags         Authentication
-// @Produce      json
-// @Success      200  {object}  map[string]string  "token"
-// @Failure      401  {object}  map[string]interface{}  "No cookie or invalid token"
-// @Router       /api/v1/auth/exchange-token [get]
-// ExchangeTokenHandler returns the JWT from the HttpOnly auth cookie.
-// GET /api/v1/auth/exchange-token
-func (h *AuthHandlers) ExchangeTokenHandler() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		cookie, err := c.Cookie("tfr_auth_token")
-		if err != nil || cookie == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "No authentication cookie found"})
-			return
-		}
-
-		// Validate the JWT to ensure the cookie isn't stale or tampered with
-		if _, err := auth.ValidateJWT(cookie); err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid authentication token"})
-			return
-		}
-
-		// Clear the cookie — the frontend will store the token in localStorage
-		http.SetCookie(c.Writer, &http.Cookie{
-			Name:     "tfr_auth_token",
-			Value:    "",
-			Path:     "/",
-			MaxAge:   -1,
-			Secure:   true,
-			HttpOnly: true,
-			SameSite: http.SameSiteLaxMode,
-		})
-
-		c.JSON(http.StatusOK, gin.H{"token": cookie})
+// setSessionCookies sets the HttpOnly auth cookie and the CSRF double-submit
+// cookie for a freshly issued session JWT. The attributes must stay identical
+// to the OIDC callback's — the frontend never sees the raw token, so the
+// cookie is the only session carrier.
+func setSessionCookies(c *gin.Context, jwtToken string) {
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     "tfr_auth_token",
+		Value:    jwtToken,
+		Path:     "/",
+		MaxAge:   86400, // 24 hours — matches the JWT lifetime
+		Secure:   true,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+	if _, csrfErr := middleware.SetCSRFCookie(c.Writer, true); csrfErr != nil {
+		slog.Error("failed to set CSRF cookie", "error", csrfErr)
 	}
 }
 
@@ -594,7 +575,7 @@ func deriveFrontendURL(cfg *config.Config) string {
 }
 
 // @Summary      Refresh JWT token
-// @Description  Exchange existing JWT token for a fresh one with extended expiration
+// @Description  Revokes the current JWT and sets a fresh one as an httpOnly auth cookie with extended expiration. The token itself is never returned in the response body.
 // @Tags         Authentication
 // @Security     Bearer
 // @Accept       json
@@ -676,7 +657,6 @@ func (h *AuthHandlers) RefreshHandler() gin.HandlerFunc {
 		}
 
 		c.JSON(http.StatusOK, gin.H{
-			"token":      newToken,
 			"expires_in": 86400, // 24 hours in seconds
 		})
 	}
@@ -1251,12 +1231,12 @@ func (h *AuthHandlers) ProvidersHandler() gin.HandlerFunc {
 }
 
 // @Summary      LDAP login
-// @Description  Authenticates a user via LDAP with username and password. On success, issues a JWT and sets an httpOnly auth cookie.
+// @Description  Authenticates a user via LDAP with username and password. On success, sets an httpOnly auth cookie; the token is never returned in the response body.
 // @Tags         Authentication
 // @Accept       json
 // @Produce      json
 // @Param        body  body  object{username=string,password=string}  true  "LDAP credentials"
-// @Success      200  {object}  map[string]interface{}  "JWT token and user info"
+// @Success      200  {object}  map[string]interface{}  "Session established via cookie"
 // @Failure      400  {object}  map[string]interface{}  "Missing credentials or LDAP not configured"
 // @Failure      401  {object}  map[string]interface{}  "Invalid username or password"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
@@ -1338,7 +1318,6 @@ func (h *AuthHandlers) LDAPLoginHandler() gin.HandlerFunc {
 		}
 
 		c.JSON(http.StatusOK, gin.H{
-			"token":      jwtToken,
 			"expires_in": 86400,
 		})
 	}

@@ -10,6 +10,7 @@ import (
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/middleware"
 )
 
 // ---------------------------------------------------------------------------
@@ -42,6 +43,42 @@ func newDevRouter(t *testing.T, userScopes []string) (sqlmock.Sqlmock, *gin.Engi
 	r.POST("/dev/login", h.DevLoginHandler())
 	r.GET("/dev/status", h.DevStatusHandler())
 	return mock, r
+}
+
+// assertSessionCookies verifies the response sets the HttpOnly auth cookie and
+// the non-HttpOnly CSRF double-submit cookie — the cookie-only session contract.
+func assertSessionCookies(t *testing.T, w *httptest.ResponseRecorder) {
+	t.Helper()
+	var authCookie, csrfCookie *http.Cookie
+	for _, c := range w.Result().Cookies() {
+		switch c.Name {
+		case "tfr_auth_token":
+			authCookie = c
+		case middleware.CSRFCookieName:
+			csrfCookie = c
+		}
+	}
+	if authCookie == nil {
+		t.Fatal("response missing tfr_auth_token Set-Cookie")
+	}
+	if !authCookie.HttpOnly {
+		t.Error("tfr_auth_token cookie is not HttpOnly")
+	}
+	if authCookie.Value == "" {
+		t.Error("tfr_auth_token cookie is empty")
+	}
+	if authCookie.MaxAge != 86400 {
+		t.Errorf("tfr_auth_token MaxAge = %d, want 86400", authCookie.MaxAge)
+	}
+	if csrfCookie == nil {
+		t.Fatal("response missing CSRF Set-Cookie")
+	}
+	if csrfCookie.HttpOnly {
+		t.Error("CSRF cookie must not be HttpOnly (frontend reads it)")
+	}
+	if csrfCookie.Value == "" {
+		t.Error("CSRF cookie is empty")
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -176,8 +213,8 @@ func TestDevLogin_Success(t *testing.T) {
 		t.Fatalf("status = %d, want 200: body=%s", w.Code, w.Body.String())
 	}
 	resp := getJSON(w)
-	if resp["token"] == nil {
-		t.Error("response missing 'token' key")
+	if _, ok := resp["token"]; ok {
+		t.Error("response must not contain 'token' — session is cookie-only")
 	}
 	if resp["user"] == nil {
 		t.Error("response missing 'user' key")
@@ -185,6 +222,7 @@ func TestDevLogin_Success(t *testing.T) {
 	if resp["expires_in"] == nil {
 		t.Error("response missing 'expires_in' key")
 	}
+	assertSessionCookies(t, w)
 }
 
 // ---------------------------------------------------------------------------
@@ -249,8 +287,8 @@ func TestImpersonate_Success(t *testing.T) {
 		t.Fatalf("status = %d, want 200: body=%s", w.Code, w.Body.String())
 	}
 	resp := getJSON(w)
-	if resp["token"] == nil {
-		t.Error("response missing 'token' key")
+	if _, ok := resp["token"]; ok {
+		t.Error("response must not contain 'token' — session is cookie-only")
 	}
 	if resp["user"] == nil {
 		t.Error("response missing 'user' key")
@@ -258,6 +296,7 @@ func TestImpersonate_Success(t *testing.T) {
 	if resp["message"] == nil {
 		t.Error("response missing 'message' key")
 	}
+	assertSessionCookies(t, w)
 }
 
 // ---------------------------------------------------------------------------

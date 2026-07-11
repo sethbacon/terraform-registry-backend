@@ -8,10 +8,10 @@ type MessageResponse struct {
 	Message string `json:"message"`
 }
 
-// RefreshResponse is returned by POST /api/v1/auth/refresh.
+// RefreshResponse is returned by POST /api/v1/auth/refresh. The refreshed
+// token itself travels only in the httpOnly auth cookie, never in the body.
 type RefreshResponse struct {
-	Token     string `json:"token"`
-	ExpiresIn int    `json:"expires_in"`
+	ExpiresIn int `json:"expires_in"`
 }
 
 // MeUserInfo contains the user fields returned by GET /api/v1/auth/me.

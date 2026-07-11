@@ -399,9 +399,13 @@ func TestRefreshHandler_Success(t *testing.T) {
 		t.Errorf("status = %d, want 200 (refresh success): body=%s", w.Code, w.Body.String())
 	}
 	resp := getJSON(w)
-	if resp["token"] == nil {
-		t.Error("response missing 'token'")
+	if _, ok := resp["token"]; ok {
+		t.Error("response must not contain 'token' — session is cookie-only")
 	}
+	if resp["expires_in"] == nil {
+		t.Error("response missing 'expires_in'")
+	}
+	assertSessionCookies(t, w)
 }
 
 // ---------------------------------------------------------------------------
@@ -1518,91 +1522,6 @@ func TestLDAPLoginHandler_NotConfigured(t *testing.T) {
 	resp := getJSON(w)
 	if resp["error"] != "LDAP authentication is not configured" {
 		t.Errorf("error = %v", resp["error"])
-	}
-}
-
-// ---------------------------------------------------------------------------
-// ExchangeTokenHandler — Phase 2 enterprise identity
-// ---------------------------------------------------------------------------
-
-func TestExchangeTokenHandler_NoCookie(t *testing.T) {
-	db, _, _ := sqlmock.New()
-	defer db.Close()
-	cfg := &config.Config{}
-	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
-
-	r := gin.New()
-	r.POST("/auth/exchange", h.ExchangeTokenHandler())
-
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/auth/exchange", nil))
-
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", w.Code)
-	}
-	resp := getJSON(w)
-	if resp["error"] != "No authentication cookie found" {
-		t.Errorf("error = %v", resp["error"])
-	}
-}
-
-func TestExchangeTokenHandler_InvalidCookie(t *testing.T) {
-	db, _, _ := sqlmock.New()
-	defer db.Close()
-	cfg := &config.Config{}
-	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
-
-	r := gin.New()
-	r.POST("/auth/exchange", h.ExchangeTokenHandler())
-
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/auth/exchange", nil)
-	req.AddCookie(&http.Cookie{Name: "tfr_auth_token", Value: "bad-jwt-token"})
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", w.Code)
-	}
-	resp := getJSON(w)
-	if resp["error"] != "Invalid authentication token" {
-		t.Errorf("error = %v", resp["error"])
-	}
-}
-
-func TestExchangeTokenHandler_ValidCookie(t *testing.T) {
-	db, _, _ := sqlmock.New()
-	defer db.Close()
-	cfg := &config.Config{}
-	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
-
-	// Generate a real JWT to use as cookie value
-	token, err := auth.GenerateJWT("user-1", "test@example.com", []string{"read"}, time.Hour)
-	if err != nil {
-		t.Fatalf("GenerateJWT: %v", err)
-	}
-
-	r := gin.New()
-	r.POST("/auth/exchange", h.ExchangeTokenHandler())
-
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/auth/exchange", nil)
-	req.AddCookie(&http.Cookie{Name: "tfr_auth_token", Value: token})
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200, body=%s", w.Code, w.Body.String())
-	}
-	resp := getJSON(w)
-	if resp["token"] != token {
-		t.Errorf("token mismatch: got %v", resp["token"])
-	}
-
-	// Verify the cookie was cleared (MaxAge = -1)
-	cookies := w.Result().Cookies()
-	for _, c := range cookies {
-		if c.Name == "tfr_auth_token" && c.MaxAge != -1 {
-			t.Errorf("cookie MaxAge = %d, want -1 (cleared)", c.MaxAge)
-		}
 	}
 }
 
