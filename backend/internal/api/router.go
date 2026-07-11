@@ -917,7 +917,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		// Authenticated-only endpoints
 		authenticatedGroup := apiV1.Group("")
 		authenticatedGroup.Use(middleware.AuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo))
-		authenticatedGroup.Use(middleware.CSRFMiddleware()) // double-submit cookie CSRF protection
+		authenticatedGroup.Use(middleware.CSRFMiddleware(cfg)) // double-submit cookie CSRF protection + browser-origin Bearer allowlist
 		authenticatedGroup.Use(middleware.PrincipalRateLimitMiddleware(generalRateLimiter, principalOverrides))
 		authenticatedGroup.Use(middleware.OrgRateLimitMiddleware(generalRateLimiter, orgRateLimiter))
 		authenticatedGroup.Use(middleware.AuditMiddleware(auditRepo)) // Audit all authenticated actions
