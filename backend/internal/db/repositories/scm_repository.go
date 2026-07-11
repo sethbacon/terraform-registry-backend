@@ -313,16 +313,37 @@ func (r *SCMRepository) ListWebhookLogs(ctx context.Context, repoID uuid.UUID, l
 	return logs, err
 }
 
-// UpdateWebhookLogState updates the processing state of a webhook log
+// UpdateWebhookLogState updates the processing state of a webhook log.
+//
+// The table has no state column — the state string maps onto the processing
+// flag columns instead: "processing" stamps processing_started_at and leaves
+// the event unprocessed; every other state ("completed"/"failed"/"skipped")
+// is terminal and sets processed/processed_at/error/result_version_id. A
+// failed event that should be retried is flipped back to processed=false by
+// MarkWebhookForRetry immediately after.
+//
+// Every bound parameter must appear in the statement: PostgreSQL rejects a
+// parameterized query with an unused placeholder gap at parse time (42P18),
+// which is exactly the bug that previously made every call here fail and
+// left webhook auto-publish dead (#583).
 func (r *SCMRepository) UpdateWebhookLogState(ctx context.Context, id uuid.UUID, state string, errorMsg *string, versionID *uuid.UUID) error {
 	now := time.Now()
+
+	if state == "processing" {
+		query := `
+			UPDATE scm_webhook_events SET
+				processing_started_at = $2
+			WHERE id = $1`
+		_, err := r.db.ExecContext(ctx, query, id, now)
+		return err
+	}
+
 	query := `
 		UPDATE scm_webhook_events SET
-			processed = true, processed_at = $3,
-			error = $4, result_version_id = $5
+			processed = true, processed_at = $2,
+			error = $3, result_version_id = $4
 		WHERE id = $1`
-
-	_, err := r.db.ExecContext(ctx, query, id, state, now, errorMsg, versionID)
+	_, err := r.db.ExecContext(ctx, query, id, now, errorMsg, versionID)
 	return err
 }
 
