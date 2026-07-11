@@ -866,7 +866,6 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		{
 			authGroup.GET("/login", authHandlers.LoginHandler())
 			authGroup.GET("/callback", authHandlers.CallbackHandler())
-			authGroup.GET("/exchange-token", authHandlers.ExchangeTokenHandler())
 			authGroup.GET("/logout", authHandlers.LogoutHandler())
 			authGroup.GET("/providers", authHandlers.ProvidersHandler())
 

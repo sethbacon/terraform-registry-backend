@@ -30,7 +30,6 @@ on dedicated ports and are deliberately excluded from the OpenAPI spec.
 - [x] `POST /api/v1/auth/refresh` - Refresh JWT token
 - [x] `GET /api/v1/auth/me` - Get current user
 - [x] `GET /api/v1/auth/logout` - OIDC logout
-- [x] `GET /api/v1/auth/exchange-token` - Exchange token
 - [x] `GET /api/v1/auth/saml/metadata` - SAML SP metadata
 - [x] `POST /api/v1/auth/saml/acs` - SAML Assertion Consumer Service
 - [x] `GET /api/v1/auth/providers` - List authentication providers
@@ -39,7 +38,7 @@ on dedicated ports and are deliberately excluded from the OpenAPI spec.
 - [x] `GET /api/v1/admin/mtls/config` - mTLS configuration
 
 **File**: `backend/internal/api/admin/auth.go`
-**Progress**: 12/12 annotated ✅
+**Progress**: 11/11 annotated ✅
 
 ### API Key Management
 

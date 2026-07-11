@@ -5880,39 +5880,9 @@
                 }
             }
         },
-        "/api/v1/auth/exchange-token": {
-            "get": {
-                "description": "Reads the HttpOnly `tfr_auth_token` cookie set during the OIDC callback, validates it, returns the JWT in the response body, and clears the cookie. The frontend calls this endpoint on the /auth/callback page to move the token from the cookie into localStorage.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Authentication"
-                ],
-                "summary": "Exchange auth cookie for JWT",
-                "responses": {
-                    "200": {
-                        "description": "token",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": {
-                                "type": "string"
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "No cookie or invalid token",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": true
-                        }
-                    }
-                }
-            }
-        },
         "/api/v1/auth/ldap/login": {
             "post": {
-                "description": "Authenticates a user via LDAP with username and password. On success, issues a JWT and sets an httpOnly auth cookie.",
+                "description": "Authenticates a user via LDAP with username and password. On success, sets an httpOnly auth cookie; the token is never returned in the response body.",
                 "consumes": [
                     "application/json"
                 ],
@@ -5944,7 +5914,7 @@
                 ],
                 "responses": {
                     "200": {
-                        "description": "JWT token and user info",
+                        "description": "Session established via cookie",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -6141,7 +6111,7 @@
                         "Bearer": []
                     }
                 ],
-                "description": "Exchange existing JWT token for a fresh one with extended expiration",
+                "description": "Revokes the current JWT and sets a fresh one as an httpOnly auth cookie with extended expiration. The token itself is never returned in the response body.",
                 "consumes": [
                     "application/json"
                 ],
@@ -14182,9 +14152,6 @@
             "properties": {
                 "expires_in": {
                     "type": "integer"
-                },
-                "token": {
-                    "type": "string"
                 }
             }
         },

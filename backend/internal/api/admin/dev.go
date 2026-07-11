@@ -51,7 +51,8 @@ func DevModeMiddleware() gin.HandlerFunc {
 	}
 }
 
-// ImpersonateUserHandler allows an admin to get a token as another user
+// ImpersonateUserHandler allows an admin to switch the session to another user.
+// The impersonated session is delivered via the httpOnly auth cookie.
 // POST /api/v1/dev/impersonate/:user_id
 // This is for development/testing only
 func (h *DevHandlers) ImpersonateUserHandler() gin.HandlerFunc {
@@ -111,8 +112,11 @@ func (h *DevHandlers) ImpersonateUserHandler() gin.HandlerFunc {
 			return
 		}
 
+		// Deliver the impersonated session via the same httpOnly auth cookie
+		// (plus CSRF cookie) as the interactive login flows.
+		setSessionCookies(c, token)
+
 		c.JSON(http.StatusOK, gin.H{
-			"token":   token,
 			"user":    targetUser,
 			"message": "You are now impersonating " + targetUser.Email,
 		})
@@ -188,8 +192,9 @@ func (h *DevHandlers) ListUsersForImpersonationHandler() gin.HandlerFunc {
 	}
 }
 
-// DevLoginHandler authenticates as the dev admin user and returns a JWT.
-// This eliminates the need for a hardcoded API key in the frontend.
+// DevLoginHandler authenticates as the dev admin user, delivering the session
+// via the httpOnly auth cookie. This eliminates the need for a hardcoded API
+// key in the frontend.
 // POST /api/v1/dev/login
 // Protected by DevModeMiddleware - returns 403 in production.
 func (h *DevHandlers) DevLoginHandler() gin.HandlerFunc {
@@ -218,8 +223,11 @@ func (h *DevHandlers) DevLoginHandler() gin.HandlerFunc {
 			return
 		}
 
+		// Deliver the session via the same httpOnly auth cookie (plus CSRF
+		// cookie) as the interactive login flows.
+		setSessionCookies(c, token)
+
 		c.JSON(http.StatusOK, gin.H{
-			"token":      token,
 			"user":       user,
 			"expires_in": 86400,
 		})
