@@ -1324,6 +1324,87 @@ func TestIdentityGroupMappingsHandler_WithSAMLAndLDAP(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// SAMLACSHandler — IdP-initiated guard (finding [1])
+// ---------------------------------------------------------------------------
+
+const samlTestIdPMetadata = `<?xml version="1.0"?>
+<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="https://idp.example.com">
+  <IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+    <SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://idp.example.com/sso"/>
+    <SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="https://idp.example.com/sso"/>
+  </IDPSSODescriptor>
+</EntityDescriptor>`
+
+// newSAMLACSHandler builds an AuthHandlers with a single SAML IdP configured.
+func newSAMLACSHandler(t *testing.T, allowIDPInitiated bool) *AuthHandlers {
+	t.Helper()
+	samlCfg := &config.SAMLConfig{
+		Enabled:           true,
+		ACSURL:            "https://registry.example.com/api/v1/auth/saml/acs",
+		EntityID:          "https://registry.example.com",
+		AllowIDPInitiated: allowIDPInitiated,
+	}
+	prov, err := samlpkg.NewProvider(samlCfg, &config.SAMLIdPConfig{Name: "test-idp", MetadataXML: samlTestIdPMetadata})
+	if err != nil {
+		t.Fatalf("samlpkg.NewProvider: %v", err)
+	}
+	cfg := &config.Config{}
+	cfg.Server.PublicURL = "https://registry.example.com"
+	cfg.Auth.SAML = *samlCfg
+	return &AuthHandlers{
+		cfg:           cfg,
+		samlProviders: map[string]*samlpkg.Provider{"test-idp": prov},
+		stateStore:    auth.NewMemoryStateStore(time.Hour),
+	}
+}
+
+// postToACS posts a (bogus) SAMLResponse with no RelayState — the shape of an
+// unsolicited IdP-initiated response.
+func postToACS(h *AuthHandlers) *httptest.ResponseRecorder {
+	r := gin.New()
+	r.POST("/api/v1/auth/saml/acs", h.SAMLACSHandler())
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/saml/acs", strings.NewReader("SAMLResponse=Zm9v"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+func TestSAMLACSHandler_RejectsUnsolicitedWhenIDPInitiatedDisabled(t *testing.T) {
+	h := newSAMLACSHandler(t, false)
+	defer h.stateStore.Close()
+
+	w := postToACS(h)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302", w.Code)
+	}
+	if loc := w.Header().Get("Location"); !strings.Contains(loc, "error=idp_initiated_disabled") {
+		t.Errorf("Location = %q, want error=idp_initiated_disabled", loc)
+	}
+}
+
+func TestSAMLACSHandler_AllowsIDPInitiatedWhenEnabled(t *testing.T) {
+	h := newSAMLACSHandler(t, true)
+	defer h.stateStore.Close()
+
+	w := postToACS(h)
+
+	// The unsolicited guard is bypassed; the bogus assertion then fails
+	// signature/parse validation instead of being rejected up-front.
+	if w.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302", w.Code)
+	}
+	loc := w.Header().Get("Location")
+	if strings.Contains(loc, "error=idp_initiated_disabled") {
+		t.Errorf("guard should be bypassed when IdP-initiated is enabled; Location = %q", loc)
+	}
+	if !strings.Contains(loc, "error=assertion_invalid") {
+		t.Errorf("Location = %q, want error=assertion_invalid", loc)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // MTLSConfigHandler — Phase 2 enterprise identity
 // ---------------------------------------------------------------------------
 

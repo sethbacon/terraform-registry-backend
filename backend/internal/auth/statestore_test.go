@@ -48,6 +48,42 @@ func TestMemoryStateStore_SaveAndLoad(t *testing.T) {
 	}
 }
 
+func TestMemoryStateStore_Reserve(t *testing.T) {
+	store := NewMemoryStateStore(time.Hour)
+	defer store.Close()
+	ctx := context.Background()
+
+	first, err := store.Reserve(ctx, "assertion-1", 10*time.Minute)
+	if err != nil {
+		t.Fatalf("Reserve() error: %v", err)
+	}
+	if !first {
+		t.Fatal("first Reserve() = false, want true (newly reserved)")
+	}
+
+	second, err := store.Reserve(ctx, "assertion-1", 10*time.Minute)
+	if err != nil {
+		t.Fatalf("Reserve() error: %v", err)
+	}
+	if second {
+		t.Error("second Reserve() = true, want false (replay must be detected)")
+	}
+}
+
+func TestMemoryStateStore_ReserveExpires(t *testing.T) {
+	store := NewMemoryStateStore(time.Hour)
+	defer store.Close()
+	ctx := context.Background()
+
+	if ok, _ := store.Reserve(ctx, "assertion-2", 5*time.Millisecond); !ok {
+		t.Fatal("first Reserve() = false, want true")
+	}
+	time.Sleep(15 * time.Millisecond)
+	if ok, _ := store.Reserve(ctx, "assertion-2", time.Minute); !ok {
+		t.Error("Reserve() after expiry = false, want true (expired entry is reusable)")
+	}
+}
+
 func TestMemoryStateStore_LoadNonExistent(t *testing.T) {
 	store := NewMemoryStateStore(time.Hour)
 	defer store.Close()

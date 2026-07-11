@@ -123,6 +123,37 @@ func TestRedisStateStore_SaveTTLExpiry(t *testing.T) {
 	}
 }
 
+func TestRedisStateStore_Reserve(t *testing.T) {
+	store, mr := newTestRedisStore(t)
+	ctx := context.Background()
+
+	first, err := store.Reserve(ctx, "assertion-1", time.Minute)
+	if err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	if !first {
+		t.Fatal("first Reserve() = false, want true (newly reserved)")
+	}
+
+	second, err := store.Reserve(ctx, "assertion-1", time.Minute)
+	if err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	if second {
+		t.Error("second Reserve() = true, want false (replay must be detected)")
+	}
+
+	// After the TTL passes the assertion ID may be reserved again.
+	mr.FastForward(2 * time.Minute)
+	third, err := store.Reserve(ctx, "assertion-1", time.Minute)
+	if err != nil {
+		t.Fatalf("Reserve after expiry: %v", err)
+	}
+	if !third {
+		t.Error("Reserve() after expiry = false, want true (expired entry is reusable)")
+	}
+}
+
 func TestNewRedisStateStore_ConnectionError(t *testing.T) {
 	// Point at a port with nothing listening; the constructor's Ping must fail.
 	_, err := NewRedisStateStore(&config.RedisConfig{

@@ -91,6 +91,17 @@ func (s *RedisStateStore) Delete(ctx context.Context, state string) error {
 	return s.client.Del(ctx, stateKeyPrefix+state).Err()
 }
 
+// Reserve atomically records key for the given TTL using SET NX. It returns
+// true when the key was newly created (first use) and false when the key
+// already existed (a replay).
+func (s *RedisStateStore) Reserve(ctx context.Context, key string, ttl time.Duration) (bool, error) {
+	ok, err := s.client.SetNX(ctx, stateKeyPrefix+key, "1", ttl).Result()
+	if err != nil {
+		return false, fmt.Errorf("redis state store: reserve error: %w", err)
+	}
+	return ok, nil
+}
+
 // Close shuts down the Redis connection.
 func (s *RedisStateStore) Close() error {
 	return s.client.Close()

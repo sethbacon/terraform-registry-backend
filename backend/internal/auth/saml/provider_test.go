@@ -233,6 +233,56 @@ func TestFetchIdPMetadata_RequiresHTTPS(t *testing.T) {
 	}
 }
 
+func TestMakeAuthenticationRequest_ReturnsRequestID(t *testing.T) {
+	cfg := &config.SAMLConfig{
+		Enabled:  true,
+		ACSURL:   "https://registry.example.com/api/v1/auth/saml/acs",
+		EntityID: "https://registry.example.com",
+	}
+	idpCfg := &config.SAMLIdPConfig{Name: "test-idp", MetadataXML: minimalIdPMetadata}
+
+	p, err := NewProvider(cfg, idpCfg)
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+
+	u, reqID, err := p.MakeAuthenticationRequest("state-token")
+	if err != nil {
+		t.Fatalf("MakeAuthenticationRequest: %v", err)
+	}
+	if u == nil {
+		t.Fatal("expected a non-nil redirect URL")
+	}
+	if reqID == "" {
+		t.Error("expected a non-empty AuthnRequest ID for InResponseTo binding")
+	}
+}
+
+func TestAllowIDPInitiated_ReflectsConfig(t *testing.T) {
+	build := func(allow bool) *Provider {
+		t.Helper()
+		cfg := &config.SAMLConfig{
+			Enabled:           true,
+			ACSURL:            "https://registry.example.com/api/v1/auth/saml/acs",
+			EntityID:          "https://registry.example.com",
+			AllowIDPInitiated: allow,
+		}
+		idpCfg := &config.SAMLIdPConfig{Name: "test-idp", MetadataXML: minimalIdPMetadata}
+		p, err := NewProvider(cfg, idpCfg)
+		if err != nil {
+			t.Fatalf("NewProvider: %v", err)
+		}
+		return p
+	}
+
+	if build(false).AllowIDPInitiated() {
+		t.Error("AllowIDPInitiated() = true, want false (secure default)")
+	}
+	if !build(true).AllowIDPInitiated() {
+		t.Error("AllowIDPInitiated() = false, want true when enabled in config")
+	}
+}
+
 // minimalIdPMetadata is a valid SAML IdP metadata XML for testing.
 const minimalIdPMetadata = `<?xml version="1.0"?>
 <EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata"

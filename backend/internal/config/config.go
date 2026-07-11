@@ -490,6 +490,13 @@ type SAMLConfig struct {
 	CertFile string `mapstructure:"cert_file"`
 	KeyFile  string `mapstructure:"key_file"`
 
+	// AllowIDPInitiated permits unsolicited IdP-initiated SSO responses, which
+	// are not bound to a server-issued AuthnRequest (no InResponseTo check).
+	// It defaults to false so that only solicited SP-initiated responses bound
+	// to a single-use request ID are accepted. When enabled, an assertion-ID
+	// replay cache is used to mitigate assertion replay.
+	AllowIDPInitiated bool `mapstructure:"allow_idp_initiated"`
+
 	// IdPs lists one or more SAML Identity Providers.
 	IdPs []SAMLIdPConfig `mapstructure:"idps"`
 
