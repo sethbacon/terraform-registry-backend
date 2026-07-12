@@ -19,7 +19,8 @@ swag:
 # have to run its own conversion step.
 openapi3:
 	@echo "Converting Swagger 2.0 -> OpenAPI 3.0..."
-	@npx --yes swagger2openapi backend/docs/swagger.json -o backend/docs/openapi3.json -p
+	@test -x node_modules/.bin/swagger2openapi || (echo "swagger2openapi not installed — run 'npm install' first" && exit 1)
+	@node_modules/.bin/swagger2openapi backend/docs/swagger.json -o backend/docs/openapi3.json -p
 	@echo "Hoisting operation-level path parameters to path level..."
 	@node -e " \
 	  const fs = require('fs'); \
