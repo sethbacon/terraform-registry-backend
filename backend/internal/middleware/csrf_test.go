@@ -322,7 +322,7 @@ func TestCSRF_Integration_CookieSession_HeaderStripped(t *testing.T) {
 		userRepo, userMock := newUserRepo(t)
 		orgRepo, _ := newOrgRepo(t)
 		r := gin.New()
-		r.Use(AuthMiddleware(nil, userRepo, nil, orgRepo, nil))
+		r.Use(AuthMiddleware(nil, userRepo, nil, orgRepo, nil, nil))
 		r.Use(CSRFMiddleware(csrfTestConfig()))
 		r.POST("/api/v1/admin/modules/create", func(c *gin.Context) { c.Status(http.StatusCreated) })
 		return r, userMock

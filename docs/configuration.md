@@ -675,9 +675,10 @@ These fields are injected at runtime into the spec served by the backend.
 export DEV_MODE=true
 ```
 
-Dev mode is gated by the bare `DEV_MODE` env var (`true` or `1`); `NODE_ENV=development`
-also triggers it. Note `DEV_MODE` is intentionally **un-prefixed** (no `TFR_` prefix), the
-same as `ENCRYPTION_KEY`.
+Dev mode is gated by the bare `DEV_MODE` env var (`true` or `1`) only. Note `DEV_MODE` is
+intentionally **un-prefixed** (no `TFR_` prefix), the same as `ENCRYPTION_KEY`.
+`NODE_ENV` has no effect — this is a Go service, and checking a Node.js-ecosystem
+convention here would risk silently enabling dev mode from a copied env file.
 
 Dev mode enables:
 
@@ -687,6 +688,14 @@ Dev mode enables:
 
 **Never set `DEV_MODE=true` in production.** The dev login endpoint allows anyone
 to authenticate as any user without credentials.
+
+As a backstop against this being set by mistake in a production-like deployment, the
+server refuses to start when `DEV_MODE` is enabled together with a production-level
+`logging.level` (`warn` or `error`) — this repo's own production manifests
+(`docker-compose.prod.yml`, the kubernetes `production` overlay) always set
+`TFR_LOGGING_LEVEL=warn`, while every dev/test manifest defaults to `info` or sets
+`debug`. There is no other environment/production flag in this codebase (no `TFR_ENV`), so
+`logging.level` is the signal used. See `devModeProductionGuard` in `cmd/server/main.go`.
 
 ---
 
@@ -959,6 +968,19 @@ Mutual TLS client authentication that maps a client certificate subject (CN or f
 to scopes. Configured under `security.mtls`. Subject mappings are a list of structs and so
 must be set in `config.yaml` (env vars cannot express the list).
 
+When `security.mtls.enabled` is true, the server loads `client_ca_file` into the TLS
+listener's client CA pool and sets `ClientAuth = VerifyClientCertIfGiven`: a client
+certificate is verified against this CA whenever one is presented, but presenting one is
+not required — callers without a client cert fall through to the existing JWT/API-key/OIDC/
+SAML/LDAP auth paths on the same listener.
+
+**mTLS requires this process to terminate TLS itself (`security.tls.enabled: true`).** It
+cannot work behind a TLS-terminating ingress or load balancer: client certificates are part
+of the TLS handshake, so once TLS is terminated upstream this process never sees the
+handshake and has nothing to verify. If your registry sits behind such an ingress, either
+have the ingress terminate mTLS and forward a trusted identity header (not implemented
+here), or terminate TLS at the registry itself.
+
 ```yaml
 security:
   mtls:
@@ -1018,3 +1040,8 @@ Optional runtime coupling to a sibling Suite app (Terraform State Manager). With
 | `TFR_SUITE_ROLE_SEED_OWNER`       | string   | `self`  | Which app seeds shared identity role templates: `self`, `registry`, or `tsm`. With a shared identity DB, exactly one app must own the seed. |
 | `TFR_SUITE_IDENTITY_SHARED_STORE` | bool     | `false` | Operator assertion that this app uses the shared identity store + single IdP (advertised in the manifest). |
 | `TFR_SUITE_SIBLING_TOKEN`         | string   | —       | Shared secret (`X-Suite-Service-Token`) for cross-app reads (the "Consumed by" panel). Set to the same value as the sibling's service token. |
+| `TFR_SUITE_TRUSTED_ISSUERS`       | []string | `[]`    | Comma-separated additional JWT `iss` values this app accepts, on top of its own (`terraform-registry`). Only relevant when `TFR_JWT_SECRET` is shared with a sibling app — without an entry here, a sibling's tokens are rejected even with the same secret. |
+
+**A shared `TFR_JWT_SECRET` alone does not grant cross-app trust.** JWT validation always
+pins `iss` to this app's own issuer plus whatever `TFR_SUITE_TRUSTED_ISSUERS` lists — a
+token minted by another app sharing the secret is rejected until its issuer is added here.

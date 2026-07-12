@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -17,11 +18,39 @@ import (
 // RBACHandlers handles RBAC-related API endpoints
 type RBACHandlers struct {
 	rbacRepo *repositories.RBACRepository
+	// userRevocations moves the revoke-all watermark for every member currently
+	// assigned a role template when that template's scopes are edited, so their
+	// outstanding JWTs (which embed scopes at login) stop validating immediately
+	// instead of carrying the old scopes until expiry (issue #559 finding [9]).
+	// May be nil in tests; revocation is skipped when unset.
+	userRevocations *repositories.UserTokenRevocationRepository
 }
 
 // NewRBACHandlers creates a new RBAC handlers instance
-func NewRBACHandlers(rbacRepo *repositories.RBACRepository) *RBACHandlers {
-	return &RBACHandlers{rbacRepo: rbacRepo}
+func NewRBACHandlers(rbacRepo *repositories.RBACRepository, userRevocations *repositories.UserTokenRevocationRepository) *RBACHandlers {
+	return &RBACHandlers{rbacRepo: rbacRepo, userRevocations: userRevocations}
+}
+
+// revokeRoleTemplateMemberTokens revokes the outstanding tokens of every member
+// currently assigned roleTemplateID. Best-effort: the scope edit has already
+// been committed, so a lookup or revocation failure is logged rather than
+// turned into a misleading error response for an otherwise-successful edit.
+func (h *RBACHandlers) revokeRoleTemplateMemberTokens(c *gin.Context, roleTemplateID uuid.UUID, reason string) {
+	if h.userRevocations == nil {
+		return
+	}
+	userIDs, err := h.rbacRepo.ListRoleTemplateMemberUserIDs(c.Request.Context(), roleTemplateID)
+	if err != nil {
+		slog.Error("failed to list role template members for token revocation",
+			"role_template_id", roleTemplateID, "reason", reason, "error", err)
+		return
+	}
+	for _, userID := range userIDs {
+		if err := h.userRevocations.RevokeAllUserTokens(c.Request.Context(), userID); err != nil {
+			slog.Error("failed to revoke user tokens after role template change",
+				"user_id", userID, "role_template_id", roleTemplateID, "reason", reason, "error", err)
+		}
+	}
 }
 
 // ============================================================================
@@ -190,6 +219,8 @@ func (h *RBACHandlers) UpdateRoleTemplate(c *gin.Context) {
 		return
 	}
 
+	scopesChanged := !stringSlicesEqual(existing.Scopes, req.Scopes)
+
 	existing.DisplayName = req.DisplayName
 	existing.Description = &req.Description
 	existing.Scopes = req.Scopes
@@ -200,7 +231,32 @@ func (h *RBACHandlers) UpdateRoleTemplate(c *gin.Context) {
 		return
 	}
 
+	// A scope edit changes what a fresh JWT would embed for every member
+	// currently assigned this template; revoke their outstanding tokens so the
+	// change takes effect immediately instead of waiting out the JWT TTL
+	// (issue #559 finding [9]). Display-name/description-only edits don't
+	// affect scopes, so skip the revocation sweep for those.
+	if scopesChanged {
+		h.revokeRoleTemplateMemberTokens(c, id, "role template scopes edited")
+	}
+
 	c.JSON(http.StatusOK, existing)
+}
+
+// stringSlicesEqual reports whether two scope slices contain the same elements
+// in the same order. Role template scopes are stored and rendered as an
+// ordered list, so this is a simple index-wise comparison rather than a
+// set comparison.
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // @Summary      Delete role template
@@ -240,12 +296,59 @@ func (h *RBACHandlers) DeleteRoleTemplate(c *gin.Context) {
 		return
 	}
 
+	// Snapshot the affected members before the delete: the FK is ON DELETE SET
+	// NULL, so a member's role_template_id is gone the instant the delete
+	// commits, and ListRoleTemplateMemberUserIDs would find nobody afterward.
+	// This lookup only feeds the best-effort revocation loop below and is not
+	// itself a precondition for the deletion, so a failure here is logged and
+	// swallowed rather than blocking the delete: the security-relevant action
+	// (removing an over-privileged or compromised role template) must not be
+	// held hostage by a transient failure in unrelated bookkeeping. This is
+	// the same posture RemoveMemberHandler takes on its analogous membership
+	// pre-check, and like that handler, a failed lookup here is surfaced to
+	// the caller via revocation_incomplete rather than silently masked behind
+	// an identical success response.
+	var memberUserIDs []string
+	revocationLookupFailed := false
+	if h.userRevocations != nil {
+		var lookupErr error
+		memberUserIDs, lookupErr = h.rbacRepo.ListRoleTemplateMemberUserIDs(c.Request.Context(), id)
+		if lookupErr != nil {
+			slog.Error("failed to look up role template members before deletion; affected members' tokens will not be revoked",
+				"role_template_id", id, "error", lookupErr)
+			memberUserIDs = nil
+			revocationLookupFailed = true
+		}
+	}
+
 	if err := h.rbacRepo.DeleteRoleTemplate(c.Request.Context(), id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete role template"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Role template deleted"})
+	// Deleting the template unconditionally removes its scopes from every
+	// member who held it (unlike an edit, there's no "was this a no-op"
+	// question to gate on) -- revoke their outstanding tokens so the change
+	// takes effect immediately instead of waiting out the JWT TTL (issue #559
+	// finding [9]). The delete has already committed, so a revocation
+	// failure here is logged rather than turned into a misleading error
+	// response for an otherwise-successful deletion, matching
+	// revokeRoleTemplateMemberTokens' own best-effort posture.
+	for _, userID := range memberUserIDs {
+		if err := h.userRevocations.RevokeAllUserTokens(c.Request.Context(), userID); err != nil {
+			slog.Error("failed to revoke user tokens after role template deletion",
+				"user_id", userID, "role_template_id", id, "error", err)
+		}
+	}
+
+	response := gin.H{"message": "Role template deleted"}
+	if revocationLookupFailed {
+		// The delete itself succeeded, but we couldn't determine which
+		// members to revoke -- surface that so the caller doesn't assume the
+		// affected members' tokens were actually invalidated.
+		response["revocation_incomplete"] = true
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 // ============================================================================

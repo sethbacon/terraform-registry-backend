@@ -43,6 +43,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/api/uitheme"
 	"github.com/terraform-registry/terraform-registry/internal/api/webhooks"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
+	"github.com/terraform-registry/terraform-registry/internal/auth/mtls"
 	"github.com/terraform-registry/terraform-registry/internal/auth/oidc"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
@@ -187,6 +188,12 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	auditRepo := repositories.NewAuditRepository(identityDB)
 	orgRepo := repositories.NewOrganizationRepository(identityDB)
 	tokenRepo := repositories.NewTokenRepository(identityDB)
+	// userTokenRevocationRepo lives on the registry's own domain connection
+	// (not identityDB) since it has no FK dependency on the identity schema and
+	// must work unchanged whether identity data is in the app's public schema,
+	// the shared identity schema, or a separate identity database (issue #559
+	// finding [9]).
+	userTokenRevocationRepo := repositories.NewUserTokenRevocationRepository(db)
 
 	// Namespace ownership claims back the object-level authorization on every
 	// module/provider mutation route (issue #555, CWE-639): a namespace binds
@@ -418,6 +425,23 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	router.Use(CORSMiddleware(cfg))
 	router.Use(middleware.SecurityHeadersMiddleware(middleware.APISecurityHeadersConfig()))
 
+	// mTLS client-certificate authentication (issue #559 finding [3]). Registered
+	// globally and before the per-route Auth/OptionalAuth middleware groups
+	// below, so a verified client cert's mapped scopes are already in the Gin
+	// context by the time those run — AuthMiddleware treats auth_method=="mtls"
+	// as satisfying its "credentials present" check even with no bearer token.
+	// Actually verifying and surfacing the client cert requires the TLS server
+	// itself to request+verify one (see mtls.BuildServerTLSConfig, wired in
+	// cmd/server/main.go); nothing here works over plain HTTP or behind a
+	// TLS-terminating ingress.
+	if cfg.Security.MTLS.Enabled {
+		mtlsProvider, mtlsErr := mtls.NewProvider(cfg.Security.MTLS)
+		if mtlsErr != nil {
+			log.Fatalf("failed to initialize mTLS provider: %v", mtlsErr)
+		}
+		router.Use(mtls.AuthMiddleware(mtlsProvider))
+	}
+
 	// Health check endpoint
 	router.GET("/health", healthCheckHandler(db))
 
@@ -598,7 +622,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// Module Registry endpoints (v1) - Terraform Protocol
 	// These are public endpoints that support optional authentication
 	v1Modules := router.Group("/v1/modules")
-	v1Modules.Use(middleware.OptionalAuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo))
+	v1Modules.Use(middleware.OptionalAuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo, userTokenRevocationRepo))
 	{
 		v1Modules.GET("/:namespace/:name/:system/versions", modules.ListVersionsHandler(db, cfg))
 		v1Modules.GET("/:namespace/:name/:system/:version/download", modules.DownloadHandler(db, storageBackend, cfg, auditRepo))
@@ -610,7 +634,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// Provider Registry endpoints (v1)
 	// These are for the standard Provider Registry Protocol
 	v1Providers := router.Group("/v1/providers")
-	v1Providers.Use(middleware.OptionalAuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo))
+	v1Providers.Use(middleware.OptionalAuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo, userTokenRevocationRepo))
 	{
 		v1Providers.GET("/:namespace/:type/versions", providers.ListVersionsHandler(db, cfg))
 		v1Providers.GET("/:namespace/:type/:version/download/:os/:arch", providers.DownloadHandler(db, storageBackend, cfg, auditRepo))
@@ -692,7 +716,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// fall back to public via the identity connection's search_path.
 	apiKeyHandlers := admin.NewAPIKeyHandlers(cfg, identityDB)
 	userHandlers := admin.NewUserHandlers(cfg, identityDB)
-	orgHandlers := admin.NewOrganizationHandlers(cfg, identityDB, nsClaimRepo)
+	orgHandlers := admin.NewOrganizationHandlers(cfg, identityDB, nsClaimRepo, userTokenRevocationRepo)
 	statsHandlers := admin.NewStatsHandler(identitySqlxDB, &cfg.Scanning)
 	mirrorHandlers := admin.NewMirrorHandler(mirrorRepo, orgRepo, providerRepo)
 	mirrorHandlers.SetSyncJob(mirrorSyncJob) // Connect sync job for manual triggers
@@ -717,7 +741,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 
 	// Role-template CRUD follows the identity schema; mirror methods stay public.
 	rbacRepo := repositories.NewRBACRepositoryWithIdentity(sqlxDB, identitySqlxDB)
-	rbacHandlers := admin.NewRBACHandlers(rbacRepo)
+	rbacHandlers := admin.NewRBACHandlers(rbacRepo, userTokenRevocationRepo)
 
 	// Initialize audit log handlers
 	auditLogHandlers := admin.NewAuditLogHandlers(identityDB)
@@ -934,7 +958,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		// Public detail endpoints — no auth required; optional auth populates user context if a
 		// token is present (used by the frontend to conditionally show management actions).
 		publicDetailGroup := apiV1.Group("")
-		publicDetailGroup.Use(middleware.OptionalAuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo))
+		publicDetailGroup.Use(middleware.OptionalAuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo, userTokenRevocationRepo))
 		publicDetailGroup.Use(middleware.RateLimitMiddleware(generalRateLimiter))
 		{
 			publicDetailGroup.GET("/modules/:namespace/:name/:system", moduleAdminHandlers.GetModule)
@@ -947,7 +971,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 
 		// Authenticated-only endpoints
 		authenticatedGroup := apiV1.Group("")
-		authenticatedGroup.Use(middleware.AuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo))
+		authenticatedGroup.Use(middleware.AuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo, userTokenRevocationRepo))
 		authenticatedGroup.Use(middleware.CSRFMiddleware(cfg)) // double-submit cookie CSRF protection + browser-origin Bearer allowlist
 		authenticatedGroup.Use(middleware.PrincipalRateLimitMiddleware(generalRateLimiter, principalOverrides))
 		authenticatedGroup.Use(middleware.OrgRateLimitMiddleware(generalRateLimiter, orgRateLimiter))
@@ -1389,7 +1413,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		// SCIM 2.0 provisioning endpoints — bearer token auth only (no CSRF, no cookie auth).
 		// Require admin or scim:provision scope.
 		scimGroup := router.Group("/scim/v2")
-		scimGroup.Use(middleware.AuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo))
+		scimGroup.Use(middleware.AuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo, userTokenRevocationRepo))
 		scimGroup.Use(middleware.RequireScope(auth.ScopeSCIMProvision))
 		{
 			scimHandlers := scim.NewHandlers(cfg, db)
@@ -1413,7 +1437,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 			devGroup.POST("/login", devHandlers.DevLoginHandler())
 
 			// Impersonation endpoints (require auth + admin scope)
-			devGroup.Use(middleware.AuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo))
+			devGroup.Use(middleware.AuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo, userTokenRevocationRepo))
 			devGroup.GET("/users", devHandlers.ListUsersForImpersonationHandler())
 			devGroup.POST("/impersonate/:user_id", devHandlers.ImpersonateUserHandler())
 		}

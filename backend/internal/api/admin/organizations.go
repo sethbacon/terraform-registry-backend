@@ -3,6 +3,7 @@ package admin
 
 import (
 	"database/sql"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -20,9 +21,17 @@ type OrganizationHandlers struct {
 	db        *sql.DB
 	orgRepo   *repositories.OrganizationRepository
 	claimRepo *repositories.NamespaceClaimRepository
+	// userRevocations moves the affected user's revoke-all watermark when a
+	// membership's role template changes or a member is removed, so outstanding
+	// JWTs (which embed scopes at login) stop validating immediately instead of
+	// carrying the old privileges until expiry (issue #559 finding [9]).
+	// May be nil in tests; revocation is skipped when unset.
+	userRevocations *repositories.UserTokenRevocationRepository
 }
 
-// NewOrganizationHandlers creates a new OrganizationHandlers instance.
+// NewOrganizationHandlers creates a new OrganizationHandlers instance. db
+// backs identity data access (organizations, members); userRevocations runs
+// on the registry's domain connection.
 //
 // claimRepo is accepted as a parameter rather than constructed internally
 // from db: db here is identityDB, but namespace_claims is a feature table
@@ -34,12 +43,27 @@ type OrganizationHandlers struct {
 // *NamespaceClaimRepository instance wired to db that the NamespaceAuthorizer
 // middleware uses, so the pre-delete ownership check in
 // DeleteOrganizationHandler queries the database that actually has the data.
-func NewOrganizationHandlers(cfg *config.Config, db *sql.DB, claimRepo *repositories.NamespaceClaimRepository) *OrganizationHandlers {
+func NewOrganizationHandlers(cfg *config.Config, db *sql.DB, claimRepo *repositories.NamespaceClaimRepository, userRevocations *repositories.UserTokenRevocationRepository) *OrganizationHandlers {
 	return &OrganizationHandlers{
-		cfg:       cfg,
-		db:        db,
-		orgRepo:   repositories.NewOrganizationRepository(db),
-		claimRepo: claimRepo,
+		cfg:             cfg,
+		db:              db,
+		orgRepo:         repositories.NewOrganizationRepository(db),
+		claimRepo:       claimRepo,
+		userRevocations: userRevocations,
+	}
+}
+
+// revokeUserTokens moves a user's revoke-all watermark after a privilege
+// change. Best-effort by design: the privilege change itself has already been
+// committed, so a failed revocation is logged loudly rather than turned into a
+// misleading error response (retrying the admin action re-runs the revocation).
+func (h *OrganizationHandlers) revokeUserTokens(c *gin.Context, userID, reason string) {
+	if h.userRevocations == nil {
+		return
+	}
+	if err := h.userRevocations.RevokeAllUserTokens(c.Request.Context(), userID); err != nil {
+		slog.Error("failed to revoke user tokens after privilege change",
+			"user_id", userID, "reason", reason, "error", err)
 	}
 }
 
@@ -654,6 +678,10 @@ func (h *OrganizationHandlers) UpdateMemberHandler() gin.HandlerFunc {
 			return
 		}
 
+		// Capture the pre-update role template so we know whether this actually
+		// changes the member's effective scopes (nil-to-nil or same ID is a no-op).
+		oldRoleTemplateID := member.RoleTemplateID
+
 		// Update role template
 		member.RoleTemplateID = req.RoleTemplateID
 		if err := h.orgRepo.UpdateMember(c.Request.Context(), member); err != nil {
@@ -661,6 +689,14 @@ func (h *OrganizationHandlers) UpdateMemberHandler() gin.HandlerFunc {
 				"error": "Failed to update member role",
 			})
 			return
+		}
+
+		// A role-template reassignment changes the scopes a fresh JWT would embed
+		// for this user; revoke their outstanding tokens so the change takes
+		// effect immediately rather than waiting out the JWT TTL (issue #559
+		// finding [9]).
+		if !stringPtrEqual(oldRoleTemplateID, req.RoleTemplateID) {
+			h.revokeUserTokens(c, userID, "organization member role template changed")
 		}
 
 		// Get member with role template info for response
@@ -697,7 +733,39 @@ func (h *OrganizationHandlers) RemoveMemberHandler() gin.HandlerFunc {
 		orgID := c.Param("id")
 		userID := c.Param("user_id")
 
-		// Remove member
+		// RemoveMember is a plain DELETE with no rows-affected/not-found
+		// signal, so when revocation is wired up, check membership first:
+		// without this, calling the endpoint against a user who was never a
+		// member of this org (a typo, a stale UI, or a probe by an org admin
+		// with no relationship to the target) would still revoke that user's
+		// tokens org-wide below -- letting any org admin log out an arbitrary
+		// user by targeting a removal that never actually changes anything.
+		// Skipped entirely when userRevocations is nil (as in most tests and
+		// any deployment that hasn't wired it up): the lookup's only purpose
+		// is deciding whether to call revokeUserTokens, which itself no-ops
+		// in that case, so running it unconditionally would add a hard
+		// dependency on an unrelated read query for no behavioral benefit.
+		//
+		// A lookup failure is logged and treated as "membership unconfirmed"
+		// rather than blocking the removal: this query only feeds the
+		// revocation decision below, not RemoveMember itself, so a transient
+		// read error must not prevent an admin from removing a member.
+		// Treating "unconfirmed" the same as "wasn't a member" is the safe
+		// direction -- it costs a skipped revocation sweep (surfaced to the
+		// caller below), never an unwarranted one.
+		var wasMember *models.OrganizationMemberWithUser
+		revocationCheckFailed := false
+		if h.userRevocations != nil {
+			var err error
+			wasMember, err = h.orgRepo.GetMemberWithRole(c.Request.Context(), orgID, userID)
+			if err != nil {
+				slog.Error("failed to check organization membership before removal; token revocation will be skipped",
+					"user_id", userID, "organization_id", orgID, "error", err)
+				wasMember = nil
+				revocationCheckFailed = true
+			}
+		}
+
 		if err := h.orgRepo.RemoveMember(c.Request.Context(), orgID, userID); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to remove member from organization",
@@ -705,10 +773,32 @@ func (h *OrganizationHandlers) RemoveMemberHandler() gin.HandlerFunc {
 			return
 		}
 
-		c.JSON(http.StatusOK, gin.H{
-			"message": "Member removed successfully",
-		})
+		// The removed member's outstanding JWTs still carry the org-derived
+		// scopes they had at login; revoke them so removal takes effect
+		// immediately instead of waiting out the JWT TTL (issue #559 finding
+		// [9]) -- but only when membership actually existed and was removed.
+		if wasMember != nil {
+			h.revokeUserTokens(c, userID, "removed from organization")
+		}
+
+		response := gin.H{"message": "Member removed successfully"}
+		if revocationCheckFailed {
+			// The removal itself succeeded, but we couldn't determine
+			// whether to revoke the user's tokens -- surface that so the
+			// caller doesn't assume the incident is fully closed.
+			response["revocation_incomplete"] = true
+		}
+		c.JSON(http.StatusOK, response)
 	}
+}
+
+// stringPtrEqual reports whether two optional strings (role template IDs) are
+// equal, treating nil as distinct from any non-nil value including "".
+func stringPtrEqual(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // @Summary      Search organizations

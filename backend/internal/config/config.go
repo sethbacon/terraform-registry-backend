@@ -309,6 +309,13 @@ type SuiteConfig struct {
 	// the sibling TSM's /consumers). Empty (default) leaves the proxy inert; set it
 	// to the SAME value as the sibling's TSM_SUITE_SERVICE_TOKEN.
 	SiblingToken string `mapstructure:"sibling_token"` // TFR_SUITE_SIBLING_TOKEN
+	// TrustedIssuers lists additional JWT `iss` claims this app accepts on top of
+	// its own ("terraform-registry"), for a coupled suite deployment sharing
+	// TFR_JWT_SECRET with sibling apps (ADR 012). Empty (default) means only this
+	// app's own tokens validate — the standalone-safe default; issue #559
+	// finding [0]. Comma-separated in TFR_SUITE_TRUSTED_ISSUERS (e.g.
+	// "terraform-state-manager"). Wired via auth.SetTrustedIssuers at startup.
+	TrustedIssuers []string `mapstructure:"trusted_issuers"` // TFR_SUITE_TRUSTED_ISSUERS
 }
 
 // ShouldSeedRoles reports whether this app (identified by app, e.g. "registry")
@@ -918,6 +925,7 @@ func bindEnvVars(v *viper.Viper) error {
 		"suite.role_seed_owner",
 		"suite.identity_shared_store",
 		"suite.sibling_token",
+		"suite.trusted_issuers",
 	}
 	for _, key := range keys {
 		if err := v.BindEnv(key); err != nil {
@@ -1140,6 +1148,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("suite.role_seed_owner", "self")
 	v.SetDefault("suite.identity_shared_store", false)
 	v.SetDefault("suite.sibling_token", "")
+	// trusted_issuers defaults to empty (deny-by-default, same convention as
+	// security.cors.allowed_origins above): only this app's own issuer is
+	// trusted unless siblings are explicitly configured.
+	v.SetDefault("suite.trusted_issuers", []string{})
 }
 
 // expandEnv expands environment variables in the format ${VAR_NAME}

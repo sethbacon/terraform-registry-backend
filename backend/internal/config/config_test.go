@@ -769,6 +769,40 @@ func TestLoad_RoleSeedOwnerEnvOverride(t *testing.T) {
 	}
 }
 
+// TestLoad_TrustedIssuersDefault and TestLoad_TrustedIssuersEnvOverride cover
+// issue #559 finding [0]: the trusted-issuer list must default to empty
+// (standalone-safe — auth.SetTrustedIssuers always adds the app's own issuer
+// regardless) and must be configurable via TFR_SUITE_TRUSTED_ISSUERS.
+func TestLoad_TrustedIssuersDefault(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Suite.TrustedIssuers) != 0 {
+		t.Errorf("default Suite.TrustedIssuers = %v, want empty", cfg.Suite.TrustedIssuers)
+	}
+}
+
+func TestLoad_TrustedIssuersEnvOverride(t *testing.T) {
+	// Proves suite.trusted_issuers is in the bindEnvVars whitelist, and that a
+	// comma-separated env value is split into a slice (viper's default
+	// StringToSliceHookFunc, same convention as security.cors.allowed_origins).
+	t.Setenv("TFR_SUITE_TRUSTED_ISSUERS", "terraform-state-manager,terraform-registry-worker")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []string{"terraform-state-manager", "terraform-registry-worker"}
+	if len(cfg.Suite.TrustedIssuers) != len(want) {
+		t.Fatalf("Suite.TrustedIssuers = %v, want %v", cfg.Suite.TrustedIssuers, want)
+	}
+	for i, v := range want {
+		if cfg.Suite.TrustedIssuers[i] != v {
+			t.Errorf("Suite.TrustedIssuers[%d] = %q, want %q", i, cfg.Suite.TrustedIssuers[i], v)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // IdentityDatabase fallback
 // ---------------------------------------------------------------------------

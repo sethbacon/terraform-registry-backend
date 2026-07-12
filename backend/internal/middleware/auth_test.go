@@ -51,7 +51,7 @@ func newAuthRouterWithJWT(t *testing.T, userMock, orgMock sqlmock.Sqlmock,
 	userRepo *repositories.UserRepository, orgRepo *repositories.OrganizationRepository) *gin.Engine {
 	t.Helper()
 	r := gin.New()
-	r.Use(AuthMiddleware(nil, userRepo, nil, orgRepo, nil))
+	r.Use(AuthMiddleware(nil, userRepo, nil, orgRepo, nil, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 	return r
 }
@@ -69,7 +69,7 @@ func generateTestJWT(t *testing.T, userID string) string {
 // nil repos are safe for early-exit paths that abort before any repo call.
 func newAuthRouter() *gin.Engine {
 	r := gin.New()
-	r.Use(AuthMiddleware(nil, nil, nil, nil, nil))
+	r.Use(AuthMiddleware(nil, nil, nil, nil, nil, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 	return r
 }
@@ -77,7 +77,7 @@ func newAuthRouter() *gin.Engine {
 // newOptionalAuthRouter builds a router with OptionalAuthMiddleware using nil repos.
 func newOptionalAuthRouter() *gin.Engine {
 	r := gin.New()
-	r.Use(OptionalAuthMiddleware(nil, nil, nil, nil, nil))
+	r.Use(OptionalAuthMiddleware(nil, nil, nil, nil, nil, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 	return r
 }
@@ -138,7 +138,7 @@ func TestAuthMiddleware_CookieAuth_ValidJWT(t *testing.T) {
 
 	r := gin.New()
 	var capturedAuthMethod string
-	r.Use(AuthMiddleware(nil, userRepo, nil, orgRepo, nil))
+	r.Use(AuthMiddleware(nil, userRepo, nil, orgRepo, nil, nil))
 	r.GET("/", func(c *gin.Context) {
 		if am, ok := c.Get("auth_method"); ok {
 			capturedAuthMethod = am.(string)
@@ -173,7 +173,7 @@ func TestAuthMiddleware_HeaderTakesPrecedenceOverCookie(t *testing.T) {
 
 	r := gin.New()
 	var capturedAuthMethod string
-	r.Use(AuthMiddleware(nil, userRepo, nil, orgRepo, nil))
+	r.Use(AuthMiddleware(nil, userRepo, nil, orgRepo, nil, nil))
 	r.GET("/", func(c *gin.Context) {
 		if am, ok := c.Get("auth_method"); ok {
 			capturedAuthMethod = am.(string)
@@ -334,7 +334,7 @@ func newAuthRouterWithRepos(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	repo, mock := newTestAPIKeyRepo(t)
 
 	r := gin.New()
-	r.Use(AuthMiddleware(nil, nil, repo, nil, nil))
+	r.Use(AuthMiddleware(nil, nil, repo, nil, nil, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 	return mock, r
 }
@@ -514,7 +514,7 @@ func TestAuthMiddleware_APIKeyWithUser(t *testing.T) {
 	userRepo := repositories.NewUserRepository(userDB)
 
 	r := gin.New()
-	r.Use(AuthMiddleware(nil, userRepo, apiKeyRepo, nil, nil))
+	r.Use(AuthMiddleware(nil, userRepo, apiKeyRepo, nil, nil, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	token := "tfr_apikey_test123"
@@ -553,7 +553,7 @@ func TestOptionalAuthMiddleware_ValidJWT_SetsUser(t *testing.T) {
 	orgRepo, orgMock := newOrgRepo(t)
 
 	r := gin.New()
-	r.Use(OptionalAuthMiddleware(nil, userRepo, nil, orgRepo, nil))
+	r.Use(OptionalAuthMiddleware(nil, userRepo, nil, orgRepo, nil, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	token := generateTestJWT(t, "user-1")
@@ -590,7 +590,7 @@ func TestOptionalAuthMiddleware_JWTRevoked_ContinuesUnauthenticated(t *testing.T
 
 	var userWasSet bool
 	r := gin.New()
-	r.Use(OptionalAuthMiddleware(nil, userRepo, nil, orgRepo, tokenRepo))
+	r.Use(OptionalAuthMiddleware(nil, userRepo, nil, orgRepo, tokenRepo, nil))
 	r.GET("/", func(c *gin.Context) {
 		_, userWasSet = c.Get("user")
 		c.Status(http.StatusOK)
@@ -615,7 +615,7 @@ func TestOptionalAuthMiddleware_ValidJWT_UserNotFound_PassesThrough(t *testing.T
 	orgRepo, _ := newOrgRepo(t)
 
 	r := gin.New()
-	r.Use(OptionalAuthMiddleware(nil, userRepo, nil, orgRepo, nil))
+	r.Use(OptionalAuthMiddleware(nil, userRepo, nil, orgRepo, nil, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	token := generateTestJWT(t, "nonexistent-user")
@@ -644,7 +644,7 @@ func TestOptionalAuthMiddleware_APIKey_Valid_SetsContext(t *testing.T) {
 	userRepo := repositories.NewUserRepository(userDB)
 
 	r := gin.New()
-	r.Use(OptionalAuthMiddleware(nil, userRepo, apiKeyRepo, nil, nil))
+	r.Use(OptionalAuthMiddleware(nil, userRepo, apiKeyRepo, nil, nil, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	token := "tfr_optional_test9"
@@ -678,7 +678,7 @@ func TestOptionalAuthMiddleware_APIKey_Expired_PassesThrough(t *testing.T) {
 	apiKeyRepo := repositories.NewAPIKeyRepository(apiKeyDB)
 
 	r := gin.New()
-	r.Use(OptionalAuthMiddleware(nil, nil, apiKeyRepo, nil, nil))
+	r.Use(OptionalAuthMiddleware(nil, nil, apiKeyRepo, nil, nil, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	token := "tfr_expired_key9"
@@ -710,7 +710,7 @@ func TestOptionalAuthMiddleware_APIKey_NoMatch_PassesThrough(t *testing.T) {
 	apiKeyRepo := repositories.NewAPIKeyRepository(apiKeyDB)
 
 	r := gin.New()
-	r.Use(OptionalAuthMiddleware(nil, nil, apiKeyRepo, nil, nil))
+	r.Use(OptionalAuthMiddleware(nil, nil, apiKeyRepo, nil, nil, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	// Return empty rows — no matching key
@@ -749,7 +749,7 @@ func newAuthRouterWithRevocation(t *testing.T,
 ) *gin.Engine {
 	t.Helper()
 	r := gin.New()
-	r.Use(AuthMiddleware(nil, userRepo, nil, orgRepo, tokenRepo))
+	r.Use(AuthMiddleware(nil, userRepo, nil, orgRepo, tokenRepo, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 	return r
 }
@@ -793,6 +793,120 @@ func TestAuthMiddleware_JWTRevocationDBError(t *testing.T) {
 	if code := doAuthRequest(r, "Bearer "+token); code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500 (revocation DB error)", code)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Per-user revoke-all watermark (issue #559 finding [9])
+//
+// Unlike JTI revocation (a denylist of specific tokens), the watermark
+// invalidates every token issued to a user before a point in time — used when
+// a member's role template changes, a member is removed from an organization,
+// or a role template's scopes are edited, none of which have a JTI to revoke
+// individually.
+// ---------------------------------------------------------------------------
+
+func newUserRevocationRepo(t *testing.T) (*repositories.UserTokenRevocationRepository, sqlmock.Sqlmock) {
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New (user revocation): %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return repositories.NewUserTokenRevocationRepository(db), mock
+}
+
+func TestAuthMiddleware_RevokeAllWatermark_Aborts(t *testing.T) {
+	userRepo, userMock := newUserRepo(t)
+	orgRepo, _ := newOrgRepo(t)
+	userRevocations, revMock := newUserRevocationRepo(t)
+
+	token := generateTestJWT(t, "user-1")
+
+	revMock.ExpectQuery("SELECT EXISTS").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+	_ = userMock // user lookup is not expected to run — the watermark check aborts first
+
+	r := gin.New()
+	r.Use(AuthMiddleware(nil, userRepo, nil, orgRepo, nil, userRevocations))
+	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	if code := doAuthRequest(r, "Bearer "+token); code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401 (token predates revoke-all watermark)", code)
+	}
+}
+
+func TestAuthMiddleware_RevokeAllWatermark_DBError(t *testing.T) {
+	userRepo, userMock := newUserRepo(t)
+	orgRepo, _ := newOrgRepo(t)
+	userRevocations, revMock := newUserRevocationRepo(t)
+
+	token := generateTestJWT(t, "user-1")
+
+	revMock.ExpectQuery("SELECT EXISTS").
+		WillReturnError(errors.New("db error"))
+	_ = userMock
+
+	r := gin.New()
+	r.Use(AuthMiddleware(nil, userRepo, nil, orgRepo, nil, userRevocations))
+	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	if code := doAuthRequest(r, "Bearer "+token); code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500 (watermark check DB error)", code)
+	}
+}
+
+func TestAuthMiddleware_RevokeAllWatermark_NotRevoked_PassesThrough(t *testing.T) {
+	userRepo, userMock := newUserRepo(t)
+	orgRepo, _ := newOrgRepo(t)
+	userRevocations, revMock := newUserRevocationRepo(t)
+
+	token := generateTestJWT(t, "user-1")
+
+	revMock.ExpectQuery("SELECT EXISTS").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	userMock.ExpectQuery("SELECT.*FROM users WHERE id").
+		WillReturnRows(sqlmock.NewRows(jwtUserCols).AddRow(
+			"user-1", "test@example.com", "Test User", nil, time.Now(), time.Now()))
+
+	r := gin.New()
+	r.Use(AuthMiddleware(nil, userRepo, nil, orgRepo, nil, userRevocations))
+	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	if code := doAuthRequest(r, "Bearer "+token); code != http.StatusOK {
+		t.Errorf("status = %d, want 200 (token postdates watermark)", code)
+	}
+}
+
+func TestOptionalAuthMiddleware_RevokeAllWatermark_ContinuesUnauthenticated(t *testing.T) {
+	userRepo, userMock := newUserRepo(t)
+	orgRepo, _ := newOrgRepo(t)
+	userRevocations, revMock := newUserRevocationRepo(t)
+
+	token := generateTestJWT(t, "user-1")
+
+	revMock.ExpectQuery("SELECT EXISTS").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+
+	r := gin.New()
+	r.Use(OptionalAuthMiddleware(nil, userRepo, nil, orgRepo, nil, userRevocations))
+	var userWasSet bool
+	r.GET("/", func(c *gin.Context) {
+		_, userWasSet = c.Get("user")
+		c.Status(http.StatusOK)
+	})
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 (optional auth always passes through)", w.Code)
+	}
+	if userWasSet {
+		t.Error("user should not be set in context for a token predating the revoke-all watermark")
+	}
+	_ = userMock // user lookup is not expected to run — the watermark check short-circuits first
 }
 
 // ---------------------------------------------------------------------------
