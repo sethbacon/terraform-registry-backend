@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
+
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 )
 
 // Fingerprint hex length in characters (20 bytes -> 40 hex chars).
@@ -135,7 +137,9 @@ func ParseReleasesKey(armored string) (*ReleasesKeyInfo, error) {
 // auditability.
 func FetchReleasesKey(ctx context.Context, httpClient *http.Client, url string, allowedFingerprint string) (string, *ReleasesKeyInfo, error) {
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		// Default to the strict SSRF-safe client rather than
+		// http.DefaultClient: the key URL is operator-configurable.
+		httpClient = httpsafe.NewClient(30*time.Second, nil)
 	}
 	if !isAllowedFingerprintShape(allowedFingerprint) {
 		return "", nil, fmt.Errorf("releases key: allowed fingerprint must be %d hex chars, got %q", fingerprintHexLen, allowedFingerprint)

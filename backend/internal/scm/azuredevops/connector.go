@@ -135,7 +135,7 @@ func (c *AzureDevOpsConnector) CompleteAuthorization(ctx context.Context, authCo
 		return nil, fmt.Errorf("azuredevops: create token request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	// #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	// #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	resp, err := scm.HTTPClient.Do(req)
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to exchange code", err)
@@ -187,7 +187,7 @@ func (c *AzureDevOpsConnector) RenewToken(ctx context.Context, refreshToken stri
 		return nil, fmt.Errorf("azuredevops: create refresh request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	// #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	// #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	resp, err := scm.HTTPClient.Do(req)
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to refresh token", err)
@@ -237,7 +237,7 @@ func (c *AzureDevOpsConnector) FetchRepositories(ctx context.Context, creds *scm
 			continue
 		}
 		c.setAuthHeaders(req, creds)
-		// #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+		// #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 		resp, err := scm.HTTPClient.Do(req)
 		if err != nil {
 			continue
@@ -272,7 +272,7 @@ func (c *AzureDevOpsConnector) FetchRepository(ctx context.Context, creds *scm.A
 		return nil, fmt.Errorf("azuredevops: create repo request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
-	// #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	// #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	resp, err := scm.HTTPClient.Do(req)
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch repository", err)
@@ -324,7 +324,7 @@ func (c *AzureDevOpsConnector) FetchBranches(ctx context.Context, creds *scm.Acc
 		return nil, fmt.Errorf("azuredevops: create branches request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
-	// #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	// #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	resp, err := scm.HTTPClient.Do(req)
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch branches", err)
@@ -369,7 +369,7 @@ func (c *AzureDevOpsConnector) FetchTags(ctx context.Context, creds *scm.AccessT
 		return nil, fmt.Errorf("azuredevops: create tags request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
-	// #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	// #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	resp, err := scm.HTTPClient.Do(req)
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch tags", err)
@@ -440,7 +440,7 @@ func (c *AzureDevOpsConnector) FetchCommit(ctx context.Context, creds *scm.Acces
 		return nil, fmt.Errorf("azuredevops: create commit request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
-	// #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	// #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	resp, err := scm.HTTPClient.Do(req)
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch commit", err)
@@ -504,7 +504,7 @@ func (c *AzureDevOpsConnector) DownloadSourceArchive(ctx context.Context, creds 
 		return nil, fmt.Errorf("azuredevops: create archive request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
-	// #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	// #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	resp, err := scm.HTTPClient.Do(req)
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to download archive", err)
@@ -594,7 +594,7 @@ func (c *AzureDevOpsConnector) fetchRepoAndProjectIDs(ctx context.Context, creds
 		return "", "", fmt.Errorf("create request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
-	// #nosec G107 -- URL is sourced from admin-controlled SCM provider configuration; non-admin users cannot influence these code paths
+	// #nosec G107 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	resp, err := scm.HTTPClient.Do(req)
 	if err != nil {
 		return "", "", scm.WrapRemoteError(0, "failed to fetch repository IDs", err)
@@ -652,7 +652,7 @@ func (c *AzureDevOpsConnector) RegisterWebhook(ctx context.Context, creds *scm.A
 		return nil, fmt.Errorf("azuredevops: create subscription request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
-	// #nosec G107 -- URL is sourced from admin-controlled SCM provider configuration; non-admin users cannot influence these code paths
+	// #nosec G107 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	resp, err := scm.HTTPClient.Do(req)
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to create service hook subscription", err)
@@ -683,7 +683,7 @@ func (c *AzureDevOpsConnector) RemoveWebhook(ctx context.Context, creds *scm.Acc
 		return fmt.Errorf("azuredevops: create delete subscription request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
-	// #nosec G107 -- URL is sourced from admin-controlled SCM provider configuration; non-admin users cannot influence these code paths
+	// #nosec G107 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	resp, err := scm.HTTPClient.Do(req)
 	if err != nil {
 		return scm.WrapRemoteError(0, "failed to delete service hook subscription", err)
@@ -802,7 +802,7 @@ func (c *AzureDevOpsConnector) fetchProjects(ctx context.Context, creds *scm.Acc
 		return nil, fmt.Errorf("azuredevops: create projects request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
-	// #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	// #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	resp, err := scm.HTTPClient.Do(req)
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch projects", err)

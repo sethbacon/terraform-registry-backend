@@ -23,6 +23,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 )
 
 // HashiCorpReleasesGPGKey is the ASCII-armored public GPG key used by
@@ -219,20 +221,25 @@ type TerraformReleasesClient struct {
 
 // NewTerraformReleasesClient creates a client targeting the given upstream base URL.
 // productName controls the URL path segment; pass "" or "terraform" for the default.
-// Use "opentofu" when targeting the OpenTofu release server.
+// Use "opentofu" when targeting the OpenTofu release server. The strict egress
+// policy applies (see NewTerraformReleasesClientWithGuard).
 func NewTerraformReleasesClient(upstreamURL, productName string) *TerraformReleasesClient {
+	return NewTerraformReleasesClientWithGuard(upstreamURL, productName, nil)
+}
+
+// NewTerraformReleasesClientWithGuard is NewTerraformReleasesClient with an
+// egress guard widening the SSRF deny-list (nil = strict). Index/metadata
+// requests and binary downloads (index-provided URLs) are dialed through
+// internal/httpsafe.
+func NewTerraformReleasesClientWithGuard(upstreamURL, productName string, egress *httpsafe.Guard) *TerraformReleasesClient {
 	if productName == "" {
 		productName = "terraform"
 	}
 	return &TerraformReleasesClient{
-		UpstreamURL: strings.TrimRight(upstreamURL, "/"),
-		ProductName: productName,
-		HTTPClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
-		DownloadClient: &http.Client{
-			Timeout: 10 * time.Minute,
-		},
+		UpstreamURL:    strings.TrimRight(upstreamURL, "/"),
+		ProductName:    productName,
+		HTTPClient:     httpsafe.NewClient(30*time.Second, egress),
+		DownloadClient: httpsafe.NewClient(10*time.Minute, egress),
 	}
 }
 
@@ -283,7 +290,7 @@ func (c *TerraformReleasesClient) ListVersions(ctx context.Context) ([]Terraform
 		return nil, fmt.Errorf("failed to build index request: %w", err)
 	}
 
-	resp, err := c.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	resp, err := c.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch terraform index: %w", err)
 	}
@@ -386,7 +393,7 @@ func (c *TerraformReleasesClient) FetchSHASums(ctx context.Context, version stri
 		return nil, nil, fmt.Errorf("failed to build shasums request: %w", err)
 	}
 
-	resp, err := c.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	resp, err := c.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to fetch shasums: %w", err)
 	}
@@ -415,7 +422,7 @@ func (c *TerraformReleasesClient) FetchSHASumsSignature(ctx context.Context, ver
 		return nil, fmt.Errorf("failed to build signature request: %w", err)
 	}
 
-	resp, err := c.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	resp, err := c.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch signature: %w", err)
 	}
@@ -454,7 +461,7 @@ func ParseSHASums(data []byte) map[string]string {
 // DownloadBinary downloads a Terraform binary zip from the given URL.
 // Returns the raw bytes and the actual SHA256 hex string computed while streaming.
 func (c *TerraformReleasesClient) DownloadBinaryStream(ctx context.Context, downloadURL string) (io.ReadCloser, int64, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil) // #nosec G107 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil) // #nosec G107 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	if err != nil {
 		return nil, -1, fmt.Errorf("failed to build download request: %w", err)
 	}

@@ -14,6 +14,7 @@ import (
 
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/mirror"
 )
 
@@ -26,9 +27,14 @@ type PullThroughService struct {
 	orgRepo      *repositories.OrganizationRepository
 
 	// newUpstream is the factory used to build an UpstreamRegistryClient from a
-	// base URL.  It defaults to mirror.NewUpstreamRegistry; tests may override it
-	// via SetUpstreamFactory to inject a fake client without performing real HTTP.
+	// base URL.  It defaults to mirror.NewUpstreamRegistryWithGuard using this
+	// service's egress guard; tests may override it via SetUpstreamFactory to
+	// inject a fake client without performing real HTTP.
 	newUpstream func(baseURL string) mirror.UpstreamRegistryClient
+
+	// egressGuard widens the SSRF egress deny-list for upstream fetches
+	// (nil = strict). Set via SetEgressGuard.
+	egressGuard *httpsafe.Guard
 }
 
 // NewPullThroughService constructs a PullThroughService.
@@ -37,14 +43,22 @@ func NewPullThroughService(
 	mirrorRepo *repositories.MirrorRepository,
 	orgRepo *repositories.OrganizationRepository,
 ) *PullThroughService {
-	return &PullThroughService{
+	s := &PullThroughService{
 		providerRepo: providerRepo,
 		mirrorRepo:   mirrorRepo,
 		orgRepo:      orgRepo,
-		newUpstream: func(baseURL string) mirror.UpstreamRegistryClient {
-			return mirror.NewUpstreamRegistry(baseURL)
-		},
 	}
+	s.newUpstream = func(baseURL string) mirror.UpstreamRegistryClient {
+		return mirror.NewUpstreamRegistryWithGuard(baseURL, s.egressGuard)
+	}
+	return s
+}
+
+// SetEgressGuard installs the operator-configured egress guard
+// (security.egress.allowlist) used by the default upstream-client factory.
+// nil keeps the strict default policy.
+func (s *PullThroughService) SetEgressGuard(g *httpsafe.Guard) {
+	s.egressGuard = g
 }
 
 // SetUpstreamFactory replaces the upstream-client factory.  Intended for tests

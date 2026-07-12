@@ -14,6 +14,7 @@ import (
 
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 
 	"github.com/gin-gonic/gin"
@@ -30,6 +31,11 @@ type TerraformMirrorHandler struct {
 	repo           *repositories.TerraformMirrorRepository
 	syncJob        TerraformMirrorSyncJobInterface
 	storageBackend storage.Storage
+	// egress is consulted when validating upstream_url on create/update so a
+	// non-admin "devops"-scoped caller cannot point the binary mirror at a
+	// private or cloud-metadata address; nil enforces the strict default
+	// deny-list.
+	egress *httpsafe.Guard
 }
 
 // NewTerraformMirrorHandler creates a new TerraformMirrorHandler.
@@ -40,6 +46,13 @@ func NewTerraformMirrorHandler(repo *repositories.TerraformMirrorRepository) *Te
 // SetSyncJob attaches the live sync job so handlers can trigger manual syncs.
 func (h *TerraformMirrorHandler) SetSyncJob(syncJob TerraformMirrorSyncJobInterface) {
 	h.syncJob = syncJob
+}
+
+// SetEgressGuard installs the operator-configured egress guard
+// (security.egress.allowlist) consulted when validating upstream_url on
+// create/update.
+func (h *TerraformMirrorHandler) SetEgressGuard(g *httpsafe.Guard) {
+	h.egress = g
 }
 
 // SetStorageBackend attaches the object-storage backend so deleting a version
@@ -91,6 +104,11 @@ func (h *TerraformMirrorHandler) CreateConfig(c *gin.Context) {
 	var req models.CreateTerraformMirrorConfigRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := h.egress.ValidateURL(req.UpstreamURL); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid upstream_url: " + err.Error()})
 		return
 	}
 
@@ -324,6 +342,10 @@ func (h *TerraformMirrorHandler) UpdateConfig(c *gin.Context) {
 		cfg.Tool = *req.Tool
 	}
 	if req.UpstreamURL != nil {
+		if err := h.egress.ValidateURL(*req.UpstreamURL); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid upstream_url: " + err.Error()})
+			return
+		}
 		cfg.UpstreamURL = *req.UpstreamURL
 	}
 	if req.GPGVerify != nil {

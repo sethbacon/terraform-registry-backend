@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"golang.org/x/time/rate"
+
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 )
 
 const (
@@ -34,15 +36,24 @@ type Client struct {
 	limiter    *rate.Limiter
 }
 
-// NewClient returns a Client pointed at the given endpoint.
-// Pass an empty string to use the default (https://api.osv.dev).
+// NewClient returns a Client pointed at the given endpoint with the strict
+// egress policy (no allow-list). Pass an empty string to use the default
+// (https://api.osv.dev). The endpoint is operator-configurable
+// (cve.osv_endpoint), so requests are dialed through internal/httpsafe.
 func NewClient(endpoint string) *Client {
+	return NewClientWithGuard(endpoint, nil)
+}
+
+// NewClientWithGuard is NewClient with an egress guard widening the SSRF
+// deny-list (nil = strict), for deployments that point osv_endpoint at an
+// internal OSV mirror.
+func NewClientWithGuard(endpoint string, egress *httpsafe.Guard) *Client {
 	if endpoint == "" {
 		endpoint = defaultEndpoint
 	}
 	return &Client{
 		endpoint:   endpoint,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		httpClient: httpsafe.NewClient(30*time.Second, egress),
 		limiter:    rate.NewLimiter(rate.Limit(requestsPerSec), requestsPerSec),
 	}
 }
