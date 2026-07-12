@@ -24,6 +24,26 @@ func TestFetchBundle_RequiresHTTPS(t *testing.T) {
 	}
 }
 
+// fetchBundle routes the request through httpsafe.NewClient (dial-time
+// resolve-and-pin), not an upfront ValidateURL call, so the SSRF guard is
+// only exercised by actually attempting the request. A nil egress guard is
+// the strict default policy (no allow-list entries), so a loopback target
+// must be rejected before any TCP connection is attempted.
+func TestFetchBundle_RejectsLoopbackTarget(t *testing.T) {
+	_, err := fetchBundle(context.Background(), "https://127.0.0.1:1/bundle.tar.gz", "", nil)
+	if err == nil {
+		t.Fatal("expected error for loopback bundle_url target")
+	}
+	// Assert on the SSRF guard's own wording, not just "any error": port 1
+	// is closed, so a connection-refused error would also satisfy a bare
+	// err != nil check without proving the egress guard is what blocked
+	// this -- if the guard ever regressed, "connection refused" would
+	// silently keep this test green.
+	if !strings.Contains(err.Error(), "blocked") {
+		t.Errorf("error = %q, want it to mention the egress guard blocking the target (not e.g. a bare connection error)", err.Error())
+	}
+}
+
 func TestFetchBundle_HTTPAllowedWhenHostAllowlisted(t *testing.T) {
 	bundleData, err := buildBundle(map[string]string{"deny.rego": denyNamespaceRego})
 	if err != nil {

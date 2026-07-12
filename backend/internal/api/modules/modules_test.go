@@ -574,6 +574,36 @@ func TestServeFileHandler_DoubleSlashTraversal(t *testing.T) {
 	}
 }
 
+// TestServeFileHandler_URLEncodedTraversal documents how gin's wildcard param
+// interacts with the substring guard for percent-encoded traversal sequences.
+// gin (with the default UseRawPath: false) matches routes and populates
+// c.Param against req.URL.Path, which net/http's url.Parse has already
+// percent-decoded — so "%2e%2e%2f" reaches the handler as a literal "../"
+// well before the "strings.Contains(filePath, \"..\")" check runs. Each of
+// these encoded variants is expected to be rejected the same as the raw
+// ".." case, not to sneak past it.
+func TestServeFileHandler_URLEncodedTraversal(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+	}{
+		{"fully encoded slashes", "/v1/files/%2e%2e%2f%2e%2e%2fetc%2fpasswd"},
+		{"encoded dots literal slashes", "/v1/files/%2e%2e/%2e%2e/etc/passwd"},
+		{"encoded slashes literal dots", "/v1/files/..%2f..%2fetc%2fpasswd"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &mockStore{existsResult: true}
+			r := newServeRouter(t, store)
+
+			w := doGET(r, tt.path)
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400; body: %s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // UploadHandler test helpers
 // ---------------------------------------------------------------------------
