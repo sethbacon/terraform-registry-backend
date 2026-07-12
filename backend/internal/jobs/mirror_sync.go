@@ -84,8 +84,9 @@ type MirrorSyncJob struct {
 	activeSyncs        map[uuid.UUID]bool
 	activeSyncsMutex   sync.Mutex
 	stopCh             chan struct{}
-	startedCh          chan struct{} // closed when the Start goroutine is scheduled and running
-	wg                 sync.WaitGroup
+	// intervalMinutes is the sync cadence; SetInterval overrides it, otherwise
+	// Start falls back to defaultMirrorSyncIntervalMinutes.
+	intervalMinutes int
 
 	// newUpstream is the factory used to build an UpstreamRegistryClient from a
 	// base URL.  It defaults to mirror.NewUpstreamRegistryWithGuard using this
@@ -117,7 +118,6 @@ func NewMirrorSyncJob(
 		activeSyncs:        make(map[uuid.UUID]bool),
 		activeSyncsMutex:   sync.Mutex{},
 		stopCh:             make(chan struct{}),
-		startedCh:          make(chan struct{}),
 	}
 	j.newUpstream = func(baseURL string) mirror.UpstreamRegistryClient {
 		return mirror.NewUpstreamRegistryWithGuard(baseURL, j.egressGuard)
@@ -146,8 +146,26 @@ func (j *MirrorSyncJob) SetUpstreamFactory(f func(baseURL string) mirror.Upstrea
 	j.newUpstream = f
 }
 
-// Start begins the periodic sync job
-func (j *MirrorSyncJob) Start(ctx context.Context, intervalMinutes int) {
+// defaultMirrorSyncIntervalMinutes is the sync cadence used when SetInterval
+// was not called (preserves the value previously hard-coded at the call site).
+const defaultMirrorSyncIntervalMinutes = 10
+
+// SetInterval overrides the sync cadence. Call before the job is started
+// (i.e. before registering it with jobs.Registry); a value <= 0 keeps the
+// default.
+func (j *MirrorSyncJob) SetInterval(minutes int) { j.intervalMinutes = minutes }
+
+// Name identifies the job in the jobs.Registry (issue #565 finding [40]).
+func (j *MirrorSyncJob) Name() string { return "mirror-sync" }
+
+// Start runs the periodic sync loop until ctx is cancelled or Stop is called.
+// It blocks (the Registry runs it in its own goroutine); the error return
+// satisfies jobs.Job, though this job has no fatal startup error.
+func (j *MirrorSyncJob) Start(ctx context.Context) error {
+	intervalMinutes := j.intervalMinutes
+	if intervalMinutes <= 0 {
+		intervalMinutes = defaultMirrorSyncIntervalMinutes
+	}
 	log.Printf("Starting mirror sync job with interval of %d minutes", intervalMinutes)
 
 	// Reset any syncs left in 'in_progress' / 'running' state from a previous process crash.
@@ -157,39 +175,36 @@ func (j *MirrorSyncJob) Start(ctx context.Context, intervalMinutes int) {
 		log.Printf("Reset %d stale sync history record(s) from previous process", n)
 	}
 
-	j.wg.Add(1)
-	go func() {
-		close(j.startedCh) // signal that the goroutine is running (wg.Add already done)
-		defer j.wg.Done()
+	ticker := time.NewTicker(time.Duration(intervalMinutes) * time.Minute)
+	defer ticker.Stop()
 
-		ticker := time.NewTicker(time.Duration(intervalMinutes) * time.Minute)
-		defer ticker.Stop()
+	// Run initial sync immediately
+	j.runScheduledSyncs(ctx)
 
-		// Run initial sync immediately
-		j.runScheduledSyncs(ctx)
-
-		for {
-			select {
-			case <-ticker.C:
-				j.runScheduledSyncs(ctx)
-			case <-j.stopCh:
-				log.Println("Mirror sync job stopped")
-				return
-			case <-ctx.Done():
-				log.Println("Mirror sync job context cancelled")
-				return
-			}
+	for {
+		select {
+		case <-ticker.C:
+			j.runScheduledSyncs(ctx)
+		case <-j.stopCh:
+			log.Println("Mirror sync job stopped")
+			return nil
+		case <-ctx.Done():
+			log.Println("Mirror sync job context cancelled")
+			return nil
 		}
-	}()
+	}
 }
 
-// Stop stops the sync job. It waits for the Start goroutine to be scheduled
-// before signalling it to exit, avoiding a race between wg.Add (in Start) and
-// wg.Wait (in Stop) when Start and Stop are called concurrently.
-func (j *MirrorSyncJob) Stop() {
-	<-j.startedCh // ensure wg.Add(1) has been called before wg.Wait()
-	close(j.stopCh)
-	j.wg.Wait()
+// Stop signals the sync loop to exit. Best-effort and idempotent (matching the
+// other background jobs); it does not block waiting for the loop to finish.
+func (j *MirrorSyncJob) Stop() error {
+	select {
+	case <-j.stopCh:
+		// already stopped
+	default:
+		close(j.stopCh)
+	}
+	return nil
 }
 
 // runScheduledSyncs checks for mirrors that need syncing and triggers them

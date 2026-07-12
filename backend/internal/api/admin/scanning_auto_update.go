@@ -127,10 +127,13 @@ func (h *ScanningAutoUpdateHandler) Put(c *gin.Context) {
 	h.cfg.AutoUpdate.AutoApproveRules = input.AutoApproveRules
 
 	// Restart the job so the new enabled/interval settings apply (the job only
-	// reads AutoUpdate at Start()).
+	// reads AutoUpdate at Start()). Stop/Start satisfy jobs.Job and return an
+	// error for interface uniformity; ScannerUpdateJob never returns a real
+	// one here (its disabled/already-running paths return nil), so both are
+	// discarded (issue #565 finding [40]).
 	if h.updateJob != nil {
-		h.updateJob.Stop()
-		go h.updateJob.Start(context.Background())
+		_ = h.updateJob.Stop()
+		go func() { _ = h.updateJob.Start(context.Background()) }()
 	}
 
 	c.JSON(http.StatusOK, ScanningAutoUpdateResponse{

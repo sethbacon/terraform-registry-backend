@@ -74,17 +74,12 @@ import (
 // be stopped during graceful shutdown. The caller (cmd/server) is responsible for
 // calling Shutdown() when the process receives a termination signal.
 type BackgroundServices struct {
-	mirrorSyncJob         *jobs.MirrorSyncJob
-	tfMirrorSyncJob       *jobs.TerraformMirrorSyncJob
-	expiryNotifier        *jobs.APIKeyExpiryNotifier
-	moduleScannerJob      *jobs.ModuleScannerJob
-	auditCleanupJob       *jobs.AuditCleanupJob
-	webhookRetryJob       *jobs.WebhookRetryJob
-	cvePollJob            *jobs.CVEPollJob
-	releasesKeyRefreshJob *jobs.ReleasesKeyRefreshJob
-	scannerUpdateJob      *jobs.ScannerUpdateJob
-	rateLimiters          []middleware.RateLimiterBackend
-	principalOverrides    *middleware.PrincipalOverrideLimiters
+	// jobs holds every background job behind the jobs.Job interface so they
+	// start and stop uniformly (issue #565 finding [40]) instead of via a
+	// hand-maintained field-per-job list.
+	jobs               *jobs.Registry
+	rateLimiters       []middleware.RateLimiterBackend
+	principalOverrides *middleware.PrincipalOverrideLimiters
 }
 
 // Shutdown stops all background goroutines. It should be called after the HTTP
@@ -92,32 +87,8 @@ type BackgroundServices struct {
 // coverage:skip:integration-only — requires a running router with live DB and jobs
 func (bg *BackgroundServices) Shutdown() {
 	slog.Info("stopping background services")
-	if bg.mirrorSyncJob != nil {
-		bg.mirrorSyncJob.Stop()
-	}
-	if bg.tfMirrorSyncJob != nil {
-		bg.tfMirrorSyncJob.Stop()
-	}
-	if bg.expiryNotifier != nil {
-		bg.expiryNotifier.Stop()
-	}
-	if bg.moduleScannerJob != nil {
-		_ = bg.moduleScannerJob.Stop()
-	}
-	if bg.auditCleanupJob != nil {
-		_ = bg.auditCleanupJob.Stop()
-	}
-	if bg.webhookRetryJob != nil {
-		bg.webhookRetryJob.Stop()
-	}
-	if bg.releasesKeyRefreshJob != nil {
-		bg.releasesKeyRefreshJob.Stop()
-	}
-	if bg.cvePollJob != nil {
-		bg.cvePollJob.Stop()
-	}
-	if bg.scannerUpdateJob != nil {
-		bg.scannerUpdateJob.Stop()
+	if bg.jobs != nil {
+		bg.jobs.StopAll()
 	}
 	for _, rl := range bg.rateLimiters {
 		if rl != nil {
@@ -221,20 +192,24 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	pullThroughSvc := services.NewPullThroughService(providerRepo, mirrorRepo, orgRepo)
 	pullThroughSvc.SetEgressGuard(egressGuard)
 
-	// Initialize mirror sync job
+	// jobRegistry collects every background job; they are all started together
+	// via StartAll near the end of NewRouter (after full wiring) and stopped
+	// together by BackgroundServices.Shutdown (issue #565 finding [40]).
+	jobRegistry := jobs.NewRegistry()
+
+	// Initialize mirror sync job - checks every 10 minutes for mirrors needing sync.
 	mirrorSyncJob := jobs.NewMirrorSyncJob(mirrorRepo, providerRepo, providerDocsRepo, orgRepo, storageBackend, cfg.Storage.DefaultBackend)
 	mirrorSyncJob.SetApprovalRepo(repositories.NewVersionApprovalRepository(sqlxDB))
 	mirrorSyncJob.SetEgressGuard(egressGuard)
-	// Start background sync job - check every 10 minutes for mirrors that need syncing
-	mirrorSyncJob.Start(context.Background(), 10)
-	log.Println("Mirror sync job started (checking every 10 minutes)")
+	mirrorSyncJob.SetInterval(10)
+	jobRegistry.Register(mirrorSyncJob)
 
 	// Initialize Terraform binary mirror repository and sync job
 	tfMirrorRepo := repositories.NewTerraformMirrorRepository(sqlxDB)
 	tfMirrorSyncJob := jobs.NewTerraformMirrorSyncJob(tfMirrorRepo, storageBackend, cfg.Storage.DefaultBackend)
 	tfMirrorSyncJob.SetEgressGuard(egressGuard)
-	tfMirrorSyncJob.Start(context.Background(), 10)
-	log.Println("Terraform binary mirror sync job started (checking every 10 minutes)")
+	tfMirrorSyncJob.SetInterval(10)
+	jobRegistry.Register(tfMirrorSyncJob)
 
 	// Initialize and start the upstream release-signing GPG key refresh job.
 	// On success it installs itself as the in-process resolver consulted by
@@ -251,8 +226,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		log.Printf("Releases key refresh job: construction failed: %v (auto-refresh disabled)", releasesKeyJobErr)
 	} else {
 		jobs.SetReleasesKeyResolver(releasesKeyRefreshJob)
-		go releasesKeyRefreshJob.Start(context.Background())
-		log.Println("Releases key refresh job started")
+		jobRegistry.Register(releasesKeyRefreshJob)
 	}
 
 	// Public handler is created here (before route registration)
@@ -261,10 +235,9 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// OCI distribution handler (public read, backed by existing module storage)
 	ociHandler := oci.NewHandler(db, storageBackend)
 
-	// Initialize and start the API key expiry notifier
+	// Initialize the API key expiry notifier
 	expiryNotifier := jobs.NewAPIKeyExpiryNotifier(apiKeyRepo, userRepo, &cfg.Notifications)
-	go expiryNotifier.Start(context.Background())
-	log.Println("API key expiry notifier started")
+	jobRegistry.Register(expiryNotifier)
 
 	// Initialize and start the module security scanner job (no-op when scanning is disabled)
 	// If scanning is not enabled via config file, check the database for setup wizard config.
@@ -328,11 +301,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	}
 
 	moduleScannerJob := jobs.NewModuleScannerJob(&cfg.Scanning, scanRepo, moduleRepo, storageBackend)
-	go func() {
-		if err := moduleScannerJob.Start(context.Background()); err != nil {
-			log.Printf("module scanner job failed to start: %v", err)
-		}
-	}()
+	jobRegistry.Register(moduleScannerJob)
 
 	// Initialize and start the scheduled scanner update-check job (no-op when
 	// scanning.auto_update.enabled=false). Discovers newer upstream scanner
@@ -341,16 +310,11 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	sbvRepo := repositories.NewScannerBinaryVersionRepository(sqlxDB)
 	scannerApprovalRepo := repositories.NewVersionApprovalRepository(sqlxDB)
 	scannerUpdateJob := jobs.NewScannerUpdateJob(&cfg.Scanning, &cfg.Notifications, &cfg.CVE, sbvRepo, scannerApprovalRepo, oidcConfigRepo, moduleScannerJob, nil, nil)
-	go scannerUpdateJob.Start(context.Background())
+	jobRegistry.Register(scannerUpdateJob)
 
-	// Initialize and start the audit log cleanup job (no-op when retention_days=0)
+	// Initialize the audit log cleanup job (no-op when retention_days=0)
 	auditCleanupJob := jobs.NewAuditCleanupJob(&cfg.AuditRetention, auditRepo)
-	go func() {
-		if err := auditCleanupJob.Start(context.Background()); err != nil {
-			log.Printf("Audit cleanup job failed: %v", err)
-		}
-	}()
-	log.Println("Audit log cleanup job started")
+	jobRegistry.Register(auditCleanupJob)
 
 	// Get encryption key from environment for OAuth token encryption
 	encryptionKey := os.Getenv("ENCRYPTION_KEY")
@@ -756,17 +720,15 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		WithModuleDocs(moduleDocsRepo).
 		WithSharedMinter(sharedMinter)
 
-	// Initialize and start the webhook retry job (no-op when max_retries=0)
+	// Initialize the webhook retry job (no-op when max_retries=0)
 	webhookRetryJob := jobs.NewWebhookRetryJob(&cfg.Webhooks, scmRepo, moduleRepo, scmPublisher, tokenCipher)
-	go webhookRetryJob.Start(context.Background())
-	log.Println("Webhook retry job started")
+	jobRegistry.Register(webhookRetryJob)
 
-	// Initialize and start the CVE polling job (no-op when cve.enabled=false)
+	// Initialize the CVE polling job (no-op when cve.enabled=false)
 	cveRepo := repositories.NewCVERepository(db)
 	cvePollJob := jobs.NewCVEPollJob(cveRepo, auditRepo, &cfg.Scanning, &cfg.CVE, &cfg.Notifications)
 	cvePollJob.SetEgressGuard(egressGuard)
-	go cvePollJob.Start(context.Background())
-	log.Println("CVE poll job started")
+	jobRegistry.Register(cvePollJob)
 
 	// Initialize SCM handlers with the already-created repositories and token cipher
 	scmProviderHandlers := admin.NewSCMProviderHandlers(cfg, scmRepo, orgRepo, tokenCipher).WithMinter(sharedMinter).WithEgressGuard(egressGuard)
@@ -1448,18 +1410,16 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// Single-use approval token redemption — no auth, token possession is the credential.
 	router.POST("/webhooks/approvals/:token", approvalWebhookHandler.RedeemApprovalToken)
 
+	// Start every registered background job now that all wiring is complete.
+	// Each runs in its own goroutine (Registry.StartAll); context.Background()
+	// means they exit only via BackgroundServices.Shutdown (Stop), matching the
+	// prior per-job `go job.Start(context.Background())` behavior.
+	jobRegistry.StartAll(context.Background())
+
 	bg := &BackgroundServices{
-		mirrorSyncJob:         mirrorSyncJob,
-		tfMirrorSyncJob:       tfMirrorSyncJob,
-		expiryNotifier:        expiryNotifier,
-		moduleScannerJob:      moduleScannerJob,
-		auditCleanupJob:       auditCleanupJob,
-		webhookRetryJob:       webhookRetryJob,
-		cvePollJob:            cvePollJob,
-		releasesKeyRefreshJob: releasesKeyRefreshJob,
-		scannerUpdateJob:      scannerUpdateJob,
-		rateLimiters:          collectRateLimiterBackends(authRateLimiter, generalRateLimiter, uploadRateLimiter, orgRateLimiter),
-		principalOverrides:    principalOverrides,
+		jobs:               jobRegistry,
+		rateLimiters:       collectRateLimiterBackends(authRateLimiter, generalRateLimiter, uploadRateLimiter, orgRateLimiter),
+		principalOverrides: principalOverrides,
 	}
 
 	return router, bg

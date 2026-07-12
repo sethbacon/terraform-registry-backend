@@ -48,9 +48,10 @@ type TerraformMirrorSyncJob struct {
 	activeSyncs      map[uuid.UUID]bool
 	activeSyncsMutex sync.Mutex
 
-	stopCh    chan struct{}
-	startedCh chan struct{}
-	wg        sync.WaitGroup
+	stopCh chan struct{}
+	// intervalMinutes is the sync cadence; SetInterval overrides it, otherwise
+	// Start falls back to defaultTerraformMirrorSyncIntervalMinutes.
+	intervalMinutes int
 
 	// manualTriggerCh carries explicit per-config sync requests from HTTP handlers.
 	manualTriggerCh chan uuid.UUID
@@ -72,7 +73,6 @@ func NewTerraformMirrorSyncJob(
 		storageBackendName: storageBackendName,
 		activeSyncs:        make(map[uuid.UUID]bool),
 		stopCh:             make(chan struct{}),
-		startedCh:          make(chan struct{}),
 		manualTriggerCh:    make(chan uuid.UUID, 16),
 	}
 }
@@ -84,44 +84,62 @@ func (j *TerraformMirrorSyncJob) SetEgressGuard(g *httpsafe.Guard) {
 	j.egressGuard = g
 }
 
-// Start begins the background sync loop, checking every intervalMinutes.
-func (j *TerraformMirrorSyncJob) Start(ctx context.Context, intervalMinutes int) {
+// defaultTerraformMirrorSyncIntervalMinutes is the sync cadence used when
+// SetInterval was not called (preserves the value previously hard-coded at
+// the call site).
+const defaultTerraformMirrorSyncIntervalMinutes = 10
+
+// SetInterval overrides the sync cadence. Call before the job is started
+// (i.e. before registering it with jobs.Registry); a value <= 0 keeps the
+// default.
+func (j *TerraformMirrorSyncJob) SetInterval(minutes int) { j.intervalMinutes = minutes }
+
+// Name identifies the job in the jobs.Registry (issue #565 finding [40]).
+func (j *TerraformMirrorSyncJob) Name() string { return "terraform-mirror-sync" }
+
+// Start runs the background sync loop until ctx is cancelled or Stop is
+// called. It blocks (the Registry runs it in its own goroutine); the error
+// return satisfies jobs.Job, though this job has no fatal startup error.
+func (j *TerraformMirrorSyncJob) Start(ctx context.Context) error {
+	intervalMinutes := j.intervalMinutes
+	if intervalMinutes <= 0 {
+		intervalMinutes = defaultTerraformMirrorSyncIntervalMinutes
+	}
 	log.Printf("[terraform-mirror] starting sync job (interval: %d minutes)", intervalMinutes)
 
-	j.wg.Add(1)
-	go func() {
-		close(j.startedCh)
-		defer j.wg.Done()
+	ticker := time.NewTicker(time.Duration(intervalMinutes) * time.Minute)
+	defer ticker.Stop()
 
-		ticker := time.NewTicker(time.Duration(intervalMinutes) * time.Minute)
-		defer ticker.Stop()
+	// Run an initial scheduled check immediately on startup.
+	j.runScheduledSyncs(ctx)
 
-		// Run an initial scheduled check immediately on startup.
-		j.runScheduledSyncs(ctx)
-
-		for {
-			select {
-			case <-ticker.C:
-				j.runScheduledSyncs(ctx)
-			case configID := <-j.manualTriggerCh:
-				cid := configID
-				safego.Go(func() { j.syncConfig(ctx, cid, "manual") })
-			case <-j.stopCh:
-				log.Println("[terraform-mirror] sync job stopped")
-				return
-			case <-ctx.Done():
-				log.Println("[terraform-mirror] sync job context cancelled")
-				return
-			}
+	for {
+		select {
+		case <-ticker.C:
+			j.runScheduledSyncs(ctx)
+		case configID := <-j.manualTriggerCh:
+			cid := configID
+			safego.Go(func() { j.syncConfig(ctx, cid, "manual") })
+		case <-j.stopCh:
+			log.Println("[terraform-mirror] sync job stopped")
+			return nil
+		case <-ctx.Done():
+			log.Println("[terraform-mirror] sync job context cancelled")
+			return nil
 		}
-	}()
+	}
 }
 
-// Stop halts the background loop gracefully.
-func (j *TerraformMirrorSyncJob) Stop() {
-	<-j.startedCh
-	close(j.stopCh)
-	j.wg.Wait()
+// Stop signals the sync loop to exit. Best-effort and idempotent (matching the
+// other background jobs); it does not block waiting for the loop to finish.
+func (j *TerraformMirrorSyncJob) Stop() error {
+	select {
+	case <-j.stopCh:
+		// already stopped
+	default:
+		close(j.stopCh)
+	}
+	return nil
 }
 
 // TriggerSync enqueues a manual sync for a single config identified by its UUID.

@@ -124,13 +124,18 @@ func (j *ReleasesKeyRefreshJob) ResolveReleasesKey(tool string) string {
 	return j.cache[strings.ToLower(tool)]
 }
 
+// Name identifies the job in the jobs.Registry (issue #565 finding [40]).
+func (j *ReleasesKeyRefreshJob) Name() string { return "releases-key-refresh" }
+
 // Start runs an initial refresh cycle, primes the in-process cache from any
 // previously persisted rows, then loops on a ticker. It is a no-op when
-// cfg.Enabled is false.
-func (j *ReleasesKeyRefreshJob) Start(ctx context.Context) {
+// cfg.Enabled is false. It blocks (the Registry runs it in its own
+// goroutine); the error return satisfies jobs.Job, though this job has no
+// fatal startup error.
+func (j *ReleasesKeyRefreshJob) Start(ctx context.Context) error {
 	if !j.cfg.Enabled {
 		slog.Info("releases key refresh job: disabled (releases_gpg_keys.enabled=false)")
-		return
+		return nil
 	}
 
 	interval := time.Duration(j.cfg.RefreshIntervalHours) * time.Hour
@@ -160,17 +165,17 @@ func (j *ReleasesKeyRefreshJob) Start(ctx context.Context) {
 		case <-ticker.C:
 			j.runCycle(ctx)
 		case <-j.stopChan:
-			return
+			return nil
 		case <-ctx.Done():
-			return
+			return nil
 		}
 	}
 }
 
 // Stop signals the job to exit gracefully.
-func (j *ReleasesKeyRefreshJob) Stop() {
+func (j *ReleasesKeyRefreshJob) Stop() error {
 	if j == nil {
-		return
+		return nil
 	}
 	select {
 	case <-j.stopChan:
@@ -178,6 +183,7 @@ func (j *ReleasesKeyRefreshJob) Stop() {
 	default:
 		close(j.stopChan)
 	}
+	return nil
 }
 
 // primeCacheFromDB loads any persisted rows into the in-process cache so the
