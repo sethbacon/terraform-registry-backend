@@ -13,7 +13,13 @@ import (
 	"time"
 
 	"github.com/terraform-registry/terraform-registry/internal/audit"
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 )
+
+// loopbackGuard allow-lists the httptest.Server addresses used throughout this
+// file (127.0.0.1 / ::1) so tests exercise real HTTP without needing the
+// strict production egress policy to accept a loopback target.
+var loopbackGuard = httpsafe.MustGuard("127.0.0.1", "::1")
 
 // ---------------------------------------------------------------------------
 // MultiShipper — via NewMultiShipper factory
@@ -97,7 +103,7 @@ func TestMultiShipper_ContinuesAfterShipperError(t *testing.T) {
 		{Enabled: true, Type: "webhook", Webhook: &audit.WebhookConfig{URL: srv1.URL, Timeout: time.Second}},
 		{Enabled: true, Type: "webhook", Webhook: &audit.WebhookConfig{URL: srv2.URL, Timeout: time.Second}},
 	}
-	ms, err := audit.NewMultiShipper(cfgs)
+	ms, err := audit.NewMultiShipperWithGuard(cfgs, loopbackGuard)
 	if err != nil {
 		t.Fatalf("NewMultiShipper error: %v", err)
 	}
@@ -130,10 +136,10 @@ func TestWebhookShipper_ShipEntry(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ws, err := audit.NewWebhookShipper(&audit.WebhookConfig{
+	ws, err := audit.NewWebhookShipperWithGuard(&audit.WebhookConfig{
 		URL:     srv.URL,
 		Timeout: 5 * time.Second,
-	})
+	}, loopbackGuard)
 	if err != nil {
 		t.Fatalf("NewWebhookShipper error: %v", err)
 	}
@@ -162,7 +168,7 @@ func TestWebhookShipper_ErrorResponse(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ws, _ := audit.NewWebhookShipper(&audit.WebhookConfig{URL: srv.URL, Timeout: 5 * time.Second})
+	ws, _ := audit.NewWebhookShipperWithGuard(&audit.WebhookConfig{URL: srv.URL, Timeout: 5 * time.Second}, loopbackGuard)
 	defer ws.Close()
 
 	if err := ws.Ship(context.Background(), &audit.LogEntry{Action: "err"}); err == nil {
@@ -178,11 +184,11 @@ func TestWebhookShipper_CustomHeader(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ws, _ := audit.NewWebhookShipper(&audit.WebhookConfig{
+	ws, _ := audit.NewWebhookShipperWithGuard(&audit.WebhookConfig{
 		URL:     srv.URL,
 		Timeout: 5 * time.Second,
 		Headers: map[string]string{"X-Auth-Token": "secret"},
-	})
+	}, loopbackGuard)
 	defer ws.Close()
 
 	ws.Ship(context.Background(), &audit.LogEntry{Action: "header.test"})
@@ -287,12 +293,12 @@ func TestWebhookShipper_BatchedShip(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ws, err := audit.NewWebhookShipper(&audit.WebhookConfig{
+	ws, err := audit.NewWebhookShipperWithGuard(&audit.WebhookConfig{
 		URL:           srv.URL,
 		Timeout:       5 * time.Second,
 		BatchSize:     1, // Batch of 1 triggers flush immediately on first entry
 		FlushInterval: 5 * time.Second,
-	})
+	}, loopbackGuard)
 	if err != nil {
 		t.Fatalf("NewWebhookShipper error: %v", err)
 	}
@@ -321,12 +327,12 @@ func TestWebhookShipper_BatchFlushOnInterval(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ws, _ := audit.NewWebhookShipper(&audit.WebhookConfig{
+	ws, _ := audit.NewWebhookShipperWithGuard(&audit.WebhookConfig{
 		URL:           srv.URL,
 		Timeout:       5 * time.Second,
 		BatchSize:     100,                   // Large batch, won't fill by count
 		FlushInterval: 50 * time.Millisecond, // Short flush interval
-	})
+	}, loopbackGuard)
 	defer ws.Close()
 
 	// Ship 1 entry — should be flushed by the interval ticker
@@ -350,12 +356,12 @@ func TestWebhookShipper_BatchFlushOnClose(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ws, _ := audit.NewWebhookShipper(&audit.WebhookConfig{
+	ws, _ := audit.NewWebhookShipperWithGuard(&audit.WebhookConfig{
 		URL:           srv.URL,
 		Timeout:       5 * time.Second,
 		BatchSize:     100,             // Large batch, won't fill by count
 		FlushInterval: 5 * time.Second, // Long interval, won't fire in test
-	})
+	}, loopbackGuard)
 
 	// Ship 1 entry and wait for goroutine to add it to the batch
 	ws.Ship(context.Background(), &audit.LogEntry{Action: "flush-on-close"})

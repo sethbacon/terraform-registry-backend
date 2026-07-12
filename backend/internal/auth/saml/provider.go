@@ -19,6 +19,7 @@ import (
 	"github.com/crewjam/saml"
 	"github.com/crewjam/saml/samlsp"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 )
 
 // Provider wraps a crewjam/saml ServiceProvider and exposes methods needed
@@ -48,9 +49,17 @@ type AssertionMeta struct {
 	NotOnOrAfter time.Time
 }
 
-// NewProvider creates a SAML Service Provider for the given IdP configuration.
-// It loads the SP certificate/key pair for signing and fetches IdP metadata.
+// NewProvider creates a SAML Service Provider for the given IdP configuration
+// with the strict egress policy (no allow-list). It loads the SP
+// certificate/key pair for signing and fetches IdP metadata.
 func NewProvider(cfg *config.SAMLConfig, idpCfg *config.SAMLIdPConfig) (*Provider, error) {
+	return NewProviderWithGuard(cfg, idpCfg, nil)
+}
+
+// NewProviderWithGuard is NewProvider with an egress guard widening the SSRF
+// deny-list (nil = strict), for deployments whose SAML IdP metadata_url points
+// at an internal IdP.
+func NewProviderWithGuard(cfg *config.SAMLConfig, idpCfg *config.SAMLIdPConfig, egress *httpsafe.Guard) (*Provider, error) {
 	if cfg.ACSURL == "" {
 		return nil, fmt.Errorf("saml: acs_url is required")
 	}
@@ -90,7 +99,7 @@ func NewProvider(cfg *config.SAMLConfig, idpCfg *config.SAMLIdPConfig) (*Provide
 	}
 
 	// Fetch or parse IdP metadata
-	idpMetadata, err := resolveIdPMetadata(idpCfg)
+	idpMetadata, err := resolveIdPMetadata(idpCfg, egress)
 	if err != nil {
 		return nil, fmt.Errorf("saml: IdP %q: %w", idpCfg.Name, err)
 	}
@@ -234,7 +243,7 @@ func (p *Provider) parseAssertionFromResponse(samlResponse string) (*UserInfo, e
 }
 
 // resolveIdPMetadata fetches or parses IdP metadata from the config.
-func resolveIdPMetadata(idpCfg *config.SAMLIdPConfig) (*saml.EntityDescriptor, error) {
+func resolveIdPMetadata(idpCfg *config.SAMLIdPConfig, egress *httpsafe.Guard) (*saml.EntityDescriptor, error) {
 	if idpCfg.MetadataXML != "" {
 		metadata := &saml.EntityDescriptor{}
 		if err := xml.Unmarshal([]byte(idpCfg.MetadataXML), metadata); err != nil {
@@ -244,14 +253,18 @@ func resolveIdPMetadata(idpCfg *config.SAMLIdPConfig) (*saml.EntityDescriptor, e
 	}
 
 	if idpCfg.MetadataURL != "" {
-		return fetchIdPMetadata(idpCfg.MetadataURL)
+		return fetchIdPMetadata(idpCfg.MetadataURL, egress)
 	}
 
 	return nil, fmt.Errorf("either metadata_url or metadata_xml must be provided")
 }
 
-// fetchIdPMetadata retrieves and parses IdP metadata from a URL.
-func fetchIdPMetadata(metadataURL string) (*saml.EntityDescriptor, error) {
+// fetchIdPMetadata retrieves and parses IdP metadata from a URL. The fetch is
+// routed through the SSRF-safe egress client (internal/httpsafe): scheme is
+// restricted to HTTPS, and (unless the host is allow-listed) the resolved IP
+// is checked against the private/metadata deny-list before dialing, with
+// redirects re-validated per hop.
+func fetchIdPMetadata(metadataURL string, egress *httpsafe.Guard) (*saml.EntityDescriptor, error) {
 	parsedURL, err := url.Parse(metadataURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid metadata URL: %w", err)
@@ -260,7 +273,7 @@ func fetchIdPMetadata(metadataURL string) (*saml.EntityDescriptor, error) {
 		return nil, fmt.Errorf("metadata URL must use HTTPS: %s", metadataURL)
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := httpsafe.NewClient(30*time.Second, egress)
 	resp, err := client.Get(metadataURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch metadata from %s: %w", metadataURL, err)

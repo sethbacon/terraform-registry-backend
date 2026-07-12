@@ -7,6 +7,8 @@ import (
 	"context"
 	"fmt"
 	"sync"
+
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 )
 
 // PolicyEngine evaluates module-upload (and other) inputs against a loaded Rego policy bundle.
@@ -14,18 +16,31 @@ import (
 //
 // PolicyEngine is safe for concurrent use.
 type PolicyEngine struct {
-	mu      sync.RWMutex
-	queries []*compiledQuery // one per policy file loaded from the bundle
-	enabled bool
-	mode    string // "warn" | "block"
+	mu           sync.RWMutex
+	queries      []*compiledQuery // one per policy file loaded from the bundle
+	enabled      bool
+	mode         string // "warn" | "block"
+	bundleSHA256 string
+	egress       *httpsafe.Guard
 }
 
-// NewPolicyEngine returns a new PolicyEngine configured from cfg.  If cfg.Enabled is false
-// the engine is a no-op: Evaluate always returns an allowed result.
+// NewPolicyEngine returns a new PolicyEngine configured from cfg, with the
+// strict egress policy (no allow-list) applied to the bundle fetch. If
+// cfg.Enabled is false the engine is a no-op: Evaluate always returns an
+// allowed result.
 func NewPolicyEngine(cfg Config) (*PolicyEngine, error) {
+	return NewPolicyEngineWithGuard(cfg, nil)
+}
+
+// NewPolicyEngineWithGuard is NewPolicyEngine with an egress guard widening
+// the SSRF deny-list applied to the bundle fetch (nil = strict), for
+// deployments whose bundle_url points at an internal bundle server.
+func NewPolicyEngineWithGuard(cfg Config, egress *httpsafe.Guard) (*PolicyEngine, error) {
 	e := &PolicyEngine{
-		enabled: cfg.Enabled,
-		mode:    cfg.Mode,
+		enabled:      cfg.Enabled,
+		mode:         cfg.Mode,
+		bundleSHA256: cfg.BundleSHA256,
+		egress:       egress,
 	}
 	if !cfg.Enabled || cfg.BundleURL == "" {
 		return e, nil
@@ -90,9 +105,15 @@ func (e *PolicyEngine) Mode() string {
 }
 
 // loadBundle fetches the bundle from bundleURL, parses .rego files, and replaces the
-// current query set atomically.
+// current query set atomically. On any failure (including a bundleSHA256
+// mismatch) the previously loaded query set is left untouched — fail closed.
 func (e *PolicyEngine) loadBundle(ctx context.Context, bundleURL string) error {
-	regoFiles, err := fetchBundle(ctx, bundleURL)
+	e.mu.RLock()
+	sha := e.bundleSHA256
+	egress := e.egress
+	e.mu.RUnlock()
+
+	regoFiles, err := fetchBundle(ctx, bundleURL, sha, egress)
 	if err != nil {
 		return err
 	}

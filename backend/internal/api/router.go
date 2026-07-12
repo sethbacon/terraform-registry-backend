@@ -48,9 +48,11 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/jobs"
 	"github.com/terraform-registry/terraform-registry/internal/middleware"
 	"github.com/terraform-registry/terraform-registry/internal/policy"
+	"github.com/terraform-registry/terraform-registry/internal/scm"
 	"github.com/terraform-registry/terraform-registry/internal/scm/appcreds"
 	"github.com/terraform-registry/terraform-registry/internal/services"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
@@ -157,6 +159,19 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		log.Fatalf("invalid trusted_proxies config: %v", err)
 	}
 
+	// egressGuard widens the SSRF deny-list enforced by every outbound client
+	// this router wires up (mirror sync, SCM connectors, OSV poller, policy
+	// bundle, SAML metadata, ...) per security.egress.allowlist. Config.Validate
+	// already parsed this list once at Load(); a second parse error here would
+	// mean cfg was constructed without going through config.Load.
+	egressGuard, err := httpsafe.NewGuard(cfg.Security.Egress.Allowlist)
+	if err != nil {
+		log.Fatalf("invalid security.egress.allowlist: %v", err)
+	}
+	if err := scm.ConfigureEgress(cfg.Security.Egress.Allowlist); err != nil {
+		log.Fatalf("failed to configure SCM connector egress policy: %v", err)
+	}
+
 	// Initialize storage backend
 	storageBackend, err := storage.NewStorage(cfg)
 	if err != nil {
@@ -180,6 +195,14 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// finding [9]).
 	userTokenRevocationRepo := repositories.NewUserTokenRevocationRepository(db)
 
+	// Namespace ownership claims back the object-level authorization on every
+	// module/provider mutation route (issue #555, CWE-639): a namespace binds
+	// to the organization that first publishes into it, and only principals
+	// with write access in that organization (or admins) may mutate its
+	// artifacts. The authorizer is wired per-route below, after RequireScope.
+	nsClaimRepo := repositories.NewNamespaceClaimRepository(db)
+	nsAuthz := middleware.NewNamespaceAuthorizer(orgRepo, nsClaimRepo, moduleRepo, providerRepo)
+
 	// Wrap *sql.DB with sqlx for SCM and mirror repositories (public) and identity
 	// data access (the identity schema when the cutover is enabled).
 	sqlxDB := sqlx.NewDb(db, "postgres")
@@ -196,10 +219,12 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 
 	// Initialize pull-through caching service
 	pullThroughSvc := services.NewPullThroughService(providerRepo, mirrorRepo, orgRepo)
+	pullThroughSvc.SetEgressGuard(egressGuard)
 
 	// Initialize mirror sync job
 	mirrorSyncJob := jobs.NewMirrorSyncJob(mirrorRepo, providerRepo, providerDocsRepo, orgRepo, storageBackend, cfg.Storage.DefaultBackend)
 	mirrorSyncJob.SetApprovalRepo(repositories.NewVersionApprovalRepository(sqlxDB))
+	mirrorSyncJob.SetEgressGuard(egressGuard)
 	// Start background sync job - check every 10 minutes for mirrors that need syncing
 	mirrorSyncJob.Start(context.Background(), 10)
 	log.Println("Mirror sync job started (checking every 10 minutes)")
@@ -207,6 +232,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// Initialize Terraform binary mirror repository and sync job
 	tfMirrorRepo := repositories.NewTerraformMirrorRepository(sqlxDB)
 	tfMirrorSyncJob := jobs.NewTerraformMirrorSyncJob(tfMirrorRepo, storageBackend, cfg.Storage.DefaultBackend)
+	tfMirrorSyncJob.SetEgressGuard(egressGuard)
 	tfMirrorSyncJob.Start(context.Background(), 10)
 	log.Println("Terraform binary mirror sync job started (checking every 10 minutes)")
 
@@ -215,7 +241,8 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// terraform mirror sync, so the next sync tick after a successful refresh
 	// uses the cached upstream key instead of the embedded snapshot.
 	releasesKeyRepo := repositories.NewReleasesGPGKeyRepository(sqlxDB)
-	releasesKeyRefreshJob, releasesKeyJobErr := jobs.NewReleasesKeyRefreshJob(&cfg.ReleasesGPGKeys, releasesKeyRepo, nil)
+	releasesKeyHTTPClient := httpsafe.NewClient(30*time.Second, egressGuard)
+	releasesKeyRefreshJob, releasesKeyJobErr := jobs.NewReleasesKeyRefreshJob(&cfg.ReleasesGPGKeys, releasesKeyRepo, releasesKeyHTTPClient)
 	if releasesKeyJobErr != nil {
 		// The only way construction fails is a parse error on the embedded
 		// OpenTofu snapshot — fatal because the fingerprint pin can't be
@@ -651,7 +678,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	}
 
 	var authHandlers *admin.AuthHandlers
-	authHandlers, err = admin.NewAuthHandlers(cfg, identityDB, oidcConfigRepo, tokenRepo, oidcStateStore)
+	authHandlers, err = admin.NewAuthHandlers(cfg, identityDB, oidcConfigRepo, tokenRepo, oidcStateStore, admin.WithSAMLEgressGuard(egressGuard))
 	if err != nil {
 		log.Fatalf("Failed to initialize auth handlers: %v", err)
 	}
@@ -689,15 +716,17 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// fall back to public via the identity connection's search_path.
 	apiKeyHandlers := admin.NewAPIKeyHandlers(cfg, identityDB)
 	userHandlers := admin.NewUserHandlers(cfg, identityDB)
-	orgHandlers := admin.NewOrganizationHandlers(cfg, identityDB, userTokenRevocationRepo)
+	orgHandlers := admin.NewOrganizationHandlers(cfg, identityDB, nsClaimRepo, userTokenRevocationRepo)
 	statsHandlers := admin.NewStatsHandler(identitySqlxDB, &cfg.Scanning)
 	mirrorHandlers := admin.NewMirrorHandler(mirrorRepo, orgRepo, providerRepo)
 	mirrorHandlers.SetSyncJob(mirrorSyncJob) // Connect sync job for manual triggers
+	mirrorHandlers.SetEgressGuard(egressGuard)
 
 	// Initialize Terraform binary mirror admin handler
 	tfMirrorAdminHandler := admin.NewTerraformMirrorHandler(tfMirrorRepo)
 	tfMirrorAdminHandler.SetSyncJob(tfMirrorSyncJob)
 	tfMirrorAdminHandler.SetStorageBackend(storageBackend) // delete stored binaries when a version is removed
+	tfMirrorAdminHandler.SetEgressGuard(egressGuard)
 	releasesGPGKeysAdminHandler := admin.NewReleasesGPGKeysHandler(releasesKeyRepo, tfMirrorRepo, cfg.ReleasesGPGKeys)
 	versionApprovalHandler := admin.NewVersionApprovalHandler(repositories.NewVersionApprovalRepository(sqlxDB))
 	providerAdminHandlers := admin.NewProviderAdminHandlers(db, storageBackend, cfg)
@@ -735,11 +764,12 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// Initialize and start the CVE polling job (no-op when cve.enabled=false)
 	cveRepo := repositories.NewCVERepository(db)
 	cvePollJob := jobs.NewCVEPollJob(cveRepo, auditRepo, &cfg.Scanning, &cfg.CVE, &cfg.Notifications)
+	cvePollJob.SetEgressGuard(egressGuard)
 	go cvePollJob.Start(context.Background())
 	log.Println("CVE poll job started")
 
 	// Initialize SCM handlers with the already-created repositories and token cipher
-	scmProviderHandlers := admin.NewSCMProviderHandlers(cfg, scmRepo, orgRepo, tokenCipher).WithMinter(sharedMinter)
+	scmProviderHandlers := admin.NewSCMProviderHandlers(cfg, scmRepo, orgRepo, tokenCipher).WithMinter(sharedMinter).WithEgressGuard(egressGuard)
 	scmOAuthHandlers := admin.NewSCMOAuthHandlers(cfg, scmRepo, userRepo, tokenCipher).WithMinter(sharedMinter)
 	scmLinkingHandler := modules.NewSCMLinkingHandler(scmRepo, moduleRepo, tokenCipher, cfg.Server.BaseURL, scmPublisher).WithMinter(sharedMinter)
 
@@ -762,9 +792,10 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		Enabled:               cfg.Policy.Enabled,
 		Mode:                  cfg.Policy.Mode,
 		BundleURL:             cfg.Policy.BundleURL,
+		BundleSHA256:          cfg.Policy.BundleSHA256,
 		BundleRefreshInterval: cfg.Policy.BundleRefreshInterval,
 	}
-	policyEngine, err := policy.NewPolicyEngine(policyEngineCfg)
+	policyEngine, err := policy.NewPolicyEngineWithGuard(policyEngineCfg, egressGuard)
 	if err != nil {
 		log.Fatalf("failed to initialize policy engine: %v", err)
 	}
@@ -941,7 +972,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		// Authenticated-only endpoints
 		authenticatedGroup := apiV1.Group("")
 		authenticatedGroup.Use(middleware.AuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo, userTokenRevocationRepo))
-		authenticatedGroup.Use(middleware.CSRFMiddleware()) // double-submit cookie CSRF protection
+		authenticatedGroup.Use(middleware.CSRFMiddleware(cfg)) // double-submit cookie CSRF protection + browser-origin Bearer allowlist
 		authenticatedGroup.Use(middleware.PrincipalRateLimitMiddleware(generalRateLimiter, principalOverrides))
 		authenticatedGroup.Use(middleware.OrgRateLimitMiddleware(generalRateLimiter, orgRateLimiter))
 		authenticatedGroup.Use(middleware.AuditMiddleware(auditRepo)) // Audit all authenticated actions
@@ -960,73 +991,92 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 			// Stats endpoints (require auth)
 			authenticatedGroup.GET("/admin/stats/dashboard", statsHandlers.GetDashboardStats)
 
-			// Modules admin endpoints - require write permissions
+			// Modules admin endpoints - require write permissions plus
+			// namespace-org authorization (issue #555)
 			authenticatedGroup.POST("/admin/modules/create",
 				middleware.RequireScope(auth.ScopeModulesWrite),
+				nsAuthz.RequirePublishAccessFromJSON(auth.ScopeModulesWrite),
 				moduleAdminHandlers.CreateModuleRecord)
 			authenticatedGroup.GET("/admin/modules/:id",
 				middleware.RequireScope(auth.ScopeModulesRead),
 				moduleAdminHandlers.GetModuleByIDRecord)
 			authenticatedGroup.PUT("/admin/modules/:id",
 				middleware.RequireScope(auth.ScopeModulesWrite),
+				nsAuthz.RequireModuleUpdateAccess(auth.ScopeModulesWrite),
 				moduleAdminHandlers.UpdateModuleRecord)
 			authenticatedGroup.POST("/modules",
 				middleware.RateLimitMiddleware(uploadRateLimiter), // Stricter rate limit for uploads
 				middleware.RequireScope(auth.ScopeModulesWrite),
+				nsAuthz.RequirePublishAccessFromForm(auth.ScopeModulesWrite, 100<<20), // matches the handler's ParseMultipartForm limit
 				modules.UploadHandler(db, storageBackend, cfg, scanRepo, moduleDocsRepo, policyEngine))
 
-			// Providers admin endpoints - require write permissions
+			// Providers admin endpoints - require write permissions plus
+			// namespace-org authorization (issue #555)
 			authenticatedGroup.POST("/providers",
 				middleware.RateLimitMiddleware(uploadRateLimiter), // Stricter rate limit for uploads
 				middleware.RequireScope(auth.ScopeProvidersWrite),
+				nsAuthz.RequirePublishAccessFromForm(auth.ScopeProvidersWrite, 32<<20), // gin's default multipart memory limit
 				providers.UploadHandler(db, storageBackend, cfg))
 			authenticatedGroup.DELETE("/providers/:namespace/:type",
 				middleware.RequireScope(auth.ScopeProvidersWrite),
+				nsAuthz.RequireNamespaceAccessFromPath(auth.ScopeProvidersWrite),
 				providerAdminHandlers.DeleteProvider)
 			authenticatedGroup.DELETE("/providers/:namespace/:type/versions/:version",
 				middleware.RequireScope(auth.ScopeProvidersWrite),
+				nsAuthz.RequireNamespaceAccessFromPath(auth.ScopeProvidersWrite),
 				providerAdminHandlers.DeleteVersion)
 			authenticatedGroup.POST("/providers/:namespace/:type/versions/:version/deprecate",
 				middleware.RequireScope(auth.ScopeProvidersWrite),
+				nsAuthz.RequireNamespaceAccessFromPath(auth.ScopeProvidersWrite),
 				providerAdminHandlers.DeprecateVersion)
 			authenticatedGroup.DELETE("/providers/:namespace/:type/versions/:version/deprecate",
 				middleware.RequireScope(auth.ScopeProvidersWrite),
+				nsAuthz.RequireNamespaceAccessFromPath(auth.ScopeProvidersWrite),
 				providerAdminHandlers.UndeprecateVersion)
 
 			// Provider record admin endpoints (create + get by UUID)
 			authenticatedGroup.POST("/admin/providers",
 				middleware.RequireScope(auth.ScopeProvidersWrite),
+				nsAuthz.RequirePublishAccessFromJSON(auth.ScopeProvidersWrite),
 				providerAdminHandlers.CreateProviderRecord)
 			authenticatedGroup.GET("/admin/providers/:id",
 				middleware.RequireScope(auth.ScopeProvidersRead),
 				providerAdminHandlers.GetProviderByID)
 			authenticatedGroup.PUT("/admin/providers/:id",
 				middleware.RequireScope(auth.ScopeProvidersWrite),
+				nsAuthz.RequireProviderAccessByID(auth.ScopeProvidersWrite),
 				providerAdminHandlers.UpdateProviderRecord)
 
 			// Modules admin endpoints - delete, deprecate (GET moved to publicDetailGroup above)
 			authenticatedGroup.DELETE("/modules/:namespace/:name/:system",
 				middleware.RequireScope(auth.ScopeModulesWrite),
+				nsAuthz.RequireNamespaceAccessFromPath(auth.ScopeModulesWrite),
 				moduleAdminHandlers.DeleteModule)
 			authenticatedGroup.DELETE("/modules/:namespace/:name/:system/versions/:version",
 				middleware.RequireScope(auth.ScopeModulesWrite),
+				nsAuthz.RequireNamespaceAccessFromPath(auth.ScopeModulesWrite),
 				moduleAdminHandlers.DeleteVersion)
 			authenticatedGroup.POST("/modules/:namespace/:name/:system/versions/:version/deprecate",
 				middleware.RequireScope(auth.ScopeModulesWrite),
+				nsAuthz.RequireNamespaceAccessFromPath(auth.ScopeModulesWrite),
 				moduleAdminHandlers.DeprecateVersion)
 			authenticatedGroup.DELETE("/modules/:namespace/:name/:system/versions/:version/deprecate",
 				middleware.RequireScope(auth.ScopeModulesWrite),
+				nsAuthz.RequireNamespaceAccessFromPath(auth.ScopeModulesWrite),
 				moduleAdminHandlers.UndeprecateVersion)
 			authenticatedGroup.POST("/modules/:namespace/:name/:system/versions/:version/reanalyze",
 				middleware.RequireScope(auth.ScopeModulesWrite),
+				nsAuthz.RequireNamespaceAccessFromPath(auth.ScopeModulesWrite),
 				moduleAdminHandlers.ReanalyzeVersion)
 
 			// Module-level deprecation
 			authenticatedGroup.POST("/modules/:namespace/:name/:system/deprecate",
 				middleware.RequireScope(auth.ScopeModulesWrite),
+				nsAuthz.RequireNamespaceAccessFromPath(auth.ScopeModulesWrite),
 				moduleAdminHandlers.DeprecateModule)
 			authenticatedGroup.DELETE("/modules/:namespace/:name/:system/deprecate",
 				middleware.RequireScope(auth.ScopeModulesWrite),
+				nsAuthz.RequireNamespaceAccessFromPath(auth.ScopeModulesWrite),
 				moduleAdminHandlers.UndeprecateModule)
 
 			authenticatedGroup.GET("/modules/:namespace/:name/:system/versions/:version/scan",
@@ -1182,15 +1232,16 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 			// SCM OAuth callback (public endpoint, no auth required)
 			apiV1.GET("/scm-providers/:id/oauth/callback", scmOAuthHandlers.HandleOAuthCallback)
 
-			// Module SCM linking endpoints
+			// Module SCM linking endpoints. Mutations additionally require
+			// namespace-org authorization for the target module (issue #555).
 			moduleSCMGroup := authenticatedGroup.Group("/admin/modules/:id/scm")
 			moduleSCMGroup.Use(middleware.RequireScope(auth.ScopeModulesWrite))
 			{
-				moduleSCMGroup.POST("", scmLinkingHandler.LinkModuleToSCM)
+				moduleSCMGroup.POST("", nsAuthz.RequireModuleAccessByID(auth.ScopeModulesWrite), scmLinkingHandler.LinkModuleToSCM)
 				moduleSCMGroup.GET("", scmLinkingHandler.GetModuleSCMInfo)
-				moduleSCMGroup.PUT("", scmLinkingHandler.UpdateSCMLink)
-				moduleSCMGroup.DELETE("", scmLinkingHandler.UnlinkModuleFromSCM)
-				moduleSCMGroup.POST("/sync", scmLinkingHandler.TriggerManualSync)
+				moduleSCMGroup.PUT("", nsAuthz.RequireModuleAccessByID(auth.ScopeModulesWrite), scmLinkingHandler.UpdateSCMLink)
+				moduleSCMGroup.DELETE("", nsAuthz.RequireModuleAccessByID(auth.ScopeModulesWrite), scmLinkingHandler.UnlinkModuleFromSCM)
+				moduleSCMGroup.POST("/sync", nsAuthz.RequireModuleAccessByID(auth.ScopeModulesWrite), scmLinkingHandler.TriggerManualSync)
 				moduleSCMGroup.GET("/events", scmLinkingHandler.GetWebhookEvents)
 			}
 

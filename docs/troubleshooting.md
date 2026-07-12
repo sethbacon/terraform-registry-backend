@@ -476,7 +476,14 @@ failed to discover services at https://registry.terraform.io
 ```
 
 - Check outbound connectivity from the registry server to `registry.terraform.io:443`
-- If behind a proxy, set `HTTPS_PROXY` environment variable
+- `HTTPS_PROXY`/`HTTP_PROXY` are **not honored** by this or any other admin-configurable
+  outbound fetch (mirror sync, SCM connectors, the policy bundle, the OSV endpoint, SAML IdP
+  metadata, audit webhooks): they all share an SSRF-safe client that resolves and pins the
+  destination IP itself, and a forward proxy would let the real destination bypass that check
+  entirely. If the registry server needs to reach the public internet through a corporate
+  egress proxy, that must be handled at the network layer (e.g. a transparent proxy, or routing
+  the server's default route through the proxy), not via environment variables.
+- If the target is intentionally an internal/private address, add it to `security.egress.allowlist`
 - Verify the upstream URL is correct (default: `https://registry.terraform.io`)
 
 ### GPG Verification Failed

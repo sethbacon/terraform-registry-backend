@@ -640,14 +640,43 @@ func TestSCMListWebhookLogs_Empty(t *testing.T) {
 // UpdateWebhookLogState
 // ---------------------------------------------------------------------------
 
-func TestSCMUpdateWebhookLogState_Success(t *testing.T) {
+// The terminal branch must bind exactly the parameters its statement
+// references — an unused placeholder gap is a hard PostgreSQL parse error
+// (42P18) that killed every state write and with it webhook auto-publish
+// (#583). WithArgs pins the count and order of bound parameters.
+func TestSCMUpdateWebhookLogState_TerminalBindsAllParams(t *testing.T) {
 	repo, mock := newSCMRepo(t)
-	mock.ExpectExec("UPDATE scm_webhook_events").
+	id := uuid.New()
+	versionID := uuid.New()
+	errMsg := "some error"
+
+	mock.ExpectExec(`UPDATE scm_webhook_events SET\s+processed = true, processed_at = \$2,\s+error = \$3, result_version_id = \$4\s+WHERE id = \$1`).
+		WithArgs(id, sqlmock.AnyArg(), &errMsg, &versionID).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	errMsg := "some error"
-	if err := repo.UpdateWebhookLogState(context.Background(), uuid.New(), "failed", &errMsg, nil); err != nil {
+	if err := repo.UpdateWebhookLogState(context.Background(), id, "failed", &errMsg, &versionID); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
+
+// "processing" is not terminal: it stamps processing_started_at and must NOT
+// mark the event processed (the retry job selects on processed = false).
+func TestSCMUpdateWebhookLogState_ProcessingStampsStartOnly(t *testing.T) {
+	repo, mock := newSCMRepo(t)
+	id := uuid.New()
+
+	mock.ExpectExec(`UPDATE scm_webhook_events SET\s+processing_started_at = \$2\s+WHERE id = \$1`).
+		WithArgs(id, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	if err := repo.UpdateWebhookLogState(context.Background(), id, "processing", nil, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
 	}
 }
 

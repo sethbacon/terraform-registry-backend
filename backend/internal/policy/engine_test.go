@@ -8,7 +8,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 )
+
+// loopbackGuard allow-lists the httptest.Server addresses used by the
+// bundle-fetch tests below (127.0.0.1 / ::1), both so the strict production
+// egress policy doesn't need to accept a loopback dial target and so
+// bundle_url's HTTPS requirement doesn't reject the plain-HTTP test server.
+var loopbackGuard = httpsafe.MustGuard("127.0.0.1", "::1")
 
 // ─── parseBundleTarGz ────────────────────────────────────────────────────────
 
@@ -128,11 +136,11 @@ func TestPolicyEngine_BundleFromHTTP_DenyFires(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	engine, err := NewPolicyEngine(Config{
+	engine, err := NewPolicyEngineWithGuard(Config{
 		Enabled:   true,
 		Mode:      "block",
 		BundleURL: srv.URL + "/bundle.tar.gz",
-	})
+	}, loopbackGuard)
 	if err != nil {
 		t.Fatalf("NewPolicyEngine: %v", err)
 	}
@@ -164,11 +172,11 @@ func TestPolicyEngine_BundleFromHTTP_Allow(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	engine, err := NewPolicyEngine(Config{
+	engine, err := NewPolicyEngineWithGuard(Config{
 		Enabled:   true,
 		Mode:      "warn",
 		BundleURL: srv.URL + "/bundle.tar.gz",
-	})
+	}, loopbackGuard)
 	if err != nil {
 		t.Fatalf("NewPolicyEngine: %v", err)
 	}
@@ -199,11 +207,11 @@ func TestPolicyEngine_Reload(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	engine, err := NewPolicyEngine(Config{
+	engine, err := NewPolicyEngineWithGuard(Config{
 		Enabled:   true,
 		Mode:      "block",
 		BundleURL: srv.URL + "/bundle.tar.gz",
-	})
+	}, loopbackGuard)
 	if err != nil {
 		t.Fatalf("NewPolicyEngine: %v", err)
 	}

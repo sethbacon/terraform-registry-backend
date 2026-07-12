@@ -20,6 +20,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 )
 
 // ---------------------------------------------------------------------------
@@ -54,6 +55,10 @@ func newPullThroughEnv(t *testing.T) (
 	mirrorRepo := repositories.NewMirrorRepository(sqlx.NewDb(mirrorDB, "sqlmock"))
 
 	svc = NewPullThroughService(providerRepo, mirrorRepo, nil /* orgRepo: unused */)
+	// Tests point the service at an httptest.Server bound to 127.0.0.1; widen
+	// its egress policy with an explicit loopback allow-list (production keeps
+	// the strict default — see SetEgressGuard's doc comment).
+	svc.SetEgressGuard(httpsafe.MustGuard("127.0.0.1", "::1"))
 
 	mux = http.NewServeMux()
 	server = httptest.NewServer(mux)

@@ -66,6 +66,8 @@ func TestCascadeOrganizationRename_Success(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectExec("UPDATE providers SET namespace").
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE namespace_claims SET namespace").
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
 	if err := CascadeOrganizationRename(context.Background(), db, "org-1", "old", "new"); err != nil {
@@ -112,6 +114,30 @@ func TestCascadeOrganizationRename_ProvidersError(t *testing.T) {
 
 	if err := CascadeOrganizationRename(context.Background(), db, "org-1", "old", "new"); err == nil {
 		t.Error("expected error when the providers cascade fails, got nil")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+func TestCascadeOrganizationRename_ClaimsError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE modules SET namespace").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("UPDATE providers SET namespace").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("UPDATE namespace_claims SET namespace").
+		WillReturnError(context.DeadlineExceeded)
+	mock.ExpectRollback()
+
+	if err := CascadeOrganizationRename(context.Background(), db, "org-1", "old", "new"); err == nil {
+		t.Error("expected error when the namespace-claims cascade fails, got nil")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
