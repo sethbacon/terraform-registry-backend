@@ -20,7 +20,7 @@ jobs:
       contents: write # needed to push auto-generated swagger.json back to the branch
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
 
       - name: Set up Go toolchain
         uses: ./.github/actions/setup-backend
@@ -192,7 +192,7 @@ jobs:
         # Once set, the action writes / overwrites 'coverage.json' in that gist, which the
         # shields.io endpoint badge in README.md reads.
         if: github.event_name == 'push'
-        uses: schneegans/dynamic-badges-action@0e50b8bad39e7e1afd3e4e9c2b7dd145fad07501 # v1.8.0
+        uses: schneegans/dynamic-badges-action@28b0fa8bdeb46170ac397105ece0c1fe58f68910 # v1.9.0
         with:
           auth: ${{ secrets.GIST_TOKEN }}
           gistID: ${{ vars.COVERAGE_GIST_ID }}
@@ -211,7 +211,7 @@ jobs:
       issues: write
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
 
       - name: Set up Go toolchain
         uses: ./.github/actions/setup-backend
@@ -287,7 +287,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
 
       - name: Build backend Docker image
         run: docker build -t terraform-registry-backend:ci backend/
@@ -329,7 +329,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
 
       - name: Validate Docker Compose configs
         working-directory: deployments
@@ -342,7 +342,7 @@ jobs:
           docker compose -f docker-compose.test.yml config --quiet
 
       - name: Install Helm
-        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
         with:
           version: "latest"
 
@@ -395,7 +395,7 @@ jobs:
       security-events: write
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
 
       - name: Set up Go toolchain
         uses: ./.github/actions/setup-backend
