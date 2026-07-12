@@ -60,6 +60,9 @@ type publicRouteDeps struct {
 	tfBinariesHandler       *terraform_binaries.Handler
 }
 
+// registerPublicRoutes wires the unauthenticated Terraform-protocol/OCI/Swagger
+// route table onto router.
+// coverage:skip:integration-only — registers the Terraform-protocol/OCI/Swagger route table; tested via E2E
 func registerPublicRoutes(router *gin.Engine, d *publicRouteDeps) {
 	cfg := d.cfg
 	db := d.db
@@ -351,6 +354,9 @@ type apiV1RouteDeps struct {
 	approvalWebhookHandler      *webhooks.ApprovalHandler
 }
 
+// registerAPIV1Routes wires the /api/v1, /scim/v2, and webhook route table
+// onto router.
+// coverage:skip:integration-only — registers the /api/v1, /scim/v2, and webhook route table; tested via E2E
 func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 	cfg := d.cfg
 	db := d.db
