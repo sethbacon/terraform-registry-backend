@@ -129,6 +129,13 @@ func TestExtractTarGz_InvalidGzip(t *testing.T) {
 	}
 }
 
+// A shallow t.TempDir() plus a 3-level "../../../" escape can resolve all the
+// way to filesystem root, where the OS itself denies the write (non-root
+// can't create files there) -- asserting only err != nil can't tell that
+// apart from ExtractTarGz's own containment check actually firing, so a
+// broken/removed containment check could still pass this test by accident
+// (permission denial masking the missing guard). Assert the error is
+// specifically the containment check's own message.
 func TestExtractTarGz_PathTraversal(t *testing.T) {
 	// Build archive with a path traversal entry
 	var buf bytes.Buffer
@@ -146,8 +153,12 @@ func TestExtractTarGz_PathTraversal(t *testing.T) {
 	_ = gw.Close()
 
 	dest := t.TempDir()
-	if err := ExtractTarGz(bytes.NewReader(buf.Bytes()), dest); err == nil {
-		t.Error("expected path traversal error, got nil")
+	err := ExtractTarGz(bytes.NewReader(buf.Bytes()), dest)
+	if err == nil {
+		t.Fatal("expected path traversal error, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid file path in archive") {
+		t.Errorf("error = %q, want it to mention the containment check's own rejection (not e.g. an OS permission error from an escape that happened to reach a restricted path)", err.Error())
 	}
 }
 
