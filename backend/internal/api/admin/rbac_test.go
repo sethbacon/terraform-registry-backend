@@ -442,6 +442,62 @@ func TestRBACDeleteRoleTemplate_Success(t *testing.T) {
 	}
 }
 
+// Deleting a role template unconditionally strips its scopes from every
+// member who held it, so — unlike an edit — there's no "was this a no-op"
+// question to gate revocation on: every affected member's tokens must be
+// revoked (issue #559 finding [9]).
+func TestRBACDeleteRoleTemplate_RevokesMemberTokens(t *testing.T) {
+	mock, r := newRBACRouterWithRevocation(t, true)
+	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+		WillReturnRows(sampleRTRow())
+	mock.ExpectQuery("SELECT DISTINCT user_id FROM organization_members WHERE role_template_id").
+		WillReturnRows(sqlmock.NewRows([]string{"user_id"}).
+			AddRow("member-1").
+			AddRow("member-2"))
+	mock.ExpectExec("DELETE FROM role_templates WHERE id").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec("INSERT INTO user_token_revocations").
+		WithArgs("member-1").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec("INSERT INTO user_token_revocations").
+		WithArgs("member-2").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/role-templates/"+knownUUID, nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("revocation sweep was not issued: %v", err)
+	}
+}
+
+// The pre-delete member lookup only feeds the best-effort revocation sweep;
+// it is not a precondition for the deletion itself. A failure there must be
+// logged and swallowed, not turned into a 500 that blocks removing an
+// over-privileged or compromised role template.
+func TestRBACDeleteRoleTemplate_MemberLookupDBError_StillDeletes(t *testing.T) {
+	mock, r := newRBACRouterWithRevocation(t, true)
+	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+		WillReturnRows(sampleRTRow())
+	mock.ExpectQuery("SELECT DISTINCT user_id FROM organization_members WHERE role_template_id").
+		WillReturnError(errDB)
+	mock.ExpectExec("DELETE FROM role_templates WHERE id").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/role-templates/"+knownUUID, nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 even though the member lookup failed: body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unexpected extra calls (no member list means no revocation attempts): %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ListApprovalRequests
 // ---------------------------------------------------------------------------

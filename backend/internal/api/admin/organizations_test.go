@@ -2,6 +2,7 @@ package admin
 
 import (
 	"bytes"
+	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -531,6 +532,8 @@ func TestRemoveMember_Success(t *testing.T) {
 func TestRemoveMember_RevokesUserTokens(t *testing.T) {
 	mock, r := newOrgRouterWithRevocation(t, true)
 
+	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
+		WillReturnRows(sampleMemberWithRoleRow())
 	mock.ExpectExec("DELETE FROM organization_members").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("INSERT INTO user_token_revocations").
@@ -554,6 +557,8 @@ func TestRemoveMember_RevokesUserTokens(t *testing.T) {
 func TestRemoveMember_RevocationErrorDoesNotFailRequest(t *testing.T) {
 	mock, r := newOrgRouterWithRevocation(t, true)
 
+	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
+		WillReturnRows(sampleMemberWithRoleRow())
 	mock.ExpectExec("DELETE FROM organization_members").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("INSERT INTO user_token_revocations").
@@ -564,6 +569,49 @@ func TestRemoveMember_RevocationErrorDoesNotFailRequest(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200 even though revocation failed: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// Removing a user who was never a member of this org must not revoke their
+// tokens: RemoveMember is a plain DELETE with no rows-affected signal, so
+// without the membership pre-check an org admin could log out an arbitrary
+// user org-wide by targeting a removal that changes nothing.
+func TestRemoveMember_NotAMember_SkipsRevocation(t *testing.T) {
+	mock, r := newOrgRouterWithRevocation(t, true)
+
+	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectExec("DELETE FROM organization_members").
+		WillReturnResult(sqlmock.NewResult(1, 0))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/organizations/org-1/members/user-1", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unexpected extra calls (revocation should have been skipped): %v", err)
+	}
+}
+
+// When revocation isn't wired up at all (nil, as in most tests and any
+// deployment that hasn't configured it), the membership pre-check must be
+// skipped entirely rather than run for no reason.
+func TestRemoveMember_NoRevocationWired_SkipsMembershipLookup(t *testing.T) {
+	mock, r := newOrgRouter(t)
+
+	mock.ExpectExec("DELETE FROM organization_members").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/organizations/org-1/members/user-1", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unexpected membership lookup ran with no revocation wired: %v", err)
 	}
 }
 

@@ -671,18 +671,27 @@ func (h *OrganizationHandlers) RemoveMemberHandler() gin.HandlerFunc {
 		userID := c.Param("user_id")
 
 		// RemoveMember is a plain DELETE with no rows-affected/not-found
-		// signal, so check membership first: without this, calling the
-		// endpoint against a user who was never a member of this org (a typo,
-		// a stale UI, or a probe by an org admin with no relationship to the
-		// target) would still revoke that user's tokens org-wide below --
-		// letting any org admin log out an arbitrary user by targeting a
-		// removal that never actually changes anything.
-		wasMember, err := h.orgRepo.GetMemberWithRole(c.Request.Context(), orgID, userID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to check organization membership",
-			})
-			return
+		// signal, so when revocation is wired up, check membership first:
+		// without this, calling the endpoint against a user who was never a
+		// member of this org (a typo, a stale UI, or a probe by an org admin
+		// with no relationship to the target) would still revoke that user's
+		// tokens org-wide below -- letting any org admin log out an arbitrary
+		// user by targeting a removal that never actually changes anything.
+		// Skipped entirely when userRevocations is nil (as in most tests and
+		// any deployment that hasn't wired it up): the lookup's only purpose
+		// is deciding whether to call revokeUserTokens, which itself no-ops
+		// in that case, so running it unconditionally would add a hard
+		// dependency on an unrelated read query for no behavioral benefit.
+		var wasMember *models.OrganizationMemberWithUser
+		if h.userRevocations != nil {
+			var err error
+			wasMember, err = h.orgRepo.GetMemberWithRole(c.Request.Context(), orgID, userID)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"error": "Failed to check organization membership",
+				})
+				return
+			}
 		}
 
 		if err := h.orgRepo.RemoveMember(c.Request.Context(), orgID, userID); err != nil {

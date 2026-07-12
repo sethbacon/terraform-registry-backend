@@ -299,12 +299,19 @@ func (h *RBACHandlers) DeleteRoleTemplate(c *gin.Context) {
 	// Snapshot the affected members before the delete: the FK is ON DELETE SET
 	// NULL, so a member's role_template_id is gone the instant the delete
 	// commits, and ListRoleTemplateMemberUserIDs would find nobody afterward.
+	// This lookup only feeds the best-effort revocation loop below and is not
+	// itself a precondition for the deletion, so a failure here is logged and
+	// swallowed rather than blocking the delete: the security-relevant action
+	// (removing an over-privileged or compromised role template) must not be
+	// held hostage by a transient failure in unrelated bookkeeping.
 	var memberUserIDs []string
 	if h.userRevocations != nil {
-		memberUserIDs, err = h.rbacRepo.ListRoleTemplateMemberUserIDs(c.Request.Context(), id)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to look up role template members"})
-			return
+		var lookupErr error
+		memberUserIDs, lookupErr = h.rbacRepo.ListRoleTemplateMemberUserIDs(c.Request.Context(), id)
+		if lookupErr != nil {
+			slog.Error("failed to look up role template members before deletion; affected members' tokens will not be revoked",
+				"role_template_id", id, "error", lookupErr)
+			memberUserIDs = nil
 		}
 	}
 
