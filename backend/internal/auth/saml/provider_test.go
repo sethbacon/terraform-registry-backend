@@ -227,7 +227,7 @@ func TestIsNameAttr(t *testing.T) {
 }
 
 func TestFetchIdPMetadata_RequiresHTTPS(t *testing.T) {
-	_, err := fetchIdPMetadata("http://insecure.example.com/metadata")
+	_, err := fetchIdPMetadata("http://insecure.example.com/metadata", nil)
 	if err == nil {
 		t.Fatal("expected error for non-HTTPS metadata URL")
 	}

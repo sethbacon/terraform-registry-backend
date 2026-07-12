@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 )
 
 // ---------------------------------------------------------------------------
@@ -624,6 +626,88 @@ func TestMirrorUpdate_InvalidRegistryURL(t *testing.T) {
 		WillReturnRows(sampleMirrorCfgRow())
 
 	badURL := "not-a-valid-url"
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/mirrors/"+knownUUID,
+		jsonBody(map[string]interface{}{"upstream_registry_url": &badURL})))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SSRF: private / cloud-metadata upstream_registry_url rejected at save
+// ---------------------------------------------------------------------------
+
+func TestMirrorCreate_RejectsCloudMetadataURL(t *testing.T) {
+	_, r := newMirrorRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/mirrors",
+		jsonBody(map[string]interface{}{
+			"name":                  "metadata-mirror",
+			"upstream_registry_url": "http://169.254.169.254/latest/meta-data/",
+		})))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "link-local") {
+		t.Errorf("body = %s, want a link-local/metadata rejection reason", w.Body.String())
+	}
+}
+
+func TestMirrorCreate_RejectsPrivateNetworkURL(t *testing.T) {
+	_, r := newMirrorRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/mirrors",
+		jsonBody(map[string]interface{}{
+			"name":                  "internal-mirror",
+			"upstream_registry_url": "https://10.0.5.5/",
+		})))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestMirrorCreate_AllowlistedPrivateURLSucceeds(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	sqlxDB := sqlx.NewDb(db, "sqlmock")
+	mirrorRepo := repositories.NewMirrorRepository(sqlxDB)
+	orgRepo := repositories.NewOrganizationRepository(db)
+	h := NewMirrorHandler(mirrorRepo, orgRepo, repositories.NewProviderRepository(db))
+	h.SetEgressGuard(httpsafe.MustGuard("10.0.5.0/24"))
+
+	r := gin.New()
+	r.POST("/mirrors", h.CreateMirrorConfig)
+
+	mock.ExpectQuery("SELECT.*FROM mirror_configurations WHERE name").
+		WillReturnRows(sqlmock.NewRows(mirrorCfgCols))
+	mock.ExpectExec("INSERT INTO mirror_configurations").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/mirrors",
+		jsonBody(map[string]interface{}{
+			"name":                  "allowlisted-internal-mirror",
+			"upstream_registry_url": "https://10.0.5.5/",
+		})))
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestMirrorUpdate_RejectsPrivateNetworkURL(t *testing.T) {
+	mock, r := newMirrorRouter(t)
+	mock.ExpectQuery("SELECT.*FROM mirror_configurations WHERE id").
+		WillReturnRows(sampleMirrorCfgRow())
+
+	badURL := "http://127.0.0.1:8080/"
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("PUT", "/mirrors/"+knownUUID,
 		jsonBody(map[string]interface{}{"upstream_registry_url": &badURL})))

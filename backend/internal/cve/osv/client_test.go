@@ -7,7 +7,14 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 )
+
+// loopbackGuard allow-lists the httptest.Server addresses used throughout this
+// file (127.0.0.1 / ::1) so tests exercise real HTTP without needing the
+// strict production egress policy to accept a loopback target.
+var loopbackGuard = httpsafe.MustGuard("127.0.0.1", "::1")
 
 // ---------------------------------------------------------------------------
 // NormalizeSeverity
@@ -144,7 +151,7 @@ func newTestServer(t *testing.T, handler http.Handler) (*httptest.Server, *Clien
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	return srv, NewClient(srv.URL)
+	return srv, NewClientWithGuard(srv.URL, loopbackGuard)
 }
 
 func TestQueryBatch_Success(t *testing.T) {

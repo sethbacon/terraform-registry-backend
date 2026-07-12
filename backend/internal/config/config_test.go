@@ -365,6 +365,68 @@ func TestValidate(t *testing.T) {
 			}
 		}
 	})
+
+	// -------------------------------------------------------------------
+	// SSRF: security.egress.allowlist + policy.bundle_url
+	// -------------------------------------------------------------------
+
+	t.Run("invalid egress allowlist entry rejected", func(t *testing.T) {
+		cfg := minimalValidConfig()
+		cfg.Security.Egress.Allowlist = []string{"not a hostname or cidr"}
+		if err := cfg.Validate(); err == nil {
+			t.Error("Validate() expected error for malformed egress allowlist entry, got nil")
+		}
+	})
+
+	t.Run("policy bundle_url rejects cloud metadata address", func(t *testing.T) {
+		cfg := minimalValidConfig()
+		cfg.Policy = PolicyConfig{Enabled: true, Mode: "block", BundleURL: "https://169.254.169.254/bundle.tar.gz"}
+		if err := cfg.Validate(); err == nil {
+			t.Error("Validate() expected error for bundle_url targeting cloud metadata, got nil")
+		}
+	})
+
+	t.Run("policy bundle_url rejects private address", func(t *testing.T) {
+		cfg := minimalValidConfig()
+		cfg.Policy = PolicyConfig{Enabled: true, Mode: "block", BundleURL: "https://10.1.2.3/bundle.tar.gz"}
+		if err := cfg.Validate(); err == nil {
+			t.Error("Validate() expected error for bundle_url targeting a private address, got nil")
+		}
+	})
+
+	t.Run("policy bundle_url requires https", func(t *testing.T) {
+		cfg := minimalValidConfig()
+		cfg.Policy = PolicyConfig{Enabled: true, Mode: "block", BundleURL: "http://bundles.example.com/bundle.tar.gz"}
+		if err := cfg.Validate(); err == nil {
+			t.Error("Validate() expected error for plain-http bundle_url, got nil")
+		}
+	})
+
+	t.Run("policy bundle_url http allowed when host allowlisted", func(t *testing.T) {
+		cfg := minimalValidConfig()
+		cfg.Security.Egress.Allowlist = []string{"bundles.internal.example.com"}
+		cfg.Policy = PolicyConfig{Enabled: true, Mode: "block", BundleURL: "http://bundles.internal.example.com/bundle.tar.gz"}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate() unexpected error for allow-listed http bundle_url: %v", err)
+		}
+	})
+
+	t.Run("policy bundle_url private address allowed when allowlisted", func(t *testing.T) {
+		cfg := minimalValidConfig()
+		cfg.Security.Egress.Allowlist = []string{"10.1.2.0/24"}
+		cfg.Policy = PolicyConfig{Enabled: true, Mode: "block", BundleURL: "https://10.1.2.3/bundle.tar.gz"}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate() unexpected error for allow-listed private bundle_url: %v", err)
+		}
+	})
+
+	t.Run("policy bundle_url ignored when policy disabled", func(t *testing.T) {
+		cfg := minimalValidConfig()
+		cfg.Policy = PolicyConfig{Enabled: false, BundleURL: "http://169.254.169.254/bundle.tar.gz"}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate() unexpected error when policy disabled: %v", err)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------

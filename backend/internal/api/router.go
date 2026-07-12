@@ -47,9 +47,11 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/jobs"
 	"github.com/terraform-registry/terraform-registry/internal/middleware"
 	"github.com/terraform-registry/terraform-registry/internal/policy"
+	"github.com/terraform-registry/terraform-registry/internal/scm"
 	"github.com/terraform-registry/terraform-registry/internal/scm/appcreds"
 	"github.com/terraform-registry/terraform-registry/internal/services"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
@@ -156,6 +158,19 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		log.Fatalf("invalid trusted_proxies config: %v", err)
 	}
 
+	// egressGuard widens the SSRF deny-list enforced by every outbound client
+	// this router wires up (mirror sync, SCM connectors, OSV poller, policy
+	// bundle, SAML metadata, ...) per security.egress.allowlist. Config.Validate
+	// already parsed this list once at Load(); a second parse error here would
+	// mean cfg was constructed without going through config.Load.
+	egressGuard, err := httpsafe.NewGuard(cfg.Security.Egress.Allowlist)
+	if err != nil {
+		log.Fatalf("invalid security.egress.allowlist: %v", err)
+	}
+	if err := scm.ConfigureEgress(cfg.Security.Egress.Allowlist); err != nil {
+		log.Fatalf("failed to configure SCM connector egress policy: %v", err)
+	}
+
 	// Initialize storage backend
 	storageBackend, err := storage.NewStorage(cfg)
 	if err != nil {
@@ -189,10 +204,12 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 
 	// Initialize pull-through caching service
 	pullThroughSvc := services.NewPullThroughService(providerRepo, mirrorRepo, orgRepo)
+	pullThroughSvc.SetEgressGuard(egressGuard)
 
 	// Initialize mirror sync job
 	mirrorSyncJob := jobs.NewMirrorSyncJob(mirrorRepo, providerRepo, providerDocsRepo, orgRepo, storageBackend, cfg.Storage.DefaultBackend)
 	mirrorSyncJob.SetApprovalRepo(repositories.NewVersionApprovalRepository(sqlxDB))
+	mirrorSyncJob.SetEgressGuard(egressGuard)
 	// Start background sync job - check every 10 minutes for mirrors that need syncing
 	mirrorSyncJob.Start(context.Background(), 10)
 	log.Println("Mirror sync job started (checking every 10 minutes)")
@@ -200,6 +217,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// Initialize Terraform binary mirror repository and sync job
 	tfMirrorRepo := repositories.NewTerraformMirrorRepository(sqlxDB)
 	tfMirrorSyncJob := jobs.NewTerraformMirrorSyncJob(tfMirrorRepo, storageBackend, cfg.Storage.DefaultBackend)
+	tfMirrorSyncJob.SetEgressGuard(egressGuard)
 	tfMirrorSyncJob.Start(context.Background(), 10)
 	log.Println("Terraform binary mirror sync job started (checking every 10 minutes)")
 
@@ -208,7 +226,8 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// terraform mirror sync, so the next sync tick after a successful refresh
 	// uses the cached upstream key instead of the embedded snapshot.
 	releasesKeyRepo := repositories.NewReleasesGPGKeyRepository(sqlxDB)
-	releasesKeyRefreshJob, releasesKeyJobErr := jobs.NewReleasesKeyRefreshJob(&cfg.ReleasesGPGKeys, releasesKeyRepo, nil)
+	releasesKeyHTTPClient := httpsafe.NewClient(30*time.Second, egressGuard)
+	releasesKeyRefreshJob, releasesKeyJobErr := jobs.NewReleasesKeyRefreshJob(&cfg.ReleasesGPGKeys, releasesKeyRepo, releasesKeyHTTPClient)
 	if releasesKeyJobErr != nil {
 		// The only way construction fails is a parse error on the embedded
 		// OpenTofu snapshot — fatal because the fingerprint pin can't be
@@ -627,7 +646,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	}
 
 	var authHandlers *admin.AuthHandlers
-	authHandlers, err = admin.NewAuthHandlers(cfg, identityDB, oidcConfigRepo, tokenRepo, oidcStateStore)
+	authHandlers, err = admin.NewAuthHandlers(cfg, identityDB, oidcConfigRepo, tokenRepo, oidcStateStore, admin.WithSAMLEgressGuard(egressGuard))
 	if err != nil {
 		log.Fatalf("Failed to initialize auth handlers: %v", err)
 	}
@@ -669,11 +688,13 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	statsHandlers := admin.NewStatsHandler(identitySqlxDB, &cfg.Scanning)
 	mirrorHandlers := admin.NewMirrorHandler(mirrorRepo, orgRepo, providerRepo)
 	mirrorHandlers.SetSyncJob(mirrorSyncJob) // Connect sync job for manual triggers
+	mirrorHandlers.SetEgressGuard(egressGuard)
 
 	// Initialize Terraform binary mirror admin handler
 	tfMirrorAdminHandler := admin.NewTerraformMirrorHandler(tfMirrorRepo)
 	tfMirrorAdminHandler.SetSyncJob(tfMirrorSyncJob)
 	tfMirrorAdminHandler.SetStorageBackend(storageBackend) // delete stored binaries when a version is removed
+	tfMirrorAdminHandler.SetEgressGuard(egressGuard)
 	releasesGPGKeysAdminHandler := admin.NewReleasesGPGKeysHandler(releasesKeyRepo, tfMirrorRepo, cfg.ReleasesGPGKeys)
 	versionApprovalHandler := admin.NewVersionApprovalHandler(repositories.NewVersionApprovalRepository(sqlxDB))
 	providerAdminHandlers := admin.NewProviderAdminHandlers(db, storageBackend, cfg)
@@ -711,11 +732,12 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// Initialize and start the CVE polling job (no-op when cve.enabled=false)
 	cveRepo := repositories.NewCVERepository(db)
 	cvePollJob := jobs.NewCVEPollJob(cveRepo, auditRepo, &cfg.Scanning, &cfg.CVE, &cfg.Notifications)
+	cvePollJob.SetEgressGuard(egressGuard)
 	go cvePollJob.Start(context.Background())
 	log.Println("CVE poll job started")
 
 	// Initialize SCM handlers with the already-created repositories and token cipher
-	scmProviderHandlers := admin.NewSCMProviderHandlers(cfg, scmRepo, orgRepo, tokenCipher).WithMinter(sharedMinter)
+	scmProviderHandlers := admin.NewSCMProviderHandlers(cfg, scmRepo, orgRepo, tokenCipher).WithMinter(sharedMinter).WithEgressGuard(egressGuard)
 	scmOAuthHandlers := admin.NewSCMOAuthHandlers(cfg, scmRepo, userRepo, tokenCipher).WithMinter(sharedMinter)
 	scmLinkingHandler := modules.NewSCMLinkingHandler(scmRepo, moduleRepo, tokenCipher, cfg.Server.BaseURL, scmPublisher).WithMinter(sharedMinter)
 
@@ -738,9 +760,10 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		Enabled:               cfg.Policy.Enabled,
 		Mode:                  cfg.Policy.Mode,
 		BundleURL:             cfg.Policy.BundleURL,
+		BundleSHA256:          cfg.Policy.BundleSHA256,
 		BundleRefreshInterval: cfg.Policy.BundleRefreshInterval,
 	}
-	policyEngine, err := policy.NewPolicyEngine(policyEngineCfg)
+	policyEngine, err := policy.NewPolicyEngineWithGuard(policyEngineCfg, egressGuard)
 	if err != nil {
 		log.Fatalf("failed to initialize policy engine: %v", err)
 	}

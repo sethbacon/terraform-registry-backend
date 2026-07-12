@@ -8,14 +8,21 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 )
+
+// loopbackGuard allow-lists the httptest.Server addresses used throughout this
+// file (127.0.0.1 / ::1) so tests exercise real HTTP without needing the
+// strict production egress policy to accept a loopback target.
+var loopbackGuard = httpsafe.MustGuard("127.0.0.1", "::1")
 
 // newTestRegistry starts a test server and returns an UpstreamRegistry pointing at it.
 func newTestRegistry(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *UpstreamRegistry) {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	return srv, NewUpstreamRegistry(srv.URL)
+	return srv, NewUpstreamRegistryWithGuard(srv.URL, loopbackGuard)
 }
 
 // newDiscoveryHandler returns an HTTP handler that serves service discovery + additional routes.
@@ -72,7 +79,7 @@ func TestValidateRegistryURL(t *testing.T) {
 		{"https://private.registry.example.com:8443", false},
 	}
 	for _, tt := range tests {
-		err := ValidateRegistryURL(tt.url)
+		err := ValidateRegistryURL(tt.url, nil)
 		if (err != nil) != tt.wantErr {
 			t.Errorf("ValidateRegistryURL(%q) error=%v, wantErr=%v", tt.url, err, tt.wantErr)
 		}
@@ -221,7 +228,7 @@ func TestDownloadFile_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	u := NewUpstreamRegistry("http://example.com")
+	u := NewUpstreamRegistryWithGuard("http://example.com", loopbackGuard)
 	// Override DownloadClient to point at test server (use HTTPClient for simplicity)
 	u.DownloadClient = u.HTTPClient
 
@@ -240,7 +247,7 @@ func TestDownloadFile_Error(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	u := NewUpstreamRegistry("http://example.com")
+	u := NewUpstreamRegistryWithGuard("http://example.com", loopbackGuard)
 	u.DownloadClient = u.HTTPClient
 
 	// DownloadFile retries 3 times before giving up
@@ -262,7 +269,7 @@ func TestDownloadFile_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	u := NewUpstreamRegistry("http://example.com")
+	u := NewUpstreamRegistryWithGuard("http://example.com", loopbackGuard)
 	u.DownloadClient = u.HTTPClient
 
 	_, err := u.DownloadFile(ctx, srv.URL+"/file.zip")
@@ -599,7 +606,7 @@ func TestDownloadFileStream_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	u := NewUpstreamRegistry("http://example.com")
+	u := NewUpstreamRegistryWithGuard("http://example.com", loopbackGuard)
 	u.DownloadClient = u.HTTPClient
 
 	stream, err := u.DownloadFileStream(context.Background(), srv.URL+"/binary")
@@ -619,7 +626,7 @@ func TestDownloadFileStream_HTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	u := NewUpstreamRegistry("http://example.com")
+	u := NewUpstreamRegistryWithGuard("http://example.com", loopbackGuard)
 	u.DownloadClient = u.HTTPClient
 
 	_, err := u.DownloadFileStream(context.Background(), srv.URL+"/missing")

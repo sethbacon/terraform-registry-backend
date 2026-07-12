@@ -11,6 +11,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/scm"
 	"github.com/terraform-registry/terraform-registry/internal/scm/appcreds"
 )
@@ -22,6 +23,11 @@ type SCMProviderHandlers struct {
 	orgRepo     *repositories.OrganizationRepository
 	tokenCipher *crypto.TokenCipher
 	minter      appcreds.SharedMinter
+	// egress is consulted when validating base_url on create/update so a
+	// non-admin "devops"-scoped caller cannot point a self-hosted SCM
+	// connector (and its OAuth token exchange) at a private or cloud-metadata
+	// address; nil enforces the strict default deny-list.
+	egress *httpsafe.Guard
 }
 
 // NewSCMProviderHandlers creates a new SCM provider handlers instance
@@ -38,6 +44,14 @@ func NewSCMProviderHandlers(cfg *config.Config, scmRepo *repositories.SCMReposit
 // app auth mode (entra_app/github_app). Returns the handler for chaining.
 func (h *SCMProviderHandlers) WithMinter(minter appcreds.SharedMinter) *SCMProviderHandlers {
 	h.minter = minter
+	return h
+}
+
+// WithEgressGuard installs the operator-configured egress guard
+// (security.egress.allowlist) consulted when validating base_url on
+// create/update. Returns the handler for chaining.
+func (h *SCMProviderHandlers) WithEgressGuard(g *httpsafe.Guard) *SCMProviderHandlers {
+	h.egress = g
 	return h
 }
 
@@ -188,6 +202,17 @@ func (h *SCMProviderHandlers) CreateProvider(c *gin.Context) {
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid auth_mode"})
 		return
+	}
+
+	// base_url is reachable from any auth mode (e.g. a GitHub Enterprise Server
+	// or self-hosted GitLab/Azure DevOps instance) and drives every outbound
+	// connector call including the OAuth code/token exchange, so it is rejected
+	// at save when it targets a private or cloud-metadata address.
+	if req.BaseURL != nil && *req.BaseURL != "" {
+		if err := h.egress.ValidateURL(*req.BaseURL); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid base_url: " + err.Error()})
+			return
+		}
 	}
 
 	// Encrypt client secret
@@ -381,6 +406,12 @@ func (h *SCMProviderHandlers) UpdateProvider(c *gin.Context) {
 		provider.Name = *req.Name
 	}
 	if req.BaseURL != nil {
+		if *req.BaseURL != "" {
+			if err := h.egress.ValidateURL(*req.BaseURL); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid base_url: " + err.Error()})
+				return
+			}
+		}
 		provider.BaseURL = req.BaseURL
 	}
 	if req.TenantID != nil {

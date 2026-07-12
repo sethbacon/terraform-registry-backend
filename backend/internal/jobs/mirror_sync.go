@@ -18,6 +18,7 @@ import (
 
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/mirror"
 	"github.com/terraform-registry/terraform-registry/internal/safego"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
@@ -87,9 +88,14 @@ type MirrorSyncJob struct {
 	wg                 sync.WaitGroup
 
 	// newUpstream is the factory used to build an UpstreamRegistryClient from a
-	// base URL.  It defaults to mirror.NewUpstreamRegistry; tests may override it
-	// via SetUpstreamFactory to inject a fake client without performing real HTTP.
+	// base URL.  It defaults to mirror.NewUpstreamRegistryWithGuard using this
+	// job's egress guard; tests may override it via SetUpstreamFactory to inject
+	// a fake client without performing real HTTP.
 	newUpstream func(baseURL string) mirror.UpstreamRegistryClient
+
+	// egressGuard widens the SSRF egress deny-list for upstream fetches
+	// (nil = strict). Set via SetEgressGuard before Start.
+	egressGuard *httpsafe.Guard
 }
 
 // NewMirrorSyncJob creates a new mirror sync job
@@ -101,7 +107,7 @@ func NewMirrorSyncJob(
 	storageBackend storage.Storage,
 	storageBackendName string,
 ) *MirrorSyncJob {
-	return &MirrorSyncJob{
+	j := &MirrorSyncJob{
 		mirrorRepo:         mirrorRepo,
 		providerRepo:       providerRepo,
 		providerDocsRepo:   providerDocsRepo,
@@ -112,10 +118,18 @@ func NewMirrorSyncJob(
 		activeSyncsMutex:   sync.Mutex{},
 		stopCh:             make(chan struct{}),
 		startedCh:          make(chan struct{}),
-		newUpstream: func(baseURL string) mirror.UpstreamRegistryClient {
-			return mirror.NewUpstreamRegistry(baseURL)
-		},
 	}
+	j.newUpstream = func(baseURL string) mirror.UpstreamRegistryClient {
+		return mirror.NewUpstreamRegistryWithGuard(baseURL, j.egressGuard)
+	}
+	return j
+}
+
+// SetEgressGuard installs the operator-configured egress guard
+// (security.egress.allowlist) used by the default upstream-client factory.
+// Call before Start; nil keeps the strict default policy.
+func (j *MirrorSyncJob) SetEgressGuard(g *httpsafe.Guard) {
+	j.egressGuard = g
 }
 
 // SetApprovalRepo wires the version-approval repository so the sync job can log

@@ -11,6 +11,7 @@ import (
 
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/mirror"
 
 	"github.com/gin-gonic/gin"
@@ -28,6 +29,10 @@ type MirrorHandler struct {
 	orgRepo      *repositories.OrganizationRepository
 	providerRepo *repositories.ProviderRepository
 	syncJob      MirrorSyncJobInterface
+	// egress is consulted (via mirror.ValidateRegistryURL) on every create/update
+	// so a non-admin "devops"-scoped caller cannot point a mirror at a private
+	// or cloud-metadata address; nil enforces the strict default deny-list.
+	egress *httpsafe.Guard
 }
 
 // NewMirrorHandler creates a new mirror handler
@@ -42,6 +47,14 @@ func NewMirrorHandler(mirrorRepo *repositories.MirrorRepository, orgRepo *reposi
 // SetSyncJob sets the sync job for triggering manual syncs
 func (h *MirrorHandler) SetSyncJob(syncJob MirrorSyncJobInterface) {
 	h.syncJob = syncJob
+}
+
+// SetEgressGuard installs the operator-configured egress guard
+// (security.egress.allowlist) consulted when validating upstream_registry_url
+// on create/update. Returns the handler for chaining.
+func (h *MirrorHandler) SetEgressGuard(g *httpsafe.Guard) *MirrorHandler {
+	h.egress = g
+	return h
 }
 
 // @Summary      Create mirror configuration
@@ -67,7 +80,7 @@ func (h *MirrorHandler) CreateMirrorConfig(c *gin.Context) {
 	}
 
 	// Validate registry URL
-	if err := mirror.ValidateRegistryURL(req.UpstreamRegistryURL); err != nil {
+	if err := mirror.ValidateRegistryURL(req.UpstreamRegistryURL, h.egress); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid registry URL: " + err.Error()})
 		return
 	}
@@ -319,7 +332,7 @@ func (h *MirrorHandler) UpdateMirrorConfig(c *gin.Context) {
 	}
 
 	if req.UpstreamRegistryURL != nil {
-		if err := mirror.ValidateRegistryURL(*req.UpstreamRegistryURL); err != nil {
+		if err := mirror.ValidateRegistryURL(*req.UpstreamRegistryURL, h.egress); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid registry URL: " + err.Error()})
 			return
 		}

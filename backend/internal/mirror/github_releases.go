@@ -30,6 +30,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 )
 
 // IsGitHubReleasesURL returns true when the upstream URL refers to a GitHub
@@ -99,8 +101,17 @@ type GitHubReleasesClient struct {
 
 // NewGitHubReleasesClient creates a GitHubReleasesClient from a GitHub URL and
 // product name. productName should match the binary filename prefix ("opentofu",
-// "terraform", or a custom value for third-party repos).
+// "terraform", or a custom value for third-party repos). The strict egress
+// policy applies (see NewGitHubReleasesClientWithGuard).
 func NewGitHubReleasesClient(upstreamURL, productName string) (*GitHubReleasesClient, error) {
+	return NewGitHubReleasesClientWithGuard(upstreamURL, productName, nil)
+}
+
+// NewGitHubReleasesClientWithGuard is NewGitHubReleasesClient with an egress
+// guard widening the SSRF deny-list (nil = strict). API calls and asset
+// downloads (upstream-controlled browser_download_url values) are dialed
+// through internal/httpsafe.
+func NewGitHubReleasesClientWithGuard(upstreamURL, productName string, egress *httpsafe.Guard) (*GitHubReleasesClient, error) {
 	owner, repo, err := ParseGitHubOwnerRepo(upstreamURL)
 	if err != nil {
 		return nil, err
@@ -109,15 +120,11 @@ func NewGitHubReleasesClient(upstreamURL, productName string) (*GitHubReleasesCl
 		productName = repo // fall back to repo name
 	}
 	return &GitHubReleasesClient{
-		Owner:       owner,
-		Repo:        repo,
-		ProductName: productName,
-		HTTPClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
-		DownloadClient: &http.Client{
-			Timeout: 10 * time.Minute,
-		},
+		Owner:          owner,
+		Repo:           repo,
+		ProductName:    productName,
+		HTTPClient:     httpsafe.NewClient(30*time.Second, egress),
+		DownloadClient: httpsafe.NewClient(10*time.Minute, egress),
 	}, nil
 }
 
@@ -215,7 +222,7 @@ func (c *GitHubReleasesClient) fetchReleasesPage(ctx context.Context, page int) 
 		req.Header.Set("Authorization", "Bearer "+c.APIToken)
 	}
 
-	resp, err := c.HTTPClient.Do(req) // #nosec G704 -- URL derived from admin-configured upstream
+	resp, err := c.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	if err != nil {
 		return nil, fmt.Errorf("failed to call GitHub releases API: %w", err)
 	}
@@ -433,7 +440,7 @@ func (c *GitHubReleasesClient) FetchSHASumsSignature(ctx context.Context, versio
 // DownloadBinary downloads a binary zip from the given URL (already a full URL
 // from the GitHub asset list). Identical to TerraformReleasesClient.DownloadBinary.
 func (c *GitHubReleasesClient) DownloadBinaryStream(ctx context.Context, downloadURL string) (io.ReadCloser, int64, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil) // #nosec G107 -- URL from admin-configured upstream
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil) // #nosec G107 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	if err != nil {
 		return nil, -1, fmt.Errorf("failed to build download request: %w", err)
 	}
@@ -502,7 +509,7 @@ func (c *GitHubReleasesClient) fetchReleaseByTag(ctx context.Context, tag string
 		req.Header.Set("Authorization", "Bearer "+c.APIToken)
 	}
 
-	resp, err := c.HTTPClient.Do(req) // #nosec G704
+	resp, err := c.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	if err != nil {
 		return gitHubRelease{}, err
 	}
@@ -528,7 +535,7 @@ func (c *GitHubReleasesClient) fetchURL(ctx context.Context, url string, maxByte
 		req.Header.Set("Authorization", "Bearer "+c.APIToken)
 	}
 
-	resp, err := c.HTTPClient.Do(req) // #nosec G704
+	resp, err := c.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	if err != nil {
 		return nil, err
 	}

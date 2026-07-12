@@ -89,7 +89,7 @@ func (c *GitHubConnector) CompleteAuthorization(ctx context.Context, authCode st
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to exchange code", err)
 	}
@@ -161,7 +161,7 @@ func (c *GitHubConnector) FetchRepository(ctx context.Context, creds *scm.Access
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch repository", err)
 	}
@@ -202,7 +202,7 @@ func (c *GitHubConnector) SearchRepositories(ctx context.Context, creds *scm.Acc
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "search failed", err)
 	}
@@ -253,7 +253,7 @@ func (c *GitHubConnector) FetchBranches(ctx context.Context, creds *scm.AccessTo
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch branches", err)
 	}
@@ -306,7 +306,7 @@ func (c *GitHubConnector) FetchTags(ctx context.Context, creds *scm.AccessToken,
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch tags", err)
 	}
@@ -349,7 +349,7 @@ func (c *GitHubConnector) FetchTagByName(ctx context.Context, creds *scm.AccessT
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch tag", err)
 	}
@@ -391,7 +391,7 @@ func (c *GitHubConnector) FetchCommit(ctx context.Context, creds *scm.AccessToke
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch commit", err)
 	}
@@ -446,7 +446,7 @@ func (c *GitHubConnector) DownloadSourceArchive(ctx context.Context, creds *scm.
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to download archive", err)
 	}
@@ -483,7 +483,7 @@ func (c *GitHubConnector) RegisterWebhook(ctx context.Context, creds *scm.Access
 	}
 	c.setAuthHeaders(req, creds)
 	req.Header.Set("Content-Type", "application/json")
-	// #nosec G107 -- URL is sourced from admin-controlled SCM provider configuration; non-admin users cannot influence these code paths
+	// #nosec G107 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	resp, err := scm.HTTPClient.Do(req)
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to create webhook", err)
@@ -514,7 +514,7 @@ func (c *GitHubConnector) RemoveWebhook(ctx context.Context, creds *scm.AccessTo
 		return fmt.Errorf("github: create delete webhook request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
-	// #nosec G107 -- URL is sourced from admin-controlled SCM provider configuration; non-admin users cannot influence these code paths
+	// #nosec G107 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	resp, err := scm.HTTPClient.Do(req)
 	if err != nil {
 		return scm.WrapRemoteError(0, "failed to delete webhook", err)
@@ -624,7 +624,7 @@ func (c *GitHubConnector) fetchRepoList(ctx context.Context, creds *scm.AccessTo
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	if err != nil {
 		return nil, scm.WrapRemoteError(0, "failed to fetch repositories", err)
 	}

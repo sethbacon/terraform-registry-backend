@@ -23,6 +23,7 @@ import (
 	samlpkg "github.com/terraform-registry/terraform-registry/internal/auth/saml"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/middleware"
 )
 
@@ -41,12 +42,25 @@ type AuthHandlers struct {
 	// stateStore persists auth CSRF state tokens. When Redis is configured the
 	// store is shared across instances; otherwise an in-memory store is used.
 	stateStore auth.StateStore
+	// samlEgressGuard widens the SSRF deny-list applied when fetching a SAML
+	// IdP's metadata_url (nil = strict). Set via WithSAMLEgressGuard.
+	samlEgressGuard *httpsafe.Guard
+}
+
+// AuthHandlersOption configures optional AuthHandlers construction behavior.
+type AuthHandlersOption func(*AuthHandlers)
+
+// WithSAMLEgressGuard widens the SSRF deny-list applied when fetching a SAML
+// IdP's metadata_url (nil = strict default), for deployments whose IdP is
+// only reachable at an internal address.
+func WithSAMLEgressGuard(g *httpsafe.Guard) AuthHandlersOption {
+	return func(h *AuthHandlers) { h.samlEgressGuard = g }
 }
 
 // NewAuthHandlers creates a new AuthHandlers instance.
 // stateStore must be non-nil; the caller selects the implementation
 // (MemoryStateStore for single-instance, RedisStateStore for HA).
-func NewAuthHandlers(cfg *config.Config, db *sql.DB, oidcConfigRepo *repositories.OIDCConfigRepository, tokenRepo *repositories.TokenRepository, stateStore auth.StateStore) (*AuthHandlers, error) {
+func NewAuthHandlers(cfg *config.Config, db *sql.DB, oidcConfigRepo *repositories.OIDCConfigRepository, tokenRepo *repositories.TokenRepository, stateStore auth.StateStore, opts ...AuthHandlersOption) (*AuthHandlers, error) {
 	h := &AuthHandlers{
 		cfg:            cfg,
 		db:             db,
@@ -55,6 +69,9 @@ func NewAuthHandlers(cfg *config.Config, db *sql.DB, oidcConfigRepo *repositorie
 		oidcConfigRepo: oidcConfigRepo,
 		tokenRepo:      tokenRepo,
 		stateStore:     stateStore,
+	}
+	for _, opt := range opts {
+		opt(h)
 	}
 
 	// Initialize OIDC provider if enabled
@@ -80,7 +97,7 @@ func NewAuthHandlers(cfg *config.Config, db *sql.DB, oidcConfigRepo *repositorie
 		h.samlProviders = make(map[string]*samlpkg.Provider, len(cfg.Auth.SAML.IdPs))
 		for i := range cfg.Auth.SAML.IdPs {
 			idpCfg := &cfg.Auth.SAML.IdPs[i]
-			sp, err := samlpkg.NewProvider(&cfg.Auth.SAML, idpCfg)
+			sp, err := samlpkg.NewProviderWithGuard(&cfg.Auth.SAML, idpCfg, h.samlEgressGuard)
 			if err != nil {
 				return nil, fmt.Errorf("saml idp %q: %w", idpCfg.Name, err)
 			}

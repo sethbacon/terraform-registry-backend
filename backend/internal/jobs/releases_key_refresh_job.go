@@ -29,6 +29,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/mirror"
 	"github.com/terraform-registry/terraform-registry/internal/telemetry"
 )
@@ -76,7 +77,11 @@ type toolEndpoint struct {
 // nothing safe to do without a pin.
 func NewReleasesKeyRefreshJob(cfg *config.ReleasesGPGKeysConfig, repo *repositories.ReleasesGPGKeyRepository, httpClient *http.Client) (*ReleasesKeyRefreshJob, error) {
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 30 * time.Second}
+		// hashicorp_url / opentofu_url are operator-configurable, so the
+		// default client is the SSRF-safe strict client (internal/httpsafe);
+		// pass an explicit client built with an egress guard for deployments
+		// that override these to an internal mirror.
+		httpClient = httpsafe.NewClient(30*time.Second, nil)
 	}
 
 	// Derive the OpenTofu fingerprint from the embedded snapshot so a future

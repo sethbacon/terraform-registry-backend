@@ -13,6 +13,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 )
 
 // ---------------------------------------------------------------------------
@@ -271,6 +272,95 @@ func TestSCMCreate_PATBased_Success(t *testing.T) {
 			"provider_type": "bitbucket_dc",
 			"name":          "test-bdc",
 			"base_url":      "https://bitbucket.example.com",
+		})))
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SSRF: private / cloud-metadata base_url rejected at save
+// ---------------------------------------------------------------------------
+
+func TestSCMCreate_RejectsCloudMetadataBaseURL(t *testing.T) {
+	_, r := newSCMProviderRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/scm-providers",
+		jsonBody(map[string]interface{}{
+			"provider_type": "bitbucket_dc",
+			"name":          "test-bdc",
+			"base_url":      "http://169.254.169.254/",
+		})))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestSCMCreate_RejectsPrivateBaseURL_OAuthMode(t *testing.T) {
+	// base_url is validated regardless of auth mode (e.g. a GitHub Enterprise
+	// Server instance configured with the default oauth_user auth mode).
+	_, r := newSCMProviderRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/scm-providers",
+		jsonBody(map[string]interface{}{
+			"provider_type": "github",
+			"name":          "test-ghe",
+			"client_id":     "cid",
+			"client_secret": "csec",
+			"base_url":      "http://10.1.2.3/",
+		})))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestSCMUpdate_RejectsPrivateBaseURL(t *testing.T) {
+	mock, r := newSCMProviderRouter(t)
+	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
+		WillReturnRows(sampleSCMProviderRow())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/scm-providers/"+knownUUID,
+		jsonBody(map[string]interface{}{"base_url": "http://127.0.0.1:8080/"})))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestSCMCreate_AllowlistedBaseURLSucceeds(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	sqlxDB := sqlx.NewDb(db, "sqlmock")
+	scmRepo := repositories.NewSCMRepository(sqlxDB)
+	orgRepo := repositories.NewOrganizationRepository(db)
+	cipher := testTokenCipher(t)
+	h := NewSCMProviderHandlers(&config.Config{}, scmRepo, orgRepo, cipher).
+		WithEgressGuard(httpsafe.MustGuard("10.5.0.0/16"))
+
+	r := gin.New()
+	r.POST("/scm-providers", h.CreateProvider)
+
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}).
+			AddRow(knownUUID, "default", "Default", nil, nil, time.Now(), time.Now()))
+	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE organization_id").
+		WillReturnRows(sqlmock.NewRows(scmProvCols))
+	mock.ExpectExec("INSERT INTO scm_providers").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/scm-providers",
+		jsonBody(map[string]interface{}{
+			"provider_type": "bitbucket_dc",
+			"name":          "internal-bdc",
+			"base_url":      "https://10.5.1.1/",
 		})))
 
 	if w.Code != http.StatusCreated {
