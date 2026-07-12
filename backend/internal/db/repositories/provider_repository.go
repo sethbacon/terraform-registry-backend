@@ -775,7 +775,7 @@ func (r *ProviderRepository) SearchProviders(ctx context.Context, orgID, query, 
 	whereClause, args := wb.clause()
 
 	// Count total results
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM providers p %s", whereClause)
+	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM providers p %s", whereClause) // #nosec G201 -- whereClause is built by whereBuilder from structural SQL + $N placeholders only; all user values are passed via args
 	var total int
 	err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&total)
 	if err != nil {
@@ -783,6 +783,7 @@ func (r *ProviderRepository) SearchProviders(ctx context.Context, orgID, query, 
 	}
 
 	// Query with pagination and JOIN for created_by_name
+	// #nosec G201 -- whereClause is built by whereBuilder from structural SQL + $N placeholders only; all user values are passed via args
 	searchQuery := fmt.Sprintf(`
 		SELECT p.id, p.organization_id, p.namespace, p.type, p.description, p.source,
 		       p.created_by, u.name as created_by_name, p.created_at, p.updated_at

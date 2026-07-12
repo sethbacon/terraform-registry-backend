@@ -502,7 +502,7 @@ func (r *ModuleRepository) SearchModules(ctx context.Context, orgID, query, name
 	whereClause, args := wb.clause()
 
 	// Count total results
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM modules m %s", whereClause)
+	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM modules m %s", whereClause) // #nosec G201 -- whereClause is built by whereBuilder from structural SQL + $N placeholders only; all user values are passed via args
 	var total int
 	err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&total)
 	if err != nil {
@@ -510,6 +510,7 @@ func (r *ModuleRepository) SearchModules(ctx context.Context, orgID, query, name
 	}
 
 	// Query with pagination and JOIN for created_by_name
+	// #nosec G201 -- whereClause is built by whereBuilder from structural SQL + $N placeholders only; all user values are passed via args
 	query = fmt.Sprintf(`
 		SELECT m.id, m.organization_id, m.namespace, m.name, m.system, m.description, m.source,
 		       m.created_by, u.name as created_by_name, m.created_at, m.updated_at,
