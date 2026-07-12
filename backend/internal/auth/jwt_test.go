@@ -394,6 +394,31 @@ func TestSetTrustedIssuers(t *testing.T) {
 			t.Error("expected sibling token to be rejected again after SetTrustedIssuers(nil)")
 		}
 	})
+
+	// A blank entry -- e.g. from a trailing/doubled comma in
+	// TFR_SUITE_TRUSTED_ISSUERS, which viper's comma-split does not filter --
+	// must never reach the allow-list. issuerAllowed does a literal string
+	// match, and a JWT whose iss claim was simply never set unmarshals to "";
+	// an empty allow-list entry would accept such a token, silently defeating
+	// the issuer pin entirely.
+	t.Run("blank entry in extra list is filtered, not trusted", func(t *testing.T) {
+		SetTrustedIssuers([]string{"terraform-state-manager", ""})
+		t.Cleanup(func() { SetTrustedIssuers(nil) })
+
+		noIssuerTM := identityauth.NewTokenManager(secret, "")
+		noIssuerToken, err := noIssuerTM.Generate("attacker", "attacker@example.com", []string{"admin"}, time.Hour)
+		if err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		if _, err := ValidateJWT(noIssuerToken); err == nil {
+			t.Error("a token with an empty iss claim must never validate, even with a blank entry in the trusted-issuers list")
+		}
+
+		// The real (non-blank) entry alongside it must still work.
+		if _, err := ValidateJWT(siblingToken); err != nil {
+			t.Errorf("legitimate sibling issuer should still be trusted: %v", err)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------

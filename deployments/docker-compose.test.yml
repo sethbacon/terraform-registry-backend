@@ -28,6 +28,10 @@ services:
       - ENCRYPTION_KEY=test-encryption-key-must-be-32ch
       - TFR_JWT_SECRET=test-jwt-secret-that-is-32-chars!!
       - DEV_MODE=true
+      # This stack runs at the default logging.level ("info"), which
+      # devModeProductionGuard (issue #559) can no longer distinguish from a
+      # production deployment left at its default -- confirm explicitly.
+      - TFR_CONFIRM_NON_PRODUCTION=true
       - TFR_SERVER_HOST=0.0.0.0
       - TFR_SERVER_PORT=8080
     ports:

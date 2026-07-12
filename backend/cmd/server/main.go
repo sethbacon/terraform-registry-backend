@@ -262,7 +262,7 @@ func serve(cfg *config.Config) error {
 	// Refuse to boot entirely when DEV_MODE is combined with a production
 	// indicator, rather than relying on the warning above being noticed. See
 	// devModeProductionGuard's doc comment for why logging.level is the signal.
-	if err := devModeProductionGuard(devModeEnabled, cfg.Logging.Level); err != nil {
+	if err := devModeProductionGuard(devModeEnabled, cfg.Logging.Level, devModeNonProductionConfirmed()); err != nil {
 		return err
 	}
 
@@ -678,27 +678,49 @@ func isProductionLoggingLevel(level string) bool {
 	return level == "warn" || level == "error"
 }
 
+// devModeNonProductionConfirmed reports whether the operator has explicitly
+// confirmed a DEV_MODE deployment running above logging.level=="debug" is not
+// production. Read directly via env, matching identitySchemaEnabled below,
+// rather than threaded through *config.Config -- this is a boot-time-only
+// escape hatch, not application configuration.
+func devModeNonProductionConfirmed() bool {
+	return os.Getenv("TFR_CONFIRM_NON_PRODUCTION") == "true"
+}
+
 // devModeProductionGuard refuses to start the server when DEV_MODE is enabled
-// together with a production indicator (issue #559 findings [5]/[11]).
+// outside of an unambiguous dev/test signal (issue #559 findings [5]/[11]).
 // DEV_MODE unconditionally exposes the unauthenticated /api/v1/dev/login
 // admin-session-minting endpoint (see internal/api/admin/dev.go); the log
 // warning above is easy to miss in aggregated production logs, so this makes
 // the misconfiguration a hard startup failure instead.
 //
-// devModeEnabled and loggingLevel are passed in rather than read from
-// os.Getenv/cfg directly so this stays a pure function, independently
-// unit-testable against arbitrary inputs without an env var or a *config.Config.
-func devModeProductionGuard(devModeEnabled bool, loggingLevel string) error {
-	if !devModeEnabled || !isProductionLoggingLevel(loggingLevel) {
+// logging.level alone cannot distinguish dev from production: this repo's own
+// dev and test compose stacks run at logging.level=="info" (the config
+// default), which is indistinguishable from a plausible, deliberate
+// production choice -- an earlier version of this guard only blocked
+// "warn"/"error" for exactly that reason, which meant the overwhelmingly
+// common case (DEV_MODE=true with logging.level left at its "info" default)
+// sailed through unblocked. "debug" is the only logging.level this repo's own
+// manifests treat as unambiguously non-production; any other level requires
+// an explicit TFR_CONFIRM_NON_PRODUCTION=true acknowledgment. Deployments that
+// spin up this backend with DEV_MODE=true at a non-debug logging.level (this
+// repo's own docker-compose.yml/docker-compose.test.yml, and any downstream
+// repo's compose files that do the same) must set that variable.
+//
+// devModeEnabled, loggingLevel, and nonProductionConfirmed are passed in
+// rather than read from os.Getenv/cfg directly so this stays a pure function,
+// independently unit-testable against arbitrary inputs.
+func devModeProductionGuard(devModeEnabled bool, loggingLevel string, nonProductionConfirmed bool) error {
+	if !devModeEnabled || loggingLevel == "debug" || nonProductionConfirmed {
 		return nil
 	}
 	return fmt.Errorf(
-		"refusing to start: DEV_MODE is enabled together with a production-level logging.level (%q). "+
-			"DEV_MODE unconditionally exposes the unauthenticated /api/v1/dev/login admin-session-minting "+
-			"endpoint and must never run in a production deployment. Unset DEV_MODE, or if this really is a "+
-			"dev/test deployment, set logging.level to \"debug\" or \"info\" — this repo's own production "+
-			"manifests (docker-compose.prod.yml, the kubernetes \"production\" overlay) always set "+
-			"logging.level to \"warn\"",
+		"refusing to start: DEV_MODE is enabled with logging.level=%q, which is not a reliable dev-only signal "+
+			"(this repo's own dev/test compose stacks also run at \"info\", the config default). DEV_MODE "+
+			"unconditionally exposes the unauthenticated /api/v1/dev/login admin-session-minting endpoint and "+
+			"must never run in a production deployment. Unset DEV_MODE, set logging.level to \"debug\", or if "+
+			"this really is a non-production deployment set TFR_CONFIRM_NON_PRODUCTION=true to acknowledge it "+
+			"explicitly",
 		loggingLevel,
 	)
 }

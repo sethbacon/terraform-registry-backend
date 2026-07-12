@@ -85,6 +85,10 @@ services:
 
       # Development mode (enables auto-generated JWT secret if TFR_JWT_SECRET not set)
       DEV_MODE: "true"
+      # This stack runs at the default logging.level ("info"), which
+      # devModeProductionGuard (issue #559) can no longer distinguish from a
+      # production deployment left at its default -- confirm explicitly.
+      TFR_CONFIRM_NON_PRODUCTION: "true"
     ports:
       - "8080:8080"  # Backend API
       - "9090:9090"  # Prometheus metrics endpoint (scraped by Prometheus)

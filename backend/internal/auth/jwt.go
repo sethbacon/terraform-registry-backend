@@ -143,7 +143,18 @@ func SetTrustedIssuers(extra []string) {
 	_ = GetJWTSecret() // ensure the secret is validated and the TokenManager exists
 	issuers := make([]string, 0, len(extra)+1)
 	issuers = append(issuers, jwtIssuer)
-	issuers = append(issuers, extra...)
+	for _, iss := range extra {
+		// A blank entry (a trailing/doubled comma in TFR_SUITE_TRUSTED_ISSUERS,
+		// which viper's comma-split does not filter) must never reach the
+		// allow-list: issuerAllowed does a literal string match, and a JWT
+		// whose iss claim was simply never set unmarshals to "" — an empty
+		// allow-list entry would accept it, silently defeating the very
+		// issuer pin this function exists to enforce.
+		if iss == "" {
+			continue
+		}
+		issuers = append(issuers, iss)
+	}
 	tokenManager.SetAllowedIssuers(issuers)
 }
 
