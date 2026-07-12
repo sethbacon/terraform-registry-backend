@@ -897,6 +897,16 @@ func TestCallbackHandler_ErrorRedirectsToFrontend(t *testing.T) {
 var authOrgCols = []string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}
 var authMemberCols = []string{"organization_id", "user_id", "role_template_id", "created_at"}
 
+// expectRoleScopesLookup queues the guardProvisionableRole scopes lookup that
+// now runs before every "wanted" (add/update) branch of reconcileGroupMemberships.
+// scopes is marshaled to the JSON array the real `scopes` column holds.
+func expectRoleScopesLookup(mock sqlmock.Sqlmock, roleName string, scopes []string) {
+	scopesJSON, _ := json.Marshal(scopes)
+	mock.ExpectQuery("SELECT scopes FROM role_templates WHERE name").
+		WithArgs(roleName).
+		WillReturnRows(sqlmock.NewRows([]string{"scopes"}).AddRow(scopesJSON))
+}
+
 func TestApplyGroupMappings_MatchingGroup_AddMember(t *testing.T) {
 	db, mock, _ := sqlmock.New()
 	defer db.Close()
@@ -916,6 +926,9 @@ func TestApplyGroupMappings_MatchingGroup_AddMember(t *testing.T) {
 	// CheckMembership → GetMember → not found (no rows)
 	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
 		WillReturnRows(sqlmock.NewRows(authMemberCols))
+
+	// guardProvisionableRole → scopes lookup (non-admin, so the write proceeds)
+	expectRoleScopesLookup(mock, "editor", []string{"modules:read", "modules:write"})
 
 	// AddMemberWithParams → lookup role template
 	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
@@ -944,8 +957,11 @@ func TestApplyGroupMappings_MatchingGroup_UpdateMember(t *testing.T) {
 	defer db.Close()
 
 	cfg := &config.Config{}
+	// Role is a non-admin role template deliberately: this test is about the
+	// UPDATE-member mechanics, not the ScopeAdmin guard (see
+	// TestReconcile_ResolvedRoleCarriesScopeAdmin_UpdatePath_Rejected for that).
 	cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
-		{Group: "admins", Organization: "acme", Role: "admin"},
+		{Group: "admins", Organization: "acme", Role: "editor"},
 	}
 	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 
@@ -961,10 +977,13 @@ func TestApplyGroupMappings_MatchingGroup_UpdateMember(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(authMemberCols).
 			AddRow("org-1", "user-1", &roleID, time.Now()))
 
+	// guardProvisionableRole → scopes lookup (non-admin, so the write proceeds)
+	expectRoleScopesLookup(mock, "editor", []string{"modules:read", "modules:write"})
+
 	// UpdateMemberRole → lookup role template
 	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
-		WithArgs("admin").
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-admin"))
+		WithArgs("editor").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-editor"))
 
 	// UpdateMemberRoleTemplate → UPDATE
 	mock.ExpectExec("UPDATE organization_members.*SET role_template_id").
@@ -1654,8 +1673,11 @@ func expectNotMember(mock sqlmock.Sqlmock) {
 		WillReturnRows(sqlmock.NewRows(authMemberCols))
 }
 
-// expectAddMember queues the role-template lookup + INSERT done by AddMemberWithParams.
+// expectAddMember queues the guardProvisionableRole scopes lookup (non-admin,
+// so the guard passes) followed by the role-template lookup + INSERT done by
+// AddMemberWithParams.
 func expectAddMember(mock sqlmock.Sqlmock, roleName, roleID string) {
+	expectRoleScopesLookup(mock, roleName, []string{"placeholder:scope"})
 	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
 		WithArgs(roleName).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(roleID))
@@ -1663,8 +1685,11 @@ func expectAddMember(mock sqlmock.Sqlmock, roleName, roleID string) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 }
 
-// expectUpdateMember queues the role-template lookup + UPDATE done by UpdateMemberRole.
+// expectUpdateMember queues the guardProvisionableRole scopes lookup (non-admin,
+// so the guard passes) followed by the role-template lookup + UPDATE done by
+// UpdateMemberRole.
 func expectUpdateMember(mock sqlmock.Sqlmock, roleName, roleID string) {
+	expectRoleScopesLookup(mock, roleName, []string{"placeholder:scope"})
 	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
 		WithArgs(roleName).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(roleID))
@@ -1736,14 +1761,16 @@ func TestReconcile_KeepsGroup_PreservesMembership(t *testing.T) {
 	defer db.Close()
 
 	cfg := &config.Config{}
+	// Role is a non-admin role template deliberately: this test is about
+	// preserving membership across logins, not the ScopeAdmin guard.
 	cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
-		{Group: "admins", Organization: "acme", Role: "admin"},
+		{Group: "admins", Organization: "acme", Role: "editor"},
 	}
 	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 
 	expectOrgByName(mock, "acme", "org-acme")
-	expectIsMember(mock, "org-acme", "user-1", "rt-admin")
-	expectUpdateMember(mock, "admin", "rt-admin")
+	expectIsMember(mock, "org-acme", "user-1", "rt-editor")
+	expectUpdateMember(mock, "editor", "rt-editor")
 
 	err := h.applyGroupMappings(context.Background(), "user-1", []string{"admins"})
 	if err != nil {
@@ -1817,7 +1844,14 @@ func TestReconcile_DefaultRole_FirstLoginAdds(t *testing.T) {
 
 	expectOrgByName(mock, "default", "org-default")
 	expectNotMember(mock)
-	expectAddMember(mock, "viewer", "rt-viewer")
+	// default_role is a static, admin-configured fallback (not an IdP-driven
+	// group mapping), so guardProvisionableRole does not run here — no scopes
+	// lookup is expected, unlike expectAddMember's use elsewhere in this file.
+	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
+		WithArgs("viewer").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-viewer"))
+	mock.ExpectExec("INSERT INTO organization_members").
+		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	err := h.applyGroupMappings(context.Background(), "user-1", []string{"whatever"})
 	if err != nil {
@@ -1869,16 +1903,18 @@ func TestReconcile_MultipleGroupsSameOrg_Deterministic(t *testing.T) {
 	defer db.Close()
 
 	cfg := &config.Config{}
+	// Roles are both non-admin role templates deliberately: this test is about
+	// deterministic mapping-order precedence, not the ScopeAdmin guard.
 	cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
-		{Group: "admins", Organization: "acme", Role: "admin"},
+		{Group: "admins", Organization: "acme", Role: "owner"},
 		{Group: "devs", Organization: "acme", Role: "editor"},
 	}
 	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 
-	// User has BOTH groups. First config mapping (admins → admin) must win.
+	// User has BOTH groups. First config mapping (admins → owner) must win.
 	expectOrgByName(mock, "acme", "org-acme")
 	expectNotMember(mock)
-	expectAddMember(mock, "admin", "rt-admin")
+	expectAddMember(mock, "owner", "rt-owner")
 
 	err := h.applyGroupMappings(context.Background(), "user-1", []string{"devs", "admins"})
 	if err != nil {
@@ -1895,8 +1931,10 @@ func TestReconcile_MultipleManagedOrgs_MixedActions(t *testing.T) {
 	defer db.Close()
 
 	cfg := &config.Config{}
+	// acme's role is a non-admin role template deliberately: this test is about
+	// reconciling multiple orgs in one login, not the ScopeAdmin guard.
 	cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
-		{Group: "admins", Organization: "acme", Role: "admin"},
+		{Group: "admins", Organization: "acme", Role: "editor"},
 		{Group: "ops", Organization: "platform", Role: "operator"},
 	}
 	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
@@ -1904,7 +1942,7 @@ func TestReconcile_MultipleManagedOrgs_MixedActions(t *testing.T) {
 	// acme: has group → add member.
 	expectOrgByName(mock, "acme", "org-acme")
 	expectNotMember(mock)
-	expectAddMember(mock, "admin", "rt-admin")
+	expectAddMember(mock, "editor", "rt-editor")
 	// platform: no group, currently a member → revoke.
 	expectOrgByName(mock, "platform", "org-platform")
 	expectIsMember(mock, "org-platform", "user-1", "rt-operator")
@@ -1937,6 +1975,103 @@ func TestReconcile_RevokeError_Surfaced(t *testing.T) {
 	err := h.applyGroupMappings(context.Background(), "user-1", []string{"not-admins"})
 	if err == nil {
 		t.Error("expected error from RemoveMember failure, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// reconcileGroupMemberships — ScopeAdmin guard (issue #604, defense-in-depth
+// adoption of terraform-suite-identity's ValidateProvisionableScopes). An
+// IdP-driven group mapping that resolves to a role_template carrying
+// auth.ScopeAdmin must be refused automatically, not silently granted.
+// ---------------------------------------------------------------------------
+
+// New member add is REJECTED when the resolved role_template's scopes carry
+// ScopeAdmin: no INSERT is issued, no error is returned (the login itself
+// still succeeds — only the automatic grant is refused and logged).
+func TestReconcile_ResolvedRoleCarriesScopeAdmin_AddPath_Rejected(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
+		{Group: "admins", Organization: "acme", Role: "admin"},
+	}
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
+
+	expectOrgByName(mock, "acme", "org-acme")
+	expectNotMember(mock)
+	// guardProvisionableRole's scopes lookup returns the grant-all wildcard —
+	// AddMemberWithParams (and its own "SELECT id FROM role_templates" lookup)
+	// must NEVER be reached.
+	expectRoleScopesLookup(mock, "admin", []string{"admin"})
+
+	err := h.applyGroupMappings(context.Background(), "user-1", []string{"admins"})
+	if err != nil {
+		t.Fatalf("applyGroupMappings: unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations (no INSERT/role-template lookup should have been issued): %v", err)
+	}
+}
+
+// Existing member's role UPDATE is REJECTED the same way: the membership is
+// left untouched (not upgraded, and — importantly — not revoked either).
+func TestReconcile_ResolvedRoleCarriesScopeAdmin_UpdatePath_Rejected(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
+		{Group: "admins", Organization: "acme", Role: "admin"},
+	}
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
+
+	expectOrgByName(mock, "acme", "org-acme")
+	expectIsMember(mock, "org-acme", "user-1", "rt-editor")
+	expectRoleScopesLookup(mock, "admin", []string{"admin"})
+	// No UPDATE (or the revoke DELETE) must follow.
+
+	err := h.applyGroupMappings(context.Background(), "user-1", []string{"admins"})
+	if err != nil {
+		t.Fatalf("applyGroupMappings: unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations (no UPDATE/DELETE should have been issued): %v", err)
+	}
+}
+
+// A role_template whose scopes are a normal, non-admin set proceeds exactly as
+// before (already covered by the success-path tests above); this test only
+// pins down the "role name doesn't exist" edge case: guardProvisionableRole
+// must defer to AddMemberWithParams's own lookup error rather than swallowing
+// or duplicating it.
+func TestReconcile_GuardProvisionableRole_UnknownRoleTemplate_DefersToRealLookup(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
+		{Group: "admins", Organization: "acme", Role: "ghost-role"},
+	}
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
+
+	expectOrgByName(mock, "acme", "org-acme")
+	expectNotMember(mock)
+	// guardProvisionableRole's own scopes lookup finds no such role template.
+	mock.ExpectQuery("SELECT scopes FROM role_templates WHERE name").
+		WithArgs("ghost-role").
+		WillReturnRows(sqlmock.NewRows([]string{"scopes"}))
+	// AddMemberWithParams's lookup is reached and fails with its own clear error.
+	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
+		WithArgs("ghost-role").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+
+	err := h.applyGroupMappings(context.Background(), "user-1", []string{"admins"})
+	if err == nil {
+		t.Fatal("expected error from AddMemberWithParams' role template lookup, got nil")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
 	}
 }
 
@@ -1979,8 +2114,10 @@ func TestApplySAMLGroupMappings_KeepsGroup_Upserts(t *testing.T) {
 	defer db.Close()
 
 	cfg := &config.Config{}
+	// Role is a non-admin role template deliberately: this test is about the
+	// upsert mechanics, not the ScopeAdmin guard.
 	cfg.Auth.SAML.GroupMappings = []config.SAMLGroupMapping{
-		{Group: "saml-admins", Organization: "acme", Role: "admin"},
+		{Group: "saml-admins", Organization: "acme", Role: "editor"},
 	}
 	h := &AuthHandlers{
 		cfg:        cfg,
@@ -1991,7 +2128,7 @@ func TestApplySAMLGroupMappings_KeepsGroup_Upserts(t *testing.T) {
 
 	expectOrgByName(mock, "acme", "org-acme")
 	expectNotMember(mock)
-	expectAddMember(mock, "admin", "rt-admin")
+	expectAddMember(mock, "editor", "rt-editor")
 
 	err := h.applySAMLGroupMappings(context.Background(), "user-1", []string{"saml-admins"})
 	if err != nil {
@@ -2125,14 +2262,16 @@ func TestApplyLDAPGroupMappings_CaseInsensitiveDN_Matches(t *testing.T) {
 
 	cfg := &config.Config{}
 	// Configured DN uses lowercase; the user presents a mixed/upper-case DN.
+	// Role is a non-admin role template deliberately: this test is about
+	// case-insensitive DN matching, not the ScopeAdmin guard.
 	cfg.Auth.LDAP.GroupMappings = []config.LDAPGroupMapping{
-		{GroupDN: "cn=admins,ou=groups,dc=example,dc=com", Organization: "acme", Role: "admin"},
+		{GroupDN: "cn=admins,ou=groups,dc=example,dc=com", Organization: "acme", Role: "editor"},
 	}
 	h := newLDAPHandler(db, cfg)
 
 	expectOrgByName(mock, "acme", "org-acme")
 	expectNotMember(mock)
-	expectAddMember(mock, "admin", "rt-admin")
+	expectAddMember(mock, "editor", "rt-editor")
 
 	err := h.applyLDAPGroupMappings(context.Background(), "user-1",
 		[]string{"CN=Admins,OU=Groups,DC=Example,DC=Com"})
@@ -2232,16 +2371,18 @@ func TestApplyLDAPGroupMappings_MultipleDNsSameOrg_Deterministic(t *testing.T) {
 	defer db.Close()
 
 	cfg := &config.Config{}
+	// Roles are both non-admin role templates deliberately: this test is about
+	// deterministic mapping-order precedence, not the ScopeAdmin guard.
 	cfg.Auth.LDAP.GroupMappings = []config.LDAPGroupMapping{
-		{GroupDN: "cn=admins,ou=groups,dc=example,dc=com", Organization: "acme", Role: "admin"},
+		{GroupDN: "cn=admins,ou=groups,dc=example,dc=com", Organization: "acme", Role: "owner"},
 		{GroupDN: "cn=devs,ou=groups,dc=example,dc=com", Organization: "acme", Role: "editor"},
 	}
 	h := newLDAPHandler(db, cfg)
 
-	// User has BOTH DNs. First config mapping (admins → admin) must win.
+	// User has BOTH DNs. First config mapping (admins → owner) must win.
 	expectOrgByName(mock, "acme", "org-acme")
 	expectNotMember(mock)
-	expectAddMember(mock, "admin", "rt-admin")
+	expectAddMember(mock, "owner", "rt-owner")
 
 	err := h.applyLDAPGroupMappings(context.Background(), "user-1", []string{
 		"cn=devs,ou=groups,dc=example,dc=com",

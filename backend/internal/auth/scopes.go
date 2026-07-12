@@ -159,3 +159,18 @@ func ValidateScopeString(scope string) error {
 	}
 	return nil
 }
+
+// ValidateProvisionableScopes rejects ScopeAdmin ("admin") from a scope list,
+// naming it specifically, and returns nil otherwise. Call this when mapping
+// externally-influenced data (an OIDC/SAML/LDAP IdP group claim, a SCIM
+// attribute, or any other value a lower-trust source contributes) onto a
+// scope/role list, BEFORE that list is trusted or persisted — never on scopes
+// read back from an already-trusted, admin-seeded role_template, where
+// carrying ScopeAdmin is expected and legitimate.
+//
+// Thin wrapper over identityauth.ValidateProvisionableScopes, matching this
+// file's existing pattern of re-exporting the shared identity module's
+// scope-checking helpers.
+func ValidateProvisionableScopes(scopes []string) error {
+	return identityauth.ValidateProvisionableScopes(scopes)
+}

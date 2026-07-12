@@ -362,6 +362,13 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 		var err error
 		var oidcGroups []string // populated for OIDC logins when group_claim_name is configured
 		var emailVerified *bool
+		// oidcEmailVerified carries the IdP's email_verified signal (as returned by
+		// ExtractUserInfo) through to GetOrCreateUserByOIDC, which uses it to gate
+		// new email->identity bindings (see terraform-suite-identity's fix for
+		// audit #52). It is distinct from emailVerified/enforceEmailVerified above,
+		// which implements this repo's own RequireVerifiedEmail login-rejection
+		// policy from the raw claim.
+		var oidcEmailVerified bool
 
 		// Exchange code for tokens based on provider
 		switch sessionState.ProviderType {
@@ -398,12 +405,8 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 				return
 			}
 
-			// Extract user info. The library's own emailVerified return is
-			// discarded here in favor of the existing emailVerifiedClaim(idToken)
-			// helper below, which this repo's enforceEmailVerified/RequireVerifiedEmail
-			// gate already relies on -- reconciling the two is left to the other
-			// v0.17.0-adoption PR in this batch.
-			sub, email, name, _, err = oidcProv.ExtractUserInfo(idToken)
+			// Extract user info
+			sub, email, name, oidcEmailVerified, err = oidcProv.ExtractUserInfo(idToken)
 			if err != nil {
 				slog.Error("oidc: failed to extract user info from ID token", "error", err)
 				callbackError("user_info_failed", "Failed to extract user information from the ID token.")
@@ -449,9 +452,8 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 				return
 			}
 
-			// Extract user info (see the OIDC branch above re: the discarded
-			// library emailVerified return).
-			sub, email, name, _, err = h.azureADProvider.ExtractUserInfo(idToken)
+			// Extract user info
+			sub, email, name, oidcEmailVerified, err = h.azureADProvider.ExtractUserInfo(idToken)
 			if err != nil {
 				slog.Error("azuread: failed to extract user info from ID token", "error", err)
 				callbackError("user_info_failed", "Failed to extract user information from the ID token.")
@@ -481,10 +483,7 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 			callbackError("email_bound", err.Error())
 			return
 		}
-		// emailVerified gates new email->identity bindings inside GetOrCreateUserByOIDC
-		// (linking a pre-provisioned account or creating a new one); a returning
-		// user matched by oidc_sub is unaffected regardless of this value.
-		user, err := h.userRepo.GetOrCreateUserByOIDC(ctx, sub, email, name, emailVerified != nil && *emailVerified)
+		user, err := h.userRepo.GetOrCreateUserByOIDC(ctx, sub, email, name, oidcEmailVerified)
 		if err != nil {
 			callbackError("user_creation_failed", "Failed to look up or create your account.")
 			return
@@ -997,13 +996,34 @@ func (h *AuthHandlers) reconcileGroupMemberships(ctx context.Context, userID str
 		}
 
 		role, wanted := desiredRole[orgName]
+		// rejectIfNotProvisionable refuses the automatic, IdP-driven role
+		// assignment when the resolved role_template carries auth.ScopeAdmin —
+		// see guardProvisionableRole's doc for the full rationale (#604).
+		// Deliberately does NOT flip `wanted` to false: on rejection this must
+		// skip the assignment, not fall through to the revoke branch below and
+		// tear down an existing (possibly unrelated, legitimately-granted)
+		// membership.
+		rejectIfNotProvisionable := func() bool {
+			if guardErr := h.guardProvisionableRole(ctx, role); guardErr != nil {
+				slog.Warn(provider+" group mapping rejected: resolved role is not automatically provisionable by an IdP-driven mapping; a human admin must grant it explicitly",
+					"user_id", userID, "org", orgName, "role", role, "error", guardErr)
+				return true
+			}
+			return false
+		}
 		switch {
 		case wanted && isMember:
+			if rejectIfNotProvisionable() {
+				continue
+			}
 			if err := h.orgRepo.UpdateMemberRole(ctx, org.ID, userID, role); err != nil {
 				return fmt.Errorf("update member role org=%s user=%s role=%s: %w", org.ID, userID, role, err)
 			}
 			slog.Info(provider+" group mapping applied", "user_id", userID, "org", orgName, "role", role)
 		case wanted && !isMember:
+			if rejectIfNotProvisionable() {
+				continue
+			}
 			if err := h.orgRepo.AddMemberWithParams(ctx, org.ID, userID, role); err != nil {
 				return fmt.Errorf("add member org=%s user=%s role=%s: %w", org.ID, userID, role, err)
 			}
@@ -1211,10 +1231,12 @@ func (h *AuthHandlers) SAMLACSHandler() gin.HandlerFunc {
 			return
 		}
 
-		// Get or create user (reuse the OIDC path — sub is unique per IdP). The
-		// email is treated as verified: it comes from a signed SAML assertion the
-		// SP has already cryptographically validated, unlike a self-asserted OIDC
-		// claim.
+		// Get or create user (reuse the OIDC path — sub is unique per IdP).
+		// emailVerified=true: the email comes from a signed SAML assertion the IdP
+		// itself vouches for (validated above by ValidateResponse), not a value the
+		// end user self-asserts — the same trust level GetOrCreateUserByOIDC's
+		// emailVerified gate is designed to require before trusting a new
+		// email->identity binding.
 		user, err := h.userRepo.GetOrCreateUserByOIDC(ctx, sub, userInfo.Email, userInfo.Name, true)
 		if err != nil {
 			callbackError("user_creation_failed", "Failed to look up or create your account.")
@@ -1355,9 +1377,11 @@ func (h *AuthHandlers) LDAPLoginHandler() gin.HandlerFunc {
 			return
 		}
 
-		// The email is treated as verified: it comes from the LDAP directory entry
-		// of a principal who just proved control of the account via a successful
-		// bind, unlike a self-asserted OIDC claim.
+		// emailVerified=true: the email is an attribute read directly off the
+		// directory entry the user just bound-authenticated against (not a
+		// self-asserted claim), the same administratively-controlled trust level
+		// GetOrCreateUserByOIDC's emailVerified gate is designed to require before
+		// trusting a new email->identity binding.
 		user, err := h.userRepo.GetOrCreateUserByOIDC(ctx, sub, userInfo.Email, userInfo.Name, true)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to look up or create your account"})
