@@ -7,6 +7,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.0](https://github.com/sethbacon/terraform-registry-backend/compare/v2.8.2...v2.9.0) (2026-07-12)
+
+
+### Features
+
+* **security:** verify GitHub Artifact Attestation for OPA releases above checksums ([#590](https://github.com/sethbacon/terraform-registry-backend/issues/590)) ([e7b2d26](https://github.com/sethbacon/terraform-registry-backend/commit/e7b2d26787fa025843961f75a54ec2f65414c21c))
+
+
+### Bug Fixes
+
+* **auth:** issue session cookies on dev flows, drop JWTs from response bodies, delete exchange-token ([#584](https://github.com/sethbacon/terraform-registry-backend/issues/584)) ([485ced0](https://github.com/sethbacon/terraform-registry-backend/commit/485ced00868dbd18a0d6400fd9f06b1ec5ac1058))
+* **ci:** dependabot.yml used invalid schedule.interval "biweekly" ([#594](https://github.com/sethbacon/terraform-registry-backend/issues/594)) ([003a339](https://github.com/sethbacon/terraform-registry-backend/commit/003a3399e0965a3b01e715728e206b6399777737))
+* **lint:** use a tagged switch on resp.StatusCode in attestation.go (staticcheck QF1002) ([#592](https://github.com/sethbacon/terraform-registry-backend/issues/592)) ([08732c1](https://github.com/sethbacon/terraform-registry-backend/commit/08732c11597d38dc1f47cb42b5397182c7262bf1))
+* rename rate-limit log field from "key" to "rate_limit_bucket" ([#593](https://github.com/sethbacon/terraform-registry-backend/issues/593)) ([5f074f5](https://github.com/sethbacon/terraform-registry-backend/commit/5f074f5a526400f14189d44ac74581fa32ac9714))
+* **scm:** make webhook state writes execute — unused $2 killed auto-publish ([#585](https://github.com/sethbacon/terraform-registry-backend/issues/585)) ([0081351](https://github.com/sethbacon/terraform-registry-backend/commit/008135162a699bc4f82f4216e0561a499a132d2c)), closes [#583](https://github.com/sethbacon/terraform-registry-backend/issues/583)
+* **security:** auth/session hardening — mTLS, dev-mode guard, issuer pinning, privilege-revocation watermarks ([#589](https://github.com/sethbacon/terraform-registry-backend/issues/589)) ([a034e0d](https://github.com/sethbacon/terraform-registry-backend/commit/a034e0d4a671ea5fd56029949c5518b0d7cc5135))
+* **security:** batch 2 of quick-win findings from 2026-07-09 audit ([#573](https://github.com/sethbacon/terraform-registry-backend/issues/573)) ([f60f3e1](https://github.com/sethbacon/terraform-registry-backend/commit/f60f3e198cdc980ba3f7de40cab54078908e91b3))
+* **security:** batch 3 of quick-win findings from 2026-07-09 audit ([#574](https://github.com/sethbacon/terraform-registry-backend/issues/574)) ([6ed2e06](https://github.com/sethbacon/terraform-registry-backend/commit/6ed2e06a54d81933c69a958db6753500dfbd39e8))
+* **security:** bind SAML assertions to request ID and gate IdP-initiated SSO ([#582](https://github.com/sethbacon/terraform-registry-backend/issues/582)) ([e226a5f](https://github.com/sethbacon/terraform-registry-backend/commit/e226a5f15819c091e6682d3d7eea3b98e72b1129))
+* **security:** close quick-win findings from 2026-07-09 audit ([#569](https://github.com/sethbacon/terraform-registry-backend/issues/569)) ([a3a9302](https://github.com/sethbacon/terraform-registry-backend/commit/a3a930208f7b7985be35d711870e931a139fa1ae))
+* **security:** enforce egress filtering + redirect re-validation on all outbound clients ([#588](https://github.com/sethbacon/terraform-registry-backend/issues/588)) ([0b9fe76](https://github.com/sethbacon/terraform-registry-backend/commit/0b9fe76a696edfcd595a582b06b17477c7ab76fa))
+* **security:** enforce namespace-org object authorization on module/provider mutations (BOLA/BFLA) ([#587](https://github.com/sethbacon/terraform-registry-backend/issues/587)) ([9dbe2e6](https://github.com/sethbacon/terraform-registry-backend/commit/9dbe2e629c7e664dabe8a8b05888946f6360f157))
+* **security:** enforce origin allowlist on browser-context Bearer mutations (CSRF) ([#586](https://github.com/sethbacon/terraform-registry-backend/issues/586)) ([8e532af](https://github.com/sethbacon/terraform-registry-backend/commit/8e532af677af4fcd0c6ce01962506db3b6ee71a9))
+* **security:** harden auth/session controls per audit findings ([#581](https://github.com/sethbacon/terraform-registry-backend/issues/581)) ([1ef482a](https://github.com/sethbacon/terraform-registry-backend/commit/1ef482a1c0c889d08049614c7b2a3c8680771d20))
+* **security:** harden CI/CD supply chain and gosec baseline governance ([#579](https://github.com/sethbacon/terraform-registry-backend/issues/579)) ([fd54753](https://github.com/sethbacon/terraform-registry-backend/commit/fd547537c23215ce582c1762bfee4e03841ee9d0))
+* **security:** harden SCM connector HTTP clients with timeouts and body caps ([#576](https://github.com/sethbacon/terraform-registry-backend/issues/576)) ([98b7572](https://github.com/sethbacon/terraform-registry-backend/commit/98b757274ab5f4c9f768f69d481ac7f7a8d31085))
+* **security:** populate provider signing key_id from OpenPGP key (closes [#564](https://github.com/sethbacon/terraform-registry-backend/issues/564)) ([#578](https://github.com/sethbacon/terraform-registry-backend/issues/578)) ([365972b](https://github.com/sethbacon/terraform-registry-backend/commit/365972b5254dc2cee43effffc64cd426696c9aea))
+* **security:** warn on low-entropy ENCRYPTION_KEY at startup ([#577](https://github.com/sethbacon/terraform-registry-backend/issues/577)) ([649c5f4](https://github.com/sethbacon/terraform-registry-backend/commit/649c5f4e7b970f9edff389bb6786ac9ba0e81a56))
+* TestExtractTarGz_PathTraversal asserted only err != nil ([#600](https://github.com/sethbacon/terraform-registry-backend/issues/600)) ([7a64586](https://github.com/sethbacon/terraform-registry-backend/commit/7a645861546799c5574c9ec013a390f49aa0c3c3))
+
+
+### Refactor
+
+* address [#565](https://github.com/sethbacon/terraform-registry-backend/issues/565) architecture debt — Job/Registry, whereBuilder, config-reload extraction ([#601](https://github.com/sethbacon/terraform-registry-backend/issues/601)) ([328a87d](https://github.com/sethbacon/terraform-registry-backend/commit/328a87d0ce5be9130feb638218cbe29207d015ba))
+* **api:** extract route registration from NewRouter ([#565](https://github.com/sethbacon/terraform-registry-backend/issues/565) [39], completion) ([#603](https://github.com/sethbacon/terraform-registry-backend/issues/603)) ([e29c36b](https://github.com/sethbacon/terraform-registry-backend/commit/e29c36b5279ae0604d31df868b7fadea24ed5a6f))
+
 ## [2.8.2](https://github.com/sethbacon/terraform-registry-backend/compare/v2.8.1...v2.8.2) (2026-07-09)
 
 
