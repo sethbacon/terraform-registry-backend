@@ -69,6 +69,15 @@ data:
   TFR_MULTI_TENANCY_ENABLED: {{ .Values.multiTenancy.enabled | quote }}
   TFR_MULTI_TENANCY_DEFAULT_ORGANIZATION: {{ .Values.multiTenancy.defaultOrganization | quote }}
 
+  # Suite coupling (optional; standalone by default — see docs/identity-schema.md).
+  # The shared service token (Consumed-by gate) lives in the Secret.
+  TFR_SUITE_SIBLING_URL: {{ .Values.suite.siblingUrl | quote }}
+  TFR_SUITE_ROLE_SEED_OWNER: {{ .Values.suite.roleSeedOwner | quote }}
+  TFR_SUITE_IDENTITY_SHARED_STORE: {{ .Values.suite.identitySharedStore | quote }}
+  {{- if .Values.suite.trustedIssuers }}
+  TFR_SUITE_TRUSTED_ISSUERS: {{ join "," .Values.suite.trustedIssuers | quote }}
+  {{- end }}
+
   # Security (TLS terminated at Ingress)
   TFR_SECURITY_TLS_ENABLED: "false"
   TFR_SECURITY_RATE_LIMITING_ENABLED: {{ .Values.security.rateLimiting.enabled | quote }}
