@@ -670,7 +670,21 @@ func (h *OrganizationHandlers) RemoveMemberHandler() gin.HandlerFunc {
 		orgID := c.Param("id")
 		userID := c.Param("user_id")
 
-		// Remove member
+		// RemoveMember is a plain DELETE with no rows-affected/not-found
+		// signal, so check membership first: without this, calling the
+		// endpoint against a user who was never a member of this org (a typo,
+		// a stale UI, or a probe by an org admin with no relationship to the
+		// target) would still revoke that user's tokens org-wide below --
+		// letting any org admin log out an arbitrary user by targeting a
+		// removal that never actually changes anything.
+		wasMember, err := h.orgRepo.GetMemberWithRole(c.Request.Context(), orgID, userID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to check organization membership",
+			})
+			return
+		}
+
 		if err := h.orgRepo.RemoveMember(c.Request.Context(), orgID, userID); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to remove member from organization",
@@ -680,8 +694,11 @@ func (h *OrganizationHandlers) RemoveMemberHandler() gin.HandlerFunc {
 
 		// The removed member's outstanding JWTs still carry the org-derived
 		// scopes they had at login; revoke them so removal takes effect
-		// immediately instead of waiting out the JWT TTL (issue #559 finding [9]).
-		h.revokeUserTokens(c, userID, "removed from organization")
+		// immediately instead of waiting out the JWT TTL (issue #559 finding
+		// [9]) -- but only when membership actually existed and was removed.
+		if wasMember != nil {
+			h.revokeUserTokens(c, userID, "removed from organization")
+		}
 
 		c.JSON(http.StatusOK, gin.H{
 			"message": "Member removed successfully",

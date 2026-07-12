@@ -48,6 +48,19 @@ func (r *UserTokenRevocationRepository) RevokeAllUserTokens(ctx context.Context,
 
 // TokensRevokedSince reports whether tokens issued to the user at issuedAt are
 // revoked, i.e. whether the user's watermark postdates the token's iat claim.
+//
+// issuedAt carries only whole-second precision (golang-jwt's NumericDate
+// floors JWT iat/exp to the second per RFC 7519), while revoked_before is a
+// full-precision Postgres timestamp, so a token minted and a revocation
+// happening within the same wall-clock second are ambiguous: we cannot tell
+// from the floored iat alone whether the real mint time was before or after
+// the revocation. This is deliberately NOT "fixed" by rounding revoked_before
+// down to match iat's precision: that would only move the ambiguity to the
+// opposite, UNSAFE side (a token minted just before a revocation, in the same
+// second, would then read as valid). The plain `>` comparison below always
+// resolves the ambiguous window toward "revoked" -- a false positive here
+// costs a fresh login one extra retry; the reverse would be a real token
+// surviving a revocation it should not have.
 func (r *UserTokenRevocationRepository) TokensRevokedSince(ctx context.Context, userID string, issuedAt time.Time) (bool, error) {
 	query := `SELECT EXISTS(SELECT 1 FROM user_token_revocations WHERE user_id = $1 AND revoked_before > $2)`
 	var revoked bool

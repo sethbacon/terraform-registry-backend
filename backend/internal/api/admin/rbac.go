@@ -296,9 +296,36 @@ func (h *RBACHandlers) DeleteRoleTemplate(c *gin.Context) {
 		return
 	}
 
+	// Snapshot the affected members before the delete: the FK is ON DELETE SET
+	// NULL, so a member's role_template_id is gone the instant the delete
+	// commits, and ListRoleTemplateMemberUserIDs would find nobody afterward.
+	var memberUserIDs []string
+	if h.userRevocations != nil {
+		memberUserIDs, err = h.rbacRepo.ListRoleTemplateMemberUserIDs(c.Request.Context(), id)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to look up role template members"})
+			return
+		}
+	}
+
 	if err := h.rbacRepo.DeleteRoleTemplate(c.Request.Context(), id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete role template"})
 		return
+	}
+
+	// Deleting the template unconditionally removes its scopes from every
+	// member who held it (unlike an edit, there's no "was this a no-op"
+	// question to gate on) -- revoke their outstanding tokens so the change
+	// takes effect immediately instead of waiting out the JWT TTL (issue #559
+	// finding [9]). The delete has already committed, so a revocation
+	// failure here is logged rather than turned into a misleading error
+	// response for an otherwise-successful deletion, matching
+	// revokeRoleTemplateMemberTokens' own best-effort posture.
+	for _, userID := range memberUserIDs {
+		if err := h.userRevocations.RevokeAllUserTokens(c.Request.Context(), userID); err != nil {
+			slog.Error("failed to revoke user tokens after role template deletion",
+				"user_id", userID, "role_template_id", id, "error", err)
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Role template deleted"})
