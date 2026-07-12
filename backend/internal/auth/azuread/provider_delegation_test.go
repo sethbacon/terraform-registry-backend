@@ -35,7 +35,7 @@ func TestExtractUserInfo_DelegatesToOIDC(t *testing.T) {
 	}
 
 	tok := makeTestIDToken(`{"sub":"user-123","email":"alice@example.com","name":"Alice"}`)
-	sub, email, name, err := p.ExtractUserInfo(tok)
+	sub, email, name, _, err := p.ExtractUserInfo(tok)
 	if err != nil {
 		t.Fatalf("ExtractUserInfo returned error: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestExtractUserInfo_DelegatesError(t *testing.T) {
 		oidcProvider: oidcpkg.NewOIDCProviderForTest(&oauth2.Config{ClientID: "c"}),
 	}
 	tok := makeTestIDToken(`{"email":"bob@example.com"}`) // no sub
-	if _, _, _, err := p.ExtractUserInfo(tok); err == nil {
+	if _, _, _, _, err := p.ExtractUserInfo(tok); err == nil {
 		t.Error("expected error for missing sub claim")
 	}
 }

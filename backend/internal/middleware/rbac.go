@@ -121,6 +121,101 @@ func RequireAllScopes(scopes ...auth.Scope) gin.HandlerFunc {
 	}
 }
 
+// RequireOrgScopeForPathOrg protects routes shaped /organizations/:id* (and any
+// other route where the target organization is the path's :id parameter). It
+// independently re-derives the caller's scopes for that SPECIFIC organization
+// via orgRepo.GetUserScopesForOrg and requires the given scope there, instead
+// of trusting the caller's flat/global combined scope set.
+//
+// This closes a cross-org authorization gap (GHSA-hc25-j576-cqm2):
+// GetUserCombinedScopes unions a user's scopes across every organization they
+// belong to into one org-less set, so RequireScope(auth.ScopeOrganizationsWrite)
+// alone lets a user who holds that scope in just one organization act on any
+// OTHER organization by ID. This middleware must run in addition to (after)
+// RequireScope, not instead of it -- RequireScope's coarse check still lets
+// callers with no organizations scope at all fail fast without a DB round trip.
+//
+// A caller holding the global "admin" wildcard scope (auth.ScopeAdmin) is
+// exempted from the per-org lookup, matching this codebase's existing
+// admin-bypass convention (see role_ceiling.go, namespace_authz.go,
+// apikeys.go, dev.go): admin is a deliberate, explicitly-named platform-wide
+// scope granted via the system "admin" role template, not something that
+// should require the holder to also be a member of every organization they
+// administer.
+//
+// This works against the existing flat/global JWT (no OrgID claim) by
+// re-deriving per-org membership from the database on every request, rather
+// than the org-scoped-token primitives (HasScopeInOrg / GenerateForOrg) the
+// identity library also ships -- adopting those requires migrating the JWT
+// itself to carry an OrgID claim, tracked separately.
+func RequireOrgScopeForPathOrg(scope auth.Scope, orgRepo *repositories.OrganizationRepository) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		scopesVal, exists := c.Get("scopes")
+		if !exists {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"error": "Insufficient permissions",
+			})
+			return
+		}
+
+		callerScopes, ok := scopesVal.([]string)
+		if !ok {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"error": "Invalid scopes format",
+			})
+			return
+		}
+
+		// Global admin wildcard bypasses the per-org check -- see doc comment.
+		if auth.HasScope(callerScopes, auth.ScopeAdmin) {
+			c.Next()
+			return
+		}
+
+		userVal, userExists := c.Get("user_id")
+		if !userExists {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"error": "User not authenticated",
+			})
+			return
+		}
+
+		userID, ok := userVal.(string)
+		if !ok || userID == "" {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"error": "Invalid user ID format",
+			})
+			return
+		}
+
+		orgID := c.Param("id")
+		if orgID == "" {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
+				"error": "Organization ID is required",
+			})
+			return
+		}
+
+		orgScopes, err := orgRepo.GetUserScopesForOrg(c.Request.Context(), userID, orgID)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to verify organization membership",
+			})
+			return
+		}
+
+		if !auth.HasScope(orgScopes, scope) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"error":   "Missing required scope for this organization",
+				"details": "Required scope: " + string(scope),
+			})
+			return
+		}
+
+		c.Next()
+	}
+}
+
 // RequireOrgMembership checks if user is a member of the specified organization
 func RequireOrgMembership(orgRepo *repositories.OrganizationRepository) gin.HandlerFunc {
 	return func(c *gin.Context) {

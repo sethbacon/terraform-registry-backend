@@ -457,12 +457,18 @@ func TestSaveOIDCConfig_Success(t *testing.T) {
 		"redirect_url":  "https://app/callback",
 	})
 
-	// Deactivate existing configs
+	// Deactivate existing configs (handler's own explicit pre-deactivate step)
 	env.oidcMock.ExpectExec("UPDATE oidc_config SET is_active = false").
 		WillReturnResult(sqlmock.NewResult(0, 0))
-	// Create new config
+	// Create new config: since the new config is created active, this is now
+	// wrapped in its own deactivate-all-then-insert transaction (identity
+	// v0.17.0), enforcing the single-active-config invariant at write time.
+	env.oidcMock.ExpectBegin()
+	env.oidcMock.ExpectExec("UPDATE oidc_config SET is_active = false").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	env.oidcMock.ExpectExec("INSERT INTO oidc_config").
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	env.oidcMock.ExpectCommit()
 	// Mark OIDC as configured
 	env.oidcMock.ExpectExec("UPDATE system_settings SET").
 		WillReturnResult(sqlmock.NewResult(0, 1))

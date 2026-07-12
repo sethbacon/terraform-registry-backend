@@ -575,10 +575,19 @@ func TestGetEnhancedSetupStatus_FullSchemaColumns(t *testing.T) {
 // CreateOIDCConfig
 // ---------------------------------------------------------------------------
 
+// TestCreateOIDCConfig_Success covers the IsActive=true path used by this
+// repo's setup wizard: as of terraform-suite-identity v0.17.0, creating an
+// active config is wrapped in the same deactivate-all-then-insert transaction
+// ActivateOIDCConfig uses, enforcing the single-active-config invariant at
+// write time.
 func TestCreateOIDCConfig_Success(t *testing.T) {
 	repo, mock := newOIDCConfigRepo(t)
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE oidc_config SET is_active = false").
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO oidc_config").
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
 	cfg := &models.OIDCConfig{
 		ID:           uuid.New(),

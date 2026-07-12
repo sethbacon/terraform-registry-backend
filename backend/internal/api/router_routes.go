@@ -707,24 +707,56 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 				middleware.RequireScope(auth.ScopeAdmin),
 				quotaHandlers.ListQuotas())
 
-			// Organizations management
+			// Organizations management.
+			//
+			// Every route below with an :id path parameter also gets
+			// RequireOrgScopeForPathOrg after RequireScope: RequireScope alone
+			// only checks the caller's flat/global combined scope (union'd
+			// across every org they belong to), which lets a user who holds
+			// organizations:write in just one organization act on any OTHER
+			// organization by ID (GHSA-hc25-j576-cqm2). RequireOrgScopeForPathOrg
+			// re-derives the caller's scopes specifically for the org named by
+			// :id and requires the route's scope there instead. Routes with no
+			// :id (list/search/create) are unaffected -- there is no specific
+			// target organization to check membership in.
 			orgsGroup := authenticatedGroup.Group("/organizations")
 			{
 				// Read operations require organizations:read
 				orgsGroup.GET("", middleware.RequireScope(auth.ScopeOrganizationsRead), orgHandlers.ListOrganizationsHandler())
 				orgsGroup.GET("/search", middleware.RequireScope(auth.ScopeOrganizationsRead), orgHandlers.SearchOrganizationsHandler())
-				orgsGroup.GET("/:id", middleware.RequireScope(auth.ScopeOrganizationsRead), orgHandlers.GetOrganizationHandler())
-				orgsGroup.GET("/:id/members", middleware.RequireScope(auth.ScopeOrganizationsRead), orgHandlers.ListMembersHandler())
+				orgsGroup.GET("/:id",
+					middleware.RequireScope(auth.ScopeOrganizationsRead),
+					middleware.RequireOrgScopeForPathOrg(auth.ScopeOrganizationsRead, orgRepo),
+					orgHandlers.GetOrganizationHandler())
+				orgsGroup.GET("/:id/members",
+					middleware.RequireScope(auth.ScopeOrganizationsRead),
+					middleware.RequireOrgScopeForPathOrg(auth.ScopeOrganizationsRead, orgRepo),
+					orgHandlers.ListMembersHandler())
 
 				// Create/update/delete require organizations:write
 				orgsGroup.POST("", middleware.RequireScope(auth.ScopeOrganizationsWrite), orgHandlers.CreateOrganizationHandler())
-				orgsGroup.PUT("/:id", middleware.RequireScope(auth.ScopeOrganizationsWrite), orgHandlers.UpdateOrganizationHandler())
-				orgsGroup.DELETE("/:id", middleware.RequireScope(auth.ScopeOrganizationsWrite), orgHandlers.DeleteOrganizationHandler())
+				orgsGroup.PUT("/:id",
+					middleware.RequireScope(auth.ScopeOrganizationsWrite),
+					middleware.RequireOrgScopeForPathOrg(auth.ScopeOrganizationsWrite, orgRepo),
+					orgHandlers.UpdateOrganizationHandler())
+				orgsGroup.DELETE("/:id",
+					middleware.RequireScope(auth.ScopeOrganizationsWrite),
+					middleware.RequireOrgScopeForPathOrg(auth.ScopeOrganizationsWrite, orgRepo),
+					orgHandlers.DeleteOrganizationHandler())
 
 				// Member management requires organizations:write
-				orgsGroup.POST("/:id/members", middleware.RequireScope(auth.ScopeOrganizationsWrite), orgHandlers.AddMemberHandler())
-				orgsGroup.PUT("/:id/members/:user_id", middleware.RequireScope(auth.ScopeOrganizationsWrite), orgHandlers.UpdateMemberHandler())
-				orgsGroup.DELETE("/:id/members/:user_id", middleware.RequireScope(auth.ScopeOrganizationsWrite), orgHandlers.RemoveMemberHandler())
+				orgsGroup.POST("/:id/members",
+					middleware.RequireScope(auth.ScopeOrganizationsWrite),
+					middleware.RequireOrgScopeForPathOrg(auth.ScopeOrganizationsWrite, orgRepo),
+					orgHandlers.AddMemberHandler())
+				orgsGroup.PUT("/:id/members/:user_id",
+					middleware.RequireScope(auth.ScopeOrganizationsWrite),
+					middleware.RequireOrgScopeForPathOrg(auth.ScopeOrganizationsWrite, orgRepo),
+					orgHandlers.UpdateMemberHandler())
+				orgsGroup.DELETE("/:id/members/:user_id",
+					middleware.RequireScope(auth.ScopeOrganizationsWrite),
+					middleware.RequireOrgScopeForPathOrg(auth.ScopeOrganizationsWrite, orgRepo),
+					orgHandlers.RemoveMemberHandler())
 			}
 
 			// SCM Provider management

@@ -134,7 +134,7 @@ func applyPersistedOIDCProvider(authHandlers *admin.AuthHandlers, repo *reposito
 	if oidcErr != nil || activeOIDCCfg == nil {
 		return
 	}
-	clientSecret, decErr := tokenCipher.Open(activeOIDCCfg.ClientSecretEncrypted)
+	clientSecret, decErr := tokenCipher.Open(activeOIDCCfg.ClientSecretCiphertext)
 	if decErr != nil {
 		slog.Error("Failed to decrypt OIDC client secret from database", "error", decErr)
 		return
