@@ -28,7 +28,7 @@ import (
 // carrying ScopeAdmin once a mapping names one — this guards against that
 // changing in the future (e.g. a lower-privileged, org-scoped mapping-writer
 // API), per terraform-suite-identity's ValidateProvisionableScopes doc and
-// this repo's issue #173.
+// this repo's issue #604.
 //
 // A role_template name that does not resolve to a row returns nil (no error):
 // the caller's own UpdateMemberRole/AddMemberWithParams performs the

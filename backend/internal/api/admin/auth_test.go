@@ -1979,7 +1979,7 @@ func TestReconcile_RevokeError_Surfaced(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// reconcileGroupMemberships — ScopeAdmin guard (issue #173, defense-in-depth
+// reconcileGroupMemberships — ScopeAdmin guard (issue #604, defense-in-depth
 // adoption of terraform-suite-identity's ValidateProvisionableScopes). An
 // IdP-driven group mapping that resolves to a role_template carrying
 // auth.ScopeAdmin must be refused automatically, not silently granted.
