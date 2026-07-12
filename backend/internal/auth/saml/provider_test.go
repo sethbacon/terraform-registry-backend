@@ -1,6 +1,7 @@
 package saml
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/crewjam/saml"
@@ -230,6 +231,27 @@ func TestFetchIdPMetadata_RequiresHTTPS(t *testing.T) {
 	_, err := fetchIdPMetadata("http://insecure.example.com/metadata", nil)
 	if err == nil {
 		t.Fatal("expected error for non-HTTPS metadata URL")
+	}
+}
+
+// fetchIdPMetadata routes the fetch through httpsafe.NewClient (dial-time
+// resolve-and-pin), not an upfront ValidateURL call, so the SSRF guard here
+// is only exercised by actually attempting the request. A nil egress guard
+// is the strict default policy (no allow-list entries), so a loopback
+// target must be rejected before any TCP connection is attempted -- nothing
+// needs to be listening on the target port for this to fail closed.
+func TestFetchIdPMetadata_RejectsLoopbackTarget(t *testing.T) {
+	_, err := fetchIdPMetadata("https://127.0.0.1:1/metadata", nil)
+	if err == nil {
+		t.Fatal("expected error for loopback metadata URL target")
+	}
+	// Assert on the SSRF guard's own wording, not just "any error": port 1
+	// is closed, so a connection-refused error would also satisfy a bare
+	// err != nil check without proving the egress guard is what blocked
+	// this -- if the guard ever regressed, "connection refused" would
+	// silently keep this test green.
+	if !strings.Contains(err.Error(), "blocked") {
+		t.Errorf("error = %q, want it to mention the egress guard blocking the target (not e.g. a bare connection error)", err.Error())
 	}
 }
 

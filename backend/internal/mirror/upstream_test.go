@@ -86,6 +86,44 @@ func TestValidateRegistryURL(t *testing.T) {
 	}
 }
 
+// ValidateRegistryURL delegates the actual SSRF classification to
+// egress.ValidateURL (internal/httpsafe). These cases lock in that an
+// admin-configured upstream_registry_url pointing at a loopback, RFC 1918,
+// or link-local/cloud-metadata target is rejected under the strict default
+// policy (nil egress == no allow-list entries, not "no enforcement" -- see
+// httpsafe.Guard.HostExempt's nil receiver handling). Literal IPs are used
+// so classification happens synchronously with no DNS dependency.
+func TestValidateRegistryURL_RejectsSSRFTargets(t *testing.T) {
+	tests := []string{
+		"http://127.0.0.1",
+		"http://127.0.0.1:8080",
+		"http://[::1]",
+		"http://169.254.169.254", // cloud metadata endpoint (AWS/GCP/Azure)
+		"http://10.0.0.5",        // RFC 1918
+		"http://172.16.0.1",      // RFC 1918
+		"http://192.168.1.1",     // RFC 1918
+		"http://[fc00::1]",       // IPv6 unique local (RFC 1918 equivalent)
+		"http://[fe80::1]",       // IPv6 link-local
+		"http://0.0.0.0",         // unspecified
+	}
+	for _, u := range tests {
+		if err := ValidateRegistryURL(u, nil); err == nil {
+			t.Errorf("ValidateRegistryURL(%q) = nil, want a rejection error", u)
+		}
+	}
+}
+
+// An explicit egress allow-list entry for an otherwise-blocked target must
+// still be honored through ValidateRegistryURL -- confirms the SSRF guard's
+// escape hatch (security.egress.allowlist) actually reaches this call site
+// and isn't silently bypassed by ValidateRegistryURL's own scheme/host checks.
+func TestValidateRegistryURL_AllowlistedPrivateTargetPasses(t *testing.T) {
+	guard := httpsafe.MustGuard("10.0.0.5")
+	if err := ValidateRegistryURL("http://10.0.0.5", guard); err != nil {
+		t.Errorf("ValidateRegistryURL with an allow-listed target = %v, want nil", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // DiscoverServices
 // ---------------------------------------------------------------------------
