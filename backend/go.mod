@@ -24,6 +24,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/go-version v1.9.0
 	github.com/hashicorp/terraform-config-inspect v0.0.0-20260224005459-813a97530220
+	github.com/in-toto/attestation v1.2.0
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/lib/pq v1.12.3
 	github.com/open-policy-agent/opa v1.16.2
@@ -34,6 +35,7 @@ require (
 	github.com/sigstore/sigstore-go v1.2.1
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.11.1
+	github.com/theupdateframework/go-tuf/v2 v2.4.2-0.20260407074541-7e8f69f906ef
 	golang.org/x/crypto v0.53.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/time v0.15.0
@@ -135,7 +137,6 @@ require (
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
 	github.com/hashicorp/hcl v1.0.1-vault-7 // indirect
 	github.com/hashicorp/hcl/v2 v2.24.0 // indirect
-	github.com/in-toto/attestation v1.2.0 // indirect
 	github.com/in-toto/in-toto-golang v0.11.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jedisct1/go-minisign v0.0.0-20211028175153-1c139d1cc84b // indirect
@@ -188,7 +189,6 @@ require (
 	github.com/subosito/gotenv v1.6.0 // indirect
 	github.com/tchap/go-patricia/v2 v2.3.3 // indirect
 	github.com/theupdateframework/go-tuf v0.7.0 // indirect
-	github.com/theupdateframework/go-tuf/v2 v2.4.2-0.20260407074541-7e8f69f906ef // indirect
 	github.com/titanous/rocacheck v0.0.0-20171023193734-afe73141d399 // indirect
 	github.com/transparency-dev/formats v0.1.1 // indirect
 	github.com/transparency-dev/merkle v0.0.2 // indirect

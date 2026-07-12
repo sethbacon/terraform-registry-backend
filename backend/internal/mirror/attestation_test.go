@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -549,13 +550,36 @@ func resetAttestationTrustRootCache(t *testing.T) {
 	})
 }
 
+// stubFetchTrustRoot substitutes fetchTrustRoot with a fake that never
+// touches the network, restoring the original on cleanup. The real
+// implementation talks to the live Sigstore public-good TUF CDN, which has
+// no fixture/fake mirror -- tests of the caching/cooldown logic in
+// publicGoodTrustedMaterial must not depend on that network being reachable
+// (or on its response, which they don't control) to get a deterministic
+// result.
+func stubFetchTrustRoot(t *testing.T, fn func() (*root.TrustedRoot, error)) *int32 {
+	t.Helper()
+	orig := fetchTrustRoot
+	t.Cleanup(func() { fetchTrustRoot = orig })
+
+	var calls int32
+	fetchTrustRoot = func() (*root.TrustedRoot, error) {
+		atomic.AddInt32(&calls, 1)
+		return fn()
+	}
+	return &calls
+}
+
 // A failed trust-root fetch must not permanently disable attestation
 // verification for the life of the process: only a fetch within the retry
 // cooldown window is short-circuited (returns the cached error without
 // attempting the network again); once the cooldown has elapsed, the next
-// call must attempt a fresh fetch (observable here as fetchedAt advancing).
+// call must attempt exactly one fresh fetch.
 func TestPublicGoodTrustedMaterial_RetriesAfterCooldown(t *testing.T) {
 	resetAttestationTrustRootCache(t)
+	calls := stubFetchTrustRoot(t, func() (*root.TrustedRoot, error) {
+		return nil, errors.New("simulated fetch failure")
+	})
 
 	staleTime := time.Now().Add(-2 * attestationTrustRootRetryCooldown)
 	attestationTrustRootMu.Lock()
@@ -573,6 +597,9 @@ func TestPublicGoodTrustedMaterial_RetriesAfterCooldown(t *testing.T) {
 	if _, err := publicGoodTrustedMaterial(); err == nil {
 		t.Fatal("expected the cached failure to be returned")
 	}
+	if got := atomic.LoadInt32(calls); got != 0 {
+		t.Errorf("fetchTrustRoot called %d times, want 0: a fetch within the cooldown window must not attempt a new network call", got)
+	}
 	attestationTrustRootMu.Lock()
 	unchanged := attestationTrustRootFetchedAt.Equal(recentFailureAt)
 	attestationTrustRootMu.Unlock()
@@ -580,23 +607,56 @@ func TestPublicGoodTrustedMaterial_RetriesAfterCooldown(t *testing.T) {
 		t.Error("a fetch within the cooldown window must not attempt a new network call")
 	}
 
-	// Past the cooldown, the next call must attempt a fresh fetch: fetchedAt
-	// advances regardless of whether that fresh attempt succeeds or fails
-	// (this test's environment may have real network access to the Sigstore
-	// TUF CDN, so either outcome is valid -- what matters is that a new
-	// attempt was made rather than the stale cached failure being returned
-	// untried).
+	// Past the cooldown, the next call must attempt exactly one fresh fetch.
 	attestationTrustRootMu.Lock()
 	attestationTrustRootFetchedAt = staleTime
 	attestationTrustRootMu.Unlock()
 
 	_, _ = publicGoodTrustedMaterial()
 
+	if got := atomic.LoadInt32(calls); got != 1 {
+		t.Errorf("fetchTrustRoot called %d times, want 1: a fetch past the cooldown window must attempt exactly one new fetch", got)
+	}
 	attestationTrustRootMu.Lock()
 	retried := attestationTrustRootFetchedAt.After(staleTime)
 	attestationTrustRootMu.Unlock()
 	if !retried {
 		t.Error("a fetch past the cooldown window must attempt a new fetch, not return the stale cached failure")
+	}
+}
+
+// A successful fetch must be cached permanently: trust roots are long-lived,
+// so once one has been fetched, subsequent calls must not re-fetch even long
+// after what would have been a failure's retry cooldown.
+func TestPublicGoodTrustedMaterial_SuccessCachedPermanently(t *testing.T) {
+	resetAttestationTrustRootCache(t)
+	fakeRoot := &root.TrustedRoot{}
+	calls := stubFetchTrustRoot(t, func() (*root.TrustedRoot, error) {
+		return fakeRoot, nil
+	})
+
+	got, err := publicGoodTrustedMaterial()
+	if err != nil {
+		t.Fatalf("publicGoodTrustedMaterial() error = %v", err)
+	}
+	if got != root.TrustedMaterial(fakeRoot) {
+		t.Error("expected the fetched trust root to be returned")
+	}
+	if c := atomic.LoadInt32(calls); c != 1 {
+		t.Errorf("fetchTrustRoot called %d times, want 1", c)
+	}
+
+	// A second call, even well past the retry cooldown, must reuse the
+	// cached success rather than fetching again.
+	attestationTrustRootMu.Lock()
+	attestationTrustRootFetchedAt = time.Now().Add(-2 * attestationTrustRootRetryCooldown)
+	attestationTrustRootMu.Unlock()
+
+	if _, err := publicGoodTrustedMaterial(); err != nil {
+		t.Fatalf("publicGoodTrustedMaterial() error = %v", err)
+	}
+	if c := atomic.LoadInt32(calls); c != 1 {
+		t.Errorf("fetchTrustRoot called %d times after a cached success, want still 1", c)
 	}
 }
 

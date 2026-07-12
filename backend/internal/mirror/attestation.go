@@ -53,7 +53,9 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/bundle"
 	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/sigstore/sigstore-go/pkg/tuf"
+	"github.com/sigstore/sigstore-go/pkg/util"
 	"github.com/sigstore/sigstore-go/pkg/verify"
+	"github.com/theupdateframework/go-tuf/v2/metadata/fetcher"
 )
 
 // GitHubActionsOIDCIssuer is the only OIDC issuer accepted for GitHub Artifact
@@ -98,12 +100,51 @@ var (
 // network on every sync.
 const attestationTrustRootRetryCooldown = time.Hour
 
+// attestationTrustRootFetchTimeout bounds a single trust-root fetch attempt.
+// Neither go-tuf's updater nor its DefaultFetcher.DownloadFile honor a
+// caller-supplied context (DownloadFile hardcodes context.Background() for
+// its own retry loop, and tuf.Options.Context is not threaded through to the
+// HTTP round trip), so a client-side HTTP timeout is the only way to bound a
+// stalled fetch: without it, a network stall (not a fast error) would hold
+// attestationTrustRootMu indefinitely and wedge every other and future caller
+// process-wide.
+const attestationTrustRootFetchTimeout = 30 * time.Second
+
+// fetchTrustRoot performs the actual network fetch of the Sigstore
+// public-good trusted root via TUF. Extracted as a package variable so tests
+// can substitute a fake that never touches the network: the real
+// implementation talks to the live Sigstore TUF CDN, which has no
+// fixture/fake mirror to exercise hermetically.
+var fetchTrustRoot = func() (*root.TrustedRoot, error) {
+	// A bounded HTTP client, not opts.Context, is what actually caps the
+	// fetch — see attestationTrustRootFetchTimeout.
+	f := fetcher.NewDefaultFetcher()
+	f.SetHTTPUserAgent(util.ConstructUserAgent())
+	f.SetHTTPClient(&http.Client{Timeout: attestationTrustRootFetchTimeout})
+
+	// DisableLocalCache lets the TUF client work on a read-only root
+	// filesystem (e.g. Kubernetes readOnlyRootFilesystem: true), matching
+	// the scanner installer's Sigstore flow.
+	opts := tuf.DefaultOptions()
+	opts.DisableLocalCache = true
+	opts.Fetcher = f
+	client, err := tuf.New(opts)
+	if err != nil {
+		return nil, fmt.Errorf("create TUF client: %w", err)
+	}
+	rootJSON, err := client.GetTarget("trusted_root.json")
+	if err != nil {
+		return nil, fmt.Errorf("fetch trusted_root.json: %w", err)
+	}
+	return root.NewTrustedRootFromJSON(rootJSON)
+}
+
 // publicGoodTrustedMaterial fetches and caches the Sigstore public-good
 // trusted root via TUF (embedded initial root, updates from the Sigstore TUF
 // CDN). There is deliberately no stale-root fallback beyond sigstore-go's own
 // TUF cache handling: verifying against an unverifiable root would be weaker
 // than the documented checksum-only degradation.
-// coverage:skip:integration-only — fetches the real Sigstore public-good trusted root over the network via TUF; no fixture/fake TUF mirror exists to exercise this hermetically.
+// coverage:skip:integration-only — fetchTrustRoot's real implementation hits the live Sigstore public-good TUF CDN; no fixture/fake mirror exists to exercise it hermetically. The caching/cooldown logic here is covered by tests that substitute fetchTrustRoot.
 func publicGoodTrustedMaterial() (root.TrustedMaterial, error) {
 	attestationTrustRootMu.Lock()
 	defer attestationTrustRootMu.Unlock()
@@ -115,24 +156,7 @@ func publicGoodTrustedMaterial() (root.TrustedMaterial, error) {
 		return nil, attestationTrustRootErr
 	}
 
-	// DisableLocalCache lets the TUF client work on a read-only root
-	// filesystem (e.g. Kubernetes readOnlyRootFilesystem: true), matching
-	// the scanner installer's Sigstore flow.
-	opts := tuf.DefaultOptions()
-	opts.DisableLocalCache = true
-	client, err := tuf.New(opts)
-	if err != nil {
-		attestationTrustRootErr = fmt.Errorf("create TUF client: %w", err)
-		attestationTrustRootFetchedAt = time.Now()
-		return nil, attestationTrustRootErr
-	}
-	rootJSON, err := client.GetTarget("trusted_root.json")
-	if err != nil {
-		attestationTrustRootErr = fmt.Errorf("fetch trusted_root.json: %w", err)
-		attestationTrustRootFetchedAt = time.Now()
-		return nil, attestationTrustRootErr
-	}
-	attestationTrustRoot, attestationTrustRootErr = root.NewTrustedRootFromJSON(rootJSON)
+	attestationTrustRoot, attestationTrustRootErr = fetchTrustRoot()
 	attestationTrustRootFetchedAt = time.Now()
 	return attestationTrustRoot, attestationTrustRootErr
 }
