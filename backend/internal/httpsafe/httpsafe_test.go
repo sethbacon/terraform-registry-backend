@@ -3,6 +3,7 @@ package httpsafe
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -333,6 +334,103 @@ func TestClient_SameHostRedirectKeepsCredentials(t *testing.T) {
 
 	if gotAuth != "Bearer keep-me" {
 		t.Errorf("same-host redirect should keep Authorization, got %q", gotAuth)
+	}
+}
+
+// A cross-host redirect that resends a request body must be refused outright,
+// not have its body silently stripped: header stripping alone misses
+// credentials carried in the body itself (e.g. an OAuth client_secret in a
+// token-exchange POST form), which a compromised/MITM'd/typo-squatted
+// upstream can exfiltrate via a single 307/308 to an attacker host.
+func TestClient_CrossHostRedirectWithBodyRefused(t *testing.T) {
+	var attackerReceivedBody bool
+	attacker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if len(body) > 0 {
+			attackerReceivedBody = true
+		}
+	}))
+	defer attacker.Close()
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, attacker.URL+"/steal", http.StatusTemporaryRedirect) // 307 preserves method+body
+	}))
+	defer origin.Close()
+
+	client := NewClient(5*time.Second, MustGuard("localhost", "127.0.0.1"))
+	req, err := http.NewRequest(http.MethodPost, localhostURL(t, origin),
+		strings.NewReader("client_id=abc&client_secret=SUPERSECRET&code=xyz"))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := client.Do(req)
+	if err == nil {
+		resp.Body.Close()
+	}
+	if attackerReceivedBody {
+		t.Fatal("cross-host redirect resent the request body to the redirect target")
+	}
+	if err == nil {
+		t.Fatal("cross-host redirect carrying a body should be refused, not followed")
+	}
+}
+
+// Same hostname but a different port (or scheme) is NOT the same origin: an
+// open-redirect on a self-hosted instance, a misrouted reverse proxy, or a
+// compromised upstream could otherwise retain credentials across the hop.
+func TestClient_SameHostDifferentPortStripsCredentials(t *testing.T) {
+	var gotAuth string
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+	}))
+	defer target.Close()
+	targetHost, targetPort, _ := net.SplitHostPort(strings.TrimPrefix(target.URL, "http://"))
+
+	src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://"+targetHost+":"+targetPort+"/after", http.StatusFound)
+	}))
+	defer src.Close()
+
+	client := NewClient(5*time.Second, MustGuard("localhost", "127.0.0.1"))
+	req, err := http.NewRequest(http.MethodGet, localhostURL(t, src), nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer secret-token")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	resp.Body.Close()
+
+	if gotAuth != "" {
+		t.Errorf("Authorization header leaked across a port change: %q", gotAuth)
+	}
+}
+
+// NewClient must not honor HTTP_PROXY/HTTPS_PROXY: a proxied request is
+// dialed to the proxy's address, which the guard validates and pins, while
+// the real destination travels inside the forwarded request/CONNECT line and
+// is never resolved or checked at all — silently defeating resolve-and-pin
+// for every guarded egress path whenever a proxy env var is set.
+func TestNewClient_DoesNotHonorEnvironmentProxy(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+
+	client := NewClient(5*time.Second, nil)
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("Transport is %T, want *http.Transport", client.Transport)
+	}
+	if transport.Proxy != nil {
+		req, _ := http.NewRequest(http.MethodGet, "http://169.254.169.254/", nil)
+		proxyURL, err := transport.Proxy(req)
+		if err == nil && proxyURL != nil {
+			t.Fatalf("transport.Proxy resolved a proxy (%s) despite HTTP_PROXY being set; resolve-and-pin would be bypassed", proxyURL)
+		}
 	}
 }
 

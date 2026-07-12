@@ -274,10 +274,28 @@ func (g *Guard) DialContext(ctx context.Context, network, addr string) (net.Conn
 	return nil, fmt.Errorf("egress dial %q: %w", host, dialErr)
 }
 
-// CheckRedirect re-validates every redirect hop against the egress policy and
-// strips credentials when a hop crosses to a different host. The dial-time
+// sameOrigin reports whether two URLs share scheme, host, and port. A
+// same-hostname comparison alone is not enough: a redirect from
+// https://git.internal/api to https://git.internal:9999/evil or to
+// http://git.internal/evil is not "the same place" and must not be treated as
+// safe to resend credentials/body to.
+func sameOrigin(a, b *url.URL) bool {
+	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Host, b.Host)
+}
+
+// CheckRedirect re-validates every redirect hop against the egress policy,
+// strips credentials on a cross-origin hop, and refuses to follow a
+// cross-origin hop that would resend a request body. The dial-time
 // resolve-and-pin check still applies to the hop; this adds fast failure with
 // a clear error plus credential hygiene.
+//
+// Body is refused rather than stripped: Go preserves method and body across
+// 307/308 redirects, and a body can carry credentials a header-only strip
+// would miss entirely (e.g. an OAuth client_secret in a token-exchange POST
+// form). There is no general way to know which body fields are sensitive, so
+// the safe behavior on cross-origin is to not resend it at all — the caller
+// gets the redirect response back instead of an error, exactly as it would
+// for same-origin non-redirect-following clients.
 func (g *Guard) CheckRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) >= maxRedirects {
 		return fmt.Errorf("stopped after %d redirects", maxRedirects)
@@ -285,10 +303,10 @@ func (g *Guard) CheckRedirect(req *http.Request, via []*http.Request) error {
 	if err := g.ValidateURL(req.URL.String()); err != nil {
 		return fmt.Errorf("redirect blocked: %w", err)
 	}
-	// net/http already strips sensitive headers unless the target is the same
-	// host or a subdomain of the original; be stricter and strip on ANY
-	// cross-host hop.
-	if len(via) > 0 && !strings.EqualFold(req.URL.Hostname(), via[0].URL.Hostname()) {
+	if len(via) > 0 && !sameOrigin(req.URL, via[0].URL) {
+		if req.GetBody != nil || req.ContentLength != 0 {
+			return fmt.Errorf("refusing to follow cross-origin redirect to %s with a non-empty request body", req.URL.Host)
+		}
 		req.Header.Del("Authorization")
 		req.Header.Del("Proxy-Authorization")
 		req.Header.Del("Cookie")
@@ -301,9 +319,17 @@ func (g *Guard) CheckRedirect(req *http.Request, via []*http.Request) error {
 // transport dials through g (resolve-and-pin) and whose CheckRedirect
 // re-validates every hop. Pass a nil guard for the strict default policy.
 // Other transport parameters mirror http.DefaultTransport.
+//
+// Proxy is deliberately nil (no HTTP_PROXY/HTTPS_PROXY support), not
+// http.ProxyFromEnvironment: when a request is proxied, DialContext only ever
+// dials the *proxy's* address — the guard would validate and pin the proxy,
+// while the real destination is embedded in the forwarded request line (HTTP)
+// or CONNECT target (HTTPS) and is never resolved or checked at all. A
+// forward proxy is trusted infrastructure with its own (unverifiable from
+// here) egress policy, which is a different trust model than this package
+// provides; supporting it safely is out of scope.
 func NewClient(timeout time.Duration, g *Guard) *http.Client {
 	transport := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
 		DialContext:           g.DialContext,
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          100,
