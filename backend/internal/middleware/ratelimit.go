@@ -218,12 +218,12 @@ func RateLimitMiddleware(backend RateLimiterBackend) gin.HandlerFunc {
 			return
 		}
 
-		// Determine the rate limit key
-		key := getRateLimitKey(c)
+		// Determine the rate limit principal
+		principal := getRateLimitPrincipal(c)
 
-		allowed, remaining, err := backend.Allow(c.Request.Context(), key)
+		allowed, remaining, err := backend.Allow(c.Request.Context(), principal)
 		if err != nil {
-			slog.Warn("rate limiter backend error, allowing request", "error", err, "key", key)
+			slog.Warn("rate limiter backend error, allowing request", "error", err, "rate_limit_bucket", principal)
 			c.Next()
 			return
 		}
@@ -231,7 +231,7 @@ func RateLimitMiddleware(backend RateLimiterBackend) gin.HandlerFunc {
 		if !allowed {
 			c.Header("X-RateLimit-Remaining", strconv.Itoa(remaining))
 			c.Header("Retry-After", "60")
-			telemetry.RateLimitRejectionsTotal.WithLabelValues(tierFromKey(key), keyTypeFromKey(key)).Inc()
+			telemetry.RateLimitRejectionsTotal.WithLabelValues(tierFromPrincipal(principal), keyTypeFromPrincipal(principal)).Inc()
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
 				"error":       "Rate limit exceeded",
 				"retry_after": 60,
@@ -258,12 +258,12 @@ func OrgRateLimitMiddleware(individual RateLimiterBackend, orgBackend RateLimite
 			return
 		}
 
-		key := getRateLimitKey(c)
+		principal := getRateLimitPrincipal(c)
 
 		// Individual check
-		allowed, remaining, err := individual.Allow(c.Request.Context(), key)
+		allowed, remaining, err := individual.Allow(c.Request.Context(), principal)
 		if err != nil {
-			slog.Warn("rate limiter backend error, allowing request", "error", err, "key", key)
+			slog.Warn("rate limiter backend error, allowing request", "error", err, "rate_limit_bucket", principal)
 			c.Next()
 			return
 		}
@@ -271,7 +271,7 @@ func OrgRateLimitMiddleware(individual RateLimiterBackend, orgBackend RateLimite
 		if !allowed {
 			c.Header("X-RateLimit-Remaining", strconv.Itoa(remaining))
 			c.Header("Retry-After", "60")
-			telemetry.RateLimitRejectionsTotal.WithLabelValues("individual", keyTypeFromKey(key)).Inc()
+			telemetry.RateLimitRejectionsTotal.WithLabelValues("individual", keyTypeFromPrincipal(principal)).Inc()
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
 				"error":       "Rate limit exceeded",
 				"retry_after": 60,
@@ -355,19 +355,19 @@ func PrincipalRateLimitMiddleware(defaultBackend RateLimiterBackend, overrides *
 			return
 		}
 
-		key := getRateLimitKey(c)
+		principal := getRateLimitPrincipal(c)
 
 		// Check for per-principal override
 		backend := defaultBackend
 		if overrides != nil {
-			if ov, ok := overrides.overrides[key]; ok {
+			if ov, ok := overrides.overrides[principal]; ok {
 				backend = ov
 			}
 		}
 
-		allowed, remaining, err := backend.Allow(c.Request.Context(), key)
+		allowed, remaining, err := backend.Allow(c.Request.Context(), principal)
 		if err != nil {
-			slog.Warn("rate limiter backend error, allowing request", "error", err, "key", key)
+			slog.Warn("rate limiter backend error, allowing request", "error", err, "rate_limit_bucket", principal)
 			c.Next()
 			return
 		}
@@ -375,7 +375,7 @@ func PrincipalRateLimitMiddleware(defaultBackend RateLimiterBackend, overrides *
 		if !allowed {
 			c.Header("X-RateLimit-Remaining", strconv.Itoa(remaining))
 			c.Header("Retry-After", "60")
-			telemetry.RateLimitRejectionsTotal.WithLabelValues("principal", keyTypeFromKey(key)).Inc()
+			telemetry.RateLimitRejectionsTotal.WithLabelValues("principal", keyTypeFromPrincipal(principal)).Inc()
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
 				"error":       "Rate limit exceeded",
 				"retry_after": 60,
@@ -389,9 +389,9 @@ func PrincipalRateLimitMiddleware(defaultBackend RateLimiterBackend, overrides *
 	}
 }
 
-// getRateLimitKey determines the key to use for rate limiting
+// getRateLimitPrincipal determines the principal identifier to use for rate limiting.
 // Priority: user_id > api_key_id > IP address
-func getRateLimitKey(c *gin.Context) string {
+func getRateLimitPrincipal(c *gin.Context) string {
 	// Check for authenticated user
 	if userID, exists := c.Get("user_id"); exists {
 		if id, ok := userID.(string); ok && id != "" {
@@ -400,8 +400,8 @@ func getRateLimitKey(c *gin.Context) string {
 	}
 
 	// Check for API key
-	if apiKeyID, exists := c.Get("api_key_id"); exists {
-		if id, ok := apiKeyID.(string); ok && id != "" {
+	if apiRecordID, exists := c.Get("api_key_id"); exists {
+		if id, ok := apiRecordID.(string); ok && id != "" {
 			return "apikey:" + id
 		}
 	}
@@ -414,19 +414,19 @@ func getRateLimitKey(c *gin.Context) string {
 	return "ip:" + ip
 }
 
-// tierFromKey extracts a tier label for metrics from a rate limit key.
-func tierFromKey(key string) string {
-	if len(key) > 4 && key[:4] == "org:" {
+// tierFromPrincipal extracts a tier label for metrics from a rate limit principal.
+func tierFromPrincipal(principal string) string {
+	if len(principal) > 4 && principal[:4] == "org:" {
 		return "organization"
 	}
 	return "individual"
 }
 
-// keyTypeFromKey extracts a key_type label for metrics from a rate limit key.
-func keyTypeFromKey(key string) string {
-	for i, ch := range key {
+// keyTypeFromPrincipal extracts a key_type label for metrics from a rate limit principal.
+func keyTypeFromPrincipal(principal string) string {
+	for i, ch := range principal {
 		if ch == ':' {
-			return key[:i]
+			return principal[:i]
 		}
 	}
 	return "unknown"

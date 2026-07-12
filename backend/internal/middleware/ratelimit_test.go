@@ -204,10 +204,10 @@ func TestMinHelper(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// getRateLimitKey
+// getRateLimitPrincipal
 // ---------------------------------------------------------------------------
 
-func TestGetRateLimitKey_UserID(t *testing.T) {
+func TestGetRateLimitPrincipal_UserID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -215,26 +215,26 @@ func TestGetRateLimitKey_UserID(t *testing.T) {
 	c.Set("user_id", "user-123")
 	c.Set("api_key_id", "key-456")
 
-	key := getRateLimitKey(c)
-	if key != "user:user-123" {
-		t.Errorf("key = %q, want user:user-123 (user_id takes priority)", key)
+	principal := getRateLimitPrincipal(c)
+	if principal != "user:user-123" {
+		t.Errorf("principal = %q, want user:user-123 (user_id takes priority)", principal)
 	}
 }
 
-func TestGetRateLimitKey_APIKeyID(t *testing.T) {
+func TestGetRateLimitPrincipal_APIKeyID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request, _ = http.NewRequest(http.MethodGet, "/", nil)
 	c.Set("api_key_id", "key-456")
 
-	key := getRateLimitKey(c)
-	if key != "apikey:key-456" {
-		t.Errorf("key = %q, want apikey:key-456", key)
+	principal := getRateLimitPrincipal(c)
+	if principal != "apikey:key-456" {
+		t.Errorf("principal = %q, want apikey:key-456", principal)
 	}
 }
 
-func TestGetRateLimitKey_IPFallback(t *testing.T) {
+func TestGetRateLimitPrincipal_IPFallback(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -242,16 +242,16 @@ func TestGetRateLimitKey_IPFallback(t *testing.T) {
 	req.RemoteAddr = "192.168.1.1:12345"
 	c.Request = req
 
-	key := getRateLimitKey(c)
-	if key == "" {
-		t.Error("getRateLimitKey() returned empty key when falling back to IP")
+	principal := getRateLimitPrincipal(c)
+	if principal == "" {
+		t.Error("getRateLimitPrincipal() returned empty principal when falling back to IP")
 	}
-	if len(key) < 3 || key[:3] != "ip:" {
-		t.Errorf("key = %q, want ip:... prefix for IP fallback", key)
+	if len(principal) < 3 || principal[:3] != "ip:" {
+		t.Errorf("principal = %q, want ip:... prefix for IP fallback", principal)
 	}
 }
 
-func TestGetRateLimitKey_EmptyUserID(t *testing.T) {
+func TestGetRateLimitPrincipal_EmptyUserID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -261,9 +261,9 @@ func TestGetRateLimitKey_EmptyUserID(t *testing.T) {
 	c.Set("user_id", "")
 	c.Set("api_key_id", "")
 
-	key := getRateLimitKey(c)
-	if len(key) < 3 || key[:3] != "ip:" {
-		t.Errorf("key = %q, want ip:... when user_id and api_key_id are empty", key)
+	principal := getRateLimitPrincipal(c)
+	if len(principal) < 3 || principal[:3] != "ip:" {
+		t.Errorf("principal = %q, want ip:... when user_id and api_key_id are empty", principal)
 	}
 }
 
@@ -458,13 +458,13 @@ func TestOrgRateLimitMiddleware_NoOrgContext(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// tierFromKey / keyTypeFromKey helpers
+// tierFromPrincipal / keyTypeFromPrincipal helpers
 // ---------------------------------------------------------------------------
 
-func TestTierFromKey(t *testing.T) {
+func TestTierFromPrincipal(t *testing.T) {
 	tests := []struct {
-		key  string
-		want string
+		principal string
+		want      string
 	}{
 		{"org:abc", "organization"},
 		{"user:123", "individual"},
@@ -472,16 +472,16 @@ func TestTierFromKey(t *testing.T) {
 		{"ip:1.2.3.4", "individual"},
 	}
 	for _, tt := range tests {
-		if got := tierFromKey(tt.key); got != tt.want {
-			t.Errorf("tierFromKey(%q) = %q, want %q", tt.key, got, tt.want)
+		if got := tierFromPrincipal(tt.principal); got != tt.want {
+			t.Errorf("tierFromPrincipal(%q) = %q, want %q", tt.principal, got, tt.want)
 		}
 	}
 }
 
-func TestKeyTypeFromKey(t *testing.T) {
+func TestKeyTypeFromPrincipal(t *testing.T) {
 	tests := []struct {
-		key  string
-		want string
+		principal string
+		want      string
 	}{
 		{"user:123", "user"},
 		{"apikey:x", "apikey"},
@@ -490,8 +490,8 @@ func TestKeyTypeFromKey(t *testing.T) {
 		{"noprefix", "unknown"},
 	}
 	for _, tt := range tests {
-		if got := keyTypeFromKey(tt.key); got != tt.want {
-			t.Errorf("keyTypeFromKey(%q) = %q, want %q", tt.key, got, tt.want)
+		if got := keyTypeFromPrincipal(tt.principal); got != tt.want {
+			t.Errorf("keyTypeFromPrincipal(%q) = %q, want %q", tt.principal, got, tt.want)
 		}
 	}
 }
