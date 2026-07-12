@@ -35,6 +35,11 @@ type TerraformMirrorConfig struct {
 	UpdatedAt         time.Time  `json:"updated_at" db:"updated_at"`
 	CustomGPGKey      *string    `json:"custom_gpg_key,omitempty" db:"custom_gpg_key"`
 	SkipGPGVerify     bool       `json:"skip_gpg_verify" db:"skip_gpg_verify"`
+	// VerifyGitHubAttestation opts the mirror into verifying GitHub Artifact
+	// Attestations (Sigstore, pinned signer identity) for binaries downloaded
+	// from a GitHub-hosted upstream. Default off; only meaningful for
+	// unsigned-upstream tools such as OPA where no GPG signature exists.
+	VerifyGitHubAttestation bool `json:"verify_github_attestation" db:"verify_github_attestation"`
 }
 
 // TerraformVersion represents a single Terraform/OpenTofu release version within a mirror config.
@@ -65,23 +70,28 @@ type TerraformVersion struct {
 
 // TerraformVersionPlatform represents a single binary package for a version+os+arch combination.
 type TerraformVersionPlatform struct {
-	ID             uuid.UUID  `json:"id" db:"id"`
-	VersionID      uuid.UUID  `json:"version_id" db:"version_id"`
-	OS             string     `json:"os" db:"os"`
-	Arch           string     `json:"arch" db:"arch"`
-	UpstreamURL    string     `json:"upstream_url" db:"upstream_url"`
-	Filename       string     `json:"filename" db:"filename"`
-	SHA256         string     `json:"sha256" db:"sha256"`
-	StorageKey     *string    `json:"storage_key,omitempty" db:"storage_key"`
-	StorageBackend *string    `json:"storage_backend,omitempty" db:"storage_backend"`
-	SHA256Verified bool       `json:"sha256_verified" db:"sha256_verified"`
-	GPGVerified    bool       `json:"gpg_verified" db:"gpg_verified"`
-	SyncStatus     string     `json:"sync_status" db:"sync_status"` // pending|syncing|synced|failed
-	SyncError      *string    `json:"sync_error,omitempty" db:"sync_error"`
-	SyncedAt       *time.Time `json:"synced_at,omitempty" db:"synced_at"`
-	DownloadCount  int64      `json:"download_count" db:"download_count"`
-	CreatedAt      time.Time  `json:"created_at" db:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at" db:"updated_at"`
+	ID             uuid.UUID `json:"id" db:"id"`
+	VersionID      uuid.UUID `json:"version_id" db:"version_id"`
+	OS             string    `json:"os" db:"os"`
+	Arch           string    `json:"arch" db:"arch"`
+	UpstreamURL    string    `json:"upstream_url" db:"upstream_url"`
+	Filename       string    `json:"filename" db:"filename"`
+	SHA256         string    `json:"sha256" db:"sha256"`
+	StorageKey     *string   `json:"storage_key,omitempty" db:"storage_key"`
+	StorageBackend *string   `json:"storage_backend,omitempty" db:"storage_backend"`
+	SHA256Verified bool      `json:"sha256_verified" db:"sha256_verified"`
+	GPGVerified    bool      `json:"gpg_verified" db:"gpg_verified"`
+	// AttestationVerified is true when this binary's SHA-256 digest was bound
+	// to a release attestation verified against a pinned signer identity
+	// (GitHub Artifact Attestation today). Independent of GPGVerified and
+	// SHA256Verified.
+	AttestationVerified bool       `json:"attestation_verified" db:"attestation_verified"`
+	SyncStatus          string     `json:"sync_status" db:"sync_status"` // pending|syncing|synced|failed
+	SyncError           *string    `json:"sync_error,omitempty" db:"sync_error"`
+	SyncedAt            *time.Time `json:"synced_at,omitempty" db:"synced_at"`
+	DownloadCount       int64      `json:"download_count" db:"download_count"`
+	CreatedAt           time.Time  `json:"created_at" db:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at" db:"updated_at"`
 }
 
 // TerraformSyncHistory records each sync run (scheduled or manual) for a specific mirror config.
@@ -115,6 +125,9 @@ type CreateTerraformMirrorConfigRequest struct {
 	SyncIntervalHours *int     `json:"sync_interval_hours,omitempty" binding:"omitempty,min=1"`
 	RequiresApproval  *bool    `json:"requires_approval,omitempty"`
 	AutoApproveRules  *string  `json:"auto_approve_rules,omitempty"` // JSON: AutoApproveRules
+	// VerifyGitHubAttestation opts into GitHub Artifact Attestation verification
+	// (default false). Only meaningful for GitHub-hosted unsigned-upstream tools.
+	VerifyGitHubAttestation *bool `json:"verify_github_attestation,omitempty"`
 }
 
 // UpdateTerraformMirrorConfigRequest is the request body for PUT /api/v1/admin/terraform-mirrors/:id.
@@ -131,6 +144,8 @@ type UpdateTerraformMirrorConfigRequest struct {
 	SyncIntervalHours *int     `json:"sync_interval_hours,omitempty" binding:"omitempty,min=1"`
 	RequiresApproval  *bool    `json:"requires_approval,omitempty"`
 	AutoApproveRules  *string  `json:"auto_approve_rules,omitempty"` // JSON: AutoApproveRules
+	// VerifyGitHubAttestation toggles GitHub Artifact Attestation verification.
+	VerifyGitHubAttestation *bool `json:"verify_github_attestation,omitempty"`
 }
 
 // TerraformMirrorConfigListResponse wraps a list of mirror configs.

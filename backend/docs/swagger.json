@@ -4041,7 +4041,7 @@
                         "Bearer": []
                     }
                 ],
-                "description": "Returns the current cached upstream release-signing GPG key and embedded snapshot state for each configured binary mirror. Binaries that share the HashiCorp releases key (terraform, packer, sentinel) each report that key's state; opentofu reports its own. Binaries whose upstream publishes no release signature (e.g. opa — checksum-only) are listed with an explicit \"none\" source and an \"unsigned\" status, so operators can see they are verified by checksum but not by signature (distinct from \"unknown\"). The response includes the fingerprint, expiry, and a pre-computed status against the configured warning threshold so UIs can render a glance-level view without re-deriving the rules.",
+                "description": "Returns the current cached upstream release-signing GPG key and embedded snapshot state for each configured binary mirror. Binaries that share the HashiCorp releases key (terraform, packer, sentinel) each report that key's state; opentofu reports its own. Binaries whose upstream publishes no release signature (e.g. opa — checksum-only) are listed with an explicit \"none\" source and an \"unsigned\" status, so operators can see they are verified by checksum but not by signature (distinct from \"unknown\"). When such a tool has verify_github_attestation enabled on at least one of its mirror configs, its status is \"attested\" instead — checksum plus a pinned-identity GitHub Artifact Attestation, distinct from checksum-only \"unsigned\". The response includes the fingerprint, expiry, and a pre-computed status against the configured warning threshold so UIs can render a glance-level view without re-deriving the rules.",
                 "produces": [
                     "application/json"
                 ],
@@ -14206,7 +14206,7 @@
                     "$ref": "#/definitions/admin.ReleasesGPGKeyCacheView"
                 },
                 "effective_source": {
-                    "description": "\"cache\" | \"embedded\"",
+                    "description": "\"cache\" | \"embedded\" | \"attestation\" | \"none\"",
                     "type": "string"
                 },
                 "embedded": {
@@ -14216,7 +14216,7 @@
                     "type": "integer"
                 },
                 "status": {
-                    "description": "\"ok\" | \"warn\" | \"expired\" | \"unknown\" | \"unsigned\"",
+                    "description": "\"ok\" | \"warn\" | \"expired\" | \"unknown\" | \"unsigned\" | \"attested\"",
                     "type": "string"
                 },
                 "tool": {
@@ -15121,6 +15121,10 @@
                 },
                 "upstream_url": {
                     "type": "string"
+                },
+                "verify_github_attestation": {
+                    "description": "VerifyGitHubAttestation opts into GitHub Artifact Attestation verification\n(default false). Only meaningful for GitHub-hosted unsigned-upstream tools.",
+                    "type": "boolean"
                 },
                 "version_filter": {
                     "type": "string"
@@ -16232,6 +16236,10 @@
                 "upstream_url": {
                     "type": "string"
                 },
+                "verify_github_attestation": {
+                    "description": "VerifyGitHubAttestation opts the mirror into verifying GitHub Artifact\nAttestations (Sigstore, pinned signer identity) for binaries downloaded\nfrom a GitHub-hosted upstream. Default off; only meaningful for\nunsigned-upstream tools such as OPA where no GPG signature exists.",
+                    "type": "boolean"
+                },
                 "version_filter": {
                     "description": "version filter expression",
                     "type": "string"
@@ -16396,6 +16404,10 @@
             "properties": {
                 "arch": {
                     "type": "string"
+                },
+                "attestation_verified": {
+                    "description": "AttestationVerified is true when this binary's SHA-256 digest was bound\nto a release attestation verified against a pinned signer identity\n(GitHub Artifact Attestation today). Independent of GPGVerified and\nSHA256Verified.",
+                    "type": "boolean"
                 },
                 "created_at": {
                     "type": "string"
@@ -16605,6 +16617,10 @@
                 },
                 "upstream_url": {
                     "type": "string"
+                },
+                "verify_github_attestation": {
+                    "description": "VerifyGitHubAttestation toggles GitHub Artifact Attestation verification.",
+                    "type": "boolean"
                 },
                 "version_filter": {
                     "type": "string"

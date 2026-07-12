@@ -40,12 +40,12 @@ func (r *TerraformMirrorRepository) Create(ctx context.Context, cfg *models.Terr
 		INSERT INTO terraform_mirror_configs (
 			id, name, description, tool, enabled, upstream_url,
 			platform_filter, version_filter, gpg_verify, stable_only, sync_interval_hours,
-			requires_approval, auto_approve_rules,
+			requires_approval, auto_approve_rules, verify_github_attestation,
 			created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 		RETURNING id, name, description, tool, enabled, upstream_url,
 		          platform_filter, version_filter, gpg_verify, stable_only, sync_interval_hours,
-		          requires_approval, auto_approve_rules,
+		          requires_approval, auto_approve_rules, verify_github_attestation,
 		          last_sync_at, last_sync_status, last_sync_error,
 		          created_at, updated_at
 	`
@@ -64,6 +64,7 @@ func (r *TerraformMirrorRepository) Create(ctx context.Context, cfg *models.Terr
 		cfg.SyncIntervalHours,
 		cfg.RequiresApproval,
 		cfg.AutoApproveRules,
+		cfg.VerifyGitHubAttestation,
 		cfg.CreatedAt,
 		cfg.UpdatedAt,
 	).Scan(
@@ -80,6 +81,7 @@ func (r *TerraformMirrorRepository) Create(ctx context.Context, cfg *models.Terr
 		&cfg.SyncIntervalHours,
 		&cfg.RequiresApproval,
 		&cfg.AutoApproveRules,
+		&cfg.VerifyGitHubAttestation,
 		&cfg.LastSyncAt,
 		&cfg.LastSyncStatus,
 		&cfg.LastSyncError,
@@ -93,7 +95,7 @@ func (r *TerraformMirrorRepository) GetByID(ctx context.Context, id uuid.UUID) (
 	query := `
 		SELECT id, name, description, tool, enabled, upstream_url,
 		       platform_filter, version_filter, gpg_verify, stable_only, sync_interval_hours,
-		       requires_approval, auto_approve_rules,
+		       requires_approval, auto_approve_rules, verify_github_attestation,
 		       last_sync_at, last_sync_status, last_sync_error,
 		       created_at, updated_at
 		FROM terraform_mirror_configs
@@ -117,7 +119,7 @@ func (r *TerraformMirrorRepository) GetByName(ctx context.Context, name string) 
 	query := `
 		SELECT id, name, description, tool, enabled, upstream_url,
 		       platform_filter, version_filter, gpg_verify, stable_only, sync_interval_hours,
-		       requires_approval, auto_approve_rules,
+		       requires_approval, auto_approve_rules, verify_github_attestation,
 		       last_sync_at, last_sync_status, last_sync_error,
 		       created_at, updated_at
 		FROM terraform_mirror_configs
@@ -141,7 +143,7 @@ func (r *TerraformMirrorRepository) ListAll(ctx context.Context) ([]models.Terra
 	query := `
 		SELECT id, name, description, tool, enabled, upstream_url,
 		       platform_filter, version_filter, gpg_verify, stable_only, sync_interval_hours,
-		       requires_approval, auto_approve_rules,
+		       requires_approval, auto_approve_rules, verify_github_attestation,
 		       last_sync_at, last_sync_status, last_sync_error,
 		       created_at, updated_at
 		FROM terraform_mirror_configs
@@ -161,7 +163,7 @@ func (r *TerraformMirrorRepository) ListEnabled(ctx context.Context) ([]models.T
 	query := `
 		SELECT id, name, description, tool, enabled, upstream_url,
 		       platform_filter, version_filter, gpg_verify, stable_only, sync_interval_hours,
-		       requires_approval, auto_approve_rules,
+		       requires_approval, auto_approve_rules, verify_github_attestation,
 		       last_sync_at, last_sync_status, last_sync_error,
 		       created_at, updated_at
 		FROM terraform_mirror_configs
@@ -182,7 +184,7 @@ func (r *TerraformMirrorRepository) GetConfigsNeedingSync(ctx context.Context) (
 	query := `
 		SELECT id, name, description, tool, enabled, upstream_url,
 		       platform_filter, version_filter, gpg_verify, stable_only, sync_interval_hours,
-		       requires_approval, auto_approve_rules,
+		       requires_approval, auto_approve_rules, verify_github_attestation,
 		       last_sync_at, last_sync_status, last_sync_error,
 		       created_at, updated_at
 		FROM terraform_mirror_configs
@@ -208,19 +210,20 @@ func (r *TerraformMirrorRepository) Update(ctx context.Context, cfg *models.Terr
 
 	query := `
 		UPDATE terraform_mirror_configs
-		SET name                = $2,
-		    description         = $3,
-		    tool                = $4,
-		    enabled             = $5,
-		    upstream_url        = $6,
-		    platform_filter     = $7,
-		    version_filter      = $8,
-		    gpg_verify          = $9,
-		    stable_only         = $10,
-		    sync_interval_hours = $11,
-		    requires_approval   = $12,
-		    auto_approve_rules  = $13,
-		    updated_at          = $14
+		SET name                      = $2,
+		    description               = $3,
+		    tool                      = $4,
+		    enabled                   = $5,
+		    upstream_url              = $6,
+		    platform_filter           = $7,
+		    version_filter            = $8,
+		    gpg_verify                = $9,
+		    stable_only               = $10,
+		    sync_interval_hours       = $11,
+		    requires_approval         = $12,
+		    auto_approve_rules        = $13,
+		    verify_github_attestation = $14,
+		    updated_at                = $15
 		WHERE id = $1
 	`
 
@@ -238,6 +241,7 @@ func (r *TerraformMirrorRepository) Update(ctx context.Context, cfg *models.Terr
 		cfg.SyncIntervalHours,
 		cfg.RequiresApproval,
 		cfg.AutoApproveRules,
+		cfg.VerifyGitHubAttestation,
 		cfg.UpdatedAt,
 	)
 	if err != nil {
@@ -544,9 +548,9 @@ func (r *TerraformMirrorRepository) UpsertPlatform(ctx context.Context, p *model
 	query := `
 		INSERT INTO terraform_version_platforms (
 			id, version_id, os, arch, upstream_url, filename, sha256,
-			storage_key, storage_backend, sha256_verified, gpg_verified,
+			storage_key, storage_backend, sha256_verified, gpg_verified, attestation_verified,
 			sync_status, sync_error, synced_at, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
 		ON CONFLICT (version_id, os, arch) DO UPDATE
 		SET upstream_url     = EXCLUDED.upstream_url,
 		    filename         = EXCLUDED.filename,
@@ -567,6 +571,7 @@ func (r *TerraformMirrorRepository) UpsertPlatform(ctx context.Context, p *model
 		p.StorageBackend,
 		p.SHA256Verified,
 		p.GPGVerified,
+		p.AttestationVerified,
 		p.SyncStatus,
 		p.SyncError,
 		p.SyncedAt,
@@ -579,7 +584,7 @@ func (r *TerraformMirrorRepository) UpsertPlatform(ctx context.Context, p *model
 func (r *TerraformMirrorRepository) GetPlatform(ctx context.Context, versionID uuid.UUID, os, arch string) (*models.TerraformVersionPlatform, error) {
 	query := `
 		SELECT id, version_id, os, arch, upstream_url, filename, sha256,
-		       storage_key, storage_backend, sha256_verified, gpg_verified,
+		       storage_key, storage_backend, sha256_verified, gpg_verified, attestation_verified,
 		       sync_status, sync_error, synced_at, download_count, created_at, updated_at
 		FROM terraform_version_platforms
 		WHERE version_id = $1 AND os = $2 AND arch = $3
@@ -613,7 +618,7 @@ func (r *TerraformMirrorRepository) IncrementDownloadCount(ctx context.Context, 
 func (r *TerraformMirrorRepository) ListPlatformsForVersion(ctx context.Context, versionID uuid.UUID) ([]models.TerraformVersionPlatform, error) {
 	query := `
 		SELECT id, version_id, os, arch, upstream_url, filename, sha256,
-		       storage_key, storage_backend, sha256_verified, gpg_verified,
+		       storage_key, storage_backend, sha256_verified, gpg_verified, attestation_verified,
 		       sync_status, sync_error, synced_at, download_count, created_at, updated_at
 		FROM terraform_version_platforms
 		WHERE version_id = $1
@@ -633,7 +638,7 @@ func (r *TerraformMirrorRepository) ListPlatformsForVersion(ctx context.Context,
 func (r *TerraformMirrorRepository) ListPendingPlatforms(ctx context.Context, configID uuid.UUID) ([]models.TerraformVersionPlatform, error) {
 	query := `
 		SELECT p.id, p.version_id, p.os, p.arch, p.upstream_url, p.filename, p.sha256,
-		       p.storage_key, p.storage_backend, p.sha256_verified, p.gpg_verified,
+		       p.storage_key, p.storage_backend, p.sha256_verified, p.gpg_verified, p.attestation_verified,
 		       p.sync_status, p.sync_error, p.synced_at, p.download_count, p.created_at, p.updated_at
 		FROM terraform_version_platforms p
 		JOIN terraform_versions v ON v.id = p.version_id
@@ -658,7 +663,7 @@ func (r *TerraformMirrorRepository) UpdatePlatformSyncStatus(
 	id uuid.UUID,
 	status string,
 	storageKey, storageBackend *string,
-	sha256Verified, gpgVerified bool,
+	sha256Verified, gpgVerified, attestationVerified bool,
 	syncErr *string,
 ) error {
 	now := time.Now()
@@ -669,20 +674,21 @@ func (r *TerraformMirrorRepository) UpdatePlatformSyncStatus(
 
 	query := `
 		UPDATE terraform_version_platforms
-		SET sync_status     = $2,
-		    storage_key     = COALESCE($3, storage_key),
-		    storage_backend = COALESCE($4, storage_backend),
-		    sha256_verified  = $5,
-		    gpg_verified    = $6,
-		    sync_error      = $7,
-		    synced_at       = $8,
-		    updated_at      = $9
+		SET sync_status          = $2,
+		    storage_key          = COALESCE($3, storage_key),
+		    storage_backend      = COALESCE($4, storage_backend),
+		    sha256_verified      = $5,
+		    gpg_verified         = $6,
+		    attestation_verified = $7,
+		    sync_error           = $8,
+		    synced_at            = $9,
+		    updated_at           = $10
 		WHERE id = $1
 	`
 
 	_, err := r.db.ExecContext(ctx, query,
 		id, status, storageKey, storageBackend,
-		sha256Verified, gpgVerified, syncErr, syncedAt, now,
+		sha256Verified, gpgVerified, attestationVerified, syncErr, syncedAt, now,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to update terraform platform sync status: %w", err)
@@ -702,6 +708,22 @@ func (r *TerraformMirrorRepository) UpdatePlatformSHA256(ctx context.Context, id
 	`, id, sha256Hex)
 	if err != nil {
 		return fmt.Errorf("failed to update sha256 for platform %s: %w", id, err)
+	}
+	return nil
+}
+
+// UpdatePlatformAttestationVerified sets attestation_verified on a single
+// platform row. Unlike GPG (one signature covers the whole version's
+// SHA256SUMS file), a GitHub Artifact Attestation is per-binary-digest, so
+// back-filling must happen per platform rather than per version.
+func (r *TerraformMirrorRepository) UpdatePlatformAttestationVerified(ctx context.Context, id uuid.UUID, verified bool) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE terraform_version_platforms
+		SET attestation_verified = $2, updated_at = NOW()
+		WHERE id = $1
+	`, id, verified)
+	if err != nil {
+		return fmt.Errorf("failed to update attestation_verified for platform %s: %w", id, err)
 	}
 	return nil
 }

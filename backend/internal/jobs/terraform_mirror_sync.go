@@ -17,6 +17,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -441,6 +442,15 @@ func (j *TerraformMirrorSyncJob) performSync(
 		log.Printf("[terraform-mirror] signature back-fill error for %s: %v", cfg.Name, backfillErr)
 	}
 
+	// 6d. Attestation back-fill: for already-synced platforms whose digest is
+	// known but attestation_verified is still false, (re-)check the GitHub
+	// attestation. Covers an operator flipping verify_github_attestation on
+	// after the initial sync — no binaries are re-downloaded, only the small
+	// attestation bundle per platform.
+	if backfillErr := j.backfillAttestation(ctx, cfg, allVersions); backfillErr != nil {
+		log.Printf("[terraform-mirror] attestation back-fill error for %s: %v", cfg.Name, backfillErr)
+	}
+
 	// 7. Mark the highest fully-synced stable version as is_latest.
 	if setLatestErr := j.updateLatestVersion(ctx, cfg.ID); setLatestErr != nil {
 		log.Printf("[terraform-mirror] failed to update latest version for %s: %v", cfg.Name, setLatestErr)
@@ -517,10 +527,16 @@ func (j *TerraformMirrorSyncJob) syncVersionBinaries(
 		}
 	}
 
+	// Build the GitHub attestation verifier once per version (not once per
+	// platform — the pinned identity is the same for every binary in this
+	// config). nil when the flag is off or the upstream isn't GitHub-hosted,
+	// in which case syncOnePlatform skips attestation entirely.
+	attestVerifier := attestationVerifierForConfig(cfg)
+
 	platformOK := 0
 	platformFail := 0
 	for _, p := range platforms {
-		ok := j.syncOnePlatform(ctx, client, version, p, sums, sumsGPGVerified)
+		ok := j.syncOnePlatform(ctx, client, version, p, sums, sumsGPGVerified, attestVerifier)
 		if ok {
 			platformOK++
 		} else {
@@ -607,13 +623,15 @@ func (j *TerraformMirrorSyncJob) syncOnePlatform(
 	p models.TerraformVersionPlatform,
 	sums map[string]string,
 	sumsGPGVerified bool,
+	attestVerifier attestationVerifier,
 ) bool {
 	// Skip if already stored.
 	if p.StorageKey != nil {
 		exists, err := j.storageBackend.Exists(ctx, *p.StorageKey)
 		if err == nil && exists {
 			backendName := j.storageBackendName
-			_ = j.repo.UpdatePlatformSyncStatus(ctx, p.ID, "synced", p.StorageKey, &backendName, true, sumsGPGVerified, nil)
+			attestationVerified := verifyBinaryAttestation(ctx, attestVerifier, version, p.OS, p.Arch, p.SHA256)
+			_ = j.repo.UpdatePlatformSyncStatus(ctx, p.ID, "synced", p.StorageKey, &backendName, true, sumsGPGVerified, attestationVerified, nil)
 			return true
 		}
 	}
@@ -623,7 +641,7 @@ func (j *TerraformMirrorSyncJob) syncOnePlatform(
 	body, _, dlErr := client.DownloadBinaryStream(ctx, p.UpstreamURL)
 	if dlErr != nil {
 		errStr := dlErr.Error()
-		_ = j.repo.UpdatePlatformSyncStatus(ctx, p.ID, "failed", nil, nil, false, false, &errStr)
+		_ = j.repo.UpdatePlatformSyncStatus(ctx, p.ID, "failed", nil, nil, false, false, false, &errStr)
 		log.Printf("[terraform-mirror] download failed for %s %s/%s: %v", version, p.OS, p.Arch, dlErr)
 		return false
 	}
@@ -632,7 +650,7 @@ func (j *TerraformMirrorSyncJob) syncOnePlatform(
 	if tmpErr != nil {
 		body.Close()
 		errStr := fmt.Sprintf("failed to create temp file: %v", tmpErr)
-		_ = j.repo.UpdatePlatformSyncStatus(ctx, p.ID, "failed", nil, nil, false, false, &errStr)
+		_ = j.repo.UpdatePlatformSyncStatus(ctx, p.ID, "failed", nil, nil, false, false, false, &errStr)
 		return false
 	}
 	defer func() {
@@ -645,7 +663,7 @@ func (j *TerraformMirrorSyncJob) syncOnePlatform(
 	body.Close()
 	if copyErr != nil {
 		errStr := fmt.Sprintf("failed to stream binary to disk: %v", copyErr)
-		_ = j.repo.UpdatePlatformSyncStatus(ctx, p.ID, "failed", nil, nil, false, false, &errStr)
+		_ = j.repo.UpdatePlatformSyncStatus(ctx, p.ID, "failed", nil, nil, false, false, false, &errStr)
 		return false
 	}
 	actualSHA256 := hex.EncodeToString(hasher.Sum(nil))
@@ -657,7 +675,7 @@ func (j *TerraformMirrorSyncJob) syncOnePlatform(
 				sha256Verified = true
 			} else {
 				errStr := fmt.Sprintf("sha256 mismatch: got %s want %s", actualSHA256, expectedHash)
-				_ = j.repo.UpdatePlatformSyncStatus(ctx, p.ID, "failed", nil, nil, false, false, &errStr)
+				_ = j.repo.UpdatePlatformSyncStatus(ctx, p.ID, "failed", nil, nil, false, false, false, &errStr)
 				log.Printf("[terraform-mirror] SHA256 mismatch for %s %s/%s", version, p.OS, p.Arch)
 				return false
 			}
@@ -670,9 +688,17 @@ func (j *TerraformMirrorSyncJob) syncOnePlatform(
 		}
 	}
 
+	// GitHub Artifact Attestation verification binds to the digest of the bytes
+	// actually downloaded (actualSHA256), independent of whether the upstream's
+	// checksum sidecar matched — the whole point is not to trust the same
+	// upstream response twice. Absence (older pre-attestation release) and
+	// infrastructure unavailability (air-gapped, rate-limited) both degrade to
+	// checksum-only rather than failing the platform sync.
+	attestationVerified := verifyBinaryAttestation(ctx, attestVerifier, version, p.OS, p.Arch, actualSHA256)
+
 	if _, seekErr := tmpFile.Seek(0, io.SeekStart); seekErr != nil {
 		errStr := fmt.Sprintf("failed to seek temp file: %v", seekErr)
-		_ = j.repo.UpdatePlatformSyncStatus(ctx, p.ID, "failed", nil, nil, sha256Verified, sumsGPGVerified, &errStr)
+		_ = j.repo.UpdatePlatformSyncStatus(ctx, p.ID, "failed", nil, nil, sha256Verified, sumsGPGVerified, attestationVerified, &errStr)
 		return false
 	}
 
@@ -680,13 +706,13 @@ func (j *TerraformMirrorSyncJob) syncOnePlatform(
 	_, uploadErr := j.storageBackend.Upload(ctx, storagePath, tmpFile, written)
 	if uploadErr != nil {
 		errStr := uploadErr.Error()
-		_ = j.repo.UpdatePlatformSyncStatus(ctx, p.ID, "failed", nil, nil, sha256Verified, sumsGPGVerified, &errStr)
+		_ = j.repo.UpdatePlatformSyncStatus(ctx, p.ID, "failed", nil, nil, sha256Verified, sumsGPGVerified, attestationVerified, &errStr)
 		log.Printf("[terraform-mirror] upload failed for %s %s/%s: %v", version, p.OS, p.Arch, uploadErr)
 		return false
 	}
 
 	backendName := j.storageBackendName
-	_ = j.repo.UpdatePlatformSyncStatus(ctx, p.ID, "synced", &storagePath, &backendName, sha256Verified, sumsGPGVerified, nil)
+	_ = j.repo.UpdatePlatformSyncStatus(ctx, p.ID, "synced", &storagePath, &backendName, sha256Verified, sumsGPGVerified, attestationVerified, nil)
 	log.Printf("[terraform-mirror] stored %s %s/%s -> %s", version, p.OS, p.Arch, storagePath)
 	return true
 }
@@ -890,6 +916,59 @@ func (j *TerraformMirrorSyncJob) backfillSignatureStorage(
 	return nil
 }
 
+// backfillAttestation re-checks the GitHub Artifact Attestation for any synced
+// platform whose digest is known (sha256 != "") but attestation_verified is
+// still false. Unlike GPG (one signature per version), an attestation is
+// per-binary-digest, so this walks platforms individually rather than
+// flipping a single flag for the whole version. A no-op when the flag is off
+// or the upstream isn't GitHub-hosted (attestationVerifierForConfig returns
+// nil). No binaries are re-downloaded — only the small attestation bundle.
+// coverage:skip:integration-only — calls the live GitHub attestation API and writes to the database; covered by integration tests.
+func (j *TerraformMirrorSyncJob) backfillAttestation(
+	ctx context.Context,
+	cfg *models.TerraformMirrorConfig,
+	filteredVersions []mirror.TerraformVersionInfo,
+) error {
+	verifier := attestationVerifierForConfig(cfg)
+	if verifier == nil {
+		return nil
+	}
+
+	wantedVersions := make(map[string]bool, len(filteredVersions))
+	for _, vi := range filteredVersions {
+		wantedVersions[vi.Version] = true
+	}
+
+	syncedVersions, err := j.repo.ListVersions(ctx, cfg.ID, true /* syncedOnly */)
+	if err != nil {
+		return fmt.Errorf("failed to list synced versions: %w", err)
+	}
+
+	for _, sv := range syncedVersions {
+		if !wantedVersions[sv.Version] {
+			continue
+		}
+		platforms, plErr := j.repo.ListPlatformsForVersion(ctx, sv.ID)
+		if plErr != nil {
+			log.Printf("[terraform-mirror] attestation backfill: failed to list platforms for %s: %v", sv.Version, plErr)
+			continue
+		}
+		for _, p := range platforms {
+			if p.SyncStatus != "synced" || p.SHA256 == "" || p.AttestationVerified {
+				continue
+			}
+			if !verifyBinaryAttestation(ctx, verifier, sv.Version, p.OS, p.Arch, p.SHA256) {
+				continue
+			}
+			if updErr := j.repo.UpdatePlatformAttestationVerified(ctx, p.ID, true); updErr != nil {
+				log.Printf("[terraform-mirror] attestation backfill: failed to update platform %s: %v", p.ID, updErr)
+			}
+		}
+	}
+
+	return nil
+}
+
 // updateLatestVersion scans all fully-synced versions for a config and sets is_latest
 // on the highest stable semver. Runs inside a DB transaction (via SetLatestVersion).
 // coverage:skip:requires-database — selects and updates synced-version rows; covered by integration tests.
@@ -1037,6 +1116,63 @@ func gpgKeyForConfig(cfg *models.TerraformMirrorConfig) string {
 		return *cfg.CustomGPGKey
 	}
 	return gpgKeyForTool(cfg.Tool)
+}
+
+// ----- GitHub Artifact Attestation helpers ----------------------------------
+
+// attestationVerifier is satisfied by *mirror.GitHubAttestationVerifier. The
+// seam lets tests inject a fake to exercise verifyBinaryAttestation's found /
+// not-found / unavailable / failed branches without live network or Sigstore
+// trust-root access (both are integration-only, like the releases clients).
+type attestationVerifier interface {
+	VerifyBinaryAttestation(ctx context.Context, sha256Hex string) error
+}
+
+// attestationVerifierForConfig builds the per-config GitHub attestation
+// verifier when the operator has opted in. Returns nil when the flag is off
+// or the upstream is not GitHub-hosted (the attestation API is GitHub-only —
+// releases.hashicorp.com and releases.opentofu.org have no equivalent), in
+// which case callers skip attestation entirely and stay checksum-only.
+func attestationVerifierForConfig(cfg *models.TerraformMirrorConfig) attestationVerifier {
+	if !cfg.VerifyGitHubAttestation || !mirror.IsGitHubReleasesURL(cfg.UpstreamURL) {
+		return nil
+	}
+	v, err := mirror.NewGitHubAttestationVerifier(cfg.UpstreamURL)
+	if err != nil {
+		log.Printf("[terraform-mirror] cannot build GitHub attestation verifier for %s: %v", cfg.UpstreamURL, err)
+		return nil
+	}
+	return v
+}
+
+// verifyBinaryAttestation runs attestation verification for one platform
+// binary's digest and returns whether it succeeded, logging the outcome. A nil
+// verifier or an empty digest are no-ops (attestation disabled, or the digest
+// isn't known yet — e.g. an already-stored platform whose sha256 column was
+// never back-filled). Absence of an attestation (older, pre-attestation
+// releases) and infrastructure unavailability (offline/air-gapped, GitHub API
+// errors) are both logged and treated as graceful degradation to
+// checksum-only — never a hard failure of the platform sync.
+func verifyBinaryAttestation(ctx context.Context, verifier attestationVerifier, version, os, arch, sha256Hex string) bool {
+	if verifier == nil || sha256Hex == "" {
+		return false
+	}
+
+	err := verifier.VerifyBinaryAttestation(ctx, sha256Hex)
+	switch {
+	case err == nil:
+		log.Printf("[terraform-mirror] GitHub attestation verification OK for %s %s/%s", version, os, arch)
+		return true
+	case errors.Is(err, mirror.ErrAttestationNotFound):
+		log.Printf("[terraform-mirror] no GitHub attestation found for %s %s/%s (pre-attestation release?) — checksum-only", version, os, arch)
+		return false
+	case errors.Is(err, mirror.ErrAttestationUnavailable):
+		log.Printf("[terraform-mirror] WARNING: GitHub attestation verification unavailable for %s %s/%s (offline/rate-limited?): %v — falling back to checksum-only", version, os, arch, err)
+		return false
+	default:
+		log.Printf("[terraform-mirror] GitHub attestation verification FAILED for %s %s/%s: %v", version, os, arch, err)
+		return false
+	}
 }
 
 // ----- Semver helpers -------------------------------------------------------
