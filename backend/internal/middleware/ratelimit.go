@@ -223,7 +223,7 @@ func RateLimitMiddleware(backend RateLimiterBackend) gin.HandlerFunc {
 
 		allowed, remaining, err := backend.Allow(c.Request.Context(), key)
 		if err != nil {
-			slog.Warn("rate limiter backend error, allowing request", "error", err, "key", key)
+			slog.Warn("rate limiter backend error, allowing request", "error", err, "rate_limit_bucket", key)
 			c.Next()
 			return
 		}
@@ -263,7 +263,7 @@ func OrgRateLimitMiddleware(individual RateLimiterBackend, orgBackend RateLimite
 		// Individual check
 		allowed, remaining, err := individual.Allow(c.Request.Context(), key)
 		if err != nil {
-			slog.Warn("rate limiter backend error, allowing request", "error", err, "key", key)
+			slog.Warn("rate limiter backend error, allowing request", "error", err, "rate_limit_bucket", key)
 			c.Next()
 			return
 		}
@@ -367,7 +367,7 @@ func PrincipalRateLimitMiddleware(defaultBackend RateLimiterBackend, overrides *
 
 		allowed, remaining, err := backend.Allow(c.Request.Context(), key)
 		if err != nil {
-			slog.Warn("rate limiter backend error, allowing request", "error", err, "key", key)
+			slog.Warn("rate limiter backend error, allowing request", "error", err, "rate_limit_bucket", key)
 			c.Next()
 			return
 		}
