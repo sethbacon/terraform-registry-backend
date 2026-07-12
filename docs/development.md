@@ -17,12 +17,29 @@ This document describes how to set up a local development environment, generate 
     go install github.com/swaggo/swag/cmd/swag@latest
     ```
 
+2. Install the pinned Swagger 2.0 → OpenAPI 3.0 conversion tooling (from the repo root):
+
+    ```bash
+    npm install
+    ```
+
+    `swagger2openapi` is declared as a pinned devDependency in the repo-root `package.json`/`package-lock.json` rather than fetched ad hoc — see `make openapi3` below.
+
 ## Generate Swagger JSON
 
 ```bash
 cd backend
 swag init -g cmd/server/main.go --outputTypes json
 # Commit backend/docs/swagger.json if changed
+```
+
+## Generate OpenAPI 3.0 (for downstream consumers)
+
+```bash
+make swag       # runs swag init, then converts to OpenAPI 3 via `make openapi3`
+# or, if swagger.json is already up to date:
+make openapi3
+# Commit backend/docs/openapi3.json if changed
 ```
 
 ## Run Backend (Dev)

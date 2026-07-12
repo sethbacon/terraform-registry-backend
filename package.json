@@ -1,0 +1,8 @@
+{
+  "name": "terraform-registry-backend-docs-tooling",
+  "private": true,
+  "description": "Pinned tooling for converting the swag-generated Swagger 2.0 spec to OpenAPI 3.0 (see Makefile's openapi3 target).",
+  "devDependencies": {
+    "swagger2openapi": "7.0.8"
+  }
+}

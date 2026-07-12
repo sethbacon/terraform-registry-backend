@@ -12,3 +12,4 @@ test-modules/
 test-providers/
 test-terraform/
 tmpclaude*
+node_modules/
