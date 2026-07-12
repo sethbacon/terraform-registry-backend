@@ -119,8 +119,12 @@ func (p *SCMPublisher) resolveSourceToken(ctx context.Context, createdBy *string
 // ProcessTagPush processes a tag push webhook and publishes a new version
 // coverage:skip:integration-only — requires live SCM connector, DB, and storage
 func (p *SCMPublisher) ProcessTagPush(ctx context.Context, logID uuid.UUID, moduleSourceRepo *scm.ModuleSourceRepoRecord, hook *scm.IncomingHook, connector scm.Connector) {
-	// Update webhook log to processing
+	// Update webhook log to processing. Returning silently on a state-write
+	// error is what let #583 (every state write failing with 42P18) go
+	// unnoticed — always leave a trace before bailing.
 	if err := p.scmRepo.UpdateWebhookLogState(ctx, logID, "processing", nil, nil); err != nil {
+		slog.Error("webhook processing aborted: failed to mark event as processing",
+			"log_id", logID, "error", err)
 		return
 	}
 
