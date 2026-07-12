@@ -244,14 +244,10 @@ func (h *Handlers) SaveOIDCConfig(c *gin.Context) {
 		name = "default"
 	}
 
-	// Deactivate any existing OIDC configs
-	if err := h.oidcConfigRepo.DeactivateAllOIDCConfigs(ctx); err != nil {
-		slog.Error("setup: failed to deactivate existing OIDC configs", "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to prepare OIDC configuration"})
-		return
-	}
-
-	// Create the new OIDC config
+	// Create the new OIDC config. CreateOIDCConfig deactivates any existing
+	// configs and inserts the new one atomically (single transaction) when
+	// IsActive is true, enforcing the single-active-config invariant without
+	// the race window a separate deactivate-then-create pair would have.
 	now := time.Now()
 	oidcCfg := &models.OIDCConfig{
 		ID:                     uuid.New(),

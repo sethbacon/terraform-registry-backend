@@ -196,7 +196,28 @@ func (h *AuthHandlers) LoginHandler() gin.HandlerFunc {
 				})
 				return
 			}
-			authURL = oidcProv.GetAuthURL(state) //nolint:staticcheck // SA1019: migrating to BeginAuth (nonce+PKCE) is tracked in the other v0.17.0-adoption PR
+			// BeginAuth (rather than the legacy GetAuthURL) generates a per-login
+			// nonce and PKCE verifier. Both must be persisted alongside the state
+			// token so the callback can bind the ID token and code exchange to
+			// this specific login attempt.
+			challenge, err := oidcProv.BeginAuth(state)
+			if err != nil {
+				slog.Error("failed to begin OIDC auth", "error", err)
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"error": "Failed to initiate OIDC login",
+				})
+				return
+			}
+			sessionState.Nonce = challenge.Nonce
+			sessionState.CodeVerifier = challenge.CodeVerifier
+			if err := h.stateStore.Save(c.Request.Context(), state, sessionState, 10*time.Minute); err != nil {
+				slog.Error("failed to save OIDC state", "error", err)
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"error": "Failed to save session state",
+				})
+				return
+			}
+			authURL = challenge.URL
 		case "azuread":
 			if h.azureADProvider == nil {
 				c.JSON(http.StatusBadRequest, gin.H{
@@ -204,7 +225,26 @@ func (h *AuthHandlers) LoginHandler() gin.HandlerFunc {
 				})
 				return
 			}
-			authURL = h.azureADProvider.GetAuthURL(state)
+			// See the "oidc" case above: BeginAuth's nonce and PKCE verifier must
+			// be persisted for the callback to bind the login end-to-end.
+			challenge, err := h.azureADProvider.BeginAuth(state)
+			if err != nil {
+				slog.Error("failed to begin Azure AD auth", "error", err)
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"error": "Failed to initiate Azure AD login",
+				})
+				return
+			}
+			sessionState.Nonce = challenge.Nonce
+			sessionState.CodeVerifier = challenge.CodeVerifier
+			if err := h.stateStore.Save(c.Request.Context(), state, sessionState, 10*time.Minute); err != nil {
+				slog.Error("failed to save OIDC state", "error", err)
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"error": "Failed to save session state",
+				})
+				return
+			}
+			authURL = challenge.URL
 		default:
 			// Check for SAML provider: "saml" uses first IdP, "saml:<name>" picks by name.
 			if provider == "saml" || strings.HasPrefix(provider, "saml:") {
@@ -332,8 +372,11 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 				return
 			}
 
-			// Exchange code for token
-			token, err := oidcProv.ExchangeCode(ctx, code)
+			// Exchange code for token. The PKCE verifier persisted at BeginAuth
+			// time binds this exchange to the authorization request this specific
+			// login made, so a stolen authorization code cannot be redeemed by
+			// anyone who did not also observe the verifier.
+			token, err := oidcProv.ExchangeCode(ctx, code, oidc.WithPKCEVerifier(sessionState.CodeVerifier))
 			if err != nil {
 				callbackError("token_exchange_failed", "Failed to exchange authorization code for token.")
 				return
@@ -346,8 +389,10 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 				return
 			}
 
-			// Verify ID token
-			idToken, err := oidcProv.VerifyIDToken(ctx, rawIDToken)
+			// Verify ID token. The nonce persisted at BeginAuth time binds
+			// verification to this specific login, so a replayed or injected ID
+			// token issued for a different login attempt is rejected.
+			idToken, err := oidcProv.VerifyIDToken(ctx, rawIDToken, oidc.WithExpectedNonce(sessionState.Nonce))
 			if err != nil {
 				callbackError("id_token_invalid", "The ID token could not be verified.")
 				return
@@ -378,8 +423,11 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 				return
 			}
 
-			// Exchange code for token
-			token, err := h.azureADProvider.ExchangeCode(ctx, code)
+			// Exchange code for token. The PKCE verifier persisted at BeginAuth
+			// time binds this exchange to the authorization request this specific
+			// login made, so a stolen authorization code cannot be redeemed by
+			// anyone who did not also observe the verifier.
+			token, err := h.azureADProvider.ExchangeCode(ctx, code, oidc.WithPKCEVerifier(sessionState.CodeVerifier))
 			if err != nil {
 				callbackError("token_exchange_failed", "Failed to exchange authorization code for token.")
 				return
@@ -392,8 +440,10 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 				return
 			}
 
-			// Verify ID token
-			idToken, err := h.azureADProvider.VerifyIDToken(ctx, rawIDToken)
+			// Verify ID token. The nonce persisted at BeginAuth time binds
+			// verification to this specific login, so a replayed or injected ID
+			// token issued for a different login attempt is rejected.
+			idToken, err := h.azureADProvider.VerifyIDToken(ctx, rawIDToken, oidc.WithExpectedNonce(sessionState.Nonce))
 			if err != nil {
 				callbackError("id_token_invalid", "The ID token could not be verified.")
 				return
@@ -431,6 +481,9 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 			callbackError("email_bound", err.Error())
 			return
 		}
+		// emailVerified gates new email->identity bindings inside GetOrCreateUserByOIDC
+		// (linking a pre-provisioned account or creating a new one); a returning
+		// user matched by oidc_sub is unaffected regardless of this value.
 		user, err := h.userRepo.GetOrCreateUserByOIDC(ctx, sub, email, name, emailVerified != nil && *emailVerified)
 		if err != nil {
 			callbackError("user_creation_failed", "Failed to look up or create your account.")
@@ -1158,12 +1211,10 @@ func (h *AuthHandlers) SAMLACSHandler() gin.HandlerFunc {
 			return
 		}
 
-		// Get or create user (reuse the OIDC path — sub is unique per IdP).
-		// SAML assertions are IdP-signed, so the asserted email is treated as
-		// verified here, matching this flow's pre-v0.17.0 behavior (no
-		// verification gate existed before this parameter was added). A
-		// dedicated SAML email-verified signal, if ever needed, belongs to the
-		// other v0.17.0-adoption PR in this batch.
+		// Get or create user (reuse the OIDC path — sub is unique per IdP). The
+		// email is treated as verified: it comes from a signed SAML assertion the
+		// SP has already cryptographically validated, unlike a self-asserted OIDC
+		// claim.
 		user, err := h.userRepo.GetOrCreateUserByOIDC(ctx, sub, userInfo.Email, userInfo.Name, true)
 		if err != nil {
 			callbackError("user_creation_failed", "Failed to look up or create your account.")
@@ -1304,9 +1355,9 @@ func (h *AuthHandlers) LDAPLoginHandler() gin.HandlerFunc {
 			return
 		}
 
-		// A successful LDAP bind against the directory is treated as verifying
-		// the returned email, matching this flow's pre-v0.17.0 behavior (no
-		// verification gate existed before this parameter was added).
+		// The email is treated as verified: it comes from the LDAP directory entry
+		// of a principal who just proved control of the account via a successful
+		// bind, unlike a self-asserted OIDC claim.
 		user, err := h.userRepo.GetOrCreateUserByOIDC(ctx, sub, userInfo.Email, userInfo.Name, true)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to look up or create your account"})

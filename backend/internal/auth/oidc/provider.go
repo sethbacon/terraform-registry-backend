@@ -16,8 +16,36 @@ import (
 
 // OIDCProvider is the suite identity OIDC provider, aliased so existing call
 // sites (including the azuread sibling package) keep referring to
-// oidc.OIDCProvider.
+// oidc.OIDCProvider. Its BeginAuth method (nonce + PKCE) carries over via this
+// alias with no extra wrapping needed.
 type OIDCProvider = identityoidc.Provider
+
+// AuthChallenge re-exports identityoidc.AuthChallenge so callers don't need to
+// import the identity package directly. It is returned by BeginAuth and holds
+// the per-login Nonce and CodeVerifier that must be persisted (keyed to the
+// state token) and supplied back at the callback via WithExpectedNonce and
+// WithPKCEVerifier.
+type AuthChallenge = identityoidc.AuthChallenge
+
+// VerifyOption re-exports identityoidc.VerifyOption.
+type VerifyOption = identityoidc.VerifyOption
+
+// ExchangeOption re-exports identityoidc.ExchangeOption.
+type ExchangeOption = identityoidc.ExchangeOption
+
+// WithExpectedNonce re-exports identityoidc.WithExpectedNonce so VerifyIDToken
+// callers can bind verification to the nonce a BeginAuth call generated for
+// this login, defending against ID-token injection/replay.
+func WithExpectedNonce(nonce string) VerifyOption {
+	return identityoidc.WithExpectedNonce(nonce)
+}
+
+// WithPKCEVerifier re-exports identityoidc.WithPKCEVerifier so ExchangeCode
+// callers can bind the token exchange to the PKCE verifier a BeginAuth call
+// generated for this login, defending against authorization-code interception.
+func WithPKCEVerifier(verifier string) ExchangeOption {
+	return identityoidc.WithPKCEVerifier(verifier)
+}
 
 // NewOIDCProvider initializes a new OIDC provider using a background context.
 func NewOIDCProvider(cfg *config.OIDCConfig) (*OIDCProvider, error) {
