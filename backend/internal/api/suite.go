@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -76,7 +77,14 @@ func startSuiteDiscovery(cfg *config.Config) *suite.DiscoveryClient {
 	if cfg.Suite.SiblingURL == "" {
 		return nil
 	}
-	dc := suite.NewDiscoveryClient(cfg.Suite.SiblingURL, buildSuiteManifest(cfg), cfg.Suite.PollInterval)
+	// NewDiscoveryClient now fails closed on a plaintext "http://" sibling URL
+	// (v0.17.0) rather than constructing a client for it; treat that the same
+	// as "no sibling configured" — non-fatal, the registry stays standalone.
+	dc, err := suite.NewDiscoveryClient(cfg.Suite.SiblingURL, buildSuiteManifest(cfg), cfg.Suite.PollInterval)
+	if err != nil {
+		slog.Error("suite: failed to start sibling discovery client", "sibling_url", cfg.Suite.SiblingURL, "error", err)
+		return nil
+	}
 	go dc.Start(context.Background())
 	return dc
 }

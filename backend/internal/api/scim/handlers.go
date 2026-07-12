@@ -254,8 +254,12 @@ func (h *Handlers) CreateUser() gin.HandlerFunc {
 			oidcSub = "scim:" + oidcSub
 		}
 
+		// SCIM provisioning is a trusted, scim:provision-scoped administrative
+		// feed, so the provided email is treated as verified here, matching
+		// this flow's pre-v0.17.0 behavior (no verification gate existed
+		// before this parameter was added).
 		ctx := c.Request.Context()
-		user, err := h.userRepo.GetOrCreateUserByOIDC(ctx, oidcSub, email, displayName)
+		user, err := h.userRepo.GetOrCreateUserByOIDC(ctx, oidcSub, email, displayName, true)
 		if err != nil {
 			slog.Error("scim: create user failed", "email", email, "error", err)
 			scimError(c, http.StatusConflict, "User already exists or creation failed")

@@ -196,7 +196,7 @@ func (h *AuthHandlers) LoginHandler() gin.HandlerFunc {
 				})
 				return
 			}
-			authURL = oidcProv.GetAuthURL(state)
+			authURL = oidcProv.GetAuthURL(state) //nolint:staticcheck // SA1019: migrating to BeginAuth (nonce+PKCE) is tracked in the other v0.17.0-adoption PR
 		case "azuread":
 			if h.azureADProvider == nil {
 				c.JSON(http.StatusBadRequest, gin.H{
@@ -353,8 +353,12 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 				return
 			}
 
-			// Extract user info
-			sub, email, name, err = oidcProv.ExtractUserInfo(idToken)
+			// Extract user info. The library's own emailVerified return is
+			// discarded here in favor of the existing emailVerifiedClaim(idToken)
+			// helper below, which this repo's enforceEmailVerified/RequireVerifiedEmail
+			// gate already relies on -- reconciling the two is left to the other
+			// v0.17.0-adoption PR in this batch.
+			sub, email, name, _, err = oidcProv.ExtractUserInfo(idToken)
 			if err != nil {
 				slog.Error("oidc: failed to extract user info from ID token", "error", err)
 				callbackError("user_info_failed", "Failed to extract user information from the ID token.")
@@ -395,8 +399,9 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 				return
 			}
 
-			// Extract user info
-			sub, email, name, err = h.azureADProvider.ExtractUserInfo(idToken)
+			// Extract user info (see the OIDC branch above re: the discarded
+			// library emailVerified return).
+			sub, email, name, _, err = h.azureADProvider.ExtractUserInfo(idToken)
 			if err != nil {
 				slog.Error("azuread: failed to extract user info from ID token", "error", err)
 				callbackError("user_info_failed", "Failed to extract user information from the ID token.")
@@ -426,7 +431,7 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 			callbackError("email_bound", err.Error())
 			return
 		}
-		user, err := h.userRepo.GetOrCreateUserByOIDC(ctx, sub, email, name)
+		user, err := h.userRepo.GetOrCreateUserByOIDC(ctx, sub, email, name, emailVerified != nil && *emailVerified)
 		if err != nil {
 			callbackError("user_creation_failed", "Failed to look up or create your account.")
 			return
@@ -1153,8 +1158,13 @@ func (h *AuthHandlers) SAMLACSHandler() gin.HandlerFunc {
 			return
 		}
 
-		// Get or create user (reuse the OIDC path — sub is unique per IdP)
-		user, err := h.userRepo.GetOrCreateUserByOIDC(ctx, sub, userInfo.Email, userInfo.Name)
+		// Get or create user (reuse the OIDC path — sub is unique per IdP).
+		// SAML assertions are IdP-signed, so the asserted email is treated as
+		// verified here, matching this flow's pre-v0.17.0 behavior (no
+		// verification gate existed before this parameter was added). A
+		// dedicated SAML email-verified signal, if ever needed, belongs to the
+		// other v0.17.0-adoption PR in this batch.
+		user, err := h.userRepo.GetOrCreateUserByOIDC(ctx, sub, userInfo.Email, userInfo.Name, true)
 		if err != nil {
 			callbackError("user_creation_failed", "Failed to look up or create your account.")
 			return
@@ -1294,7 +1304,10 @@ func (h *AuthHandlers) LDAPLoginHandler() gin.HandlerFunc {
 			return
 		}
 
-		user, err := h.userRepo.GetOrCreateUserByOIDC(ctx, sub, userInfo.Email, userInfo.Name)
+		// A successful LDAP bind against the directory is treated as verifying
+		// the returned email, matching this flow's pre-v0.17.0 behavior (no
+		// verification gate existed before this parameter was added).
+		user, err := h.userRepo.GetOrCreateUserByOIDC(ctx, sub, userInfo.Email, userInfo.Name, true)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to look up or create your account"})
 			return

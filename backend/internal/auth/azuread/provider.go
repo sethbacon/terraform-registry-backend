@@ -65,7 +65,7 @@ func NewAzureADProvider(cfg *config.AzureADConfig) (*AzureADProvider, error) {
 
 // GetAuthURL returns the Azure AD authorization URL
 func (p *AzureADProvider) GetAuthURL(state string) string {
-	return p.oidcProvider.GetAuthURL(state)
+	return p.oidcProvider.GetAuthURL(state) //nolint:staticcheck // SA1019: migrating to BeginAuth (nonce+PKCE) is tracked in the other v0.17.0-adoption PR
 }
 
 // ExchangeCode exchanges the authorization code for tokens
@@ -81,7 +81,7 @@ func (p *AzureADProvider) VerifyIDToken(ctx context.Context, rawIDToken string) 
 
 // ExtractUserInfo extracts user information from the Azure AD token
 // coverage:skip:integration-only — thin delegation to oidc.ExtractUserInfo; the underlying logic is fully unit-tested in the oidc package.
-func (p *AzureADProvider) ExtractUserInfo(idToken *oidc.IDToken) (sub, email, name string, err error) {
+func (p *AzureADProvider) ExtractUserInfo(idToken *oidc.IDToken) (sub, email, name string, emailVerified bool, err error) {
 	return p.oidcProvider.ExtractUserInfo(idToken)
 }
 

@@ -600,17 +600,18 @@ func TestAddMemberWithParams_Success(t *testing.T) {
 	}
 }
 
+// TestAddMemberWithParams_TemplateNotFound: as of terraform-suite-identity
+// v0.17.0, an unresolvable role template name is a hard error rather than a
+// silent fallback to a nil (no-scopes) role template id — the caller
+// explicitly named a role, so an unknown name must not be silently dropped.
 func TestAddMemberWithParams_TemplateNotFound(t *testing.T) {
 	repo, mock := newOrgRepo(t)
-	// Template not found - should still insert with nil roleTemplateID
 	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
 		WithArgs("nonexistent").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
-	mock.ExpectExec("INSERT INTO organization_members").
-		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	if err := repo.AddMemberWithParams(context.Background(), "org-1", "user-1", "nonexistent"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err := repo.AddMemberWithParams(context.Background(), "org-1", "user-1", "nonexistent"); err == nil {
+		t.Fatal("expected error for unknown role template name")
 	}
 }
 

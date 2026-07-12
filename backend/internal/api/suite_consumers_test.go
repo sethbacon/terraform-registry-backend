@@ -31,10 +31,14 @@ func getConsumers(r *gin.Engine) (int, map[string]any) {
 }
 
 // activeClient builds a DiscoveryClient polling url and waits for it to go active.
+// url is an httptest.Server address (plaintext HTTP), so this uses
+// NewInsecureDiscoveryClient — the library's explicit opt-out of the
+// HTTPS-only requirement NewDiscoveryClient enforces for real sibling URLs —
+// rather than the production constructor.
 func activeClient(t *testing.T, url string) *suite.DiscoveryClient {
 	t.Helper()
 	self := suite.Manifest{SchemaVersion: suite.SchemaVersionV1, App: "terraform-registry"}
-	dc := suite.NewDiscoveryClient(url, self, time.Minute)
+	dc := suite.NewInsecureDiscoveryClient(url, self, time.Minute)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel)
 	go dc.Start(ctx)

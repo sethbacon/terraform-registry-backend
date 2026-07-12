@@ -188,12 +188,12 @@ func TestOIDCConfig_GetScopes_InvalidJSON(t *testing.T) {
 
 func TestOIDCConfig_ToResponse_NoSecrets(t *testing.T) {
 	cfg := &OIDCConfig{
-		ClientSecretEncrypted: "super-secret-encrypted-data",
+		ClientSecretCiphertext: "super-secret-encrypted-data",
 	}
 
 	resp := OIDCConfigToResponse(cfg)
 	// Ensure the response type has no secret field — this is a compile-time check.
-	// The OIDCConfigResponse struct simply omits ClientSecretEncrypted.
+	// The OIDCConfigResponse struct simply omits ClientSecretCiphertext.
 	data, _ := json.Marshal(resp)
 	var raw map[string]interface{}
 	json.Unmarshal(data, &raw)

@@ -115,7 +115,7 @@ func TestNewOIDCProvider_HTTPIssuerRejected(t *testing.T) {
 
 func TestGetAuthURL_ContainsState(t *testing.T) {
 	p := newMockOIDCProvider()
-	url := p.GetAuthURL("my-state-123")
+	url := p.GetAuthURL("my-state-123") //nolint:staticcheck // SA1019: migrating to BeginAuth (nonce+PKCE) is tracked in the other v0.17.0-adoption PR
 	if !strings.Contains(url, "state=my-state-123") {
 		t.Errorf("GetAuthURL = %q, want to contain state=my-state-123", url)
 	}
@@ -123,7 +123,7 @@ func TestGetAuthURL_ContainsState(t *testing.T) {
 
 func TestGetAuthURL_ContainsClientID(t *testing.T) {
 	p := newMockOIDCProvider()
-	url := p.GetAuthURL("s")
+	url := p.GetAuthURL("s") //nolint:staticcheck // SA1019: migrating to BeginAuth (nonce+PKCE) is tracked in the other v0.17.0-adoption PR
 	if !strings.Contains(url, "client_id=test-client") {
 		t.Errorf("GetAuthURL = %q, want to contain client_id=test-client", url)
 	}
@@ -131,7 +131,7 @@ func TestGetAuthURL_ContainsClientID(t *testing.T) {
 
 func TestGetAuthURL_ContainsResponseTypeCode(t *testing.T) {
 	p := newMockOIDCProvider()
-	url := p.GetAuthURL("s")
+	url := p.GetAuthURL("s") //nolint:staticcheck // SA1019: migrating to BeginAuth (nonce+PKCE) is tracked in the other v0.17.0-adoption PR
 	if !strings.Contains(url, "response_type=code") {
 		t.Errorf("GetAuthURL = %q, want to contain response_type=code", url)
 	}

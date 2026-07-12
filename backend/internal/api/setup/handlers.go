@@ -254,18 +254,18 @@ func (h *Handlers) SaveOIDCConfig(c *gin.Context) {
 	// Create the new OIDC config
 	now := time.Now()
 	oidcCfg := &models.OIDCConfig{
-		ID:                    uuid.New(),
-		Name:                  name,
-		ProviderType:          input.ProviderType,
-		IssuerURL:             input.IssuerURL,
-		ClientID:              input.ClientID,
-		ClientSecretEncrypted: encryptedSecret,
-		RedirectURL:           input.RedirectURL,
-		Scopes:                scopesJSON,
-		IsActive:              true,
-		ExtraConfig:           extraConfigJSON,
-		CreatedAt:             now,
-		UpdatedAt:             now,
+		ID:                     uuid.New(),
+		Name:                   name,
+		ProviderType:           input.ProviderType,
+		IssuerURL:              input.IssuerURL,
+		ClientID:               input.ClientID,
+		ClientSecretCiphertext: encryptedSecret,
+		RedirectURL:            input.RedirectURL,
+		Scopes:                 scopesJSON,
+		IsActive:               true,
+		ExtraConfig:            extraConfigJSON,
+		CreatedAt:              now,
+		UpdatedAt:              now,
 	}
 
 	if err := h.oidcConfigRepo.CreateOIDCConfig(ctx, oidcCfg); err != nil {
