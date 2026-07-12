@@ -759,34 +759,23 @@ func (r *ProviderRepository) DeletePlatform(ctx context.Context, platformID stri
 
 // SearchProviders searches for providers matching the query
 func (r *ProviderRepository) SearchProviders(ctx context.Context, orgID, query, namespace string, limit, offset int) ([]*models.Provider, int, error) {
-	// Build WHERE clause
-	var whereClause string
-	var args []interface{}
-	argCount := 0
-
-	// Only filter by organization if orgID is provided (multi-tenant mode)
+	// Build WHERE clause. Only filter by organization when orgID is provided
+	// (multi-tenant mode); every value is bound as a parameter, never
+	// interpolated (see whereBuilder / issue #565 finding [42]).
+	var wb whereBuilder
 	if orgID != "" {
-		argCount++
-		whereClause = fmt.Sprintf("WHERE p.organization_id = $%d", argCount)
-		args = append(args, orgID)
-	} else {
-		whereClause = "WHERE 1=1" // No org filter in single-tenant mode
+		wb.add("p.organization_id = $%d", orgID)
 	}
-
 	if query != "" {
-		argCount++
-		whereClause += fmt.Sprintf(" AND (p.namespace ILIKE $%d OR p.type ILIKE $%d OR p.description ILIKE $%d)", argCount, argCount, argCount)
-		args = append(args, "%"+query+"%")
+		wb.add("(p.namespace ILIKE $%d OR p.type ILIKE $%d OR p.description ILIKE $%d)", "%"+query+"%")
 	}
-
 	if namespace != "" {
-		argCount++
-		whereClause += fmt.Sprintf(" AND p.namespace = $%d", argCount)
-		args = append(args, namespace)
+		wb.add("p.namespace = $%d", namespace)
 	}
+	whereClause, args := wb.clause()
 
 	// Count total results
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM providers p %s", whereClause)
+	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM providers p %s", whereClause) // #nosec G201 -- whereClause is built by whereBuilder from structural SQL + $N placeholders only; all user values are passed via args
 	var total int
 	err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&total)
 	if err != nil {
@@ -794,6 +783,7 @@ func (r *ProviderRepository) SearchProviders(ctx context.Context, orgID, query, 
 	}
 
 	// Query with pagination and JOIN for created_by_name
+	// #nosec G201 -- whereClause is built by whereBuilder from structural SQL + $N placeholders only; all user values are passed via args
 	searchQuery := fmt.Sprintf(`
 		SELECT p.id, p.organization_id, p.namespace, p.type, p.description, p.source,
 		       p.created_by, u.name as created_by_name, p.created_at, p.updated_at
@@ -802,7 +792,7 @@ func (r *ProviderRepository) SearchProviders(ctx context.Context, orgID, query, 
 		%s
 		ORDER BY p.created_at DESC
 		LIMIT $%d OFFSET $%d
-	`, whereClause, argCount+1, argCount+2)
+	`, whereClause, wb.nextPlaceholder(), wb.nextPlaceholder()+1)
 
 	args = append(args, limit, offset)
 
@@ -869,41 +859,31 @@ func (r *ProviderRepository) SearchProvidersWithStats(ctx context.Context, orgID
 		sortOrder = "desc"
 	}
 
-	var whereClauses []string
-	var args []interface{}
-	argCount := 0
-
 	// useFTS is true when the query is long enough for PostgreSQL full-text search.
 	useFTS := len(searchQuery) >= 3
 
+	// Build the WHERE clause via the shared whereBuilder (issue #565 finding
+	// [42]); capture the search term's placeholder index explicitly so the
+	// ts_rank expression below can reuse it without scanning the args slice
+	// for a value-equal string (which would pick the wrong index if, e.g.,
+	// orgID happened to equal searchQuery).
+	var wb whereBuilder
+	searchArgIdx := 0
 	if orgID != "" {
-		argCount++
-		whereClauses = append(whereClauses, fmt.Sprintf("p.organization_id = $%d", argCount))
-		args = append(args, orgID)
+		wb.add("p.organization_id = $%d", orgID)
 	}
 	if searchQuery != "" {
-		argCount++
+		searchArgIdx = wb.nextPlaceholder()
 		if useFTS {
-			whereClauses = append(whereClauses, fmt.Sprintf("p.search_vector @@ plainto_tsquery('english', $%d)", argCount))
+			wb.add("p.search_vector @@ plainto_tsquery('english', $%d)", searchQuery)
 		} else {
-			whereClauses = append(whereClauses, fmt.Sprintf("(p.namespace ILIKE $%d OR p.type ILIKE $%d OR p.description ILIKE $%d)", argCount, argCount, argCount))
-		}
-		if useFTS {
-			args = append(args, searchQuery)
-		} else {
-			args = append(args, searchQuery+"%")
+			wb.add("(p.namespace ILIKE $%d OR p.type ILIKE $%d OR p.description ILIKE $%d)", searchQuery+"%")
 		}
 	}
 	if namespace != "" {
-		argCount++
-		whereClauses = append(whereClauses, fmt.Sprintf("p.namespace = $%d", argCount))
-		args = append(args, namespace)
+		wb.add("p.namespace = $%d", namespace)
 	}
-
-	whereClause := ""
-	if len(whereClauses) > 0 {
-		whereClause = "WHERE " + strings.Join(whereClauses, " AND ")
-	}
+	whereClause, args := wb.clause()
 
 	// Count total results
 	countSQL := fmt.Sprintf("SELECT COUNT(*) FROM providers p %s", whereClause) // #nosec G201 -- whereClause contains only parameterized SQL structural conditions; user values are passed via args
@@ -916,18 +896,10 @@ func (r *ProviderRepository) SearchProvidersWithStats(ctx context.Context, orgID
 	rankExpr := "" // extra column in SELECT
 	var orderByClause string
 
-	if useFTS && searchQuery != "" {
-		// Re-use the same parameter index that holds the search query for ts_rank.
-		searchArgIdx := 0
-		for idx, a := range args {
-			if s, ok := a.(string); ok && s == searchQuery {
-				searchArgIdx = idx + 1 // 1-based
-				break
-			}
-		}
-		if searchArgIdx > 0 {
-			rankExpr = fmt.Sprintf(", ts_rank(p.search_vector, plainto_tsquery('english', $%d)) AS rank", searchArgIdx)
-		}
+	if useFTS && searchArgIdx > 0 {
+		// Re-use the exact placeholder that holds the search term for ts_rank,
+		// captured when the condition was added above.
+		rankExpr = fmt.Sprintf(", ts_rank(p.search_vector, plainto_tsquery('english', $%d)) AS rank", searchArgIdx)
 	}
 
 	switch sortField {
@@ -978,7 +950,7 @@ func (r *ProviderRepository) SearchProvidersWithStats(ctx context.Context, orgID
 		%s
 		%s
 		LIMIT $%d OFFSET $%d
-	`, rankExpr, whereClause, orderByClause, argCount+1, argCount+2)
+	`, rankExpr, whereClause, orderByClause, wb.nextPlaceholder(), wb.nextPlaceholder()+1)
 
 	args = append(args, limit, offset)
 

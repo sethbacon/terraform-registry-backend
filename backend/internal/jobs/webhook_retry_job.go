@@ -47,10 +47,16 @@ func NewWebhookRetryJob(
 }
 
 // Start begins the retry polling loop.  It is a no-op when MaxRetries is 0.
-func (j *WebhookRetryJob) Start(ctx context.Context) {
+// Name identifies the job in the jobs.Registry (issue #565 finding [40]).
+func (j *WebhookRetryJob) Name() string { return "webhook-retry" }
+
+// Start runs the webhook-retry loop until ctx is cancelled or Stop is called.
+// It blocks (the Registry runs it in its own goroutine); the error return
+// satisfies jobs.Job, though this job has no fatal startup error.
+func (j *WebhookRetryJob) Start(ctx context.Context) error {
 	if j.cfg.MaxRetries == 0 {
 		slog.Info("webhook retry job: disabled (webhooks.max_retries=0)")
-		return
+		return nil
 	}
 
 	interval := time.Duration(j.cfg.RetryIntervalMins) * time.Minute
@@ -71,21 +77,22 @@ func (j *WebhookRetryJob) Start(ctx context.Context) {
 		case <-ticker.C:
 			j.runRetryCycle(ctx)
 		case <-j.stopChan:
-			return
+			return nil
 		case <-ctx.Done():
-			return
+			return nil
 		}
 	}
 }
 
 // Stop signals the job to exit gracefully.
-func (j *WebhookRetryJob) Stop() {
+func (j *WebhookRetryJob) Stop() error {
 	select {
 	case <-j.stopChan:
 		// already stopped
 	default:
 		close(j.stopChan)
 	}
+	return nil
 }
 
 // runRetryCycle queries for retryable webhook events and processes each one.

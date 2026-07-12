@@ -75,10 +75,16 @@ func (j *CVEPollJob) SetEgressGuard(g *httpsafe.Guard) {
 // Start begins the background polling loop. It runs an initial poll immediately
 // on startup, then repeats on the configured interval. The loop exits when ctx
 // is cancelled or Stop() is called.
-func (j *CVEPollJob) Start(ctx context.Context) {
+// Name identifies the job in the jobs.Registry (issue #565 finding [40]).
+func (j *CVEPollJob) Name() string { return "cve-poll" }
+
+// Start runs the CVE polling loop until ctx is cancelled or Stop is called.
+// It blocks (the Registry runs it in its own goroutine); the error return
+// satisfies jobs.Job, though this job has no fatal startup error.
+func (j *CVEPollJob) Start(ctx context.Context) error {
 	if !j.cveCfg.Enabled {
 		log.Println("[cve-poll] disabled (cve.enabled=false)")
-		return
+		return nil
 	}
 
 	intervalHours := j.cveCfg.IntervalHours
@@ -104,10 +110,10 @@ func (j *CVEPollJob) Start(ctx context.Context) {
 			j.runPoll(ctx)
 		case <-j.stopChan:
 			log.Println("[cve-poll] stopped")
-			return
+			return nil
 		case <-ctx.Done():
 			log.Println("[cve-poll] context cancelled")
-			return
+			return nil
 		}
 	}
 }
@@ -122,8 +128,9 @@ func (j *CVEPollJob) TriggerPoll() {
 }
 
 // Stop signals the background loop to exit.
-func (j *CVEPollJob) Stop() {
+func (j *CVEPollJob) Stop() error {
 	close(j.stopChan)
+	return nil
 }
 
 // runPoll executes a single CVE polling pass.

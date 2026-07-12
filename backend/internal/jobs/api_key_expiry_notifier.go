@@ -53,14 +53,20 @@ func NewAPIKeyExpiryNotifier(
 // Start begins the background expiry-notification loop.
 // It runs an initial check immediately, then repeats on the configured interval.
 // The loop exits when ctx is cancelled or Stop() is called.
-func (n *APIKeyExpiryNotifier) Start(ctx context.Context) {
+// Name identifies the job in the jobs.Registry (issue #565 finding [40]).
+func (n *APIKeyExpiryNotifier) Name() string { return "api-key-expiry-notifier" }
+
+// Start runs the expiry-notification loop until ctx is cancelled or Stop is
+// called. It blocks (the Registry runs it in its own goroutine); the error
+// return satisfies jobs.Job, though this job has no fatal startup error.
+func (n *APIKeyExpiryNotifier) Start(ctx context.Context) error {
 	if !n.cfg.Enabled {
 		log.Println("API key expiry notifier: disabled (notifications.enabled=false)")
-		return
+		return nil
 	}
 	if n.cfg.SMTP.Host == "" {
 		log.Println("API key expiry notifier: disabled (notifications.smtp.host not set)")
-		return
+		return nil
 	}
 
 	ticker := time.NewTicker(n.interval)
@@ -78,17 +84,18 @@ func (n *APIKeyExpiryNotifier) Start(ctx context.Context) {
 			n.runCheck(ctx)
 		case <-n.stopChan:
 			log.Println("API key expiry notifier stopped")
-			return
+			return nil
 		case <-ctx.Done():
 			log.Println("API key expiry notifier context cancelled")
-			return
+			return nil
 		}
 	}
 }
 
 // Stop signals the background loop to exit.
-func (n *APIKeyExpiryNotifier) Stop() {
+func (n *APIKeyExpiryNotifier) Stop() error {
 	close(n.stopChan)
+	return nil
 }
 
 // runCheck queries for expiring keys and sends notification emails.

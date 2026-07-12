@@ -15,6 +15,20 @@ type Job interface {
 	Stop() error
 }
 
+// Compile-time assertions that every background job satisfies Job, so the
+// Registry can start/stop them uniformly (issue #565 finding [40]).
+var (
+	_ Job = (*MirrorSyncJob)(nil)
+	_ Job = (*TerraformMirrorSyncJob)(nil)
+	_ Job = (*ReleasesKeyRefreshJob)(nil)
+	_ Job = (*APIKeyExpiryNotifier)(nil)
+	_ Job = (*ModuleScannerJob)(nil)
+	_ Job = (*ScannerUpdateJob)(nil)
+	_ Job = (*AuditCleanupJob)(nil)
+	_ Job = (*WebhookRetryJob)(nil)
+	_ Job = (*CVEPollJob)(nil)
+)
+
 // Registry manages the lifecycle of background jobs.
 type Registry struct {
 	jobs []Job

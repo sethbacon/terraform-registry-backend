@@ -76,10 +76,23 @@ func TestTerraformMirrorSyncJob_StartStop(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 
 	ctx := context.Background()
-	job.Start(ctx, 60)
+	done := make(chan struct{})
+	go func() {
+		_ = job.Start(ctx) // Start now blocks until Stop/ctx cancel (issue #565 finding [40])
+		close(done)
+	}()
 
 	time.Sleep(50 * time.Millisecond)
-	job.Stop()
+	if err := job.Stop(); err != nil {
+		t.Errorf("Stop() error = %v", err)
+	}
+
+	select {
+	case <-done:
+		// OK — Start returned after Stop()
+	case <-time.After(3 * time.Second):
+		t.Error("Start did not return after Stop()")
+	}
 }
 
 func TestTerraformMirrorSyncJob_StartContextCancel(t *testing.T) {
@@ -97,11 +110,19 @@ func TestTerraformMirrorSyncJob_StartContextCancel(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 
 	ctx, cancel := context.WithCancel(context.Background())
-	job.Start(ctx, 60)
+	done := make(chan struct{})
+	go func() {
+		_ = job.Start(ctx) // Start now blocks until Stop/ctx cancel (issue #565 finding [40])
+		close(done)
+	}()
 
 	time.Sleep(50 * time.Millisecond)
 	cancel()
 
-	// Wait for goroutine to exit
-	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-done:
+		// OK — Start returned after context cancellation
+	case <-time.After(3 * time.Second):
+		t.Error("Start did not return after context cancellation")
+	}
 }

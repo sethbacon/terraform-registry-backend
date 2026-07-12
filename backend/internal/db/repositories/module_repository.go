@@ -483,40 +483,26 @@ func (r *ModuleRepository) IncrementDownloadCount(ctx context.Context, versionID
 
 // SearchModules searches for modules matching the query
 func (r *ModuleRepository) SearchModules(ctx context.Context, orgID, query, namespace, system string, limit, offset int) ([]*models.Module, int, error) {
-	// Build WHERE clause
-	var whereClause string
-	var args []interface{}
-	argCount := 0
-
-	// Only filter by organization if orgID is provided (multi-tenant mode)
+	// Build WHERE clause. Only filter by organization when orgID is provided
+	// (multi-tenant mode); every value is bound as a parameter, never
+	// interpolated (see whereBuilder / issue #565 finding [42]).
+	var wb whereBuilder
 	if orgID != "" {
-		argCount++
-		whereClause = fmt.Sprintf("WHERE m.organization_id = $%d", argCount)
-		args = append(args, orgID)
-	} else {
-		whereClause = "WHERE 1=1" // No org filter in single-tenant mode
+		wb.add("m.organization_id = $%d", orgID)
 	}
-
 	if query != "" {
-		argCount++
-		whereClause += fmt.Sprintf(" AND (m.namespace ILIKE $%d OR m.name ILIKE $%d OR m.description ILIKE $%d)", argCount, argCount, argCount)
-		args = append(args, "%"+query+"%")
+		wb.add("(m.namespace ILIKE $%d OR m.name ILIKE $%d OR m.description ILIKE $%d)", "%"+query+"%")
 	}
-
 	if namespace != "" {
-		argCount++
-		whereClause += fmt.Sprintf(" AND m.namespace = $%d", argCount)
-		args = append(args, namespace)
+		wb.add("m.namespace = $%d", namespace)
 	}
-
 	if system != "" {
-		argCount++
-		whereClause += fmt.Sprintf(" AND m.system = $%d", argCount)
-		args = append(args, system)
+		wb.add("m.system = $%d", system)
 	}
+	whereClause, args := wb.clause()
 
 	// Count total results
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM modules %s", whereClause)
+	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM modules m %s", whereClause) // #nosec G201 -- whereClause is built by whereBuilder from structural SQL + $N placeholders only; all user values are passed via args
 	var total int
 	err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&total)
 	if err != nil {
@@ -524,6 +510,7 @@ func (r *ModuleRepository) SearchModules(ctx context.Context, orgID, query, name
 	}
 
 	// Query with pagination and JOIN for created_by_name
+	// #nosec G201 -- whereClause is built by whereBuilder from structural SQL + $N placeholders only; all user values are passed via args
 	query = fmt.Sprintf(`
 		SELECT m.id, m.organization_id, m.namespace, m.name, m.system, m.description, m.source,
 		       m.created_by, u.name as created_by_name, m.created_at, m.updated_at,
@@ -533,7 +520,7 @@ func (r *ModuleRepository) SearchModules(ctx context.Context, orgID, query, name
 		%s
 		ORDER BY m.deprecated ASC, m.created_at DESC
 		LIMIT $%d OFFSET $%d
-	`, whereClause, argCount+1, argCount+2)
+	`, whereClause, wb.nextPlaceholder(), wb.nextPlaceholder()+1)
 
 	args = append(args, limit, offset)
 
@@ -601,46 +588,34 @@ func (r *ModuleRepository) SearchModulesWithStats(ctx context.Context, orgID, se
 		sortOrder = "desc"
 	}
 
-	var whereClauses []string
-	var args []interface{}
-	argCount := 0
-
 	// useFTS is true when the query is long enough for PostgreSQL full-text search.
 	useFTS := len(searchQuery) >= 3
 
+	// Build the WHERE clause via the shared whereBuilder (issue #565 finding
+	// [42]); capture the search term's placeholder index explicitly so the
+	// ts_rank expression below can reuse it without scanning the args slice
+	// for a value-equal string (which would pick the wrong index if, e.g.,
+	// orgID happened to equal searchQuery).
+	var wb whereBuilder
+	searchArgIdx := 0
 	if orgID != "" {
-		argCount++
-		whereClauses = append(whereClauses, fmt.Sprintf("m.organization_id = $%d", argCount))
-		args = append(args, orgID)
+		wb.add("m.organization_id = $%d", orgID)
 	}
 	if searchQuery != "" {
-		argCount++
+		searchArgIdx = wb.nextPlaceholder()
 		if useFTS {
-			whereClauses = append(whereClauses, fmt.Sprintf("m.search_vector @@ plainto_tsquery('english', $%d)", argCount))
+			wb.add("m.search_vector @@ plainto_tsquery('english', $%d)", searchQuery)
 		} else {
-			whereClauses = append(whereClauses, fmt.Sprintf("(m.namespace ILIKE $%d OR m.name ILIKE $%d OR m.description ILIKE $%d)", argCount, argCount, argCount))
-		}
-		if useFTS {
-			args = append(args, searchQuery)
-		} else {
-			args = append(args, searchQuery+"%")
+			wb.add("(m.namespace ILIKE $%d OR m.name ILIKE $%d OR m.description ILIKE $%d)", searchQuery+"%")
 		}
 	}
 	if namespace != "" {
-		argCount++
-		whereClauses = append(whereClauses, fmt.Sprintf("m.namespace = $%d", argCount))
-		args = append(args, namespace)
+		wb.add("m.namespace = $%d", namespace)
 	}
 	if system != "" {
-		argCount++
-		whereClauses = append(whereClauses, fmt.Sprintf("m.system = $%d", argCount))
-		args = append(args, system)
+		wb.add("m.system = $%d", system)
 	}
-
-	whereClause := ""
-	if len(whereClauses) > 0 {
-		whereClause = "WHERE " + strings.Join(whereClauses, " AND ")
-	}
+	whereClause, args := wb.clause()
 
 	// Count total results
 	countSQL := fmt.Sprintf("SELECT COUNT(*) FROM modules m %s", whereClause) // #nosec G201 -- whereClause contains only parameterized SQL structural conditions; user values are passed via args
@@ -653,19 +628,10 @@ func (r *ModuleRepository) SearchModulesWithStats(ctx context.Context, orgID, se
 	rankExpr := "" // extra column in SELECT
 	var orderByClause string
 
-	if useFTS && searchQuery != "" {
-		// Re-use the same parameter index that holds the search query for ts_rank.
-		// The searchQuery arg was added at a specific argCount; find it.
-		searchArgIdx := 0
-		for idx, a := range args {
-			if s, ok := a.(string); ok && s == searchQuery {
-				searchArgIdx = idx + 1 // 1-based
-				break
-			}
-		}
-		if searchArgIdx > 0 {
-			rankExpr = fmt.Sprintf(", ts_rank(m.search_vector, plainto_tsquery('english', $%d)) AS rank", searchArgIdx)
-		}
+	if useFTS && searchArgIdx > 0 {
+		// Re-use the exact placeholder that holds the search term for ts_rank,
+		// captured when the condition was added above.
+		rankExpr = fmt.Sprintf(", ts_rank(m.search_vector, plainto_tsquery('english', $%d)) AS rank", searchArgIdx)
 	}
 
 	switch sortField {
@@ -718,7 +684,7 @@ func (r *ModuleRepository) SearchModulesWithStats(ctx context.Context, orgID, se
 		%s
 		%s
 		LIMIT $%d OFFSET $%d
-	`, rankExpr, whereClause, orderByClause, argCount+1, argCount+2)
+	`, rankExpr, whereClause, orderByClause, wb.nextPlaceholder(), wb.nextPlaceholder()+1)
 
 	args = append(args, limit, offset)
 

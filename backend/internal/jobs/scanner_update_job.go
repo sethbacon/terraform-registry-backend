@@ -90,17 +90,17 @@ func (j *ScannerUpdateJob) Name() string { return "scanner-update" }
 // activation reconciliation) immediately on startup, then repeats on the
 // configured interval. The loop exits when ctx is cancelled or Stop() is called.
 // coverage:skip:integration-only — drives runCheck/reconcileActivations on a live ticker loop against a real GitHub release feed, DB, and SMTP; TestScannerUpdateJob_RestartSafety exercises the mu/started/stopChan bookkeeping directly without invoking the loop body.
-func (j *ScannerUpdateJob) Start(ctx context.Context) {
+func (j *ScannerUpdateJob) Start(ctx context.Context) error {
 	if !j.scanCfg.AutoUpdate.Enabled {
 		log.Println("[scanner-update] disabled (scanning.auto_update.enabled=false)")
-		return
+		return nil
 	}
 
 	j.mu.Lock()
 	if j.started {
 		j.mu.Unlock()
 		log.Println("[scanner-update] already running, ignoring duplicate Start")
-		return
+		return nil
 	}
 	j.started = true
 	stopChan := j.stopChan // capture under mutex; Stop() may replace the field concurrently
@@ -132,13 +132,13 @@ func (j *ScannerUpdateJob) Start(ctx context.Context) {
 			j.reconcileActivations(ctx)
 		case <-stopChan:
 			log.Println("[scanner-update] stopped")
-			return
+			return nil
 		case <-ctx.Done():
 			log.Println("[scanner-update] context cancelled")
 			j.mu.Lock()
 			j.started = false
 			j.mu.Unlock()
-			return
+			return nil
 		}
 	}
 }
@@ -155,7 +155,7 @@ func (j *ScannerUpdateJob) TriggerCheck() {
 // Stop signals the background loop to exit. Safe to call multiple times and
 // safe to call when the job was never started; a subsequent Start() can run
 // again since the stop channel is replaced with a fresh one.
-func (j *ScannerUpdateJob) Stop() {
+func (j *ScannerUpdateJob) Stop() error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if j.started {
@@ -163,6 +163,7 @@ func (j *ScannerUpdateJob) Stop() {
 		j.stopChan = make(chan struct{}) // fresh channel so Start() can be called again
 		j.started = false
 	}
+	return nil
 }
 
 // runCheck queries upstream for the latest release of the configured tool and,

@@ -441,7 +441,7 @@ func TestMirrorSyncJob_StartStop_ContextCancel(t *testing.T) {
 	done := make(chan struct{})
 
 	go func() {
-		job.Start(ctx, 60) // 60-minute interval, won't fire during test
+		job.Start(ctx) // default 10-minute interval, won't fire during test
 		close(done)
 	}()
 
@@ -468,7 +468,7 @@ func TestMirrorSyncJob_Stop_DirectStop(t *testing.T) {
 	done := make(chan struct{})
 
 	go func() {
-		job.Start(ctx, 60)
+		job.Start(ctx)
 		close(done)
 	}()
 
