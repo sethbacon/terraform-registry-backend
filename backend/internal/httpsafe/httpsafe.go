@@ -274,13 +274,24 @@ func (g *Guard) DialContext(ctx context.Context, network, addr string) (net.Conn
 	return nil, fmt.Errorf("egress dial %q: %w", host, dialErr)
 }
 
-// sameOrigin reports whether two URLs share scheme, host, and port. A
-// same-hostname comparison alone is not enough: a redirect from
-// https://git.internal/api to https://git.internal:9999/evil or to
-// http://git.internal/evil is not "the same place" and must not be treated as
-// safe to resend credentials/body to.
-func sameOrigin(a, b *url.URL) bool {
-	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Host, b.Host)
+// safeToFollow reports whether a redirect from `from` to `to` may resend
+// credentials/body. A same-hostname comparison alone is not enough: a
+// redirect from https://git.internal/api to https://git.internal:9999/evil is
+// not "the same place" (host includes port) and must not be treated as safe.
+// Scheme is asymmetric, not just compared for equality: an http -> https
+// upgrade on the same host is safe -- and a common, explicitly-supported
+// pattern, since ValidateURL permits an admin to configure a self-hosted SCM
+// base_url as http:// while its reverse proxy force-upgrades every request to
+// https via a same-host 307/308 -- but the reverse (https -> http) is a
+// downgrade that must never carry credentials/body over plaintext.
+func safeToFollow(from, to *url.URL) bool {
+	if !strings.EqualFold(from.Host, to.Host) {
+		return false
+	}
+	if strings.EqualFold(from.Scheme, to.Scheme) {
+		return true
+	}
+	return strings.EqualFold(from.Scheme, "http") && strings.EqualFold(to.Scheme, "https")
 }
 
 // CheckRedirect re-validates every redirect hop against the egress policy,
@@ -303,7 +314,7 @@ func (g *Guard) CheckRedirect(req *http.Request, via []*http.Request) error {
 	if err := g.ValidateURL(req.URL.String()); err != nil {
 		return fmt.Errorf("redirect blocked: %w", err)
 	}
-	if len(via) > 0 && !sameOrigin(req.URL, via[0].URL) {
+	if len(via) > 0 && !safeToFollow(via[0].URL, req.URL) {
 		if req.GetBody != nil || req.ContentLength != 0 {
 			return fmt.Errorf("refusing to follow cross-origin redirect to %s with a non-empty request body", req.URL.Host)
 		}

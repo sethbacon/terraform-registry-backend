@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -460,6 +461,44 @@ func TestClient_StrictGuardBlocksLoopbackFetch(t *testing.T) {
 	if err == nil {
 		resp.Body.Close()
 		t.Fatal("strict client should refuse to dial loopback")
+	}
+}
+
+// safeToFollow's scheme handling is asymmetric: an http -> https upgrade on
+// the same host must be followed (a common, explicitly-supported self-hosted
+// SCM pattern -- ValidateURL permits an http:// base_url, and its reverse
+// proxy force-upgrades every request to https via a same-host redirect), but
+// the reverse -- https -> http -- is a downgrade that must never be treated
+// as safe, since it would carry credentials/body over plaintext.
+func TestSafeToFollow_SchemeAsymmetry(t *testing.T) {
+	mustParse := func(t *testing.T, raw string) *url.URL {
+		t.Helper()
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatalf("url.Parse(%q): %v", raw, err)
+		}
+		return u
+	}
+
+	cases := []struct {
+		name string
+		from string
+		to   string
+		want bool
+	}{
+		{"same scheme same host", "https://git.internal/a", "https://git.internal/b", true},
+		{"http to https upgrade, same host", "http://git.internal/oauth/token", "https://git.internal/oauth/token", true},
+		{"https to http downgrade, same host", "https://git.internal/oauth/token", "http://git.internal/oauth/token", false},
+		{"different host, same scheme", "https://git.internal/a", "https://attacker.example/a", false},
+		{"different port, same host and scheme", "https://git.internal:443/a", "https://git.internal:9999/a", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := safeToFollow(mustParse(t, tc.from), mustParse(t, tc.to))
+			if got != tc.want {
+				t.Errorf("safeToFollow(%q, %q) = %v, want %v", tc.from, tc.to, got, tc.want)
+			}
+		})
 	}
 }
 
