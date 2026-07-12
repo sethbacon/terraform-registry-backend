@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -14,8 +15,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+	"golang.org/x/oauth2"
+
 	"github.com/terraform-registry/terraform-registry/internal/auth"
+	"github.com/terraform-registry/terraform-registry/internal/auth/azuread"
 	ldappkg "github.com/terraform-registry/terraform-registry/internal/auth/ldap"
+	oidcpkg "github.com/terraform-registry/terraform-registry/internal/auth/oidc"
 	samlpkg "github.com/terraform-registry/terraform-registry/internal/auth/saml"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
@@ -117,6 +122,103 @@ func TestLoginHandler_DefaultProviderOIDC(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400 (default OIDC not configured)", w.Code)
+	}
+}
+
+// TestLoginHandler_OIDCSuccess proves the BeginAuth (nonce + PKCE) path: a
+// configured OIDC provider redirects with a nonce/PKCE-bearing authorization
+// URL, and the generated Nonce/CodeVerifier are persisted to the state store
+// keyed by the state token, so the callback can bind verification to this
+// specific login attempt.
+func TestLoginHandler_OIDCSuccess(t *testing.T) {
+	h, _, r := newAuthRouter(t)
+
+	mockOIDC := oidcpkg.NewOIDCProviderForTest(&oauth2.Config{
+		ClientID: "test-client",
+		Endpoint: oauth2.Endpoint{
+			AuthURL: "https://issuer.example.com/authorize",
+		},
+		RedirectURL: "https://registry.example.com/callback",
+		Scopes:      []string{"openid", "email"},
+	})
+	h.oidcProvider.Store(mockOIDC)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/auth/login?provider=oidc", nil))
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302, body: %s", w.Code, w.Body.String())
+	}
+	location := w.Header().Get("Location")
+	if !strings.Contains(location, "code_challenge=") {
+		t.Errorf("Location missing PKCE code_challenge param, got: %s", location)
+	}
+	if !strings.Contains(location, "state=") {
+		t.Errorf("Location missing state param, got: %s", location)
+	}
+
+	// Extract the state token and confirm the session state store actually
+	// persisted a non-empty Nonce and CodeVerifier for it.
+	u, err := url.Parse(location)
+	if err != nil {
+		t.Fatalf("failed to parse Location: %v", err)
+	}
+	state := u.Query().Get("state")
+	if state == "" {
+		t.Fatal("could not extract state param from Location")
+	}
+	saved, err := h.stateStore.Load(context.Background(), state)
+	if err != nil || saved == nil {
+		t.Fatalf("stateStore.Load(%q) = %v, %v; want a saved session state", state, saved, err)
+	}
+	if saved.Nonce == "" {
+		t.Error("saved session state has empty Nonce")
+	}
+	if saved.CodeVerifier == "" {
+		t.Error("saved session state has empty CodeVerifier")
+	}
+}
+
+// TestLoginHandler_AzureADSuccess mirrors TestLoginHandler_OIDCSuccess for the
+// Azure AD provider path.
+func TestLoginHandler_AzureADSuccess(t *testing.T) {
+	h, _, r := newAuthRouter(t)
+
+	mockOIDC := oidcpkg.NewOIDCProviderForTest(&oauth2.Config{
+		ClientID: "azure-client",
+		Endpoint: oauth2.Endpoint{
+			AuthURL: "https://login.microsoftonline.com/tenant/oauth2/v2.0/authorize",
+		},
+		RedirectURL: "https://registry.example.com/callback",
+		Scopes:      []string{"openid", "email"},
+	})
+	h.azureADProvider = azuread.NewAzureADProviderForTest(mockOIDC, "tenant-abc")
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/auth/login?provider=azuread", nil))
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302, body: %s", w.Code, w.Body.String())
+	}
+	location := w.Header().Get("Location")
+	if !strings.Contains(location, "code_challenge=") {
+		t.Errorf("Location missing PKCE code_challenge param, got: %s", location)
+	}
+
+	u, err := url.Parse(location)
+	if err != nil {
+		t.Fatalf("failed to parse Location: %v", err)
+	}
+	state := u.Query().Get("state")
+	saved, err := h.stateStore.Load(context.Background(), state)
+	if err != nil || saved == nil {
+		t.Fatalf("stateStore.Load(%q) = %v, %v; want a saved session state", state, saved, err)
+	}
+	if saved.Nonce == "" {
+		t.Error("saved session state has empty Nonce")
+	}
+	if saved.CodeVerifier == "" {
+		t.Error("saved session state has empty CodeVerifier")
 	}
 }
 

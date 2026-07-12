@@ -19,6 +19,14 @@ type AzureADProvider struct {
 	tenantID     string
 }
 
+// NewAzureADProviderForTest builds an AzureADProvider around an already-
+// constructed OIDC provider (e.g. oidcpkg.NewOIDCProviderForTest), without
+// performing Azure AD discovery. Exported for tests in other packages (e.g.
+// api/admin) that need a working AzureADProvider without a live tenant.
+func NewAzureADProviderForTest(oidcProvider *oidcpkg.OIDCProvider, tenantID string) *AzureADProvider {
+	return &AzureADProvider{oidcProvider: oidcProvider, tenantID: tenantID}
+}
+
 // NewAzureADProvider initializes a new Azure AD provider
 func NewAzureADProvider(cfg *config.AzureADConfig) (*AzureADProvider, error) {
 	if !cfg.Enabled {
