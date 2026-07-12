@@ -575,12 +575,36 @@ func TestGetEnhancedSetupStatus_FullSchemaColumns(t *testing.T) {
 // CreateOIDCConfig
 // ---------------------------------------------------------------------------
 
-// TestCreateOIDCConfig_Success covers the IsActive=true path used by this
-// repo's setup wizard: as of terraform-suite-identity v0.17.0, creating an
-// active config is wrapped in the same deactivate-all-then-insert transaction
-// ActivateOIDCConfig uses, enforcing the single-active-config invariant at
-// write time.
+// TestCreateOIDCConfig_Success covers the IsActive=false plain-insert path
+// (no other configs to deactivate, so no transaction is needed). See
+// TestCreateOIDCConfig_ActiveSuccess for the IsActive=true transactional path.
 func TestCreateOIDCConfig_Success(t *testing.T) {
+	repo, mock := newOIDCConfigRepo(t)
+	mock.ExpectExec("INSERT INTO oidc_config").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	cfg := &models.OIDCConfig{
+		ID:           uuid.New(),
+		Name:         "test",
+		ProviderType: "generic_oidc",
+		IssuerURL:    "https://issuer.example.com",
+		ClientID:     "client-id",
+		RedirectURL:  "https://app.example.com/callback",
+		IsActive:     false,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+
+	err := repo.CreateOIDCConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestCreateOIDCConfig_ActiveSuccess covers the IsActive=true path: the
+// identity store enforces the single-active-config invariant by wrapping the
+// deactivate-others + insert steps in one transaction.
+func TestCreateOIDCConfig_ActiveSuccess(t *testing.T) {
 	repo, mock := newOIDCConfigRepo(t)
 	mock.ExpectBegin()
 	mock.ExpectExec("UPDATE oidc_config SET is_active = false").

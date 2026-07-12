@@ -34,8 +34,8 @@ func TestExtractUserInfo_DelegatesToOIDC(t *testing.T) {
 		tenantID:     "tenant",
 	}
 
-	tok := makeTestIDToken(`{"sub":"user-123","email":"alice@example.com","name":"Alice"}`)
-	sub, email, name, _, err := p.ExtractUserInfo(tok)
+	tok := makeTestIDToken(`{"sub":"user-123","email":"alice@example.com","name":"Alice","email_verified":true}`)
+	sub, email, name, emailVerified, err := p.ExtractUserInfo(tok)
 	if err != nil {
 		t.Fatalf("ExtractUserInfo returned error: %v", err)
 	}
@@ -47,6 +47,9 @@ func TestExtractUserInfo_DelegatesToOIDC(t *testing.T) {
 	}
 	if name != "Alice" {
 		t.Errorf("name = %q, want Alice", name)
+	}
+	if !emailVerified {
+		t.Error("emailVerified = false, want true")
 	}
 }
 

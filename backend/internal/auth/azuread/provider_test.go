@@ -99,6 +99,45 @@ func TestGetAuthURL(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// BeginAuth (delegates to oidcProvider)
+// ---------------------------------------------------------------------------
+
+func TestBeginAuth(t *testing.T) {
+	mockOIDC := oidcpkg.NewOIDCProviderForTest(&oauth2.Config{
+		ClientID: "azure-client",
+		Endpoint: oauth2.Endpoint{
+			AuthURL: "https://login.microsoftonline.com/tenant/oauth2/v2.0/authorize",
+		},
+		RedirectURL: "https://registry.example.com/callback",
+		Scopes:      []string{"openid", "email"},
+	})
+	p := &AzureADProvider{
+		oidcProvider: mockOIDC,
+		tenantID:     "tenant-abc",
+	}
+
+	challenge, err := p.BeginAuth("test-state")
+	if err != nil {
+		t.Fatalf("BeginAuth returned error: %v", err)
+	}
+	if !strings.Contains(challenge.URL, "state=test-state") {
+		t.Errorf("URL missing state param, got: %s", challenge.URL)
+	}
+	if !strings.Contains(challenge.URL, "client_id=azure-client") {
+		t.Errorf("URL missing client_id, got: %s", challenge.URL)
+	}
+	if !strings.Contains(challenge.URL, "code_challenge=") {
+		t.Errorf("URL missing PKCE code_challenge param, got: %s", challenge.URL)
+	}
+	if challenge.Nonce == "" {
+		t.Error("Nonce is empty, want a generated value")
+	}
+	if challenge.CodeVerifier == "" {
+		t.Error("CodeVerifier is empty, want a generated value")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // ExchangeCode (delegates to oidcProvider — verifies error path)
 // ---------------------------------------------------------------------------
 

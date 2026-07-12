@@ -390,6 +390,9 @@ func TestSaveOIDCConfig_MissingFields(t *testing.T) {
 	}
 }
 
+// TestSaveOIDCConfig_DeactivateError covers CreateOIDCConfig's internal
+// deactivate-others step (run inside its own transaction — see
+// identity/store.OIDCConfigRepository.CreateOIDCConfig) failing.
 func TestSaveOIDCConfig_DeactivateError(t *testing.T) {
 	env := newTestEnv(t)
 
@@ -404,9 +407,11 @@ func TestSaveOIDCConfig_DeactivateError(t *testing.T) {
 		"redirect_url":  "https://app/callback",
 	})
 
-	// Deactivate all fails
+	// Deactivate-others (within CreateOIDCConfig's transaction) fails.
+	env.oidcMock.ExpectBegin()
 	env.oidcMock.ExpectExec("UPDATE oidc_config SET is_active = false").
 		WillReturnError(errDB)
+	env.oidcMock.ExpectRollback()
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/oidc", body))
@@ -430,10 +435,12 @@ func TestSaveOIDCConfig_CreateError(t *testing.T) {
 		"redirect_url":  "https://app/callback",
 	})
 
+	env.oidcMock.ExpectBegin()
 	env.oidcMock.ExpectExec("UPDATE oidc_config SET is_active = false").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	env.oidcMock.ExpectExec("INSERT INTO oidc_config").
 		WillReturnError(errDB)
+	env.oidcMock.ExpectRollback()
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/oidc", body))
@@ -457,12 +464,8 @@ func TestSaveOIDCConfig_Success(t *testing.T) {
 		"redirect_url":  "https://app/callback",
 	})
 
-	// Deactivate existing configs (handler's own explicit pre-deactivate step)
-	env.oidcMock.ExpectExec("UPDATE oidc_config SET is_active = false").
-		WillReturnResult(sqlmock.NewResult(0, 0))
-	// Create new config: since the new config is created active, this is now
-	// wrapped in its own deactivate-all-then-insert transaction (identity
-	// v0.17.0), enforcing the single-active-config invariant at write time.
+	// CreateOIDCConfig deactivates existing configs and inserts the new one
+	// atomically in a single transaction (single-active-config invariant).
 	env.oidcMock.ExpectBegin()
 	env.oidcMock.ExpectExec("UPDATE oidc_config SET is_active = false").
 		WillReturnResult(sqlmock.NewResult(0, 0))
