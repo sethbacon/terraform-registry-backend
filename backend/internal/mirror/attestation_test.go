@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	in_toto "github.com/in-toto/attestation/go/v1"
 	"github.com/sigstore/sigstore-go/pkg/fulcio/certificate"
@@ -528,6 +529,74 @@ func TestFetchAttestationBundles_NoAuthHeaderWhenTokenEmpty(t *testing.T) {
 	}
 	if sawAuth {
 		t.Errorf("expected no Authorization header, got %q", gotAuth)
+	}
+}
+
+// resetAttestationTrustRootCache clears the package-level trust-root cache so
+// each subtest starts from a known state, and restores it afterward so other
+// tests in the package aren't affected by whatever state this test leaves.
+func resetAttestationTrustRootCache(t *testing.T) {
+	t.Helper()
+	attestationTrustRootMu.Lock()
+	root, err, fetchedAt := attestationTrustRoot, attestationTrustRootErr, attestationTrustRootFetchedAt
+	attestationTrustRoot, attestationTrustRootErr, attestationTrustRootFetchedAt = nil, nil, time.Time{}
+	attestationTrustRootMu.Unlock()
+
+	t.Cleanup(func() {
+		attestationTrustRootMu.Lock()
+		attestationTrustRoot, attestationTrustRootErr, attestationTrustRootFetchedAt = root, err, fetchedAt
+		attestationTrustRootMu.Unlock()
+	})
+}
+
+// A failed trust-root fetch must not permanently disable attestation
+// verification for the life of the process: only a fetch within the retry
+// cooldown window is short-circuited (returns the cached error without
+// attempting the network again); once the cooldown has elapsed, the next
+// call must attempt a fresh fetch (observable here as fetchedAt advancing).
+func TestPublicGoodTrustedMaterial_RetriesAfterCooldown(t *testing.T) {
+	resetAttestationTrustRootCache(t)
+
+	staleTime := time.Now().Add(-2 * attestationTrustRootRetryCooldown)
+	attestationTrustRootMu.Lock()
+	attestationTrustRootErr = errors.New("simulated prior failure")
+	attestationTrustRootFetchedAt = staleTime
+	attestationTrustRootMu.Unlock()
+
+	// Within the cooldown, a fresh failure must be short-circuited (no
+	// attempted fetch, fetchedAt unchanged).
+	attestationTrustRootMu.Lock()
+	attestationTrustRootFetchedAt = time.Now()
+	recentFailureAt := attestationTrustRootFetchedAt
+	attestationTrustRootMu.Unlock()
+
+	if _, err := publicGoodTrustedMaterial(); err == nil {
+		t.Fatal("expected the cached failure to be returned")
+	}
+	attestationTrustRootMu.Lock()
+	unchanged := attestationTrustRootFetchedAt.Equal(recentFailureAt)
+	attestationTrustRootMu.Unlock()
+	if !unchanged {
+		t.Error("a fetch within the cooldown window must not attempt a new network call")
+	}
+
+	// Past the cooldown, the next call must attempt a fresh fetch: fetchedAt
+	// advances regardless of whether that fresh attempt succeeds or fails
+	// (this test's environment may have real network access to the Sigstore
+	// TUF CDN, so either outcome is valid -- what matters is that a new
+	// attempt was made rather than the stale cached failure being returned
+	// untried).
+	attestationTrustRootMu.Lock()
+	attestationTrustRootFetchedAt = staleTime
+	attestationTrustRootMu.Unlock()
+
+	_, _ = publicGoodTrustedMaterial()
+
+	attestationTrustRootMu.Lock()
+	retried := attestationTrustRootFetchedAt.After(staleTime)
+	attestationTrustRootMu.Unlock()
+	if !retried {
+		t.Error("a fetch past the cooldown window must attempt a new fetch, not return the stale cached failure")
 	}
 }
 

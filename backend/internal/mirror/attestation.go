@@ -81,42 +81,60 @@ var ErrAttestationUnavailable = errors.New("attestation verification unavailable
 // ----- Trusted root (Sigstore public-good, via TUF) --------------------------
 
 var (
-	attestationTrustRootOnce sync.Once
-	attestationTrustRoot     *root.TrustedRoot
-	attestationTrustRootErr  error
+	attestationTrustRootMu        sync.Mutex
+	attestationTrustRoot          *root.TrustedRoot
+	attestationTrustRootErr       error
+	attestationTrustRootFetchedAt time.Time
 )
 
-// publicGoodTrustedMaterial lazily fetches and caches the Sigstore public-good
+// attestationTrustRootRetryCooldown bounds how often a FAILED trust-root
+// fetch is retried. A successful fetch is cached permanently (trust roots are
+// long-lived; there is no reason to ever re-fetch a good one). A failure is
+// cached only for this long, not forever: a transient network blip (a rate
+// limit, a momentary outage) must not permanently disable attestation
+// verification for the life of the server process. A deployment that is
+// persistently unable to reach the TUF CDN (e.g. genuinely air-gapped)
+// settles into "retry at most once per cooldown" instead of hammering the
+// network on every sync.
+const attestationTrustRootRetryCooldown = time.Hour
+
+// publicGoodTrustedMaterial fetches and caches the Sigstore public-good
 // trusted root via TUF (embedded initial root, updates from the Sigstore TUF
-// CDN). The fetch happens at most once per process; a failure is cached too so
-// an air-gapped deployment does not retry TUF on every platform sync. There is
-// deliberately no stale-root fallback beyond sigstore-go's own TUF cache
-// handling: verifying against an unverifiable root would be weaker than the
-// documented checksum-only degradation.
+// CDN). There is deliberately no stale-root fallback beyond sigstore-go's own
+// TUF cache handling: verifying against an unverifiable root would be weaker
+// than the documented checksum-only degradation.
 // coverage:skip:integration-only — fetches the real Sigstore public-good trusted root over the network via TUF; no fixture/fake TUF mirror exists to exercise this hermetically.
 func publicGoodTrustedMaterial() (root.TrustedMaterial, error) {
-	attestationTrustRootOnce.Do(func() {
-		// DisableLocalCache lets the TUF client work on a read-only root
-		// filesystem (e.g. Kubernetes readOnlyRootFilesystem: true), matching
-		// the scanner installer's Sigstore flow.
-		opts := tuf.DefaultOptions()
-		opts.DisableLocalCache = true
-		client, err := tuf.New(opts)
-		if err != nil {
-			attestationTrustRootErr = fmt.Errorf("create TUF client: %w", err)
-			return
-		}
-		rootJSON, err := client.GetTarget("trusted_root.json")
-		if err != nil {
-			attestationTrustRootErr = fmt.Errorf("fetch trusted_root.json: %w", err)
-			return
-		}
-		attestationTrustRoot, attestationTrustRootErr = root.NewTrustedRootFromJSON(rootJSON)
-	})
-	if attestationTrustRootErr != nil {
+	attestationTrustRootMu.Lock()
+	defer attestationTrustRootMu.Unlock()
+
+	if attestationTrustRoot != nil {
+		return attestationTrustRoot, nil
+	}
+	if attestationTrustRootErr != nil && time.Since(attestationTrustRootFetchedAt) < attestationTrustRootRetryCooldown {
 		return nil, attestationTrustRootErr
 	}
-	return attestationTrustRoot, nil
+
+	// DisableLocalCache lets the TUF client work on a read-only root
+	// filesystem (e.g. Kubernetes readOnlyRootFilesystem: true), matching
+	// the scanner installer's Sigstore flow.
+	opts := tuf.DefaultOptions()
+	opts.DisableLocalCache = true
+	client, err := tuf.New(opts)
+	if err != nil {
+		attestationTrustRootErr = fmt.Errorf("create TUF client: %w", err)
+		attestationTrustRootFetchedAt = time.Now()
+		return nil, attestationTrustRootErr
+	}
+	rootJSON, err := client.GetTarget("trusted_root.json")
+	if err != nil {
+		attestationTrustRootErr = fmt.Errorf("fetch trusted_root.json: %w", err)
+		attestationTrustRootFetchedAt = time.Now()
+		return nil, attestationTrustRootErr
+	}
+	attestationTrustRoot, attestationTrustRootErr = root.NewTrustedRootFromJSON(rootJSON)
+	attestationTrustRootFetchedAt = time.Now()
+	return attestationTrustRoot, attestationTrustRootErr
 }
 
 // ----- Verifier ---------------------------------------------------------------
