@@ -10,6 +10,7 @@ import (
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
 
 // ---------------------------------------------------------------------------
@@ -57,7 +58,7 @@ func newOrgRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	}
 	t.Cleanup(func() { db.Close() })
 
-	h := NewOrganizationHandlers(&config.Config{}, db)
+	h := NewOrganizationHandlers(&config.Config{}, db, repositories.NewNamespaceClaimRepository(db))
 
 	r := gin.New()
 	r.GET("/organizations", h.ListOrganizationsHandler())
@@ -374,6 +375,8 @@ func TestDeleteOrganization_Success(t *testing.T) {
 		WillReturnRows(sampleOrgRow())
 	mock.ExpectQuery("SELECT COUNT.*FROM namespace_claims").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery("SELECT EXISTS.*FROM modules").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 	mock.ExpectExec("DELETE FROM organizations").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -411,6 +414,49 @@ func TestDeleteOrganization_ClaimCountDBError(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE id").
 		WillReturnRows(sampleOrgRow())
 	mock.ExpectQuery("SELECT COUNT.*FROM namespace_claims").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/organizations/org-1", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// A namespace whose artifacts already span more than one organization is
+// deliberately left unclaimed (ambiguous ownership, admin-only at runtime),
+// so the namespace_claims count is 0 for it even though this organization
+// still owns rows there directly. Deleting the organization must still be
+// blocked, or the shared namespace collapses from ambiguous to unchecked sole
+// ownership by whichever organization's rows survive the cascade (#555
+// review finding).
+func TestDeleteOrganization_BlockedByArtifactOwnership(t *testing.T) {
+	mock, r := newOrgRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE id").
+		WillReturnRows(sampleOrgRow())
+	mock.ExpectQuery("SELECT COUNT.*FROM namespace_claims").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery("SELECT EXISTS.*FROM modules").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/organizations/org-1", nil))
+
+	if w.Code != http.StatusConflict {
+		t.Errorf("status = %d, want 409: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestDeleteOrganization_ArtifactOwnershipDBError(t *testing.T) {
+	mock, r := newOrgRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE id").
+		WillReturnRows(sampleOrgRow())
+	mock.ExpectQuery("SELECT COUNT.*FROM namespace_claims").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery("SELECT EXISTS.*FROM modules").
 		WillReturnError(errDB)
 
 	w := httptest.NewRecorder()
@@ -743,6 +789,10 @@ func TestDeleteOrganization_DeleteDBError(t *testing.T) {
 
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE id").
 		WillReturnRows(sampleOrgRow())
+	mock.ExpectQuery("SELECT COUNT.*FROM namespace_claims").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery("SELECT EXISTS.*FROM modules").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 	mock.ExpectExec("DELETE FROM organizations").
 		WillReturnError(errDB)
 

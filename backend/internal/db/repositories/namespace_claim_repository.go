@@ -127,3 +127,32 @@ func (r *NamespaceClaimRepository) CountByOrganization(ctx context.Context, orga
 	}
 	return count, nil
 }
+
+// OwnsArtifacts reports whether an organization owns any module or provider
+// row directly (in any namespace), independent of namespace_claims. Used
+// alongside CountByOrganization to block organization deletion: a namespace
+// whose artifacts already span more than one organization is deliberately
+// left UNCLAIMED (ambiguous ownership, restricted to admins at runtime —
+// see resolveOwnerOrg), so CountByOrganization alone would return 0 for it
+// even though this organization still owns rows there. modules/providers'
+// organization_id FK is still ON DELETE CASCADE (unrelated to the
+// namespace_claims RESTRICT added alongside this method): deleting this
+// organization would silently remove its rows from that ambiguous namespace,
+// collapsing it from admin-only "ambiguous" to unchecked sole ownership by
+// whichever organization's rows survive — the same "artifact-row fallback
+// re-attributes ownership after an org disappears" defect this table exists
+// to close, reached via a shared/ambiguous namespace instead of via a claim.
+func (r *NamespaceClaimRepository) OwnsArtifacts(ctx context.Context, organizationID string) (bool, error) {
+	query := `
+		SELECT EXISTS(
+			SELECT 1 FROM modules   WHERE organization_id = $1
+			UNION ALL
+			SELECT 1 FROM providers WHERE organization_id = $1
+		)
+	`
+	var owns bool
+	if err := r.db.QueryRowContext(ctx, query, organizationID).Scan(&owns); err != nil {
+		return false, fmt.Errorf("failed to check organization artifact ownership: %w", err)
+	}
+	return owns, nil
+}
