@@ -147,18 +147,8 @@ available in the upstream project repository.
   Licensed under the Apache License, Version 2.0
   https://github.com/googleapis/google-api-go-client/blob/main/LICENSE
 
-## Frontend dependencies (React ecosystem)
-
-  react, react-dom          MIT License — Copyright (c) Meta Platforms, Inc.
-  react-router-dom          MIT License — Copyright (c) Remix Software Inc.
-  @mui/material, @emotion/* MIT License — Copyright (c) Material-UI SAS
-  axios                     MIT License — Copyright (c) Matt Zabriskie
-  react-markdown            MIT License — Copyright (c) Titus Wormer
-  vite                      MIT License — Copyright (c) Evan You
-
 ## All other transitive dependencies
 
   The remaining transitive dependencies are licensed under the Apache License 2.0,
   MIT License, or BSD 3-Clause License. Full license texts are available in the
-  respective upstream repositories referenced in backend/go.mod and
-  frontend/package.json.
+  respective upstream repositories referenced in backend/go.mod.

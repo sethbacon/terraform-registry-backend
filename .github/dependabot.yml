@@ -7,7 +7,7 @@ updates:
   - package-ecosystem: gomod
     directory: /backend
     schedule:
-      interval: biweekly
+      interval: weekly
       day: monday
       time: "09:00"
       timezone: UTC
@@ -36,7 +36,7 @@ updates:
   - package-ecosystem: docker
     directory: /backend
     schedule:
-      interval: biweekly
+      interval: weekly
       day: monday
       time: "09:00"
       timezone: UTC
@@ -49,12 +49,31 @@ updates:
       prefix: "chore(deps)"
 
   # ---------------------------------------------------------------------------
+  # npm (repo root) — pinned doc-generation tooling only (swagger2openapi),
+  # not a runtime/shipped dependency. See docs/development.md.
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: UTC
+    reviewers:
+      - maintainers
+    labels:
+      - dependencies
+      - npm
+    commit-message:
+      prefix: "chore(deps)"
+
+  # ---------------------------------------------------------------------------
   # GitHub Actions
   # ---------------------------------------------------------------------------
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: biweekly
+      interval: weekly
       day: monday
       time: "09:00"
       timezone: UTC
