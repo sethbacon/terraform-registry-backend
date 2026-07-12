@@ -345,8 +345,13 @@ func TestSetTrustedIssuers(t *testing.T) {
 
 	// A token signed with the SAME secret but a different issuer — simulating
 	// a sibling app in a coupled suite deployment sharing TFR_JWT_SECRET
-	// (ADR 012).
+	// (ADR 012). The sibling also stamps this app's own identity as the
+	// audience, as terraform-suite-identity's coupled-suite guidance directs a
+	// well-behaved sibling to do when minting a token meant to be honored here
+	// — see TestValidateJWT_AudienceEnforced below for the cases where it does
+	// not (or audiences it for itself instead).
 	siblingTM := identityauth.NewTokenManager(secret, "terraform-state-manager")
+	siblingTM.SetAudience(jwtIssuer)
 	siblingToken, err := siblingTM.Generate("user-1", "user1@example.com", nil, time.Hour)
 	if err != nil {
 		t.Fatalf("sibling Generate: %v", err)
@@ -417,6 +422,79 @@ func TestSetTrustedIssuers(t *testing.T) {
 		// The real (non-blank) entry alongside it must still work.
 		if _, err := ValidateJWT(siblingToken); err != nil {
 			t.Errorf("legitimate sibling issuer should still be trusted: %v", err)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Audience enforcement (issue #559 finding [0], completed via #608)
+// ---------------------------------------------------------------------------
+
+// TestValidateJWT_AudienceEnforced confirms ValidateJWTSecret now also stamps
+// and requires this app's own audience, closing the half of #559 finding [0]
+// that SetAllowedIssuers alone left open: a trusted sibling issuer is no
+// longer sufficient on its own — the token must also have been minted FOR
+// this app.
+func TestValidateJWT_AudienceEnforced(t *testing.T) {
+	resetJWTSecret()
+	secret := "test-jwt-secret-that-is-32-chars-!"
+	t.Setenv("TFR_JWT_SECRET", secret)
+	if err := ValidateJWTSecret(); err != nil {
+		t.Fatalf("ValidateJWTSecret: %v", err)
+	}
+	t.Cleanup(func() { SetTrustedIssuers(nil) })
+	SetTrustedIssuers([]string{"terraform-state-manager"})
+	t.Cleanup(func() { SetTrustedIssuers(nil) })
+
+	t.Run("own token carries own audience and validates", func(t *testing.T) {
+		token, err := GenerateJWT("user-1", "user1@example.com", nil, time.Hour)
+		if err != nil {
+			t.Fatalf("GenerateJWT: %v", err)
+		}
+		if _, err := ValidateJWT(token); err != nil {
+			t.Errorf("own token with own audience should validate: %v", err)
+		}
+	})
+
+	t.Run("trusted issuer but no audience claim is rejected", func(t *testing.T) {
+		// The sibling's issuer is trusted (see SetTrustedIssuers above), but this
+		// token never had an audience stamped — simulating a sibling that has not
+		// (yet) adopted SetAudience. Trusting the issuer must not be enough on
+		// its own.
+		siblingTM := identityauth.NewTokenManager(secret, "terraform-state-manager")
+		token, err := siblingTM.Generate("attacker-or-unaware-sibling", "x@example.com", []string{"admin"}, time.Hour)
+		if err != nil {
+			t.Fatalf("sibling Generate: %v", err)
+		}
+		if _, err := ValidateJWT(token); err == nil {
+			t.Error("a trusted-issuer token with no audience claim must be rejected once this app requires an audience")
+		}
+	})
+
+	t.Run("trusted issuer but wrong audience is rejected", func(t *testing.T) {
+		// The sibling stamps ITS OWN identity as the audience (i.e. mints a
+		// normal token for its own use), not this app's — this must not validate
+		// here even though the issuer is trusted and the secret matches.
+		siblingTM := identityauth.NewTokenManager(secret, "terraform-state-manager")
+		siblingTM.SetAudience("terraform-state-manager")
+		token, err := siblingTM.Generate("user-1", "user1@example.com", nil, time.Hour)
+		if err != nil {
+			t.Fatalf("sibling Generate: %v", err)
+		}
+		if _, err := ValidateJWT(token); err == nil {
+			t.Error("a trusted-issuer token audienced for a different app must be rejected")
+		}
+	})
+
+	t.Run("trusted issuer and correct audience validates", func(t *testing.T) {
+		siblingTM := identityauth.NewTokenManager(secret, "terraform-state-manager")
+		siblingTM.SetAudience(jwtIssuer)
+		token, err := siblingTM.Generate("user-1", "user1@example.com", nil, time.Hour)
+		if err != nil {
+			t.Fatalf("sibling Generate: %v", err)
+		}
+		if _, err := ValidateJWT(token); err != nil {
+			t.Errorf("a trusted-issuer token correctly audienced for this app should validate: %v", err)
 		}
 	})
 }

@@ -115,15 +115,25 @@ func ValidateJWTSecret() error {
 		// current secret — in a coupled suite deployment sharing TFR_JWT_SECRET
 		// with a sibling app (per ADR 012), that sibling's tokens (or a token
 		// crafted with a spoofed iss) would be silently accepted here (issue #559
-		// finding [0]). This does not add audience enforcement (the shared
-		// TokenManager has no audience support yet); that half of the finding
-		// requires a change to the terraform-suite-identity library itself.
+		// finding [0]).
 		//
 		// This is the default, standalone-safe set (own issuer only). A coupled
 		// suite deployment extends it via SetTrustedIssuers (suite.trusted_issuers
 		// / TFR_SUITE_TRUSTED_ISSUERS), called once at startup after this
 		// function; see cmd/server/main.go.
 		tokenManager.SetAllowedIssuers([]string{jwtIssuer})
+		// Stamp/require this app's own identity as the audience (issue #559
+		// finding [0], completed via #608). An issuer pin alone still lets a
+		// trusted sibling's token through unchanged; SetAudience closes that gap
+		// by additionally requiring a token — even one from a trusted sibling
+		// issuer — to have been minted FOR this app specifically. Audience
+		// support (SetAudience/NewCoupledTokenManager) is new in
+		// terraform-suite-identity v0.17.0; before that bump this half of the
+		// finding could not be closed without a library change. Safe to enable
+		// unconditionally: Validate only enforces the check once set, so a
+		// standalone (non-coupled) deployment is unaffected beyond every token
+		// now also carrying/requiring its own aud claim.
+		tokenManager.SetAudience(jwtIssuer)
 	})
 
 	return jwtSecretErr
