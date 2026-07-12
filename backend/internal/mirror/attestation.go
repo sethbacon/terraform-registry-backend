@@ -330,10 +330,10 @@ func (v *GitHubAttestationVerifier) fetchAttestationBundles(ctx context.Context,
 	}
 	defer resp.Body.Close()
 
-	switch {
-	case resp.StatusCode == http.StatusOK:
+	switch resp.StatusCode {
+	case http.StatusOK:
 		// fall through to decode
-	case resp.StatusCode == http.StatusNotFound:
+	case http.StatusNotFound:
 		return nil, ErrAttestationNotFound
 	default:
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
