@@ -55,6 +55,14 @@ jobs:
           go install github.com/swaggo/swag/cmd/swag@v1.16.6
           echo "$GITHUB_WORKSPACE/bin" >> $GITHUB_PATH
 
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24"
+
+      - name: Install docs tooling (swagger2openapi)
+        run: npm ci
+
       - name: Swagger generation (auto-commit if changed)
         working-directory: backend
         env:
@@ -72,7 +80,10 @@ jobs:
           # Convert Swagger 2.0 -> OpenAPI 3 for downstream consumers (frontend
           # typegen, terraform-provider-registry oapi-codegen). swag itself only
           # emits Swagger 2.0; this conversion keeps both files in lockstep.
-          npx --yes swagger2openapi docs/swagger.json -o docs/openapi3.json -p
+          # swagger2openapi is pinned in the repo-root package.json/package-lock.json
+          # (installed via the "Install docs tooling" step above); node_modules lives
+          # at the repo root, one level up from this backend/ working directory.
+          ../node_modules/.bin/swagger2openapi docs/swagger.json -o docs/openapi3.json -p
           if ! git diff --exit-code docs/swagger.json docs/openapi3.json; then
             echo "swagger.json or openapi3.json changed — committing updated docs"
             git config user.name  "github-actions[bot]"
