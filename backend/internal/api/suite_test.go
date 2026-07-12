@@ -184,6 +184,18 @@ func TestStartSuiteDiscovery_NilWhenNoSiblingURL(t *testing.T) {
 	}
 }
 
+// TestStartSuiteDiscovery_NilOnPlaintextSiblingURL verifies startSuiteDiscovery
+// degrades to standalone (nil, logged) rather than panicking or starting an
+// insecure client, now that suite.NewDiscoveryClient fails closed on a
+// plaintext "http://" sibling URL (terraform-suite-identity v0.17.0+).
+func TestStartSuiteDiscovery_NilOnPlaintextSiblingURL(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Suite.SiblingURL = "http://tfstate.internal.example.com"
+	if dc := startSuiteDiscovery(cfg); dc != nil {
+		t.Error("expected nil when SiblingURL uses plaintext HTTP")
+	}
+}
+
 func TestUIConfigHandler_ForwardsIdentityBlock(t *testing.T) {
 	sibling := suite.Manifest{
 		SchemaVersion: suite.SchemaVersionV1,

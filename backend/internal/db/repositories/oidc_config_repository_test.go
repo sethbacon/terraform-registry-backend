@@ -604,11 +604,16 @@ func TestCreateOIDCConfig_Success(t *testing.T) {
 // TestCreateOIDCConfig_ActiveSuccess covers the IsActive=true path: the
 // identity store enforces the single-active-config invariant by wrapping the
 // deactivate-others + insert steps in one transaction.
+//
+// terraform-suite-identity v0.17.0+: creating an already-active config wraps
+// the insert in the same deactivate-all-then-activate-one transaction
+// ActivateOIDCConfig uses, so the single-active-config invariant is
+// enforced at write time (see CreateOIDCConfig's doc comment).
 func TestCreateOIDCConfig_ActiveSuccess(t *testing.T) {
 	repo, mock := newOIDCConfigRepo(t)
 	mock.ExpectBegin()
 	mock.ExpectExec("UPDATE oidc_config SET is_active = false").
-		WillReturnResult(sqlmock.NewResult(0, 1))
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("INSERT INTO oidc_config").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
@@ -628,6 +633,39 @@ func TestCreateOIDCConfig_ActiveSuccess(t *testing.T) {
 	err := repo.CreateOIDCConfig(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestCreateOIDCConfig_Inactive_PlainInsert covers the !IsActive path, which
+// remains a plain, untransacted insert (behavior unchanged from before
+// v0.17.0) — added alongside the now-transactional active-config test above so
+// both CreateOIDCConfig code paths have explicit coverage.
+func TestCreateOIDCConfig_Inactive_PlainInsert(t *testing.T) {
+	repo, mock := newOIDCConfigRepo(t)
+	mock.ExpectExec("INSERT INTO oidc_config").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	cfg := &models.OIDCConfig{
+		ID:           uuid.New(),
+		Name:         "test",
+		ProviderType: "generic_oidc",
+		IssuerURL:    "https://issuer.example.com",
+		ClientID:     "client-id",
+		RedirectURL:  "https://app.example.com/callback",
+		IsActive:     false,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+
+	err := repo.CreateOIDCConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
 	}
 }
 

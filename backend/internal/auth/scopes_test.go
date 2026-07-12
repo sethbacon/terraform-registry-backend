@@ -152,6 +152,28 @@ func TestValidateScopeString(t *testing.T) {
 	}
 }
 
+func TestValidateProvisionableScopes(t *testing.T) {
+	tests := []struct {
+		name    string
+		scopes  []string
+		wantErr bool
+	}{
+		{"empty list", []string{}, false},
+		{"non-admin scopes", []string{"modules:read", "providers:write"}, false},
+		{"admin alone", []string{"admin"}, true},
+		{"admin among others", []string{"modules:read", "admin"}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateProvisionableScopes(tt.scopes)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateProvisionableScopes(%v) error = %v, wantErr %v", tt.scopes, err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestGetDefaultScopes(t *testing.T) {
 	scopes := GetDefaultScopes()
 	if len(scopes) == 0 {

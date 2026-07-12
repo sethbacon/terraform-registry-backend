@@ -244,10 +244,14 @@ func (h *Handlers) SaveOIDCConfig(c *gin.Context) {
 		name = "default"
 	}
 
-	// Create the new OIDC config. CreateOIDCConfig deactivates any existing
-	// configs and inserts the new one atomically (single transaction) when
-	// IsActive is true, enforcing the single-active-config invariant without
-	// the race window a separate deactivate-then-create pair would have.
+	// Create the new OIDC config. As of terraform-suite-identity v0.17.0,
+	// CreateOIDCConfig itself wraps the insert in a deactivate-all-then-
+	// activate-one transaction whenever IsActive is true (the same transaction
+	// ActivateOIDCConfig uses), so the single-active-config invariant is
+	// enforced atomically at write time. The previously-separate explicit
+	// DeactivateAllOIDCConfigs call is no longer needed here — keeping it would
+	// just reintroduce the transient "zero active configs" window between two
+	// non-atomic calls that this transaction is designed to close.
 	now := time.Now()
 	oidcCfg := &models.OIDCConfig{
 		ID:                     uuid.New(),

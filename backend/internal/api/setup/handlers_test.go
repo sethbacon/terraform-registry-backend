@@ -407,7 +407,10 @@ func TestSaveOIDCConfig_DeactivateError(t *testing.T) {
 		"redirect_url":  "https://app/callback",
 	})
 
-	// Deactivate-others (within CreateOIDCConfig's transaction) fails.
+	// terraform-suite-identity v0.17.0+: CreateOIDCConfig(IsActive: true) wraps
+	// the deactivate-all step in its own transaction (see handlers.go's
+	// SaveOIDCConfig comment) — a failure there rolls back and surfaces as a
+	// CreateOIDCConfig error, same as an INSERT failure below.
 	env.oidcMock.ExpectBegin()
 	env.oidcMock.ExpectExec("UPDATE oidc_config SET is_active = false").
 		WillReturnError(errDB)
@@ -418,6 +421,9 @@ func TestSaveOIDCConfig_DeactivateError(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
+	}
+	if err := env.oidcMock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
 	}
 }
 
@@ -448,6 +454,9 @@ func TestSaveOIDCConfig_CreateError(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
+	if err := env.oidcMock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
 }
 
 func TestSaveOIDCConfig_Success(t *testing.T) {
@@ -464,8 +473,10 @@ func TestSaveOIDCConfig_Success(t *testing.T) {
 		"redirect_url":  "https://app/callback",
 	})
 
-	// CreateOIDCConfig deactivates existing configs and inserts the new one
-	// atomically in a single transaction (single-active-config invariant).
+	// CreateOIDCConfig(IsActive: true) wraps deactivate-all + insert in one
+	// transaction (terraform-suite-identity v0.17.0+; see handlers.go's
+	// SaveOIDCConfig comment) — no separate, non-transactional deactivate call
+	// precedes it.
 	env.oidcMock.ExpectBegin()
 	env.oidcMock.ExpectExec("UPDATE oidc_config SET is_active = false").
 		WillReturnResult(sqlmock.NewResult(0, 0))
@@ -481,6 +492,9 @@ func TestSaveOIDCConfig_Success(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200, body: %s", w.Code, w.Body.String())
+	}
+	if err := env.oidcMock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
 	}
 
 	resp := getJSON(w)
