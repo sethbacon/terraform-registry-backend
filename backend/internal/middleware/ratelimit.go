@@ -400,8 +400,8 @@ func getRateLimitPrincipal(c *gin.Context) string {
 	}
 
 	// Check for API key
-	if apiKeyID, exists := c.Get("api_key_id"); exists {
-		if id, ok := apiKeyID.(string); ok && id != "" {
+	if apiRecordID, exists := c.Get("api_key_id"); exists {
+		if id, ok := apiRecordID.(string); ok && id != "" {
 			return "apikey:" + id
 		}
 	}
