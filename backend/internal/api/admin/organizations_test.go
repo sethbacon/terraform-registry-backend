@@ -372,6 +372,8 @@ func TestDeleteOrganization_Success(t *testing.T) {
 
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE id").
 		WillReturnRows(sampleOrgRow())
+	mock.ExpectQuery("SELECT COUNT.*FROM namespace_claims").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectExec("DELETE FROM organizations").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -380,6 +382,42 @@ func TestDeleteOrganization_Success(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// An organization that still owns namespace claims must not be deletable:
+// deleting it would cascade the claim away and let resolveOwnerOrg's
+// artifact-row fallback silently re-attribute the namespace to whichever
+// (unrelated) organization the mistagged rows point at (#555 review finding).
+func TestDeleteOrganization_BlockedByNamespaceClaims(t *testing.T) {
+	mock, r := newOrgRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE id").
+		WillReturnRows(sampleOrgRow())
+	mock.ExpectQuery("SELECT COUNT.*FROM namespace_claims").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/organizations/org-1", nil))
+
+	if w.Code != http.StatusConflict {
+		t.Errorf("status = %d, want 409: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestDeleteOrganization_ClaimCountDBError(t *testing.T) {
+	mock, r := newOrgRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE id").
+		WillReturnRows(sampleOrgRow())
+	mock.ExpectQuery("SELECT COUNT.*FROM namespace_claims").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/organizations/org-1", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
 	}
 }
 

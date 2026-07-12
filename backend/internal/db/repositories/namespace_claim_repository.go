@@ -111,3 +111,19 @@ func (r *NamespaceClaimRepository) ArtifactOrganizations(ctx context.Context, na
 
 	return orgIDs, nil
 }
+
+// CountByOrganization returns how many namespaces an organization currently
+// owns a claim to. Used to block organization deletion while claims exist:
+// the claims FK is ON DELETE RESTRICT, but that surfaces as an opaque 500 —
+// this backs a clear, actionable 409 instead. Deleting an org out from under
+// its claims would silently fall back namespace ownership to whichever
+// (unrelated) organization the mistagged artifact rows point at, defeating
+// the object-level authorization this table exists to enforce.
+func (r *NamespaceClaimRepository) CountByOrganization(ctx context.Context, organizationID string) (int, error) {
+	var count int
+	query := `SELECT COUNT(*) FROM namespace_claims WHERE organization_id = $1`
+	if err := r.db.QueryRowContext(ctx, query, organizationID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("failed to count namespace claims for organization: %w", err)
+	}
+	return count, nil
+}

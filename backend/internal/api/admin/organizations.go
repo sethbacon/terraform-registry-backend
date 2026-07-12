@@ -16,9 +16,10 @@ import (
 
 // OrganizationHandlers handles organization management endpoints
 type OrganizationHandlers struct {
-	cfg     *config.Config
-	db      *sql.DB
-	orgRepo *repositories.OrganizationRepository
+	cfg       *config.Config
+	db        *sql.DB
+	orgRepo   *repositories.OrganizationRepository
+	claimRepo *repositories.NamespaceClaimRepository
 }
 
 // NewOrganizationHandlers creates a new OrganizationHandlers instance
@@ -27,6 +28,11 @@ func NewOrganizationHandlers(cfg *config.Config, db *sql.DB) *OrganizationHandle
 		cfg:     cfg,
 		db:      db,
 		orgRepo: repositories.NewOrganizationRepository(db),
+		// namespace_claims is a feature table (not identity data); when db here
+		// is identityDB post-cutover it still resolves via the public
+		// search_path fallback, same as the other feature-table repos in
+		// router.go.
+		claimRepo: repositories.NewNamespaceClaimRepository(db),
 	}
 }
 
@@ -394,6 +400,7 @@ func (h *OrganizationHandlers) UpdateOrganizationHandler() gin.HandlerFunc {
 // @Success      200  {object}  admin.MessageResponse
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
 // @Failure      404  {object}  map[string]interface{}  "Organization not found"
+// @Failure      409  {object}  map[string]interface{}  "Organization still owns namespace claims"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/organizations/{id} [delete]
 // DeleteOrganizationHandler deletes an organization
@@ -414,6 +421,29 @@ func (h *OrganizationHandlers) DeleteOrganizationHandler() gin.HandlerFunc {
 		if org == nil {
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": "Organization not found",
+			})
+			return
+		}
+
+		// Refuse to delete an organization that still owns namespace claims
+		// (CWE-639, issue #555). Cascading the delete onto namespace_claims
+		// would silently fall the namespace back to resolveOwnerOrg's
+		// artifact-row fallback, which — since every write handler stamps
+		// organization_id from the default organization regardless of the
+		// real caller — reliably re-attributes ownership to the default org
+		// rather than leaving it (correctly) unowned. The namespace_claims FK
+		// is ON DELETE RESTRICT as a fail-closed backstop; this check exists
+		// to surface the reason with a clear 409 instead of an opaque 500.
+		claimCount, err := h.claimRepo.CountByOrganization(c.Request.Context(), orgID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to check namespace ownership",
+			})
+			return
+		}
+		if claimCount > 0 {
+			c.JSON(http.StatusConflict, gin.H{
+				"error": "Organization still owns namespace claims; release or reassign its namespaces before deleting it",
 			})
 			return
 		}

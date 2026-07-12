@@ -101,7 +101,14 @@ func (a *NamespaceAuthorizer) RequirePublishAccessFromForm(scope auth.Scope, max
 			abortNamespaceAuthz(c, http.StatusBadRequest, "Failed to parse multipart form")
 			return
 		}
-		namespace := c.Request.FormValue("namespace")
+		// PostFormValue (body-only), NOT FormValue: FormValue prefers the URL
+		// query string over the parsed body, but the upload handler reads the
+		// namespace via c.PostForm (body-only, Gin's GetPostForm reads
+		// req.PostForm). Using FormValue here let a caller authorize against a
+		// namespace named in the query string (?namespace=one-they-own) while
+		// the multipart body — what the handler actually persists into —
+		// named a different, victim namespace, bypassing this check entirely.
+		namespace := c.Request.PostFormValue("namespace")
 		if namespace == "" {
 			// The handler rejects the request as invalid; nothing is targeted.
 			c.Next()
