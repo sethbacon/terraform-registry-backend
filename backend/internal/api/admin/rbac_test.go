@@ -2,6 +2,7 @@ package admin
 
 import (
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -491,10 +492,19 @@ func TestRBACDeleteRoleTemplate_MemberLookupDBError_StillDeletes(t *testing.T) {
 	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/role-templates/"+knownUUID, nil))
 
 	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want 200 even though the member lookup failed: body=%s", w.Code, w.Body.String())
+		t.Fatalf("status = %d, want 200 even though the member lookup failed: body=%s", w.Code, w.Body.String())
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unexpected extra calls (no member list means no revocation attempts): %v", err)
+	}
+	var body struct {
+		RevocationIncomplete bool `json:"revocation_incomplete"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed to decode response body: %v: body=%s", err, w.Body.String())
+	}
+	if !body.RevocationIncomplete {
+		t.Errorf("expected revocation_incomplete=true in the response, got body=%s", w.Body.String())
 	}
 }
 

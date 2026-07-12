@@ -303,8 +303,13 @@ func (h *RBACHandlers) DeleteRoleTemplate(c *gin.Context) {
 	// itself a precondition for the deletion, so a failure here is logged and
 	// swallowed rather than blocking the delete: the security-relevant action
 	// (removing an over-privileged or compromised role template) must not be
-	// held hostage by a transient failure in unrelated bookkeeping.
+	// held hostage by a transient failure in unrelated bookkeeping. This is
+	// the same posture RemoveMemberHandler takes on its analogous membership
+	// pre-check, and like that handler, a failed lookup here is surfaced to
+	// the caller via revocation_incomplete rather than silently masked behind
+	// an identical success response.
 	var memberUserIDs []string
+	revocationLookupFailed := false
 	if h.userRevocations != nil {
 		var lookupErr error
 		memberUserIDs, lookupErr = h.rbacRepo.ListRoleTemplateMemberUserIDs(c.Request.Context(), id)
@@ -312,6 +317,7 @@ func (h *RBACHandlers) DeleteRoleTemplate(c *gin.Context) {
 			slog.Error("failed to look up role template members before deletion; affected members' tokens will not be revoked",
 				"role_template_id", id, "error", lookupErr)
 			memberUserIDs = nil
+			revocationLookupFailed = true
 		}
 	}
 
@@ -335,7 +341,14 @@ func (h *RBACHandlers) DeleteRoleTemplate(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Role template deleted"})
+	response := gin.H{"message": "Role template deleted"}
+	if revocationLookupFailed {
+		// The delete itself succeeded, but we couldn't determine which
+		// members to revoke -- surface that so the caller doesn't assume the
+		// affected members' tokens were actually invalidated.
+		response["revocation_incomplete"] = true
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 // ============================================================================

@@ -3,8 +3,11 @@ package admin
 import (
 	"bytes"
 	"database/sql"
+	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -572,12 +575,37 @@ func TestRemoveMember_RevocationErrorDoesNotFailRequest(t *testing.T) {
 	}
 }
 
+// captureSlogOutput temporarily redirects the default slog logger to a
+// buffer, restoring it on cleanup. Some failure paths in these handlers are
+// deliberately best-effort (logged, not surfaced as an error response), so a
+// test that only checks the HTTP response cannot tell "no attempt was made"
+// apart from "an attempt was made and its error was swallowed" -- sqlmock's
+// ExpectationsWereMet only fails on missing expected calls, not on extra,
+// unexpected ones, so an accidentally-unconditional call that happens to fail
+// would otherwise pass silently. Capturing the log output closes that gap.
+func captureSlogOutput(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	orig := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(orig) })
+	return &buf
+}
+
 // Removing a user who was never a member of this org must not revoke their
 // tokens: RemoveMember is a plain DELETE with no rows-affected signal, so
 // without the membership pre-check an org admin could log out an arbitrary
-// user org-wide by targeting a removal that changes nothing.
+// user org-wide by targeting a removal that changes nothing. Asserting only
+// on the HTTP response and mock.ExpectationsWereMet() isn't enough to prove
+// this: if the wasMember guard were accidentally removed, revokeUserTokens
+// would still be called, sqlmock would reject the unregistered INSERT and
+// return an error to it, and revokeUserTokens swallows that error via
+// slog.Error without failing the request -- so this also asserts no such
+// log line was emitted, which does distinguish "never attempted" from
+// "attempted and silently failed".
 func TestRemoveMember_NotAMember_SkipsRevocation(t *testing.T) {
 	mock, r := newOrgRouterWithRevocation(t, true)
+	logs := captureSlogOutput(t)
 
 	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
 		WillReturnError(sql.ErrNoRows)
@@ -592,6 +620,45 @@ func TestRemoveMember_NotAMember_SkipsRevocation(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unexpected extra calls (revocation should have been skipped): %v", err)
+	}
+	if strings.Contains(logs.String(), "revoke") {
+		t.Errorf("a revocation was attempted even though the removed user was never a member; logs: %s", logs.String())
+	}
+}
+
+// A failed membership check must not block the removal itself (that lookup
+// only feeds the revocation decision, not RemoveMember), but must surface
+// that the revocation sweep may not have happened rather than returning an
+// identical response to the fully-successful case.
+func TestRemoveMember_MembershipCheckDBError_StillRemovesButFlagsIncomplete(t *testing.T) {
+	mock, r := newOrgRouterWithRevocation(t, true)
+	logs := captureSlogOutput(t)
+
+	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
+		WillReturnError(errDB)
+	mock.ExpectExec("DELETE FROM organization_members").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/organizations/org-1/members/user-1", nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 even though the membership check failed: body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unexpected extra calls (no confirmed membership means no revocation attempt): %v", err)
+	}
+	var body struct {
+		RevocationIncomplete bool `json:"revocation_incomplete"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed to decode response body: %v: body=%s", err, w.Body.String())
+	}
+	if !body.RevocationIncomplete {
+		t.Errorf("expected revocation_incomplete=true in the response, got body=%s", w.Body.String())
+	}
+	if !strings.Contains(logs.String(), "failed to check organization membership") {
+		t.Errorf("expected the membership-check failure to be logged; logs: %s", logs.String())
 	}
 }
 

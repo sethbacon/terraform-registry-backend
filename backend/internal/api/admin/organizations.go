@@ -682,15 +682,24 @@ func (h *OrganizationHandlers) RemoveMemberHandler() gin.HandlerFunc {
 		// is deciding whether to call revokeUserTokens, which itself no-ops
 		// in that case, so running it unconditionally would add a hard
 		// dependency on an unrelated read query for no behavioral benefit.
+		//
+		// A lookup failure is logged and treated as "membership unconfirmed"
+		// rather than blocking the removal: this query only feeds the
+		// revocation decision below, not RemoveMember itself, so a transient
+		// read error must not prevent an admin from removing a member.
+		// Treating "unconfirmed" the same as "wasn't a member" is the safe
+		// direction -- it costs a skipped revocation sweep (surfaced to the
+		// caller below), never an unwarranted one.
 		var wasMember *models.OrganizationMemberWithUser
+		revocationCheckFailed := false
 		if h.userRevocations != nil {
 			var err error
 			wasMember, err = h.orgRepo.GetMemberWithRole(c.Request.Context(), orgID, userID)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"error": "Failed to check organization membership",
-				})
-				return
+				slog.Error("failed to check organization membership before removal; token revocation will be skipped",
+					"user_id", userID, "organization_id", orgID, "error", err)
+				wasMember = nil
+				revocationCheckFailed = true
 			}
 		}
 
@@ -709,9 +718,14 @@ func (h *OrganizationHandlers) RemoveMemberHandler() gin.HandlerFunc {
 			h.revokeUserTokens(c, userID, "removed from organization")
 		}
 
-		c.JSON(http.StatusOK, gin.H{
-			"message": "Member removed successfully",
-		})
+		response := gin.H{"message": "Member removed successfully"}
+		if revocationCheckFailed {
+			// The removal itself succeeded, but we couldn't determine
+			// whether to revoke the user's tokens -- surface that so the
+			// caller doesn't assume the incident is fully closed.
+			response["revocation_incomplete"] = true
+		}
+		c.JSON(http.StatusOK, response)
 	}
 }
 
