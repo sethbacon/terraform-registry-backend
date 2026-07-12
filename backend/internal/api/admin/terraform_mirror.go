@@ -136,19 +136,28 @@ func (h *TerraformMirrorHandler) CreateConfig(c *gin.Context) {
 		requiresApproval = *req.RequiresApproval
 	}
 
+	// GitHub Artifact Attestation verification defaults to off — it is only
+	// meaningful for GitHub-hosted unsigned-upstream tools (OPA today), and an
+	// operator must opt in explicitly.
+	verifyGitHubAttestation := false
+	if req.VerifyGitHubAttestation != nil {
+		verifyGitHubAttestation = *req.VerifyGitHubAttestation
+	}
+
 	cfg := &models.TerraformMirrorConfig{
-		Name:              req.Name,
-		Description:       req.Description,
-		Tool:              req.Tool,
-		Enabled:           enabled,
-		UpstreamURL:       req.UpstreamURL,
-		PlatformFilter:    encoded,
-		VersionFilter:     req.VersionFilter,
-		GPGVerify:         gpgVerify,
-		StableOnly:        stableOnly,
-		SyncIntervalHours: syncIntervalHours,
-		RequiresApproval:  requiresApproval,
-		AutoApproveRules:  req.AutoApproveRules,
+		Name:                    req.Name,
+		Description:             req.Description,
+		Tool:                    req.Tool,
+		Enabled:                 enabled,
+		UpstreamURL:             req.UpstreamURL,
+		PlatformFilter:          encoded,
+		VersionFilter:           req.VersionFilter,
+		GPGVerify:               gpgVerify,
+		StableOnly:              stableOnly,
+		SyncIntervalHours:       syncIntervalHours,
+		RequiresApproval:        requiresApproval,
+		AutoApproveRules:        req.AutoApproveRules,
+		VerifyGitHubAttestation: verifyGitHubAttestation,
 	}
 
 	if createErr := h.repo.Create(c.Request.Context(), cfg); createErr != nil {
@@ -354,6 +363,9 @@ func (h *TerraformMirrorHandler) UpdateConfig(c *gin.Context) {
 	}
 	if req.AutoApproveRules != nil {
 		cfg.AutoApproveRules = req.AutoApproveRules
+	}
+	if req.VerifyGitHubAttestation != nil {
+		cfg.VerifyGitHubAttestation = *req.VerifyGitHubAttestation
 	}
 
 	if updateErr := h.repo.Update(c.Request.Context(), cfg); updateErr != nil {

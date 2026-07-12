@@ -21,7 +21,7 @@ import (
 var tmcCols = []string{
 	"id", "name", "description", "tool", "enabled", "upstream_url",
 	"platform_filter", "version_filter", "gpg_verify", "stable_only", "sync_interval_hours",
-	"requires_approval", "auto_approve_rules",
+	"requires_approval", "auto_approve_rules", "verify_github_attestation",
 	"last_sync_at", "last_sync_status", "last_sync_error",
 	"created_at", "updated_at",
 }
@@ -58,7 +58,7 @@ func sampleTMCRow() *sqlmock.Rows {
 		AddRow(
 			knownUUID, "my-mirror", nil, "terraform", false,
 			"https://releases.hashicorp.com", nil, nil, true, false, 24,
-			false, nil,
+			false, nil, false,
 			nil, nil, nil,
 			time.Now(), time.Now(),
 		)
@@ -228,6 +228,7 @@ func TestTMCreateConfig_DefaultsStableOnlyAndApproval(t *testing.T) {
 			sqlmock.AnyArg(), // sync_interval_hours
 			true,             // requires_approval -> default true
 			sqlmock.AnyArg(), // auto_approve_rules
+			false,            // verify_github_attestation -> default false
 			sqlmock.AnyArg(), // created_at
 			sqlmock.AnyArg(), // updated_at
 		).
@@ -270,6 +271,7 @@ func TestTMCreateConfig_ExplicitFalseOverridesDefaults(t *testing.T) {
 			sqlmock.AnyArg(), // sync_interval_hours
 			false,            // requires_approval -> explicit false honored
 			sqlmock.AnyArg(), // auto_approve_rules
+			false,            // verify_github_attestation -> default false
 			sqlmock.AnyArg(), // created_at
 			sqlmock.AnyArg(), // updated_at
 		).
@@ -290,6 +292,73 @@ func TestTMCreateConfig_ExplicitFalseOverridesDefaults(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet sqlmock expectations (explicit false not honored?): %v", err)
+	}
+}
+
+// verify_github_attestation defaults to off for new mirror configs — it is
+// only meaningful for GitHub-hosted unsigned-upstream tools (OPA today), so an
+// operator must opt in explicitly rather than have it silently default on.
+func TestTMCreateConfig_VerifyGitHubAttestationDefaultsFalse(t *testing.T) {
+	mock, r := newTerraformMirrorRouter(t)
+	mock.ExpectQuery("SELECT.*FROM terraform_mirror_configs WHERE name").
+		WillReturnRows(emptyTMCRows())
+	mock.ExpectQuery("INSERT INTO terraform_mirror_configs").
+		WithArgs(
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(),
+			false, // verify_github_attestation -> default false
+			sqlmock.AnyArg(), sqlmock.AnyArg(),
+		).
+		WillReturnRows(sampleTMCRow())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/terraform-mirrors",
+		jsonBody(map[string]interface{}{
+			"name":         "my-mirror",
+			"tool":         "opa",
+			"upstream_url": "https://github.com/open-policy-agent/opa",
+		})))
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations (verify_github_attestation not defaulted to false?): %v", err)
+	}
+}
+
+// An explicit verify_github_attestation=true in the request must be persisted.
+func TestTMCreateConfig_VerifyGitHubAttestationExplicitTrue(t *testing.T) {
+	mock, r := newTerraformMirrorRouter(t)
+	mock.ExpectQuery("SELECT.*FROM terraform_mirror_configs WHERE name").
+		WillReturnRows(emptyTMCRows())
+	mock.ExpectQuery("INSERT INTO terraform_mirror_configs").
+		WithArgs(
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(),
+			true, // verify_github_attestation -> explicit true honored
+			sqlmock.AnyArg(), sqlmock.AnyArg(),
+		).
+		WillReturnRows(sampleTMCRow())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/terraform-mirrors",
+		jsonBody(map[string]interface{}{
+			"name":                      "my-mirror",
+			"tool":                      "opa",
+			"upstream_url":              "https://github.com/open-policy-agent/opa",
+			"verify_github_attestation": true,
+		})))
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations (verify_github_attestation=true not honored?): %v", err)
 	}
 }
 
@@ -748,6 +817,25 @@ func TestTMUpdateConfig_RequiresApprovalPersisted(t *testing.T) {
 	}
 	if got := getJSON(w)["requires_approval"]; got != true {
 		t.Errorf("requires_approval = %v, want true (toggle dropped by handler)", got)
+	}
+}
+
+func TestTMUpdateConfig_VerifyGitHubAttestationPersisted(t *testing.T) {
+	mock, r := newTerraformMirrorRouter(t)
+	mock.ExpectQuery("SELECT.*FROM terraform_mirror_configs WHERE id").
+		WillReturnRows(sampleTMCRow())
+	mock.ExpectExec("UPDATE terraform_mirror_configs SET").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/terraform-mirrors/"+knownUUID,
+		jsonBody(map[string]interface{}{"verify_github_attestation": true})))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	if got := getJSON(w)["verify_github_attestation"]; got != true {
+		t.Errorf("verify_github_attestation = %v, want true (toggle dropped by handler)", got)
 	}
 }
 

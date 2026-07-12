@@ -363,6 +363,109 @@ func TestReleasesGPGKeys_UnsignedUpstreamBinaryHasUnsignedStatus(t *testing.T) {
 	}
 }
 
+// When an unsigned-upstream tool (opa) has verify_github_attestation enabled
+// on its mirror config, the status is "attested" — checksum + a pinned-identity
+// GitHub Artifact Attestation — distinct from bare "unsigned" (checksum only).
+func TestReleasesGPGKeys_UnsignedUpstreamWithAttestationEnabled_HasAttestedStatus(t *testing.T) {
+	repo := &stubReleasesRepo{rows: map[string]*models.ReleasesGPGKey{}}
+	lister := &stubMirrorLister{configs: []models.TerraformMirrorConfig{
+		{Tool: "opa", VerifyGitHubAttestation: true},
+	}}
+	r := newReleasesGPGRouterWithMirrors(t, repo, lister, defaultReleasesCfg())
+
+	_, body := invokeAndDecode(t, r)
+	opa := findTool(t, body, "opa")
+	if opa.Status != "attested" {
+		t.Errorf("status = %q, want attested", opa.Status)
+	}
+	if opa.EffectiveSource != "attestation" {
+		t.Errorf("effective source = %q, want attestation", opa.EffectiveSource)
+	}
+	if opa.Cache != nil || opa.Embedded != nil {
+		t.Errorf("expected no cache/embedded for opa, got cache=%v embedded=%v", opa.Cache, opa.Embedded)
+	}
+}
+
+// Explicit verify_github_attestation=false must behave exactly like the
+// classic unsigned-upstream case: "unsigned", not "attested".
+func TestReleasesGPGKeys_UnsignedUpstreamWithAttestationExplicitlyDisabled_StaysUnsigned(t *testing.T) {
+	repo := &stubReleasesRepo{rows: map[string]*models.ReleasesGPGKey{}}
+	lister := &stubMirrorLister{configs: []models.TerraformMirrorConfig{
+		{Tool: "opa", VerifyGitHubAttestation: false},
+	}}
+	r := newReleasesGPGRouterWithMirrors(t, repo, lister, defaultReleasesCfg())
+
+	_, body := invokeAndDecode(t, r)
+	opa := findTool(t, body, "opa")
+	if opa.Status != "unsigned" {
+		t.Errorf("status = %q, want unsigned", opa.Status)
+	}
+	if opa.EffectiveSource != "none" {
+		t.Errorf("effective source = %q, want none", opa.EffectiveSource)
+	}
+}
+
+// Two mirrors of the same unsigned-upstream tool, only one with attestation
+// enabled: the dedup'd row must still report "attested" — the flag is an OR
+// across all configs of that tool, since the key/attestation state is per-tool
+// in this view, not per-config.
+func TestReleasesGPGKeys_DuplicateToolOneWithAttestation_Aggregates(t *testing.T) {
+	repo := &stubReleasesRepo{rows: map[string]*models.ReleasesGPGKey{}}
+	lister := &stubMirrorLister{configs: []models.TerraformMirrorConfig{
+		{Tool: "opa", VerifyGitHubAttestation: false},
+		{Tool: "opa", VerifyGitHubAttestation: true},
+	}}
+	r := newReleasesGPGRouterWithMirrors(t, repo, lister, defaultReleasesCfg())
+
+	_, body := invokeAndDecode(t, r)
+	if len(body.Keys) != 1 {
+		t.Fatalf("expected 1 deduped opa row, got %d", len(body.Keys))
+	}
+	opa := findTool(t, body, "opa")
+	if opa.Status != "attested" {
+		t.Errorf("status = %q, want attested (OR across configs)", opa.Status)
+	}
+}
+
+// verify_github_attestation is meaningless for tools that already have a
+// managed GPG key (terraform/packer/sentinel/opentofu) — the "attested"
+// status only applies to the unsigned-upstream branch. A managed-key tool
+// must keep its normal cache/embedded-derived status regardless of the flag.
+func TestReleasesGPGKeys_AttestationFlagOnManagedKeyTool_NoEffect(t *testing.T) {
+	repo := &stubReleasesRepo{rows: map[string]*models.ReleasesGPGKey{}}
+	lister := &stubMirrorLister{configs: []models.TerraformMirrorConfig{
+		{Tool: "terraform", VerifyGitHubAttestation: true},
+	}}
+	r := newReleasesGPGRouterWithMirrors(t, repo, lister, defaultReleasesCfg())
+
+	_, body := invokeAndDecode(t, r)
+	tf := findTool(t, body, "terraform")
+	if tf.Status == "attested" {
+		t.Error("terraform (managed-key tool) must never report status=attested")
+	}
+	if tf.EffectiveSource == "attestation" {
+		t.Error("terraform (managed-key tool) must never report effective_source=attestation")
+	}
+}
+
+// verify_github_attestation on a tool that is configured but not classified as
+// unsigned-upstream (not opa/terraform-docs) must NOT flip to "attested" — the
+// generic-status design requires both the unsigned-upstream classification and
+// the flag together.
+func TestReleasesGPGKeys_AttestationFlagOnUnclassifiedTool_StaysUnknown(t *testing.T) {
+	repo := &stubReleasesRepo{rows: map[string]*models.ReleasesGPGKey{}}
+	lister := &stubMirrorLister{configs: []models.TerraformMirrorConfig{
+		{Tool: "futuretool", VerifyGitHubAttestation: true},
+	}}
+	r := newReleasesGPGRouterWithMirrors(t, repo, lister, defaultReleasesCfg())
+
+	_, body := invokeAndDecode(t, r)
+	row := findTool(t, body, "futuretool")
+	if row.Status != "unknown" {
+		t.Errorf("status = %q, want unknown", row.Status)
+	}
+}
+
 // A configured tool that is neither key-managed nor known-unsigned keeps the
 // default "unknown" status — the "unsigned" marker is reserved for tools we know
 // publish no signature (opa), not for unclassified ones.

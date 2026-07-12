@@ -17,7 +17,7 @@ import (
 var tfMirrorConfigCols = []string{
 	"id", "name", "description", "tool", "enabled", "upstream_url",
 	"platform_filter", "version_filter", "gpg_verify", "stable_only", "sync_interval_hours",
-	"requires_approval", "auto_approve_rules",
+	"requires_approval", "auto_approve_rules", "verify_github_attestation",
 	"last_sync_at", "last_sync_status", "last_sync_error",
 	"created_at", "updated_at",
 }
@@ -48,6 +48,7 @@ func newTfMirrorConfigRow(mock sqlmock.Sqlmock, cfg *models.TerraformMirrorConfi
 		cfg.SyncIntervalHours,
 		cfg.RequiresApproval,
 		cfg.AutoApproveRules,
+		cfg.VerifyGitHubAttestation,
 		cfg.LastSyncAt,
 		cfg.LastSyncStatus,
 		cfg.LastSyncError,
@@ -321,7 +322,7 @@ func TestTerraformMirrorListAll_Success(t *testing.T) {
 		rows.AddRow(
 			c.ID, c.Name, c.Description, c.Tool, c.Enabled, c.UpstreamURL,
 			c.PlatformFilter, c.VersionFilter, c.GPGVerify, c.StableOnly, c.SyncIntervalHours,
-			c.RequiresApproval, c.AutoApproveRules,
+			c.RequiresApproval, c.AutoApproveRules, c.VerifyGitHubAttestation,
 			c.LastSyncAt, c.LastSyncStatus, c.LastSyncError, c.CreatedAt, c.UpdatedAt,
 		)
 	}
@@ -755,7 +756,7 @@ func TestSetLatestVersion_DBError(t *testing.T) {
 
 var tfPlatformCols = []string{
 	"id", "version_id", "os", "arch", "upstream_url", "filename", "sha256",
-	"storage_key", "storage_backend", "sha256_verified", "gpg_verified",
+	"storage_key", "storage_backend", "sha256_verified", "gpg_verified", "attestation_verified",
 	"sync_status", "sync_error", "synced_at", "download_count", "created_at", "updated_at",
 }
 
@@ -778,7 +779,7 @@ func testTFPlatform(versionID uuid.UUID) *models.TerraformVersionPlatform {
 func newTFPlatformRow(mock sqlmock.Sqlmock, p *models.TerraformVersionPlatform) *sqlmock.Rows {
 	return mock.NewRows(tfPlatformCols).AddRow(
 		p.ID, p.VersionID, p.OS, p.Arch, p.UpstreamURL, p.Filename, p.SHA256,
-		p.StorageKey, p.StorageBackend, p.SHA256Verified, p.GPGVerified,
+		p.StorageKey, p.StorageBackend, p.SHA256Verified, p.GPGVerified, p.AttestationVerified,
 		p.SyncStatus, p.SyncError, p.SyncedAt, p.DownloadCount, p.CreatedAt, p.UpdatedAt,
 	)
 }
@@ -1060,7 +1061,7 @@ func TestTerraformMirrorUpdatePlatformSyncStatus_Synced(t *testing.T) {
 	mock.ExpectExec(`UPDATE terraform_version_platforms`).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	err := repo.UpdatePlatformSyncStatus(context.Background(), id, "synced", &storageKey, &storageBackend, true, true, nil)
+	err := repo.UpdatePlatformSyncStatus(context.Background(), id, "synced", &storageKey, &storageBackend, true, true, true, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1074,7 +1075,7 @@ func TestTerraformMirrorUpdatePlatformSyncStatus_Failed(t *testing.T) {
 	mock.ExpectExec(`UPDATE terraform_version_platforms`).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	err := repo.UpdatePlatformSyncStatus(context.Background(), id, "failed", nil, nil, false, false, &syncErr)
+	err := repo.UpdatePlatformSyncStatus(context.Background(), id, "failed", nil, nil, false, false, false, &syncErr)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1087,7 +1088,7 @@ func TestTerraformMirrorUpdatePlatformSyncStatus_DBError(t *testing.T) {
 	mock.ExpectExec(`UPDATE terraform_version_platforms`).
 		WillReturnError(fmt.Errorf("db error"))
 
-	err := repo.UpdatePlatformSyncStatus(context.Background(), id, "synced", nil, nil, false, false, nil)
+	err := repo.UpdatePlatformSyncStatus(context.Background(), id, "synced", nil, nil, false, false, false, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1182,10 +1183,10 @@ func TestTerraformMirrorBackfillPlatformSHA256_UpdatesEmptyHashes(t *testing.T) 
 		WithArgs(versionID).
 		WillReturnRows(newTFPlatformRow(mock, pNeed).
 			AddRow(pHas.ID, pHas.VersionID, pHas.OS, pHas.Arch, pHas.UpstreamURL, pHas.Filename, pHas.SHA256,
-				pHas.StorageKey, pHas.StorageBackend, pHas.SHA256Verified, pHas.GPGVerified,
+				pHas.StorageKey, pHas.StorageBackend, pHas.SHA256Verified, pHas.GPGVerified, pHas.AttestationVerified,
 				pHas.SyncStatus, pHas.SyncError, pHas.SyncedAt, pHas.DownloadCount, pHas.CreatedAt, pHas.UpdatedAt).
 			AddRow(pPending.ID, pPending.VersionID, pPending.OS, pPending.Arch, pPending.UpstreamURL, pPending.Filename, pPending.SHA256,
-				pPending.StorageKey, pPending.StorageBackend, pPending.SHA256Verified, pPending.GPGVerified,
+				pPending.StorageKey, pPending.StorageBackend, pPending.SHA256Verified, pPending.GPGVerified, pPending.AttestationVerified,
 				pPending.SyncStatus, pPending.SyncError, pPending.SyncedAt, pPending.DownloadCount, pPending.CreatedAt, pPending.UpdatedAt))
 
 	mock.ExpectExec(`UPDATE terraform_version_platforms\s+SET sha256`).
