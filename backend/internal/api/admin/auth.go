@@ -998,7 +998,7 @@ func (h *AuthHandlers) reconcileGroupMemberships(ctx context.Context, userID str
 		role, wanted := desiredRole[orgName]
 		// rejectIfNotProvisionable refuses the automatic, IdP-driven role
 		// assignment when the resolved role_template carries auth.ScopeAdmin —
-		// see guardProvisionableRole's doc for the full rationale (#604).
+		// see guardProvisionableRole's doc for the full rationale (#173).
 		// Deliberately does NOT flip `wanted` to false: on rejection this must
 		// skip the assignment, not fall through to the revoke branch below and
 		// tear down an existing (possibly unrelated, legitimately-granted)
