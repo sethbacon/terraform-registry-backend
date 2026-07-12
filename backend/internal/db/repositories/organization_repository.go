@@ -22,9 +22,10 @@ type OrganizationRepository = identitystore.OrganizationRepository
 var NewOrganizationRepository = identitystore.NewOrganizationRepository
 
 // CascadeOrganizationRename propagates a renamed organization's new name to the
-// registry's denormalized module and provider namespace columns, in a single
-// transaction on the registry's domain connection. The identity-side rename
-// (organizations.name) is performed separately via OrganizationRepository.Rename.
+// registry's denormalized module and provider namespace columns and to the
+// organization's namespace-ownership claims, in a single transaction on the
+// registry's domain connection. The identity-side rename (organizations.name)
+// is performed separately via OrganizationRepository.Rename.
 func CascadeOrganizationRename(ctx context.Context, db *sql.DB, orgID, oldName, newName string) (retErr error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -48,6 +49,13 @@ func CascadeOrganizationRename(ctx context.Context, db *sql.DB, orgID, oldName, 
 		newName, orgID, oldName,
 	); err != nil {
 		return fmt.Errorf("cascade rename to providers: %w", err)
+	}
+
+	if _, err = tx.ExecContext(ctx,
+		`UPDATE namespace_claims SET namespace = $1 WHERE organization_id = $2 AND namespace = $3`,
+		newName, orgID, oldName,
+	); err != nil {
+		return fmt.Errorf("cascade rename to namespace claims: %w", err)
 	}
 
 	return tx.Commit()

@@ -188,6 +188,14 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	orgRepo := repositories.NewOrganizationRepository(identityDB)
 	tokenRepo := repositories.NewTokenRepository(identityDB)
 
+	// Namespace ownership claims back the object-level authorization on every
+	// module/provider mutation route (issue #555, CWE-639): a namespace binds
+	// to the organization that first publishes into it, and only principals
+	// with write access in that organization (or admins) may mutate its
+	// artifacts. The authorizer is wired per-route below, after RequireScope.
+	nsClaimRepo := repositories.NewNamespaceClaimRepository(db)
+	nsAuthz := middleware.NewNamespaceAuthorizer(orgRepo, nsClaimRepo, moduleRepo, providerRepo)
+
 	// Wrap *sql.DB with sqlx for SCM and mirror repositories (public) and identity
 	// data access (the identity schema when the cutover is enabled).
 	sqlxDB := sqlx.NewDb(db, "postgres")
@@ -684,7 +692,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// fall back to public via the identity connection's search_path.
 	apiKeyHandlers := admin.NewAPIKeyHandlers(cfg, identityDB)
 	userHandlers := admin.NewUserHandlers(cfg, identityDB)
-	orgHandlers := admin.NewOrganizationHandlers(cfg, identityDB)
+	orgHandlers := admin.NewOrganizationHandlers(cfg, identityDB, nsClaimRepo)
 	statsHandlers := admin.NewStatsHandler(identitySqlxDB, &cfg.Scanning)
 	mirrorHandlers := admin.NewMirrorHandler(mirrorRepo, orgRepo, providerRepo)
 	mirrorHandlers.SetSyncJob(mirrorSyncJob) // Connect sync job for manual triggers
@@ -959,73 +967,92 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 			// Stats endpoints (require auth)
 			authenticatedGroup.GET("/admin/stats/dashboard", statsHandlers.GetDashboardStats)
 
-			// Modules admin endpoints - require write permissions
+			// Modules admin endpoints - require write permissions plus
+			// namespace-org authorization (issue #555)
 			authenticatedGroup.POST("/admin/modules/create",
 				middleware.RequireScope(auth.ScopeModulesWrite),
+				nsAuthz.RequirePublishAccessFromJSON(auth.ScopeModulesWrite),
 				moduleAdminHandlers.CreateModuleRecord)
 			authenticatedGroup.GET("/admin/modules/:id",
 				middleware.RequireScope(auth.ScopeModulesRead),
 				moduleAdminHandlers.GetModuleByIDRecord)
 			authenticatedGroup.PUT("/admin/modules/:id",
 				middleware.RequireScope(auth.ScopeModulesWrite),
+				nsAuthz.RequireModuleUpdateAccess(auth.ScopeModulesWrite),
 				moduleAdminHandlers.UpdateModuleRecord)
 			authenticatedGroup.POST("/modules",
 				middleware.RateLimitMiddleware(uploadRateLimiter), // Stricter rate limit for uploads
 				middleware.RequireScope(auth.ScopeModulesWrite),
+				nsAuthz.RequirePublishAccessFromForm(auth.ScopeModulesWrite, 100<<20), // matches the handler's ParseMultipartForm limit
 				modules.UploadHandler(db, storageBackend, cfg, scanRepo, moduleDocsRepo, policyEngine))
 
-			// Providers admin endpoints - require write permissions
+			// Providers admin endpoints - require write permissions plus
+			// namespace-org authorization (issue #555)
 			authenticatedGroup.POST("/providers",
 				middleware.RateLimitMiddleware(uploadRateLimiter), // Stricter rate limit for uploads
 				middleware.RequireScope(auth.ScopeProvidersWrite),
+				nsAuthz.RequirePublishAccessFromForm(auth.ScopeProvidersWrite, 32<<20), // gin's default multipart memory limit
 				providers.UploadHandler(db, storageBackend, cfg))
 			authenticatedGroup.DELETE("/providers/:namespace/:type",
 				middleware.RequireScope(auth.ScopeProvidersWrite),
+				nsAuthz.RequireNamespaceAccessFromPath(auth.ScopeProvidersWrite),
 				providerAdminHandlers.DeleteProvider)
 			authenticatedGroup.DELETE("/providers/:namespace/:type/versions/:version",
 				middleware.RequireScope(auth.ScopeProvidersWrite),
+				nsAuthz.RequireNamespaceAccessFromPath(auth.ScopeProvidersWrite),
 				providerAdminHandlers.DeleteVersion)
 			authenticatedGroup.POST("/providers/:namespace/:type/versions/:version/deprecate",
 				middleware.RequireScope(auth.ScopeProvidersWrite),
+				nsAuthz.RequireNamespaceAccessFromPath(auth.ScopeProvidersWrite),
 				providerAdminHandlers.DeprecateVersion)
 			authenticatedGroup.DELETE("/providers/:namespace/:type/versions/:version/deprecate",
 				middleware.RequireScope(auth.ScopeProvidersWrite),
+				nsAuthz.RequireNamespaceAccessFromPath(auth.ScopeProvidersWrite),
 				providerAdminHandlers.UndeprecateVersion)
 
 			// Provider record admin endpoints (create + get by UUID)
 			authenticatedGroup.POST("/admin/providers",
 				middleware.RequireScope(auth.ScopeProvidersWrite),
+				nsAuthz.RequirePublishAccessFromJSON(auth.ScopeProvidersWrite),
 				providerAdminHandlers.CreateProviderRecord)
 			authenticatedGroup.GET("/admin/providers/:id",
 				middleware.RequireScope(auth.ScopeProvidersRead),
 				providerAdminHandlers.GetProviderByID)
 			authenticatedGroup.PUT("/admin/providers/:id",
 				middleware.RequireScope(auth.ScopeProvidersWrite),
+				nsAuthz.RequireProviderAccessByID(auth.ScopeProvidersWrite),
 				providerAdminHandlers.UpdateProviderRecord)
 
 			// Modules admin endpoints - delete, deprecate (GET moved to publicDetailGroup above)
 			authenticatedGroup.DELETE("/modules/:namespace/:name/:system",
 				middleware.RequireScope(auth.ScopeModulesWrite),
+				nsAuthz.RequireNamespaceAccessFromPath(auth.ScopeModulesWrite),
 				moduleAdminHandlers.DeleteModule)
 			authenticatedGroup.DELETE("/modules/:namespace/:name/:system/versions/:version",
 				middleware.RequireScope(auth.ScopeModulesWrite),
+				nsAuthz.RequireNamespaceAccessFromPath(auth.ScopeModulesWrite),
 				moduleAdminHandlers.DeleteVersion)
 			authenticatedGroup.POST("/modules/:namespace/:name/:system/versions/:version/deprecate",
 				middleware.RequireScope(auth.ScopeModulesWrite),
+				nsAuthz.RequireNamespaceAccessFromPath(auth.ScopeModulesWrite),
 				moduleAdminHandlers.DeprecateVersion)
 			authenticatedGroup.DELETE("/modules/:namespace/:name/:system/versions/:version/deprecate",
 				middleware.RequireScope(auth.ScopeModulesWrite),
+				nsAuthz.RequireNamespaceAccessFromPath(auth.ScopeModulesWrite),
 				moduleAdminHandlers.UndeprecateVersion)
 			authenticatedGroup.POST("/modules/:namespace/:name/:system/versions/:version/reanalyze",
 				middleware.RequireScope(auth.ScopeModulesWrite),
+				nsAuthz.RequireNamespaceAccessFromPath(auth.ScopeModulesWrite),
 				moduleAdminHandlers.ReanalyzeVersion)
 
 			// Module-level deprecation
 			authenticatedGroup.POST("/modules/:namespace/:name/:system/deprecate",
 				middleware.RequireScope(auth.ScopeModulesWrite),
+				nsAuthz.RequireNamespaceAccessFromPath(auth.ScopeModulesWrite),
 				moduleAdminHandlers.DeprecateModule)
 			authenticatedGroup.DELETE("/modules/:namespace/:name/:system/deprecate",
 				middleware.RequireScope(auth.ScopeModulesWrite),
+				nsAuthz.RequireNamespaceAccessFromPath(auth.ScopeModulesWrite),
 				moduleAdminHandlers.UndeprecateModule)
 
 			authenticatedGroup.GET("/modules/:namespace/:name/:system/versions/:version/scan",
@@ -1181,15 +1208,16 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 			// SCM OAuth callback (public endpoint, no auth required)
 			apiV1.GET("/scm-providers/:id/oauth/callback", scmOAuthHandlers.HandleOAuthCallback)
 
-			// Module SCM linking endpoints
+			// Module SCM linking endpoints. Mutations additionally require
+			// namespace-org authorization for the target module (issue #555).
 			moduleSCMGroup := authenticatedGroup.Group("/admin/modules/:id/scm")
 			moduleSCMGroup.Use(middleware.RequireScope(auth.ScopeModulesWrite))
 			{
-				moduleSCMGroup.POST("", scmLinkingHandler.LinkModuleToSCM)
+				moduleSCMGroup.POST("", nsAuthz.RequireModuleAccessByID(auth.ScopeModulesWrite), scmLinkingHandler.LinkModuleToSCM)
 				moduleSCMGroup.GET("", scmLinkingHandler.GetModuleSCMInfo)
-				moduleSCMGroup.PUT("", scmLinkingHandler.UpdateSCMLink)
-				moduleSCMGroup.DELETE("", scmLinkingHandler.UnlinkModuleFromSCM)
-				moduleSCMGroup.POST("/sync", scmLinkingHandler.TriggerManualSync)
+				moduleSCMGroup.PUT("", nsAuthz.RequireModuleAccessByID(auth.ScopeModulesWrite), scmLinkingHandler.UpdateSCMLink)
+				moduleSCMGroup.DELETE("", nsAuthz.RequireModuleAccessByID(auth.ScopeModulesWrite), scmLinkingHandler.UnlinkModuleFromSCM)
+				moduleSCMGroup.POST("/sync", nsAuthz.RequireModuleAccessByID(auth.ScopeModulesWrite), scmLinkingHandler.TriggerManualSync)
 				moduleSCMGroup.GET("/events", scmLinkingHandler.GetWebhookEvents)
 			}
 
