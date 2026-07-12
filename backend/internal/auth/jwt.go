@@ -118,10 +118,33 @@ func ValidateJWTSecret() error {
 		// finding [0]). This does not add audience enforcement (the shared
 		// TokenManager has no audience support yet); that half of the finding
 		// requires a change to the terraform-suite-identity library itself.
+		//
+		// This is the default, standalone-safe set (own issuer only). A coupled
+		// suite deployment extends it via SetTrustedIssuers (suite.trusted_issuers
+		// / TFR_SUITE_TRUSTED_ISSUERS), called once at startup after this
+		// function; see cmd/server/main.go.
 		tokenManager.SetAllowedIssuers([]string{jwtIssuer})
 	})
 
 	return jwtSecretErr
+}
+
+// SetTrustedIssuers extends the set of `iss` claims this app's TokenManager
+// accepts beyond its own issuer (jwtIssuer, always trusted regardless of what
+// is passed here), for a coupled suite deployment where TFR_JWT_SECRET is
+// shared with sibling apps (ADR 012; issue #559 finding [0]).
+//
+// Must be called after ValidateJWTSecret (it constructs the TokenManager);
+// GetJWTSecret is called defensively here too so this is safe even if the
+// caller's ordering is wrong. Passing an empty/nil slice restores the default
+// (own issuer only) — safe to call unconditionally at startup regardless of
+// whether suite.trusted_issuers is configured.
+func SetTrustedIssuers(extra []string) {
+	_ = GetJWTSecret() // ensure the secret is validated and the TokenManager exists
+	issuers := make([]string, 0, len(extra)+1)
+	issuers = append(issuers, jwtIssuer)
+	issuers = append(issuers, extra...)
+	tokenManager.SetAllowedIssuers(issuers)
 }
 
 // GetJWTSecret retrieves the current effective JWT secret, validating lazily if

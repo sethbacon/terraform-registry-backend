@@ -12,6 +12,13 @@ import (
 // to configured scopes, the scopes are set in the Gin context.
 // This middleware is additive — it does NOT reject requests without certs.
 // It only applies when the TLS handshake has already verified the cert chain.
+//
+// Register this middleware globally, before the per-route AuthMiddleware /
+// OptionalAuthMiddleware groups (see router.go), so the identity/scopes it
+// sets are already in the Gin context by the time those run. AuthMiddleware
+// treats auth_method=="mtls" as satisfying the "credentials present" check
+// even with no bearer token, so an mTLS-authenticated request reaches the
+// RBAC layer normally.
 func AuthMiddleware(p *Provider) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if p == nil {
@@ -19,13 +26,20 @@ func AuthMiddleware(p *Provider) gin.HandlerFunc {
 			return
 		}
 
-		// Only inspect when TLS peer certs are present (already verified by Go's TLS stack)
-		if c.Request.TLS == nil || len(c.Request.TLS.PeerCertificates) == 0 {
+		// Only inspect VerifiedChains, not PeerCertificates: VerifiedChains is
+		// populated by Go's TLS stack only after the presented certificate has
+		// been chain-verified against the server's ClientCAs (wired in
+		// cmd/server/main.go via ClientAuth=tls.VerifyClientCertIfGiven).
+		// PeerCertificates would include the raw certificate the client
+		// presented even when no ClientCAs are configured or verification
+		// failed, which would let an unverified/self-signed cert be trusted
+		// for subject→scope mapping (issue #559 finding [3]).
+		if c.Request.TLS == nil || len(c.Request.TLS.VerifiedChains) == 0 || len(c.Request.TLS.VerifiedChains[0]) == 0 {
 			c.Next()
 			return
 		}
 
-		cert := c.Request.TLS.PeerCertificates[0]
+		cert := c.Request.TLS.VerifiedChains[0][0]
 		subject, scopes, err := p.Authenticate(cert)
 		if err != nil {
 			slog.Debug("mTLS auth: no mapping for client cert", "cn", cert.Subject.CommonName, "error", err)

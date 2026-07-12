@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	identityauth "github.com/sethbacon/terraform-suite-identity/identity/auth"
 )
 
 // resetJWTSecret resets the package-level sync.Once so tests can set a fresh secret.
@@ -323,6 +325,75 @@ func TestGetJWTSecret_AutoValidates(t *testing.T) {
 	if got != "auto-validate-secret-32-chars-!!" {
 		t.Errorf("GetJWTSecret() = %q, want auto-validate secret", got)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// SetTrustedIssuers (issue #559 finding [0])
+// ---------------------------------------------------------------------------
+
+func TestSetTrustedIssuers(t *testing.T) {
+	resetJWTSecret()
+	secret := "test-jwt-secret-that-is-32-chars-!"
+	t.Setenv("TFR_JWT_SECRET", secret)
+	if err := ValidateJWTSecret(); err != nil {
+		t.Fatalf("ValidateJWTSecret: %v", err)
+	}
+	// Restore the default (own-issuer-only) trust set once this test's
+	// sub-tests are done, so later tests in the package aren't affected by
+	// the shared package-level tokenManager.
+	t.Cleanup(func() { SetTrustedIssuers(nil) })
+
+	// A token signed with the SAME secret but a different issuer — simulating
+	// a sibling app in a coupled suite deployment sharing TFR_JWT_SECRET
+	// (ADR 012).
+	siblingTM := identityauth.NewTokenManager(secret, "terraform-state-manager")
+	siblingToken, err := siblingTM.Generate("user-1", "user1@example.com", nil, time.Hour)
+	if err != nil {
+		t.Fatalf("sibling Generate: %v", err)
+	}
+
+	t.Run("foreign issuer rejected by default", func(t *testing.T) {
+		if _, err := ValidateJWT(siblingToken); err == nil {
+			t.Error("expected an error validating a token from an untrusted issuer")
+		}
+	})
+
+	t.Run("foreign issuer accepted once trusted", func(t *testing.T) {
+		SetTrustedIssuers([]string{"terraform-state-manager"})
+		t.Cleanup(func() { SetTrustedIssuers(nil) })
+
+		claims, err := ValidateJWT(siblingToken)
+		if err != nil {
+			t.Fatalf("expected the sibling token to validate once trusted: %v", err)
+		}
+		if claims.UserID != "user-1" {
+			t.Errorf("UserID = %q, want user-1", claims.UserID)
+		}
+	})
+
+	t.Run("own issuer always trusted regardless of extra list", func(t *testing.T) {
+		// Deliberately omit this app's own issuer from the extra list — it must
+		// remain trusted regardless, since SetTrustedIssuers always adds it.
+		SetTrustedIssuers([]string{"some-other-app"})
+		t.Cleanup(func() { SetTrustedIssuers(nil) })
+
+		ownToken, err := GenerateJWT("user-2", "user2@example.com", nil, time.Hour)
+		if err != nil {
+			t.Fatalf("GenerateJWT: %v", err)
+		}
+		if _, err := ValidateJWT(ownToken); err != nil {
+			t.Errorf("own-issuer token should always validate: %v", err)
+		}
+	})
+
+	t.Run("nil restores default (own issuer only)", func(t *testing.T) {
+		SetTrustedIssuers([]string{"terraform-state-manager"})
+		SetTrustedIssuers(nil)
+
+		if _, err := ValidateJWT(siblingToken); err == nil {
+			t.Error("expected sibling token to be rejected again after SetTrustedIssuers(nil)")
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------

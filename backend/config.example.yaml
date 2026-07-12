@@ -185,6 +185,9 @@ security:
   # Mutual TLS (mTLS) client certificate authentication for machine-to-machine callers.
   # When enabled, clients presenting a valid certificate signed by the configured CA
   # are authenticated and assigned scopes based on the certificate subject mapping.
+  # Requires tls.enabled: true above — mTLS is a TLS-handshake-level control and
+  # cannot function behind a TLS-terminating ingress/load balancer, since this
+  # process never sees the raw handshake once TLS is terminated upstream.
   mtls:
     enabled: false
     client_ca_file: /etc/certs/client-ca.crt

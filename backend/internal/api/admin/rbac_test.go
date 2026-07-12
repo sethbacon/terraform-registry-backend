@@ -101,6 +101,15 @@ func emptyMPListRows() *sqlmock.Rows {
 
 func newRBACRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	t.Helper()
+	return newRBACRouterWithRevocation(t, false)
+}
+
+// newRBACRouterWithRevocation builds the same router as newRBACRouter but, when
+// withRevocation is true, also wires a UserTokenRevocationRepository over the
+// same mocked connection, so tests can assert on the revocation-sweep calls
+// described in issue #559 finding [9].
+func newRBACRouterWithRevocation(t *testing.T, withRevocation bool) (sqlmock.Sqlmock, *gin.Engine) {
+	t.Helper()
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
@@ -109,7 +118,11 @@ func newRBACRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 
 	sqlxDB := sqlx.NewDb(db, "sqlmock")
 	rbacRepo := repositories.NewRBACRepository(sqlxDB)
-	h := NewRBACHandlers(rbacRepo)
+	var userRevocations *repositories.UserTokenRevocationRepository
+	if withRevocation {
+		userRevocations = repositories.NewUserTokenRevocationRepository(db)
+	}
+	h := NewRBACHandlers(rbacRepo, userRevocations)
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
@@ -318,6 +331,69 @@ func TestRBACUpdateRoleTemplate_Success(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// Issue #559 finding [9]: editing a role template's scopes must revoke the
+// outstanding tokens of every member currently assigned that template, so the
+// new scopes take effect immediately rather than waiting out the JWT TTL.
+func TestRBACUpdateRoleTemplate_ScopesChanged_RevokesMemberTokens(t *testing.T) {
+	mock, r := newRBACRouterWithRevocation(t, true)
+	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+		WillReturnRows(sampleRTRow()) // scopes = testRTScopes = ["modules:read","providers:write"]
+	mock.ExpectExec("UPDATE role_templates.*SET display_name").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery("SELECT DISTINCT user_id FROM organization_members WHERE role_template_id").
+		WillReturnRows(sqlmock.NewRows([]string{"user_id"}).
+			AddRow("member-1").
+			AddRow("member-2"))
+	mock.ExpectExec("INSERT INTO user_token_revocations").
+		WithArgs("member-1").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec("INSERT INTO user_token_revocations").
+		WithArgs("member-2").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/role-templates/"+knownUUID,
+		jsonBody(map[string]interface{}{
+			"name":         "reader",
+			"display_name": "Reader Updated",
+			"scopes":       []string{"modules:read"}, // differs from testRTScopes
+		})))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("revocation sweep was not issued: %v", err)
+	}
+}
+
+// A display-name/description-only edit that leaves scopes unchanged must not
+// trigger a revocation sweep — asserted by NOT registering the member-lookup
+// or revocation expectations: sqlmock fails the test if the handler runs an
+// unexpected query or exec.
+func TestRBACUpdateRoleTemplate_ScopesUnchanged_SkipsRevocation(t *testing.T) {
+	mock, r := newRBACRouterWithRevocation(t, true)
+	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+		WillReturnRows(sampleRTRow()) // scopes = testRTScopes = ["modules:read","providers:write"]
+	mock.ExpectExec("UPDATE role_templates.*SET display_name").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/role-templates/"+knownUUID,
+		jsonBody(map[string]interface{}{
+			"name":         "reader",
+			"display_name": "Reader Updated",
+			"scopes":       []string{"modules:read", "providers:write"}, // same as testRTScopes
+		})))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unexpected mock call: %v", err)
 	}
 }
 
@@ -976,7 +1052,7 @@ func newRBACRouterWithOrg(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 
 	sqlxDB := sqlx.NewDb(db, "sqlmock")
 	rbacRepo := repositories.NewRBACRepository(sqlxDB)
-	h := NewRBACHandlers(rbacRepo)
+	h := NewRBACHandlers(rbacRepo, nil)
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
@@ -1371,7 +1447,7 @@ func newRBACRouterNoUser(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 
 	sqlxDB := sqlx.NewDb(db, "sqlmock")
 	rbacRepo := repositories.NewRBACRepository(sqlxDB)
-	h := NewRBACHandlers(rbacRepo)
+	h := NewRBACHandlers(rbacRepo, nil)
 
 	r := gin.New()
 	// No user_id middleware — exercises context-absent code paths

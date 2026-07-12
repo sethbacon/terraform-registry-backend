@@ -10,6 +10,7 @@ import (
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
 
 // ---------------------------------------------------------------------------
@@ -41,6 +42,13 @@ func sampleOrgMemberRow() *sqlmock.Rows {
 		AddRow("org-1", "user-1", nil, time.Now())
 }
 
+// sampleOrgMemberRowWithRole returns a member row already assigned roleTemplateID,
+// used to exercise the "changing away from a role template" revocation path.
+func sampleOrgMemberRowWithRole(roleTemplateID string) *sqlmock.Rows {
+	return sqlmock.NewRows(orgMemberCols).
+		AddRow("org-1", "user-1", roleTemplateID, time.Now())
+}
+
 func emptyOrgMemberRow() *sqlmock.Rows {
 	return sqlmock.NewRows(orgMemberCols)
 }
@@ -51,13 +59,27 @@ func emptyOrgMemberRow() *sqlmock.Rows {
 
 func newOrgRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	t.Helper()
+	return newOrgRouterWithRevocation(t, false)
+}
+
+// newOrgRouterWithRevocation builds the same router as newOrgRouter but, when
+// withRevocation is true, also wires a UserTokenRevocationRepository over the
+// same mocked connection, so tests can assert on the revocation calls
+// described in issue #559 finding [9].
+func newOrgRouterWithRevocation(t *testing.T, withRevocation bool) (sqlmock.Sqlmock, *gin.Engine) {
+	t.Helper()
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	h := NewOrganizationHandlers(&config.Config{}, db)
+	var userRevocations *repositories.UserTokenRevocationRepository
+	if withRevocation {
+		userRevocations = repositories.NewUserTokenRevocationRepository(db)
+	}
+
+	h := NewOrganizationHandlers(&config.Config{}, db, userRevocations)
 
 	r := gin.New()
 	r.GET("/organizations", h.ListOrganizationsHandler())
@@ -503,6 +525,48 @@ func TestRemoveMember_Success(t *testing.T) {
 	}
 }
 
+// Issue #559 finding [9]: removing a member must revoke their outstanding
+// tokens so the removal takes effect immediately rather than waiting out the
+// JWT TTL.
+func TestRemoveMember_RevokesUserTokens(t *testing.T) {
+	mock, r := newOrgRouterWithRevocation(t, true)
+
+	mock.ExpectExec("DELETE FROM organization_members").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec("INSERT INTO user_token_revocations").
+		WithArgs("user-1").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/organizations/org-1/members/user-1", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("revocation was not issued: %v", err)
+	}
+}
+
+// A failed revocation must not turn an otherwise-successful removal into an
+// error response — the member removal has already been committed, and the
+// revocation failure is logged rather than surfaced (see revokeUserTokens).
+func TestRemoveMember_RevocationErrorDoesNotFailRequest(t *testing.T) {
+	mock, r := newOrgRouterWithRevocation(t, true)
+
+	mock.ExpectExec("DELETE FROM organization_members").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec("INSERT INTO user_token_revocations").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/organizations/org-1/members/user-1", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 even though revocation failed: body=%s", w.Code, w.Body.String())
+	}
+}
+
 // ---------------------------------------------------------------------------
 // SearchOrganizationsHandler tests
 // ---------------------------------------------------------------------------
@@ -628,6 +692,72 @@ func TestUpdateMember_Success(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+}
+
+const (
+	oldRoleTemplateUUID = "11111111-1111-1111-1111-111111111111"
+	newRoleTemplateUUID = "33333333-3333-3333-3333-333333333333"
+)
+
+// Issue #559 finding [9]: reassigning a member's role template must revoke
+// their outstanding tokens so the new scopes (or lack thereof) take effect
+// immediately rather than waiting out the JWT TTL.
+func TestUpdateMember_RoleTemplateChanged_RevokesUserTokens(t *testing.T) {
+	mock, r := newOrgRouterWithRevocation(t, true)
+	// checkRoleAssignment looks up the target role template's scopes first.
+	mock.ExpectQuery("SELECT scopes FROM role_templates WHERE id").
+		WillReturnRows(sqlmock.NewRows([]string{"scopes"}).AddRow([]byte(`[]`)))
+	// Member currently holds oldRoleTemplateUUID; the request reassigns to
+	// newRoleTemplateUUID — a real change that must trigger revocation.
+	mock.ExpectQuery("SELECT.*FROM organization_members WHERE organization_id").
+		WillReturnRows(sampleOrgMemberRowWithRole(oldRoleTemplateUUID))
+	mock.ExpectExec("UPDATE organization_members").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec("INSERT INTO user_token_revocations").
+		WithArgs("user-1").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
+		WillReturnRows(sampleMemberWithRoleRow())
+
+	body := `{"role_template_id": "` + newRoleTemplateUUID + `"}`
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/organizations/org-1/members/user-1",
+		bytes.NewBufferString(body)))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("revocation was not issued: %v", err)
+	}
+}
+
+// Reassigning a member to the SAME role template they already hold is a no-op
+// for effective scopes, so no revocation should be issued — asserted by NOT
+// registering a revocation expectation: sqlmock fails the test if the handler
+// tries to run an unexpected exec.
+func TestUpdateMember_RoleTemplateUnchanged_SkipsRevocation(t *testing.T) {
+	mock, r := newOrgRouterWithRevocation(t, true)
+	mock.ExpectQuery("SELECT scopes FROM role_templates WHERE id").
+		WillReturnRows(sqlmock.NewRows([]string{"scopes"}).AddRow([]byte(`[]`)))
+	mock.ExpectQuery("SELECT.*FROM organization_members WHERE organization_id").
+		WillReturnRows(sampleOrgMemberRowWithRole(oldRoleTemplateUUID))
+	mock.ExpectExec("UPDATE organization_members").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
+		WillReturnRows(sampleMemberWithRoleRow())
+
+	body := `{"role_template_id": "` + oldRoleTemplateUUID + `"}`
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/organizations/org-1/members/user-1",
+		bytes.NewBufferString(body)))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unexpected mock call: %v", err)
 	}
 }
 

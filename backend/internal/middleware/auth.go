@@ -34,7 +34,7 @@ import (
 //     originates from a cookie the auth_method is set to "jwt_cookie" so that
 //     downstream middleware (CSRFMiddleware) can distinguish browser-initiated
 //     requests from programmatic ones.
-func AuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, apiKeyRepo *repositories.APIKeyRepository, orgRepo *repositories.OrganizationRepository, tokenRepo *repositories.TokenRepository) gin.HandlerFunc {
+func AuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, apiKeyRepo *repositories.APIKeyRepository, orgRepo *repositories.OrganizationRepository, tokenRepo *repositories.TokenRepository, userRevocations *repositories.UserTokenRevocationRepository) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var token string
 		var fromCookie bool
@@ -60,6 +60,15 @@ func AuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, a
 		}
 
 		if token == "" {
+			// mTLS-authenticated machine clients carry no bearer token: when
+			// security.mtls.enabled, the mtls middleware runs earlier in the
+			// chain, reads the identity from the TLS layer's verified chains,
+			// and sets auth_method/scopes from the subject mapping (issue #559
+			// finding [3]). Let those requests through to the scope checks.
+			if c.GetString("auth_method") == "mtls" {
+				c.Next()
+				return
+			}
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"error": "Missing authorization credentials",
 			})
@@ -71,6 +80,25 @@ func AuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, a
 			// Check if the token has been revoked
 			if claims.JTI != "" && tokenRepo != nil {
 				if revoked, rErr := tokenRepo.IsTokenRevoked(c.Request.Context(), claims.JTI); rErr != nil {
+					c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
+						"error": "Auth check failed",
+					})
+					return
+				} else if revoked {
+					c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+						"error": "Token has been revoked",
+					})
+					return
+				}
+			}
+
+			// Also reject tokens issued before the user's revoke-all watermark.
+			// The watermark is moved forward when a member's role template is
+			// changed, a member is removed from an organization, or a role
+			// template's scopes are edited, so privilege changes take effect
+			// without waiting out the JWT TTL (issue #559 finding [9]).
+			if claims.IssuedAt != nil && userRevocations != nil {
+				if revoked, rErr := userRevocations.TokensRevokedSince(c.Request.Context(), claims.UserID, claims.IssuedAt.Time); rErr != nil {
 					c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
 						"error": "Auth check failed",
 					})
@@ -201,7 +229,7 @@ func AuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, a
 }
 
 // OptionalAuthMiddleware - same as AuthMiddleware but doesn't abort if no auth
-func OptionalAuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, apiKeyRepo *repositories.APIKeyRepository, orgRepo *repositories.OrganizationRepository, tokenRepo *repositories.TokenRepository) gin.HandlerFunc {
+func OptionalAuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, apiKeyRepo *repositories.APIKeyRepository, orgRepo *repositories.OrganizationRepository, tokenRepo *repositories.TokenRepository, userRevocations *repositories.UserTokenRevocationRepository) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var token string
 		var fromCookie bool
@@ -235,6 +263,11 @@ func OptionalAuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepos
 			revoked := false
 			if claims.JTI != "" && tokenRepo != nil {
 				revoked, _ = tokenRepo.IsTokenRevoked(c.Request.Context(), claims.JTI)
+			}
+			// Same revoke-all watermark check as AuthMiddleware (issue #559
+			// finding [9]); a match likewise downgrades to unauthenticated.
+			if !revoked && claims.IssuedAt != nil && userRevocations != nil {
+				revoked, _ = userRevocations.TokensRevokedSince(c.Request.Context(), claims.UserID, claims.IssuedAt.Time)
 			}
 			if !revoked {
 				// JWT is valid, load user and set in context
