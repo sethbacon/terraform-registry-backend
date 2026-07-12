@@ -100,15 +100,26 @@ var (
 // network on every sync.
 const attestationTrustRootRetryCooldown = time.Hour
 
-// attestationTrustRootFetchTimeout bounds a single trust-root fetch attempt.
+// attestationTrustRootFetchTimeout bounds the HTTP client used for each
+// individual round trip fetchTrustRoot makes, and separately (as
+// attestationTrustRootAggregateTimeout below) the total wall-clock time a
+// call to publicGoodTrustedMaterial may spend fetching a fresh trust root.
 // Neither go-tuf's updater nor its DefaultFetcher.DownloadFile honor a
 // caller-supplied context (DownloadFile hardcodes context.Background() for
 // its own retry loop, and tuf.Options.Context is not threaded through to the
-// HTTP round trip), so a client-side HTTP timeout is the only way to bound a
-// stalled fetch: without it, a network stall (not a fast error) would hold
-// attestationTrustRootMu indefinitely and wedge every other and future caller
-// process-wide.
+// HTTP round trip), so a client-side HTTP timeout is the only way to bound
+// any one request. But a full TUF refresh performs several such round trips
+// in sequence (timestamp, snapshot, top-level targets, then the final
+// GetTarget download) -- bounding only each individual request would still
+// let a stalled network hold attestationTrustRootMu for several times this
+// value, so fetchTrustRootBounded additionally enforces a hard aggregate
+// deadline around the whole sequence.
 const attestationTrustRootFetchTimeout = 30 * time.Second
+
+// attestationTrustRootAggregateTimeout is a var (not const) so tests can
+// shrink it to verify the aggregate deadline actually fires, without waiting
+// out a real 30-second stall.
+var attestationTrustRootAggregateTimeout = attestationTrustRootFetchTimeout
 
 // fetchTrustRoot performs the actual network fetch of the Sigstore
 // public-good trusted root via TUF. Extracted as a package variable so tests
@@ -116,8 +127,9 @@ const attestationTrustRootFetchTimeout = 30 * time.Second
 // implementation talks to the live Sigstore TUF CDN, which has no
 // fixture/fake mirror to exercise hermetically.
 var fetchTrustRoot = func() (*root.TrustedRoot, error) {
-	// A bounded HTTP client, not opts.Context, is what actually caps the
-	// fetch — see attestationTrustRootFetchTimeout.
+	// Each individual HTTP round trip is bounded by this client; the
+	// aggregate deadline across the whole (possibly multi-request) fetch is
+	// separately enforced by fetchTrustRootBounded.
 	f := fetcher.NewDefaultFetcher()
 	f.SetHTTPUserAgent(util.ConstructUserAgent())
 	f.SetHTTPClient(&http.Client{Timeout: attestationTrustRootFetchTimeout})
@@ -139,12 +151,50 @@ var fetchTrustRoot = func() (*root.TrustedRoot, error) {
 	return root.NewTrustedRootFromJSON(rootJSON)
 }
 
+// fetchTrustRootResult carries a fetchTrustRoot outcome over a channel.
+type fetchTrustRootResult struct {
+	root *root.TrustedRoot
+	err  error
+}
+
+// fetchTrustRootBounded runs fetchTrustRoot with a hard wall-clock deadline,
+// so a stalled network can delay attestationTrustRootMu by at most
+// attestationTrustRootAggregateTimeout regardless of how many internal HTTP
+// round trips the real TUF refresh makes or how long any one of them stalls.
+// If the deadline fires first, the fetch goroutine is abandoned (not
+// canceled -- go-tuf gives us no cancellation hook) and left to finish or
+// fail on its own; each of its own HTTP calls is still individually bounded
+// by attestationTrustRootFetchTimeout, so it cannot run forever, and its
+// eventual result is simply discarded into the buffered channel with nobody
+// left to read it.
+func fetchTrustRootBounded() (*root.TrustedRoot, error) {
+	// Snapshot fetchTrustRoot into a local before spawning: the abandoned
+	// goroutine below can outlive this call by an unbounded amount (up to
+	// attestationTrustRootFetchTimeout), so it must never read the mutable
+	// package variable again afterward -- doing so would race a later
+	// reassignment (production never reassigns it, but tests substituting a
+	// fake do, and go test -race catches exactly that race otherwise).
+	fetch := fetchTrustRoot
+	ch := make(chan fetchTrustRootResult, 1)
+	go func() {
+		r, err := fetch()
+		ch <- fetchTrustRootResult{r, err}
+	}()
+
+	select {
+	case res := <-ch:
+		return res.root, res.err
+	case <-time.After(attestationTrustRootAggregateTimeout):
+		return nil, fmt.Errorf("fetch trusted_root.json: exceeded %s aggregate deadline", attestationTrustRootAggregateTimeout)
+	}
+}
+
 // publicGoodTrustedMaterial fetches and caches the Sigstore public-good
 // trusted root via TUF (embedded initial root, updates from the Sigstore TUF
 // CDN). There is deliberately no stale-root fallback beyond sigstore-go's own
 // TUF cache handling: verifying against an unverifiable root would be weaker
 // than the documented checksum-only degradation.
-// coverage:skip:integration-only — fetchTrustRoot's real implementation hits the live Sigstore public-good TUF CDN; no fixture/fake mirror exists to exercise it hermetically. The caching/cooldown logic here is covered by tests that substitute fetchTrustRoot.
+// coverage:skip:integration-only — fetchTrustRoot's real implementation hits the live Sigstore public-good TUF CDN; no fixture/fake mirror exists to exercise it hermetically. The caching/cooldown/deadline logic here is covered by tests that substitute fetchTrustRoot.
 func publicGoodTrustedMaterial() (root.TrustedMaterial, error) {
 	attestationTrustRootMu.Lock()
 	defer attestationTrustRootMu.Unlock()
@@ -156,7 +206,7 @@ func publicGoodTrustedMaterial() (root.TrustedMaterial, error) {
 		return nil, attestationTrustRootErr
 	}
 
-	attestationTrustRoot, attestationTrustRootErr = fetchTrustRoot()
+	attestationTrustRoot, attestationTrustRootErr = fetchTrustRootBounded()
 	attestationTrustRootFetchedAt = time.Now()
 	return attestationTrustRoot, attestationTrustRootErr
 }

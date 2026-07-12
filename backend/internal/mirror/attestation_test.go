@@ -660,6 +660,44 @@ func TestPublicGoodTrustedMaterial_SuccessCachedPermanently(t *testing.T) {
 	}
 }
 
+// A stalled fetch must not hold attestationTrustRootMu past the aggregate
+// deadline: a full TUF refresh makes several sequential HTTP round trips,
+// each individually bounded by attestationTrustRootFetchTimeout, but nothing
+// previously bounded the whole sequence -- a fetch that stalls on, say, its
+// third round trip could otherwise hold the mutex for several multiples of
+// that per-request timeout. Shrinks attestationTrustRootAggregateTimeout so
+// the test doesn't wait out a real deadline, and blocks fetchTrustRoot on a
+// channel that's never sent to, simulating a stall rather than a fast error.
+func TestPublicGoodTrustedMaterial_AggregateTimeoutExceeded(t *testing.T) {
+	resetAttestationTrustRootCache(t)
+
+	origTimeout := attestationTrustRootAggregateTimeout
+	attestationTrustRootAggregateTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { attestationTrustRootAggregateTimeout = origTimeout })
+
+	stall := make(chan struct{})
+	t.Cleanup(func() { close(stall) }) // let the abandoned goroutine exit
+	stubFetchTrustRoot(t, func() (*root.TrustedRoot, error) {
+		<-stall
+		return nil, errors.New("should never be observed: fetch was abandoned")
+	})
+
+	start := time.Now()
+	_, err := publicGoodTrustedMaterial()
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected an aggregate-deadline error, got nil")
+	}
+	// Generous upper bound: the real deadline is 20ms, but leave headroom for
+	// scheduler jitter under test load without weakening what's being proven
+	// (that this returns promptly rather than hanging until the stall channel
+	// is closed at test cleanup).
+	if elapsed > 2*time.Second {
+		t.Errorf("publicGoodTrustedMaterial() took %s, want well under 2s: the aggregate deadline did not bound the stall", elapsed)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // test helpers
 // ---------------------------------------------------------------------------
