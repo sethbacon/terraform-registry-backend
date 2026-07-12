@@ -7,7 +7,7 @@ updates:
   - package-ecosystem: gomod
     directory: /backend
     schedule:
-      interval: biweekly
+      interval: weekly
       day: monday
       time: "09:00"
       timezone: UTC
@@ -36,7 +36,7 @@ updates:
   - package-ecosystem: docker
     directory: /backend
     schedule:
-      interval: biweekly
+      interval: weekly
       day: monday
       time: "09:00"
       timezone: UTC
@@ -55,7 +55,7 @@ updates:
   - package-ecosystem: npm
     directory: /
     schedule:
-      interval: biweekly
+      interval: weekly
       day: monday
       time: "09:00"
       timezone: UTC
@@ -73,7 +73,7 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: biweekly
+      interval: weekly
       day: monday
       time: "09:00"
       timezone: UTC
