@@ -365,6 +365,68 @@ func TestValidate(t *testing.T) {
 			}
 		}
 	})
+
+	// -------------------------------------------------------------------
+	// SSRF: security.egress.allowlist + policy.bundle_url
+	// -------------------------------------------------------------------
+
+	t.Run("invalid egress allowlist entry rejected", func(t *testing.T) {
+		cfg := minimalValidConfig()
+		cfg.Security.Egress.Allowlist = []string{"not a hostname or cidr"}
+		if err := cfg.Validate(); err == nil {
+			t.Error("Validate() expected error for malformed egress allowlist entry, got nil")
+		}
+	})
+
+	t.Run("policy bundle_url rejects cloud metadata address", func(t *testing.T) {
+		cfg := minimalValidConfig()
+		cfg.Policy = PolicyConfig{Enabled: true, Mode: "block", BundleURL: "https://169.254.169.254/bundle.tar.gz"}
+		if err := cfg.Validate(); err == nil {
+			t.Error("Validate() expected error for bundle_url targeting cloud metadata, got nil")
+		}
+	})
+
+	t.Run("policy bundle_url rejects private address", func(t *testing.T) {
+		cfg := minimalValidConfig()
+		cfg.Policy = PolicyConfig{Enabled: true, Mode: "block", BundleURL: "https://10.1.2.3/bundle.tar.gz"}
+		if err := cfg.Validate(); err == nil {
+			t.Error("Validate() expected error for bundle_url targeting a private address, got nil")
+		}
+	})
+
+	t.Run("policy bundle_url requires https", func(t *testing.T) {
+		cfg := minimalValidConfig()
+		cfg.Policy = PolicyConfig{Enabled: true, Mode: "block", BundleURL: "http://bundles.example.com/bundle.tar.gz"}
+		if err := cfg.Validate(); err == nil {
+			t.Error("Validate() expected error for plain-http bundle_url, got nil")
+		}
+	})
+
+	t.Run("policy bundle_url http allowed when host allowlisted", func(t *testing.T) {
+		cfg := minimalValidConfig()
+		cfg.Security.Egress.Allowlist = []string{"bundles.internal.example.com"}
+		cfg.Policy = PolicyConfig{Enabled: true, Mode: "block", BundleURL: "http://bundles.internal.example.com/bundle.tar.gz"}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate() unexpected error for allow-listed http bundle_url: %v", err)
+		}
+	})
+
+	t.Run("policy bundle_url private address allowed when allowlisted", func(t *testing.T) {
+		cfg := minimalValidConfig()
+		cfg.Security.Egress.Allowlist = []string{"10.1.2.0/24"}
+		cfg.Policy = PolicyConfig{Enabled: true, Mode: "block", BundleURL: "https://10.1.2.3/bundle.tar.gz"}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate() unexpected error for allow-listed private bundle_url: %v", err)
+		}
+	})
+
+	t.Run("policy bundle_url ignored when policy disabled", func(t *testing.T) {
+		cfg := minimalValidConfig()
+		cfg.Policy = PolicyConfig{Enabled: false, BundleURL: "http://169.254.169.254/bundle.tar.gz"}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate() unexpected error when policy disabled: %v", err)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -704,6 +766,40 @@ func TestLoad_RoleSeedOwnerEnvOverride(t *testing.T) {
 	}
 	if cfg.Suite.RoleSeedOwner != "registry" {
 		t.Errorf("Suite.RoleSeedOwner = %q, want registry (TFR_SUITE_ROLE_SEED_OWNER override)", cfg.Suite.RoleSeedOwner)
+	}
+}
+
+// TestLoad_TrustedIssuersDefault and TestLoad_TrustedIssuersEnvOverride cover
+// issue #559 finding [0]: the trusted-issuer list must default to empty
+// (standalone-safe — auth.SetTrustedIssuers always adds the app's own issuer
+// regardless) and must be configurable via TFR_SUITE_TRUSTED_ISSUERS.
+func TestLoad_TrustedIssuersDefault(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Suite.TrustedIssuers) != 0 {
+		t.Errorf("default Suite.TrustedIssuers = %v, want empty", cfg.Suite.TrustedIssuers)
+	}
+}
+
+func TestLoad_TrustedIssuersEnvOverride(t *testing.T) {
+	// Proves suite.trusted_issuers is in the bindEnvVars whitelist, and that a
+	// comma-separated env value is split into a slice (viper's default
+	// StringToSliceHookFunc, same convention as security.cors.allowed_origins).
+	t.Setenv("TFR_SUITE_TRUSTED_ISSUERS", "terraform-state-manager,terraform-registry-worker")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []string{"terraform-state-manager", "terraform-registry-worker"}
+	if len(cfg.Suite.TrustedIssuers) != len(want) {
+		t.Fatalf("Suite.TrustedIssuers = %v, want %v", cfg.Suite.TrustedIssuers, want)
+	}
+	for i, v := range want {
+		if cfg.Suite.TrustedIssuers[i] != v {
+			t.Errorf("Suite.TrustedIssuers[%d] = %q, want %q", i, cfg.Suite.TrustedIssuers[i], v)
+		}
 	}
 }
 

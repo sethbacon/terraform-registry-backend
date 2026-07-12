@@ -20,6 +20,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 )
 
 // LogEntry represents a structured audit log entry
@@ -100,8 +102,16 @@ type MultiShipper struct {
 	mu       sync.RWMutex
 }
 
-// NewMultiShipper creates a new multi-shipper from configs
+// NewMultiShipper creates a new multi-shipper from configs, with the strict
+// egress policy (no allow-list) applied to webhook shippers.
 func NewMultiShipper(configs []ShipperConfig) (*MultiShipper, error) {
+	return NewMultiShipperWithGuard(configs, nil)
+}
+
+// NewMultiShipperWithGuard is NewMultiShipper with an egress guard widening
+// the SSRF deny-list applied to webhook shippers (nil = strict), for
+// deployments whose webhook URL points at an internal SIEM/log aggregator.
+func NewMultiShipperWithGuard(configs []ShipperConfig, egress *httpsafe.Guard) (*MultiShipper, error) {
 	ms := &MultiShipper{
 		shippers: make([]Shipper, 0),
 	}
@@ -124,7 +134,7 @@ func NewMultiShipper(configs []ShipperConfig) (*MultiShipper, error) {
 			if cfg.Webhook == nil {
 				return nil, fmt.Errorf("webhook config is required for webhook shipper")
 			}
-			shipper, err = NewWebhookShipper(cfg.Webhook)
+			shipper, err = NewWebhookShipperWithGuard(cfg.Webhook, egress)
 		case "file":
 			if cfg.File == nil {
 				return nil, fmt.Errorf("file config is required for file shipper")
@@ -185,18 +195,25 @@ type WebhookShipper struct {
 	closeOnce sync.Once
 }
 
-// NewWebhookShipper creates a new webhook shipper
+// NewWebhookShipper creates a new webhook shipper with the strict egress
+// policy (no allow-list). cfg.URL is operator-configurable, so requests are
+// dialed through internal/httpsafe.
 func NewWebhookShipper(cfg *WebhookConfig) (*WebhookShipper, error) {
+	return NewWebhookShipperWithGuard(cfg, nil)
+}
+
+// NewWebhookShipperWithGuard is NewWebhookShipper with an egress guard
+// widening the SSRF deny-list (nil = strict), for deployments whose webhook
+// URL points at an internal SIEM/log aggregator.
+func NewWebhookShipperWithGuard(cfg *WebhookConfig, egress *httpsafe.Guard) (*WebhookShipper, error) {
 	timeout := cfg.Timeout
 	if timeout == 0 {
 		timeout = 10 * time.Second
 	}
 
 	ws := &WebhookShipper{
-		cfg: cfg,
-		client: &http.Client{
-			Timeout: timeout,
-		},
+		cfg:     cfg,
+		client:  httpsafe.NewClient(timeout, egress),
 		batchCh: make(chan *LogEntry, 1000),
 		batch:   make([]*LogEntry, 0),
 		closeCh: make(chan struct{}),
@@ -303,7 +320,7 @@ func (ws *WebhookShipper) sendRequest(ctx context.Context, data []byte) error {
 		req.Header.Set(k, v)
 	}
 
-	resp, err := ws.client.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	resp, err := ws.client.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	if err != nil {
 		return fmt.Errorf("failed to send webhook: %w", err)
 	}

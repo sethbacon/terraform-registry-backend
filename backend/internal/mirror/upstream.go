@@ -22,6 +22,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 )
 
 // UpstreamRegistry represents a client for interacting with an upstream Terraform registry
@@ -42,16 +44,25 @@ const maxUpstreamResponseBytes = 10 << 20 // 10 MB
 // error messages, matching the cap already used by DownloadFileStream's error path.
 const maxUpstreamErrorBodyBytes = 4096
 
-// NewUpstreamRegistry creates a new upstream registry client
+// NewUpstreamRegistry creates a new upstream registry client with the strict
+// egress policy (no allow-list). Both clients are SSRF-safe: the configured
+// base URL and every upstream-returned URL (download_url, shasums_url,
+// shasums_signature_url) are dialed through internal/httpsafe, which refuses
+// loopback/private/link-local/metadata targets at dial time and re-validates
+// redirects.
 func NewUpstreamRegistry(baseURL string) *UpstreamRegistry {
+	return NewUpstreamRegistryWithGuard(baseURL, nil)
+}
+
+// NewUpstreamRegistryWithGuard creates an upstream registry client whose
+// egress policy is widened by the given guard's allow-list (nil = strict).
+// Deployments that mirror from internal registries pass a guard built from
+// security.egress.allowlist.
+func NewUpstreamRegistryWithGuard(baseURL string, egress *httpsafe.Guard) *UpstreamRegistry {
 	return &UpstreamRegistry{
-		BaseURL: strings.TrimRight(baseURL, "/"),
-		HTTPClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
-		DownloadClient: &http.Client{
-			Timeout: 10 * time.Minute, // Longer timeout for large provider binaries
-		},
+		BaseURL:        strings.TrimRight(baseURL, "/"),
+		HTTPClient:     httpsafe.NewClient(30*time.Second, egress),
+		DownloadClient: httpsafe.NewClient(10*time.Minute, egress), // Longer timeout for large provider binaries
 	}
 }
 
@@ -115,7 +126,7 @@ func (u *UpstreamRegistry) DiscoverServices(ctx context.Context) (*ServiceDiscov
 		return nil, fmt.Errorf("failed to create discovery request: %w", err)
 	}
 
-	resp, err := u.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	resp, err := u.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	if err != nil {
 		return nil, fmt.Errorf("failed to perform discovery request: %w", err)
 	}
@@ -159,7 +170,7 @@ func (u *UpstreamRegistry) ListProviderVersions(ctx context.Context, namespace, 
 		return nil, fmt.Errorf("failed to create versions request: %w", err)
 	}
 
-	resp, err := u.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	resp, err := u.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch provider versions: %w", err)
 	}
@@ -214,7 +225,7 @@ func (u *UpstreamRegistry) GetProviderPackage(ctx context.Context, namespace, pr
 		return nil, fmt.Errorf("failed to create package request: %w", err)
 	}
 
-	resp, err := u.HTTPClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	resp, err := u.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch provider package info: %w", err)
 	}
@@ -275,7 +286,7 @@ func (u *UpstreamRegistry) downloadFileOnce(ctx context.Context, fileURL string)
 		return nil, fmt.Errorf("failed to create download request: %w", err)
 	}
 
-	resp, err := u.DownloadClient.Do(req) // #nosec G704 -- URL is sourced from admin-controlled SCM provider or mirror configuration; non-admin users cannot influence these code paths
+	resp, err := u.DownloadClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	if err != nil {
 		return nil, fmt.Errorf("failed to download file: %w", err)
 	}
@@ -305,7 +316,7 @@ type DownloadStream struct {
 // one attempt (retries on a stream would require re-downloading) and it is the
 // caller's responsibility to close DownloadStream.Body.
 func (u *UpstreamRegistry) DownloadFileStream(ctx context.Context, fileURL string) (*DownloadStream, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", fileURL, nil) // #nosec G107 -- URL is admin-controlled
+	req, err := http.NewRequestWithContext(ctx, "GET", fileURL, nil) // #nosec G107 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	if err != nil {
 		return nil, fmt.Errorf("failed to create download request: %w", err)
 	}
@@ -421,7 +432,7 @@ func (u *UpstreamRegistry) resolveProviderVersionID(ctx context.Context, namespa
 		url.PathEscape(namespace),
 		url.PathEscape(providerName),
 	)
-	req, err := http.NewRequestWithContext(ctx, "GET", providerURL, nil) // #nosec G107 -- URL built from admin-controlled mirror configuration
+	req, err := http.NewRequestWithContext(ctx, "GET", providerURL, nil) // #nosec G107 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	if err != nil {
 		return "", fmt.Errorf("failed to create v2 provider lookup request: %w", err)
 	}
@@ -456,7 +467,7 @@ func (u *UpstreamRegistry) resolveProviderVersionID(ctx context.Context, namespa
 			versionPageSize,
 			versionPage,
 		)
-		req, err = http.NewRequestWithContext(ctx, "GET", versionsURL, nil) // #nosec G107 -- URL built from admin-controlled mirror configuration
+		req, err = http.NewRequestWithContext(ctx, "GET", versionsURL, nil) // #nosec G107 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 		if err != nil {
 			return "", fmt.Errorf("failed to create v2 provider-versions request (page %d): %w", versionPage, err)
 		}
@@ -518,7 +529,7 @@ func (u *UpstreamRegistry) GetProviderDocIndexByVersion(ctx context.Context, nam
 			return nil, fmt.Errorf("failed to create v2 doc index request (page %d): %w", pageNum, err)
 		}
 
-		resp, err := u.HTTPClient.Do(req) // #nosec G107 -- URL built from admin-controlled mirror configuration
+		resp, err := u.HTTPClient.Do(req) // #nosec G107 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch v2 provider doc index (page %d): %w", pageNum, err)
 		}
@@ -577,7 +588,7 @@ func (u *UpstreamRegistry) GetProviderDocContent(ctx context.Context, upstreamDo
 		return "", fmt.Errorf("failed to create doc content request: %w", err)
 	}
 
-	resp, err := u.HTTPClient.Do(req) // #nosec G107 -- URL is sourced from admin-controlled mirror configuration
+	resp, err := u.HTTPClient.Do(req) // #nosec G107 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch provider doc content: %w", err)
 	}
@@ -596,8 +607,12 @@ func (u *UpstreamRegistry) GetProviderDocContent(ctx context.Context, upstreamDo
 	return v2Resp.Data.Attributes.Content, nil
 }
 
-// ValidateRegistryURL validates that a registry URL is properly formatted
-func ValidateRegistryURL(registryURL string) error {
+// ValidateRegistryURL validates that a registry URL is properly formatted AND
+// that it does not target a private/metadata address (loopback, RFC 1918,
+// link-local incl. 169.254.169.254, ULA, …) unless the host is covered by the
+// egress guard's allow-list. Pass a nil guard for the strict default policy.
+// Intended for config-write time so bad targets are rejected at save.
+func ValidateRegistryURL(registryURL string, egress *httpsafe.Guard) error {
 	if registryURL == "" {
 		return fmt.Errorf("registry URL cannot be empty")
 	}
@@ -615,5 +630,5 @@ func ValidateRegistryURL(registryURL string) error {
 		return fmt.Errorf("registry URL must have a host")
 	}
 
-	return nil
+	return egress.ValidateURL(registryURL)
 }

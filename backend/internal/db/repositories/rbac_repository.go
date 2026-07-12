@@ -19,6 +19,7 @@ import (
 // is delegated to the shared identity store so it follows the identity schema.
 type RBACRepository struct {
 	db            *sqlx.DB
+	identityDB    *sqlx.DB
 	roleTemplates *identitystore.RoleTemplateRepository
 }
 
@@ -35,8 +36,32 @@ func NewRBACRepository(db *sqlx.DB) *RBACRepository {
 func NewRBACRepositoryWithIdentity(db, identityDB *sqlx.DB) *RBACRepository {
 	return &RBACRepository{
 		db:            db,
+		identityDB:    identityDB,
 		roleTemplates: identitystore.NewRoleTemplateRepository(identityDB),
 	}
+}
+
+// ListRoleTemplateMemberUserIDs returns the distinct user IDs of organization
+// members currently assigned the given role template. Used to revoke the
+// outstanding tokens of every affected user when a role template's scopes are
+// edited or the template is deleted (issue #559 finding [9]).
+func (r *RBACRepository) ListRoleTemplateMemberUserIDs(ctx context.Context, roleTemplateID uuid.UUID) ([]string, error) {
+	query := `SELECT DISTINCT user_id FROM organization_members WHERE role_template_id = $1`
+	rows, err := r.identityDB.QueryContext(ctx, query, roleTemplateID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var userIDs []string
+	for rows.Next() {
+		var userID string
+		if err := rows.Scan(&userID); err != nil {
+			return nil, err
+		}
+		userIDs = append(userIDs, userID)
+	}
+	return userIDs, rows.Err()
 }
 
 // ============================================================================

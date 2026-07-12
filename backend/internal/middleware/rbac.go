@@ -1,11 +1,23 @@
 // Package middleware (rbac.go) implements scope-based authorization middleware.
 //
-// Scopes (e.g., "modules:write", "mirrors:manage") are checked at request time
-// rather than being embedded in the JWT. This is a deliberate design choice:
-// when a user's role template is updated, the change takes effect immediately
-// on their next request without needing to invalidate or reissue their token.
-// Embedding scopes in the JWT would require token rotation on every permission
-// change, which is operationally expensive and error-prone.
+// Scope resolution (issue #559 finding [9] corrected this comment — it
+// previously claimed all scopes were re-checked from the DB on every request):
+//
+//   - RequireScope / RequireAnyScope / RequireAllScopes read the scopes that
+//     AuthMiddleware attached to the context. For JWT sessions those scopes
+//     were embedded in the token at login (avoiding a DB query per request);
+//     for API keys they are the key's stored scopes.
+//   - RequireOrgMembership / RequireOrgScope re-resolve the membership and its
+//     role-template scopes from the database on every request.
+//
+// Because JWT-embedded scopes are only refreshed when a token is issued,
+// privilege changes are enforced by token revocation instead: changing a
+// member's role template, removing a member from an organization, or editing a
+// role template's scopes moves the affected users' revoke-all watermark
+// (user_token_revocations), which AuthMiddleware and OptionalAuthMiddleware
+// check on every JWT request. The change therefore takes effect immediately —
+// the user's outstanding tokens stop validating and a fresh login picks up the
+// new scopes.
 
 package middleware
 

@@ -30,6 +30,7 @@ import (
 
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/mirror"
 	"github.com/terraform-registry/terraform-registry/internal/safego"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
@@ -53,6 +54,10 @@ type TerraformMirrorSyncJob struct {
 
 	// manualTriggerCh carries explicit per-config sync requests from HTTP handlers.
 	manualTriggerCh chan uuid.UUID
+
+	// egressGuard widens the SSRF egress deny-list for upstream fetches
+	// (nil = strict). Set via SetEgressGuard before Start.
+	egressGuard *httpsafe.Guard
 }
 
 // NewTerraformMirrorSyncJob creates a new TerraformMirrorSyncJob.
@@ -70,6 +75,13 @@ func NewTerraformMirrorSyncJob(
 		startedCh:          make(chan struct{}),
 		manualTriggerCh:    make(chan uuid.UUID, 16),
 	}
+}
+
+// SetEgressGuard installs the operator-configured egress guard
+// (security.egress.allowlist) used when constructing upstream release
+// clients. Call before Start; nil keeps the strict default policy.
+func (j *TerraformMirrorSyncJob) SetEgressGuard(g *httpsafe.Guard) {
+	j.egressGuard = g
 }
 
 // Start begins the background sync loop, checking every intervalMinutes.
@@ -245,15 +257,15 @@ type terraformReleasesClient interface {
 // GitHub URLs (containing "github.com") use the GitHub Releases API; all other
 // URLs use the standard HashiCorp/OpenTofu releases index format.
 // coverage:skip:integration-only — factory that wires a live HTTP client; covered indirectly via integration tests.
-func newReleasesClient(upstreamURL, productName string) (terraformReleasesClient, error) {
+func newReleasesClient(upstreamURL, productName string, egress *httpsafe.Guard) (terraformReleasesClient, error) {
 	if mirror.IsGitHubReleasesURL(upstreamURL) {
 		// GitHub asset filenames use the binary's published prefix, which may differ
 		// from the logical product name. For example, OpenTofu publishes assets as
 		// "tofu_*" even though the product is called "opentofu".
 		binaryPrefix := githubBinaryPrefix(productName)
-		return mirror.NewGitHubReleasesClient(upstreamURL, binaryPrefix)
+		return mirror.NewGitHubReleasesClientWithGuard(upstreamURL, binaryPrefix, egress)
 	}
-	return mirror.NewTerraformReleasesClient(upstreamURL, productName), nil
+	return mirror.NewTerraformReleasesClientWithGuard(upstreamURL, productName, egress), nil
 }
 
 // githubBinaryPrefix returns the filename prefix used in GitHub release assets
@@ -285,7 +297,7 @@ func (j *TerraformMirrorSyncJob) performSync(
 
 	// Derive product name from the tool field for URL path construction.
 	productName := productNameForTool(cfg.Tool)
-	client, clientErr := newReleasesClient(cfg.UpstreamURL, productName)
+	client, clientErr := newReleasesClient(cfg.UpstreamURL, productName, j.egressGuard)
 	if clientErr != nil {
 		return 0, 0, 0, details, fmt.Errorf("failed to create releases client: %w", clientErr)
 	}

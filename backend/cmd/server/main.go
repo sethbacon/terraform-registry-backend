@@ -62,6 +62,7 @@ import (
 	"github.com/sethbacon/terraform-suite-identity/identity"
 	"github.com/terraform-registry/terraform-registry/internal/api"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
+	"github.com/terraform-registry/terraform-registry/internal/auth/mtls"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
@@ -249,7 +250,8 @@ func serve(cfg *config.Config) error {
 	// environment variable. Defaults closed and also requires a seeded
 	// admin@dev.local account, but give operators a loud, unmissable signal if
 	// it's ever set, since there is no other startup-time indication.
-	if devMode := os.Getenv("DEV_MODE"); devMode == "true" || devMode == "1" {
+	devModeEnabled := devModeFromEnv(os.Getenv("DEV_MODE"))
+	if devModeEnabled {
 		log.Println("WARNING: ==========================================================")
 		log.Println("WARNING: DEV_MODE is enabled. Unauthenticated admin-session minting")
 		log.Println("WARNING: endpoints (/api/v1/dev/login, /api/v1/dev/impersonate) are")
@@ -257,11 +259,27 @@ func serve(cfg *config.Config) error {
 		log.Println("WARNING: ==========================================================")
 	}
 
+	// Refuse to boot entirely when DEV_MODE is combined with a production
+	// indicator, rather than relying on the warning above being noticed. See
+	// devModeProductionGuard's doc comment for why logging.level is the signal.
+	if err := devModeProductionGuard(devModeEnabled, cfg.Logging.Level, devModeNonProductionConfirmed()); err != nil {
+		return err
+	}
+
 	// Validate JWT secret configuration (fails in production if not set)
 	if err := auth.ValidateJWTSecret(); err != nil {
 		return fmt.Errorf("security configuration error: %w", err)
 	}
 	log.Println("JWT secret validated successfully")
+
+	// Extend JWT issuer validation to trusted sibling apps in a coupled suite
+	// deployment (issue #559 finding [0]). Safe to call unconditionally:
+	// with suite.trusted_issuers unset (the default), this re-asserts the same
+	// own-issuer-only set ValidateJWTSecret already configured.
+	auth.SetTrustedIssuers(cfg.Suite.TrustedIssuers)
+	if len(cfg.Suite.TrustedIssuers) > 0 {
+		log.Printf("JWT trusted issuers extended for suite coupling: %v", cfg.Suite.TrustedIssuers) // #nosec G706 -- config values from trusted config file/env, not user input
+	}
 
 	// Debug: Print database configuration (mask password)
 	maskedPassword := "****"
@@ -428,15 +446,58 @@ func serve(cfg *config.Config) error {
 		}
 	}()
 
+	// Start daily cleanup of stale per-user token-revocation watermarks (issue
+	// #559 finding [9]; user_token_revocations lives on the registry's own
+	// connection, see NewRouter). 25h > the 24h JWT TTL so a watermark is only
+	// dropped once every token it could have revoked has expired naturally.
+	userRevocationRepo := repositories.NewUserTokenRevocationRepository(database)
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := userRevocationRepo.CleanupExpiredWatermarks(context.Background(), 25*time.Hour); err != nil {
+				slog.Error("failed to clean up expired user token revocation watermarks", "error", err)
+			}
+		}
+	}()
+
+	// Explicit floor instead of relying on crypto/tls defaults.
+	serverTLSConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+
+	// Wire mTLS client-certificate verification into the TLS server (issue #559
+	// finding [3]). Without this, the mtls Provider/AuthMiddleware are dead
+	// code: c.Request.TLS.VerifiedChains is only ever populated by Go's TLS
+	// stack when the server itself requests and verifies a client cert during
+	// the handshake, which requires ClientCAs + ClientAuth on this tls.Config.
+	if cfg.Security.MTLS.Enabled {
+		if !cfg.Security.TLS.Enabled {
+			// mTLS is a TLS-handshake-level control; it cannot function unless
+			// this process terminates TLS itself. See mtls.BuildServerTLSConfig's
+			// doc comment for the TLS-terminating-ingress case, which has the
+			// same failure mode (no cfg.Security.TLS.Enabled to check there —
+			// this is the in-process version of that warning).
+			slog.Warn("security.mtls.enabled is true but security.tls.enabled is false; " +
+				"mTLS requires this server to terminate TLS itself and will have no effect " +
+				"(client certificates are never requested over plain HTTP)")
+		}
+		mtlsTLSConfig, mtlsErr := mtls.BuildServerTLSConfig(cfg.Security.MTLS)
+		if mtlsErr != nil {
+			return fmt.Errorf("mTLS configuration error: %w", mtlsErr)
+		}
+		serverTLSConfig.ClientCAs = mtlsTLSConfig.ClientCAs
+		serverTLSConfig.ClientAuth = mtlsTLSConfig.ClientAuth
+		log.Println("mTLS client-certificate verification enabled on the TLS server")
+	}
+
 	// Create HTTP server
 	server := &http.Server{
 		Addr:              cfg.Server.GetAddress(),
 		Handler:           router,
 		ReadTimeout:       cfg.Server.ReadTimeout,
 		WriteTimeout:      cfg.Server.WriteTimeout,
-		ReadHeaderTimeout: 10 * time.Second,                          // Prevents Slowloris attacks
-		IdleTimeout:       120 * time.Second,                         // Close idle keep-alive connections
-		TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12}, // Explicit floor instead of relying on crypto/tls defaults
+		ReadHeaderTimeout: 10 * time.Second,  // Prevents Slowloris attacks
+		IdleTimeout:       120 * time.Second, // Close idle keep-alive connections
+		TLSConfig:         serverTLSConfig,
 	}
 
 	// Start server in a goroutine
@@ -587,6 +648,81 @@ func handleSetupToken(repo *repositories.OIDCConfigRepository) error {
 // TFR_IDENTITY_MIGRATIONS_ENABLED=true. Additive and reversible.
 func identityMigrationsEnabled() bool {
 	return os.Getenv("TFR_IDENTITY_MIGRATIONS_ENABLED") == "true"
+}
+
+// devModeFromEnv parses the raw DEV_MODE environment variable value using the
+// same "true" or "1" rule as auth.isDevMode and DevModeMiddleware (duplicated
+// rather than imported, same rationale as auth.isDevMode: avoiding an import
+// cycle / keeping this a pure function of its input for testability).
+func devModeFromEnv(raw string) bool {
+	return raw == "true" || raw == "1"
+}
+
+// isProductionLoggingLevel reports whether level indicates a production
+// deployment.
+//
+// This codebase has no explicit environment/production config flag (no
+// TFR_ENV, no NODE_ENV equivalent) — logging.level is the strongest existing
+// signal, because it's the one dimension this repo's own deployment manifests
+// already vary consistently between environments: docker-compose.prod.yml and
+// the kubernetes "production" overlay both set TFR_LOGGING_LEVEL=warn, while
+// every dev/test manifest (docker-compose.yml, docker-compose.test.yml, the
+// k8s "dev" overlay) either defaults to "info" or explicitly sets "debug" —
+// none of them ever set "warn" or "error". Gin's release/debug mode was
+// considered too (see the "Set Gin mode" block above) but it collapses to the
+// same logging.level=="debug" check and additionally defaults to release mode
+// for the *majority* of non-production configs (e.g. the "info"-level dev
+// compose stack), so it would false-positive far more often than the logging
+// level check below.
+func isProductionLoggingLevel(level string) bool {
+	return level == "warn" || level == "error"
+}
+
+// devModeNonProductionConfirmed reports whether the operator has explicitly
+// confirmed a DEV_MODE deployment running above logging.level=="debug" is not
+// production. Read directly via env, matching identitySchemaEnabled below,
+// rather than threaded through *config.Config -- this is a boot-time-only
+// escape hatch, not application configuration.
+func devModeNonProductionConfirmed() bool {
+	return os.Getenv("TFR_CONFIRM_NON_PRODUCTION") == "true"
+}
+
+// devModeProductionGuard refuses to start the server when DEV_MODE is enabled
+// outside of an unambiguous dev/test signal (issue #559 findings [5]/[11]).
+// DEV_MODE unconditionally exposes the unauthenticated /api/v1/dev/login
+// admin-session-minting endpoint (see internal/api/admin/dev.go); the log
+// warning above is easy to miss in aggregated production logs, so this makes
+// the misconfiguration a hard startup failure instead.
+//
+// logging.level alone cannot distinguish dev from production: this repo's own
+// dev and test compose stacks run at logging.level=="info" (the config
+// default), which is indistinguishable from a plausible, deliberate
+// production choice -- an earlier version of this guard only blocked
+// "warn"/"error" for exactly that reason, which meant the overwhelmingly
+// common case (DEV_MODE=true with logging.level left at its "info" default)
+// sailed through unblocked. "debug" is the only logging.level this repo's own
+// manifests treat as unambiguously non-production; any other level requires
+// an explicit TFR_CONFIRM_NON_PRODUCTION=true acknowledgment. Deployments that
+// spin up this backend with DEV_MODE=true at a non-debug logging.level (this
+// repo's own docker-compose.yml/docker-compose.test.yml, and any downstream
+// repo's compose files that do the same) must set that variable.
+//
+// devModeEnabled, loggingLevel, and nonProductionConfirmed are passed in
+// rather than read from os.Getenv/cfg directly so this stays a pure function,
+// independently unit-testable against arbitrary inputs.
+func devModeProductionGuard(devModeEnabled bool, loggingLevel string, nonProductionConfirmed bool) error {
+	if !devModeEnabled || loggingLevel == "debug" || nonProductionConfirmed {
+		return nil
+	}
+	return fmt.Errorf(
+		"refusing to start: DEV_MODE is enabled with logging.level=%q, which is not a reliable dev-only signal "+
+			"(this repo's own dev/test compose stacks also run at \"info\", the config default). DEV_MODE "+
+			"unconditionally exposes the unauthenticated /api/v1/dev/login admin-session-minting endpoint and "+
+			"must never run in a production deployment. Unset DEV_MODE, set logging.level to \"debug\", or if "+
+			"this really is a non-production deployment set TFR_CONFIRM_NON_PRODUCTION=true to acknowledge it "+
+			"explicitly",
+		loggingLevel,
+	)
 }
 
 // identitySchemaEnabled reports whether identity data (users, organizations, API

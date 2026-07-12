@@ -23,7 +23,7 @@ func newReleasesClient(t *testing.T, handler http.HandlerFunc) (*httptest.Server
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	c := NewTerraformReleasesClient(srv.URL+"/", "terraform")
+	c := NewTerraformReleasesClientWithGuard(srv.URL+"/", "terraform", loopbackGuard)
 	// Keep timeouts short in tests by reusing the HTTPClient for downloads too.
 	c.DownloadClient = c.HTTPClient
 	return srv, c
@@ -335,7 +335,7 @@ func TestDownloadBinaryStream_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewTerraformReleasesClient(srv.URL, "terraform")
+	c := NewTerraformReleasesClientWithGuard(srv.URL, "terraform", loopbackGuard)
 	c.DownloadClient = c.HTTPClient
 
 	body, _, err := c.DownloadBinaryStream(context.Background(), srv.URL+"/terraform_1.5.0_linux_amd64.zip")
@@ -361,7 +361,7 @@ func TestDownloadBinaryStream_NonOKStatus(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewTerraformReleasesClient(srv.URL, "terraform")
+	c := NewTerraformReleasesClientWithGuard(srv.URL, "terraform", loopbackGuard)
 	c.DownloadClient = c.HTTPClient
 
 	_, _, err := c.DownloadBinaryStream(context.Background(), srv.URL+"/missing.zip")

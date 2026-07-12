@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 )
 
 // ---------------------------------------------------------------------------
@@ -113,6 +114,86 @@ func newTerraformMirrorRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	r.GET("/terraform-mirrors/:id/versions/:version/platforms", h.ListPlatforms)
 
 	return mock, r
+}
+
+// ---------------------------------------------------------------------------
+// SSRF: private / cloud-metadata upstream_url rejected at save
+// ---------------------------------------------------------------------------
+
+func TestTMCreateConfig_RejectsCloudMetadataURL(t *testing.T) {
+	_, r := newTerraformMirrorRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/terraform-mirrors",
+		jsonBody(map[string]interface{}{
+			"name":         "metadata-mirror",
+			"tool":         "terraform",
+			"upstream_url": "http://169.254.169.254/",
+		})))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestTMCreateConfig_RejectsPrivateURL(t *testing.T) {
+	_, r := newTerraformMirrorRouter(t)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/terraform-mirrors",
+		jsonBody(map[string]interface{}{
+			"name":         "internal-mirror",
+			"tool":         "terraform",
+			"upstream_url": "https://192.168.1.1/",
+		})))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestTMUpdateConfig_RejectsPrivateURL(t *testing.T) {
+	mock, r := newTerraformMirrorRouter(t)
+	mock.ExpectQuery("SELECT.*FROM terraform_mirror_configs WHERE id").
+		WillReturnRows(sampleTMCRow())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/terraform-mirrors/"+knownUUID,
+		jsonBody(map[string]interface{}{"upstream_url": "http://127.0.0.1:9000/"})))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestTMCreateConfig_AllowlistedURLSucceeds(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	sqlxDB := sqlx.NewDb(db, "sqlmock")
+	repo := repositories.NewTerraformMirrorRepository(sqlxDB)
+	h := NewTerraformMirrorHandler(repo)
+	h.SetEgressGuard(httpsafe.MustGuard("172.20.0.0/16"))
+
+	r := gin.New()
+	r.POST("/terraform-mirrors", h.CreateConfig)
+
+	mock.ExpectQuery("SELECT.*FROM terraform_mirror_configs WHERE name").
+		WillReturnRows(emptyTMCRows())
+	mock.ExpectQuery("INSERT INTO terraform_mirror_configs").
+		WillReturnRows(sampleTMCRow())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/terraform-mirrors",
+		jsonBody(map[string]interface{}{
+			"name":         "allowlisted-internal-mirror",
+			"tool":         "terraform",
+			"upstream_url": "https://172.20.5.5/",
+		})))
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+	}
 }
 
 // ---------------------------------------------------------------------------

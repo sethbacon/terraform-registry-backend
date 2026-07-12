@@ -13,11 +13,14 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/spf13/viper"
+
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 )
 
 // Config holds all application configuration
@@ -115,8 +118,13 @@ type PolicyConfig struct {
 	Enabled bool `mapstructure:"enabled"`
 	// Mode controls enforcement: "warn" logs violations and continues; "block" rejects the action.
 	Mode string `mapstructure:"mode"`
-	// BundleURL is the HTTP/HTTPS URL of the .tar.gz Rego bundle.
+	// BundleURL is the HTTPS URL of the .tar.gz Rego bundle. Plain HTTP is only
+	// accepted when the bundle host is covered by security.egress.allowlist.
 	BundleURL string `mapstructure:"bundle_url"`
+	// BundleSHA256 optionally pins the expected SHA-256 (hex) of the bundle
+	// archive. When set, a fetched bundle whose digest does not match is
+	// rejected and the previously loaded policies are kept (fail closed).
+	BundleSHA256 string `mapstructure:"bundle_sha256"`
 	// BundleRefreshInterval is how often (in seconds) the bundle is re-fetched in the background.
 	// 0 means no background refresh.
 	BundleRefreshInterval int `mapstructure:"bundle_refresh_interval"`
@@ -301,6 +309,13 @@ type SuiteConfig struct {
 	// the sibling TSM's /consumers). Empty (default) leaves the proxy inert; set it
 	// to the SAME value as the sibling's TSM_SUITE_SERVICE_TOKEN.
 	SiblingToken string `mapstructure:"sibling_token"` // TFR_SUITE_SIBLING_TOKEN
+	// TrustedIssuers lists additional JWT `iss` claims this app accepts on top of
+	// its own ("terraform-registry"), for a coupled suite deployment sharing
+	// TFR_JWT_SECRET with sibling apps (ADR 012). Empty (default) means only this
+	// app's own tokens validate — the standalone-safe default; issue #559
+	// finding [0]. Comma-separated in TFR_SUITE_TRUSTED_ISSUERS (e.g.
+	// "terraform-state-manager"). Wired via auth.SetTrustedIssuers at startup.
+	TrustedIssuers []string `mapstructure:"trusted_issuers"` // TFR_SUITE_TRUSTED_ISSUERS
 }
 
 // ShouldSeedRoles reports whether this app (identified by app, e.g. "registry")
@@ -556,6 +571,22 @@ type SecurityConfig struct {
 	RateLimiting RateLimitingConfig `mapstructure:"rate_limiting"`
 	TLS          TLSConfig          `mapstructure:"tls"`
 	MTLS         MTLSConfig         `mapstructure:"mtls"`
+	Egress       EgressConfig       `mapstructure:"egress"`
+}
+
+// EgressConfig controls SSRF egress filtering for outbound HTTP requests whose
+// target URL is operator- or admin-configurable (mirror upstreams, SCM provider
+// base URLs, the policy bundle, the OSV endpoint, SAML IdP metadata, audit
+// webhooks). By default outbound requests may not target loopback, private
+// (RFC 1918 / ULA), link-local (including the cloud metadata endpoint
+// 169.254.169.254), or otherwise non-public addresses.
+type EgressConfig struct {
+	// Allowlist exempts specific hostnames, IPs, or CIDR ranges from the
+	// private-address deny-list, for deployments that legitimately mirror from
+	// internal registries (e.g. ["registry.corp.internal", "10.20.0.0/16"]).
+	// Default empty = deny all private/internal targets.
+	// Env: TFR_SECURITY_EGRESS_ALLOWLIST (comma-separated).
+	Allowlist []string `mapstructure:"allowlist"`
 }
 
 // CORSConfig holds CORS configuration
@@ -829,6 +860,7 @@ func bindEnvVars(v *viper.Viper) error {
 		"security.tls.enabled",
 		"security.tls.cert_file",
 		"security.tls.key_file",
+		"security.egress.allowlist",
 
 		// Logging
 		"logging.level",
@@ -893,6 +925,7 @@ func bindEnvVars(v *viper.Viper) error {
 		"suite.role_seed_owner",
 		"suite.identity_shared_store",
 		"suite.sibling_token",
+		"suite.trusted_issuers",
 	}
 	for _, key := range keys {
 		if err := v.BindEnv(key); err != nil {
@@ -1042,6 +1075,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("security.rate_limiting.org_requests_per_minute", 0)
 	v.SetDefault("security.rate_limiting.org_burst", 0)
 	v.SetDefault("security.tls.enabled", false)
+	v.SetDefault("security.egress.allowlist", []string{})
 
 	// Logging defaults
 	v.SetDefault("logging.level", "info")
@@ -1114,6 +1148,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("suite.role_seed_owner", "self")
 	v.SetDefault("suite.identity_shared_store", false)
 	v.SetDefault("suite.sibling_token", "")
+	// trusted_issuers defaults to empty (deny-by-default, same convention as
+	// security.cors.allowed_origins above): only this app's own issuer is
+	// trusted unless siblings are explicitly configured.
+	v.SetDefault("suite.trusted_issuers", []string{})
 }
 
 // expandEnv expands environment variables in the format ${VAR_NAME}
@@ -1245,6 +1283,31 @@ func (c *Config) Validate() error {
 		}
 		if !toolValid {
 			return fmt.Errorf("scanning.tool must be one of: %s", strings.Join(validTools, ", "))
+		}
+	}
+
+	// Validate the egress allow-list itself (each entry must be a hostname, IP,
+	// or CIDR) before using it to validate the URLs below.
+	egressGuard, err := httpsafe.NewGuard(c.Security.Egress.Allowlist)
+	if err != nil {
+		return fmt.Errorf("security.egress.allowlist: %w", err)
+	}
+
+	// Validate the policy bundle URL at config-load time: bundle_url is not
+	// exposed through any runtime-writable admin endpoint (only YAML/env), but
+	// it is still operator-configurable and must not resolve to a private or
+	// cloud-metadata address, and must use HTTPS unless the host is
+	// allow-listed (see internal/policy/bundle_loader.go).
+	if c.Policy.Enabled && c.Policy.BundleURL != "" {
+		parsed, err := url.Parse(c.Policy.BundleURL)
+		if err != nil {
+			return fmt.Errorf("policy.bundle_url: invalid URL: %w", err)
+		}
+		if parsed.Scheme != "https" && !egressGuard.HostExempt(parsed.Hostname()) {
+			return fmt.Errorf("policy.bundle_url must use https (got %q); add the host to security.egress.allowlist if plain HTTP to an internal mirror is intentional", parsed.Scheme)
+		}
+		if err := egressGuard.ValidateURL(c.Policy.BundleURL); err != nil {
+			return fmt.Errorf("policy.bundle_url: %w", err)
 		}
 	}
 

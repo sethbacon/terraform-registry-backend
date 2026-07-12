@@ -16,6 +16,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/cve/osv"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/notify"
 )
 
@@ -28,6 +29,7 @@ type CVEPollJob struct {
 	matcher   *cve.Matcher
 	cveRepo   *repositories.CVERepository
 	auditRepo *repositories.AuditRepository
+	scanCfg   *config.ScanningConfig
 	cveCfg    *config.CVEConfig
 	notifCfg  *config.NotificationsConfig
 	mailer    *notify.Mailer
@@ -35,7 +37,9 @@ type CVEPollJob struct {
 	manualCh  chan struct{}
 }
 
-// NewCVEPollJob constructs and returns a CVEPollJob.
+// NewCVEPollJob constructs and returns a CVEPollJob. The OSV client uses the
+// strict egress policy; call SetEgressGuard before Start to widen it for a
+// deployment that points cve.osv_endpoint at an internal OSV mirror.
 func NewCVEPollJob(
 	cveRepo *repositories.CVERepository,
 	auditRepo *repositories.AuditRepository,
@@ -43,23 +47,29 @@ func NewCVEPollJob(
 	cveCfg *config.CVEConfig,
 	notifCfg *config.NotificationsConfig,
 ) *CVEPollJob {
-	endpoint := cveCfg.OSVEndpoint
-	if endpoint == "" {
-		endpoint = "https://api.osv.dev"
-	}
-	client := osv.NewClient(endpoint)
+	client := osv.NewClient(cveCfg.OSVEndpoint)
 	matcher := cve.NewMatcher(client, cveRepo, scanCfg)
 
 	return &CVEPollJob{
 		matcher:   matcher,
 		cveRepo:   cveRepo,
 		auditRepo: auditRepo,
+		scanCfg:   scanCfg,
 		cveCfg:    cveCfg,
 		notifCfg:  notifCfg,
 		mailer:    notify.New(&notifCfg.SMTP),
 		stopChan:  make(chan struct{}),
 		manualCh:  make(chan struct{}, 1),
 	}
+}
+
+// SetEgressGuard rebuilds the OSV client and matcher using the
+// operator-configured egress guard (security.egress.allowlist), widening the
+// SSRF deny-list for deployments that point cve.osv_endpoint at an internal
+// OSV mirror. Call before Start.
+func (j *CVEPollJob) SetEgressGuard(g *httpsafe.Guard) {
+	client := osv.NewClientWithGuard(j.cveCfg.OSVEndpoint, g)
+	j.matcher = cve.NewMatcher(client, j.cveRepo, j.scanCfg)
 }
 
 // Start begins the background polling loop. It runs an initial poll immediately
