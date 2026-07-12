@@ -47,6 +47,11 @@ This document catalogs all database migrations, their reversibility, and rollbac
 | 000038 | `feature_fk_to_identity`               | ✅ Yes         | Reverts feature-table FKs to `public.{users,organizations}`; no-op when the `identity` schema is absent |
 | 000039 | `add_packer_sentinel_opa_tools`        | ⚠️ Conditional | Restores the original tool CHECK constraint; the down fails if rows use `packer`/`sentinel`/`opa` |
 | 000040 | `terraform_mirror_default_stable_approval` | ✅ Yes     | Reverts column defaults; existing rows are not modified   |
+| 000041 | `scm_shared_app_credentials`           | ⚠️ Conditional | Drops app-credential columns; the down fails while providers still use an app auth mode |
+| 000042 | `add_terraform_docs_tool`              | ⚠️ Conditional | Restores the tool CHECK constraint; the down fails if rows use `terraform-docs` |
+| 000043 | `setup_notifications`                  | ✅ Yes         | Drops notification-config columns; persisted SMTP config lost |
+| 000044 | `scanner_binary_versions`              | ✅ Yes         | Drops the scanner-binary-versions table and approval-event column |
+| 000045 | `namespace_org_claims`                 | ✅ Yes         | Drops the namespace-ownership table; bindings are re-derived from artifacts on re-apply |
 
 ## How to Run Migrations
 
