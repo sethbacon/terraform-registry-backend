@@ -210,6 +210,29 @@ security:
     #   allowedOrigins: ["https://registry.example.com"]
     allowedOrigins: []
 
+# -- Suite coupling with the Terraform State Manager. Standalone by default.
+# A COUPLED deployment (sharing one identity database and/or JWT secret) MUST
+# set roleSeedOwner to exactly one owner ("registry" or "tsm") across both
+# apps to avoid clobbering each other's shared role scopes. See
+# docs/identity-schema.md if also cutting over to the shared identity DB schema.
+suite:
+  # -- Sibling TSM's public origin (its /suite/manifest is polled). Empty = standalone.
+  siblingUrl: ""
+  # -- Role-template seeder / identity owner: self | registry | tsm.
+  roleSeedOwner: "self"
+  # -- Set true only when both apps share one identity database + IdP (enables seamless SSO).
+  identitySharedStore: false
+  # -- Shared service token sent (X-Suite-Service-Token) when this app proxies a
+  # cross-app "Consumed by" read to the sibling TSM. Empty disables the proxy.
+  # Must equal the sibling's TSM_SUITE_SERVICE_TOKEN. Ignored if
+  # security.existingSecret is set (add TFR_SUITE_SIBLING_TOKEN there instead).
+  siblingToken: ""
+  # -- Additional trusted JWT issuers, for a coupled suite deployment sharing
+  # security.jwtSecret with sibling apps. Empty (default) means only this app's
+  # own tokens validate — the standalone-safe default. Example:
+  #   trustedIssuers: ["terraform-state-manager"]
+  trustedIssuers: []
+
 # -- Redis configuration (optional, enables HA features)
 # When redis.host is set, rate limiting uses distributed GCRA in Redis and
 # OIDC session state is stored in Redis -- both required for correct behavior
