@@ -7,6 +7,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0](https://github.com/sethbacon/terraform-registry-backend/compare/v2.9.0...v3.0.0) (2026-07-13)
+
+
+### ⚠ BREAKING CHANGES
+
+* **auth:** adopt terraform-suite-identity v0.17.0 (email_verified, ClientSecretCiphertext, ScopeAdmin guard) ([#614](https://github.com/sethbacon/terraform-registry-backend/issues/614))
+
+### Features
+
+* **auth:** adopt terraform-suite-identity v0.17.0 (email_verified, ClientSecretCiphertext, ScopeAdmin guard) ([#614](https://github.com/sethbacon/terraform-registry-backend/issues/614)) ([31e7e28](https://github.com/sethbacon/terraform-registry-backend/commit/31e7e285a6908dbf825314147949d05d63e18609))
+* **helm:** wire suite coupling into the registry chart ([#616](https://github.com/sethbacon/terraform-registry-backend/issues/616)) ([17be3cb](https://github.com/sethbacon/terraform-registry-backend/commit/17be3cbee953bf3b169efc22692adef85945c2ed))
+
+
+### Bug Fixes
+
+* **auth:** bind OIDC/Azure AD logins with a nonce and PKCE ([#612](https://github.com/sethbacon/terraform-registry-backend/issues/612)) ([b9f93dd](https://github.com/sethbacon/terraform-registry-backend/commit/b9f93dd9475047576253eb59143a00893c02b317))
+* **security:** enforce per-organization membership on /organizations/:id* routes ([#611](https://github.com/sethbacon/terraform-registry-backend/issues/611)) ([cb2d41f](https://github.com/sethbacon/terraform-registry-backend/commit/cb2d41fcf9ede4b3e9d3b8213bd004f40a04c511))
+
 ## [2.9.0](https://github.com/sethbacon/terraform-registry-backend/compare/v2.8.2...v2.9.0) (2026-07-12)
 
 
