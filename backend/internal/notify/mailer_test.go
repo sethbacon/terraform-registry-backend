@@ -59,3 +59,33 @@ func TestSanitizeHeader(t *testing.T) {
 		})
 	}
 }
+
+// TestAuthFor verifies that authentication is only attached when credentials
+// are provided. An open relay (no username/password) must receive a nil auth so
+// smtp.SendMail does not fail with "smtp: server doesn't support AUTH".
+func TestAuthFor(t *testing.T) {
+	tests := []struct {
+		name        string
+		username    string
+		password    string
+		wantNilAuth bool
+	}{
+		{"no credentials (unauthenticated relay)", "", "", true},
+		{"username only", "user", "", false},
+		{"password only", "", "secret", false},
+		{"username and password", "user", "secret", false},
+		{"whitespace-only username still attempts auth", " ", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.SMTPConfig{Host: "smtp.example.com", Username: tt.username, Password: tt.password}
+			auth := authFor(cfg)
+			if tt.wantNilAuth && auth != nil {
+				t.Errorf("authFor(%q, %q) = non-nil, want nil", tt.username, tt.password)
+			}
+			if !tt.wantNilAuth && auth == nil {
+				t.Errorf("authFor(%q, %q) = nil, want non-nil", tt.username, tt.password)
+			}
+		})
+	}
+}

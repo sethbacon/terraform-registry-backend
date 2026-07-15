@@ -51,12 +51,25 @@ func (m *Mailer) Send(to []string, subject, body string) error {
 	msg := []byte(headers + body + "\r\n")
 
 	addr := fmt.Sprintf("%s:%d", m.cfg.Host, m.cfg.Port)
-	auth := smtp.PlainAuth("", m.cfg.Username, m.cfg.Password, m.cfg.Host)
+	auth := authFor(m.cfg)
 
 	if m.cfg.UseTLS {
 		return sendMailTLS(addr, m.cfg.Host, auth, m.cfg.From, recipients, msg)
 	}
 	return smtp.SendMail(addr, auth, m.cfg.From, recipients, msg)
+}
+
+// authFor returns the SMTP authentication mechanism for the configured
+// credentials, or nil when both username and password are empty. A relay that
+// does not require authentication (and therefore does not advertise the AUTH
+// extension, e.g. an internal server on port 25) rejects a non-nil auth with
+// "smtp: server doesn't support AUTH", so returning nil here skips
+// authentication and allows sending through such relays.
+func authFor(cfg *config.SMTPConfig) smtp.Auth {
+	if cfg.Username == "" && cfg.Password == "" {
+		return nil
+	}
+	return smtp.PlainAuth("", cfg.Username, cfg.Password, cfg.Host)
 }
 
 // sanitizeHeader removes CR and LF characters so a value cannot inject

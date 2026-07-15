@@ -225,6 +225,9 @@ notifications:
   smtp:
     host: smtp.example.com  # e.g. smtp.sendgrid.net, smtp.mailgun.org
     port: 587               # 587 = STARTTLS, 465 = SMTPS, 25 = plain
+    # Leave username and password empty to send through an unauthenticated relay.
+    # Only point this at a trusted, network-isolated internal relay, and still set
+    # use_tls: true (STARTTLS) even without credentials so the connection is encrypted.
     username: ${SMTP_USERNAME}
     password: ${SMTP_PASSWORD}
     from: "Terraform Registry <no-reply@example.com>"
