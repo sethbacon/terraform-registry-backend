@@ -7,6 +7,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.0](https://github.com/sethbacon/terraform-registry-backend/compare/v3.0.0...v3.1.0) (2026-07-16)
+
+
+### Features
+
+* **release:** publish the FIPS-140-3 Docker image variant ([#617](https://github.com/sethbacon/terraform-registry-backend/issues/617)) ([52bbafd](https://github.com/sethbacon/terraform-registry-backend/commit/52bbafd0a1858d4483286d47e2635959a201389f))
+
+
+### Bug Fixes
+
+* **deps:** bump Go 1.26.4 -&gt; 1.26.5 to close two stdlib CVEs ([#623](https://github.com/sethbacon/terraform-registry-backend/issues/623)) ([5484cef](https://github.com/sethbacon/terraform-registry-backend/commit/5484cef8a893c1b078b51654083ab321ea236855))
+* skip SMTP auth when relay credentials are blank ([#624](https://github.com/sethbacon/terraform-registry-backend/issues/624)) ([7cdb70e](https://github.com/sethbacon/terraform-registry-backend/commit/7cdb70e4bd3d01cb88967beb45ba6a2038017371))
+
 ## [3.0.0](https://github.com/sethbacon/terraform-registry-backend/compare/v2.9.0...v3.0.0) (2026-07-13)
 
 
