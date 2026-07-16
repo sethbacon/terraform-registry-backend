@@ -14,5 +14,5 @@ Closes #<!-- issue number -->
 - [ ] `go test ./...` passes
 - [ ] `go fmt ./...` and `go vet ./...` clean
 - [ ] No new `gosec` findings
-- [ ] PR targets `development` (for feature/fix) or `main` (release only)
+- [ ] PR targets `main`
 - [ ] Remote branch will be deleted after merge
