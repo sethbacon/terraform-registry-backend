@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.0](https://github.com/sethbacon/terraform-registry-backend/compare/v3.1.0...v3.2.0) (2026-07-16)
+
+
+### Features
+
+* **notifications:** delivery channels, event controls, and SMTP TLS hardening ([#625](https://github.com/sethbacon/terraform-registry-backend/issues/625)) ([9a657e5](https://github.com/sethbacon/terraform-registry-backend/commit/9a657e533a664a1dd2af744547e9685c66a177d2))
+
 ## [3.1.0](https://github.com/sethbacon/terraform-registry-backend/compare/v3.0.0...v3.1.0) (2026-07-16)
 
 
