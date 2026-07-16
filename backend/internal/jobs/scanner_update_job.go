@@ -39,12 +39,17 @@ type ScannerUpdateJob struct {
 	oidcCfgRepo  *repositories.OIDCConfigRepository
 	scannerJob   *ModuleScannerJob
 	mailer       *notify.Mailer
-	check        installer.CheckFunc
-	download     installer.InstallFunc
-	stopChan     chan struct{}
-	manualCh     chan struct{}
-	mu           sync.Mutex
-	started      bool
+	// notifier fans scanner_update_available / approval_pending out to
+	// admin-configured notification channels, in addition to the direct
+	// recipients email below. May be nil (e.g. in tests); Notifier.Notify is a
+	// no-op on a nil receiver. Set via SetNotifier.
+	notifier *notify.Notifier
+	check    installer.CheckFunc
+	download installer.InstallFunc
+	stopChan chan struct{}
+	manualCh chan struct{}
+	mu       sync.Mutex
+	started  bool
 }
 
 // NewScannerUpdateJob constructs a ScannerUpdateJob. check and download default to
@@ -85,6 +90,13 @@ func NewScannerUpdateJob(
 
 // Name returns the human-readable job name used in logs.
 func (j *ScannerUpdateJob) Name() string { return "scanner-update" }
+
+// SetNotifier wires in the channel notifier so scanner update discoveries
+// also fan out to admin-configured notification channels (webhook/Slack/
+// Teams/email), in addition to the direct recipients email. Call before Start.
+func (j *ScannerUpdateJob) SetNotifier(n *notify.Notifier) {
+	j.notifier = n
+}
 
 // Start begins the background update-check loop. It runs an initial check (plus
 // activation reconciliation) immediately on startup, then repeats on the
@@ -419,15 +431,14 @@ func supersededDirsToRemove(rows []models.ScannerBinaryVersion, active *models.S
 	return dirs
 }
 
-// notify sends an admin notification email about a newly discovered scanner
-// version, guarded by notifications being enabled/configured and recipients
-// being present. Never fails the caller; send errors are logged only.
+// notify sends an admin notification about a newly discovered scanner
+// version: a direct email (guarded by notifications being enabled/configured,
+// the relevant event toggle, and recipients being present) plus a fan-out to
+// admin-configured notification channels (webhook/Slack/Teams/email), which
+// have their own independent enabled flag and event subscription. Never
+// fails the caller; send errors are logged only.
 // coverage:skip:integration-only — calls the shared mailer, which requires live SMTP.
-func (j *ScannerUpdateJob) notify(_ context.Context, v *models.ScannerBinaryVersion, status *string) {
-	if j.notifCfg == nil || !j.notifCfg.Enabled || j.notifCfg.SMTP.Host == "" || len(j.cveCfg.EmailRecipients) == 0 {
-		return
-	}
-
+func (j *ScannerUpdateJob) notify(ctx context.Context, v *models.ScannerBinaryVersion, status *string) {
 	approved := status != nil && *status == models.VersionApprovalStatusApproved
 
 	var subject string
@@ -446,7 +457,37 @@ func (j *ScannerUpdateJob) notify(_ context.Context, v *models.ScannerBinaryVers
 		body.WriteString("This version is pending approval. Log in to review and approve it before it is activated.\n")
 	}
 
-	if err := j.mailer.Send(j.cveCfg.EmailRecipients, subject, body.String()); err != nil {
+	// Fan out to notification channels regardless of the direct-recipients
+	// toggles below — each channel has its own enabled flag and event
+	// subscription.
+	eventType := notify.EventScannerUpdateAvailable
+	if !approved {
+		eventType = notify.EventApprovalPending
+	}
+	j.notifier.Notify(ctx, notify.Event{Type: eventType, Title: subject, Message: body.String()})
+
+	if j.notifCfg == nil || !j.notifCfg.Enabled || j.notifCfg.SMTP.Host == "" {
+		return
+	}
+	// approved (auto-approved, informational) is gated separately from a
+	// pending version (needs admin action) so an admin can opt out of one
+	// without the other.
+	if approved && !j.notifCfg.Events.ScannerUpdateAvailable {
+		return
+	}
+	if !approved && !j.notifCfg.Events.ApprovalPending {
+		return
+	}
+
+	recipients := j.notifCfg.Recipients
+	if len(recipients) == 0 {
+		recipients = j.cveCfg.EmailRecipients
+	}
+	if len(recipients) == 0 {
+		return
+	}
+
+	if err := j.mailer.Send(recipients, subject, body.String()); err != nil {
 		log.Printf("[scanner-update] failed to send notification email: %v", err)
 	}
 }

@@ -39,6 +39,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/jobs"
 	"github.com/terraform-registry/terraform-registry/internal/middleware"
+	"github.com/terraform-registry/terraform-registry/internal/notify"
 	"github.com/terraform-registry/terraform-registry/internal/policy"
 	"github.com/terraform-registry/terraform-registry/internal/scm"
 	"github.com/terraform-registry/terraform-registry/internal/scm/appcreds"
@@ -384,7 +385,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 
 	// Role-template CRUD follows the identity schema; mirror methods stay public.
 	rbacRepo := repositories.NewRBACRepositoryWithIdentity(sqlxDB, identitySqlxDB)
-	rbacHandlers := admin.NewRBACHandlers(rbacRepo, userTokenRevocationRepo)
+	rbacHandlers := admin.NewRBACHandlers(rbacRepo, userTokenRevocationRepo).WithNotifications(&cfg.Notifications, &cfg.CVE)
 
 	// Initialize audit log handlers
 	auditLogHandlers := admin.NewAuditLogHandlers(identityDB)
@@ -419,6 +420,22 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 
 	// Initialize notifications configuration handlers
 	notificationsHandler := admin.NewNotificationsHandler(&cfg.Notifications, oidcConfigRepo, tokenCipher, &cfg.CVE)
+
+	// Notification channels: additional delivery destinations (webhook, Slack,
+	// Microsoft Teams, or an ad-hoc email recipient list) for the
+	// module_published, approval_pending, cve_detected, and
+	// scanner_update_available events, alongside the shared SMTP recipients
+	// list above. Wire the notifier into every trigger that fans those events
+	// out so channels observe them in addition to the direct-recipients email.
+	// The notifier and the channel handlers both take egressGuard so a
+	// webhook/Slack/Teams target URL is subject to the same SSRF egress policy
+	// as every other outbound client (validated at save, enforced at dial).
+	notificationChannelRepo := repositories.NewNotificationChannelRepository(db)
+	notifier := notify.NewNotifier(notificationChannelRepo, notify.New(&cfg.Notifications.SMTP), tokenCipher, egressGuard)
+	notificationChannelHandlers := admin.NewNotificationChannelHandlers(notificationChannelRepo, notifier, tokenCipher, egressGuard)
+	cvePollJob.SetNotifier(notifier)
+	scannerUpdateJob.SetNotifier(notifier)
+	rbacHandlers.WithNotifier(notifier)
 
 	// Initialize OIDC admin configuration handlers
 	oidcAdminHandlers := admin.NewOIDCConfigAdminHandlers(oidcConfigRepo)
@@ -554,6 +571,8 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		scannerApprovalRepo:         scannerApprovalRepo,
 		scannerUpdateJob:            scannerUpdateJob,
 		notificationsHandler:        notificationsHandler,
+		notificationChannelHandlers: notificationChannelHandlers,
+		notifier:                    notifier,
 		apiKeyHandlers:              apiKeyHandlers,
 		userHandlers:                userHandlers,
 		gdprHandlers:                gdprHandlers,

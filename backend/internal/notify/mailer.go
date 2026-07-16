@@ -31,7 +31,7 @@ func New(cfg *config.SMTPConfig) *Mailer {
 // Send composes RFC822 headers plus a plain-text body and delivers the message to
 // all recipients. When cfg.UseTLS is set, an implicit TLS connection is attempted
 // first, falling back to STARTTLS (via smtp.SendMail) on dial failure; otherwise
-// plain smtp.SendMail is used.
+// the connection is deliberately kept plaintext (see sendMailPlain).
 // coverage:skip:integration-only — calls smtp.SendMail / TLS dial; requires live SMTP.
 func (m *Mailer) Send(to []string, subject, body string) error {
 	if m.cfg == nil {
@@ -56,7 +56,15 @@ func (m *Mailer) Send(to []string, subject, body string) error {
 	if m.cfg.UseTLS {
 		return sendMailTLS(addr, m.cfg.Host, auth, m.cfg.From, recipients, msg)
 	}
-	return smtp.SendMail(addr, auth, m.cfg.From, recipients, msg)
+	// UseTLS=false is a deliberate operator choice (typically a trusted,
+	// network-isolated relay that has no valid certificate) and must reliably
+	// result in a plaintext connection. smtp.SendMail cannot be used here: it
+	// opportunistically upgrades to STARTTLS whenever the server merely
+	// advertises the extension, with no way to opt out. Many relays advertise
+	// STARTTLS even when unauthenticated/internal, so a self-signed or
+	// otherwise untrusted certificate would fail the TLS handshake and abort
+	// the send even though use_tls was explicitly set to false.
+	return sendMailPlain(addr, m.cfg.Host, auth, m.cfg.From, recipients, msg)
 }
 
 // authFor returns the SMTP authentication mechanism for the configured
@@ -114,6 +122,53 @@ func sendMailTLS(addr, host string, auth smtp.Auth, from string, to []string, ms
 	for _, addr := range to {
 		if err := c.Rcpt(addr); err != nil {
 			return fmt.Errorf("smtp RCPT TO %s: %w", addr, err)
+		}
+	}
+	w, err := c.Data()
+	if err != nil {
+		return fmt.Errorf("smtp DATA: %w", err)
+	}
+	if _, err := w.Write(msg); err != nil {
+		return fmt.Errorf("smtp write: %w", err)
+	}
+	return w.Close()
+}
+
+// sendMailPlain connects without TLS and sends a message, deliberately never
+// attempting a STARTTLS upgrade even if the relay advertises the extension.
+// This is the UseTLS=false path: unlike smtp.SendMail (which opportunistically
+// upgrades to STARTTLS whenever the server offers it, with no way to opt out),
+// this guarantees the connection stays plaintext throughout. Without this, a
+// relay that merely advertises STARTTLS but presents a self-signed or otherwise
+// untrusted certificate — common for internal/unauthenticated relays — would
+// fail the TLS handshake and abort the send even though the operator explicitly
+// configured use_tls: false for a plaintext connection.
+func sendMailPlain(addr, host string, auth smtp.Auth, from string, to []string, msg []byte) error {
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("dial: %w", err)
+	}
+	c, err := smtp.NewClient(conn, host)
+	if err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("smtp new client: %w", err)
+	}
+	defer c.Quit() //nolint:errcheck
+
+	if auth != nil {
+		if ok, _ := c.Extension("AUTH"); !ok {
+			return fmt.Errorf("smtp: server doesn't support AUTH")
+		}
+		if err := c.Auth(auth); err != nil {
+			return fmt.Errorf("smtp auth: %w", err)
+		}
+	}
+	if err := c.Mail(from); err != nil {
+		return fmt.Errorf("smtp MAIL FROM: %w", err)
+	}
+	for _, rcpt := range to {
+		if err := c.Rcpt(rcpt); err != nil {
+			return fmt.Errorf("smtp RCPT TO %s: %w", rcpt, err)
 		}
 	}
 	w, err := c.Data()

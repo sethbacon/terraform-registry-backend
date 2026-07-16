@@ -2,17 +2,21 @@
 package admin
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/notify"
 )
 
 // RBACHandlers handles RBAC-related API endpoints
@@ -24,11 +28,40 @@ type RBACHandlers struct {
 	// instead of carrying the old scopes until expiry (issue #559 finding [9]).
 	// May be nil in tests; revocation is skipped when unset.
 	userRevocations *repositories.UserTokenRevocationRepository
+
+	// notifCfg, cveCfg, and mailer back the approval_pending notification sent
+	// when a new mirror approval request is created. Set via WithNotifications;
+	// nil until then, in which case the notification is skipped.
+	notifCfg *config.NotificationsConfig
+	cveCfg   *config.CVEConfig
+	mailer   *notify.Mailer
+	// notifier fans approval_pending out to admin-configured notification
+	// channels (webhook/Slack/Teams/email), in addition to the direct
+	// recipients email above. Set via WithNotifier; nil is a no-op.
+	notifier *notify.Notifier
 }
 
 // NewRBACHandlers creates a new RBAC handlers instance
 func NewRBACHandlers(rbacRepo *repositories.RBACRepository, userRevocations *repositories.UserTokenRevocationRepository) *RBACHandlers {
 	return &RBACHandlers{rbacRepo: rbacRepo, userRevocations: userRevocations}
+}
+
+// WithNotifications wires in the shared notifications/CVE config so
+// CreateApprovalRequest can send an approval_pending admin notification email.
+// Returns the handler for chaining.
+func (h *RBACHandlers) WithNotifications(notifCfg *config.NotificationsConfig, cveCfg *config.CVEConfig) *RBACHandlers {
+	h.notifCfg = notifCfg
+	h.cveCfg = cveCfg
+	h.mailer = notify.New(&notifCfg.SMTP)
+	return h
+}
+
+// WithNotifier wires in the channel notifier so CreateApprovalRequest also
+// fans approval_pending out to admin-configured notification channels
+// (webhook/Slack/Teams/email). Returns the handler for chaining.
+func (h *RBACHandlers) WithNotifier(n *notify.Notifier) *RBACHandlers {
+	h.notifier = n
+	return h
 }
 
 // revokeRoleTemplateMemberTokens revokes the outstanding tokens of every member
@@ -51,6 +84,48 @@ func (h *RBACHandlers) revokeRoleTemplateMemberTokens(c *gin.Context, roleTempla
 				"user_id", userID, "role_template_id", roleTemplateID, "reason", reason, "error", err)
 		}
 	}
+}
+
+// notifyApprovalPending emails the configured admin recipients and fans out
+// to admin-configured notification channels (webhook/Slack/Teams/email) when
+// a new mirror provider approval request is created. The direct email is
+// gated on notifications being enabled and the approval_pending event type
+// not having been opted out of; channels have their own independent enabled
+// flag and event subscription. Runs detached (fire-and-forget) so SMTP/
+// webhook latency never delays the API response; send failures are logged
+// only. A nil notifCfg (WithNotifications never called, e.g. in tests) skips
+// only the direct email — the channel fan-out is independent.
+func (h *RBACHandlers) notifyApprovalPending(approval *models.MirrorApprovalRequest) {
+	target := approval.ProviderNamespace
+	if approval.ProviderName != nil && *approval.ProviderName != "" {
+		target = fmt.Sprintf("%s/%s", approval.ProviderNamespace, *approval.ProviderName)
+	}
+	subject := fmt.Sprintf("New approval pending: mirror request for %s", target)
+	body := fmt.Sprintf(
+		"A new mirror provider approval request requires review.\n\nProvider: %s\nReason: %s\n\nLog in to the Terraform Registry admin UI to review and approve or reject it.\n\n— Terraform Registry",
+		target, approval.Reason,
+	)
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		h.notifier.Notify(ctx, notify.Event{Type: notify.EventApprovalPending, Title: subject, Message: body})
+
+		if h.notifCfg == nil || !h.notifCfg.Enabled || h.notifCfg.SMTP.Host == "" || !h.notifCfg.Events.ApprovalPending {
+			return
+		}
+		recipients := h.notifCfg.Recipients
+		if len(recipients) == 0 && h.cveCfg != nil {
+			recipients = h.cveCfg.EmailRecipients
+		}
+		if len(recipients) == 0 {
+			return
+		}
+		if err := h.mailer.Send(recipients, subject, body); err != nil {
+			slog.Warn("failed to send approval-pending notification email", "error", err)
+		}
+	}()
 }
 
 // ============================================================================
@@ -504,6 +579,8 @@ func (h *RBACHandlers) CreateApprovalRequest(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create approval request"})
 		return
 	}
+
+	h.notifyApprovalPending(approval)
 
 	c.JSON(http.StatusCreated, approval)
 }

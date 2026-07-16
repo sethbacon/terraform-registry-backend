@@ -33,8 +33,13 @@ type CVEPollJob struct {
 	cveCfg    *config.CVEConfig
 	notifCfg  *config.NotificationsConfig
 	mailer    *notify.Mailer
-	stopChan  chan struct{}
-	manualCh  chan struct{}
+	// notifier fans cve_detected out to admin-configured notification channels
+	// (webhook/Slack/Teams/email), in addition to the direct recipients email
+	// below. May be nil (e.g. in tests); Notifier.Notify is a no-op on a nil
+	// receiver. Set via SetNotifier.
+	notifier *notify.Notifier
+	stopChan chan struct{}
+	manualCh chan struct{}
 }
 
 // NewCVEPollJob constructs and returns a CVEPollJob. The OSV client uses the
@@ -70,6 +75,14 @@ func NewCVEPollJob(
 func (j *CVEPollJob) SetEgressGuard(g *httpsafe.Guard) {
 	client := osv.NewClientWithGuard(j.cveCfg.OSVEndpoint, g)
 	j.matcher = cve.NewMatcher(client, j.cveRepo, j.scanCfg)
+}
+
+// SetNotifier wires in the channel notifier so newly discovered advisories
+// also fan out to admin-configured notification channels (webhook/Slack/
+// Teams/email), in addition to the direct cve.email_recipients /
+// notifications.recipients email. Call before Start.
+func (j *CVEPollJob) SetNotifier(n *notify.Notifier) {
+	j.notifier = n
 }
 
 // Start begins the background polling loop. It runs an initial poll immediately
@@ -160,6 +173,10 @@ func (j *CVEPollJob) runPoll(ctx context.Context) {
 	// Send email notifications.
 	if len(result.NewAdvisories) > 0 {
 		j.sendNotifications(ctx, result.NewAdvisories)
+		// Fan out to admin-configured notification channels (webhook/Slack/
+		// Teams/email), independent of the direct-recipients toggle above —
+		// each channel has its own enabled flag and event subscription.
+		j.notifier.Notify(ctx, cveChannelEvent(result.NewAdvisories))
 	}
 }
 
@@ -190,6 +207,24 @@ func (j *CVEPollJob) emitAuditLog(ctx context.Context, adv models.CVEAdvisory) {
 	}
 }
 
+// cveChannelEvent builds the cve_detected notify.Event fanned out to
+// admin-configured notification channels (webhook/Slack/Teams/email): one
+// concise summary listing every newly discovered advisory, regardless of how
+// many there are (unlike the direct-email path, which switches to a digest
+// only at digestThreshold — channel messages are single posts either way).
+func cveChannelEvent(advisories []models.CVEAdvisory) notify.Event {
+	title := fmt.Sprintf("%d new security advisory(ies) detected in Terraform Registry", len(advisories))
+	lines := make([]string, 0, len(advisories))
+	for _, adv := range advisories {
+		targetKind := "unknown"
+		if len(adv.Targets) > 0 {
+			targetKind = string(adv.Targets[0].TargetKind)
+		}
+		lines = append(lines, fmt.Sprintf("%s %s %s: %s", strings.ToUpper(string(adv.Severity)), targetKind, adv.SourceID, adv.Summary))
+	}
+	return notify.Event{Type: notify.EventCVEDetected, Title: title, Message: strings.Join(lines, "\n")}
+}
+
 // sendNotifications delivers email notification(s) for newly discovered advisories.
 // If there are >= digestThreshold new advisories, a single digest email is sent.
 // Otherwise, one email is sent per advisory.
@@ -198,8 +233,14 @@ func (j *CVEPollJob) sendNotifications(ctx context.Context, newAdvisories []mode
 	if j.notifCfg == nil || !j.notifCfg.Enabled || j.notifCfg.SMTP.Host == "" {
 		return
 	}
+	if !j.notifCfg.Events.CVEDetected {
+		return
+	}
 
-	recipients := j.cveCfg.EmailRecipients
+	recipients := j.notifCfg.Recipients
+	if len(recipients) == 0 {
+		recipients = j.cveCfg.EmailRecipients
+	}
 	if len(recipients) == 0 {
 		// No dedicated CVE recipients configured — skip.
 		return

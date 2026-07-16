@@ -23,6 +23,7 @@ func newNotifierConfig(enabled bool, smtpHost string) *config.NotificationsConfi
 			Port: 25,
 			From: "noreply@example.com",
 		},
+		Events:                         config.NotificationEventsConfig{APIKeyExpiring: true},
 		APIKeyExpiryWarningDays:        7,
 		APIKeyExpiryCheckIntervalHours: 24,
 	}

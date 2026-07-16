@@ -2,18 +2,21 @@
 package modules
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/analyzer"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/notify"
 	"github.com/terraform-registry/terraform-registry/internal/policy"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 	"github.com/terraform-registry/terraform-registry/internal/telemetry"
@@ -43,9 +46,10 @@ import (
 // UploadHandler handles module upload requests
 // Implements: POST /api/v1/modules
 // Accepts multipart form with: namespace, name, system, version, description (optional), file
-func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Config, scanRepo *repositories.ModuleScanRepository, moduleDocsRepo *repositories.ModuleDocsRepository, policyEngine *policy.PolicyEngine) gin.HandlerFunc {
+func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Config, scanRepo *repositories.ModuleScanRepository, moduleDocsRepo *repositories.ModuleDocsRepository, policyEngine *policy.PolicyEngine, notifier *notify.Notifier) gin.HandlerFunc {
 	moduleRepo := repositories.NewModuleRepository(db)
 	orgRepo := repositories.NewOrganizationRepository(db)
+	mailer := notify.New(&cfg.Notifications.SMTP)
 
 	return func(c *gin.Context) {
 		// Parse multipart form (max 100MB)
@@ -306,6 +310,8 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 			return
 		}
 
+		notifyModulePublished(mailer, notifier, cfg, namespace, name, system, version)
+
 		// Queue a security scan for the newly uploaded version (non-fatal).
 		if scanRepo != nil && cfg.Scanning.Enabled && cfg.Scanning.BinaryPath != "" {
 			if err := scanRepo.CreatePendingScan(c.Request.Context(), moduleVersion.ID); err != nil {
@@ -351,4 +357,43 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 			"created_at": moduleVersion.CreatedAt,
 		})
 	}
+}
+
+// notifyModulePublished emails the configured admin recipients and fans out to
+// admin-configured notification channels (webhook/Slack/Teams/email) when a
+// new module version is published. The direct email is gated on notifications
+// being enabled and the module_published event type not having been opted
+// out of; channels have their own independent enabled flag and event
+// subscription. Runs detached (fire-and-forget) so SMTP/webhook latency never
+// delays the upload response; send failures are logged only. Uses a fresh
+// background context (not the request context, which is cancelled once the
+// HTTP response is written) with its own timeout.
+func notifyModulePublished(mailer *notify.Mailer, notifier *notify.Notifier, cfg *config.Config, namespace, name, system, version string) {
+	subject := fmt.Sprintf("New module version published: %s/%s/%s v%s", namespace, name, system, version)
+	body := fmt.Sprintf(
+		"A new module version has been published to the Terraform Registry.\n\nModule: %s/%s/%s\nVersion: %s\n\nLog in to the Terraform Registry admin UI to review it.\n\n— Terraform Registry",
+		namespace, name, system, version,
+	)
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		notifier.Notify(ctx, notify.Event{Type: notify.EventModulePublished, Title: subject, Message: body})
+
+		nc := cfg.Notifications
+		if !nc.Enabled || nc.SMTP.Host == "" || !nc.Events.ModulePublished {
+			return
+		}
+		recipients := nc.Recipients
+		if len(recipients) == 0 {
+			recipients = cfg.CVE.EmailRecipients
+		}
+		if len(recipients) == 0 {
+			return
+		}
+		if err := mailer.Send(recipients, subject, body); err != nil {
+			slog.Warn("failed to send module-published notification email", "error", err)
+		}
+	}()
 }

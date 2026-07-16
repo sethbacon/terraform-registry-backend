@@ -23,10 +23,15 @@ import (
 // it when reloading the persisted configuration into cfg.Notifications at
 // startup.
 type NotificationsConfigDB struct {
-	Enabled                        bool `json:"enabled"`
-	APIKeyExpiryWarningDays        int  `json:"api_key_expiry_warning_days,omitempty"`
-	APIKeyExpiryCheckIntervalHours int  `json:"api_key_expiry_check_interval_hours,omitempty"`
-	SMTP                           struct {
+	Enabled                        bool     `json:"enabled"`
+	APIKeyExpiryWarningDays        int      `json:"api_key_expiry_warning_days,omitempty"`
+	APIKeyExpiryCheckIntervalHours int      `json:"api_key_expiry_check_interval_hours,omitempty"`
+	Recipients                     []string `json:"recipients,omitempty"`
+	// Events is a pointer so a persisted config saved before this feature
+	// existed (nil) can be distinguished from one that explicitly disabled
+	// every event type — resolveEvents treats nil as "all events enabled".
+	Events *NotificationEventsJSON `json:"events,omitempty"`
+	SMTP   struct {
 		Host              string `json:"host"`
 		Port              int    `json:"port"`
 		Username          string `json:"username"`
@@ -36,11 +41,27 @@ type NotificationsConfigDB struct {
 	} `json:"smtp"`
 }
 
+// NotificationEventsJSON is the wire/persistence shape of
+// config.NotificationEventsConfig (snake_case field names matching the
+// frontend and the YAML/env "notifications.events.*" keys). Field names,
+// types, and order match config.NotificationEventsConfig exactly, so the two
+// are directly convertible (config.NotificationEventsConfig(x) /
+// NotificationEventsJSON(y)) without a field-by-field copy.
+type NotificationEventsJSON struct {
+	APIKeyExpiring         bool `json:"api_key_expiring"`
+	ModulePublished        bool `json:"module_published"`
+	ApprovalPending        bool `json:"approval_pending"`
+	CVEDetected            bool `json:"cve_detected"`
+	ScannerUpdateAvailable bool `json:"scanner_update_available"`
+}
+
 // NotificationsConfigResponse is the redacted public view of the notifications
 // config. The SMTP password/ciphertext is never included.
 type NotificationsConfigResponse struct {
 	Enabled                        bool                      `json:"enabled"`
 	SMTP                           NotificationsSMTPResponse `json:"smtp"`
+	Recipients                     []string                  `json:"recipients"`
+	Events                         NotificationEventsJSON    `json:"events"`
 	APIKeyExpiryWarningDays        int                       `json:"api_key_expiry_warning_days"`
 	APIKeyExpiryCheckIntervalHours int                       `json:"api_key_expiry_check_interval_hours"`
 	PasswordConfigured             bool                      `json:"password_configured"`
@@ -66,8 +87,10 @@ type notificationsConfigInput struct {
 		From     string `json:"from"`
 		UseTLS   bool   `json:"use_tls"`
 	} `json:"smtp"`
-	APIKeyExpiryWarningDays        int `json:"api_key_expiry_warning_days"`
-	APIKeyExpiryCheckIntervalHours int `json:"api_key_expiry_check_interval_hours"`
+	Recipients                     []string               `json:"recipients"`
+	Events                         NotificationEventsJSON `json:"events"`
+	APIKeyExpiryWarningDays        int                    `json:"api_key_expiry_warning_days"`
+	APIKeyExpiryCheckIntervalHours int                    `json:"api_key_expiry_check_interval_hours"`
 }
 
 // notificationsTestEmailInput is the POST /admin/notifications/test request body.
@@ -122,6 +145,8 @@ func (h *NotificationsHandler) toResponse(passwordConfigured bool) Notifications
 			From:     h.cfg.SMTP.From,
 			UseTLS:   h.cfg.SMTP.UseTLS,
 		},
+		Recipients:                     h.cfg.Recipients,
+		Events:                         NotificationEventsJSON(h.cfg.Events),
 		APIKeyExpiryWarningDays:        h.cfg.APIKeyExpiryWarningDays,
 		APIKeyExpiryCheckIntervalHours: h.cfg.APIKeyExpiryCheckIntervalHours,
 		PasswordConfigured:             passwordConfigured,
@@ -214,6 +239,8 @@ func (h *NotificationsHandler) PutConfig(c *gin.Context) {
 	h.cfg.SMTP.Username = input.SMTP.Username
 	h.cfg.SMTP.From = input.SMTP.From
 	h.cfg.SMTP.UseTLS = input.SMTP.UseTLS
+	h.cfg.Recipients = input.Recipients
+	h.cfg.Events = config.NotificationEventsConfig(input.Events)
 	h.cfg.APIKeyExpiryWarningDays = input.APIKeyExpiryWarningDays
 	h.cfg.APIKeyExpiryCheckIntervalHours = input.APIKeyExpiryCheckIntervalHours
 	if input.SMTP.Password != "" {
@@ -257,6 +284,9 @@ func buildNotificationsConfigDB(input notificationsConfigInput, tokenCipher *cry
 	dbc.Enabled = input.Enabled
 	dbc.APIKeyExpiryWarningDays = input.APIKeyExpiryWarningDays
 	dbc.APIKeyExpiryCheckIntervalHours = input.APIKeyExpiryCheckIntervalHours
+	dbc.Recipients = input.Recipients
+	events := input.Events
+	dbc.Events = &events
 	dbc.SMTP.Host = input.SMTP.Host
 	dbc.SMTP.Port = input.SMTP.Port
 	dbc.SMTP.Username = input.SMTP.Username

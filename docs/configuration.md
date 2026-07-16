@@ -872,21 +872,39 @@ notifications:
     password: ${SMTP_PASSWORD}
     from: registry@example.com
     use_tls: true
+  recipients: []
+  events:
+    api_key_expiring: true
+    module_published: true
+    approval_pending: true
+    cve_detected: true
+    scanner_update_available: true
   api_key_expiry_warning_days: 7
   api_key_expiry_check_interval_hours: 24
 ```
 
-| Variable                                                | Type   | Default | Description                                                                                               |
-| ------------------------------------------------------- | ------ | ------- | --------------------------------------------------------------------------------------------------------- |
-| `TFR_NOTIFICATIONS_ENABLED`                             | bool   | `false` | Master toggle for outbound email notifications.                                                           |
-| `TFR_NOTIFICATIONS_SMTP_HOST`                           | string | —       | SMTP server hostname.                                                                                     |
-| `TFR_NOTIFICATIONS_SMTP_PORT`                           | int    | `587`   | SMTP server port (587 for STARTTLS, 465 for implicit TLS).                                                |
-| `TFR_NOTIFICATIONS_SMTP_USERNAME`                       | string | —       | SMTP authentication username. Leave this and the password blank to send through an unauthenticated relay. |
-| `TFR_NOTIFICATIONS_SMTP_PASSWORD`                       | string | —       | SMTP authentication password. Leave this and the username blank to send through an unauthenticated relay. |
-| `TFR_NOTIFICATIONS_SMTP_FROM`                           | string | —       | Sender address for notification emails.                                                                   |
-| `TFR_NOTIFICATIONS_SMTP_USE_TLS`                        | bool   | `true`  | Enable TLS for SMTP connection.                                                                           |
-| `TFR_NOTIFICATIONS_API_KEY_EXPIRY_WARNING_DAYS`         | int    | `7`     | Days before API key expiry to send the first warning email.                                               |
-| `TFR_NOTIFICATIONS_API_KEY_EXPIRY_CHECK_INTERVAL_HOURS` | int    | `24`    | How often the expiry check job runs (in hours).                                                           |
+| Variable                                                | Type   | Default | Description                                                                                                                                                                                                                                                                                                 |
+| ------------------------------------------------------- | ------ | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TFR_NOTIFICATIONS_ENABLED`                             | bool   | `false` | Master toggle for outbound email notifications.                                                                                                                                                                                                                                                             |
+| `TFR_NOTIFICATIONS_SMTP_HOST`                           | string | —       | SMTP server hostname.                                                                                                                                                                                                                                                                                       |
+| `TFR_NOTIFICATIONS_SMTP_PORT`                           | int    | `587`   | SMTP server port (587 for STARTTLS, 465 for implicit TLS).                                                                                                                                                                                                                                                  |
+| `TFR_NOTIFICATIONS_SMTP_USERNAME`                       | string | —       | SMTP authentication username. Leave this and the password blank to send through an unauthenticated relay.                                                                                                                                                                                                   |
+| `TFR_NOTIFICATIONS_SMTP_PASSWORD`                       | string | —       | SMTP authentication password. Leave this and the username blank to send through an unauthenticated relay.                                                                                                                                                                                                   |
+| `TFR_NOTIFICATIONS_SMTP_FROM`                           | string | —       | Sender address for notification emails.                                                                                                                                                                                                                                                                     |
+| `TFR_NOTIFICATIONS_SMTP_USE_TLS`                        | bool   | `true`  | When true, uses STARTTLS (587) or implicit TLS (465). When false, the connection is deliberately kept plaintext and never opportunistically upgraded, even if the relay advertises STARTTLS — use this for a trusted internal relay whose STARTTLS support is broken or backed by an untrusted certificate. |
+| `TFR_NOTIFICATIONS_EVENTS_API_KEY_EXPIRING`             | bool   | `true`  | Enables the per-user API key expiry warning email.                                                                                                                                                                                                                                                          |
+| `TFR_NOTIFICATIONS_EVENTS_MODULE_PUBLISHED`             | bool   | `true`  | Enables the admin notification sent when a new module version is published.                                                                                                                                                                                                                                 |
+| `TFR_NOTIFICATIONS_EVENTS_APPROVAL_PENDING`             | bool   | `true`  | Enables the admin notification sent when a mirror provider approval request or scanner version needs approval.                                                                                                                                                                                              |
+| `TFR_NOTIFICATIONS_EVENTS_CVE_DETECTED`                 | bool   | `true`  | Enables the CVE poll job's advisory/digest emails.                                                                                                                                                                                                                                                          |
+| `TFR_NOTIFICATIONS_EVENTS_SCANNER_UPDATE_AVAILABLE`     | bool   | `true`  | Enables the informational email sent when an auto-approved scanner update is discovered.                                                                                                                                                                                                                    |
+| `TFR_NOTIFICATIONS_API_KEY_EXPIRY_WARNING_DAYS`         | int    | `7`     | Days before API key expiry to send the first warning email.                                                                                                                                                                                                                                                 |
+| `TFR_NOTIFICATIONS_API_KEY_EXPIRY_CHECK_INTERVAL_HOURS` | int    | `24`    | How often the expiry check job runs (in hours).                                                                                                                                                                                                                                                             |
+
+`notifications.recipients` (admin-editable via the Notifications settings page,
+or `notifications.recipients` in YAML) is the general recipient list for the
+`module_published`, `approval_pending`, `cve_detected`, and
+`scanner_update_available` event types. It falls back to `cve.email_recipients`
+when empty, for deployments that only ever configured the CVE recipient list.
 
 > **Security note:** an unauthenticated relay (blank username/password) should only be
 > pointed at a trusted, network-isolated internal mail server -- restrict network access

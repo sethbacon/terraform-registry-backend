@@ -39,6 +39,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/jobs"
 	"github.com/terraform-registry/terraform-registry/internal/middleware"
+	"github.com/terraform-registry/terraform-registry/internal/notify"
 	"github.com/terraform-registry/terraform-registry/internal/policy"
 	"github.com/terraform-registry/terraform-registry/internal/services"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
@@ -328,6 +329,8 @@ type apiV1RouteDeps struct {
 	scannerApprovalRepo         *repositories.VersionApprovalRepository
 	scannerUpdateJob            *jobs.ScannerUpdateJob
 	notificationsHandler        *admin.NotificationsHandler
+	notificationChannelHandlers *admin.NotificationChannelHandlers
+	notifier                    *notify.Notifier
 	apiKeyHandlers              *admin.APIKeyHandlers
 	userHandlers                *admin.UserHandlers
 	gdprHandlers                *admin.GDPRHandlers
@@ -386,6 +389,8 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 	scannerApprovalRepo := d.scannerApprovalRepo
 	scannerUpdateJob := d.scannerUpdateJob
 	notificationsHandler := d.notificationsHandler
+	notificationChannelHandlers := d.notificationChannelHandlers
+	notifier := d.notifier
 	apiKeyHandlers := d.apiKeyHandlers
 	userHandlers := d.userHandlers
 	gdprHandlers := d.gdprHandlers
@@ -536,7 +541,7 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 				middleware.RateLimitMiddleware(uploadRateLimiter), // Stricter rate limit for uploads
 				middleware.RequireScope(auth.ScopeModulesWrite),
 				nsAuthz.RequirePublishAccessFromForm(auth.ScopeModulesWrite, 100<<20), // matches the handler's ParseMultipartForm limit
-				modules.UploadHandler(db, storageBackend, cfg, scanRepo, moduleDocsRepo, policyEngine))
+				modules.UploadHandler(db, storageBackend, cfg, scanRepo, moduleDocsRepo, policyEngine, notifier))
 
 			// Providers admin endpoints - require write permissions plus
 			// namespace-org authorization (issue #555)
@@ -646,6 +651,26 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 			authenticatedGroup.POST("/admin/notifications/test",
 				middleware.RequireScope(auth.ScopeAdmin),
 				notificationsHandler.TestEmail)
+
+			// Notification channels: additional delivery destinations (webhook,
+			// Slack, Microsoft Teams, or an ad-hoc email recipient list) for the
+			// module_published, approval_pending, cve_detected, and
+			// scanner_update_available events.
+			authenticatedGroup.GET("/admin/notifications/channels",
+				middleware.RequireScope(auth.ScopeAdmin),
+				notificationChannelHandlers.ListChannels)
+			authenticatedGroup.POST("/admin/notifications/channels",
+				middleware.RequireScope(auth.ScopeAdmin),
+				notificationChannelHandlers.CreateChannel)
+			authenticatedGroup.PUT("/admin/notifications/channels/:id",
+				middleware.RequireScope(auth.ScopeAdmin),
+				notificationChannelHandlers.UpdateChannel)
+			authenticatedGroup.DELETE("/admin/notifications/channels/:id",
+				middleware.RequireScope(auth.ScopeAdmin),
+				notificationChannelHandlers.DeleteChannel)
+			authenticatedGroup.POST("/admin/notifications/channels/:id/test",
+				middleware.RequireScope(auth.ScopeAdmin),
+				notificationChannelHandlers.TestChannel)
 
 			// API Keys management - self-service for own keys
 			// Users can manage their own API keys without api_keys:manage scope
