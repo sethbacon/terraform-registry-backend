@@ -91,6 +91,9 @@ func sanitizeHeader(s string) string {
 // Use this when UseTLS=true and the port is 465; for port 587 STARTTLS,
 // smtp.SendMail handles the upgrade automatically — but we call this path for
 // both so the config is unambiguous: UseTLS=true always means an encrypted connection.
+// coverage:skip:integration-only — implicit-TLS dial plus a live SMTP protocol
+// exchange; cannot be meaningfully unit-tested without a real SMTP-over-TLS server
+// (the sibling Send is skipped for the same reason).
 func sendMailTLS(addr, host string, auth smtp.Auth, from string, to []string, msg []byte) error {
 	tlsConfig := &tls.Config{
 		ServerName: host,
