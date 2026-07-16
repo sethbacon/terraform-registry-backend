@@ -1906,6 +1906,206 @@
                 }
             }
         },
+        "/api/v1/admin/notifications/channels": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Returns all notification channels (destination secrets redacted). Requires admin scope.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Notifications"
+                ],
+                "summary": "List notification channels",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Registers a notification channel, encrypting its target. Requires admin scope.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Notifications"
+                ],
+                "summary": "Create notification channel",
+                "parameters": [
+                    {
+                        "description": "Notification channel",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/admin.notificationChannelRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/models.NotificationChannel"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid input",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/admin/notifications/channels/{id}": {
+            "put": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Replaces a channel. A blank target keeps the existing one. Requires admin scope.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Notifications"
+                ],
+                "summary": "Update notification channel",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Channel ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Notification channel",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/admin.notificationChannelRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.NotificationChannel"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid input",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Channel not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "tags": [
+                    "Notifications"
+                ],
+                "summary": "Delete notification channel",
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                }
+            }
+        },
+        "/api/v1/admin/notifications/channels/{id}/test": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Sends a fixed test message through a channel. Requires admin scope.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Notifications"
+                ],
+                "summary": "Test notification channel",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Channel not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "502": {
+                        "description": "Delivery failed",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/admin/notifications/config": {
             "get": {
                 "security": [
@@ -13893,6 +14093,26 @@
                 }
             }
         },
+        "admin.NotificationEventsJSON": {
+            "type": "object",
+            "properties": {
+                "api_key_expiring": {
+                    "type": "boolean"
+                },
+                "approval_pending": {
+                    "type": "boolean"
+                },
+                "cve_detected": {
+                    "type": "boolean"
+                },
+                "module_published": {
+                    "type": "boolean"
+                },
+                "scanner_update_available": {
+                    "type": "boolean"
+                }
+            }
+        },
         "admin.NotificationsConfigResponse": {
             "type": "object",
             "properties": {
@@ -13905,8 +14125,17 @@
                 "enabled": {
                     "type": "boolean"
                 },
+                "events": {
+                    "$ref": "#/definitions/admin.NotificationEventsJSON"
+                },
                 "password_configured": {
                     "type": "boolean"
+                },
+                "recipients": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 },
                 "smtp": {
                     "$ref": "#/definitions/admin.NotificationsSMTPResponse"
@@ -14523,6 +14752,34 @@
                 "events": {}
             }
         },
+        "admin.notificationChannelRequest": {
+            "type": "object",
+            "required": [
+                "name",
+                "type"
+            ],
+            "properties": {
+                "enabled": {
+                    "type": "boolean"
+                },
+                "events": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "name": {
+                    "type": "string"
+                },
+                "target": {
+                    "description": "destination URL or recipient list; write-only (omit on edit to keep existing)",
+                    "type": "string"
+                },
+                "type": {
+                    "type": "string"
+                }
+            }
+        },
         "admin.notificationsConfigInput": {
             "type": "object",
             "properties": {
@@ -14534,6 +14791,15 @@
                 },
                 "enabled": {
                     "type": "boolean"
+                },
+                "events": {
+                    "$ref": "#/definitions/admin.NotificationEventsJSON"
+                },
+                "recipients": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 },
                 "smtp": {
                     "type": "object",
@@ -15640,6 +15906,49 @@
                     "type": "string"
                 },
                 "version": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.NotificationChannel": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "events": {
+                    "description": "empty = all events",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "has_target": {
+                    "type": "boolean"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "last_error": {
+                    "type": "string"
+                },
+                "last_sent_at": {
+                    "type": "string"
+                },
+                "last_status": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "type": {
+                    "description": "webhook | slack | teams | email",
+                    "type": "string"
+                },
+                "updated_at": {
                     "type": "string"
                 }
             }

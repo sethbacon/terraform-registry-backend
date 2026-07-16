@@ -115,6 +115,16 @@ func reloadNotificationsConfigFromDB(cfg *config.Config, repo *repositories.OIDC
 			log.Printf("notifications startup: failed to decrypt persisted smtp password: %v", derr)
 		}
 	}
+	if len(dbc.Recipients) > 0 {
+		cfg.Notifications.Recipients = dbc.Recipients
+	}
+	if dbc.Events != nil {
+		// A persisted config saved since this feature shipped: use it exactly.
+		cfg.Notifications.Events = config.NotificationEventsConfig(*dbc.Events)
+	}
+	// else: dbc.Events is nil (persisted before this feature existed) — leave
+	// cfg.Notifications.Events at its Viper-default (all true), so upgrading
+	// never silently disables a notification nobody opted out of.
 	if dbc.APIKeyExpiryWarningDays > 0 {
 		cfg.Notifications.APIKeyExpiryWarningDays = dbc.APIKeyExpiryWarningDays
 	}

@@ -228,10 +228,30 @@ notifications:
     # Leave username and password empty to send through an unauthenticated relay.
     # Only point this at a trusted, network-isolated internal relay, and still set
     # use_tls: true (STARTTLS) even without credentials so the connection is encrypted.
+    # Setting use_tls: false deliberately keeps the connection plaintext (never
+    # opportunistically upgrades to STARTTLS even if the relay advertises it) —
+    # use this for a trusted internal relay whose STARTTLS support is broken or
+    # backed by an untrusted certificate.
     username: ${SMTP_USERNAME}
     password: ${SMTP_PASSWORD}
     from: "Terraform Registry <no-reply@example.com>"
     use_tls: true           # true enables TLS (STARTTLS on 587 or SMTPS on 465)
+
+  # General admin recipient list for the module_published, approval_pending,
+  # cve_detected, and scanner_update_available event types below. Falls back to
+  # cve.email_recipients when empty, for backward compatibility.
+  recipients: []
+  # recipients:
+  #   - admin@example.com
+
+  # Per-event-type toggles. All default to true — every field must be
+  # explicitly set to false to opt out of that notification category.
+  events:
+    api_key_expiring: true          # per-user API key expiry warning
+    module_published: true          # new module version published
+    approval_pending: true          # mirror provider or scanner version awaiting approval
+    cve_detected: true               # CVE poll job advisory/digest emails
+    scanner_update_available: true  # informational auto-approved scanner update
 
   # Days before expiry to send the first warning email (default: 7)
   api_key_expiry_warning_days: 7

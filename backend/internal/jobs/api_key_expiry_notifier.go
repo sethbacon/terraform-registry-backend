@@ -68,6 +68,10 @@ func (n *APIKeyExpiryNotifier) Start(ctx context.Context) error {
 		log.Println("API key expiry notifier: disabled (notifications.smtp.host not set)")
 		return nil
 	}
+	if !n.cfg.Events.APIKeyExpiring {
+		log.Println("API key expiry notifier: disabled (notifications.events.api_key_expiring=false)")
+		return nil
+	}
 
 	ticker := time.NewTicker(n.interval)
 	defer ticker.Stop()
@@ -100,6 +104,13 @@ func (n *APIKeyExpiryNotifier) Stop() error {
 
 // runCheck queries for expiring keys and sends notification emails.
 func (n *APIKeyExpiryNotifier) runCheck(ctx context.Context) {
+	// Re-checked on every run (not just at Start) so an admin toggling
+	// notifications.events.api_key_expiring off via the admin API takes
+	// effect on the next tick without a process restart.
+	if !n.cfg.Enabled || n.cfg.SMTP.Host == "" || !n.cfg.Events.APIKeyExpiring {
+		return
+	}
+
 	warningDays := n.cfg.APIKeyExpiryWarningDays
 	if warningDays <= 0 {
 		warningDays = 7

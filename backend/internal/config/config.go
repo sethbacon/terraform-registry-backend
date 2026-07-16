@@ -734,10 +734,38 @@ type NotificationsConfig struct {
 	Enabled bool `mapstructure:"enabled"`
 	// SMTP holds the outbound mail server settings
 	SMTP SMTPConfig `mapstructure:"smtp"`
+	// Recipients is the general admin recipient list for the module_published,
+	// approval_pending, cve_detected, and scanner_update_available event types.
+	// Falls back to cve.email_recipients when empty, for backward compatibility
+	// with deployments that only ever configured the CVE recipient list.
+	Recipients []string `mapstructure:"recipients"`
+	// Events toggles which event types trigger an outbound email. Every field
+	// defaults to true so upgrading an existing deployment never silently
+	// disables a notification an admin never explicitly turned off.
+	Events NotificationEventsConfig `mapstructure:"events"`
 	// APIKeyExpiryWarningDays is how many days before expiry to send the first warning email (default 7)
 	APIKeyExpiryWarningDays int `mapstructure:"api_key_expiry_warning_days"`
 	// APIKeyExpiryCheckIntervalHours determines how often the expiry check job runs (default 24)
 	APIKeyExpiryCheckIntervalHours int `mapstructure:"api_key_expiry_check_interval_hours"`
+}
+
+// NotificationEventsConfig toggles individual outbound notification event
+// types, letting an admin opt out of specific categories (e.g. "module
+// published") while keeping others (e.g. "API key expiring") on. Every field
+// defaults to true.
+type NotificationEventsConfig struct {
+	// APIKeyExpiring gates the per-user API key expiry warning email.
+	APIKeyExpiring bool `mapstructure:"api_key_expiring"`
+	// ModulePublished gates the admin notification sent when a new module version is published.
+	ModulePublished bool `mapstructure:"module_published"`
+	// ApprovalPending gates the admin notification sent when something requires
+	// approval (a mirror provider approval request or a pending scanner version).
+	ApprovalPending bool `mapstructure:"approval_pending"`
+	// CVEDetected gates the CVE poll job's advisory/digest emails.
+	CVEDetected bool `mapstructure:"cve_detected"`
+	// ScannerUpdateAvailable gates the informational email sent when an
+	// auto-approved scanner update is discovered.
+	ScannerUpdateAvailable bool `mapstructure:"scanner_update_available"`
 }
 
 // SMTPConfig holds outbound mail server configuration for notification emails
@@ -893,6 +921,11 @@ func bindEnvVars(v *viper.Viper) error {
 		"notifications.smtp.use_tls",
 		"notifications.api_key_expiry_warning_days",
 		"notifications.api_key_expiry_check_interval_hours",
+		"notifications.events.api_key_expiring",
+		"notifications.events.module_published",
+		"notifications.events.approval_pending",
+		"notifications.events.cve_detected",
+		"notifications.events.scanner_update_available",
 		"scanning.enabled",
 		"scanning.tool",
 		"scanning.binary_path",
@@ -1103,6 +1136,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("notifications.smtp.use_tls", true)
 	v.SetDefault("notifications.api_key_expiry_warning_days", 7)
 	v.SetDefault("notifications.api_key_expiry_check_interval_hours", 24)
+	v.SetDefault("notifications.events.api_key_expiring", true)
+	v.SetDefault("notifications.events.module_published", true)
+	v.SetDefault("notifications.events.approval_pending", true)
+	v.SetDefault("notifications.events.cve_detected", true)
+	v.SetDefault("notifications.events.scanner_update_available", true)
 
 	// Scanning defaults
 	v.SetDefault("scanning.enabled", false)
