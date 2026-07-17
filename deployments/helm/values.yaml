@@ -58,6 +58,11 @@ backend:
   extraVolumeMounts: []
   # -- Additional volumes
   extraVolumes: []
+  # -- Additional init containers on the backend pod (e.g. to install a
+  #    private/enterprise CA bundle into the container's trust store before
+  #    the app starts, using extraVolumes/extraVolumeMounts to share the
+  #    result). Raw Kubernetes initContainer specs, passed through as-is.
+  extraInitContainers: []
 
 # -- Frontend configuration
 frontend:
