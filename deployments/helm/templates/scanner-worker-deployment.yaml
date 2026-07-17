@@ -36,6 +36,10 @@ spec:
       serviceAccountName: {{ include "terraform-registry.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.backend.podSecurityContext | nindent 8 }}
+      {{- with .Values.backend.extraInitContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: scanner-worker
           image: {{ include "terraform-registry.backendImage" . }}
