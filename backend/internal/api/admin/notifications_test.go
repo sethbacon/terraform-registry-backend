@@ -164,6 +164,39 @@ func TestNotificationsHandler_GetConfig_NoPassword(t *testing.T) {
 	}
 }
 
+// TestNotificationsHandler_GetConfig_RecipientsNeverNull guards against a
+// regression that crashed the admin Notifications page: a nil
+// config.Recipients slice marshals to JSON `null`, and the frontend calls
+// .join() on it unconditionally, throwing "Cannot read properties of null
+// (reading 'join')". A zero-value config.NotificationsConfig{} (as returned
+// when nothing has ever been persisted) must still serialize recipients as
+// an empty array, never null.
+func TestNotificationsHandler_GetConfig_RecipientsNeverNull(t *testing.T) {
+	h, _, mock := newNotificationsHandler(t)
+	mock.ExpectQuery("SELECT notifications_config FROM system_settings").
+		WillReturnRows(sqlmock.NewRows([]string{"notifications_config"}).AddRow(nil))
+
+	w := httptest.NewRecorder()
+	r := gin.New()
+	r.GET("/notifications/config", h.GetConfig)
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/notifications/config", nil))
+
+	if strings.Contains(w.Body.String(), `"recipients":null`) {
+		t.Fatalf("recipients must never serialize as null, got body=%s", w.Body.String())
+	}
+
+	var resp NotificationsConfigResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Recipients == nil {
+		t.Error("resp.Recipients should be an empty (non-nil) slice, not nil")
+	}
+	if len(resp.Recipients) != 0 {
+		t.Errorf("resp.Recipients = %v, want empty", resp.Recipients)
+	}
+}
+
 func TestNotificationsHandler_GetConfig_PasswordConfiguredFromDB(t *testing.T) {
 	h, _, mock := newNotificationsHandler(t)
 	dbRow := `{"enabled":true,"smtp":{"host":"smtp.example.com","port":587,"from":"a@example.com","smtp_password_encrypted":"cipher"}}`
