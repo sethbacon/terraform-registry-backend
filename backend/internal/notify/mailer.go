@@ -88,9 +88,10 @@ func sanitizeHeader(s string) string {
 }
 
 // sendMailTLS connects via implicit TLS (port 465 / SMTPS) and sends a message.
-// Use this when UseTLS=true and the port is 465; for port 587 STARTTLS,
-// smtp.SendMail handles the upgrade automatically — but we call this path for
-// both so the config is unambiguous: UseTLS=true always means an encrypted connection.
+// Use this when UseTLS=true and the port is 465; for port 587/25 STARTTLS,
+// falls back to sendMailStartTLS, which upgrades explicitly rather than
+// delegating to smtp.SendMail — so the config is unambiguous: UseTLS=true
+// always means an encrypted connection, never a silent plaintext fallback.
 // coverage:skip:integration-only — implicit-TLS dial plus a live SMTP protocol
 // exchange; cannot be meaningfully unit-tested without a real SMTP-over-TLS server
 // (the sibling Send is skipped for the same reason).
@@ -102,8 +103,7 @@ func sendMailTLS(addr, host string, auth smtp.Auth, from string, to []string, ms
 
 	conn, err := tls.Dial("tcp", addr, tlsConfig)
 	if err != nil {
-		// Fall back to STARTTLS via the standard smtp.SendMail path (port 587 pattern)
-		return smtp.SendMail(addr, auth, from, to, msg)
+		return sendMailStartTLS(addr, host, auth, from, to, msg)
 	}
 	defer conn.Close()
 
@@ -125,6 +125,56 @@ func sendMailTLS(addr, host string, auth smtp.Auth, from string, to []string, ms
 	for _, addr := range to {
 		if err := c.Rcpt(addr); err != nil {
 			return fmt.Errorf("smtp RCPT TO %s: %w", addr, err)
+		}
+	}
+	w, err := c.Data()
+	if err != nil {
+		return fmt.Errorf("smtp DATA: %w", err)
+	}
+	if _, err := w.Write(msg); err != nil {
+		return fmt.Errorf("smtp write: %w", err)
+	}
+	return w.Close()
+}
+
+// sendMailStartTLS connects in plaintext, then upgrades via STARTTLS (the
+// standard submission-port pattern) before authenticating and sending. It
+// calls c.StartTLS directly instead of delegating to smtp.SendMail: SendMail
+// only upgrades when the server's EHLO response advertises the STARTTLS
+// extension, and otherwise silently continues in plaintext -- so a relay that
+// omits (or conditionally refuses) that advertisement would make a
+// UseTLS=true send quietly succeed unencrypted. Calling StartTLS explicitly
+// guarantees the upgrade is attempted and any failure (e.g. the relay
+// rejecting it) is surfaced as a real error rather than swallowed.
+// coverage:skip:integration-only — live SMTP protocol exchange (STARTTLS
+// handshake); cannot be meaningfully unit-tested without a real SMTP server.
+func sendMailStartTLS(addr, host string, auth smtp.Auth, from string, to []string, msg []byte) error {
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("dial: %w", err)
+	}
+	c, err := smtp.NewClient(conn, host)
+	if err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("smtp new client: %w", err)
+	}
+	defer c.Quit() //nolint:errcheck
+
+	if err := c.StartTLS(&tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}); err != nil {
+		return fmt.Errorf("smtp starttls: %w", err)
+	}
+
+	if auth != nil {
+		if err := c.Auth(auth); err != nil {
+			return fmt.Errorf("smtp auth: %w", err)
+		}
+	}
+	if err := c.Mail(from); err != nil {
+		return fmt.Errorf("smtp MAIL FROM: %w", err)
+	}
+	for _, rcpt := range to {
+		if err := c.Rcpt(rcpt); err != nil {
+			return fmt.Errorf("smtp RCPT TO %s: %w", rcpt, err)
 		}
 	}
 	w, err := c.Data()
