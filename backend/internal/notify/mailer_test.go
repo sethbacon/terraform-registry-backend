@@ -241,3 +241,26 @@ func TestSendMailPlain_SendsAuthWhenConfigured(t *testing.T) {
 		t.Fatal("timed out waiting for fake SMTP server result")
 	}
 }
+
+// TestSendMailStartTLS_Rejected_ReturnsError is the regression test for the
+// bug this fix addresses: sendMailTLS's fallback previously delegated to
+// smtp.SendMail, which only attempts STARTTLS when the server's EHLO
+// advertises the extension and otherwise silently continues in plaintext --
+// so a relay whose STARTTLS command fails (this fake server always responds
+// "454 TLS not available", matching a live relay's
+// `454 4.3.3 TLS not available after start`) would previously result in a
+// silent plaintext "success" instead of a surfaced error. sendMailStartTLS
+// calls c.StartTLS directly, so the rejection must now propagate.
+func TestSendMailStartTLS_Rejected_ReturnsError(t *testing.T) {
+	addr, _ := fakeSMTPServer(t, true /* advertise STARTTLS */)
+	host, _, _ := net.SplitHostPort(addr)
+
+	err := sendMailStartTLS(addr, host, nil, "from@example.com", []string{"to@example.com"},
+		[]byte("Subject: hi\r\n\r\nbody\r\n"))
+	if err == nil {
+		t.Fatal("expected an error when the relay rejects STARTTLS, got nil (silent plaintext fallback)")
+	}
+	if !strings.Contains(err.Error(), "smtp starttls") {
+		t.Errorf("error = %q, want it to mention the starttls failure", err.Error())
+	}
+}
