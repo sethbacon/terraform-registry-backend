@@ -136,6 +136,15 @@ func NewNotificationsHandler(
 
 // toResponse builds the redacted response shape shared by GetConfig and PutConfig.
 func (h *NotificationsHandler) toResponse(passwordConfigured bool) NotificationsConfigResponse {
+	// A nil slice marshals to JSON `null`, not `[]` -- the frontend calls
+	// .join() on this field unconditionally, so a null response throws
+	// "Cannot read properties of null (reading 'join')" and crashes the
+	// admin Notifications page. Normalize to an empty slice so the field is
+	// always a real (possibly empty) JSON array.
+	recipients := h.cfg.Recipients
+	if recipients == nil {
+		recipients = []string{}
+	}
 	return NotificationsConfigResponse{
 		Enabled: h.cfg.Enabled,
 		SMTP: NotificationsSMTPResponse{
@@ -145,7 +154,7 @@ func (h *NotificationsHandler) toResponse(passwordConfigured bool) Notifications
 			From:     h.cfg.SMTP.From,
 			UseTLS:   h.cfg.SMTP.UseTLS,
 		},
-		Recipients:                     h.cfg.Recipients,
+		Recipients:                     recipients,
 		Events:                         NotificationEventsJSON(h.cfg.Events),
 		APIKeyExpiryWarningDays:        h.cfg.APIKeyExpiryWarningDays,
 		APIKeyExpiryCheckIntervalHours: h.cfg.APIKeyExpiryCheckIntervalHours,
