@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.0](https://github.com/sethbacon/terraform-registry-backend/compare/v3.2.0...v3.3.0) (2026-07-17)
+
+
+### Features
+
+* **helm:** support extra init containers on the backend pod ([#629](https://github.com/sethbacon/terraform-registry-backend/issues/629)) ([03c4296](https://github.com/sethbacon/terraform-registry-backend/commit/03c42963c1a777aada147ffa49c3970b8eaff51b))
+
 ## [3.2.0](https://github.com/sethbacon/terraform-registry-backend/compare/v3.1.0...v3.2.0) (2026-07-16)
 
 
