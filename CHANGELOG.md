@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.0](https://github.com/sethbacon/terraform-registry-backend/compare/v3.3.3...v3.4.0) (2026-07-18)
+
+
+### Features
+
+* **notify:** adopt shared identity/notify, identity/crypto, identity/httpsafe ([#637](https://github.com/sethbacon/terraform-registry-backend/issues/637)) ([abdd205](https://github.com/sethbacon/terraform-registry-backend/commit/abdd20505a3ce95a4196ad1b2756ba8b81319e11))
+
 ## [3.3.3](https://github.com/sethbacon/terraform-registry-backend/compare/v3.3.2...v3.3.3) (2026-07-17)
 
 
