@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.3](https://github.com/sethbacon/terraform-registry-backend/compare/v3.3.2...v3.3.3) (2026-07-17)
+
+
+### Bug Fixes
+
+* **notify:** never silently fall back to plaintext on STARTTLS ([#635](https://github.com/sethbacon/terraform-registry-backend/issues/635)) ([0cf0fb6](https://github.com/sethbacon/terraform-registry-backend/commit/0cf0fb64fdc6e2acaeae2cdcfa0ffed90b7116ab))
+
 ## [3.3.2](https://github.com/sethbacon/terraform-registry-backend/compare/v3.3.1...v3.3.2) (2026-07-17)
 
 

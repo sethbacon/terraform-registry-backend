@@ -35,7 +35,6 @@ func buildIdentityTokenCipher(encryptionKey, encryptionKeyPrevious string) (*ide
 	return identitycrypto.NewTokenCipher([]byte(encryptionKey))
 }
 
-
 // reloadScanningConfigFromDB applies any scanning configuration persisted by
 // the setup wizard over the file/env config. It has two independent parts,
 // preserved exactly from the original inline logic:
