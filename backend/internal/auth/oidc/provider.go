@@ -66,7 +66,10 @@ func NewOIDCProviderWithContext(ctx context.Context, cfg *config.OIDCConfig) (*O
 		ClientSecret: cfg.ClientSecret,
 		RedirectURL:  cfg.RedirectURL,
 		Scopes:       cfg.Scopes,
-		RequireHTTPS: true,
+		// AllowInsecureIssuer left false (the zero value): HTTPS is required
+		// for the issuer/redirect URLs by default in the shared package,
+		// matching this provider's original RequireHTTPS:true intent (the
+		// field was renamed/inverted upstream — see identity/auth/oidc.Config).
 	})
 }
 

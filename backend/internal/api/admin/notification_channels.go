@@ -15,10 +15,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
-	"github.com/terraform-registry/terraform-registry/internal/crypto"
+	identitycrypto "github.com/sethbacon/terraform-suite-identity/identity/crypto"
+	identityhttpsafe "github.com/sethbacon/terraform-suite-identity/identity/httpsafe"
+
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
-	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/notify"
 )
 
@@ -35,19 +36,22 @@ var validNotificationChannelEvents = map[string]bool{
 type NotificationChannelHandlers struct {
 	repo        *repositories.NotificationChannelRepository
 	notifier    *notify.Notifier
-	tokenCipher *crypto.TokenCipher
+	tokenCipher *identitycrypto.TokenCipher
 	// egress rejects a webhook/Slack/Teams target that resolves to a
 	// denied range (loopback, link-local/metadata, RFC 1918, ...) at
 	// create/update time, so an admin gets an immediate, clear error rather
 	// than a silent dial-time failure. The Notifier's guarded client remains
 	// the authoritative enforcement point at send time. nil = strict default.
-	egress *httpsafe.Guard
+	// Shares the same *identityhttpsafe.Guard instance passed to the Notifier
+	// (router.go), so create-time validation and send-time enforcement apply
+	// the identical security.egress.allowlist policy.
+	egress *identityhttpsafe.Guard
 }
 
 // NewNotificationChannelHandlers builds the handlers over the app connection.
 // guard applies the deployment egress policy (security.egress.allowlist) when
 // validating a channel target URL on create/update.
-func NewNotificationChannelHandlers(repo *repositories.NotificationChannelRepository, notifier *notify.Notifier, tokenCipher *crypto.TokenCipher, guard *httpsafe.Guard) *NotificationChannelHandlers {
+func NewNotificationChannelHandlers(repo *repositories.NotificationChannelRepository, notifier *notify.Notifier, tokenCipher *identitycrypto.TokenCipher, guard *identityhttpsafe.Guard) *NotificationChannelHandlers {
 	return &NotificationChannelHandlers{repo: repo, notifier: notifier, tokenCipher: tokenCipher, egress: guard}
 }
 
@@ -63,7 +67,7 @@ type notificationChannelRequest struct {
 // non-nil, additionally rejects a non-email (URL) target that violates the
 // egress policy (private/metadata/loopback ranges) — defense in depth against
 // SSRF via an admin-configured destination URL.
-func (req *notificationChannelRequest) validate(guard *httpsafe.Guard) error {
+func (req *notificationChannelRequest) validate(guard *identityhttpsafe.Guard) error {
 	if !validNotificationChannelTypes[req.Type] {
 		return fmt.Errorf(`type must be one of "webhook", "slack", "teams", "email"`)
 	}
@@ -172,8 +176,8 @@ func (h *NotificationChannelHandlers) CreateChannel(c *gin.Context) {
 // @Failure      404  {object}  map[string]interface{}  "Channel not found"
 // @Router       /api/v1/admin/notifications/channels/{id} [put]
 func (h *NotificationChannelHandlers) UpdateChannel(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
+	id := c.Param("id")
+	if _, err := uuid.Parse(id); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid channel id"})
 		return
 	}
@@ -188,6 +192,7 @@ func (h *NotificationChannelHandlers) UpdateChannel(c *gin.Context) {
 	}
 	var encrypted string
 	if req.Target != "" {
+		var err error
 		encrypted, err = h.tokenCipher.Seal(req.Target)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt target"})
@@ -213,8 +218,8 @@ func (h *NotificationChannelHandlers) UpdateChannel(c *gin.Context) {
 // @Success      204
 // @Router       /api/v1/admin/notifications/channels/{id} [delete]
 func (h *NotificationChannelHandlers) DeleteChannel(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
+	id := c.Param("id")
+	if _, err := uuid.Parse(id); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid channel id"})
 		return
 	}
@@ -235,8 +240,8 @@ func (h *NotificationChannelHandlers) DeleteChannel(c *gin.Context) {
 // @Failure      502  {object}  map[string]interface{}  "Delivery failed"
 // @Router       /api/v1/admin/notifications/channels/{id}/test [post]
 func (h *NotificationChannelHandlers) TestChannel(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
+	id := c.Param("id")
+	if _, err := uuid.Parse(id); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid channel id"})
 		return
 	}
