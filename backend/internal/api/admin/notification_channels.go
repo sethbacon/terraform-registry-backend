@@ -128,7 +128,7 @@ func (h *NotificationChannelHandlers) ListChannels(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        body  body  notificationChannelRequest  true  "Notification channel"
-// @Success      201  {object}  models.NotificationChannel
+// @Success      201  {object}  map[string]interface{}
 // @Failure      400  {object}  map[string]interface{}  "Invalid input"
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
 // @Router       /api/v1/admin/notifications/channels [post]
@@ -171,7 +171,7 @@ func (h *NotificationChannelHandlers) CreateChannel(c *gin.Context) {
 // @Produce      json
 // @Param        id    path  string                       true  "Channel ID"
 // @Param        body  body  notificationChannelRequest  true  "Notification channel"
-// @Success      200  {object}  models.NotificationChannel
+// @Success      200  {object}  map[string]interface{}
 // @Failure      400  {object}  map[string]interface{}  "Invalid input"
 // @Failure      404  {object}  map[string]interface{}  "Channel not found"
 // @Router       /api/v1/admin/notifications/channels/{id} [put]
