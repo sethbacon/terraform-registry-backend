@@ -497,7 +497,7 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 		}
 
 		// Fetch user scopes to embed in JWT (avoids per-request DB lookup)
-		scopes, err := h.orgRepo.GetUserCombinedScopes(ctx, user.ID)
+		scopes, err := h.orgRepo.GetUserCombinedScopes(ctx, user.ID) //nolint:staticcheck // SA1019: registry issues suite-wide (not per-org) JWTs by design via auth.GenerateJWT; narrow legitimate use per the deprecation notice
 		if err != nil {
 			scopes = []string{}
 		}
@@ -690,7 +690,7 @@ func (h *AuthHandlers) RefreshHandler() gin.HandlerFunc {
 		}
 
 		// Fetch fresh scopes to embed in the new JWT
-		scopes, err := h.orgRepo.GetUserCombinedScopes(c.Request.Context(), user.ID)
+		scopes, err := h.orgRepo.GetUserCombinedScopes(c.Request.Context(), user.ID) //nolint:staticcheck // SA1019: registry issues suite-wide (not per-org) JWTs by design via auth.GenerateJWT; narrow legitimate use per the deprecation notice
 		if err != nil {
 			scopes = []string{}
 		}
@@ -819,7 +819,7 @@ func (h *AuthHandlers) MeHandler() gin.HandlerFunc {
 
 		// Calculate combined allowed scopes across all organizations
 		// and provide a "primary" role template (highest privilege) for backward compatibility
-		response["allowed_scopes"] = userWithRoles.GetAllowedScopes()
+		response["allowed_scopes"] = userWithRoles.GetAllowedScopes() //nolint:staticcheck // SA1019: deliberate suite-wide combined view for this admin display endpoint; narrow legitimate use per the deprecation notice
 
 		// Include session expiry from JWT claims so the frontend can schedule the
 		// pre-expiry warning dialog for cookie-based sessions. Absent for API-key auth.
@@ -1249,7 +1249,7 @@ func (h *AuthHandlers) SAMLACSHandler() gin.HandlerFunc {
 		}
 
 		// Fetch user scopes to embed in JWT
-		scopes, scopeErr := h.orgRepo.GetUserCombinedScopes(ctx, user.ID)
+		scopes, scopeErr := h.orgRepo.GetUserCombinedScopes(ctx, user.ID) //nolint:staticcheck // SA1019: registry issues suite-wide (not per-org) JWTs by design via auth.GenerateJWT; narrow legitimate use per the deprecation notice
 		if scopeErr != nil {
 			scopes = []string{}
 		}
@@ -1394,7 +1394,7 @@ func (h *AuthHandlers) LDAPLoginHandler() gin.HandlerFunc {
 		}
 
 		// Fetch user scopes
-		scopes, err := h.orgRepo.GetUserCombinedScopes(ctx, user.ID)
+		scopes, err := h.orgRepo.GetUserCombinedScopes(ctx, user.ID) //nolint:staticcheck // SA1019: registry issues suite-wide (not per-org) JWTs by design via auth.GenerateJWT; narrow legitimate use per the deprecation notice
 		if err != nil {
 			scopes = []string{}
 		}

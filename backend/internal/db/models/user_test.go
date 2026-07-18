@@ -12,7 +12,7 @@ import (
 func TestGetAllowedScopes(t *testing.T) {
 	t.Run("empty memberships returns empty slice", func(t *testing.T) {
 		u := &UserWithOrgRoles{}
-		scopes := u.GetAllowedScopes()
+		scopes := u.GetAllowedScopes() //nolint:staticcheck // SA1019: unit test for the deprecated-but-retained method itself
 		if len(scopes) != 0 {
 			t.Errorf("GetAllowedScopes() len = %d, want 0", len(scopes))
 		}
@@ -24,7 +24,7 @@ func TestGetAllowedScopes(t *testing.T) {
 				{OrganizationID: "org1", RoleTemplateScopes: []string{"providers:read", "modules:write"}},
 			},
 		}
-		scopes := u.GetAllowedScopes()
+		scopes := u.GetAllowedScopes() //nolint:staticcheck // SA1019: unit test for the deprecated-but-retained method itself
 		if len(scopes) != 2 {
 			t.Errorf("GetAllowedScopes() len = %d, want 2", len(scopes))
 		}
@@ -41,7 +41,7 @@ func TestGetAllowedScopes(t *testing.T) {
 				{OrganizationID: "org2", RoleTemplateScopes: []string{"providers:read", "modules:write"}},
 			},
 		}
-		scopes := u.GetAllowedScopes()
+		scopes := u.GetAllowedScopes() //nolint:staticcheck // SA1019: unit test for the deprecated-but-retained method itself
 		// 3 unique scopes: admin, providers:read, modules:write
 		if len(scopes) != 3 {
 			t.Errorf("GetAllowedScopes() len = %d, want 3 (deduplicated)", len(scopes))
@@ -63,7 +63,7 @@ func TestGetAllowedScopes(t *testing.T) {
 				{OrganizationID: "org1", RoleTemplateScopes: []string{}},
 			},
 		}
-		scopes := u.GetAllowedScopes()
+		scopes := u.GetAllowedScopes() //nolint:staticcheck // SA1019: unit test for the deprecated-but-retained method itself
 		if len(scopes) != 0 {
 			t.Errorf("GetAllowedScopes() len = %d, want 0", len(scopes))
 		}
@@ -75,7 +75,7 @@ func TestGetAllowedScopes(t *testing.T) {
 				{OrganizationID: "org1", RoleTemplateScopes: nil},
 			},
 		}
-		scopes := u.GetAllowedScopes()
+		scopes := u.GetAllowedScopes() //nolint:staticcheck // SA1019: unit test for the deprecated-but-retained method itself
 		if len(scopes) != 0 {
 			t.Errorf("GetAllowedScopes() len = %d, want 0", len(scopes))
 		}

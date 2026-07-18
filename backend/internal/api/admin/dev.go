@@ -101,7 +101,7 @@ func (h *DevHandlers) ImpersonateUserHandler() gin.HandlerFunc {
 		}
 
 		// Fetch target user's scopes to embed in JWT
-		targetScopes, _ := h.orgRepo.GetUserCombinedScopes(c.Request.Context(), targetUser.ID)
+		targetScopes, _ := h.orgRepo.GetUserCombinedScopes(c.Request.Context(), targetUser.ID) //nolint:staticcheck // SA1019: registry issues suite-wide (not per-org) JWTs by design via auth.GenerateJWT; narrow legitimate use per the deprecation notice
 
 		// Generate a new JWT for the target user
 		token, err := auth.GenerateJWT(targetUser.ID, targetUser.Email, targetScopes, 24*time.Hour)
@@ -214,7 +214,7 @@ func (h *DevHandlers) DevLoginHandler() gin.HandlerFunc {
 			return
 		}
 
-		scopes, _ := h.orgRepo.GetUserCombinedScopes(c.Request.Context(), user.ID)
+		scopes, _ := h.orgRepo.GetUserCombinedScopes(c.Request.Context(), user.ID) //nolint:staticcheck // SA1019: registry issues suite-wide (not per-org) JWTs by design via auth.GenerateJWT; narrow legitimate use per the deprecation notice
 		token, err := auth.GenerateJWT(user.ID, user.Email, scopes, 24*time.Hour)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
