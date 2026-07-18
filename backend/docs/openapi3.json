@@ -2472,7 +2472,8 @@
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/models.NotificationChannel"
+                                    "type": "object",
+                                    "additionalProperties": true
                                 }
                             }
                         }
@@ -2534,7 +2535,8 @@
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "$ref": "#/components/schemas/models.NotificationChannel"
+                                    "type": "object",
+                                    "additionalProperties": true
                                 }
                             }
                         }
@@ -19061,49 +19063,6 @@
                         "type": "string"
                     },
                     "version": {
-                        "type": "string"
-                    }
-                }
-            },
-            "models.NotificationChannel": {
-                "type": "object",
-                "properties": {
-                    "created_at": {
-                        "type": "string"
-                    },
-                    "enabled": {
-                        "type": "boolean"
-                    },
-                    "events": {
-                        "description": "empty = all events",
-                        "type": "array",
-                        "items": {
-                            "type": "string"
-                        }
-                    },
-                    "has_target": {
-                        "type": "boolean"
-                    },
-                    "id": {
-                        "type": "string"
-                    },
-                    "last_error": {
-                        "type": "string"
-                    },
-                    "last_sent_at": {
-                        "type": "string"
-                    },
-                    "last_status": {
-                        "type": "string"
-                    },
-                    "name": {
-                        "type": "string"
-                    },
-                    "type": {
-                        "description": "webhook | slack | teams | email",
-                        "type": "string"
-                    },
-                    "updated_at": {
                         "type": "string"
                     }
                 }

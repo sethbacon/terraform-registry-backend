@@ -25,6 +25,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
+
+	identityhttpsafe "github.com/sethbacon/terraform-suite-identity/identity/httpsafe"
+	identitymailer "github.com/sethbacon/terraform-suite-identity/identity/mailer"
+	identitynotify "github.com/sethbacon/terraform-suite-identity/identity/notify"
+
 	"github.com/terraform-registry/terraform-registry/internal/api/admin"
 	"github.com/terraform-registry/terraform-registry/internal/api/modules"
 	"github.com/terraform-registry/terraform-registry/internal/api/oci"
@@ -224,8 +229,28 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// OCI distribution handler (public read, backed by existing module storage)
 	ociHandler := oci.NewHandler(db, storageBackend)
 
-	// Initialize the API key expiry notifier
-	expiryNotifier := jobs.NewAPIKeyExpiryNotifier(apiKeyRepo, userRepo, &cfg.Notifications)
+	// Initialize the API key expiry notifier. The shared identity/notify job
+	// re-reads notificationsExpiryConfig() on every tick, so an admin toggling
+	// notifications.events.api_key_expiring off via the admin API takes effect
+	// on the next tick without a process restart (mirrors the pre-shared
+	// behavior of holding cfg.Notifications by pointer).
+	notificationsExpiryConfig := func() identitynotify.ExpiryConfig {
+		return identitynotify.ExpiryConfig{
+			Enabled:        cfg.Notifications.Enabled,
+			APIKeyExpiring: cfg.Notifications.Events.APIKeyExpiring,
+			SMTP: identitymailer.Config{
+				Host:     cfg.Notifications.SMTP.Host,
+				Port:     cfg.Notifications.SMTP.Port,
+				From:     cfg.Notifications.SMTP.From,
+				Username: cfg.Notifications.SMTP.Username,
+				Password: cfg.Notifications.SMTP.Password,
+				UseTLS:   cfg.Notifications.SMTP.UseTLS,
+			},
+			WarningDays:        cfg.Notifications.APIKeyExpiryWarningDays,
+			CheckIntervalHours: cfg.Notifications.APIKeyExpiryCheckIntervalHours,
+		}
+	}
+	expiryNotifier := identitynotify.NewAPIKeyExpiryNotifier(apiKeyRepo, userRepo, notificationsExpiryConfig, identitynotify.ExpiryOptions{ProductName: "Terraform Registry"})
 	jobRegistry.Register(expiryNotifier)
 
 	// Apply any scanning configuration persisted by the setup wizard (over the
@@ -427,12 +452,38 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// scanner_update_available events, alongside the shared SMTP recipients
 	// list above. Wire the notifier into every trigger that fans those events
 	// out so channels observe them in addition to the direct-recipients email.
-	// The notifier and the channel handlers both take egressGuard so a
+	// The notifier and the channel handlers both take identityGuard so a
 	// webhook/Slack/Teams target URL is subject to the same SSRF egress policy
 	// as every other outbound client (validated at save, enforced at dial).
+	//
+	// identityTokenCipher/identityGuard are separate instances (built from the
+	// same key material / allow-list as tokenCipher/egressGuard above) of the
+	// shared identity/crypto and identity/httpsafe types the shared
+	// identity/notify package requires — see the cross-app notification
+	// parity effort. tokenCipher/egressGuard remain registry's own types for
+	// every other existing use (SCM tokens, storage keys, mirror sync, ...).
+	identityTokenCipher, err := buildIdentityTokenCipher(encryptionKey, encryptionKeyPrevious)
+	if err != nil {
+		log.Fatalf("Failed to initialize shared token cipher: %v", err)
+	}
+	identityGuard, err := identityhttpsafe.NewGuard(cfg.Security.Egress.Allowlist)
+	if err != nil {
+		log.Fatalf("invalid security.egress.allowlist: %v", err)
+	}
+	notificationsSMTPConfig := func() identitymailer.Config {
+		return identitymailer.Config{
+			Host:     cfg.Notifications.SMTP.Host,
+			Port:     cfg.Notifications.SMTP.Port,
+			From:     cfg.Notifications.SMTP.From,
+			Username: cfg.Notifications.SMTP.Username,
+			Password: cfg.Notifications.SMTP.Password,
+			UseTLS:   cfg.Notifications.SMTP.UseTLS,
+		}
+	}
 	notificationChannelRepo := repositories.NewNotificationChannelRepository(db)
-	notifier := notify.NewNotifier(notificationChannelRepo, notify.New(&cfg.Notifications.SMTP), tokenCipher, egressGuard)
-	notificationChannelHandlers := admin.NewNotificationChannelHandlers(notificationChannelRepo, notifier, tokenCipher, egressGuard)
+	notifierOpts := identitynotify.Options{Source: "terraform-registry", TestMessage: "This is a test from the Terraform Registry."}
+	notifier := notify.NewNotifier(notificationChannelRepo, notificationsSMTPConfig, identityTokenCipher, identityGuard, notifierOpts)
+	notificationChannelHandlers := admin.NewNotificationChannelHandlers(notificationChannelRepo, notifier, identityTokenCipher, identityGuard)
 	cvePollJob.SetNotifier(notifier)
 	scannerUpdateJob.SetNotifier(notifier)
 	rbacHandlers.WithNotifier(notifier)

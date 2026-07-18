@@ -12,6 +12,8 @@ import (
 	"log/slog"
 	"time"
 
+	identitycrypto "github.com/sethbacon/terraform-suite-identity/identity/crypto"
+
 	"github.com/terraform-registry/terraform-registry/internal/api/admin"
 	"github.com/terraform-registry/terraform-registry/internal/api/setup"
 	"github.com/terraform-registry/terraform-registry/internal/auth/oidc"
@@ -19,6 +21,19 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
+
+// buildIdentityTokenCipher constructs the shared identity/crypto.TokenCipher
+// instance used by the notification-channel Notifier and its admin handlers.
+// It mirrors this repo's own tokenCipher construction (same ENCRYPTION_KEY /
+// ENCRYPTION_KEY_PREVIOUS key material, same dual-key rotation support) but
+// produces the shared package's type, since the shared identity/notify
+// package cannot depend on this repo's internal/crypto package.
+func buildIdentityTokenCipher(encryptionKey, encryptionKeyPrevious string) (*identitycrypto.TokenCipher, error) {
+	if encryptionKeyPrevious != "" {
+		return identitycrypto.NewTokenCipherWithPrevious([]byte(encryptionKey), []byte(encryptionKeyPrevious))
+	}
+	return identitycrypto.NewTokenCipher([]byte(encryptionKey))
+}
 
 // reloadScanningConfigFromDB applies any scanning configuration persisted by
 // the setup wizard over the file/env config. It has two independent parts,

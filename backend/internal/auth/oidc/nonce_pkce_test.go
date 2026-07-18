@@ -186,13 +186,16 @@ func TestVerifyIDToken_NonceMatch_Succeeds(t *testing.T) {
 }
 
 // TestVerifyIDToken_NoExpectedNonce_StillWorks confirms WithExpectedNonce is
-// additive: calling VerifyIDToken without it (the pre-existing calling
-// convention, still used e.g. by call sites that never adopted BeginAuth)
-// keeps working unchanged.
+// additive: calling VerifyIDToken without it still works for a token that
+// carries no nonce claim at all. (A token that DOES carry a nonce claim now
+// requires WithExpectedNonce — see the shared identity/auth/oidc package's
+// issue #104 hardening — this repo's real callback path already always
+// supplies it; internal/api/admin/auth.go:VerifyIDToken(ctx, rawIDToken,
+// oidc.WithExpectedNonce(sessionState.Nonce)).)
 func TestVerifyIDToken_NoExpectedNonce_StillWorks(t *testing.T) {
 	ts, priv := newTestIdP(t)
 	p := newTestProvider(t, ts, "test-client")
-	token := signToken(t, priv, ts.URL, "test-client", "user-1", "any-nonce")
+	token := signToken(t, priv, ts.URL, "test-client", "user-1", "")
 
 	if _, err := p.VerifyIDToken(context.Background(), token); err != nil {
 		t.Fatalf("VerifyIDToken returned error: %v", err)

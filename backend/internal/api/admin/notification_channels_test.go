@@ -13,9 +13,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
-	"github.com/terraform-registry/terraform-registry/internal/crypto"
+	identitycrypto "github.com/sethbacon/terraform-suite-identity/identity/crypto"
+	identityhttpsafe "github.com/sethbacon/terraform-suite-identity/identity/httpsafe"
+	identitynotify "github.com/sethbacon/terraform-suite-identity/identity/notify"
+
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
-	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/notify"
 )
 
@@ -24,7 +26,7 @@ var adminChannelCols = []string{
 	"last_status", "last_error", "last_sent_at", "created_at", "updated_at",
 }
 
-func adminChannelRow(id uuid.UUID, enc string) *sqlmock.Rows {
+func adminChannelRow(id, enc string) *sqlmock.Rows {
 	now := time.Now()
 	return sqlmock.NewRows(adminChannelCols).AddRow(
 		id, "ops", "webhook", enc, []byte(`["cve_detected"]`), true,
@@ -34,7 +36,7 @@ func adminChannelRow(id uuid.UUID, enc string) *sqlmock.Rows {
 // newChannelHandlers builds the handlers over a sqlmock-backed repository and a
 // real token cipher. guard is the egress guard used for create/update target
 // validation (pass nil to skip the egress check in a test).
-func newChannelHandlers(t *testing.T, guard *httpsafe.Guard) (*NotificationChannelHandlers, sqlmock.Sqlmock, *crypto.TokenCipher) {
+func newChannelHandlers(t *testing.T, guard *identityhttpsafe.Guard) (*NotificationChannelHandlers, sqlmock.Sqlmock, *identitycrypto.TokenCipher) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	db, mock, err := sqlmock.New()
@@ -43,11 +45,12 @@ func newChannelHandlers(t *testing.T, guard *httpsafe.Guard) (*NotificationChann
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	repo := repositories.NewNotificationChannelRepository(db)
-	tc, err := crypto.NewTokenCipher(make([]byte, 32))
+	tc, err := identitycrypto.NewTokenCipher(make([]byte, 32))
 	if err != nil {
 		t.Fatalf("NewTokenCipher: %v", err)
 	}
-	notifier := notify.NewNotifier(repo, nil, tc, httpsafe.MustGuard("127.0.0.1"))
+	opts := identitynotify.Options{Source: "terraform-registry", TestMessage: "This is a test from the Terraform Registry."}
+	notifier := notify.NewNotifier(repo, nil, tc, identityhttpsafe.MustGuard("127.0.0.1"), opts)
 	return NewNotificationChannelHandlers(repo, notifier, tc, guard), mock, tc
 }
 
@@ -61,12 +64,12 @@ func channelTestCtx(method, body string, params gin.Params) (*gin.Context, *http
 }
 
 func TestNotificationChannelRequest_Validate(t *testing.T) {
-	strict := httpsafe.MustGuard() // strict default policy
+	strict := identityhttpsafe.MustGuard() // strict default policy
 
 	cases := []struct {
 		name    string
 		req     notificationChannelRequest
-		guard   *httpsafe.Guard
+		guard   *identityhttpsafe.Guard
 		wantErr bool
 	}{
 		{"bad type", notificationChannelRequest{Type: "sms"}, nil, true},
@@ -100,7 +103,7 @@ func TestNotificationChannelRequest_Events(t *testing.T) {
 
 func TestListChannels(t *testing.T) {
 	h, mock, _ := newChannelHandlers(t, nil)
-	mock.ExpectQuery("FROM notification_channels ORDER BY").WillReturnRows(adminChannelRow(uuid.New(), "ENC"))
+	mock.ExpectQuery("FROM notification_channels ORDER BY").WillReturnRows(adminChannelRow(uuid.New().String(), "ENC"))
 	c, w := channelTestCtx(http.MethodGet, "", nil)
 	h.ListChannels(c)
 	if w.Code != http.StatusOK {
@@ -120,7 +123,7 @@ func TestListChannels_Error(t *testing.T) {
 
 func TestCreateChannel(t *testing.T) {
 	h, mock, _ := newChannelHandlers(t, nil)
-	mock.ExpectQuery("INSERT INTO notification_channels").WillReturnRows(adminChannelRow(uuid.New(), "ENC"))
+	mock.ExpectQuery("INSERT INTO notification_channels").WillReturnRows(adminChannelRow(uuid.New().String(), "ENC"))
 	body := `{"name":"ops","type":"webhook","target":"https://hooks.example.com/x","events":["cve_detected"]}`
 	c, w := channelTestCtx(http.MethodPost, body, nil)
 	h.CreateChannel(c)
@@ -169,10 +172,10 @@ func TestCreateChannel_RepoError(t *testing.T) {
 
 func TestUpdateChannel(t *testing.T) {
 	h, mock, _ := newChannelHandlers(t, nil)
-	id := uuid.New()
+	id := uuid.New().String()
 	mock.ExpectQuery("UPDATE notification_channels").WillReturnRows(adminChannelRow(id, "ENC"))
 	body := `{"name":"ops","type":"webhook","target":"https://hooks.example.com/x"}`
-	c, w := channelTestCtx(http.MethodPut, body, gin.Params{{Key: "id", Value: id.String()}})
+	c, w := channelTestCtx(http.MethodPut, body, gin.Params{{Key: "id", Value: id}})
 	h.UpdateChannel(c)
 	if w.Code != http.StatusOK {
 		t.Fatalf("code = %d, body = %s", w.Code, w.Body.String())
@@ -181,11 +184,11 @@ func TestUpdateChannel(t *testing.T) {
 
 func TestUpdateChannel_KeepTarget(t *testing.T) {
 	h, mock, _ := newChannelHandlers(t, nil)
-	id := uuid.New()
+	id := uuid.New().String()
 	mock.ExpectQuery("UPDATE notification_channels").WillReturnRows(adminChannelRow(id, "ENC"))
 	// No target => the encrypt step is skipped and the existing target kept.
 	body := `{"name":"ops","type":"webhook"}`
-	c, w := channelTestCtx(http.MethodPut, body, gin.Params{{Key: "id", Value: id.String()}})
+	c, w := channelTestCtx(http.MethodPut, body, gin.Params{{Key: "id", Value: id}})
 	h.UpdateChannel(c)
 	if w.Code != http.StatusOK {
 		t.Fatalf("code = %d, body = %s", w.Code, w.Body.String())
@@ -221,10 +224,10 @@ func TestUpdateChannel_ValidateFail(t *testing.T) {
 
 func TestUpdateChannel_RepoError(t *testing.T) {
 	h, mock, _ := newChannelHandlers(t, nil)
-	id := uuid.New()
+	id := uuid.New().String()
 	mock.ExpectQuery("UPDATE notification_channels").WillReturnError(errors.New("boom"))
 	body := `{"name":"ops","type":"webhook","target":"https://hooks.example.com/x"}`
-	c, w := channelTestCtx(http.MethodPut, body, gin.Params{{Key: "id", Value: id.String()}})
+	c, w := channelTestCtx(http.MethodPut, body, gin.Params{{Key: "id", Value: id}})
 	h.UpdateChannel(c)
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("code = %d", w.Code)
@@ -233,10 +236,10 @@ func TestUpdateChannel_RepoError(t *testing.T) {
 
 func TestUpdateChannel_NotFound(t *testing.T) {
 	h, mock, _ := newChannelHandlers(t, nil)
-	id := uuid.New()
+	id := uuid.New().String()
 	mock.ExpectQuery("UPDATE notification_channels").WillReturnError(sql.ErrNoRows)
 	body := `{"name":"ops","type":"webhook","target":"https://hooks.example.com/x"}`
-	c, w := channelTestCtx(http.MethodPut, body, gin.Params{{Key: "id", Value: id.String()}})
+	c, w := channelTestCtx(http.MethodPut, body, gin.Params{{Key: "id", Value: id}})
 	h.UpdateChannel(c)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("code = %d", w.Code)
@@ -245,9 +248,9 @@ func TestUpdateChannel_NotFound(t *testing.T) {
 
 func TestDeleteChannel(t *testing.T) {
 	h, mock, _ := newChannelHandlers(t, nil)
-	id := uuid.New()
+	id := uuid.New().String()
 	mock.ExpectExec("DELETE FROM notification_channels").WillReturnResult(sqlmock.NewResult(0, 1))
-	c, _ := channelTestCtx(http.MethodDelete, "", gin.Params{{Key: "id", Value: id.String()}})
+	c, _ := channelTestCtx(http.MethodDelete, "", gin.Params{{Key: "id", Value: id}})
 	h.DeleteChannel(c)
 	// DeleteChannel replies 204 with no body; c.Status() buffers the code on the
 	// gin writer without flushing it to the recorder, so assert on the writer.
@@ -267,9 +270,9 @@ func TestDeleteChannel_InvalidID(t *testing.T) {
 
 func TestDeleteChannel_RepoError(t *testing.T) {
 	h, mock, _ := newChannelHandlers(t, nil)
-	id := uuid.New()
+	id := uuid.New().String()
 	mock.ExpectExec("DELETE FROM notification_channels").WillReturnError(errors.New("boom"))
-	c, w := channelTestCtx(http.MethodDelete, "", gin.Params{{Key: "id", Value: id.String()}})
+	c, w := channelTestCtx(http.MethodDelete, "", gin.Params{{Key: "id", Value: id}})
 	h.DeleteChannel(c)
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("code = %d", w.Code)
@@ -287,11 +290,11 @@ func TestTestChannel_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
-	id := uuid.New()
+	id := uuid.New().String()
 	mock.ExpectQuery("FROM notification_channels WHERE id").WillReturnRows(adminChannelRow(id, enc))
 	mock.ExpectExec("UPDATE notification_channels SET last_status").WillReturnResult(sqlmock.NewResult(0, 1))
 
-	c, w := channelTestCtx(http.MethodPost, "", gin.Params{{Key: "id", Value: id.String()}})
+	c, w := channelTestCtx(http.MethodPost, "", gin.Params{{Key: "id", Value: id}})
 	h.TestChannel(c)
 	if w.Code != http.StatusOK {
 		t.Fatalf("code = %d, body = %s", w.Code, w.Body.String())
@@ -309,9 +312,9 @@ func TestTestChannel_InvalidID(t *testing.T) {
 
 func TestTestChannel_NotFound(t *testing.T) {
 	h, mock, _ := newChannelHandlers(t, nil)
-	id := uuid.New()
+	id := uuid.New().String()
 	mock.ExpectQuery("FROM notification_channels WHERE id").WillReturnError(sql.ErrNoRows)
-	c, w := channelTestCtx(http.MethodPost, "", gin.Params{{Key: "id", Value: id.String()}})
+	c, w := channelTestCtx(http.MethodPost, "", gin.Params{{Key: "id", Value: id}})
 	h.TestChannel(c)
 	if w.Code != http.StatusBadGateway {
 		t.Fatalf("code = %d", w.Code)

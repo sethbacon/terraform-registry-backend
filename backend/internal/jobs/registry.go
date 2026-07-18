@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"sync"
 
+	identitynotify "github.com/sethbacon/terraform-suite-identity/identity/notify"
+
 	"github.com/terraform-registry/terraform-registry/internal/safego"
 )
 
@@ -21,7 +23,7 @@ var (
 	_ Job = (*MirrorSyncJob)(nil)
 	_ Job = (*TerraformMirrorSyncJob)(nil)
 	_ Job = (*ReleasesKeyRefreshJob)(nil)
-	_ Job = (*APIKeyExpiryNotifier)(nil)
+	_ Job = (*identitynotify.APIKeyExpiryNotifier)(nil)
 	_ Job = (*ModuleScannerJob)(nil)
 	_ Job = (*ScannerUpdateJob)(nil)
 	_ Job = (*AuditCleanupJob)(nil)

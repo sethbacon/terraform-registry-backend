@@ -184,7 +184,7 @@ func GetJWTSecret() string {
 // authorize without a database round-trip; a unique JTI is stamped for revocation.
 func GenerateJWT(userID, email string, scopes []string, expiresIn time.Duration) (string, error) {
 	_ = GetJWTSecret() // ensure the secret is validated and the TokenManager exists
-	return tokenManager.Generate(userID, email, scopes, expiresIn)
+	return tokenManager.Generate(userID, email, scopes, expiresIn) //nolint:staticcheck // SA1019: registry issues suite-wide (not per-org) JWTs by design; this is the canonical call site, a deliberate suite-wide decision per the deprecation notice
 }
 
 // ValidateJWT parses and validates a JWT via the shared identity TokenManager.

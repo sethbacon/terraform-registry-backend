@@ -352,7 +352,7 @@ func TestSetTrustedIssuers(t *testing.T) {
 	// not (or audiences it for itself instead).
 	siblingTM := identityauth.NewTokenManager(secret, "terraform-state-manager")
 	siblingTM.SetAudience(jwtIssuer)
-	siblingToken, err := siblingTM.Generate("user-1", "user1@example.com", nil, time.Hour)
+	siblingToken, err := siblingTM.Generate("user-1", "user1@example.com", nil, time.Hour) //nolint:staticcheck // SA1019: intentionally simulating a sibling app's own token-minting call, not registry's own auth flow
 	if err != nil {
 		t.Fatalf("sibling Generate: %v", err)
 	}
@@ -411,7 +411,7 @@ func TestSetTrustedIssuers(t *testing.T) {
 		t.Cleanup(func() { SetTrustedIssuers(nil) })
 
 		noIssuerTM := identityauth.NewTokenManager(secret, "")
-		noIssuerToken, err := noIssuerTM.Generate("attacker", "attacker@example.com", []string{"admin"}, time.Hour)
+		noIssuerToken, err := noIssuerTM.Generate("attacker", "attacker@example.com", []string{"admin"}, time.Hour) //nolint:staticcheck // SA1019: intentionally simulating an attacker/sibling token-minting call, not registry's own auth flow
 		if err != nil {
 			t.Fatalf("Generate: %v", err)
 		}
@@ -462,7 +462,7 @@ func TestValidateJWT_AudienceEnforced(t *testing.T) {
 		// (yet) adopted SetAudience. Trusting the issuer must not be enough on
 		// its own.
 		siblingTM := identityauth.NewTokenManager(secret, "terraform-state-manager")
-		token, err := siblingTM.Generate("attacker-or-unaware-sibling", "x@example.com", []string{"admin"}, time.Hour)
+		token, err := siblingTM.Generate("attacker-or-unaware-sibling", "x@example.com", []string{"admin"}, time.Hour) //nolint:staticcheck // SA1019: intentionally simulating a sibling app's own token-minting call, not registry's own auth flow
 		if err != nil {
 			t.Fatalf("sibling Generate: %v", err)
 		}
@@ -477,7 +477,7 @@ func TestValidateJWT_AudienceEnforced(t *testing.T) {
 		// here even though the issuer is trusted and the secret matches.
 		siblingTM := identityauth.NewTokenManager(secret, "terraform-state-manager")
 		siblingTM.SetAudience("terraform-state-manager")
-		token, err := siblingTM.Generate("user-1", "user1@example.com", nil, time.Hour)
+		token, err := siblingTM.Generate("user-1", "user1@example.com", nil, time.Hour) //nolint:staticcheck // SA1019: intentionally simulating a sibling app's own token-minting call, not registry's own auth flow
 		if err != nil {
 			t.Fatalf("sibling Generate: %v", err)
 		}
@@ -489,7 +489,7 @@ func TestValidateJWT_AudienceEnforced(t *testing.T) {
 	t.Run("trusted issuer and correct audience validates", func(t *testing.T) {
 		siblingTM := identityauth.NewTokenManager(secret, "terraform-state-manager")
 		siblingTM.SetAudience(jwtIssuer)
-		token, err := siblingTM.Generate("user-1", "user1@example.com", nil, time.Hour)
+		token, err := siblingTM.Generate("user-1", "user1@example.com", nil, time.Hour) //nolint:staticcheck // SA1019: intentionally simulating a sibling app's own token-minting call, not registry's own auth flow
 		if err != nil {
 			t.Fatalf("sibling Generate: %v", err)
 		}

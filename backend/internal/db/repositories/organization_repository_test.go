@@ -790,7 +790,7 @@ func TestGetUserCombinedScopes_Success(t *testing.T) {
 			"viewer", "Viewer", []byte(`["modules:read","modules:write"]`),
 		))
 
-	scopes, err := repo.GetUserCombinedScopes(context.Background(), "user-1")
+	scopes, err := repo.GetUserCombinedScopes(context.Background(), "user-1") //nolint:staticcheck // SA1019: unit test for the deprecated-but-retained method itself
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -804,7 +804,7 @@ func TestGetUserCombinedScopes_DBError(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organization_members.*JOIN organizations").
 		WillReturnError(errDB)
 
-	_, err := repo.GetUserCombinedScopes(context.Background(), "user-1")
+	_, err := repo.GetUserCombinedScopes(context.Background(), "user-1") //nolint:staticcheck // SA1019: unit test for the deprecated-but-retained method itself
 	if err == nil {
 		t.Error("expected error")
 	}
