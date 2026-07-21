@@ -2,8 +2,8 @@ apiVersion: v2
 name: terraform-registry
 description: A Helm chart for deploying the Enterprise Terraform Registry
 type: application
-version: 3.4.0
-appVersion: 3.4.0
+version: 3.4.1
+appVersion: 3.4.1
 keywords:
   - terraform
   - registry
