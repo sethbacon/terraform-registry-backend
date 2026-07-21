@@ -126,7 +126,7 @@ func (s *UserService) ExportUserData(ctx context.Context, userID string) (*UserD
 		SELECT DISTINCT m.id, m.namespace, m.name
 		FROM modules m
 		JOIN module_versions mv ON mv.module_id = m.id
-		WHERE mv.created_by = $1
+		WHERE mv.published_by = $1
 	`, userID)
 	if err == nil {
 		defer modRows.Close()
@@ -143,7 +143,7 @@ func (s *UserService) ExportUserData(ctx context.Context, userID string) (*UserD
 		SELECT DISTINCT p.id, p.namespace, p.type
 		FROM providers p
 		JOIN provider_versions pv ON pv.provider_id = p.id
-		WHERE pv.created_by = $1
+		WHERE pv.published_by = $1
 	`, userID)
 	if err == nil {
 		defer provRows.Close()
