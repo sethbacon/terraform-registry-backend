@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.1](https://github.com/sethbacon/terraform-registry-backend/compare/v3.4.0...v3.4.1) (2026-07-21)
+
+
+### Bug Fixes
+
+* **gdpr:** use published_by instead of nonexistent created_by column ([#642](https://github.com/sethbacon/terraform-registry-backend/issues/642)) ([a6a86ff](https://github.com/sethbacon/terraform-registry-backend/commit/a6a86ffdcc255b43d7070a28953e38abbfb9bfda))
+
 ## [3.4.0](https://github.com/sethbacon/terraform-registry-backend/compare/v3.3.3...v3.4.0) (2026-07-18)
 
 
