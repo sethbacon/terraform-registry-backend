@@ -48,6 +48,36 @@ func (r *NamespaceClaimRepository) GetClaim(ctx context.Context, namespace strin
 	return claim, nil
 }
 
+// ListClaims returns every namespace ownership claim ordered by namespace.
+// Used by the admin namespace-ownership read API for auditability. Organization
+// names are resolved separately by the handler because namespace_claims and the
+// organizations table may live on different database connections.
+func (r *NamespaceClaimRepository) ListClaims(ctx context.Context) ([]*models.NamespaceClaim, error) {
+	query := `
+		SELECT namespace, organization_id, claimed_by, created_at
+		FROM namespace_claims
+		ORDER BY namespace
+	`
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list namespace claims: %w", err)
+	}
+	defer rows.Close()
+
+	var claims []*models.NamespaceClaim
+	for rows.Next() {
+		claim := &models.NamespaceClaim{}
+		if err := rows.Scan(&claim.Namespace, &claim.OrganizationID, &claim.ClaimedBy, &claim.CreatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan namespace claim: %w", err)
+		}
+		claims = append(claims, claim)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate namespace claims: %w", err)
+	}
+	return claims, nil
+}
+
 // ClaimNamespace atomically claims a namespace for an organization and returns
 // the winning claim. When two organizations race for the same namespace, the
 // first insert wins (ON CONFLICT DO NOTHING) and the loser receives the

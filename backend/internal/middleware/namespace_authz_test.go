@@ -454,6 +454,172 @@ func TestRequirePublishAccessFromForm_APIKeyOrg_FirstClaim(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// First-publish org resolution: fail-closed + validated explicit organization_id
+// ---------------------------------------------------------------------------
+
+func TestRequirePublishAccessFromForm_MultiOrgAdmin_NoExplicitOrg_FailsClosed(t *testing.T) {
+	mock, authz := newNamespaceAuthzTestDeps(t)
+
+	mock.ExpectQuery("SELECT.*FROM namespace_claims").
+		WillReturnRows(sqlmock.NewRows(claimCols)) // unclaimed
+	mock.ExpectQuery("SELECT DISTINCT organization_id FROM").
+		WillReturnRows(sqlmock.NewRows(artifactOrgCols)) // no artifacts
+	// Admin belongs to two orgs and supplies no organization_id: the backend
+	// must NOT silently fall back to the default org (the historical bug); it
+	// must fail closed.
+	mock.ExpectQuery("SELECT.*FROM organization_members.*JOIN organizations").
+		WillReturnRows(sqlmock.NewRows(userMembershipCols).
+			AddRow(nsOrgA, "Org A", "role-adm", time.Now(), "admin", "Administrator", []byte(`["admin"]`)).
+			AddRow(nsOrgB, "Org B", "role-adm", time.Now(), "admin", "Administrator", []byte(`["admin"]`)))
+
+	r := gin.New()
+	r.POST("/modules",
+		contextSetter(withScopesAndUser([]string{string(auth.ScopeAdmin)}, nsUserID)),
+		authz.RequirePublishAccessFromForm(auth.ScopeModulesWrite, 100<<20),
+		func(c *gin.Context) { c.JSON(http.StatusCreated, gin.H{"ok": true}) })
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, multipartRequest(t, map[string]string{"namespace": "newteam", "name": "vpc", "system": "aws"}))
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (multi-org admin must specify org; no silent default): body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet/unexpected expectations (no claim insert expected): %v", err)
+	}
+}
+
+func TestRequirePublishAccessFromForm_AdminExplicitOrg_Claims(t *testing.T) {
+	mock, authz := newNamespaceAuthzTestDeps(t)
+
+	mock.ExpectQuery("SELECT.*FROM namespace_claims").
+		WillReturnRows(sqlmock.NewRows(claimCols)) // unclaimed
+	mock.ExpectQuery("SELECT DISTINCT organization_id FROM").
+		WillReturnRows(sqlmock.NewRows(artifactOrgCols)) // no artifacts
+	// Admin + explicit org: resolveCallerOrg returns the requested org WITHOUT a
+	// membership lookup; the claim is inserted for exactly that org.
+	mock.ExpectExec("INSERT INTO namespace_claims").
+		WithArgs("newteam", nsOrgB, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery("SELECT.*FROM namespace_claims").
+		WillReturnRows(sqlmock.NewRows(claimCols).AddRow("newteam", nsOrgB, nil, time.Now()))
+
+	r := gin.New()
+	r.POST("/modules",
+		contextSetter(withScopesAndUser([]string{string(auth.ScopeAdmin)}, nsUserID)),
+		authz.RequirePublishAccessFromForm(auth.ScopeModulesWrite, 100<<20),
+		func(c *gin.Context) { c.JSON(http.StatusCreated, gin.H{"ok": true}) })
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, multipartRequest(t, map[string]string{"namespace": "newteam", "name": "vpc", "system": "aws", "organization_id": nsOrgB}))
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201 (admin binds new namespace to explicit org): body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet/unexpected expectations: %v", err)
+	}
+}
+
+func TestRequirePublishAccessFromForm_NonAdminExplicitOrg_Member_Claims(t *testing.T) {
+	mock, authz := newNamespaceAuthzTestDeps(t)
+
+	mock.ExpectQuery("SELECT.*FROM namespace_claims").
+		WillReturnRows(sqlmock.NewRows(claimCols)) // unclaimed
+	mock.ExpectQuery("SELECT DISTINCT organization_id FROM").
+		WillReturnRows(sqlmock.NewRows(artifactOrgCols)) // no artifacts
+	// Non-admin with explicit org: membership is verified; the requested org is
+	// among the caller's memberships, so the claim binds to it.
+	mock.ExpectQuery("SELECT.*FROM organization_members.*JOIN organizations").
+		WillReturnRows(sqlmock.NewRows(userMembershipCols).
+			AddRow(nsOrgA, "Org A", "role-pub", time.Now(), "publisher", "Publisher", []byte(`["modules:write"]`)).
+			AddRow(nsOrgB, "Org B", "role-pub", time.Now(), "publisher", "Publisher", []byte(`["modules:write"]`)))
+	mock.ExpectExec("INSERT INTO namespace_claims").
+		WithArgs("newteam", nsOrgB, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery("SELECT.*FROM namespace_claims").
+		WillReturnRows(sqlmock.NewRows(claimCols).AddRow("newteam", nsOrgB, nil, time.Now()))
+
+	r := gin.New()
+	r.POST("/modules",
+		contextSetter(withScopesAndUser([]string{string(auth.ScopeModulesWrite)}, nsUserID)),
+		authz.RequirePublishAccessFromForm(auth.ScopeModulesWrite, 100<<20),
+		func(c *gin.Context) { c.JSON(http.StatusCreated, gin.H{"ok": true}) })
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, multipartRequest(t, map[string]string{"namespace": "newteam", "name": "vpc", "system": "aws", "organization_id": nsOrgB}))
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201 (member may bind a new namespace to a chosen org they belong to): body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet/unexpected expectations: %v", err)
+	}
+}
+
+func TestRequirePublishAccessFromForm_NonAdminExplicitOrg_NotMember_Denied(t *testing.T) {
+	mock, authz := newNamespaceAuthzTestDeps(t)
+
+	mock.ExpectQuery("SELECT.*FROM namespace_claims").
+		WillReturnRows(sqlmock.NewRows(claimCols)) // unclaimed
+	mock.ExpectQuery("SELECT DISTINCT organization_id FROM").
+		WillReturnRows(sqlmock.NewRows(artifactOrgCols)) // no artifacts
+	// Caller belongs only to org A but asks to bind the namespace to org B.
+	mock.ExpectQuery("SELECT.*FROM organization_members.*JOIN organizations").
+		WillReturnRows(sqlmock.NewRows(userMembershipCols).
+			AddRow(nsOrgA, "Org A", "role-pub", time.Now(), "publisher", "Publisher", []byte(`["modules:write"]`)))
+
+	r := gin.New()
+	r.POST("/modules",
+		contextSetter(withScopesAndUser([]string{string(auth.ScopeModulesWrite)}, nsUserID)),
+		authz.RequirePublishAccessFromForm(auth.ScopeModulesWrite, 100<<20),
+		func(c *gin.Context) { c.JSON(http.StatusCreated, gin.H{"ok": true}) })
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, multipartRequest(t, map[string]string{"namespace": "newteam", "name": "vpc", "system": "aws", "organization_id": nsOrgB}))
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (cannot bind namespace to an org you don't belong to): body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet/unexpected expectations (no claim insert expected): %v", err)
+	}
+}
+
+func TestRequirePublishAccessFromForm_APIKeyOrg_IgnoresExplicitOrg(t *testing.T) {
+	mock, authz := newNamespaceAuthzTestDeps(t)
+
+	mock.ExpectQuery("SELECT.*FROM namespace_claims").
+		WillReturnRows(sqlmock.NewRows(claimCols)) // unclaimed
+	mock.ExpectQuery("SELECT DISTINCT organization_id FROM").
+		WillReturnRows(sqlmock.NewRows(artifactOrgCols)) // no artifacts
+	// API key binding is authoritative: the claim binds to the key's org
+	// (nsOrgA), NOT the attacker-supplied organization_id form field (nsOrgB).
+	// No membership query is issued.
+	mock.ExpectExec("INSERT INTO namespace_claims").
+		WithArgs("ci-team", nsOrgA, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery("SELECT.*FROM namespace_claims").
+		WillReturnRows(sqlmock.NewRows(claimCols).AddRow("ci-team", nsOrgA, nil, time.Now()))
+
+	r := gin.New()
+	r.POST("/modules",
+		contextSetter(withAPIKey(nsOrgA, []string{string(auth.ScopeModulesWrite)})),
+		authz.RequirePublishAccessFromForm(auth.ScopeModulesWrite, 100<<20),
+		func(c *gin.Context) { c.JSON(http.StatusCreated, gin.H{"ok": true}) })
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, multipartRequest(t, map[string]string{"namespace": "ci-team", "name": "vpc", "system": "aws", "organization_id": nsOrgB}))
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201 (API key org claims directly, request org ignored): body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet/unexpected expectations: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // RequirePublishAccessFromJSON — JSON-body namespace (admin create routes)
 // ---------------------------------------------------------------------------
 

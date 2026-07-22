@@ -67,6 +67,116 @@ func (h *OrganizationHandlers) revokeUserTokens(c *gin.Context, userID, reason s
 	}
 }
 
+// ListNamespaceClaimsHandler lists every namespace ownership claim with its
+// resolved organization name, so operators can audit which organization owns
+// each module/provider namespace (issue #555). Organization names are resolved
+// via a separate per-org lookup rather than a SQL join because namespace_claims
+// (registry connection) and organizations (identity connection) may live on
+// different databases.
+// GET /api/v1/admin/namespaces
+func (h *OrganizationHandlers) ListNamespaceClaimsHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if h.claimRepo == nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Namespace claims are not available"})
+			return
+		}
+		claims, err := h.claimRepo.ListClaims(c.Request.Context())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list namespace claims"})
+			return
+		}
+
+		nameCache := make(map[string]string)
+		out := make([]gin.H, 0, len(claims))
+		for _, cl := range claims {
+			orgName, cached := nameCache[cl.OrganizationID]
+			if !cached {
+				if org, err := h.orgRepo.GetByID(c.Request.Context(), cl.OrganizationID); err == nil && org != nil {
+					orgName = org.Name
+				}
+				nameCache[cl.OrganizationID] = orgName
+			}
+			out = append(out, gin.H{
+				"namespace":         cl.Namespace,
+				"organization_id":   cl.OrganizationID,
+				"organization_name": orgName,
+				"claimed_by":        cl.ClaimedBy,
+				"created_at":        cl.CreatedAt,
+			})
+		}
+		c.JSON(http.StatusOK, gin.H{"namespaces": out})
+	}
+}
+
+// GetNamespaceOwnershipHandler resolves the owning organization of a single
+// namespace exactly as the mutation authorizer does: the claim when present,
+// otherwise the artifact-row fallback (a namespace that predates claims or was
+// populated by a system path). A namespace whose artifacts span multiple
+// organizations without a claim is reported as ambiguous rather than guessed.
+// GET /api/v1/admin/namespaces/:namespace
+func (h *OrganizationHandlers) GetNamespaceOwnershipHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if h.claimRepo == nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Namespace claims are not available"})
+			return
+		}
+		namespace := c.Param("namespace")
+		if namespace == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "namespace is required"})
+			return
+		}
+
+		claim, err := h.claimRepo.GetClaim(c.Request.Context(), namespace)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to resolve namespace ownership"})
+			return
+		}
+
+		var orgID, source string
+		if claim != nil {
+			orgID = claim.OrganizationID
+			source = "claim"
+		} else {
+			orgIDs, err := h.claimRepo.ArtifactOrganizations(c.Request.Context(), namespace)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to resolve namespace ownership"})
+				return
+			}
+			switch len(orgIDs) {
+			case 0:
+				c.JSON(http.StatusNotFound, gin.H{"error": "Namespace is unclaimed and has no artifacts"})
+				return
+			case 1:
+				orgID = orgIDs[0]
+				source = "artifact"
+			default:
+				c.JSON(http.StatusOK, gin.H{
+					"namespace":              namespace,
+					"source":                 "ambiguous",
+					"owner_organization_ids": orgIDs,
+				})
+				return
+			}
+		}
+
+		var orgName string
+		if org, err := h.orgRepo.GetByID(c.Request.Context(), orgID); err == nil && org != nil {
+			orgName = org.Name
+		}
+		resp := gin.H{
+			"namespace":         namespace,
+			"organization_id":   orgID,
+			"organization_name": orgName,
+			"source":            source,
+		}
+		if claim != nil {
+			resp["claimed_by"] = claim.ClaimedBy
+			resp["created_at"] = claim.CreatedAt
+		}
+		c.JSON(http.StatusOK, resp)
+	}
+}
+
 // @Summary      List organizations
 // @Description  Get a paginated list of all organizations.
 // @Tags         Organizations

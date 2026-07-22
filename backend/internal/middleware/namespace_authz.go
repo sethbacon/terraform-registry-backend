@@ -30,7 +30,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -114,6 +116,10 @@ func (a *NamespaceAuthorizer) RequirePublishAccessFromForm(scope auth.Scope, max
 			c.Next()
 			return
 		}
+		// An optional organization_id form field lets a multi-org caller (or an
+		// admin acting as operator) state which organization should own a
+		// brand-new namespace; resolveCallerOrg validates and consumes it.
+		c.Set("requested_org_id", c.Request.PostFormValue("organization_id"))
 		if a.authorizeNamespaceMutation(c, namespace, scope, true) {
 			c.Next()
 		}
@@ -145,6 +151,12 @@ func (a *NamespaceAuthorizer) RequirePublishAccessFromJSON(scope auth.Scope) gin
 			c.Next()
 			return
 		}
+
+		// An explicit organization_id lets a multi-org caller (or an admin
+		// acting as operator) state which organization should own a brand-new
+		// namespace; resolveCallerOrg validates and consumes it on the
+		// first-publish path.
+		c.Set("requested_org_id", body.OrganizationID)
 
 		if !a.authorizeNamespaceMutation(c, body.Namespace, scope, true) {
 			return
@@ -317,6 +329,9 @@ func (a *NamespaceAuthorizer) moduleAccessByID(c *gin.Context, scope auth.Scope)
 		return nil, "", false
 	}
 
+	// Expose the resolved owning organization to downstream handlers (audit,
+	// and so a handler never has to re-derive ownership independently).
+	c.Set("owner_org_id", ownerOrgID)
 	return module, ownerOrgID, true
 }
 
@@ -343,6 +358,7 @@ func (a *NamespaceAuthorizer) authorizeNamespaceMutation(c *gin.Context, namespa
 			abortNamespaceAuthz(c, status, msg)
 			return false
 		}
+		c.Set("owner_org_id", ownerOrgID)
 		return true
 	}
 
@@ -380,6 +396,21 @@ func (a *NamespaceAuthorizer) authorizeNamespaceMutation(c *gin.Context, namespa
 		}
 	}
 
+	// Audit the ownership binding: a namespace's owner is set exactly once, so
+	// this is a security-relevant, non-repeating event.
+	var claimedBy string
+	if uid := callerUserID(c); uid != nil {
+		claimedBy = *uid
+	}
+	slog.Info("namespace ownership claimed",
+		"namespace", namespace,
+		"organization_id", claim.OrganizationID,
+		"claimed_by", claimedBy,
+		"admin", callerIsAdmin(c),
+		"explicit_org", strings.TrimSpace(c.GetString("requested_org_id")) != "",
+	)
+
+	c.Set("owner_org_id", claim.OrganizationID)
 	return true
 }
 
@@ -491,13 +522,48 @@ func (a *NamespaceAuthorizer) ownerOrgForArtifact(ctx context.Context, namespace
 // status and message. Fails closed when no organization can be derived from
 // the caller's identity.
 func (a *NamespaceAuthorizer) resolveCallerOrg(c *gin.Context) (string, int, string) {
-	// Org-scoped API keys carry their organization directly.
+	// Org-scoped API keys carry their organization directly and are the
+	// strongest trust anchor: the binding is fixed at key creation and cannot
+	// be influenced by the request body.
 	if keyVal, exists := c.Get("api_key"); exists {
 		if apiKey, ok := keyVal.(*models.APIKey); ok && apiKey.OrganizationID != "" {
 			return apiKey.OrganizationID, 0, ""
 		}
 	}
 
+	// An explicit target organization may be supplied on the publish request
+	// (organization_id in the JSON body or multipart form; stashed by the
+	// publish middleware). It lets a member of multiple organizations, or an
+	// admin acting as a registry operator, state which organization owns a
+	// brand-new namespace instead of the backend guessing. The previous guess
+	// was a silent fall-through to the default organization, which silently
+	// mis-attributed ownership.
+	requestedOrg := strings.TrimSpace(c.GetString("requested_org_id"))
+
+	if requestedOrg != "" {
+		// Admins may bind a new namespace to any organization (registry
+		// operator). The claim's foreign key enforces that the organization
+		// actually exists; the binding is audit-logged by the caller.
+		if callerIsAdmin(c) {
+			return requestedOrg, 0, ""
+		}
+		// Non-admins may only bind to an organization they belong to.
+		if userID := callerUserID(c); userID != nil {
+			memberships, err := a.orgRepo.GetUserMemberships(c.Request.Context(), *userID)
+			if err != nil {
+				return "", http.StatusInternalServerError, "Failed to resolve organization memberships"
+			}
+			for _, m := range memberships {
+				if m.OrganizationID == requestedOrg {
+					return requestedOrg, 0, ""
+				}
+			}
+		}
+		return "", http.StatusForbidden, "You are not a member of the requested organization"
+	}
+
+	// No explicit organization: only an unambiguous single membership can be
+	// used automatically.
 	if userID := callerUserID(c); userID != nil {
 		memberships, err := a.orgRepo.GetUserMemberships(c.Request.Context(), *userID)
 		if err != nil {
@@ -506,25 +572,18 @@ func (a *NamespaceAuthorizer) resolveCallerOrg(c *gin.Context) (string, int, str
 		if len(memberships) == 1 {
 			return memberships[0].OrganizationID, 0, ""
 		}
-		if len(memberships) > 1 && !callerIsAdmin(c) {
-			return "", http.StatusForbidden, "Ambiguous organization context: use an organization-scoped API key to publish a new namespace"
+		if len(memberships) > 1 {
+			// Fail closed. A caller with multiple memberships -- INCLUDING an
+			// admin, who previously fell through to the default organization --
+			// must state the target organization explicitly. The backend never
+			// guesses a namespace owner.
+			return "", http.StatusForbidden, "Ambiguous organization: specify organization_id or use an organization-scoped API key to publish a new namespace"
 		}
 	}
 
-	// Admins without an unambiguous organization bind new namespaces to the
-	// default organization (registry-operator behavior).
-	if callerIsAdmin(c) {
-		org, err := a.orgRepo.GetDefaultOrganization(c.Request.Context())
-		if err != nil {
-			return "", http.StatusInternalServerError, "Failed to get organization context"
-		}
-		if org == nil {
-			return "", http.StatusInternalServerError, "Default organization not found"
-		}
-		return org.ID, 0, ""
-	}
-
-	return "", http.StatusForbidden, "Organization context required"
+	// No org-scoped key, no explicit org, and no single membership to fall back
+	// on: ownership cannot be established. Fail closed.
+	return "", http.StatusForbidden, "No organization context: use an organization-scoped API key or specify organization_id to publish a new namespace"
 }
 
 // callerIsAdmin reports whether the authenticated principal holds the wildcard
