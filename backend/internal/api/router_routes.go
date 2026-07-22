@@ -784,6 +784,17 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 					orgHandlers.RemoveMemberHandler())
 			}
 
+			// Namespace ownership (read-only): audit which organization owns each
+			// module/provider namespace. Ownership itself is enforced by
+			// namespace_claims on every mutation (issue #555); these endpoints only
+			// expose it for verification.
+			authenticatedGroup.GET("/admin/namespaces",
+				middleware.RequireScope(auth.ScopeOrganizationsRead),
+				orgHandlers.ListNamespaceClaimsHandler())
+			authenticatedGroup.GET("/admin/namespaces/:namespace",
+				middleware.RequireScope(auth.ScopeOrganizationsRead),
+				orgHandlers.GetNamespaceOwnershipHandler())
+
 			// SCM Provider management
 			scmProvidersGroup := authenticatedGroup.Group("/scm-providers")
 			{

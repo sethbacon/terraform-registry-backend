@@ -96,7 +96,118 @@ func newOrgRouterWithRevocation(t *testing.T, withRevocation bool) (sqlmock.Sqlm
 	r.POST("/organizations/:id/members", h.AddMemberHandler())
 	r.PUT("/organizations/:id/members/:user_id", h.UpdateMemberHandler())
 	r.DELETE("/organizations/:id/members/:user_id", h.RemoveMemberHandler())
+	r.GET("/admin/namespaces", h.ListNamespaceClaimsHandler())
+	r.GET("/admin/namespaces/:namespace", h.GetNamespaceOwnershipHandler())
 	return mock, r
+}
+
+// ---------------------------------------------------------------------------
+// Namespace ownership read API tests (GET /admin/namespaces[/:namespace])
+// ---------------------------------------------------------------------------
+
+func nsClaimRows() *sqlmock.Rows {
+	return sqlmock.NewRows([]string{"namespace", "organization_id", "claimed_by", "created_at"})
+}
+
+func TestListNamespaceClaims_Success(t *testing.T) {
+	mock, r := newOrgRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM namespace_claims.*ORDER BY").
+		WillReturnRows(nsClaimRows().
+			AddRow("aceo", "org-a", nil, time.Now()).
+			AddRow("azure", "org-a", nil, time.Now()))
+	// Both claims share org-a: the org name is resolved once and then cached.
+	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE id").
+		WillReturnRows(sqlmock.NewRows(orgCols).
+			AddRow("org-a", "aceo", "ACEO", nil, nil, time.Now(), time.Now()))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/admin/namespaces", nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	resp := getJSON(w)
+	nsList, ok := resp["namespaces"].([]interface{})
+	if !ok || len(nsList) != 2 {
+		t.Fatalf("expected 2 namespaces, got %v", resp["namespaces"])
+	}
+	first := nsList[0].(map[string]interface{})
+	if first["organization_name"] != "aceo" {
+		t.Errorf("organization_name = %v, want aceo", first["organization_name"])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet/unexpected expectations (org name should be cached — a single GetByID): %v", err)
+	}
+}
+
+func TestGetNamespaceOwnership_Claim(t *testing.T) {
+	mock, r := newOrgRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM namespace_claims.*WHERE namespace").
+		WillReturnRows(nsClaimRows().AddRow("aceo", "org-a", nil, time.Now()))
+	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE id").
+		WillReturnRows(sqlmock.NewRows(orgCols).
+			AddRow("org-a", "aceo", "ACEO", nil, nil, time.Now(), time.Now()))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/admin/namespaces/aceo", nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	resp := getJSON(w)
+	if resp["source"] != "claim" {
+		t.Errorf("source = %v, want claim", resp["source"])
+	}
+	if resp["organization_id"] != "org-a" {
+		t.Errorf("organization_id = %v, want org-a", resp["organization_id"])
+	}
+	if resp["organization_name"] != "aceo" {
+		t.Errorf("organization_name = %v, want aceo", resp["organization_name"])
+	}
+}
+
+func TestGetNamespaceOwnership_ArtifactFallback(t *testing.T) {
+	mock, r := newOrgRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM namespace_claims.*WHERE namespace").
+		WillReturnRows(nsClaimRows()) // no claim row
+	mock.ExpectQuery("SELECT DISTINCT organization_id FROM").
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}).AddRow("org-b"))
+	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE id").
+		WillReturnRows(sqlmock.NewRows(orgCols).
+			AddRow("org-b", "legacy", "Legacy", nil, nil, time.Now(), time.Now()))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/admin/namespaces/legacyns", nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	resp := getJSON(w)
+	if resp["source"] != "artifact" {
+		t.Errorf("source = %v, want artifact", resp["source"])
+	}
+	if resp["organization_id"] != "org-b" {
+		t.Errorf("organization_id = %v, want org-b", resp["organization_id"])
+	}
+}
+
+func TestGetNamespaceOwnership_Unclaimed_NotFound(t *testing.T) {
+	mock, r := newOrgRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM namespace_claims.*WHERE namespace").
+		WillReturnRows(nsClaimRows()) // no claim
+	mock.ExpectQuery("SELECT DISTINCT organization_id FROM").
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id"})) // no artifacts
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/admin/namespaces/ghost", nil))
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 (unclaimed, no artifacts): body=%s", w.Code, w.Body.String())
+	}
 }
 
 // ---------------------------------------------------------------------------
