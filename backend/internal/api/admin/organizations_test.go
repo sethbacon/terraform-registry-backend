@@ -350,6 +350,86 @@ func TestCreateOrganization_Success(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Errorf("status = %d, want 201: body=%s", w.Code, w.Body.String())
 	}
+	// newOrgRouter's plain requests carry no user_id in context, so the
+	// creator-membership branch below is never reached -- no further
+	// expectations are queued, and ExpectationsWereMet (implicitly checked by
+	// t.Cleanup(db.Close) not being relied upon here) would fail if it were.
+}
+
+// newCreateOrgRouterWithUser builds a router with only POST /organizations
+// registered, injecting user_id into context first -- exercises the
+// "creator is auto-added as org_owner" branch of CreateOrganizationHandler
+// (issue #648), which newOrgRouter's unauthenticated requests never reach.
+func newCreateOrgRouterWithUser(t *testing.T, userID string) (sqlmock.Sqlmock, *gin.Engine) {
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	h := NewOrganizationHandlers(&config.Config{}, db, repositories.NewNamespaceClaimRepository(db), nil)
+
+	r := gin.New()
+	r.Use(func(c *gin.Context) { c.Set("user_id", userID) })
+	r.POST("/organizations", h.CreateOrganizationHandler())
+	return mock, r
+}
+
+// TestCreateOrganizationHandler_GrantsOrgOwnerNotAdmin is a regression test
+// for issue #648: the creator of a new organization must be auto-added as
+// org_owner, never as the platform-wide admin role template.
+func TestCreateOrganizationHandler_GrantsOrgOwnerNotAdmin(t *testing.T) {
+	mock, r := newCreateOrgRouterWithUser(t, "creator-1")
+
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
+		WillReturnRows(emptyOrgRow())
+	mock.ExpectQuery("INSERT INTO organizations").
+		WillReturnRows(sqlmock.NewRows(orgCreateCols).AddRow("org-new", time.Now(), time.Now()))
+	// AddMemberWithParams looks up the role template by name -- asserting
+	// WithArgs("org_owner") means a regression back to granting "admin" would
+	// leave this expectation unmatched, surfacing as a 500 below rather than
+	// a silent false pass.
+	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
+		WithArgs("org_owner").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-org-owner"))
+	mock.ExpectExec("INSERT INTO organization_members").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/organizations",
+		jsonBody(map[string]string{"name": "new-org", "display_name": "New Org"})))
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet/unexpected expectations (creator must be added as org_owner): %v", err)
+	}
+}
+
+// TestCreateOrganizationHandler_AddMemberError_Returns500 is a regression
+// test for issue #648: a failure while adding the creator as a member must be
+// reported to the caller, not silently swallowed (which would leave the
+// creator without any membership in the org they just created).
+func TestCreateOrganizationHandler_AddMemberError_Returns500(t *testing.T) {
+	mock, r := newCreateOrgRouterWithUser(t, "creator-2")
+
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
+		WillReturnRows(emptyOrgRow())
+	mock.ExpectQuery("INSERT INTO organizations").
+		WillReturnRows(sqlmock.NewRows(orgCreateCols).AddRow("org-new", time.Now(), time.Now()))
+	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
+		WithArgs("org_owner").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/organizations",
+		jsonBody(map[string]string{"name": "new-org", "display_name": "New Org"})))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500 (membership failure must not be swallowed): body=%s", w.Code, w.Body.String())
+	}
 }
 
 // ---------------------------------------------------------------------------

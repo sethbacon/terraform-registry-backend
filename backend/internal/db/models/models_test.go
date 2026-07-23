@@ -162,8 +162,8 @@ func TestMirrorPolicy_Matches_EmptyPatternStrings(t *testing.T) {
 
 func TestPredefinedRoleTemplates_Count(t *testing.T) {
 	templates := PredefinedRoleTemplates()
-	if len(templates) != 6 {
-		t.Errorf("expected 6 role templates, got %d", len(templates))
+	if len(templates) != 8 {
+		t.Errorf("expected 8 role templates, got %d", len(templates))
 	}
 }
 
@@ -172,6 +172,7 @@ func TestPredefinedRoleTemplates_Names(t *testing.T) {
 	expected := map[string]bool{
 		"viewer": true, "publisher": true, "devops": true,
 		"admin": true, "user_manager": true, "auditor": true,
+		"org_owner": true, "org_provisioner": true,
 	}
 	for _, tmpl := range templates {
 		if !expected[tmpl.Name] {

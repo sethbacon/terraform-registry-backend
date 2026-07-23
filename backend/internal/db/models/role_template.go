@@ -17,6 +17,8 @@ func PredefinedRoleTemplates() []RoleTemplate {
 	adminDesc := "Full access to all registry features"
 	userManagerDesc := "Can manage user accounts and memberships"
 	auditorDesc := "Read-only access with audit log visibility for security and compliance review"
+	orgOwnerDesc := "Full management of a single organization's modules, providers, mirrors, SCM integrations, and membership, without platform-wide admin privileges"
+	orgProvisionerDesc := "Can provision new top-level organizations without platform-wide admin privileges"
 
 	return []RoleTemplate{
 		{
@@ -59,6 +61,20 @@ func PredefinedRoleTemplates() []RoleTemplate {
 			DisplayName: "Auditor",
 			Description: &auditorDesc,
 			Scopes:      []string{"modules:read", "providers:read", "mirrors:read", "organizations:read", "scm:read", "audit:read"},
+			IsSystem:    true,
+		},
+		{
+			Name:        "org_owner",
+			DisplayName: "Organization Owner",
+			Description: &orgOwnerDesc,
+			Scopes:      []string{"organizations:write", "users:read", "api_keys:manage", "modules:read", "modules:write", "providers:read", "providers:write", "mirrors:read", "mirrors:manage", "scm:read", "scm:manage"},
+			IsSystem:    true,
+		},
+		{
+			Name:        "org_provisioner",
+			DisplayName: "Organization Provisioner",
+			Description: &orgProvisionerDesc,
+			Scopes:      []string{"organizations:create", "organizations:read"},
 			IsSystem:    true,
 		},
 	}

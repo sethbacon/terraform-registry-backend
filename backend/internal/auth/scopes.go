@@ -46,6 +46,14 @@ const (
 	ScopeAPIKeysManage      Scope = identityauth.ScopeAPIKeysManage
 	ScopeAuditRead          Scope = identityauth.ScopeAuditRead
 	ScopeAdmin              Scope = identityauth.ScopeAdmin
+
+	// ScopeOrganizationsCreate authorizes creating a new top-level
+	// organization (platform-tier provisioning). Deliberately separate from
+	// ScopeOrganizationsWrite: holding write access via membership in an
+	// existing organization must not by itself grant the ability to
+	// provision brand new organizations (issue #648). Intentionally NOT part
+	// of readWritePairs below -- it must be granted explicitly, not implied.
+	ScopeOrganizationsCreate Scope = identityauth.ScopeOrganizationsCreate
 )
 
 // readWritePairs maps read scopes to the write/manage scope that implies them.
@@ -72,6 +80,7 @@ func AllScopes() []Scope {
 		ScopeUsersWrite,
 		ScopeOrganizationsRead,
 		ScopeOrganizationsWrite,
+		ScopeOrganizationsCreate,
 		ScopeSCMRead,
 		ScopeSCMManage,
 		ScopeAPIKeysManage,
@@ -132,6 +141,23 @@ func HasAllScopes(userScopes []string, requiredScopes []Scope) bool {
 		strs[i] = string(s)
 	}
 	return identityauth.HasAllScopes(userScopes, strs, readWritePairs)
+}
+
+// RoleScopesPermittedBy reports whether a caller holding callerScopes is
+// permitted to assign a role whose scopes are roleScopes. An empty roleScopes
+// is vacuously permitted; a global admin caller may assign anything,
+// including another admin role; otherwise the caller must hold every scope
+// in roleScopes themselves (write-implies-read applies) and may never grant
+// admin without holding it.
+//
+// Thin wrapper over identityauth.RoleScopesPermittedBy, matching this file's
+// existing pattern of re-exporting the shared identity module's
+// scope-checking helpers. Callers deriving callerScopes for a specific
+// target organization (rather than passing the caller's global union scopes)
+// get a per-org assignment ceiling -- see checkRoleAssignment in
+// internal/api/admin/role_ceiling.go for the primary caller.
+func RoleScopesPermittedBy(callerScopes, roleScopes []string) bool {
+	return identityauth.RoleScopesPermittedBy(callerScopes, roleScopes, readWritePairs)
 }
 
 // GetDefaultScopes returns default scopes for a new API key

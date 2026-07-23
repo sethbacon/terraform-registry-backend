@@ -181,8 +181,8 @@ func TestRoleScopesPermittedBy(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := roleScopesPermittedBy(tc.callerScopes, tc.roleScopes); got != tc.want {
-				t.Errorf("roleScopesPermittedBy(%v, %v) = %v, want %v", tc.callerScopes, tc.roleScopes, got, tc.want)
+			if got := auth.RoleScopesPermittedBy(tc.callerScopes, tc.roleScopes); got != tc.want {
+				t.Errorf("auth.RoleScopesPermittedBy(%v, %v) = %v, want %v", tc.callerScopes, tc.roleScopes, got, tc.want)
 			}
 		})
 	}
