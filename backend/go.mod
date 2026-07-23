@@ -2,6 +2,13 @@ module github.com/terraform-registry/terraform-registry
 
 go 1.26.5
 
+// TEMPORARY: pin to the local, unreleased terraform-suite-identity branch
+// (fix/org-create-scope-and-ceiling, commit 1c9062e) that adds
+// ScopeOrganizationsCreate and RoleScopesPermittedBy (issue #648, refs #125).
+// MUST be replaced with a real released version bump of
+// terraform-suite-identity before this PR merges out of draft.
+replace github.com/sethbacon/terraform-suite-identity => ../../terraform-suite-identity
+
 require (
 	cloud.google.com/go/storage v1.64.0
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.22.0

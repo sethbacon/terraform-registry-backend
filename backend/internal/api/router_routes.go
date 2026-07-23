@@ -758,8 +758,14 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 					middleware.RequireOrgScopeForPathOrg(auth.ScopeOrganizationsRead, orgRepo),
 					orgHandlers.ListMembersHandler())
 
-				// Create/update/delete require organizations:write
-				orgsGroup.POST("", middleware.RequireScope(auth.ScopeOrganizationsWrite), orgHandlers.CreateOrganizationHandler())
+				// Creating a new top-level organization is a platform-tier
+				// provisioning action, gated on its own organizations:create
+				// scope instead of organizations:write (issue #648): holding
+				// organizations:write via membership in one org must not by
+				// itself grant the ability to provision brand new orgs.
+				orgsGroup.POST("", middleware.RequireScope(auth.ScopeOrganizationsCreate), orgHandlers.CreateOrganizationHandler())
+
+				// Update/delete require organizations:write
 				orgsGroup.PUT("/:id",
 					middleware.RequireScope(auth.ScopeOrganizationsWrite),
 					middleware.RequireOrgScopeForPathOrg(auth.ScopeOrganizationsWrite, orgRepo),

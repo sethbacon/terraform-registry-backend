@@ -390,10 +390,20 @@ func (h *OrganizationHandlers) CreateOrganizationHandler() gin.HandlerFunc {
 			return
 		}
 
-		// Auto-add the creating user as an admin member so they can immediately access the org
+		// Auto-add the creating user as an org_owner member (not global admin
+		// -- issue #648) so they can immediately manage the org they just
+		// created, without being granted platform-wide admin privileges. The
+		// error is no longer swallowed: silently succeeding here would leave
+		// the creator with no membership at all in their own new org, and
+		// would hide a real failure from the caller.
 		if rawUID, exists := c.Get("user_id"); exists {
 			if uid, ok := rawUID.(string); ok && uid != "" {
-				_ = h.orgRepo.AddMemberWithParams(c.Request.Context(), org.ID, uid, "admin")
+				if err := h.orgRepo.AddMemberWithParams(c.Request.Context(), org.ID, uid, "org_owner"); err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{
+						"error": "Organization created but failed to add creator as a member",
+					})
+					return
+				}
 			}
 		}
 
