@@ -37,16 +37,29 @@ func CascadeOrganizationRename(ctx context.Context, db *sql.DB, orgID, oldName, 
 		}
 	}()
 
+	// Match module/provider rows by namespace alone, NOT by organization_id.
+	// Artifact rows are stamped with the DEFAULT organization at publish time,
+	// not the namespace's true owner (issue #555), so an `organization_id = orgID`
+	// predicate matches nothing whenever a NON-default organization is renamed --
+	// silently leaving that organization's artifacts pinned to the old namespace
+	// while the organization row and its namespace_claims move to the new name,
+	// orphaning them from the unauthenticated protocol read path (which resolves
+	// modules/providers by namespace). A namespace is a globally-unique ownership
+	// identity (namespace_claims.namespace is the PRIMARY KEY) and this cascade is
+	// triggered precisely by renaming the organization that owns it, so matching
+	// on the old namespace string alone is both correct and complete. The
+	// namespace_claims row below is matched by organization_id because claims —
+	// unlike artifact rows — do carry the true owning organization.
 	if _, err = tx.ExecContext(ctx,
-		`UPDATE modules SET namespace = $1, updated_at = NOW() WHERE organization_id = $2 AND namespace = $3`,
-		newName, orgID, oldName,
+		`UPDATE modules SET namespace = $1, updated_at = NOW() WHERE namespace = $2`,
+		newName, oldName,
 	); err != nil {
 		return fmt.Errorf("cascade rename to modules: %w", err)
 	}
 
 	if _, err = tx.ExecContext(ctx,
-		`UPDATE providers SET namespace = $1, updated_at = NOW() WHERE organization_id = $2 AND namespace = $3`,
-		newName, orgID, oldName,
+		`UPDATE providers SET namespace = $1, updated_at = NOW() WHERE namespace = $2`,
+		newName, oldName,
 	); err != nil {
 		return fmt.Errorf("cascade rename to providers: %w", err)
 	}

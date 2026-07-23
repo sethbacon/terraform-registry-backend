@@ -154,8 +154,24 @@ func TestListAPIKeys_OrgFilter_NoManageScope(t *testing.T) {
 	}
 }
 
+// A caller who holds api_keys:manage IN THE TARGET ORG may list all keys in
+// that org. The per-org role is re-derived via GetMemberWithRole, NOT trusted
+// from the login-time global scope union (issue #648 class, CWE-266). This is
+// the legitimate positive path.
 func TestListAPIKeys_OrgFilter_WithManageScope(t *testing.T) {
 	mock, r := newAPIKeyRouter(t, "user-1", []string{"api_keys:manage"})
+	roleID := "role-1"
+	roleName := "user-manager"
+	roleDisplay := "User Manager"
+	// GetUserScopesForOrg -> GetMemberWithRole: caller manages keys in org-1.
+	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
+		WillReturnRows(sqlmock.NewRows(memberRoleCols).AddRow(
+			"org-1", "user-1", &roleID, time.Now(),
+			"Alice", "alice@example.com",
+			&roleName, &roleDisplay,
+			[]byte(`["api_keys:manage"]`),
+		))
+	// Manager sees all keys in the org.
 	mock.ExpectQuery("WHERE ak.organization_id").
 		WillReturnRows(sampleAKListRow())
 
@@ -164,6 +180,92 @@ func TestListAPIKeys_OrgFilter_WithManageScope(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// Cross-org disclosure attack (issue #648 class, CWE-266): a caller who holds
+// api_keys:manage only in their LOGIN-TIME GLOBAL scope union (e.g. a
+// user_manager in some other org) queries an org they do NOT manage. The
+// handler must re-derive management rights per-org (GetUserScopesForOrg) and
+// fall back to the caller's OWN keys in that org — never ListByOrganization —
+// so no cross-org key metadata leaks. The previous code derived canManageAll
+// from c.Get("scopes") and listed every key in org-2.
+func TestListAPIKeys_OrgFilter_GlobalManageScope_NotInOrg_OwnKeysOnly(t *testing.T) {
+	mock, r := newAPIKeyRouter(t, "user-1", []string{"api_keys:manage"})
+	// GetUserScopesForOrg -> GetMemberWithRole for org-2 returns no rows:
+	// the caller is not a member/manager of org-2.
+	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
+		WillReturnRows(sqlmock.NewRows(memberRoleCols))
+	// Must fall back to the caller's OWN keys in org-2, not all keys.
+	mock.ExpectQuery("WHERE ak.user_id.*AND ak.organization_id").
+		WillReturnRows(sampleAKListRow())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/apikeys?organization_id=org-2", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// Platform admins bypass the per-org lookup and may list all keys in any org.
+func TestListAPIKeys_OrgFilter_PlatformAdmin(t *testing.T) {
+	mock, r := newAPIKeyRouter(t, "user-1", []string{"admin"})
+	// No GetMemberWithRole query: admin is exempt from the per-org lookup.
+	mock.ExpectQuery("WHERE ak.organization_id").
+		WillReturnRows(sampleAKListRow())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/apikeys?organization_id=org-2", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// A DB error while re-deriving the caller's per-org scopes must fail closed (500),
+// not fall through to any listing.
+func TestListAPIKeys_OrgFilter_OrgScopeLookupDBError(t *testing.T) {
+	mock, r := newAPIKeyRouter(t, "user-1", []string{"api_keys:manage"})
+	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/apikeys?organization_id=org-2", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// Without an organization_id, a non-admin holding api_keys:manage only in the
+// global scope union must NOT list every key across all orgs (ListAll); they
+// see only their own keys. ListAll is reserved for platform admins.
+func TestListAPIKeys_NoOrg_GlobalManageScope_OwnKeysOnly(t *testing.T) {
+	mock, r := newAPIKeyRouter(t, "user-1", []string{"api_keys:manage"})
+	mock.ExpectQuery("WHERE ak.user_id").
+		WillReturnRows(sampleAKListRow())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/apikeys", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
 	}
 }
 
@@ -775,5 +877,59 @@ func TestUpdateAPIKey_WithInvalidExpiresAt(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// Issue #650 (CWE-269): a key owner who is no longer a member of the key's
+// organization must not be able to widen the key's scopes. The key survives
+// removal (RemoveMember does not delete keys) and authenticates with its stored
+// scopes, so if the scope ceiling were skipped when membership is absent the
+// owner could self-escalate an org-bound key to "admin". UpdateAPIKeyHandler
+// must fail closed exactly like CreateAPIKeyHandler.
+func TestUpdateAPIKey_ScopeChange_NotMember_FailsClosed(t *testing.T) {
+	// The caller authenticates with the key's own (low) scopes, not admin.
+	mock, r := newAPIKeyRouter(t, "user-1", []string{"modules:read"})
+	mock.ExpectQuery("SELECT.*FROM api_keys WHERE id").WillReturnRows(sampleAKRow())
+	// GetMemberWithRole returns no rows -> caller is not a member of the org.
+	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
+		WillReturnRows(sqlmock.NewRows(memberRoleCols))
+
+	body := `{"scopes":["admin"]}`
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/apikeys/key-1",
+		bytes.NewBufferString(body)))
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (non-member must not widen key scopes): body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// A cleared role template (RoleTemplateID == nil) grants zero scopes and must be
+// treated as such: a scope change by a member whose role was cleared fails
+// closed rather than applying req.Scopes verbatim (issue #650).
+func TestUpdateAPIKey_ScopeChange_NullRole_FailsClosed(t *testing.T) {
+	mock, r := newAPIKeyRouter(t, "user-1", []string{"modules:read"})
+	mock.ExpectQuery("SELECT.*FROM api_keys WHERE id").WillReturnRows(sampleAKRow())
+	// Member row exists but role_template_id is NULL (role cleared).
+	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
+		WillReturnRows(sqlmock.NewRows(memberRoleCols).AddRow(
+			"org-1", "user-1", nil, time.Now(),
+			"Alice", "alice@example.com",
+			nil, nil, []byte(`[]`),
+		))
+
+	body := `{"scopes":["modules:read"]}`
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/apikeys/key-1",
+		bytes.NewBufferString(body)))
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (null role grants zero scopes): body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
 	}
 }
