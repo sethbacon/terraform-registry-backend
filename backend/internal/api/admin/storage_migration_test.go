@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/middleware"
 	"github.com/terraform-registry/terraform-registry/internal/services"
 )
 
@@ -39,14 +40,15 @@ func newMigrationRouter(t *testing.T) *gin.Engine {
 	return r
 }
 
-// newMigrationRouterWithRecovery creates a gin router with gin.Recovery() middleware
-// and a real (but infra-less) service, so panics from nil repos are caught as 500s.
+// newMigrationRouterWithRecovery creates a gin router with middleware.RecoveryMiddleware()
+// (the redacted-dump replacement for gin.Recovery(), issue #663) and a real
+// (but infra-less) service, so panics from nil repos are caught as 500s.
 func newMigrationRouterWithRecovery(t *testing.T) *gin.Engine {
 	t.Helper()
 	svc := services.NewStorageMigrationService(nil, nil, nil, nil, nil, nil)
 	h := NewStorageMigrationHandler(svc)
 	r := gin.New()
-	r.Use(gin.Recovery())
+	r.Use(middleware.RecoveryMiddleware())
 	r.POST("/migrations/plan", h.PlanMigration)
 	r.POST("/migrations", h.StartMigration)
 	r.GET("/migrations", h.ListMigrations)
@@ -238,7 +240,7 @@ func TestCancelMigration_InvalidID(t *testing.T) {
 
 func TestListMigrations_DefaultPagination(t *testing.T) {
 	// ListMigrations calls service.ListMigrations which calls repo.ListMigrations.
-	// With a nil repo, the service panics. gin.Recovery() converts it to a 500.
+	// With a nil repo, the service panics. middleware.RecoveryMiddleware() converts it to a 500.
 	// The key check: valid query params do NOT produce a 400 (validation is fine).
 	r := newMigrationRouterWithRecovery(t)
 

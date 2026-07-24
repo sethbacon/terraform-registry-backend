@@ -281,12 +281,18 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		log.Fatal("ENCRYPTION_KEY environment variable must be set for SCM integration")
 	}
 	// ENCRYPTION_KEY is used directly as raw AES-256 key bytes (no KDF/hashing), so its
-	// real-world entropy determines the actual strength of the cipher. This is a
-	// heuristic warning only — it cannot prove or disprove true randomness — for
-	// operators who set ENCRYPTION_KEY to a human-typed passphrase instead of following
-	// the documented `openssl rand -hex 16` generation method (see docs/secrets-rotation.md).
+	// real-world entropy determines the actual strength of the cipher. Fail closed by
+	// default when the key looks human-typed rather than CSPRNG-generated (issue #560):
+	// this key encrypts every stored OAuth/SCM token suite-wide, and warning without
+	// enforcing left every installation free to run indefinitely on a guessable key.
+	// TFR_ALLOW_LOW_ENTROPY_ENCRYPTION_KEY provides a migration-safe bridge so an
+	// existing deployment can restart once to rotate its key instead of being unable
+	// to start at all.
+	if shouldRejectLowEntropyEncryptionKey([]byte(encryptionKey), allowLowEntropyEncryptionKey()) {
+		log.Fatal("ENCRYPTION_KEY has low estimated entropy and may not have been generated with a CSPRNG. Refusing to start (issue #560). Generate one with: openssl rand -hex 16 (see docs/secrets-rotation.md). To roll out this check on an existing deployment while you rotate to a stronger key, set TFR_ALLOW_LOW_ENTROPY_ENCRYPTION_KEY=true temporarily.")
+	}
 	if crypto.IsLikelyLowEntropySecret([]byte(encryptionKey)) {
-		log.Printf("WARNING: ENCRYPTION_KEY has low estimated entropy and may not have been generated with a CSPRNG. Generate one with: openssl rand -hex 16")
+		log.Printf("WARNING: ENCRYPTION_KEY has low estimated entropy and may not have been generated with a CSPRNG. Generate one with: openssl rand -hex 16 (TFR_ALLOW_LOW_ENTROPY_ENCRYPTION_KEY override in use -- rotate this key soon)")
 	}
 	encryptionKeyPrevious := os.Getenv("ENCRYPTION_KEY_PREVIOUS")
 
@@ -314,7 +320,11 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	reloadNotificationsConfigFromDB(cfg, oidcConfigRepo, tokenCipher)
 
 	// Add middleware
-	router.Use(gin.Recovery())
+	// middleware.RecoveryMiddleware replaces gin.Recovery(): gin's stock
+	// Recovery() only redacts the Authorization header in its panic-recovery
+	// request dump, leaving the Cookie/Set-Cookie session token unredacted
+	// (issue #663).
+	router.Use(middleware.RecoveryMiddleware())
 	router.Use(middleware.RequestIDMiddleware())
 	router.Use(middleware.MetricsMiddleware())
 	router.Use(LoggerMiddleware(cfg))
@@ -668,6 +678,23 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	return router, bg
 }
 
+// shouldRejectLowEntropyEncryptionKey reports whether NewRouter should refuse
+// to start given ENCRYPTION_KEY's estimated entropy. Extracted from the
+// entropy check inline in NewRouter so the fail-closed decision (issue #560)
+// can be unit tested without exercising log.Fatal.
+func shouldRejectLowEntropyEncryptionKey(encryptionKey []byte, overrideAllowed bool) bool {
+	return crypto.IsLikelyLowEntropySecret(encryptionKey) && !overrideAllowed
+}
+
+// allowLowEntropyEncryptionKey reports whether an operator has explicitly
+// opted out of the fail-closed low-entropy ENCRYPTION_KEY check (issue #560).
+// Off by default; enable with TFR_ALLOW_LOW_ENTROPY_ENCRYPTION_KEY=true only
+// as a temporary bridge while rotating an existing deployment to a
+// CSPRNG-generated key.
+func allowLowEntropyEncryptionKey() bool {
+	return os.Getenv("TFR_ALLOW_LOW_ENTROPY_ENCRYPTION_KEY") == "true"
+}
+
 // @Summary      Health check
 // @Description  Returns the health status of the service, including database connectivity.
 // @Tags         System
@@ -800,8 +827,8 @@ func versionHandler(cfg *config.Config) gin.HandlerFunc {
 func LoggerMiddleware(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
-		path := redactSensitivePath(c.Request.URL.Path)
-		query := redactSensitiveQuery(c.Request.URL.RawQuery)
+		path := middleware.RedactSensitivePath(c.Request.URL.Path)
+		query := middleware.RedactSensitiveQuery(c.Request.URL.RawQuery)
 
 		c.Next()
 

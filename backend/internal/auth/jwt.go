@@ -20,6 +20,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 
 	identityauth "github.com/sethbacon/terraform-suite-identity/identity/auth"
+	"github.com/terraform-registry/terraform-registry/internal/crypto"
 )
 
 // jwtIssuer stamps the iss claim on tokens this service generates.
@@ -105,6 +106,16 @@ func ValidateJWTSecret() error {
 			if len(secret) < 32 {
 				log.Printf("WARNING: TFR_JWT_SECRET is shorter than recommended 32 characters. Consider using a longer secret.")
 			}
+			// Low-entropy check: crypto.IsLikelyLowEntropySecret is documented as
+			// intended for both ENCRYPTION_KEY and TFR_JWT_SECRET and is already wired
+			// in for ENCRYPTION_KEY (see router.go), but was never called here -- a
+			// 32+ character secret that is still low-entropy (a repeated character or
+			// a short phrase padded to length) passed the length check above with zero
+			// warning even though this secret signs/validates every session and API
+			// bearer token suite-wide (issue #654).
+			if crypto.IsLikelyLowEntropySecret([]byte(secret)) {
+				log.Printf("WARNING: TFR_JWT_SECRET has low estimated entropy and may not have been generated with a CSPRNG. Generate one with: openssl rand -hex 32")
+			}
 			resolved = secret
 		}
 
@@ -183,7 +194,7 @@ func GetJWTSecret() string {
 // identity TokenManager. Scopes are embedded so the auth middleware can
 // authorize without a database round-trip; a unique JTI is stamped for revocation.
 func GenerateJWT(userID, email string, scopes []string, expiresIn time.Duration) (string, error) {
-	_ = GetJWTSecret() // ensure the secret is validated and the TokenManager exists
+	_ = GetJWTSecret()                                             // ensure the secret is validated and the TokenManager exists
 	return tokenManager.Generate(userID, email, scopes, expiresIn) //nolint:staticcheck // SA1019: registry issues suite-wide (not per-org) JWTs by design; this is the canonical call site, a deliberate suite-wide decision per the deprecation notice
 }
 

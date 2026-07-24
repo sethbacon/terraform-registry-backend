@@ -230,6 +230,44 @@ func TestAuditMiddleware_ContextValuesExtracted(t *testing.T) {
 	}
 }
 
+// TestAuditMiddleware_RedactsSensitivePath is the negative (attack-path) test
+// for issue #678: even if a future route embedding a secret in its own path
+// were ever mounted behind AuditMiddleware, the persisted/shipped action
+// string must not carry the raw secret.
+func TestAuditMiddleware_RedactsSensitivePath(t *testing.T) {
+	cs := newCaptureShipper(1)
+	r := gin.New()
+	r.Use(AuditMiddlewareWithShipper(nil, cs, nil))
+	r.POST("/webhooks/scm/:module_source_repo_id/:secret", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/webhooks/scm/repo-123/s3cr3t-value", nil)
+	r.ServeHTTP(w, req)
+
+	entry := cs.waitForEntry(t, 500*time.Millisecond)
+	if entry.Action != "POST /webhooks/scm/repo-123/[REDACTED]" {
+		t.Errorf("Action = %q, want secret segment redacted", entry.Action)
+	}
+}
+
+// TestAuditMiddleware_UnrelatedPathUnaffected is the positive (legit-path)
+// counterpart: ordinary paths are logged unchanged.
+func TestAuditMiddleware_UnrelatedPathUnaffected(t *testing.T) {
+	cs := newCaptureShipper(1)
+	r := gin.New()
+	r.Use(AuditMiddlewareWithShipper(nil, cs, nil))
+	r.POST("/api/v1/modules/test", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/modules/test", nil)
+	r.ServeHTTP(w, req)
+
+	entry := cs.waitForEntry(t, 500*time.Millisecond)
+	if entry.Action != "POST /api/v1/modules/test" {
+		t.Errorf("Action = %q, want unredacted path", entry.Action)
+	}
+}
+
 func TestAuditMiddleware_BackwardCompat(t *testing.T) {
 	// AuditMiddleware(nil) should not panic
 	r := gin.New()

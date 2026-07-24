@@ -38,6 +38,46 @@ func newSetupRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	return mock, r
 }
 
+// newFullSetupRouter mounts SetupTokenMiddleware under the real /api/v1/setup
+// route prefix with one handler per real route, so c.FullPath() inside the
+// middleware matches production (see featureSetupAllowedPaths).
+func newFullSetupRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
+	t.Helper()
+	repo, mock := newOIDCConfigRepo(t)
+	r := gin.New()
+	group := r.Group("/api/v1/setup")
+	group.Use(SetupTokenMiddleware(repo))
+	ok := func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) }
+	group.POST("/validate-token", ok)
+	group.POST("/oidc/test", ok)
+	group.POST("/oidc", ok)
+	group.POST("/ldap/test", ok)
+	group.POST("/ldap", ok)
+	group.POST("/storage/test", ok)
+	group.POST("/storage", ok)
+	group.POST("/admin", ok)
+	group.POST("/scanning", ok)
+	group.POST("/scanning/test", ok)
+	group.POST("/scanning/install", ok)
+	group.POST("/complete", ok)
+	group.PUT("/ui-theme", ok)
+	return mock, r
+}
+
+func doFullSetupRequest(r *gin.Engine, path, authHeader string) *httptest.ResponseRecorder {
+	return doFullSetupRequestMethod(r, http.MethodPost, path, authHeader)
+}
+
+func doFullSetupRequestMethod(r *gin.Engine, method, path, authHeader string) *httptest.ResponseRecorder {
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(method, path, nil)
+	if authHeader != "" {
+		req.Header.Set("Authorization", authHeader)
+	}
+	r.ServeHTTP(w, req)
+	return w
+}
+
 func doSetupRequest(r *gin.Engine, authHeader string) *httptest.ResponseRecorder {
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest(http.MethodGet, "/", nil)
@@ -241,6 +281,93 @@ func TestSetupRateLimiter_DifferentIPsIndependent(t *testing.T) {
 	// IP-B should still be allowed
 	if !rl.allow("10.0.0.2") {
 		t.Error("different IP should have independent rate limit")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SetupTokenMiddleware — pending-feature re-arm scoping (issue #649)
+// ---------------------------------------------------------------------------
+
+// TestSetupMiddleware_PendingFeature_BlocksIdentityEndpoints is the negative
+// (attack-path) test: even when setup is completed AND a feature is pending
+// (HasPendingFeatureSetup=true), identity/admin/storage endpoints must stay
+// permanently disabled -- a re-minted setup token for the pending feature
+// must not be able to reconfigure OIDC, LDAP, storage, mint an admin, or
+// change the UI theme. Covers each route's /test sibling too (e.g.
+// /oidc/test), not just the save endpoint, since both are registered on the
+// same setupGroup and gated by the same featureSetupAllowedPaths lookup.
+//
+// The Authorization header carries a real, correctly bcrypt-hashed setup
+// token (mocked identically to the positive AllowsScanningEndpoint case
+// below), not a throwaway string -- so the 403 asserted here demonstrates
+// that the route-scoping gate itself blocks a validly-reminted token,
+// rather than merely reflecting an unrelated sqlmock "unexpected query"
+// 500 that would occur regardless of whether the gate exists. If the
+// featureSetupAllowedPaths gate were ever removed, this exact setup would
+// let the request reach the token check and legitimately succeed with 200.
+func TestSetupMiddleware_PendingFeature_BlocksIdentityEndpoints(t *testing.T) {
+	cases := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/api/v1/setup/oidc"},
+		{http.MethodPost, "/api/v1/setup/oidc/test"},
+		{http.MethodPost, "/api/v1/setup/ldap"},
+		{http.MethodPost, "/api/v1/setup/ldap/test"},
+		{http.MethodPost, "/api/v1/setup/storage"},
+		{http.MethodPost, "/api/v1/setup/storage/test"},
+		{http.MethodPost, "/api/v1/setup/admin"},
+		{http.MethodPut, "/api/v1/setup/ui-theme"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			mock, r := newFullSetupRouter(t)
+			token := "re-minted-setup-token"
+			hash, _ := bcrypt.GenerateFromPassword([]byte(token), bcrypt.MinCost)
+
+			mock.ExpectQuery("SELECT setup_completed FROM system_settings").
+				WillReturnRows(sqlmock.NewRows([]string{"setup_completed"}).AddRow(true))
+			mock.ExpectQuery(`SELECT setup_completed AND \(NOT scanning_configured\) FROM system_settings`).
+				WillReturnRows(sqlmock.NewRows([]string{"pending"}).AddRow(true))
+			// Registered but expected to go unconsumed: the route-scoping gate
+			// must abort with 403 before ever reaching the token-hash check. If
+			// the gate is removed, the middleware would query this hash next,
+			// the valid token below would match it, and the request would
+			// wrongly succeed with 200 -- which is exactly the exploit #649 fixed.
+			mock.ExpectQuery("SELECT setup_token_hash FROM system_settings").
+				WillReturnRows(sqlmock.NewRows([]string{"setup_token_hash"}).AddRow(string(hash)))
+
+			w := doFullSetupRequestMethod(r, tc.method, tc.path, "SetupToken "+token)
+			if w.Code != http.StatusForbidden {
+				t.Errorf("%s %s: status = %d, want 403 (a valid re-minted setup token must not reach this endpoint)", tc.method, tc.path, w.Code)
+			}
+		})
+	}
+}
+
+// TestSetupMiddleware_PendingFeature_AllowsScanningEndpoint is the positive
+// (legit-path) counterpart: with setup completed and a feature pending, the
+// pending feature's own routes (scanning, validate-token, complete) remain
+// reachable with a valid setup token.
+func TestSetupMiddleware_PendingFeature_AllowsScanningEndpoint(t *testing.T) {
+	for _, path := range []string{"/api/v1/setup/scanning", "/api/v1/setup/scanning/test", "/api/v1/setup/scanning/install", "/api/v1/setup/validate-token", "/api/v1/setup/complete"} {
+		t.Run(path, func(t *testing.T) {
+			mock, r := newFullSetupRouter(t)
+			token := "feature-setup-token"
+			hash, _ := bcrypt.GenerateFromPassword([]byte(token), bcrypt.MinCost)
+
+			mock.ExpectQuery("SELECT setup_completed FROM system_settings").
+				WillReturnRows(sqlmock.NewRows([]string{"setup_completed"}).AddRow(true))
+			mock.ExpectQuery(`SELECT setup_completed AND \(NOT scanning_configured\) FROM system_settings`).
+				WillReturnRows(sqlmock.NewRows([]string{"pending"}).AddRow(true))
+			mock.ExpectQuery("SELECT setup_token_hash FROM system_settings").
+				WillReturnRows(sqlmock.NewRows([]string{"setup_token_hash"}).AddRow(string(hash)))
+
+			w := doFullSetupRequest(r, path, "SetupToken "+token)
+			if w.Code != http.StatusOK {
+				t.Errorf("path %s: status = %d, want 200", path, w.Code)
+			}
+		})
 	}
 }
 

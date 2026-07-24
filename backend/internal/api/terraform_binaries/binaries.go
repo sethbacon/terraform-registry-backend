@@ -21,6 +21,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/middleware"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 	"github.com/terraform-registry/terraform-registry/internal/telemetry"
 	"github.com/terraform-registry/terraform-registry/internal/validation"
@@ -338,7 +339,9 @@ func (h *Handler) DownloadBinary(c *gin.Context) {
 	// Audit log the download event asynchronously
 	if h.auditRepo != nil {
 		resourceType := "terraform_binary"
-		action := "GET " + c.Request.URL.Path
+		// Route through the same redaction helper AuditMiddleware/LoggerMiddleware
+		// use rather than logging the raw path (issue #678 sibling).
+		action := "GET " + middleware.RedactSensitivePath(c.Request.URL.Path)
 		ip := c.ClientIP()
 		versionIDForAudit := version.ID.String()
 		var userIDStr *string

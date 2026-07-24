@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -453,5 +455,72 @@ func TestCORSMiddleware_WildcardNoOriginHeader(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ENCRYPTION_KEY fail-closed entropy enforcement (issue #560)
+// ---------------------------------------------------------------------------
+
+func TestShouldRejectLowEntropyEncryptionKey(t *testing.T) {
+	lowEntropyKey := []byte(strings.Repeat("k", 32))
+	highEntropyKey := []byte("3f7a9c1e5b2d8046f1a7c3e9b5d2084f")
+
+	tests := []struct {
+		name            string
+		key             []byte
+		overrideAllowed bool
+		want            bool
+	}{
+		{"low entropy, no override -> reject (fail closed)", lowEntropyKey, false, true},
+		{"low entropy, override allowed -> do not reject", lowEntropyKey, true, false},
+		{"high entropy, no override -> do not reject", highEntropyKey, false, false},
+		{"high entropy, override allowed -> do not reject", highEntropyKey, true, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldRejectLowEntropyEncryptionKey(tt.key, tt.overrideAllowed); got != tt.want {
+				t.Errorf("shouldRejectLowEntropyEncryptionKey(%q, %v) = %v, want %v", tt.key, tt.overrideAllowed, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAllowLowEntropyEncryptionKey(t *testing.T) {
+	const envVar = "TFR_ALLOW_LOW_ENTROPY_ENCRYPTION_KEY"
+
+	tests := []struct {
+		name  string
+		value string
+		unset bool
+		want  bool
+	}{
+		{"unset -> disallowed (fail closed by default)", "", true, false},
+		{"empty -> disallowed", "", false, false},
+		{"true -> allowed", "true", false, true},
+		{"True -> disallowed (exact match required)", "True", false, false},
+		{"1 -> disallowed (exact match required)", "1", false, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.unset {
+				// t.Setenv can't express "unset"; restore afterward to avoid
+				// leaking state into other tests in this package.
+				if prev, ok := os.LookupEnv(envVar); ok {
+					defer os.Setenv(envVar, prev)
+				} else {
+					defer os.Unsetenv(envVar)
+				}
+				os.Unsetenv(envVar)
+			} else {
+				t.Setenv(envVar, tt.value)
+			}
+
+			if got := allowLowEntropyEncryptionKey(); got != tt.want {
+				t.Errorf("allowLowEntropyEncryptionKey() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

@@ -19,6 +19,28 @@ import (
 // SetupTokenContextKey is the context key set when a request is authenticated via setup token.
 const SetupTokenContextKey = "is_setup_request"
 
+// featureSetupAllowedPaths lists the exact setup routes that stay reachable
+// once setup_completed is true but HasPendingFeatureSetup still reports a
+// pending optional feature (currently: security scanning, added after initial
+// setup). Every other setup route -- OIDC, LDAP, storage, and admin
+// bootstrapping -- reconfigures identity/tenant-critical state and must
+// remain permanently disabled once setup_completed is true, regardless of any
+// pending optional feature (issue #649). Without this allow-list, hasPending
+// re-opened the ENTIRE setup token surface, letting a re-minted setup token
+// hot-swap the live OIDC provider or mint an arbitrary admin.
+//
+// validate-token is included because it performs no state change (it only
+// confirms the token is valid). complete is included because CompleteSetup's
+// own pending-feature branch already re-verifies that the pending feature --
+// and only that feature -- is now configured before clearing the token.
+var featureSetupAllowedPaths = map[string]bool{
+	"/api/v1/setup/validate-token":   true,
+	"/api/v1/setup/scanning/test":    true,
+	"/api/v1/setup/scanning":         true,
+	"/api/v1/setup/scanning/install": true,
+	"/api/v1/setup/complete":         true,
+}
+
 // setupRateLimiter tracks per-IP attempt counts to prevent brute-force attacks
 // on the setup token. Allows maxAttempts per window per IP.
 type setupRateLimiter struct {
@@ -85,7 +107,10 @@ func SetupTokenMiddleware(oidcConfigRepo *repositories.OIDCConfigRepository) gin
 			return
 		}
 		if completed {
-			// Allow through if there are unconfigured features added in later releases
+			// Allow through only if there is an unconfigured feature added in a
+			// later release (e.g. scanning) AND the requested route is part of
+			// that feature's own setup surface. OIDC/LDAP/storage/admin stay
+			// permanently disabled even when a feature is pending (issue #649).
 			hasPending, pendingErr := oidcConfigRepo.HasPendingFeatureSetup(ctx)
 			if pendingErr != nil {
 				slog.Error("setup middleware: failed to check pending features", "error", pendingErr)
@@ -94,7 +119,7 @@ func SetupTokenMiddleware(oidcConfigRepo *repositories.OIDCConfigRepository) gin
 				})
 				return
 			}
-			if !hasPending {
+			if !hasPending || !featureSetupAllowedPaths[c.FullPath()] {
 				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
 					"error": "Setup has already been completed. These endpoints are permanently disabled.",
 				})

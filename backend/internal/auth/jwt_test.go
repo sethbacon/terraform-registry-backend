@@ -1,8 +1,13 @@
 package auth
 
 import (
+	"bytes"
+	cryptorand "crypto/rand"
+	"encoding/hex"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -310,6 +315,52 @@ func TestValidateJWTSecret_ShortSecret(t *testing.T) {
 	}
 	if got := GetJWTSecret(); got != "short" {
 		t.Errorf("GetJWTSecret() = %q, want %q", got, "short")
+	}
+}
+
+// TestValidateJWTSecret_LowEntropyLongSecret is the core assertion for issue
+// #654: a TFR_JWT_SECRET that is 32+ characters (so it passes the length
+// check) but low-entropy (a short pattern repeated to length, as opposed to
+// CSPRNG output) must still trigger a warning, the same way ENCRYPTION_KEY
+// already does via crypto.IsLikelyLowEntropySecret (see router.go).
+func TestValidateJWTSecret_LowEntropyLongSecret(t *testing.T) {
+	resetJWTSecret()
+	lowEntropySecret := strings.Repeat("ab", 20) // 40 chars, 2-symbol alphabet
+	t.Setenv("TFR_JWT_SECRET", lowEntropySecret)
+
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	if err := ValidateJWTSecret(); err != nil {
+		t.Fatalf("ValidateJWTSecret() unexpected error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "low estimated entropy") {
+		t.Errorf("ValidateJWTSecret() with low-entropy 40-char secret did not warn; log output: %q", buf.String())
+	}
+}
+
+// TestValidateJWTSecret_HighEntropySecretNoWarning is the positive-path
+// counterpart of TestValidateJWTSecret_LowEntropyLongSecret: a properly
+// generated (CSPRNG hex) secret must not trip the new low-entropy warning.
+func TestValidateJWTSecret_HighEntropySecretNoWarning(t *testing.T) {
+	resetJWTSecret()
+	randomBytes := make([]byte, 24)
+	if _, err := cryptorand.Read(randomBytes); err != nil {
+		t.Fatalf("failed to generate random secret: %v", err)
+	}
+	highEntropySecret := hex.EncodeToString(randomBytes)
+	t.Setenv("TFR_JWT_SECRET", highEntropySecret)
+
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	if err := ValidateJWTSecret(); err != nil {
+		t.Fatalf("ValidateJWTSecret() unexpected error: %v", err)
+	}
+	if strings.Contains(buf.String(), "low estimated entropy") {
+		t.Errorf("ValidateJWTSecret() with high-entropy secret unexpectedly warned; log output: %q", buf.String())
 	}
 }
 

@@ -115,10 +115,12 @@ The encryption key protects SCM OAuth tokens stored in the database. The backend
 
    `ENCRYPTION_KEY` is consumed directly as raw AES-256 key bytes — there is no
    password-based key derivation. Always generate it with a CSPRNG as shown above;
-   never type a passphrase by hand. At startup the backend logs a `WARNING` if
+   never type a passphrase by hand. At startup the backend refuses to start if
    `ENCRYPTION_KEY`'s estimated entropy looks low (e.g. a human-typed passphrase or a
-   repeated pattern) — treat that warning as a sign the key needs to be regenerated
-   and rotated.
+   repeated pattern) — regenerate and rotate the key rather than reaching for
+   `TFR_ALLOW_LOW_ENTROPY_ENCRYPTION_KEY`, which only exists as a temporary bridge to
+   restart an existing deployment while you rotate to a stronger key (see
+   [docs/initial-setup.md](initial-setup.md)).
 
 2. **Record the current key as the previous key.** Retrieve the current value of `ENCRYPTION_KEY` from your secrets manager.
 

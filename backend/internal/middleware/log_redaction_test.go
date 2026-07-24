@@ -1,4 +1,4 @@
-package api
+package middleware
 
 import "testing"
 
@@ -36,8 +36,8 @@ func TestRedactSensitivePath(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := redactSensitivePath(tc.in); got != tc.want {
-				t.Errorf("redactSensitivePath(%q) = %q, want %q", tc.in, got, tc.want)
+			if got := RedactSensitivePath(tc.in); got != tc.want {
+				t.Errorf("RedactSensitivePath(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
 	}
@@ -82,8 +82,8 @@ func TestRedactSensitiveQuery(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := redactSensitiveQuery(tc.in); got != tc.want {
-				t.Errorf("redactSensitiveQuery(%q) = %q, want %q", tc.in, got, tc.want)
+			if got := RedactSensitiveQuery(tc.in); got != tc.want {
+				t.Errorf("RedactSensitiveQuery(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
 	}

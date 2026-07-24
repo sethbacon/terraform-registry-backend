@@ -29,10 +29,10 @@ import (
 // requests, enabling Grafana Tempo or other trace backends to correlate metrics with
 // traces when the same request ID is propagated through the tracing pipeline.
 //
-// This middleware must be registered AFTER gin.Recovery() and RequestIDMiddleware so that
+// This middleware must be registered AFTER RecoveryMiddleware and RequestIDMiddleware so that
 // the response status set by error handlers is captured correctly:
 //
-//	router.Use(gin.Recovery())
+//	router.Use(RecoveryMiddleware())
 //	router.Use(RequestIDMiddleware())
 //	router.Use(MetricsMiddleware())
 //
