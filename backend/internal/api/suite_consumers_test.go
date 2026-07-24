@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,12 +14,20 @@ import (
 	"github.com/sethbacon/terraform-suite-identity/identity/suite"
 
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 )
 
-func mountConsumers(cfg *config.Config, dc *suite.DiscoveryClient) *gin.Engine {
+// loopbackGuard allow-lists the loopback addresses httptest.NewServer binds to
+// (127.0.0.1 / ::1) so the positive-path tests below can exercise a real
+// outbound round trip through the httpsafe-guarded client (issue #653)
+// without the strict default policy rejecting the test server itself as an
+// internal target.
+var loopbackGuard = httpsafe.MustGuard("127.0.0.1", "::1")
+
+func mountConsumers(cfg *config.Config, dc *suite.DiscoveryClient, guard *httpsafe.Guard) *gin.Engine {
 	r := gin.New()
 	r.GET("/api/v1/suite/modules/:namespace/:name/:system/consumers",
-		moduleConsumersHandler(func() *suite.DiscoveryClient { return dc }, cfg))
+		moduleConsumersHandler(func() *suite.DiscoveryClient { return dc }, cfg, guard))
 	return r
 }
 
@@ -57,7 +66,7 @@ func TestModuleConsumers_StandaloneReturnsEmpty(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Server.PublicURL = "https://registry.example.com"
 	cfg.Suite.SiblingToken = "tok"
-	code, out := getConsumers(mountConsumers(cfg, nil)) // no sibling
+	code, out := getConsumers(mountConsumers(cfg, nil, nil)) // no sibling
 	if code != http.StatusOK {
 		t.Fatalf("status = %d", code)
 	}
@@ -77,7 +86,7 @@ func TestModuleConsumers_NoTokenReturnsEmpty(t *testing.T) {
 
 	cfg := &config.Config{}
 	cfg.Server.PublicURL = "https://registry.example.com" // SiblingToken empty → inert
-	_, out := getConsumers(mountConsumers(cfg, dc))
+	_, out := getConsumers(mountConsumers(cfg, dc, loopbackGuard))
 	if c, _ := out["consumers"].([]any); len(c) != 0 {
 		t.Errorf("no sibling token must yield empty: %v", out)
 	}
@@ -106,7 +115,7 @@ func TestModuleConsumers_ProxiesActiveSibling(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Server.PublicURL = "https://registry.example.com"
 	cfg.Suite.SiblingToken = "s3cr3t"
-	code, out := getConsumers(mountConsumers(cfg, dc))
+	code, out := getConsumers(mountConsumers(cfg, dc, loopbackGuard))
 	if code != http.StatusOK {
 		t.Fatalf("status = %d", code)
 	}
@@ -151,7 +160,7 @@ func TestModuleConsumers_EmitsHostAliasSet(t *testing.T) {
 	cfg.Server.BaseURL = "http://registry.internal:8080"
 	cfg.Server.HostAliases = []string{"tf.example.com", "REGISTRY.example.com"} // alias + dup-of-public
 	cfg.Suite.SiblingToken = "s3cr3t"
-	if code, _ := getConsumers(mountConsumers(cfg, dc)); code != http.StatusOK {
+	if code, _ := getConsumers(mountConsumers(cfg, dc, loopbackGuard)); code != http.StatusOK {
 		t.Fatalf("status = %d", code)
 	}
 
@@ -182,8 +191,90 @@ func TestModuleConsumers_SiblingErrorReturnsEmpty(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Server.PublicURL = "https://registry.example.com"
 	cfg.Suite.SiblingToken = "s3cr3t"
-	_, out := getConsumers(mountConsumers(cfg, dc))
+	_, out := getConsumers(mountConsumers(cfg, dc, loopbackGuard))
 	if c, _ := out["consumers"].([]any); len(c) != 0 {
 		t.Errorf("sibling error must yield empty (graceful): %v", out)
+	}
+}
+
+// TestModuleConsumers_OversizedResponseIsCappedAndFails is the regression test
+// for issue #662: the sibling response is decoded through an io.LimitReader
+// capped at maxConsumersResponseBytes (1 MB), so a well-formed JSON document
+// whose encoded size exceeds that cap is truncated mid-document and fails to
+// decode, falling back to the graceful empty result -- it is never fully
+// buffered or forwarded. Without the io.LimitReader wrap (i.e. reverting
+// suite.go's decode to a bare resp.Body), this same oversized document would
+// decode successfully with all its rows and this test would fail.
+func TestModuleConsumers_OversizedResponseIsCappedAndFails(t *testing.T) {
+	manifest := suite.Manifest{SchemaVersion: suite.SchemaVersionV1, App: "terraform-state-manager"}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/v1/consumers") {
+			w.Header().Set("Content-Type", "application/json")
+			// A single well-formed JSON document whose encoded size exceeds
+			// maxConsumersResponseBytes: the padding pushes total size past the
+			// cap, so io.LimitReader truncates mid-string before the closing
+			// quote/braces are ever read.
+			_, _ = io.WriteString(w, `{"consumers":[{"source_id":"s1","pad":"`)
+			_, _ = io.WriteString(w, strings.Repeat("x", maxConsumersResponseBytes+1024))
+			_, _ = io.WriteString(w, `"}],"total":1}`)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(manifest) // discovery poll
+	}))
+	defer srv.Close()
+	manifest.PublicURL = srv.URL
+	dc := activeClient(t, srv.URL)
+
+	cfg := &config.Config{}
+	cfg.Server.PublicURL = "https://registry.example.com"
+	cfg.Suite.SiblingToken = "s3cr3t"
+	code, out := getConsumers(mountConsumers(cfg, dc, loopbackGuard))
+	if code != http.StatusOK {
+		t.Fatalf("status = %d", code)
+	}
+	if c, _ := out["consumers"].([]any); len(c) != 0 {
+		t.Errorf("oversized (cap-truncated) response must decode-fail to empty, got %d consumers", len(c))
+	}
+}
+
+// TestModuleConsumers_BlocksNonAllowlistedSiblingURL is the negative test for
+// issue #653: moduleConsumersHandler must not reach a sibling whose
+// self-advertised PublicURL (m.PublicURL, taken from the discovery manifest —
+// not the operator-pinned SiblingURL) is outside the operator's egress
+// allow-list, even though discovery itself already succeeded. A nil egress
+// guard is the strict default policy (no allow-list), so the loopback address
+// every httptest.Server in this file binds to stands in for the internal/
+// metadata host a compromised sibling or a MITM'd discovery response could
+// try to steer this credential-bearing request at.
+func TestModuleConsumers_BlocksNonAllowlistedSiblingURL(t *testing.T) {
+	var consumersHit bool
+	manifest := suite.Manifest{SchemaVersion: suite.SchemaVersionV1, App: "terraform-state-manager"}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/v1/consumers") {
+			consumersHit = true
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"consumers": []map[string]any{{"source_id": "s1"}},
+				"total":     1,
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(manifest) // discovery poll
+	}))
+	defer srv.Close()
+	manifest.PublicURL = srv.URL
+	dc := activeClient(t, srv.URL)
+
+	cfg := &config.Config{}
+	cfg.Server.PublicURL = "https://registry.example.com"
+	cfg.Suite.SiblingToken = "s3cr3t"
+	code, out := getConsumers(mountConsumers(cfg, dc, nil)) // nil guard == strict default, no allow-list
+	if code != http.StatusOK {
+		t.Fatalf("status = %d", code)
+	}
+	if c, _ := out["consumers"].([]any); len(c) != 0 {
+		t.Errorf("non-allowlisted sibling target must yield empty: %v", out)
+	}
+	if consumersHit {
+		t.Error("the sibling's /consumers endpoint must never be reached when its advertised PublicURL is not egress-allowlisted")
 	}
 }

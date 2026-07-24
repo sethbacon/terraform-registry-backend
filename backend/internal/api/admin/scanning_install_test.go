@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/scanner/installer"
 )
 
@@ -97,6 +98,35 @@ func TestInstallScannerHandler_InstallerSuccess(t *testing.T) {
 	}
 	if resp.Version != "0.52.2" {
 		t.Errorf("version = %q", resp.Version)
+	}
+}
+
+// TestInstallScannerHandler_ThreadsEgressGuard locks in that the admin install
+// endpoint passes the operator-configured egress guard through installer.Handle
+// into the InstallConfig the install func receives (issue #676's threading
+// requirement), rather than silently falling back to the strict nil-guard
+// default.
+func TestInstallScannerHandler_ThreadsEgressGuard(t *testing.T) {
+	cfg := &config.ScanningConfig{InstallDir: "/tmp/test"}
+	g := httpsafe.MustGuard("10.0.0.0/8")
+	var got *httpsafe.Guard
+	stub := func(ctx context.Context, c installer.InstallConfig, tool, version string) (*installer.Result, error) {
+		got = c.EgressGuard
+		return &installer.Result{BinaryPath: "/app/scanners/trivy", Version: "0.52.2"}, nil
+	}
+
+	h := NewScanningInstallHandler(cfg, stub, nil, nil, nil)
+	h.SetEgressGuard(g)
+	r := gin.New()
+	r.POST("/install", h.Install())
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/install", jsonBodyAdmin(map[string]string{"tool": "trivy"}))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if got != g {
+		t.Errorf("InstallConfig.EgressGuard = %v, want the guard set via SetEgressGuard", got)
 	}
 }
 

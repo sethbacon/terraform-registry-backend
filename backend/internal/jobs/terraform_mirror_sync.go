@@ -549,7 +549,7 @@ func (j *TerraformMirrorSyncJob) syncVersionBinaries(
 	// platform — the pinned identity is the same for every binary in this
 	// config). nil when the flag is off or the upstream isn't GitHub-hosted,
 	// in which case syncOnePlatform skips attestation entirely.
-	attestVerifier := attestationVerifierForConfig(cfg)
+	attestVerifier := attestationVerifierForConfig(cfg, j.egressGuard)
 
 	platformOK := 0
 	platformFail := 0
@@ -716,6 +716,15 @@ func (j *TerraformMirrorSyncJob) syncOnePlatform(
 
 	if _, seekErr := tmpFile.Seek(0, io.SeekStart); seekErr != nil {
 		errStr := fmt.Sprintf("failed to seek temp file: %v", seekErr)
+		_ = j.repo.UpdatePlatformSyncStatus(ctx, p.ID, "failed", nil, nil, sha256Verified, sumsGPGVerified, attestationVerified, &errStr)
+		return false
+	}
+
+	// p.Filename comes straight from the upstream releases index (same defect
+	// class as the provider mirror's packageInfo.Filename, issue #677): reject
+	// path separators and '..' before it reaches the storage key.
+	if err := validation.ValidateStorageFilename(p.Filename); err != nil {
+		errStr := fmt.Sprintf("unsafe filename from upstream releases index: %v", err)
 		_ = j.repo.UpdatePlatformSyncStatus(ctx, p.ID, "failed", nil, nil, sha256Verified, sumsGPGVerified, attestationVerified, &errStr)
 		return false
 	}
@@ -947,7 +956,7 @@ func (j *TerraformMirrorSyncJob) backfillAttestation(
 	cfg *models.TerraformMirrorConfig,
 	filteredVersions []mirror.TerraformVersionInfo,
 ) error {
-	verifier := attestationVerifierForConfig(cfg)
+	verifier := attestationVerifierForConfig(cfg, j.egressGuard)
 	if verifier == nil {
 		return nil
 	}
@@ -1151,11 +1160,15 @@ type attestationVerifier interface {
 // or the upstream is not GitHub-hosted (the attestation API is GitHub-only —
 // releases.hashicorp.com and releases.opentofu.org have no equivalent), in
 // which case callers skip attestation entirely and stay checksum-only.
-func attestationVerifierForConfig(cfg *models.TerraformMirrorConfig) attestationVerifier {
+//
+// egress is threaded through to the verifier's HTTP client (same operator-
+// configured guard as newReleasesClient above), for parity with the rest of
+// this sync job's outbound calls (issue #676's Minter fix, same defect class).
+func attestationVerifierForConfig(cfg *models.TerraformMirrorConfig, egress *httpsafe.Guard) attestationVerifier {
 	if !cfg.VerifyGitHubAttestation || !mirror.IsGitHubReleasesURL(cfg.UpstreamURL) {
 		return nil
 	}
-	v, err := mirror.NewGitHubAttestationVerifier(cfg.UpstreamURL)
+	v, err := mirror.NewGitHubAttestationVerifierWithGuard(cfg.UpstreamURL, egress)
 	if err != nil {
 		log.Printf("[terraform-mirror] cannot build GitHub attestation verifier for %s: %v", cfg.UpstreamURL, err)
 		return nil

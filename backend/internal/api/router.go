@@ -268,6 +268,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	sbvRepo := repositories.NewScannerBinaryVersionRepository(sqlxDB)
 	scannerApprovalRepo := repositories.NewVersionApprovalRepository(sqlxDB)
 	scannerUpdateJob := jobs.NewScannerUpdateJob(&cfg.Scanning, &cfg.Notifications, &cfg.CVE, sbvRepo, scannerApprovalRepo, oidcConfigRepo, moduleScannerJob, nil, nil)
+	scannerUpdateJob.SetEgressGuard(egressGuard)
 	jobRegistry.Register(scannerUpdateJob)
 
 	// Initialize the audit log cleanup job (no-op when retention_days=0)
@@ -416,8 +417,9 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	auditLogHandlers := admin.NewAuditLogHandlers(identityDB)
 
 	// Shared app-credential minter (Entra app / GitHub App) for providers opted
-	// into an app auth mode; scmRepo provides the token-cache store.
-	sharedMinter := appcreds.NewMinter(tokenCipher, scmRepo)
+	// into an app auth mode; scmRepo provides the token-cache store. Uses the
+	// shared egress guard for parity with the other SCM outbound paths (#676).
+	sharedMinter := appcreds.NewMinterWithGuard(tokenCipher, scmRepo, egressGuard)
 
 	// Initialize SCM publisher service (needed by scmLinkingHandler)
 	scmPublisher := services.NewSCMPublisher(scmRepo, moduleRepo, storageBackend, tokenCipher).
@@ -494,7 +496,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// Initialize setup wizard handlers
 	setupHandlers := setup.NewHandlers(
 		cfg, tokenCipher, oidcConfigRepo, storageConfigRepo, userRepo, orgRepo, authHandlers,
-	).WithScannerJob(moduleScannerJob)
+	).WithScannerJob(moduleScannerJob).WithEgressGuard(egressGuard)
 
 	// Initialize policy engine (no-op when disabled).
 	policyEngineCfg := policy.Config{
@@ -648,6 +650,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		statsHandlers:               statsHandlers,
 		scmWebhookHandler:           scmWebhookHandler,
 		approvalWebhookHandler:      approvalWebhookHandler,
+		egressGuard:                 egressGuard,
 	})
 
 	// Start every registered background job now that all wiring is complete.
