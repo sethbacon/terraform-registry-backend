@@ -455,7 +455,7 @@ func (u *UpstreamRegistry) resolveProviderVersionID(ctx context.Context, namespa
 	}
 	var provResp providerV2Response
 	decodeErr := json.NewDecoder(io.LimitReader(resp.Body, maxUpstreamResponseBytes)).Decode(&provResp)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if decodeErr != nil {
 		return "", fmt.Errorf("failed to decode v2 provider response: %w", decodeErr)
 	}
@@ -490,7 +490,7 @@ func (u *UpstreamRegistry) resolveProviderVersionID(ctx context.Context, namespa
 		}
 		var versionsResp providerVersionListV2
 		decodeErr = json.NewDecoder(io.LimitReader(resp.Body, maxUpstreamResponseBytes)).Decode(&versionsResp)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if decodeErr != nil {
 			return "", fmt.Errorf("failed to decode v2 provider-versions response (page %d): %w", versionPage, decodeErr)
 		}
@@ -550,7 +550,7 @@ func (u *UpstreamRegistry) GetProviderDocIndexByVersion(ctx context.Context, nam
 
 		var page providerDocListV2
 		decodeErr := json.NewDecoder(io.LimitReader(resp.Body, maxUpstreamResponseBytes)).Decode(&page)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if decodeErr != nil {
 			return nil, fmt.Errorf("failed to decode v2 provider doc index response (page %d): %w", pageNum, decodeErr)
 		}
