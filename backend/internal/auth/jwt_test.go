@@ -154,6 +154,47 @@ func TestGenerateAndValidateJWT(t *testing.T) {
 	})
 }
 
+// TestGenerateJWT_IsGlobalOrgLessToken pins the issue #652 disposition
+// (session JWTs embed a cross-organization scope union with no org binding).
+// The registry's canonical session token is DELIBERATELY global/org-less: the
+// minted token carries the caller's flat scope union verbatim and an EMPTY
+// OrgID, so nothing in the token records which organization granted a scope.
+// This is exactly why authorization for org-scoped resources must re-derive
+// per-org membership server-side (RequireOrgScopeForPathOrg, the namespace
+// authorizer, and the #648/#650 in-handler ceilings) rather than trusting
+// Claims.Scopes. Should a future change begin binding tokens to an organization
+// (TokenManager.GenerateForOrg), OrgID would become non-empty and trip this
+// test — a signal that the deferred org-scoped-token migration has begun and the
+// per-org enforcement layer must be revisited in tandem.
+func TestGenerateJWT_IsGlobalOrgLessToken(t *testing.T) {
+	resetJWTSecret()
+	t.Setenv("TFR_JWT_SECRET", "test-jwt-secret-that-is-32-chars-!")
+
+	// A flat union deliberately mixing scopes a user might hold in DIFFERENT
+	// organizations (e.g. modules:read in org A, organizations:write + scm:manage
+	// in org B) — the shape GetUserCombinedScopes produces.
+	unionScopes := []string{"modules:read", "organizations:write", "scm:manage"}
+	token, err := GenerateJWT("user-1", "u@example.com", unionScopes, time.Hour)
+	if err != nil {
+		t.Fatalf("GenerateJWT() error: %v", err)
+	}
+	claims, err := ValidateJWT(token)
+	if err != nil {
+		t.Fatalf("ValidateJWT() error: %v", err)
+	}
+	if claims.OrgID != "" {
+		t.Errorf("claims.OrgID = %q, want empty: registry issues org-less suite-wide tokens by design (issue #652); a non-empty OrgID means org-scoped tokens are being introduced and per-org enforcement must be re-audited", claims.OrgID)
+	}
+	if len(claims.Scopes) != len(unionScopes) {
+		t.Fatalf("claims.Scopes = %v, want the flat union %v embedded verbatim", claims.Scopes, unionScopes)
+	}
+	for i, s := range unionScopes {
+		if claims.Scopes[i] != s {
+			t.Errorf("claims.Scopes[%d] = %q, want %q", i, claims.Scopes[i], s)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // trimSecretBytes
 // ---------------------------------------------------------------------------

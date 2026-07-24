@@ -182,9 +182,56 @@ func GetJWTSecret() string {
 // GenerateJWT creates a JWT for an authenticated user, delegating to the shared
 // identity TokenManager. Scopes are embedded so the auth middleware can
 // authorize without a database round-trip; a unique JTI is stamped for revocation.
+//
+// Issue #652 disposition — "Session JWTs embed a cross-organization union of
+// scopes with no org binding" (CWE-269), DEFERRED with the rationale below.
+//
+// This is the single canonical token-minting primitive for the registry, and it
+// deliberately calls the identity library's org-less TokenManager.Generate
+// (Deprecated in favor of GenerateForOrg) rather than issuing per-organization
+// tokens. Every session-issuing path (OIDC/SAML/LDAP/AzureAD callbacks, refresh,
+// and dev impersonation) routes through here with a FLAT scope union — the set
+// unioned across every organization the user belongs to
+// (store.OrganizationRepository.GetUserCombinedScopes) — so the resulting token
+// has an empty Claims.OrgID and a Claims.Scopes that does not record WHICH
+// organization granted a given scope. The identity library flags exactly this
+// flat-union Generate path as the cross-org privilege-escalation primitive
+// UNLESS the host independently re-checks per-organization membership on every
+// request.
+//
+// The registry's compensating control is precisely that per-request re-check:
+// authorization for an org-scoped resource never trusts Claims.Scopes alone, it
+// re-derives the caller's scopes IN THE TARGET ORGANIZATION server-side —
+//   - middleware.RequireOrgScopeForPathOrg for /organizations/:id* routes
+//     (orgRepo.GetUserScopesForOrg), closing GHSA-hc25-j576-cqm2;
+//   - middleware.NamespaceAuthorizer (namespace_claims ownership) for
+//     module/provider publish/mutate routes (issue #555);
+//   - in-handler orgRepo.GetUserScopesForOrg / GetMemberWithRole re-derivation
+//     for the role-assignment ceiling and API-key ceiling (issues #648/#650).
+//
+// The platform-wide "admin" wildcard is the one deliberate exception (superuser).
+//
+// Why DEFERRED rather than closed here: adopting org-scoped tokens
+// (TokenManager.GenerateForOrg + auth.HasScopeInOrg) is a suite-wide change that
+// must stamp an OrgID claim at every session-issuing path AND migrate every
+// consuming route to the per-org token check — the same org-scoped-token
+// migration already noted as "tracked separately" in RequireOrgScopeForPathOrg's
+// doc. It is out of scope for a surgical authz batch, and doing it piecemeal
+// would leave a mix of org-bound and flat tokens that is harder to reason about
+// than the uniform flat-token + per-org-re-check model in place today. Note the
+// compensating re-check is NOT yet universal: some org-scoped ADMIN resources
+// (SCM providers, mirror configs — org-scoped rows gated only on a coarse
+// scm:*/mirrors:* scope that a per-org role template such as "devops" grants)
+// still authorize from the flat union and are part of this deferred residual
+// (see the batch report / follow-up finding). This batch closes the concrete
+// paths (#648 org-creation auto-admin + role-ceiling, #650 API-key ceiling) by
+// which the flat token could be escalated all the way to the admin wildcard.
 func GenerateJWT(userID, email string, scopes []string, expiresIn time.Duration) (string, error) {
 	_ = GetJWTSecret() // ensure the secret is validated and the TokenManager exists
-	return tokenManager.Generate(userID, email, scopes, expiresIn) //nolint:staticcheck // SA1019: registry issues suite-wide (not per-org) JWTs by design; this is the canonical call site, a deliberate suite-wide decision per the deprecation notice
+	// SA1019: TokenManager.Generate is deprecated in favor of GenerateForOrg;
+	// the registry issues suite-wide (org-less) JWTs by design — see the
+	// issue #652 disposition on this function.
+	return tokenManager.Generate(userID, email, scopes, expiresIn) //nolint:staticcheck // SA1019: deliberate org-less suite-wide token; issue #652 disposition documented on GenerateJWT
 }
 
 // ValidateJWT parses and validates a JWT via the shared identity TokenManager.

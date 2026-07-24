@@ -497,7 +497,7 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 		}
 
 		// Fetch user scopes to embed in JWT (avoids per-request DB lookup)
-		scopes, err := h.orgRepo.GetUserCombinedScopes(ctx, user.ID) //nolint:staticcheck // SA1019: registry issues suite-wide (not per-org) JWTs by design via auth.GenerateJWT; narrow legitimate use per the deprecation notice
+		scopes, err := h.orgRepo.GetUserCombinedScopes(ctx, user.ID) //nolint:staticcheck // SA1019: registry issues suite-wide (not per-org) JWTs by design via auth.GenerateJWT; flat cross-org scope union is intentional here — see the issue #652 disposition on auth.GenerateJWT (org-scoped tokens deferred; per-org membership is re-checked server-side on every org-scoped route)
 		if err != nil {
 			scopes = []string{}
 		}
@@ -690,7 +690,7 @@ func (h *AuthHandlers) RefreshHandler() gin.HandlerFunc {
 		}
 
 		// Fetch fresh scopes to embed in the new JWT
-		scopes, err := h.orgRepo.GetUserCombinedScopes(c.Request.Context(), user.ID) //nolint:staticcheck // SA1019: registry issues suite-wide (not per-org) JWTs by design via auth.GenerateJWT; narrow legitimate use per the deprecation notice
+		scopes, err := h.orgRepo.GetUserCombinedScopes(c.Request.Context(), user.ID) //nolint:staticcheck // SA1019: registry issues suite-wide (not per-org) JWTs by design via auth.GenerateJWT; flat cross-org scope union is intentional here — see the issue #652 disposition on auth.GenerateJWT (org-scoped tokens deferred; per-org membership is re-checked server-side on every org-scoped route)
 		if err != nil {
 			scopes = []string{}
 		}
@@ -1249,7 +1249,7 @@ func (h *AuthHandlers) SAMLACSHandler() gin.HandlerFunc {
 		}
 
 		// Fetch user scopes to embed in JWT
-		scopes, scopeErr := h.orgRepo.GetUserCombinedScopes(ctx, user.ID) //nolint:staticcheck // SA1019: registry issues suite-wide (not per-org) JWTs by design via auth.GenerateJWT; narrow legitimate use per the deprecation notice
+		scopes, scopeErr := h.orgRepo.GetUserCombinedScopes(ctx, user.ID) //nolint:staticcheck // SA1019: registry issues suite-wide (not per-org) JWTs by design via auth.GenerateJWT; flat cross-org scope union is intentional here — see the issue #652 disposition on auth.GenerateJWT (org-scoped tokens deferred; per-org membership is re-checked server-side on every org-scoped route)
 		if scopeErr != nil {
 			scopes = []string{}
 		}
@@ -1394,7 +1394,7 @@ func (h *AuthHandlers) LDAPLoginHandler() gin.HandlerFunc {
 		}
 
 		// Fetch user scopes
-		scopes, err := h.orgRepo.GetUserCombinedScopes(ctx, user.ID) //nolint:staticcheck // SA1019: registry issues suite-wide (not per-org) JWTs by design via auth.GenerateJWT; narrow legitimate use per the deprecation notice
+		scopes, err := h.orgRepo.GetUserCombinedScopes(ctx, user.ID) //nolint:staticcheck // SA1019: registry issues suite-wide (not per-org) JWTs by design via auth.GenerateJWT; flat cross-org scope union is intentional here — see the issue #652 disposition on auth.GenerateJWT (org-scoped tokens deferred; per-org membership is re-checked server-side on every org-scoped route)
 		if err != nil {
 			scopes = []string{}
 		}

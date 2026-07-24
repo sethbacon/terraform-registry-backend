@@ -101,7 +101,7 @@ func (h *DevHandlers) ImpersonateUserHandler() gin.HandlerFunc {
 		}
 
 		// Fetch target user's scopes to embed in JWT
-		targetScopes, _ := h.orgRepo.GetUserCombinedScopes(c.Request.Context(), targetUser.ID) //nolint:staticcheck // SA1019: registry issues suite-wide (not per-org) JWTs by design via auth.GenerateJWT; narrow legitimate use per the deprecation notice
+		targetScopes, _ := h.orgRepo.GetUserCombinedScopes(c.Request.Context(), targetUser.ID) //nolint:staticcheck // SA1019: registry issues suite-wide (not per-org) JWTs by design via auth.GenerateJWT; flat cross-org scope union is intentional here — see the issue #652 disposition on auth.GenerateJWT (org-scoped tokens deferred; per-org membership is re-checked server-side on every org-scoped route)
 
 		// Generate a new JWT for the target user
 		token, err := auth.GenerateJWT(targetUser.ID, targetUser.Email, targetScopes, 24*time.Hour)
@@ -214,7 +214,7 @@ func (h *DevHandlers) DevLoginHandler() gin.HandlerFunc {
 			return
 		}
 
-		scopes, _ := h.orgRepo.GetUserCombinedScopes(c.Request.Context(), user.ID) //nolint:staticcheck // SA1019: registry issues suite-wide (not per-org) JWTs by design via auth.GenerateJWT; narrow legitimate use per the deprecation notice
+		scopes, _ := h.orgRepo.GetUserCombinedScopes(c.Request.Context(), user.ID) //nolint:staticcheck // SA1019: registry issues suite-wide (not per-org) JWTs by design via auth.GenerateJWT; flat cross-org scope union is intentional here — see the issue #652 disposition on auth.GenerateJWT (org-scoped tokens deferred; per-org membership is re-checked server-side on every org-scoped route)
 		token, err := auth.GenerateJWT(user.ID, user.Email, scopes, 24*time.Hour)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
