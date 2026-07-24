@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -13,7 +14,14 @@ import (
 	"github.com/sethbacon/terraform-suite-identity/identity/suite"
 
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 )
+
+// maxConsumersResponseBytes bounds the sibling's "/consumers" JSON response
+// body. The 2s Timeout on the client below bounds wall-clock time, not bytes;
+// without this cap a slow-trickle or oversized response would be fully
+// buffered in memory by json.Decode.
+const maxConsumersResponseBytes = 1 << 20 // 1 MB
 
 const suiteIssuer = "terraform-registry"
 
@@ -106,14 +114,19 @@ func startSuiteDiscovery(cfg *config.Config) *suite.DiscoveryClient {
 // @Success      200  {object}  map[string]interface{}  "Consuming states (rows forwarded opaquely from the sibling) and total count"
 // @Failure      401  {object}  map[string]interface{}  "Authentication required"
 // @Router       /api/v1/suite/modules/{namespace}/{name}/{system}/consumers [get]
-func moduleConsumersHandler(getClient func() *suite.DiscoveryClient, cfg *config.Config) gin.HandlerFunc {
+func moduleConsumersHandler(getClient func() *suite.DiscoveryClient, cfg *config.Config, egressGuard *httpsafe.Guard) gin.HandlerFunc {
 	// hosts is THIS registry's set of canonical host identities the sibling
 	// matches "consumed by" on: its public host, its base/discovery host, and any
 	// operator-configured aliases (TFR_SERVER_HOST_ALIASES) for vanity-CNAME or
 	// port-asymmetry deployments. Canonicalized + de-duped so the join compares
 	// like-for-like against the host TSM captured from the module source address.
 	hosts := canonicalHostSet(cfg.Server.GetPublicURL(), cfg.Server.BaseURL, cfg.Server.HostAliases)
-	httpClient := &http.Client{Timeout: 2 * time.Second}
+	// Routed through the shared httpsafe egress guard like every other outbound
+	// client in this codebase: m.PublicURL is the sibling's self-advertised
+	// discovery field, not the operator-pinned SiblingURL, so it is untrusted
+	// input that must be resolve-and-pinned (and re-validated on redirect) the
+	// same as any other operator/upstream-influenced target (issue #653).
+	httpClient := httpsafe.NewClient(2*time.Second, egressGuard)
 
 	return func(c *gin.Context) {
 		empty := gin.H{"consumers": []any{}, "total": 0}
@@ -132,6 +145,16 @@ func moduleConsumersHandler(getClient func() *suite.DiscoveryClient, cfg *config
 		// host the outbound request below is permitted to reach.
 		siblingURL, err := url.Parse(m.PublicURL)
 		if err != nil || siblingURL.Host == "" {
+			c.JSON(http.StatusOK, empty)
+			return
+		}
+		// m.PublicURL is the sibling's self-advertised manifest field, not the
+		// operator-pinned SiblingURL, so its scheme and target range are
+		// re-checked against the egress policy up front (the httpsafe client
+		// below re-validates at dial time regardless, but this fails fast with
+		// a clear reason instead of an opaque "sibling unreachable" empty
+		// result on the happy-path shape).
+		if err := egressGuard.ValidateURL(m.PublicURL); err != nil {
 			c.JSON(http.StatusOK, empty)
 			return
 		}
@@ -182,7 +205,7 @@ func moduleConsumersHandler(getClient func() *suite.DiscoveryClient, cfg *config
 			Consumers []json.RawMessage `json:"consumers"`
 			Total     int               `json:"total"`
 		}
-		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		if err := json.NewDecoder(io.LimitReader(resp.Body, maxConsumersResponseBytes)).Decode(&body); err != nil {
 			c.JSON(http.StatusOK, empty)
 			return
 		}

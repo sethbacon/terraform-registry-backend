@@ -3,8 +3,10 @@ package osv
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -257,6 +259,49 @@ func TestQuerySingle_HTTPError(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error for HTTP 400, got nil")
+	}
+}
+
+// TestQuerySingle_OversizedResponseIsCapped is the regression test for the
+// #662 sibling in this client: the 200 response is decoded through an
+// io.LimitReader capped at maxOSVResponseBytes, so a well-formed JSON document
+// whose encoded size exceeds that cap is truncated mid-document and fails to
+// decode. Without the io.LimitReader wrap this same oversized document would
+// decode successfully and this test would fail.
+func TestQuerySingle_OversizedResponseIsCapped(t *testing.T) {
+	srv, client := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"vulns":[{"id":"GHSA-0001","summary":"pad`)
+		_, _ = io.WriteString(w, strings.Repeat("x", maxOSVResponseBytes+1024))
+		_, _ = io.WriteString(w, `"}]}`)
+	}))
+	_ = srv
+
+	_, err := client.QuerySingle(context.Background(), Query{
+		Package: Package{Ecosystem: "Go", Name: "example"}, Version: "1.0.0",
+	})
+	if err == nil {
+		t.Fatal("expected decode error for response exceeding maxOSVResponseBytes, got nil")
+	}
+}
+
+// TestDoBatch_OversizedResponseIsCapped is the regression test for the #662
+// sibling in doBatch's success-path decode (see
+// TestQuerySingle_OversizedResponseIsCapped for the cap-truncation rationale).
+func TestDoBatch_OversizedResponseIsCapped(t *testing.T) {
+	srv, client := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"results":[{"vulns":[{"id":"GHSA-0001","summary":"pad`)
+		_, _ = io.WriteString(w, strings.Repeat("x", maxOSVResponseBytes+1024))
+		_, _ = io.WriteString(w, `"}]}]}`)
+	}))
+	_ = srv
+
+	_, err := client.doBatch(context.Background(), []Query{
+		{Package: Package{Ecosystem: "Go", Name: "foo"}, Version: "1.0.0"},
+	})
+	if err == nil {
+		t.Fatal("expected decode error for batch response exceeding maxOSVResponseBytes, got nil")
 	}
 }
 

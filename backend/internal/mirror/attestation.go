@@ -56,6 +56,8 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/util"
 	"github.com/sigstore/sigstore-go/pkg/verify"
 	"github.com/theupdateframework/go-tuf/v2/metadata/fetcher"
+
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 )
 
 // GitHubActionsOIDCIssuer is the only OIDC issuer accepted for GitHub Artifact
@@ -129,10 +131,14 @@ var attestationTrustRootAggregateTimeout = attestationTrustRootFetchTimeout
 var fetchTrustRoot = func() (*root.TrustedRoot, error) {
 	// Each individual HTTP round trip is bounded by this client; the
 	// aggregate deadline across the whole (possibly multi-request) fetch is
-	// separately enforced by fetchTrustRootBounded.
+	// separately enforced by fetchTrustRootBounded. Routed through the shared
+	// httpsafe egress guard for parity with every other outbound client in
+	// this package (sibling of issue #676's Minter fix): the CDN host is
+	// fixed and public so a nil guard (strict default) is correct here, but a
+	// bare http.Client is still the wrong default to reach for.
 	f := fetcher.NewDefaultFetcher()
 	f.SetHTTPUserAgent(util.ConstructUserAgent())
-	f.SetHTTPClient(&http.Client{Timeout: attestationTrustRootFetchTimeout})
+	f.SetHTTPClient(httpsafe.NewClient(attestationTrustRootFetchTimeout, nil))
 
 	// DisableLocalCache lets the TUF client work on a read-only root
 	// filesystem (e.g. Kubernetes readOnlyRootFilesystem: true), matching
@@ -240,8 +246,20 @@ type GitHubAttestationVerifier struct {
 }
 
 // NewGitHubAttestationVerifier builds a verifier for the repository referenced
-// by a GitHub upstream URL (same URL formats ParseGitHubOwnerRepo accepts).
+// by a GitHub upstream URL (same URL formats ParseGitHubOwnerRepo accepts),
+// using the strict (no allow-list) egress policy. Equivalent to
+// NewGitHubAttestationVerifierWithGuard(upstreamURL, nil).
 func NewGitHubAttestationVerifier(upstreamURL string) (*GitHubAttestationVerifier, error) {
+	return NewGitHubAttestationVerifierWithGuard(upstreamURL, nil)
+}
+
+// NewGitHubAttestationVerifierWithGuard is NewGitHubAttestationVerifier with an
+// egress guard, for parity with the other outbound paths in this package
+// (UpstreamRegistry, releases clients): the attestation fetch carries a
+// credential (the GITHUB_TOKEN bearer token, when set) to a fixed public host,
+// so it is routed through the shared httpsafe resolve-and-pin client rather
+// than a bare http.Client (sibling of issue #676's Minter fix).
+func NewGitHubAttestationVerifierWithGuard(upstreamURL string, egress *httpsafe.Guard) (*GitHubAttestationVerifier, error) {
 	owner, repo, err := ParseGitHubOwnerRepo(upstreamURL)
 	if err != nil {
 		return nil, err
@@ -249,7 +267,7 @@ func NewGitHubAttestationVerifier(upstreamURL string) (*GitHubAttestationVerifie
 	return &GitHubAttestationVerifier{
 		Owner:      owner,
 		Repo:       repo,
-		HTTPClient: &http.Client{Timeout: 30 * time.Second},
+		HTTPClient: httpsafe.NewClient(30*time.Second, egress),
 		APIToken:   os.Getenv("GITHUB_TOKEN"),
 		APIBaseURL: "https://api.github.com",
 

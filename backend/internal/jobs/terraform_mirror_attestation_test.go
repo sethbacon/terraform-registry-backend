@@ -26,7 +26,7 @@ func TestAttestationVerifierForConfig_FlagOff_NoAttempt(t *testing.T) {
 		UpstreamURL:             "https://github.com/open-policy-agent/opa",
 		VerifyGitHubAttestation: false,
 	}
-	if v := attestationVerifierForConfig(cfg); v != nil {
+	if v := attestationVerifierForConfig(cfg, nil); v != nil {
 		t.Errorf("expected nil verifier when flag is off, got %v", v)
 	}
 }
@@ -37,7 +37,7 @@ func TestAttestationVerifierForConfig_NonGitHubUpstream_NoAttempt(t *testing.T) 
 		UpstreamURL:             "https://releases.hashicorp.com",
 		VerifyGitHubAttestation: true,
 	}
-	if v := attestationVerifierForConfig(cfg); v != nil {
+	if v := attestationVerifierForConfig(cfg, nil); v != nil {
 		t.Errorf("expected nil verifier for non-GitHub upstream even with flag on, got %v", v)
 	}
 }
@@ -48,7 +48,7 @@ func TestAttestationVerifierForConfig_FlagOn_GitHubUpstream_Attempted(t *testing
 		UpstreamURL:             "https://github.com/open-policy-agent/opa",
 		VerifyGitHubAttestation: true,
 	}
-	v := attestationVerifierForConfig(cfg)
+	v := attestationVerifierForConfig(cfg, nil)
 	if v == nil {
 		t.Fatal("expected non-nil verifier when flag is on and upstream is GitHub-hosted")
 	}
@@ -62,7 +62,7 @@ func TestAttestationVerifierForConfig_InvalidUpstream_NoAttempt(t *testing.T) {
 		UpstreamURL:             "https://github.com/",
 		VerifyGitHubAttestation: true,
 	}
-	if v := attestationVerifierForConfig(cfg); v != nil {
+	if v := attestationVerifierForConfig(cfg, nil); v != nil {
 		t.Errorf("expected nil verifier for unparseable GitHub URL, got %v", v)
 	}
 }

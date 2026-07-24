@@ -360,6 +360,26 @@ func TestDownloadSourceArchive_Success(t *testing.T) {
 	}
 }
 
+// TestDownloadSourceArchive_OversizedResponseCapped locks in the
+// maxArchiveDownloadBytes cap on the raw zip response read in
+// DownloadSourceArchive (same CWE-400 defect class as #662): unlike the other
+// SCM connectors, Azure DevOps must fully buffer the response (zip.NewReader
+// needs io.ReaderAt), so that buffering must itself be size-capped rather than
+// unbounded.
+func TestDownloadSourceArchive_OversizedResponseCapped(t *testing.T) {
+	_, c := newTestConnector(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Write(bytes.Repeat([]byte("x"), maxArchiveDownloadBytes+1024))
+	})
+
+	_, err := c.DownloadSourceArchive(context.Background(), creds(), "proj", "repo", "v1.0", scm.ArchiveZipball)
+	if err == nil {
+		t.Fatal("expected error for archive response exceeding maxArchiveDownloadBytes, got nil")
+	}
+	if !strings.Contains(err.Error(), "exceeds size cap") {
+		t.Errorf("error = %q, want it to mention the size cap", err.Error())
+	}
+}
+
 // ---------------------------------------------------------------------------
 // SearchRepositories (filters in-memory from FetchRepositories)
 // ---------------------------------------------------------------------------

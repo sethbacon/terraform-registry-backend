@@ -37,6 +37,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/jobs"
 	"github.com/terraform-registry/terraform-registry/internal/middleware"
 	"github.com/terraform-registry/terraform-registry/internal/notify"
@@ -355,6 +356,7 @@ type apiV1RouteDeps struct {
 	statsHandlers               *admin.StatsHandler
 	scmWebhookHandler           *webhooks.SCMWebhookHandler
 	approvalWebhookHandler      *webhooks.ApprovalHandler
+	egressGuard                 *httpsafe.Guard
 }
 
 // registerAPIV1Routes wires the /api/v1, /scim/v2, and webhook route table
@@ -415,6 +417,7 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 	statsHandlers := d.statsHandlers
 	scmWebhookHandler := d.scmWebhookHandler
 	approvalWebhookHandler := d.approvalWebhookHandler
+	egressGuard := d.egressGuard
 
 	// Admin API endpoints
 	apiV1 := router.Group("/api/v1")
@@ -519,7 +522,7 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 			// auth-required so internal state/source names aren't exposed anonymously.
 			// Namespaced under /suite to avoid the /modules/:version wildcard.
 			authenticatedGroup.GET("/suite/modules/:namespace/:name/:system/consumers",
-				moduleConsumersHandler(func() *suite.DiscoveryClient { return suiteClient }, cfg))
+				moduleConsumersHandler(func() *suite.DiscoveryClient { return suiteClient }, cfg, egressGuard))
 
 			// Stats endpoints (require auth)
 			authenticatedGroup.GET("/admin/stats/dashboard", statsHandlers.GetDashboardStats)
@@ -627,6 +630,7 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 				middleware.RequireScope(auth.ScopeScanningRead),
 				admin.GetScanByIDHandler(db))
 			installHandler := admin.NewScanningInstallHandler(&cfg.Scanning, nil, scannerUpdateJob, sbvRepo, scannerApprovalRepo)
+			installHandler.SetEgressGuard(egressGuard)
 			authenticatedGroup.POST("/admin/scanning/install",
 				middleware.RequireScope(auth.ScopeAdmin),
 				installHandler.Install())
@@ -635,7 +639,7 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 				admin.TriggerScannerCheckHandler(scannerUpdateJob))
 			authenticatedGroup.GET("/admin/scanning/latest",
 				middleware.RequireScope(auth.ScopeScanningRead),
-				admin.GetScannerLatestHandler(&cfg.Scanning))
+				admin.GetScannerLatestHandler(&cfg.Scanning, egressGuard))
 			scanningAutoUpdateHandler := admin.NewScanningAutoUpdateHandler(&cfg.Scanning, oidcConfigRepo, scannerUpdateJob)
 			authenticatedGroup.PUT("/admin/scanning/auto-update",
 				middleware.RequireScope(auth.ScopeAdmin),
@@ -758,8 +762,14 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 					middleware.RequireOrgScopeForPathOrg(auth.ScopeOrganizationsRead, orgRepo),
 					orgHandlers.ListMembersHandler())
 
-				// Create/update/delete require organizations:write
-				orgsGroup.POST("", middleware.RequireScope(auth.ScopeOrganizationsWrite), orgHandlers.CreateOrganizationHandler())
+				// Creating a new top-level organization is a platform-tier
+				// provisioning action, gated on its own organizations:create
+				// scope instead of organizations:write (issue #648): holding
+				// organizations:write via membership in one org must not by
+				// itself grant the ability to provision brand new orgs.
+				orgsGroup.POST("", middleware.RequireScope(auth.ScopeOrganizationsCreate), orgHandlers.CreateOrganizationHandler())
+
+				// Update/delete require organizations:write
 				orgsGroup.PUT("/:id",
 					middleware.RequireScope(auth.ScopeOrganizationsWrite),
 					middleware.RequireOrgScopeForPathOrg(auth.ScopeOrganizationsWrite, orgRepo),

@@ -24,6 +24,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/scm"
 )
 
@@ -59,12 +60,24 @@ type Minter struct {
 	githubAPIBaseURL  string
 }
 
-// NewMinter builds a Minter using the production identity-provider endpoints.
+// NewMinter builds a Minter using the production identity-provider endpoints
+// and the strict (no allow-list) egress policy. Equivalent to
+// NewMinterWithGuard(cipher, store, nil).
 func NewMinter(cipher *crypto.TokenCipher, store ProviderTokenStore) *Minter {
+	return NewMinterWithGuard(cipher, store, nil)
+}
+
+// NewMinterWithGuard is NewMinter with an egress guard, for parity with the
+// other SCM outbound paths (scm.HTTPClient): the token-exchange requests carry
+// a credential (the RS256 app JWT or a client assertion), so they are routed
+// through the shared httpsafe resolve-and-pin client rather than a bare
+// http.Client, even though entraLoginBaseURL/githubAPIBaseURL are currently
+// fixed to public hosts (issue #676).
+func NewMinterWithGuard(cipher *crypto.TokenCipher, store ProviderTokenStore, egress *httpsafe.Guard) *Minter {
 	return &Minter{
 		cipher:            cipher,
 		store:             store,
-		httpClient:        &http.Client{Timeout: 30 * time.Second},
+		httpClient:        httpsafe.NewClient(30*time.Second, egress),
 		now:               time.Now,
 		refreshMargin:     tokenRefreshMargin,
 		entraLoginBaseURL: "https://login.microsoftonline.com",

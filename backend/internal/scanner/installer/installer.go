@@ -23,16 +23,18 @@ import (
 	"time"
 
 	goversion "github.com/hashicorp/go-version"
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/mirror"
 	"github.com/terraform-registry/terraform-registry/internal/validation"
 )
 
 // Size caps to prevent zip-bomb / decompression-bomb DoS.
 const (
-	maxArchiveSize   = 500 << 20 // 500 MB
-	maxFileSize      = 200 << 20 // 200 MB per extracted file
-	maxChecksumsSize = 8 << 10   // 8 KB
-	maxSigBundleSize = 1 << 20   // 1 MB; a sigstore bundle (cert chain + inclusion proof) is a few KB-15KB
+	maxArchiveSize     = 500 << 20 // 500 MB
+	maxFileSize        = 200 << 20 // 200 MB per extracted file
+	maxChecksumsSize   = 8 << 10   // 8 KB
+	maxSigBundleSize   = 1 << 20   // 1 MB; a sigstore bundle (cert chain + inclusion proof) is a few KB-15KB
+	maxReleaseJSONSize = 1 << 20   // 1 MB; a GitHub release with a large asset list is well under this
 )
 
 // InstallConfig holds parameters for an Install call.
@@ -41,8 +43,16 @@ type InstallConfig struct {
 	InstallDir string
 	// Timeout caps the entire operation; default 5 minutes if zero.
 	Timeout time.Duration
-	// HTTPClient is optional; default is http.Client{Timeout: 5m}.
+	// HTTPClient is optional; default is an httpsafe-guarded client (see
+	// EgressGuard) with a Timeout of 5m.
 	HTTPClient *http.Client
+	// EgressGuard is used to build the default HTTPClient when one isn't
+	// supplied: the GitHub API and browser_download_url asset URLs this package
+	// dials are upstream (GitHub)-supplied, so the default client is routed
+	// through the shared httpsafe resolve-and-pin egress guard rather than a
+	// bare http.Client (issue #676's defect class). A nil guard is the strict
+	// default policy. Ignored when HTTPClient is set explicitly.
+	EgressGuard *httpsafe.Guard
 	// SignatureMode controls the optional cryptographic signature check (on top of
 	// the mandatory SHA256 checksum): "off" skips it, "warn" verifies and records
 	// the result but never blocks, "enforce" fails the install on a definitive
@@ -106,7 +116,7 @@ func Install(ctx context.Context, cfg InstallConfig, tool, pinnedVersion string)
 	}
 	client := cfg.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: cfg.Timeout}
+		client = httpsafe.NewClient(cfg.Timeout, cfg.EgressGuard)
 	}
 
 	// 1. Verify install dir is writable.
@@ -421,7 +431,7 @@ func CheckLatest(ctx context.Context, cfg InstallConfig, tool string) (*LatestIn
 	}
 	client := cfg.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: cfg.Timeout}
+		client = httpsafe.NewClient(cfg.Timeout, cfg.EgressGuard)
 	}
 
 	spec, ok := Lookup(tool, runtime.GOOS, runtime.GOARCH)
@@ -469,7 +479,7 @@ func DownloadVerified(ctx context.Context, cfg InstallConfig, tool, pinnedVersio
 	}
 	client := cfg.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: cfg.Timeout}
+		client = httpsafe.NewClient(cfg.Timeout, cfg.EgressGuard)
 	}
 
 	if err := ensureWritableDir(cfg.InstallDir); err != nil {
@@ -562,8 +572,12 @@ func resolveRelease(ctx context.Context, client *http.Client, spec AssetSpec, pi
 		return nil, fmt.Errorf("GitHub API returned %d: %s", resp.StatusCode, string(body))
 	}
 
+	// The non-200 error body above is capped at 1024 bytes, but this success-path
+	// decode was unbounded (the exact "capped-error/uncapped-success" pattern
+	// fixed in cve/osv/client.go for the same #662 defect class): an oversized
+	// or slow-trickle 200 response would otherwise be fully buffered in memory.
 	var release ghRelease
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxReleaseJSONSize)).Decode(&release); err != nil {
 		return nil, fmt.Errorf("decode release JSON: %w", err)
 	}
 	return &release, nil
@@ -764,7 +778,9 @@ func randHex(n int) string {
 
 // Handle is a shared helper for both setup and admin install handlers.
 // It runs the install logic and returns a JSON-friendly response map.
-func Handle(ctx context.Context, installDir string, install InstallFunc, tool, version string) (success bool, result *Result, errMsg string) {
+// guard is threaded into the InstallConfig so the default HTTP client honours
+// the operator-configured egress allow-list; nil is the strict default policy.
+func Handle(ctx context.Context, installDir string, guard *httpsafe.Guard, install InstallFunc, tool, version string) (success bool, result *Result, errMsg string) {
 	if !Supports(tool) {
 		return false, nil, fmt.Sprintf(
 			"auto-install is not available for %q — install it manually and enter the binary path below. Supported: %v",
@@ -781,8 +797,9 @@ func Handle(ctx context.Context, installDir string, install InstallFunc, tool, v
 	}
 
 	r, err := install(ctx, InstallConfig{
-		InstallDir: installDir,
-		Timeout:    5 * time.Minute,
+		InstallDir:  installDir,
+		Timeout:     5 * time.Minute,
+		EgressGuard: guard,
 	}, tool, version)
 	if err != nil {
 		return false, nil, err.Error()

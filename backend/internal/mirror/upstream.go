@@ -44,6 +44,14 @@ const maxUpstreamResponseBytes = 10 << 20 // 10 MB
 // error messages, matching the cap already used by DownloadFileStream's error path.
 const maxUpstreamErrorBodyBytes = 4096
 
+// maxDownloadFileBytes bounds DownloadFile/downloadFileOnce, used to fetch the
+// SHASUMS and detached-signature files (small text, not the provider binaries
+// themselves — those go through the streaming DownloadFileStream instead).
+// Without this cap the unbounded io.ReadAll would fully buffer an oversized or
+// slow-trickle response from the httpsafe-guarded but still upstream-controlled
+// server in memory (CWE-400), the same defect class fixed elsewhere in this file.
+const maxDownloadFileBytes = 10 << 20 // 10 MB
+
 // NewUpstreamRegistry creates a new upstream registry client with the strict
 // egress policy (no allow-list). Both clients are SSRF-safe: the configured
 // base URL and every upstream-returned URL (download_url, shasums_url,
@@ -296,7 +304,7 @@ func (u *UpstreamRegistry) downloadFileOnce(ctx context.Context, fileURL string)
 		return nil, fmt.Errorf("download failed with status %d", resp.StatusCode)
 	}
 
-	data, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxDownloadFileBytes))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read download content: %w", err)
 	}
@@ -441,13 +449,13 @@ func (u *UpstreamRegistry) resolveProviderVersionID(ctx context.Context, namespa
 		return "", fmt.Errorf("failed to fetch v2 provider: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBodyBytes))
 		resp.Body.Close()
 		return "", fmt.Errorf("v2 provider lookup failed with status %d: %s", resp.StatusCode, string(body))
 	}
 	var provResp providerV2Response
-	decodeErr := json.NewDecoder(resp.Body).Decode(&provResp)
-	resp.Body.Close()
+	decodeErr := json.NewDecoder(io.LimitReader(resp.Body, maxUpstreamResponseBytes)).Decode(&provResp)
+	_ = resp.Body.Close()
 	if decodeErr != nil {
 		return "", fmt.Errorf("failed to decode v2 provider response: %w", decodeErr)
 	}
@@ -476,13 +484,13 @@ func (u *UpstreamRegistry) resolveProviderVersionID(ctx context.Context, namespa
 			return "", fmt.Errorf("failed to fetch v2 provider-versions (page %d): %w", versionPage, err)
 		}
 		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBodyBytes))
 			resp.Body.Close()
 			return "", fmt.Errorf("v2 provider-versions request failed with status %d: %s", resp.StatusCode, string(body))
 		}
 		var versionsResp providerVersionListV2
-		decodeErr = json.NewDecoder(resp.Body).Decode(&versionsResp)
-		resp.Body.Close()
+		decodeErr = json.NewDecoder(io.LimitReader(resp.Body, maxUpstreamResponseBytes)).Decode(&versionsResp)
+		_ = resp.Body.Close()
 		if decodeErr != nil {
 			return "", fmt.Errorf("failed to decode v2 provider-versions response (page %d): %w", versionPage, decodeErr)
 		}
@@ -535,14 +543,14 @@ func (u *UpstreamRegistry) GetProviderDocIndexByVersion(ctx context.Context, nam
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBodyBytes))
 			resp.Body.Close()
 			return nil, fmt.Errorf("v2 provider doc index request failed with status %d: %s", resp.StatusCode, string(body))
 		}
 
 		var page providerDocListV2
-		decodeErr := json.NewDecoder(resp.Body).Decode(&page)
-		resp.Body.Close()
+		decodeErr := json.NewDecoder(io.LimitReader(resp.Body, maxUpstreamResponseBytes)).Decode(&page)
+		_ = resp.Body.Close()
 		if decodeErr != nil {
 			return nil, fmt.Errorf("failed to decode v2 provider doc index response (page %d): %w", pageNum, decodeErr)
 		}
@@ -595,12 +603,12 @@ func (u *UpstreamRegistry) GetProviderDocContent(ctx context.Context, upstreamDo
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBodyBytes))
 		return "", fmt.Errorf("provider doc content request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var v2Resp providerDocContentV2
-	if err := json.NewDecoder(resp.Body).Decode(&v2Resp); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxUpstreamResponseBytes)).Decode(&v2Resp); err != nil {
 		return "", fmt.Errorf("failed to decode v2 provider doc response: %w", err)
 	}
 

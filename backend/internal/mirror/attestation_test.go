@@ -337,6 +337,35 @@ func TestNewGitHubAttestationVerifier_InvalidURL(t *testing.T) {
 	}
 }
 
+// TestNewGitHubAttestationVerifierWithGuard_RejectsLoopbackTarget exercises
+// the egress guard wired into NewGitHubAttestationVerifier/WithGuard (sibling
+// of issue #676's Minter fix): APIBaseURL defaults to the fixed public
+// api.github.com host, but the client itself must still fail closed against
+// an internal/loopback target rather than silently dialing it, so a future
+// misconfiguration (or test regression) can't turn this into a live SSRF
+// primitive. A nil guard is the strict default policy, and port 1 is closed,
+// so this fails before any TCP connect is attempted.
+func TestNewGitHubAttestationVerifierWithGuard_RejectsLoopbackTarget(t *testing.T) {
+	vs, _ := ca.NewVirtualSigstore()
+	v, err := NewGitHubAttestationVerifierWithGuard("https://github.com/"+testOwner+"/"+testRepo, nil) // nil guard == strict default
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	v.APIBaseURL = "http://127.0.0.1:1" // nothing listens here
+	v.trustedMaterial = func() (root.TrustedMaterial, error) { return vs, nil }
+
+	err = v.VerifyBinaryAttestation(context.Background(), validDigest)
+	if !errors.Is(err, ErrAttestationUnavailable) {
+		t.Fatalf("expected ErrAttestationUnavailable, got %v", err)
+	}
+	// Assert on the guard's own wording, not just "any error": port 1 is
+	// closed, so a bare connection-refused error would also satisfy this
+	// without proving the egress guard is what blocked the request.
+	if !strings.Contains(err.Error(), "blocked") {
+		t.Errorf("error = %q, want it to mention the egress guard blocking the target", err.Error())
+	}
+}
+
 func TestVerifyBinaryAttestation_TrustRootUnavailable(t *testing.T) {
 	called := false
 	v := &GitHubAttestationVerifier{

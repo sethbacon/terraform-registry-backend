@@ -20,6 +20,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 )
 
 // ---------------------------------------------------------------------------
@@ -183,6 +185,82 @@ func mustCompile(t *testing.T, pattern string) *regexp.Regexp {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+// newDefaultClientReleaseServer starts a plain (non-TLS) httptest server
+// serving a minimal GitHub release for "trivy" and returns a patched
+// AssetSpec, for tests of the cfg.HTTPClient == nil fallback (issue #676):
+// unlike setupTestServer/setupTestServerFull, callers here must NOT set
+// InstallConfig.HTTPClient, so the default httpsafe.NewClient(cfg.Timeout,
+// cfg.EgressGuard) path in Install/CheckLatest/DownloadVerified actually runs.
+// Plain HTTP avoids the self-signed-cert problem that httpsafe.NewClient's
+// transport (which does not consult http.DefaultTransport) would otherwise hit.
+func newDefaultClientReleaseServer(t *testing.T) (*httptest.Server, AssetSpec) {
+	t.Helper()
+	mux := http.NewServeMux()
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	archiveName := "trivy_1.2.3_Linux-64bit.tar.gz"
+	checksumsName := "trivy_1.2.3_checksums.txt"
+	release := ghRelease{TagName: "v1.2.3", Assets: []ghAsset{
+		{Name: archiveName, BrowserDownloadURL: server.URL + "/assets/" + archiveName},
+		{Name: checksumsName, BrowserDownloadURL: server.URL + "/assets/" + checksumsName},
+	}}
+	mux.HandleFunc("/releases/latest", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(release)
+	})
+
+	spec := AssetSpec{
+		LatestReleaseAPI: server.URL + "/releases/latest",
+		VersionedAPI:     server.URL + "/releases/tags/v%s",
+		AssetPattern:     mustCompile(t, `^`+regexp_escape(archiveName)+`$`),
+		ChecksumsPattern: mustCompile(t, `^`+regexp_escape(checksumsName)+`$`),
+		BinaryInArchive:  "trivy",
+		ArchiveFormat:    "tar.gz",
+	}
+	return server, spec
+}
+
+// TestCheckLatest_DefaultClient_AllowlistedLoopbackSucceeds is the positive
+// counterpart of TestCheckLatest_DefaultClient_StrictPolicyBlocksLoopback: an
+// EgressGuard that allow-lists the test server's loopback address lets the
+// default (cfg.HTTPClient == nil) client reach it (issue #676).
+func TestCheckLatest_DefaultClient_AllowlistedLoopbackSucceeds(t *testing.T) {
+	_, spec := newDefaultClientReleaseServer(t)
+	platform := runtime.GOOS + "/" + runtime.GOARCH
+	origCatalog := Catalog["trivy"]
+	Catalog["trivy"] = map[string]AssetSpec{platform: spec}
+	t.Cleanup(func() { Catalog["trivy"] = origCatalog })
+
+	info, err := CheckLatest(context.Background(), InstallConfig{EgressGuard: httpsafe.MustGuard("127.0.0.1")}, "trivy")
+	if err != nil {
+		t.Fatalf("CheckLatest: %v", err)
+	}
+	if info.LatestVersion != "1.2.3" {
+		t.Errorf("LatestVersion = %q, want 1.2.3", info.LatestVersion)
+	}
+}
+
+// TestCheckLatest_DefaultClient_StrictPolicyBlocksLoopback proves the
+// cfg.HTTPClient == nil fallback in CheckLatest is actually routed through the
+// httpsafe egress guard (issue #676) rather than a bare http.Client: without an
+// allow-listed guard, the strict default policy rejects the loopback target the
+// httptest server binds to.
+func TestCheckLatest_DefaultClient_StrictPolicyBlocksLoopback(t *testing.T) {
+	_, spec := newDefaultClientReleaseServer(t)
+	platform := runtime.GOOS + "/" + runtime.GOARCH
+	origCatalog := Catalog["trivy"]
+	Catalog["trivy"] = map[string]AssetSpec{platform: spec}
+	t.Cleanup(func() { Catalog["trivy"] = origCatalog })
+
+	_, err := CheckLatest(context.Background(), InstallConfig{}, "trivy") // nil HTTPClient, nil EgressGuard
+	if err == nil {
+		t.Fatal("expected error for loopback target under the strict default egress policy, got nil")
+	}
+	if !strings.Contains(err.Error(), "blocked") {
+		t.Errorf("error = %q, want it to mention the egress guard blocking the target", err.Error())
+	}
+}
 
 func TestInstall_Trivy_Latest_Success(t *testing.T) {
 	archiveName := "trivy_0.52.2_Linux-64bit.tar.gz"
@@ -743,7 +821,7 @@ func TestSupportedTools(t *testing.T) {
 }
 
 func TestHandle_UnsupportedTool(t *testing.T) {
-	ok, _, msg := Handle(context.Background(), "/tmp", nil, "snyk", "")
+	ok, _, msg := Handle(context.Background(), "/tmp", nil, nil, "snyk", "")
 	if ok {
 		t.Error("expected failure")
 	}
@@ -753,7 +831,7 @@ func TestHandle_UnsupportedTool(t *testing.T) {
 }
 
 func TestHandle_EmptyInstallDir(t *testing.T) {
-	ok, _, msg := Handle(context.Background(), "", nil, "trivy", "")
+	ok, _, msg := Handle(context.Background(), "", nil, nil, "trivy", "")
 	if ok {
 		t.Error("expected failure")
 	}
@@ -772,7 +850,7 @@ func TestHandle_Success(t *testing.T) {
 		}, nil
 	}
 
-	ok, result, msg := Handle(context.Background(), "/app/scanners", InstallFunc(stub), "trivy", "")
+	ok, result, msg := Handle(context.Background(), "/app/scanners", nil, InstallFunc(stub), "trivy", "")
 	if !ok {
 		t.Fatalf("expected success, got error: %s", msg)
 	}
@@ -786,12 +864,34 @@ func TestHandle_InstallerError(t *testing.T) {
 		return nil, ErrChecksumMismatch
 	}
 
-	ok, _, msg := Handle(context.Background(), "/app/scanners", InstallFunc(stub), "trivy", "")
+	ok, _, msg := Handle(context.Background(), "/app/scanners", nil, InstallFunc(stub), "trivy", "")
 	if ok {
 		t.Error("expected failure")
 	}
 	if !strings.Contains(msg, "checksum") {
 		t.Errorf("message should mention checksum: %s", msg)
+	}
+}
+
+// TestHandle_ThreadsEgressGuard locks in that Handle passes its guard into the
+// InstallConfig it builds, so the setup/admin install handlers (which call
+// Install only through Handle) get the operator-configured egress policy
+// rather than silently falling back to the strict nil-guard default (issue
+// #676's threading requirement).
+func TestHandle_ThreadsEgressGuard(t *testing.T) {
+	g := httpsafe.MustGuard("10.0.0.0/8")
+	var got *httpsafe.Guard
+	stub := func(ctx context.Context, cfg InstallConfig, tool, version string) (*Result, error) {
+		got = cfg.EgressGuard
+		return &Result{BinaryPath: "/app/scanners/trivy", Version: "0.52.2"}, nil
+	}
+
+	ok, _, msg := Handle(context.Background(), "/app/scanners", g, InstallFunc(stub), "trivy", "")
+	if !ok {
+		t.Fatalf("expected success, got error: %s", msg)
+	}
+	if got != g {
+		t.Errorf("InstallConfig.EgressGuard = %v, want the guard passed to Handle", got)
 	}
 }
 
@@ -827,6 +927,43 @@ func TestCheckLatest_ReturnsLatestVersionAndURLs(t *testing.T) {
 	}
 	if info.SignatureSupported {
 		t.Error("SignatureSupported should be false when spec.Signature.Type is unset")
+	}
+}
+
+// TestCheckLatest_OversizedReleaseJSONIsCapped is the regression test for the
+// resolveRelease fix (mirroring the cve/osv/client.go pattern for the same
+// #662 defect class): the success-path decode is wrapped in an io.LimitReader
+// capped at maxReleaseJSONSize, so a well-formed release JSON whose encoded
+// size exceeds that cap is truncated mid-document and fails to decode instead
+// of being buffered unbounded.
+func TestCheckLatest_OversizedReleaseJSONIsCapped(t *testing.T) {
+	mux := http.NewServeMux()
+	server := httptest.NewTLSServer(mux)
+	t.Cleanup(server.Close)
+
+	mux.HandleFunc("/releases/latest", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"tag_name":"v1.2.3","assets":[{"name":"pad","browser_download_url":"`)
+		_, _ = io.WriteString(w, strings.Repeat("x", maxReleaseJSONSize+1024))
+		_, _ = io.WriteString(w, `"}]}`)
+	})
+
+	spec := AssetSpec{
+		LatestReleaseAPI: server.URL + "/releases/latest",
+		VersionedAPI:     server.URL + "/releases/tags/v%s",
+		AssetPattern:     mustCompile(t, `^trivy_[\d.]+_Linux-64bit\.tar\.gz$`),
+		ChecksumsPattern: mustCompile(t, `^trivy_[\d.]+_checksums\.txt$`),
+		BinaryInArchive:  "trivy",
+		ArchiveFormat:    "tar.gz",
+	}
+	platform := runtime.GOOS + "/" + runtime.GOARCH
+	origCatalog := Catalog["trivy"]
+	Catalog["trivy"] = map[string]AssetSpec{platform: spec}
+	t.Cleanup(func() { Catalog["trivy"] = origCatalog })
+
+	_, err := CheckLatest(context.Background(), InstallConfig{HTTPClient: server.Client()}, "trivy")
+	if err == nil {
+		t.Fatal("expected decode error for release JSON exceeding maxReleaseJSONSize, got nil")
 	}
 }
 

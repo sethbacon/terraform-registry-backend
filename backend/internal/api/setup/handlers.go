@@ -25,6 +25,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/jobs"
 	"github.com/terraform-registry/terraform-registry/internal/scanner"
 	"github.com/terraform-registry/terraform-registry/internal/scanner/installer"
@@ -42,6 +43,7 @@ type Handlers struct {
 	authHandlers      *admin.AuthHandlers // to swap OIDC provider at runtime
 	installFunc       installer.InstallFunc
 	scannerJob        *jobs.ModuleScannerJob
+	egressGuard       *httpsafe.Guard
 }
 
 // WithScannerJob attaches the scanner job so that SaveScanningConfig can kick
@@ -49,6 +51,14 @@ type Handlers struct {
 // server restart.
 func (h *Handlers) WithScannerJob(job *jobs.ModuleScannerJob) *Handlers {
 	h.scannerJob = job
+	return h
+}
+
+// WithEgressGuard attaches the operator-configured egress guard so that
+// InstallScanner's installer.Handle call routes its downloads through the
+// shared httpsafe policy (issue #676); nil is the strict default.
+func (h *Handlers) WithEgressGuard(g *httpsafe.Guard) *Handlers {
+	h.egressGuard = g
 	return h
 }
 

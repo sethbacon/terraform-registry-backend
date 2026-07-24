@@ -194,6 +194,27 @@ func TestListVersions_MalformedJSON(t *testing.T) {
 	}
 }
 
+// TestListVersions_OversizedIndexIsCapped is the regression test for the #662
+// sibling in ListVersions' stream decode: resp.Body is wrapped in an
+// io.LimitReader capped at maxTerraformIndexBytes, so a well-formed index.json
+// whose encoded size exceeds that cap is truncated mid-document and fails to
+// decode instead of being buffered unbounded. Without the io.LimitReader wrap
+// this oversized-but-well-formed document would decode successfully and this
+// test would fail.
+func TestListVersions_OversizedIndexIsCapped(t *testing.T) {
+	_, c := newReleasesClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"versions":{"1.0.0":{"version":"1.0.0","shasums":"`)
+		_, _ = io.WriteString(w, strings.Repeat("x", maxTerraformIndexBytes+1024))
+		_, _ = io.WriteString(w, `"}}}`)
+	})
+
+	_, err := c.ListVersions(context.Background())
+	if err == nil {
+		t.Fatal("expected decode error for index.json exceeding maxTerraformIndexBytes, got nil")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // FetchSHASums
 // ---------------------------------------------------------------------------

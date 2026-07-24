@@ -234,7 +234,7 @@ func (c *GitHubReleasesClient) fetchReleasesPage(ctx context.Context, page int) 
 	}
 
 	var releases []gitHubRelease
-	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxUpstreamResponseBytes)).Decode(&releases); err != nil {
 		return nil, fmt.Errorf("failed to decode GitHub releases response: %w", err)
 	}
 	return releases, nil
@@ -520,7 +520,10 @@ func (c *GitHubReleasesClient) fetchReleaseByTag(ctx context.Context, tag string
 	}
 
 	var rel gitHubRelease
-	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
+	// maxUpstreamResponseBytes (defined in upstream.go, shared across this
+	// package's outbound clients) bounds this decode the same way it already
+	// bounds fetchReleasesPage above.
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxUpstreamResponseBytes)).Decode(&rel); err != nil {
 		return gitHubRelease{}, err
 	}
 	return rel, nil

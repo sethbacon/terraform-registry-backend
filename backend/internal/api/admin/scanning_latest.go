@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	goversion "github.com/hashicorp/go-version"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/scanner"
 	"github.com/terraform-registry/terraform-registry/internal/scanner/installer"
 )
@@ -35,7 +36,7 @@ type ScannerLatestResponse struct {
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
 // @Failure      500  {object}  map[string]interface{}  "Failed to resolve upstream release"
 // @Router       /api/v1/admin/scanning/latest [get]
-func GetScannerLatestHandler(cfg *config.ScanningConfig) gin.HandlerFunc {
+func GetScannerLatestHandler(cfg *config.ScanningConfig, egressGuard *httpsafe.Guard) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		tool := c.Query("tool")
 		if tool == "" {
@@ -50,7 +51,7 @@ func GetScannerLatestHandler(cfg *config.ScanningConfig) gin.HandlerFunc {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 		defer cancel()
 
-		latest, err := installer.CheckLatest(ctx, installer.InstallConfig{InstallDir: cfg.InstallDir}, tool)
+		latest, err := installer.CheckLatest(ctx, installer.InstallConfig{InstallDir: cfg.InstallDir, EgressGuard: egressGuard}, tool)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return

@@ -16,8 +16,16 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/scm"
 )
+
+// loopbackGuard allow-lists the loopback addresses httptest.NewServer binds to
+// (127.0.0.1 / ::1) so the positive-path tests below can exercise a real HTTP
+// round trip through the httpsafe-guarded client (issue #676) without the
+// strict default policy rejecting the test server itself as an internal
+// target.
+var loopbackGuard = httpsafe.MustGuard("127.0.0.1", "::1")
 
 // fakeStore is an in-memory ProviderTokenStore for tests.
 type fakeStore struct {
@@ -86,7 +94,7 @@ func TestMintProviderToken_EntraApp(t *testing.T) {
 
 	cipher := testCipher(t)
 	store := &fakeStore{}
-	m := NewMinter(cipher, store)
+	m := NewMinterWithGuard(cipher, store, loopbackGuard)
 	m.entraLoginBaseURL = srv.URL
 
 	secret, _ := cipher.Seal("the-secret")
@@ -126,7 +134,7 @@ func TestMintProviderToken_EntraApp_ErrorStatus(t *testing.T) {
 	defer srv.Close()
 
 	cipher := testCipher(t)
-	m := NewMinter(cipher, &fakeStore{})
+	m := NewMinterWithGuard(cipher, &fakeStore{}, loopbackGuard)
 	m.entraLoginBaseURL = srv.URL
 
 	secret, _ := cipher.Seal("bad")
@@ -139,6 +147,38 @@ func TestMintProviderToken_EntraApp_ErrorStatus(t *testing.T) {
 	}
 	if _, err := m.MintProviderToken(context.Background(), p); err == nil {
 		t.Fatal("expected error on 401 from Entra")
+	}
+}
+
+// TestMintProviderToken_EntraApp_RejectsLoopbackTarget exercises the egress
+// guard wired in NewMinter/NewMinterWithGuard (issue #676): entraLoginBaseURL
+// is hard-coded in production, but the client itself must still fail closed
+// against an internal/loopback target rather than silently dialing it, so a
+// future misconfiguration (or test regression) can't turn this into a live
+// SSRF primitive. A nil guard is the strict default policy, and port 1 is
+// closed, so no listener is needed for this to fail before any TCP connect.
+func TestMintProviderToken_EntraApp_RejectsLoopbackTarget(t *testing.T) {
+	cipher := testCipher(t)
+	m := NewMinter(cipher, &fakeStore{}) // nil guard == strict default
+	m.entraLoginBaseURL = "https://127.0.0.1:1"
+
+	secret, _ := cipher.Seal("s")
+	p := &scm.SCMProvider{
+		ID:                    uuid.New(),
+		AuthMode:              scm.AuthModeEntraApp,
+		TenantID:              strptr("t"),
+		ClientID:              "c",
+		ClientSecretEncrypted: secret,
+	}
+	_, err := m.MintProviderToken(context.Background(), p)
+	if err == nil {
+		t.Fatal("expected error for loopback entraLoginBaseURL target")
+	}
+	// Assert on the guard's own wording, not just "any error": port 1 is
+	// closed, so a bare connection-refused error would also satisfy err != nil
+	// without proving the egress guard is what blocked this.
+	if !strings.Contains(err.Error(), "blocked") {
+		t.Errorf("error = %q, want it to mention the egress guard blocking the target", err.Error())
 	}
 }
 
@@ -164,7 +204,7 @@ func TestMintProviderToken_GitHubApp(t *testing.T) {
 
 	cipher := testCipher(t)
 	store := &fakeStore{}
-	m := NewMinter(cipher, store)
+	m := NewMinterWithGuard(cipher, store, loopbackGuard)
 	m.githubAPIBaseURL = srv.URL
 
 	encKey, _ := cipher.Seal(keyPEM)
@@ -189,6 +229,33 @@ func TestMintProviderToken_GitHubApp(t *testing.T) {
 	}
 	if len(store.upserts) != 1 {
 		t.Errorf("upserts = %d, want 1", len(store.upserts))
+	}
+}
+
+// TestMintProviderToken_GitHubApp_RejectsLoopbackTarget is the GitHub-App
+// counterpart of TestMintProviderToken_EntraApp_RejectsLoopbackTarget: the
+// installation-token exchange must fail closed against a loopback
+// githubAPIBaseURL rather than dialing it (issue #676).
+func TestMintProviderToken_GitHubApp_RejectsLoopbackTarget(t *testing.T) {
+	cipher := testCipher(t)
+	m := NewMinter(cipher, &fakeStore{}) // nil guard == strict default
+	m.githubAPIBaseURL = "https://127.0.0.1:1"
+
+	encKey, _ := cipher.Seal(generateTestKeyPEM(t))
+	p := &scm.SCMProvider{
+		ID:                     uuid.New(),
+		ProviderType:           scm.ProviderGitHub,
+		AuthMode:               scm.AuthModeGitHubApp,
+		GitHubAppID:            strptr("12345"),
+		GitHubInstallationID:   strptr("67890"),
+		EncryptedAppPrivateKey: &encKey,
+	}
+	_, err := m.MintProviderToken(context.Background(), p)
+	if err == nil {
+		t.Fatal("expected error for loopback githubAPIBaseURL target")
+	}
+	if !strings.Contains(err.Error(), "blocked") {
+		t.Errorf("error = %q, want it to mention the egress guard blocking the target", err.Error())
 	}
 }
 
@@ -255,7 +322,7 @@ func TestMintProviderToken_CacheExpiredRemints(t *testing.T) {
 		TokenType:            "Bearer",
 		ExpiresAt:            &past,
 	}}
-	m := NewMinter(cipher, store)
+	m := NewMinterWithGuard(cipher, store, loopbackGuard)
 	m.entraLoginBaseURL = srv.URL
 
 	secret, _ := cipher.Seal("s")

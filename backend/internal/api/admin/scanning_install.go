@@ -12,6 +12,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/jobs"
 	"github.com/terraform-registry/terraform-registry/internal/scanner/installer"
 )
@@ -44,6 +45,13 @@ type ScanningInstallHandler struct {
 	updateJob    *jobs.ScannerUpdateJob
 	sbvRepo      *repositories.ScannerBinaryVersionRepository
 	approvalRepo *repositories.VersionApprovalRepository
+	egressGuard  *httpsafe.Guard
+}
+
+// SetEgressGuard installs the operator-configured egress guard threaded into
+// installer.Handle's InstallConfig (issue #676); nil is the strict default.
+func (h *ScanningInstallHandler) SetEgressGuard(g *httpsafe.Guard) {
+	h.egressGuard = g
 }
 
 // NewScanningInstallHandler constructs a ScanningInstallHandler.
@@ -86,7 +94,7 @@ func (h *ScanningInstallHandler) Install() gin.HandlerFunc {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Minute)
 		defer cancel()
 
-		ok, result, errMsg := installer.Handle(ctx, h.cfg.InstallDir, h.install, input.Tool, input.Version)
+		ok, result, errMsg := installer.Handle(ctx, h.cfg.InstallDir, h.egressGuard, h.install, input.Tool, input.Version)
 		if !ok {
 			if errMsg == "scanning.install_dir is not configured on the server" {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": errMsg})
