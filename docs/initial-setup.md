@@ -100,7 +100,9 @@ Example:
 | Variable | Description |
 | -- | -- |
 | `SETUP_TOKEN_FILE` | Path to write the setup token for automated retrieval (e.g., `/run/secrets/setup-token`) |
-| `ENCRYPTION_KEY` | **Required.** 32-byte key for encrypting sensitive data (OIDC client secrets, storage credentials) |
+| `ENCRYPTION_KEY` | **Required.** 32-byte key for encrypting sensitive data (OIDC client secrets, storage credentials). The server refuses to start if this looks human-typed rather than CSPRNG-generated; see `TFR_ALLOW_LOW_ENTROPY_ENCRYPTION_KEY` below. |
+| `TFR_ALLOW_LOW_ENTROPY_ENCRYPTION_KEY` | Set to `true` to temporarily bypass the low-entropy `ENCRYPTION_KEY` startup check while rotating an existing deployment to a stronger, CSPRNG-generated key (e.g. `openssl rand -hex 16`). Off by default; the server fails closed instead of only warning. |
+| `TFR_ALLOW_FEATURE_SETUP_REARM` | Set to `true` to allow the server to mint a new setup token, scoped only to an optional feature left unconfigured after initial setup (currently: security scanning). Off by default; OIDC/LDAP/storage/admin setup remain permanently disabled regardless of this flag. See [Reconfiguring a pending optional feature](#reconfiguring-a-pending-optional-feature) below. |
 
 ### Token File for Automation
 
@@ -111,6 +113,10 @@ export SETUP_TOKEN_FILE=/tmp/setup-token.txt
 ./terraform-registry-server
 # Token is now in /tmp/setup-token.txt
 ```
+
+### Reconfiguring a pending optional feature
+
+Once initial setup completes, OIDC/LDAP/storage/admin bootstrapping are permanently disabled — there is no setup-token path back into them. Optional features added in a later release (currently: security scanning) can still show up as "pending" if left unconfigured, but the server no longer auto-mints a setup token for that case. If the startup log reports an unconfigured feature, set `TFR_ALLOW_FEATURE_SETUP_REARM=true` and restart once to mint a token scoped only to that feature's own setup routes (e.g. `/api/v1/setup/scanning`), then unset the variable again. All other setup routes remain disabled even while this flag is set.
 
 ## Using the Web Wizard
 
@@ -359,7 +365,7 @@ For registries that were already deployed and configured before the setup wizard
 
 ### "Setup already completed" error
 
-The setup wizard can only be used once. After completion, all configuration must be done through the authenticated admin interface. If you need to reconfigure OIDC, use the standard OIDC configuration in `config.yaml` or redeploy with a fresh database.
+The setup wizard can only be used once. After completion, all configuration must be done through the authenticated admin interface. If you need to reconfigure OIDC, use the standard OIDC configuration in `config.yaml` or redeploy with a fresh database. This applies even if the server logs report a pending optional feature (e.g. scanning) — see [Reconfiguring a pending optional feature](#reconfiguring-a-pending-optional-feature); OIDC/LDAP/storage/admin stay disabled regardless.
 
 ### "Invalid setup token" error
 

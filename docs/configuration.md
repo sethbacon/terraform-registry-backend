@@ -62,6 +62,8 @@ For example, `database.host` in YAML becomes `TFR_DATABASE_HOST` as an env var.
 | `TFR_REDIS_DIAL_TIMEOUT`                             | duration | `5s`                    | No         | Redis connection timeout                                                     |
 | `TFR_JWT_SECRET_FILE`                                | string   | —                       | No         | Path to file containing JWT secret (enables hot-reload)                      |
 | `ENCRYPTION_KEY_PREVIOUS`                            | string   | —                       | No         | Previous encryption key for zero-downtime rotation                           |
+| `TFR_ALLOW_LOW_ENTROPY_ENCRYPTION_KEY`                | bool     | `false`                 | No         | Temporary bridge to bypass the fail-closed low-entropy `ENCRYPTION_KEY` startup check while rotating an existing deployment |
+| `TFR_ALLOW_FEATURE_SETUP_REARM`                      | bool     | `false`                 | No         | Allow minting a setup token scoped to a pending optional feature (e.g. scanning) after initial setup has completed          |
 | `TFR_SECURITY_RATE_LIMITING_ORG_REQUESTS_PER_MINUTE` | int      | `0`                     | No         | Per-org aggregate rate limit (0 = disabled)                                  |
 | `TFR_SECURITY_RATE_LIMITING_ORG_BURST`               | int      | `0`                     | No         | Per-org burst allowance                                                      |
 | `TFR_SCANNING_ENABLED`                               | bool     | `false`                 | No         | Enable module security scanning                                              |

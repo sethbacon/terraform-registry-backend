@@ -61,8 +61,12 @@ func AuditMiddlewareWithShipper(auditRepo *repositories.AuditRepository, shipper
 		orgID, _ := c.Get("organization_id")
 		authMethod, _ := c.Get("auth_method")
 
-		// Create audit log entry
-		action := fmt.Sprintf("%s %s", c.Request.Method, c.Request.URL.Path)
+		// Create audit log entry. Route the path through the same redaction
+		// helper LoggerMiddleware uses (RedactSensitivePath) rather than logging
+		// it verbatim, so a secret-bearing route never depends on which route
+		// group it happens to be mounted under to stay out of the audit trail
+		// (issue #678).
+		action := fmt.Sprintf("%s %s", c.Request.Method, RedactSensitivePath(c.Request.URL.Path))
 		ipAddress := c.ClientIP()
 
 		auditLog := &models.AuditLog{

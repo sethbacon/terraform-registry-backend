@@ -13,6 +13,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/middleware"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 	"github.com/terraform-registry/terraform-registry/internal/telemetry"
 )
@@ -141,7 +142,9 @@ func ServeFileHandler(storageBackend storage.Storage, cfg *config.Config, db *sq
 			} else if strings.HasPrefix(filePath, "modules/") {
 				resourceType = "module"
 			}
-			action := "GET " + c.Request.URL.Path
+			// Route through the same redaction helper AuditMiddleware/LoggerMiddleware
+			// use rather than logging the raw path (issue #678 sibling).
+			action := "GET " + middleware.RedactSensitivePath(c.Request.URL.Path)
 			ip := c.ClientIP()
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

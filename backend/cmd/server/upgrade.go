@@ -10,6 +10,8 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
+
+	"github.com/terraform-registry/terraform-registry/internal/crypto"
 )
 
 // PreflightResult describes the outcome of a preflight check.
@@ -96,13 +98,14 @@ func RunUpgradePreflight(configPath string, verbose bool) int {
 		results = append(results, PreflightResult{"Schema", status, msg})
 	}
 
-	// Check encryption key
-	encKey := os.Getenv("ENCRYPTION_KEY")
-	if encKey == "" {
-		results = append(results, PreflightResult{"Encryption key", "fail", "ENCRYPTION_KEY environment variable not set"})
-	} else {
-		results = append(results, PreflightResult{"Encryption key", "ok", "Present"})
-	}
+	// Check encryption key. The server itself now refuses to start on a
+	// low-entropy key unless TFR_ALLOW_LOW_ENTROPY_ENCRYPTION_KEY is set (issue
+	// #560); surface the same signal here so an upgrade doesn't fail preflight
+	// then fail again, more disruptively, at server startup.
+	results = append(results, encryptionKeyPreflightResult(
+		os.Getenv("ENCRYPTION_KEY"),
+		os.Getenv("TFR_ALLOW_LOW_ENTROPY_ENCRYPTION_KEY") == "true",
+	))
 
 	// Check storage backend
 	storageType := cfg.Storage.Type
@@ -146,6 +149,25 @@ func RunUpgradePreflight(configPath string, verbose bool) int {
 	}
 	fmt.Println("Result: READY TO UPGRADE")
 	return 0
+}
+
+// encryptionKeyPreflightResult evaluates ENCRYPTION_KEY's presence and
+// estimated entropy for the upgrade preflight check (issue #560 consistency
+// with router.go's fail-closed shouldRejectLowEntropyEncryptionKey check).
+// Extracted from RunUpgradePreflight so this branch can be unit tested
+// without requiring a live database connection.
+func encryptionKeyPreflightResult(encKey string, overrideAllowed bool) PreflightResult {
+	if encKey == "" {
+		return PreflightResult{"Encryption key", "fail", "ENCRYPTION_KEY environment variable not set"}
+	}
+	if crypto.IsLikelyLowEntropySecret([]byte(encKey)) {
+		msg := "Present, but has low estimated entropy — the server will refuse to start on the next restart unless TFR_ALLOW_LOW_ENTROPY_ENCRYPTION_KEY=true is set; rotate to a CSPRNG-generated key (e.g. openssl rand -hex 16)"
+		if overrideAllowed {
+			msg = "Present, but has low estimated entropy; TFR_ALLOW_LOW_ENTROPY_ENCRYPTION_KEY=true override is set so the server will still start — rotate to a CSPRNG-generated key (e.g. openssl rand -hex 16) and remove the override"
+		}
+		return PreflightResult{"Encryption key", "warn", msg}
+	}
+	return PreflightResult{"Encryption key", "ok", "Present"}
 }
 
 func printResults(results []PreflightResult, verbose bool) {

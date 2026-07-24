@@ -289,7 +289,12 @@ func serve(cfg *config.Config) error {
 	log.Printf("Database config: host=%s, port=%d, user=%s, password=%s, dbname=%s, sslmode=%s", // #nosec G706 -- logged value is application-internal (config string, integer, or application-constructed path); not raw user-controlled request input
 		cfg.Database.Host, cfg.Database.Port, cfg.Database.User, maskedPassword,
 		cfg.Database.Name, cfg.Database.SSLMode)
-	log.Printf("Full DSN (masked): %s", cfg.Database.GetDSN()) // #nosec G706 -- logged value is application-internal (config string, integer, or application-constructed path); not raw user-controlled request input
+	// NOTE: do not also log cfg.Database.GetDSN() here (issue #651) -- it interpolates
+	// cfg.Database.Password verbatim with zero redaction, so a line like
+	// "Full DSN (masked): host=... password=<real password> ..." would write the live
+	// database credential to stdout/log aggregation on every server start despite the
+	// misleading "(masked)" label. The line above already logs every field with the
+	// password properly redacted.
 
 	// Connect to database
 	database, err := db.Connect(cfg.Database.GetDSN(), cfg.Database.MaxConnections, cfg.Database.MinIdleConnections)
@@ -562,6 +567,21 @@ func handleSetupToken(repo *repositories.OIDCConfigRepository) error {
 		if !hasPending {
 			return nil // Setup fully done, nothing to do
 		}
+		// Do NOT auto-mint a new setup token here by default (issue #649):
+		// SetSetupCompleted clears setup_token_hash, so on every restart with a
+		// pending optional feature (e.g. scanning left unconfigured -- a common,
+		// indefinite production state) this branch used to unconditionally
+		// generate and print a fresh token. SetupTokenMiddleware now scopes what
+		// that token can reach to the pending feature's own routes only, but
+		// minting and logging a privileged token on every restart without
+		// operator awareness is still unsafe. Require an explicit opt-in.
+		if !featureSetupRearmAllowed() {
+			log.Println("Detected an unconfigured feature added after initial setup (e.g. security scanning),")
+			log.Println("but automatic setup-token re-arm is disabled by default. Set")
+			log.Println("TFR_ALLOW_FEATURE_SETUP_REARM=true and restart to mint a token scoped to")
+			log.Println("completing that feature; OIDC/LDAP/storage/admin setup remain permanently disabled.")
+			return nil
+		}
 		log.Println("Detected unconfigured features added after initial setup.")
 	}
 
@@ -641,6 +661,16 @@ func handleSetupToken(repo *repositories.OIDCConfigRepository) error {
 	}
 
 	return nil
+}
+
+// featureSetupRearmAllowed reports whether an operator has explicitly opted in
+// to minting a new setup token for a pending post-setup feature (e.g. security
+// scanning added in a later release) on an install that already completed
+// initial setup. Off by default -- see the pending-feature branch of
+// handleSetupToken for why silently re-arming here on every restart is unsafe
+// (issue #649). Enable with TFR_ALLOW_FEATURE_SETUP_REARM=true.
+func featureSetupRearmAllowed() bool {
+	return os.Getenv("TFR_ALLOW_FEATURE_SETUP_REARM") == "true"
 }
 
 // identityMigrationsEnabled reports whether the shared identity schema migrations

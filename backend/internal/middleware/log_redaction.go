@@ -1,4 +1,4 @@
-package api
+package middleware
 
 import (
 	"net/url"
@@ -23,9 +23,12 @@ var sensitiveQueryParams = map[string]bool{
 	"secret":        true,
 }
 
-// redactSensitiveQuery masks known-sensitive query parameter values before logging.
+// RedactSensitiveQuery masks known-sensitive query parameter values before logging.
 // Malformed query strings are redacted wholesale rather than risk leaking them verbatim.
-func redactSensitiveQuery(rawQuery string) string {
+//
+// Exported so both api.LoggerMiddleware and AuditMiddleware share this one
+// implementation instead of each keeping their own copy (issue #678).
+func RedactSensitiveQuery(rawQuery string) string {
 	if rawQuery == "" {
 		return rawQuery
 	}
@@ -46,11 +49,14 @@ func redactSensitiveQuery(rawQuery string) string {
 	return values.Encode()
 }
 
-// redactSensitivePath masks secret URL segments before logging.
+// RedactSensitivePath masks secret URL segments before logging.
 //
 //	/webhooks/scm/<id>/<secret>  -> /webhooks/scm/<id>/[REDACTED]
 //	/webhooks/approvals/<token>  -> /webhooks/approvals/[REDACTED]
-func redactSensitivePath(p string) string {
+//
+// Exported so both api.LoggerMiddleware and AuditMiddleware share this one
+// implementation instead of each keeping their own copy (issue #678).
+func RedactSensitivePath(p string) string {
 	switch {
 	case strings.HasPrefix(p, "/webhooks/scm/"):
 		parts := strings.Split(p, "/")

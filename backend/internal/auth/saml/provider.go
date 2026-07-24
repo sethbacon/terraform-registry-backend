@@ -151,28 +151,15 @@ func (p *Provider) MakeAuthenticationRequest(relayState string) (*url.URL, strin
 	return redirectURL, authReq.ID, nil
 }
 
-// ParseResponse validates a SAML Response (from the ACS POST) and extracts user info.
-func (p *Provider) ParseResponse(samlResponse string, groupAttr string) (*UserInfo, error) {
-	assertion, err := p.sp.ParseResponse(nil, []string{})
-	// The crewjam/saml library expects the response in an http.Request.
-	// We use samlsp.ParseResponse which is more convenient.
-	// Let's use the lower-level approach with a synthetic request.
-	_ = assertion
-	_ = err
-
-	// Use the direct assertion parsing approach
-	assertionInfo, err := p.parseAssertionFromResponse(samlResponse)
-	if err != nil {
-		return nil, err
-	}
-
-	return assertionInfo, nil
-}
-
-// ValidateResponse validates a SAML response from an HTTP request and returns
-// user info plus replay-relevant assertion metadata. possibleRequestIDs must
-// contain the AuthnRequest ID issued for this login (SP-initiated); when the
-// provider does not allow IdP-initiated SSO, an empty list rejects the response.
+// ValidateResponse is the sole SAML response-parsing entry point (issue #559
+// removed a second, dead ParseResponse(samlResponse, groupAttr string) method
+// that called p.sp.ParseResponse(nil, []string{}) with a hardcoded-empty
+// possibleRequestIDs, silently skipping InResponseTo/replay binding; it had
+// no production or test caller). It validates a SAML response from an HTTP
+// request and returns user info plus replay-relevant assertion metadata.
+// possibleRequestIDs must contain the AuthnRequest ID issued for this login
+// (SP-initiated); when the provider does not allow IdP-initiated SSO, an
+// empty list rejects the response.
 func (p *Provider) ValidateResponse(r *http.Request, possibleRequestIDs []string, groupAttr string) (*UserInfo, *AssertionMeta, error) {
 	assertion, err := p.sp.ParseResponse(r, possibleRequestIDs)
 	if err != nil {
@@ -219,27 +206,6 @@ func extractUserInfo(assertion *saml.Assertion, groupAttr string) *UserInfo {
 	}
 
 	return info
-}
-
-// parseAssertionFromResponse is a helper that processes a base64-encoded SAMLResponse.
-func (p *Provider) parseAssertionFromResponse(samlResponse string) (*UserInfo, error) {
-	// Build a synthetic POST request for crewjam/saml's ParseResponse
-	form := url.Values{}
-	form.Set("SAMLResponse", samlResponse)
-	body := strings.NewReader(form.Encode())
-
-	req, err := http.NewRequest(http.MethodPost, p.sp.AcsURL.String(), body)
-	if err != nil {
-		return nil, fmt.Errorf("saml: failed to build synthetic request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	assertion, err := p.sp.ParseResponse(req, []string{})
-	if err != nil {
-		return nil, fmt.Errorf("saml: failed to validate SAML response: %w", err)
-	}
-
-	return extractUserInfo(assertion, ""), nil
 }
 
 // resolveIdPMetadata fetches or parses IdP metadata from the config.

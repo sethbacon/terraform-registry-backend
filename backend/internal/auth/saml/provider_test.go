@@ -1,6 +1,7 @@
 package saml
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -302,6 +303,27 @@ func TestAllowIDPInitiated_ReflectsConfig(t *testing.T) {
 	}
 	if !build(true).AllowIDPInitiated() {
 		t.Error("AllowIDPInitiated() = false, want true when enabled in config")
+	}
+}
+
+// TestProvider_NoUnboundParseResponsePath guards against reintroducing the
+// dead ParseResponse(samlResponse, groupAttr string) method removed by issue
+// #559: it called p.sp.ParseResponse(nil, []string{}) with a hardcoded-empty
+// possibleRequestIDs, silently skipping the InResponseTo/replay binding that
+// ValidateResponse (the sole real entry point, invoked from the ACS handler)
+// enforces. Checked by reflection on the method name rather than by calling
+// it directly, since a direct call would simply fail to compile once the
+// method is gone -- silently deleting this regression test's value along
+// with it instead of failing loudly if the method is ever reintroduced.
+func TestProvider_NoUnboundParseResponsePath(t *testing.T) {
+	typ := reflect.TypeOf(&Provider{})
+	for i := 0; i < typ.NumMethod(); i++ {
+		if typ.Method(i).Name == "ParseResponse" {
+			t.Fatal("Provider must not expose its own ParseResponse method (issue #559): " +
+				"it bypassed InResponseTo/replay binding by calling the underlying SP's " +
+				"ParseResponse with a hardcoded-empty possibleRequestIDs; callers must go " +
+				"through ValidateResponse, which requires possibleRequestIDs")
+		}
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/middleware"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 	"github.com/terraform-registry/terraform-registry/internal/telemetry"
 	"github.com/terraform-registry/terraform-registry/internal/validation"
@@ -200,7 +201,9 @@ func DownloadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Con
 		// Audit log the download event asynchronously
 		if auditRepo != nil {
 			resourceType := "provider"
-			action := "GET " + c.Request.URL.Path
+			// Route through the same redaction helper AuditMiddleware/LoggerMiddleware
+			// use rather than logging the raw path (issue #678 sibling).
+			action := "GET " + middleware.RedactSensitivePath(c.Request.URL.Path)
 			ip := c.ClientIP()
 			versionIDForAudit := providerVersion.ID
 			var userIDStr *string

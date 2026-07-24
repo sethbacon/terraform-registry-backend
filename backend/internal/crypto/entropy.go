@@ -42,8 +42,12 @@ func EstimateShannonEntropy(data []byte) float64 {
 // IsLikelyLowEntropySecret reports whether data's estimated Shannon entropy falls
 // below MinRecommendedEntropyBitsPerByte, suggesting it was human-typed rather than
 // generated with a CSPRNG (e.g. `openssl rand -hex 16`). This is a heuristic, not a
-// security boundary: it can neither prove nor disprove true randomness, so callers
-// should only use it to emit an operator-facing warning, never to reject a key outright.
+// security boundary: it can neither prove nor disprove true randomness. The threshold
+// above is deliberately conservative to keep false positives on legitimate CSPRNG-
+// generated hex/base64 keys rare, so ENCRYPTION_KEY's call site (see router.go) treats
+// a positive result as fail-closed by default rather than advisory-only (issue #560);
+// callers with a lower tolerance for false positives should still treat it as
+// warning-only.
 func IsLikelyLowEntropySecret(data []byte) bool {
 	return EstimateShannonEntropy(data) < MinRecommendedEntropyBitsPerByte
 }

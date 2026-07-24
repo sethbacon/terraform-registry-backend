@@ -32,7 +32,7 @@ const (
 //
 // Register this middleware as early as possible so all downstream logging includes the ID:
 //
-//	router.Use(gin.Recovery())
+//	router.Use(RecoveryMiddleware())
 //	router.Use(RequestIDMiddleware())
 //	router.Use(MetricsMiddleware())
 //	router.Use(LoggerMiddleware(cfg))
