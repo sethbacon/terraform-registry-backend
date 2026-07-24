@@ -32,6 +32,14 @@ const (
 	// maxExtractBytes caps the total uncompressed size of any single archive entry
 	// during zip→tar.gz conversion to prevent decompression bomb attacks.
 	maxExtractBytes = 500 << 20 // 500 MB
+	// maxArchiveDownloadBytes caps the raw (compressed) zip response read into
+	// memory before conversion. Unlike the other SCM connectors (github/gitlab/
+	// bitbucket), which stream resp.Body straight back to the caller, Azure
+	// DevOps only supports zip and zip.NewReader requires an io.ReaderAt, so the
+	// response must be fully buffered here — but that buffering must still be
+	// size-capped (CWE-400), matching the cap already applied to each extracted
+	// entry below.
+	maxArchiveDownloadBytes = 500 << 20 // 500 MB
 )
 
 // AzureDevOpsConnector implements scm.Connector for Azure DevOps using Microsoft Entra ID OAuth
@@ -515,11 +523,19 @@ func (c *AzureDevOpsConnector) DownloadSourceArchive(ctx context.Context, creds 
 		return nil, scm.WrapRemoteError(resp.StatusCode, fmt.Sprintf("failed to download archive: %s", string(body)), nil)
 	}
 
-	// Read the entire zip response into memory so we can use zip.NewReader (which needs io.ReaderAt).
-	zipData, err := io.ReadAll(resp.Body)
+	// Read the entire zip response into memory so we can use zip.NewReader (which
+	// needs io.ReaderAt). Capped at maxArchiveDownloadBytes to bound memory use
+	// against an oversized or slow-trickle response (CWE-400); +1 lets us detect
+	// and report the overflow with a clear error rather than silently truncating
+	// into a corrupt zip that would otherwise fail with an opaque "not a valid
+	// zip file" error.
+	zipData, err := io.ReadAll(io.LimitReader(resp.Body, maxArchiveDownloadBytes+1))
 	_ = resp.Body.Close()
 	if err != nil {
 		return nil, fmt.Errorf("failed to read zip response: %w", err)
+	}
+	if int64(len(zipData)) > maxArchiveDownloadBytes {
+		return nil, fmt.Errorf("archive exceeds size cap (%d bytes)", maxArchiveDownloadBytes)
 	}
 
 	// Convert zip → tar.gz in memory and return a ReadCloser.

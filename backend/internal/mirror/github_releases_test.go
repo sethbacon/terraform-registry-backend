@@ -547,6 +547,29 @@ func TestGitHubListVersions_Success(t *testing.T) {
 	}
 }
 
+// TestGitHubListVersions_OversizedResponseIsCapped is the regression test for
+// the #662 sibling in fetchReleasesPage's decode: the response is decoded
+// through an io.LimitReader capped at maxUpstreamResponseBytes (shared with
+// mirror/upstream.go), so a well-formed JSON array whose encoded size exceeds
+// that cap is truncated mid-document and fails to decode. Without the
+// io.LimitReader wrap this same oversized document would decode successfully
+// and this test would fail.
+func TestGitHubListVersions_OversizedResponseIsCapped(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `[{"tag_name":"v1.0.0","draft":false,"assets":[{"name":"pad","browser_download_url":"`)
+		_, _ = io.WriteString(w, strings.Repeat("x", maxUpstreamResponseBytes+1024))
+		_, _ = io.WriteString(w, `"}]}]`)
+	}))
+	defer ts.Close()
+
+	client := newTestGitHubClient(ts, "opentofu", "opentofu", "opentofu")
+	_, err := client.ListVersions(context.Background())
+	if err == nil {
+		t.Fatal("expected decode error for releases page exceeding maxUpstreamResponseBytes, got nil")
+	}
+}
+
 func TestGitHubListVersions_SkipDraftReleases(t *testing.T) {
 	draft := sampleReleaseJSON("v1.10.0-alpha1", "opentofu")
 	draft.Draft = true
@@ -696,6 +719,26 @@ func TestGitHubFetchSHASums_NotFound(t *testing.T) {
 	_, _, err := client.FetchSHASums(context.Background(), "1.9.0")
 	if err == nil {
 		t.Fatal("expected error when no SHA256SUMS asset found, got nil")
+	}
+}
+
+// TestFetchReleaseByTag_OversizedResponseIsCapped is the regression test for
+// the #662 sibling in fetchReleaseByTag's decode (see
+// TestGitHubListVersions_OversizedResponseIsCapped for the cap-truncation
+// rationale).
+func TestFetchReleaseByTag_OversizedResponseIsCapped(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"tag_name":"v1.9.0","draft":false,"assets":[{"name":"pad","browser_download_url":"`)
+		_, _ = io.WriteString(w, strings.Repeat("x", maxUpstreamResponseBytes+1024))
+		_, _ = io.WriteString(w, `"}]}`)
+	}))
+	defer ts.Close()
+
+	client := newTestGitHubClient(ts, "opentofu", "opentofu", "opentofu")
+	_, err := client.fetchReleaseByTag(context.Background(), "v1.9.0")
+	if err == nil {
+		t.Fatal("expected decode error for release response exceeding maxUpstreamResponseBytes, got nil")
 	}
 }
 

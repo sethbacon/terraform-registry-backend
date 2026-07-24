@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/scanner/installer"
 )
 
@@ -154,6 +155,34 @@ func TestInstallScanner_Success_LatestVersion(t *testing.T) {
 	}
 	if resp.BinaryPath == "" {
 		t.Error("binary_path empty")
+	}
+}
+
+// TestInstallScanner_ThreadsEgressGuard locks in that the setup wizard's
+// install endpoint passes the operator-configured egress guard through
+// installer.Handle into the InstallConfig the install func receives (issue
+// #676's threading requirement), rather than silently falling back to the
+// strict nil-guard default.
+func TestInstallScanner_ThreadsEgressGuard(t *testing.T) {
+	env := newTestEnv(t)
+	env.h.cfg.Scanning.InstallDir = "/tmp/test"
+	g := httpsafe.MustGuard("10.0.0.0/8")
+	env.h.WithEgressGuard(g)
+
+	var got *httpsafe.Guard
+	env.h.installFunc = func(ctx context.Context, cfg installer.InstallConfig, tool, version string) (*installer.Result, error) {
+		got = cfg.EgressGuard
+		return &installer.Result{BinaryPath: "/app/scanners/trivy", Version: "0.52.2"}, nil
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest(http.MethodPost, "/", jsonBody(map[string]string{"tool": "trivy"}))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	env.h.InstallScanner(c)
+	if got != g {
+		t.Errorf("InstallConfig.EgressGuard = %v, want the guard set via WithEgressGuard", got)
 	}
 }
 

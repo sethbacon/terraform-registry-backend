@@ -6,17 +6,26 @@ import (
 	"net/http/httptest"
 	"regexp"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/scanner/installer"
 )
+
+// scanningLatestLoopbackGuard allow-lists the httptest.Server addresses used
+// throughout this file (127.0.0.1) so tests exercise GetScannerLatestHandler's
+// installer.CheckLatest call (routed through httpsafe.NewClient via
+// installer.InstallConfig.EgressGuard, issue #676) without the strict default
+// egress policy rejecting the test server itself as an internal target.
+var scanningLatestLoopbackGuard = httpsafe.MustGuard("127.0.0.1")
 
 func TestGetScannerLatestHandler_UnsupportedTool(t *testing.T) {
 	cfg := &config.ScanningConfig{Tool: "trivy"}
 	r := gin.New()
-	r.GET("/latest", GetScannerLatestHandler(cfg))
+	r.GET("/latest", GetScannerLatestHandler(cfg, scanningLatestLoopbackGuard))
 
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest(http.MethodGet, "/latest?tool=snyk", nil)
@@ -32,7 +41,7 @@ func TestGetScannerLatestHandler_UpdateAvailable(t *testing.T) {
 	checksumsName := "trivy_0.60.0_checksums.txt"
 
 	mux := http.NewServeMux()
-	server := httptest.NewTLSServer(mux)
+	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
 	type ghAssetJSON struct {
@@ -67,16 +76,9 @@ func TestGetScannerLatestHandler_UpdateAvailable(t *testing.T) {
 	installer.Catalog["trivy"] = map[string]installer.AssetSpec{platform: spec}
 	t.Cleanup(func() { installer.Catalog["trivy"] = origCatalog })
 
-	// GetScannerLatestHandler has no HTTPClient injection point, so it uses
-	// http.DefaultTransport internally; point it at the httptest TLS server's
-	// certificate for the duration of this test.
-	origTransport := http.DefaultTransport
-	http.DefaultTransport = server.Client().Transport
-	t.Cleanup(func() { http.DefaultTransport = origTransport })
-
 	cfg := &config.ScanningConfig{Tool: "trivy", ExpectedVersion: "0.50.0"}
 	r := gin.New()
-	r.GET("/latest", GetScannerLatestHandler(cfg))
+	r.GET("/latest", GetScannerLatestHandler(cfg, scanningLatestLoopbackGuard))
 
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest(http.MethodGet, "/latest", nil)
@@ -103,7 +105,7 @@ func TestGetScannerLatestHandler_UpdateAvailable(t *testing.T) {
 
 func TestGetScannerLatestHandler_CheckLatestError(t *testing.T) {
 	mux := http.NewServeMux()
-	server := httptest.NewTLSServer(mux)
+	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
 	// No handler registered for /releases/latest -> the httptest server
@@ -121,13 +123,9 @@ func TestGetScannerLatestHandler_CheckLatestError(t *testing.T) {
 	installer.Catalog["trivy"] = map[string]installer.AssetSpec{platform: spec}
 	t.Cleanup(func() { installer.Catalog["trivy"] = origCatalog })
 
-	origTransport := http.DefaultTransport
-	http.DefaultTransport = server.Client().Transport
-	t.Cleanup(func() { http.DefaultTransport = origTransport })
-
 	cfg := &config.ScanningConfig{Tool: "trivy"}
 	r := gin.New()
-	r.GET("/latest", GetScannerLatestHandler(cfg))
+	r.GET("/latest", GetScannerLatestHandler(cfg, scanningLatestLoopbackGuard))
 
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest(http.MethodGet, "/latest", nil)
@@ -138,12 +136,56 @@ func TestGetScannerLatestHandler_CheckLatestError(t *testing.T) {
 	}
 }
 
+// TestGetScannerLatestHandler_StrictGuardRejectsLoopback is the negative
+// counterpart to TestGetScannerLatestHandler_CheckLatestError: it proves the
+// EgressGuard plumbed into installer.InstallConfig (issue #676) actually
+// blocks a loopback target under the strict default policy (nil guard),
+// rather than the handler silently reaching it. LatestReleaseAPI itself is
+// server-config-controlled in production, but the point of routing through
+// httpsafe is defense-in-depth against exactly this class of target.
+func TestGetScannerLatestHandler_StrictGuardRejectsLoopback(t *testing.T) {
+	mux := http.NewServeMux()
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	mux.HandleFunc("/releases/latest", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"tag_name": "v0.60.0"})
+	})
+
+	spec := installer.AssetSpec{
+		LatestReleaseAPI: server.URL + "/releases/latest",
+		VersionedAPI:     server.URL + "/releases/tags/v%s",
+		AssetPattern:     regexp.MustCompile(`^trivy_[\d.]+_Linux-64bit\.tar\.gz$`),
+		ChecksumsPattern: regexp.MustCompile(`^trivy_[\d.]+_checksums\.txt$`),
+		BinaryInArchive:  "trivy",
+		ArchiveFormat:    "tar.gz",
+	}
+	platform := runtime.GOOS + "/" + runtime.GOARCH
+	origCatalog := installer.Catalog["trivy"]
+	installer.Catalog["trivy"] = map[string]installer.AssetSpec{platform: spec}
+	t.Cleanup(func() { installer.Catalog["trivy"] = origCatalog })
+
+	cfg := &config.ScanningConfig{Tool: "trivy"}
+	r := gin.New()
+	r.GET("/latest", GetScannerLatestHandler(cfg, nil)) // nil guard == strict default
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/latest", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (loopback target blocked), body = %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "blocked") {
+		t.Errorf("body = %s, want it to mention the egress guard blocking the target", w.Body.String())
+	}
+}
+
 func TestGetScannerLatestHandler_NoCurrentVersion(t *testing.T) {
 	archiveName := "trivy_0.60.0_Linux-64bit.tar.gz"
 	checksumsName := "trivy_0.60.0_checksums.txt"
 
 	mux := http.NewServeMux()
-	server := httptest.NewTLSServer(mux)
+	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
 	type ghAssetJSON struct {
@@ -177,16 +219,12 @@ func TestGetScannerLatestHandler_NoCurrentVersion(t *testing.T) {
 	installer.Catalog["trivy"] = map[string]installer.AssetSpec{platform: spec}
 	t.Cleanup(func() { installer.Catalog["trivy"] = origCatalog })
 
-	origTransport := http.DefaultTransport
-	http.DefaultTransport = server.Client().Transport
-	t.Cleanup(func() { http.DefaultTransport = origTransport })
-
 	// Enabled=false so the handler never attempts to resolve a live scanner
 	// binary/version, and ExpectedVersion is empty -> currentVersion stays ""
 	// -> UpdateAvailable is unconditionally true.
 	cfg := &config.ScanningConfig{Tool: "trivy", Enabled: false}
 	r := gin.New()
-	r.GET("/latest", GetScannerLatestHandler(cfg))
+	r.GET("/latest", GetScannerLatestHandler(cfg, scanningLatestLoopbackGuard))
 
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest(http.MethodGet, "/latest", nil)

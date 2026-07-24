@@ -13,6 +13,7 @@ import (
 
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 )
 
 // newTestScannerUpdateJob builds a ScannerUpdateJob with only scanCfg populated,
@@ -29,6 +30,22 @@ func newTestScannerUpdateJob(scanCfg *config.ScanningConfig) *ScannerUpdateJob {
 		nil, // check (defaults to installer.CheckLatest, unused here)
 		nil, // download (defaults to installer.DownloadVerified, unused here)
 	)
+}
+
+// TestScannerUpdateJob_SetEgressGuard locks in that SetEgressGuard (issue #676)
+// actually populates the field runCheck threads into every
+// installer.InstallConfig it builds; runCheck itself needs a live Postgres
+// (sbvRepo) so isn't exercised here — see the file doc comment.
+func TestScannerUpdateJob_SetEgressGuard(t *testing.T) {
+	j := newTestScannerUpdateJob(&config.ScanningConfig{})
+	if j.egressGuard != nil {
+		t.Fatalf("egressGuard = %v, want nil before SetEgressGuard", j.egressGuard)
+	}
+	g := httpsafe.MustGuard("10.0.0.0/8")
+	j.SetEgressGuard(g)
+	if j.egressGuard != g {
+		t.Error("SetEgressGuard did not set the egressGuard field")
+	}
 }
 
 func TestSupersededDirsToRemove(t *testing.T) {
