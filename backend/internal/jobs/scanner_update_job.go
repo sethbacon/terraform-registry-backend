@@ -23,6 +23,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/mirror"
 	"github.com/terraform-registry/terraform-registry/internal/notify"
 	"github.com/terraform-registry/terraform-registry/internal/scanner/installer"
@@ -50,6 +51,12 @@ type ScannerUpdateJob struct {
 	manualCh chan struct{}
 	mu       sync.Mutex
 	started  bool
+	// egressGuard is threaded into every installer.InstallConfig this job builds
+	// so the installer's default HTTP client (GitHub API + browser_download_url
+	// asset fetches) is routed through the shared httpsafe resolve-and-pin guard
+	// rather than a bare http.Client (issue #676's defect class). Set via
+	// SetEgressGuard; nil is the strict default policy.
+	egressGuard *httpsafe.Guard
 }
 
 // NewScannerUpdateJob constructs a ScannerUpdateJob. check and download default to
@@ -96,6 +103,12 @@ func (j *ScannerUpdateJob) Name() string { return "scanner-update" }
 // Teams/email), in addition to the direct recipients email. Call before Start.
 func (j *ScannerUpdateJob) SetNotifier(n *notify.Notifier) {
 	j.notifier = n
+}
+
+// SetEgressGuard wires the shared egress guard into every installer.InstallConfig
+// this job builds (issue #676). Call before Start.
+func (j *ScannerUpdateJob) SetEgressGuard(g *httpsafe.Guard) {
+	j.egressGuard = g
 }
 
 // Start begins the background update-check loop. It runs an initial check (plus
@@ -190,7 +203,7 @@ func (j *ScannerUpdateJob) runCheck(ctx context.Context) {
 		return
 	}
 
-	latest, err := j.check(ctx, installer.InstallConfig{InstallDir: j.scanCfg.InstallDir}, tool)
+	latest, err := j.check(ctx, installer.InstallConfig{InstallDir: j.scanCfg.InstallDir, EgressGuard: j.egressGuard}, tool)
 	if err != nil {
 		log.Printf("[scanner-update] failed to check latest version for %s: %v", tool, err)
 		return
@@ -210,7 +223,7 @@ func (j *ScannerUpdateJob) runCheck(ctx context.Context) {
 		return
 	}
 
-	res, err := j.download(ctx, installer.InstallConfig{InstallDir: j.scanCfg.InstallDir, SignatureMode: j.scanCfg.SignatureVerification}, tool, latest.LatestVersion)
+	res, err := j.download(ctx, installer.InstallConfig{InstallDir: j.scanCfg.InstallDir, SignatureMode: j.scanCfg.SignatureVerification, EgressGuard: j.egressGuard}, tool, latest.LatestVersion)
 	if err != nil {
 		log.Printf("[scanner-update] failed to download %s %s: %v", tool, latest.LatestVersion, err)
 		failed := &models.ScannerBinaryVersion{

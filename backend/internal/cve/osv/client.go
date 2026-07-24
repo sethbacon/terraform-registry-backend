@@ -29,6 +29,15 @@ const (
 	requestsPerSec  = 60
 )
 
+// maxOSVResponseBytes bounds the 200-response body read by QuerySingle/doBatch.
+// Every other outbound decode in this codebase (mirror/upstream.go,
+// mirror/github_releases.go, api/suite.go) wraps resp.Body in io.LimitReader
+// before decoding; these two capped only the non-200 error body (4096 bytes)
+// but decoded a 200 response with a bare, unbounded json.NewDecoder.Decode. A
+// batch of up to batchMaxSize queries can legitimately return many advisories,
+// so the cap is generous relative to the small error-body cap.
+const maxOSVResponseBytes = 20 << 20 // 20 MB
+
 // Client is a rate-limited HTTP client for the OSV.dev API.
 type Client struct {
 	endpoint   string
@@ -164,7 +173,7 @@ func (c *Client) QuerySingle(ctx context.Context, q Query) ([]Advisory, error) {
 	}
 
 	var result QueryResult
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxOSVResponseBytes)).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decode osv response: %w", err)
 	}
 	return result.Vulns, nil
@@ -195,7 +204,7 @@ func (c *Client) doBatch(ctx context.Context, queries []Query) ([]QueryResult, e
 	}
 
 	var br BatchResponse
-	if err := json.NewDecoder(resp.Body).Decode(&br); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxOSVResponseBytes)).Decode(&br); err != nil {
 		return nil, fmt.Errorf("decode osv batch response: %w", err)
 	}
 	return br.Results, nil

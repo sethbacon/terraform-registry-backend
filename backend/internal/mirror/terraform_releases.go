@@ -27,6 +27,12 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 )
 
+// maxTerraformIndexBytes bounds the releases index.json stream decoded by
+// ListVersions. The index is typically ~10 MB (see the package doc comment);
+// this cap is generous relative to that so legitimate growth over time isn't
+// affected, while still bounding an adversarial/oversized upstream response.
+const maxTerraformIndexBytes = 64 << 20 // 64 MB
+
 // HashiCorpReleasesGPGKey is the ASCII-armored public GPG key used by
 // HashiCorp to sign release artifact SHA256SUMS files.
 // Source: https://www.hashicorp.com/security / https://keybase.io/hashicorp
@@ -302,8 +308,14 @@ func (c *TerraformReleasesClient) ListVersions(ctx context.Context) ([]Terraform
 	}
 
 	// Stream-decode: read the top-level {"versions":{...}} manually to avoid
-	// holding the full ~10 MB document in memory before processing.
-	dec := json.NewDecoder(resp.Body)
+	// holding the full ~10 MB document in memory before processing. The stream
+	// itself is still capped at maxTerraformIndexBytes: without it, a
+	// compromised/malicious upstream (or a MITM) could serve an oversized or
+	// slow-trickle index.json and grow the decoded versions slice unboundedly
+	// in memory (CWE-400), the same defect class as the other read/decode
+	// sites in this file (FetchSHASums, FetchSHASumsSignature) and in the
+	// sibling upstream.go/github_releases.go files this batch fixed.
+	dec := json.NewDecoder(io.LimitReader(resp.Body, maxTerraformIndexBytes))
 
 	// Opening '{'
 	if _, err := dec.Token(); err != nil {

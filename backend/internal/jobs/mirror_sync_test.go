@@ -2,13 +2,17 @@ package jobs
 
 import (
 	"context"
+	"io"
+	"strings"
 	"testing"
 	"time"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/jmoiron/sqlx"
+	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/mirror"
+	"github.com/terraform-registry/terraform-registry/internal/storage"
 )
 
 // ---------------------------------------------------------------------------
@@ -480,5 +484,132 @@ func TestMirrorSyncJob_Stop_DirectStop(t *testing.T) {
 		// OK — Start returned after Stop()
 	case <-time.After(3 * time.Second):
 		t.Error("Start did not return after Stop()")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// syncPlatformBinary — upstream-controlled filename validation (issue #677)
+// ---------------------------------------------------------------------------
+
+// fakeUpstreamClient is a minimal mirror.UpstreamRegistryClient stub whose
+// GetProviderPackage/DownloadFileStream responses are set per test, per the
+// dependency-injection contract documented on the interface itself.
+type fakeUpstreamClient struct {
+	pkg    *mirror.ProviderPackageResponse
+	pkgErr error
+	binary string // DownloadFileStream body content
+	dlErr  error
+}
+
+func (f *fakeUpstreamClient) DiscoverServices(_ context.Context) (*mirror.ServiceDiscoveryResponse, error) {
+	return nil, nil
+}
+func (f *fakeUpstreamClient) ListProviderVersions(_ context.Context, _, _ string) ([]mirror.ProviderVersion, error) {
+	return nil, nil
+}
+func (f *fakeUpstreamClient) GetProviderPackage(_ context.Context, _, _, _, _, _ string) (*mirror.ProviderPackageResponse, error) {
+	return f.pkg, f.pkgErr
+}
+func (f *fakeUpstreamClient) DownloadFile(_ context.Context, _ string) ([]byte, error) {
+	return []byte(f.binary), f.dlErr
+}
+func (f *fakeUpstreamClient) DownloadFileStream(_ context.Context, _ string) (*mirror.DownloadStream, error) {
+	if f.dlErr != nil {
+		return nil, f.dlErr
+	}
+	return &mirror.DownloadStream{Body: io.NopCloser(strings.NewReader(f.binary)), ContentLength: int64(len(f.binary))}, nil
+}
+func (f *fakeUpstreamClient) GetProviderDocIndexByVersion(_ context.Context, _, _, _ string) ([]mirror.ProviderDocEntry, error) {
+	return nil, nil
+}
+func (f *fakeUpstreamClient) GetProviderDocContent(_ context.Context, _ string) (string, error) {
+	return "", nil
+}
+
+var _ mirror.UpstreamRegistryClient = (*fakeUpstreamClient)(nil)
+
+// TestSyncPlatformBinary_RejectsUnsafeUpstreamFilename is the negative test for
+// issue #677: an upstream package descriptor reporting a path-traversal
+// filename must be rejected before it reaches the storage key. The job's
+// storageBackend/providerRepo are left nil — the validation error must be
+// returned before either is touched, so a regression here would panic (nil
+// storageBackend.Upload) rather than silently succeed.
+func TestSyncPlatformBinary_RejectsUnsafeUpstreamFilename(t *testing.T) {
+	job := NewMirrorSyncJob(nil, nil, nil, nil, nil, "")
+	upstream := &fakeUpstreamClient{
+		pkg: &mirror.ProviderPackageResponse{
+			Filename:    "../../etc/passwd",
+			DownloadURL: "https://upstream.example.com/download",
+		},
+		binary: "fake-binary-content",
+	}
+	versionRecord := &models.ProviderVersion{ID: "v1"}
+
+	err := job.syncPlatformBinary(context.Background(), upstream, versionRecord,
+		"hashicorp", "aws", "5.0.0", mirror.ProviderPlatform{OS: "linux", Arch: "amd64"}, nil)
+	if err == nil {
+		t.Fatal("expected error for path-traversal filename from upstream package descriptor")
+	}
+	if !strings.Contains(err.Error(), "unsafe filename") {
+		t.Errorf("error = %q, want it to mention the unsafe filename check", err.Error())
+	}
+}
+
+// fakeUploadStorage is a minimal storage.Storage stub recording the path
+// passed to Upload, for the positive-path test below.
+type fakeUploadStorage struct {
+	uploadedPath string
+}
+
+func (s *fakeUploadStorage) Upload(_ context.Context, path string, _ io.Reader, size int64) (*storage.UploadResult, error) {
+	s.uploadedPath = path
+	return &storage.UploadResult{Path: path, Size: size}, nil
+}
+func (s *fakeUploadStorage) Download(_ context.Context, _ string) (io.ReadCloser, error) {
+	return nil, nil
+}
+func (s *fakeUploadStorage) Delete(_ context.Context, _ string) error { return nil }
+func (s *fakeUploadStorage) GetURL(_ context.Context, _ string, _ time.Duration) (string, error) {
+	return "", nil
+}
+func (s *fakeUploadStorage) Exists(_ context.Context, _ string) (bool, error) { return false, nil }
+func (s *fakeUploadStorage) GetMetadata(_ context.Context, _ string) (*storage.FileMetadata, error) {
+	return nil, nil
+}
+
+var _ storage.Storage = (*fakeUploadStorage)(nil)
+
+// TestSyncPlatformBinary_AcceptsWellFormedFilename is the positive-path
+// companion: a normal upstream filename must still pass the new validation
+// check and reach the storage backend, at the same storage path as before
+// this fix.
+func TestSyncPlatformBinary_AcceptsWellFormedFilename(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	mock.ExpectQuery("INSERT INTO provider_platforms").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("platform-1"))
+
+	job := NewMirrorSyncJob(nil, repositories.NewProviderRepository(db), nil, nil, &fakeUploadStorage{}, "local")
+	upstream := &fakeUpstreamClient{
+		pkg: &mirror.ProviderPackageResponse{
+			Filename:    "terraform-provider-aws_5.0.0_linux_amd64.zip",
+			DownloadURL: "https://upstream.example.com/download",
+		},
+		binary: "fake-binary-content",
+	}
+	versionRecord := &models.ProviderVersion{ID: "v1"}
+
+	err = job.syncPlatformBinary(context.Background(), upstream, versionRecord,
+		"hashicorp", "aws", "5.0.0", mirror.ProviderPlatform{OS: "linux", Arch: "amd64"}, nil)
+	if err != nil {
+		t.Fatalf("syncPlatformBinary: %v", err)
+	}
+	gotStorage := job.storageBackend.(*fakeUploadStorage)
+	wantPath := "providers/hashicorp/aws/5.0.0/linux/amd64/terraform-provider-aws_5.0.0_linux_amd64.zip"
+	if gotStorage.uploadedPath != wantPath {
+		t.Errorf("uploaded path = %q, want %q", gotStorage.uploadedPath, wantPath)
 	}
 }

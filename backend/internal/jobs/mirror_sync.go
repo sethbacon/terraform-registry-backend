@@ -1053,6 +1053,14 @@ func (j *MirrorSyncJob) syncPlatformBinary(
 
 	log.Printf("Checksum verified for %s: %s", packageInfo.Filename, checksumHex)
 
+	// packageInfo.Filename comes straight from the upstream registry's package
+	// descriptor, unlike the other segments of this path (which are validated
+	// registry identifiers / platform values); reject path separators and '..'
+	// before it reaches the storage key (issue #677).
+	if err := validation.ValidateStorageFilename(packageInfo.Filename); err != nil {
+		return fmt.Errorf("unsafe filename from upstream package descriptor: %w", err)
+	}
+
 	// Store the binary
 	storagePath := fmt.Sprintf("providers/%s/%s/%s/%s/%s/%s",
 		namespace, providerName, version, platform.OS, platform.Arch, packageInfo.Filename)

@@ -44,7 +44,7 @@ func (h *Handlers) InstallScanner(c *gin.Context) {
 		install = installer.Install
 	}
 
-	ok, result, errMsg := installer.Handle(ctx, h.cfg.Scanning.InstallDir, install, input.Tool, input.Version)
+	ok, result, errMsg := installer.Handle(ctx, h.cfg.Scanning.InstallDir, h.egressGuard, install, input.Tool, input.Version)
 	if !ok {
 		if errMsg == "scanning.install_dir is not configured on the server" {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": errMsg})

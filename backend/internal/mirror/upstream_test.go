@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -298,6 +299,28 @@ func TestDownloadFile_Error(t *testing.T) {
 	}
 }
 
+// TestDownloadFile_OversizedResponseCapped locks in the maxDownloadFileBytes
+// cap added to downloadFileOnce (sibling of the #662 CWE-400 fixes elsewhere
+// in this file): DownloadFile is used for SHASUMS/signature files, which are
+// small text, so an oversized response must not be buffered unbounded.
+func TestDownloadFile_OversizedResponseCapped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, strings.Repeat("x", maxDownloadFileBytes+1024))
+	}))
+	defer srv.Close()
+
+	u := NewUpstreamRegistryWithGuard("http://example.com", loopbackGuard)
+	u.DownloadClient = u.HTTPClient
+
+	data, err := u.DownloadFile(context.Background(), srv.URL+"/SHA256SUMS")
+	if err != nil {
+		t.Fatalf("DownloadFile error: %v", err)
+	}
+	if len(data) != maxDownloadFileBytes {
+		t.Errorf("len(data) = %d, want exactly maxDownloadFileBytes (%d) — response should be truncated at the cap, not buffered unbounded", len(data), maxDownloadFileBytes)
+	}
+}
+
 func TestDownloadFile_ContextCancelled(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -434,6 +457,57 @@ func TestResolveProviderVersionID_Pagination(t *testing.T) {
 	}
 }
 
+// TestResolveProviderVersionID_OversizedProviderLookupIsCapped is the
+// regression test for the #662 sibling in this file's v2 provider lookup: the
+// response is decoded through an io.LimitReader capped at
+// maxUpstreamResponseBytes (10 MB, matching the v1 functions above), so a
+// well-formed JSON document whose encoded size exceeds that cap is truncated
+// mid-document and fails to decode. Without the io.LimitReader wrap this same
+// oversized document would decode successfully and this test would fail.
+func TestResolveProviderVersionID_OversizedProviderLookupIsCapped(t *testing.T) {
+	_, u := newTestRegistry(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/providers/hashicorp/aws":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"data":{"id":"100","pad":"`)
+			_, _ = io.WriteString(w, strings.Repeat("x", maxUpstreamResponseBytes+1024))
+			_, _ = io.WriteString(w, `"}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+
+	_, err := u.resolveProviderVersionID(context.Background(), "hashicorp", "aws", "5.0.0")
+	if err == nil {
+		t.Fatal("expected decode error for provider lookup response exceeding maxUpstreamResponseBytes, got nil")
+	}
+}
+
+// TestResolveProviderVersionID_OversizedVersionsPageIsCapped is the
+// regression test for the #662 sibling in this file's v2 provider-versions
+// page decode (see TestResolveProviderVersionID_OversizedProviderLookupIsCapped
+// for the cap-truncation rationale).
+func TestResolveProviderVersionID_OversizedVersionsPageIsCapped(t *testing.T) {
+	_, u := newTestRegistry(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/providers/hashicorp/aws":
+			json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"id": "100"}})
+		case "/v2/providers/100/provider-versions":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"data":[{"id":"1","attributes":{"version":"pad`)
+			_, _ = io.WriteString(w, strings.Repeat("x", maxUpstreamResponseBytes+1024))
+			_, _ = io.WriteString(w, `"}}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+
+	_, err := u.resolveProviderVersionID(context.Background(), "hashicorp", "aws", "5.0.0")
+	if err == nil {
+		t.Fatal("expected decode error for provider-versions page exceeding maxUpstreamResponseBytes, got nil")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // GetProviderDocIndexByVersion
 // ---------------------------------------------------------------------------
@@ -559,6 +633,35 @@ func TestGetProviderDocIndexByVersion_Empty(t *testing.T) {
 	}
 }
 
+// TestGetProviderDocIndexByVersion_OversizedPageIsCapped is the regression
+// test for the #662 sibling in this function's provider-docs page decode (see
+// TestResolveProviderVersionID_OversizedProviderLookupIsCapped for the
+// cap-truncation rationale).
+func TestGetProviderDocIndexByVersion_OversizedPageIsCapped(t *testing.T) {
+	_, u := newTestRegistry(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/providers/hashicorp/aws":
+			json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"id": "5000"}})
+		case "/v2/providers/5000/provider-versions":
+			json.NewEncoder(w).Encode(makeVersionListPage([]providerVersionEntryV2{
+				makeVersionEntry("999", "5.0.0"),
+			}, nil))
+		case "/v2/provider-docs":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"data":[{"id":"1","attributes":{"title":"pad`)
+			_, _ = io.WriteString(w, strings.Repeat("x", maxUpstreamResponseBytes+1024))
+			_, _ = io.WriteString(w, `"}}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+
+	_, err := u.GetProviderDocIndexByVersion(context.Background(), "hashicorp", "aws", "5.0.0")
+	if err == nil {
+		t.Fatal("expected decode error for provider-docs page exceeding maxUpstreamResponseBytes, got nil")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // GetProviderDocContent
 // ---------------------------------------------------------------------------
@@ -628,6 +731,24 @@ func TestGetProviderDocContent_InvalidJSON(t *testing.T) {
 	_, err := u.GetProviderDocContent(context.Background(), "12345")
 	if err == nil {
 		t.Error("expected error for invalid JSON")
+	}
+}
+
+// TestGetProviderDocContent_OversizedResponseIsCapped is the regression test
+// for the #662 sibling in this function's decode (see
+// TestResolveProviderVersionID_OversizedProviderLookupIsCapped for the
+// cap-truncation rationale).
+func TestGetProviderDocContent_OversizedResponseIsCapped(t *testing.T) {
+	_, u := newTestRegistry(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":{"attributes":{"content":"pad`)
+		_, _ = io.WriteString(w, strings.Repeat("x", maxUpstreamResponseBytes+1024))
+		_, _ = io.WriteString(w, `"}}}`)
+	})
+
+	_, err := u.GetProviderDocContent(context.Background(), "12345")
+	if err == nil {
+		t.Fatal("expected decode error for doc content response exceeding maxUpstreamResponseBytes, got nil")
 	}
 }
 
