@@ -7,6 +7,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.1](https://github.com/sethbacon/terraform-registry-backend/compare/v3.5.0...v3.5.1) (2026-07-24)
+
+
+### Bug Fixes
+
+* gate org creation on organizations:create and grant org_owner instead of admin ([#697](https://github.com/sethbacon/terraform-registry-backend/issues/697)) ([79ff79a](https://github.com/sethbacon/terraform-registry-backend/commit/79ff79a2cf81e6d0d6f1f94056efa44287e3e04c))
+* **security:** route remaining outbound HTTP clients through the httpsafe egress guard ([#699](https://github.com/sethbacon/terraform-registry-backend/issues/699)) ([54414c1](https://github.com/sethbacon/terraform-registry-backend/commit/54414c12b5711b16e74d1465cdfb3d1e85875e5f))
+
+
+### Security
+
+* secret custody and log-hygiene hardening ([#649](https://github.com/sethbacon/terraform-registry-backend/issues/649), [#651](https://github.com/sethbacon/terraform-registry-backend/issues/651), [#654](https://github.com/sethbacon/terraform-registry-backend/issues/654), [#663](https://github.com/sethbacon/terraform-registry-backend/issues/663), [#678](https://github.com/sethbacon/terraform-registry-backend/issues/678), part of [#560](https://github.com/sethbacon/terraform-registry-backend/issues/560), part of [#559](https://github.com/sethbacon/terraform-registry-backend/issues/559)) ([#702](https://github.com/sethbacon/terraform-registry-backend/issues/702)) ([fb5420a](https://github.com/sethbacon/terraform-registry-backend/commit/fb5420a323af12d1ddafbf0e4705029ac432d5df))
+
 ## [3.5.0](https://github.com/sethbacon/terraform-registry-backend/compare/v3.4.1...v3.5.0) (2026-07-22)
 
 
