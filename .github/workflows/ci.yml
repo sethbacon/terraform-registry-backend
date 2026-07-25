@@ -16,8 +16,13 @@ jobs:
   backend-test:
     name: Backend Tests & Quality
     runs-on: ubuntu-latest
+    # contents:read only — this job installs untrusted third-party packages
+    # (golangci-lint via `go install`, swag, npm ci for swagger2openapi) and
+    # must never hold a write-capable token while doing so (#656). Committing
+    # the regenerated swagger docs is handled by the isolated
+    # swagger-docs-sync job below, which runs no package installs at all.
     permissions:
-      contents: write # needed to push auto-generated swagger.json back to the branch
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
@@ -63,16 +68,19 @@ jobs:
       - name: Install docs tooling (swagger2openapi)
         run: npm ci
 
-      - name: Swagger generation (auto-commit if changed)
+      - name: Swagger generation
+        # Regenerates docs/swagger.json and docs/openapi3.json so drift against
+        # the API annotations can be detected. This step only ever needs read
+        # access to the checkout — landing the regenerated docs (if changed)
+        # is handled by the isolated swagger-docs-sync job below, which holds
+        # the only contents:write token and runs no package installs (#656).
         working-directory: backend
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # On tag refs (release builds) skip swagger validation — it was already
-          # checked when the release PR CI ran.  Tags are immutable so we cannot
-          # auto-commit anyway.
+          # On tag refs (release builds) skip swagger regeneration — it was
+          # already checked when the release PR CI ran. Tags are immutable so
+          # we cannot land doc updates against them anyway.
           if [ "${{ github.ref_type }}" = "tag" ]; then
-            echo "Running on tag ${{ github.ref_name }} — skipping swagger auto-commit check"
+            echo "Running on tag ${{ github.ref_name }} — skipping swagger regeneration"
             exit 0
           fi
 
@@ -84,23 +92,16 @@ jobs:
           # (installed via the "Install docs tooling" step above); node_modules lives
           # at the repo root, one level up from this backend/ working directory.
           ../node_modules/.bin/swagger2openapi docs/swagger.json -o docs/openapi3.json -p
-          if ! git diff --exit-code docs/swagger.json docs/openapi3.json; then
-            echo "swagger.json or openapi3.json changed — committing updated docs"
-            git config user.name  "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add docs/swagger.json docs/openapi3.json
-            git commit -m "chore: regenerate swagger.json and openapi3.json [skip ci]"
-            # Push back to the source branch (works for both PRs and direct pushes).
-            # GITHUB_HEAD_REF is set for pull_request events; GITHUB_REF_NAME is used otherwise.
-            TARGET_BRANCH="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
-            # Fetch and rebase before pushing so concurrent commits to the same branch
-            # (e.g. two PR squash-merges landing seconds apart) don't cause a rejected push.
-            git fetch origin "${TARGET_BRANCH}"
-            git rebase "origin/${TARGET_BRANCH}"
-            git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
-          else
-            echo "swagger.json and openapi3.json are up-to-date — nothing to commit"
-          fi
+
+      - name: Upload generated Swagger/OpenAPI docs
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: swagger-docs
+          path: |
+            backend/docs/swagger.json
+            backend/docs/openapi3.json
+          retention-days: 1
 
       - name: Run Go tests (with coverage)
         working-directory: backend
@@ -200,6 +201,84 @@ jobs:
           label: Coverage
           message: ${{ steps.badge.outputs.percent }}%
           color: ${{ steps.badge.outputs.color }}
+
+  swagger-docs-sync:
+    name: Sync generated Swagger/OpenAPI docs
+    runs-on: ubuntu-latest
+    needs: backend-test
+    if: github.ref_type != 'tag'
+    # Isolated from backend-test's build/lint/npm steps so the token needed
+    # to land regenerated docs is never live alongside untrusted third-party
+    # package installs (#656). This job runs no package manager at all — it
+    # only downloads the docs backend-test already generated under a
+    # contents:read token and commits/PRs them.
+    permissions:
+      contents: write
+      pull-requests: write # only used for the bot-PR path below (#657)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+
+      - name: Download generated docs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: swagger-docs
+          path: backend/docs
+
+      - name: Check for changes
+        id: diff
+        run: |
+          if git diff --exit-code backend/docs/swagger.json backend/docs/openapi3.json; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Determine target branch
+        id: target
+        # Same derivation the auto-commit step always used: GITHUB_HEAD_REF is
+        # set for pull_request events (the PR's own head branch);
+        # GITHUB_REF_NAME is used otherwise (push/workflow_dispatch/schedule,
+        # all of which run against main — see the `on:` triggers).
+        run: echo "branch=${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Commit docs directly to PR branch
+        # A non-main target branch is an open PR's own head branch, which
+        # still requires review + status checks before it can reach main, so
+        # a direct push here is safe — it just keeps that PR's docs in sync.
+        if: steps.diff.outputs.changed == 'true' && steps.target.outputs.branch != 'main'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add backend/docs/swagger.json backend/docs/openapi3.json
+          git commit -m "chore: regenerate swagger.json and openapi3.json [skip ci]"
+          TARGET_BRANCH="${{ steps.target.outputs.branch }}"
+          # Fetch and rebase before pushing so concurrent commits to the same branch
+          # (e.g. two PR squash-merges landing seconds apart) don't cause a rejected push.
+          git fetch origin "${TARGET_BRANCH}"
+          git rebase "origin/${TARGET_BRANCH}"
+          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
+
+      - name: Open pull request for doc regeneration onto main
+        # Anything that would otherwise write straight onto the protected
+        # main branch — a direct push, workflow_dispatch, or the scheduled
+        # weekly run — goes through a bot-authored PR instead of a direct
+        # push, so normal review and required status checks always apply
+        # before regenerated docs reach main (#657).
+        if: steps.diff.outputs.changed == 'true' && steps.target.outputs.branch == 'main'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          base: main
+          commit-message: "chore: regenerate swagger.json and openapi3.json"
+          title: "chore: regenerate swagger.json and openapi3.json"
+          body: >
+            Auto-generated by the backend-test CI job — the committed
+            OpenAPI/Swagger docs drifted from the API annotations.
+          branch: ci/swagger-docs-sync
+          add-paths: |
+            backend/docs/swagger.json
+            backend/docs/openapi3.json
+          delete-branch: true
 
   gosec:
     name: Security Scan (gosec)
@@ -336,6 +415,10 @@ jobs:
 
       - name: Validate Docker Compose configs
         working-directory: deployments
+        # REGISTRY_TAG is required (no default — #680); set a placeholder so
+        # config validation doesn't require a real pinned release version.
+        env:
+          REGISTRY_TAG: ci-validate-placeholder
         run: |
           # docker-compose.prod.yml requires .env.production to exist (env_file directive).
           # Touch a stub so compose config doesn't fail on a missing file.

@@ -112,6 +112,14 @@ jobs:
             dist/artifacts.json | while IFS=$'\t' read -r src name; do
               cp "$src" "release/$name"
           done
+          # SBOMs (syft, one per archived binary — see .goreleaser.yml `sboms`)
+          # get the same treatment so raw-binary consumers have the same SBOM
+          # transparency the Docker images already get via anchore/sbom-action
+          # below; otherwise these are silently dropped before publishing (#679).
+          jq -r '.[] | select(.type=="SBOM") | "\(.path)\t\(.name)"' \
+            dist/artifacts.json | while IFS=$'\t' read -r src name; do
+              cp "$src" "release/$name"
+          done
           cp dist/checksums.txt release/
           cp dist/checksums.txt.sigstore.json release/
           cp "dist/deployment-configs-${GITHUB_REF_NAME}.tar.gz" release/

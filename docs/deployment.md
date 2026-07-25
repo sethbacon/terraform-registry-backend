@@ -82,12 +82,17 @@ cd deployments
 cp .env.production.example .env.production
 # Edit .env.production with your secrets and domain
 
+# REGISTRY_TAG has no default — pin it to a specific release so you get the
+# signed/attested image the release pipeline built, not whatever is newest.
+# See "Supply-chain verification" in the release notes for the cosign
+# verify / gh attestation verify commands to run first.
+export REGISTRY_TAG=v<version>   # e.g. v3.5.0
 docker-compose -f docker-compose.prod.yml up -d
 ```
 
 Key differences from dev:
 
-- Backend and frontend use pre-built Docker images (tag configurable via `IMAGE_TAG`)
+- Backend and frontend use pre-built Docker images (tag configurable via `REGISTRY_TAG`, required — see above)
 - All secrets loaded from `.env.production` (do not commit this file)
 - Resource limits set to prevent runaway memory usage
 - `restart: always` ensures services come back after host reboots
@@ -1016,10 +1021,10 @@ If a critical issue is discovered after deployment:
 #### Rollback Docker Compose
 
 ```bash
-# Rollback to previous image tag
-docker compose -f deployments/docker-compose.prod.yml \
-  up -d --no-deps \
-  -e "IMAGE_TAG=v<previous-version>" backend
+# Rollback to previous image tag (REGISTRY_TAG is required — see "Production" above)
+REGISTRY_TAG=v<previous-version> \
+  docker compose -f deployments/docker-compose.prod.yml \
+  up -d --no-deps backend
 ```
 
 #### Rollback Kubernetes
