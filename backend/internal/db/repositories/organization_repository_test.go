@@ -78,6 +78,42 @@ func TestCascadeOrganizationRename_Success(t *testing.T) {
 	}
 }
 
+// Issue #555 (regression): the module/provider namespace cascade must match rows
+// by namespace ALONE, not by organization_id. Artifact rows are stamped with the
+// default organization at publish time, not the namespace's true owner, so an
+// `organization_id = orgID` predicate silently skips a renamed non-default org's
+// artifacts -- leaving them pinned to the old namespace while the organization
+// row and namespace_claims move, orphaning them from the read path. This asserts
+// the modules/providers UPDATEs carry exactly (newName, oldName) and no org_id,
+// while the namespace_claims UPDATE (whose rows DO carry the true org) still
+// scopes by organization_id.
+func TestCascadeOrganizationRename_MatchesArtifactsByNamespaceOnly(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE modules SET namespace").
+		WithArgs("new", "old").
+		WillReturnResult(sqlmock.NewResult(0, 3))
+	mock.ExpectExec("UPDATE providers SET namespace").
+		WithArgs("new", "old").
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec("UPDATE namespace_claims SET namespace").
+		WithArgs("new", "org-1", "old").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	if err := CascadeOrganizationRename(context.Background(), db, "org-1", "old", "new"); err != nil {
+		t.Fatalf("CascadeOrganizationRename: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
 func TestCascadeOrganizationRename_ModulesError(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

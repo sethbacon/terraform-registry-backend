@@ -71,10 +71,12 @@ type CreateAPIKeyResponse struct {
 // ListAPIKeysHandler lists API keys for the authenticated user
 // GET /api/v1/apikeys
 // If organization_id is provided:
-//   - Users with api_keys:manage scope see all keys in that org
-//   - Otherwise, users only see their own keys in that org
+//   - Platform admins, and callers holding api_keys:manage IN THAT ORG, see all keys in the org
+//   - Otherwise, callers only see their own keys in that org
 //
-// If no organization_id: returns only the user's own keys across all orgs
+// If no organization_id:
+//   - Platform admins see all keys across all orgs
+//   - Otherwise, callers see only their own keys across all orgs
 func (h *APIKeyHandlers) ListAPIKeysHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Get user ID from context
@@ -97,27 +99,56 @@ func (h *APIKeyHandlers) ListAPIKeysHandler() gin.HandlerFunc {
 		// Get organization filter if provided
 		orgID := c.Query("organization_id")
 
-		// Check if user has api_keys:manage scope (allows viewing all keys in org)
+		// Platform admins (holders of the platform-wide "admin" wildcard) may view
+		// every key. For everyone else the "see all keys" decision must be derived
+		// from the caller's scopes IN THE TARGET ORGANIZATION, never from their
+		// login-time cross-org scope union (c.Get("scopes")). api_keys:manage is a
+		// per-org role-template scope, so trusting the global union would let a
+		// user_manager in org A enumerate every key's metadata (id, name,
+		// description, key_prefix, scopes, owner, expiry) in an unrelated org B --
+		// the same global-union-as-ceiling defect fixed for role assignment
+		// (role_ceiling.go) and key updates (UpdateAPIKeyHandler) in this batch
+		// (issue #648 class, CWE-266). Likewise, only platform admins may list keys
+		// across every org (ListAll); a per-org api_keys:manage holder must not.
 		scopesVal, _ := c.Get("scopes")
 		scopes, _ := scopesVal.([]string)
-		canManageAll := auth.HasScope(scopes, auth.ScopeAPIKeysManage) || auth.HasScope(scopes, auth.ScopeAdmin)
+		isPlatformAdmin := auth.HasScope(scopes, auth.ScopeAdmin)
+		// The global union is a superset of every per-org scope set, so a caller
+		// who lacks api_keys:manage here cannot hold it in ANY org -- skip the
+		// per-org lookup for them. A caller who DOES hold it globally might hold it
+		// only in a *different* org, so their management right is re-confirmed
+		// against the specific target org below before all keys are disclosed.
+		hasGlobalManage := isPlatformAdmin || auth.HasScope(scopes, auth.ScopeAPIKeysManage)
 
 		var keys []*models.APIKey
 		var err error
 
-		if orgID != "" {
-			if canManageAll {
-				// Users with api_keys:manage can see all keys in the organization
+		switch {
+		case orgID != "":
+			// Re-derive per-org whether the caller may manage all keys in THIS org.
+			canManageOrg := isPlatformAdmin
+			if !canManageOrg && hasGlobalManage {
+				orgScopes, scErr := h.orgRepo.GetUserScopesForOrg(c.Request.Context(), userID, orgID)
+				if scErr != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{
+						"error": "Failed to list API keys",
+					})
+					return
+				}
+				canManageOrg = auth.HasScope(orgScopes, auth.ScopeAPIKeysManage)
+			}
+			if canManageOrg {
+				// Caller manages keys in this org: see all keys in the org.
 				keys, err = h.apiKeyRepo.ListByOrganization(c.Request.Context(), orgID)
 			} else {
-				// Regular users only see their own keys in the organization
+				// Otherwise only the caller's own keys in the org.
 				keys, err = h.apiKeyRepo.ListByUserAndOrganization(c.Request.Context(), userID, orgID)
 			}
-		} else if canManageAll {
-			// Admins can see all keys across all organizations
+		case isPlatformAdmin:
+			// Only platform admins may enumerate keys across all organizations.
 			keys, err = h.apiKeyRepo.ListAll(c.Request.Context())
-		} else {
-			// Regular users only see their own keys across all organizations
+		default:
+			// Regular users only see their own keys across all organizations.
 			keys, err = h.apiKeyRepo.ListByUser(c.Request.Context(), userID)
 		}
 
@@ -566,31 +597,53 @@ func (h *APIKeyHandlers) UpdateAPIKeyHandler() gin.HandlerFunc {
 				return
 			}
 
-			if memberWithRole != nil && memberWithRole.RoleTemplateID != nil {
-				// Validate requested scopes are within user's allowed scopes for this org
-				userHasAdmin := false
-				for _, scope := range memberWithRole.RoleTemplateScopes {
-					if scope == "admin" {
-						userHasAdmin = true
-						break
-					}
+			// Fail closed exactly like CreateAPIKeyHandler: changing a key's scopes
+			// requires a current role in the key's organization. The previous code
+			// only enforced the ceiling when membership+role were present and
+			// otherwise applied req.Scopes verbatim, so a key owner who had been
+			// removed from the org (or had their role template cleared) could widen
+			// an org-bound key to "admin". The key survives removal — RemoveMember
+			// does not delete keys, and API-key auth sets scopes from the stored key
+			// without consulting the revocation watermark — so the owner could
+			// re-authenticate with the key and self-escalate to a platform-wide
+			// admin wildcard (issue #650, CWE-269). A null role template grants zero
+			// scopes and must be treated as such.
+			if memberWithRole == nil {
+				c.JSON(http.StatusForbidden, gin.H{
+					"error": "You are not a member of this organization",
+				})
+				return
+			}
+			if memberWithRole.RoleTemplateID == nil {
+				c.JSON(http.StatusForbidden, gin.H{
+					"error": "No role template assigned for this organization. Contact an administrator to assign a role.",
+				})
+				return
+			}
+
+			// Validate requested scopes are within user's allowed scopes for this org
+			userHasAdmin := false
+			for _, scope := range memberWithRole.RoleTemplateScopes {
+				if scope == "admin" {
+					userHasAdmin = true
+					break
+				}
+			}
+
+			if !userHasAdmin {
+				allowedScopeSet := make(map[string]bool)
+				for _, s := range memberWithRole.RoleTemplateScopes {
+					allowedScopeSet[s] = true
 				}
 
-				if !userHasAdmin {
-					allowedScopeSet := make(map[string]bool)
-					for _, s := range memberWithRole.RoleTemplateScopes {
-						allowedScopeSet[s] = true
-					}
-
-					for _, requestedScope := range req.Scopes {
-						if !allowedScopeSet[requestedScope] {
-							c.JSON(http.StatusForbidden, gin.H{
-								"error":          "Scope '" + requestedScope + "' exceeds your role permissions for this organization",
-								"allowed_scopes": memberWithRole.RoleTemplateScopes,
-								"role_template":  *memberWithRole.RoleTemplateName,
-							})
-							return
-						}
+				for _, requestedScope := range req.Scopes {
+					if !allowedScopeSet[requestedScope] {
+						c.JSON(http.StatusForbidden, gin.H{
+							"error":          "Scope '" + requestedScope + "' exceeds your role permissions for this organization",
+							"allowed_scopes": memberWithRole.RoleTemplateScopes,
+							"role_template":  *memberWithRole.RoleTemplateName,
+						})
+						return
 					}
 				}
 			}
