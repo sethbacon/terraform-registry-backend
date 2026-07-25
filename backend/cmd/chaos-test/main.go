@@ -1,12 +1,15 @@
 // Package main implements a chaos/soak testing tool for the Terraform Registry.
 //
-// It injects controlled failures (Redis down, storage 5xx, DB connection storms)
-// while continuously exercising the API, then reports on error rates and recovery.
+// It drives sustained HTTP load against a running registry instance --
+// health-soak, api-soak, connection-storm, and large-payload scenarios --
+// then reports on error rates, latency, and recovery. It does not inject
+// failures into the registry's own dependencies (Redis, object storage,
+// PostgreSQL); it only exercises the API as an external client would.
 //
 // Usage:
 //
 //	go run ./cmd/chaos-test --target https://localhost:5000 --duration 1h --scenario all
-//	go run ./cmd/chaos-test --target https://localhost:5000 --duration 10m --scenario redis-down
+//	go run ./cmd/chaos-test --target https://localhost:5000 --duration 10m --scenario connection-storm
 package main
 
 import (

@@ -32,6 +32,7 @@ This repository contains the backend API, database migrations, and deployment in
 - **User Management** — Comprehensive user administration
 - **Organization Membership** — Role-based team collaboration (viewer, publisher, devops, user_manager, auditor, admin)
 - **Configurable Modes** — Single-tenant or multi-tenant deployment
+- **Namespace Ownership** — Each module/provider namespace is bound to the organization that first published into it; mutations are checked against this claim to prevent cross-org namespace hijacking. Read-only `/api/v1/admin/namespaces` API for auditing current ownership (`organizations:read` scope).
 
 ### Module Source Control (SCM) Integration
 

@@ -5,7 +5,7 @@ This document maps ISO 27001:2022 Annex A controls to Terraform Registry
 features, configurations, and evidence sources. It supports organizations
 seeking ISO 27001 certification that include the registry in their ISMS scope.
 
-**Last updated:** 2026-06-17
+**Last updated:** 2026-07-24
 **Applicable version:** 1.0.0+
 
 ---
@@ -71,7 +71,7 @@ application with no physical infrastructure requirements.
 | A.8.26  | Application security requirements       | Input validation, parameterized queries, CSRF protection          | Validation package, middleware                     |
 | A.8.27  | Secure system architecture              | Architecture documentation, ADRs                                  | `docs/architecture.md`, `docs/adr/`                |
 | A.8.28  | Secure coding                           | gosec static analysis, linting, code review                       | CI workflows, CODEOWNERS                           |
-| A.8.29  | Security testing                        | Unit tests, integration tests, E2E tests, fuzz tests (planned)    | Test suites, CI workflows                          |
+| A.8.29  | Security testing                        | Unit tests, integration tests, E2E tests, fuzz tests               | Test suites; nightly fuzz workflow `.github/workflows/fuzz.yml` runs `backend/internal/analyzer/analyzer_fuzz_test.go` and `backend/internal/scm/*/connector_fuzz_test.go`; `backend/internal/archiver/tarball_test.go` also defines a fuzz target but is exercised only as a seed-corpus regression test via `go test`, not in the fuzz.yml matrix |
 | A.8.31  | Separation of environments              | Separate compose files for dev/test/prod; env var config          | `deployments/docker-compose*.yml`                  |
 | A.8.32  | Change management                       | Git-based PR workflow, required reviews, CI gates                 | Branch protection, CI                              |
 | A.8.33  | Test information                        | Test fixtures use synthetic data only                             | Test files                                         |
@@ -86,6 +86,16 @@ Controls marked N/A are not applicable because:
 - **A.6.1 (Screening):** Organizational HR responsibility, not application-level.
 - **A.7.x (Physical controls):** Application runs in cloud/container environments; physical security is the provider's responsibility.
 - **A.8.1 (Endpoint devices):** Server-side application; end-user device management is organizational responsibility.
+
+---
+
+## Review Schedule
+
+This mapping is reviewed on the same cadence as
+[docs/threat-model.md](../threat-model.md) §8 (on every major version release,
+when new authentication mechanisms or data stores/external integrations are
+introduced, and at least annually), so control mappings do not lag the
+codebase's actual test/CI maturity.
 
 ---
 

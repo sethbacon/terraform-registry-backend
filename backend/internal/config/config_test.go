@@ -427,6 +427,38 @@ func TestValidate(t *testing.T) {
 			t.Errorf("Validate() unexpected error when policy disabled: %v", err)
 		}
 	})
+
+	// -------------------------------------------------------------------
+	// binary_mirror.auth (issue #673: unrecognized values used to fail
+	// open by silently behaving like "none")
+	// -------------------------------------------------------------------
+
+	t.Run("binary_mirror auth unset defaults to none", func(t *testing.T) {
+		cfg := minimalValidConfig()
+		cfg.BinaryMirror.Auth = ""
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate() unexpected error for unset binary_mirror.auth: %v", err)
+		}
+	})
+
+	for _, mode := range []string{"none", "allowlist", "mtls"} {
+		mode := mode
+		t.Run("binary_mirror auth "+mode+" accepted", func(t *testing.T) {
+			cfg := minimalValidConfig()
+			cfg.BinaryMirror.Auth = mode
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("Validate() unexpected error for binary_mirror.auth %q: %v", mode, err)
+			}
+		})
+	}
+
+	t.Run("binary_mirror auth typo rejected instead of silently failing open", func(t *testing.T) {
+		cfg := minimalValidConfig()
+		cfg.BinaryMirror.Auth = "allowlst" // typo for "allowlist"
+		if err := cfg.Validate(); err == nil {
+			t.Error("Validate() expected error for misspelled binary_mirror.auth, got nil")
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
