@@ -3,8 +3,14 @@ terraform {
 
   required_providers {
     azurerm = {
-      source  = "hashicorp/azurerm"
-      version = ">= 4.0"
+      source = "hashicorp/azurerm"
+      # Pessimistic (>= 4.0, < 5.0) rather than an open-ended ">= 4.0": this
+      # configuration is written against the v4 schema, and azurerm v5.0.0
+      # makes previously-optional arguments required (e.g.
+      # azurerm_key_vault.rbac_authorization_enabled), so an unpinned major
+      # silently breaks `terraform validate` in CI. Adopting v5 is a
+      # deliberate migration, not an implicit one.
+      version = "~> 4.0"
     }
   }
 
