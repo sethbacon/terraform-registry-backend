@@ -450,7 +450,7 @@ func (u *UpstreamRegistry) resolveProviderVersionID(ctx context.Context, namespa
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBodyBytes))
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return "", fmt.Errorf("v2 provider lookup failed with status %d: %s", resp.StatusCode, string(body))
 	}
 	var provResp providerV2Response
@@ -485,7 +485,7 @@ func (u *UpstreamRegistry) resolveProviderVersionID(ctx context.Context, namespa
 		}
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBodyBytes))
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			return "", fmt.Errorf("v2 provider-versions request failed with status %d: %s", resp.StatusCode, string(body))
 		}
 		var versionsResp providerVersionListV2
@@ -544,7 +544,7 @@ func (u *UpstreamRegistry) GetProviderDocIndexByVersion(ctx context.Context, nam
 
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBodyBytes))
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			return nil, fmt.Errorf("v2 provider doc index request failed with status %d: %s", resp.StatusCode, string(body))
 		}
 

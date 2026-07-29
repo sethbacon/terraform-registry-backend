@@ -13,3 +13,7 @@ test-providers/
 test-terraform/
 tmpclaude*
 node_modules/
+
+# Python bytecode (e.g. backend/scripts/*.py test runs)
+__pycache__/
+*.pyc
