@@ -43,10 +43,14 @@ jobs:
         uses: google/osv-scanner-action/osv-scanner-action@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
         continue-on-error: true
         with:
+          # JSON (not table) so the triage step below can tell an advisory
+          # with a published fix from one without; the triage step prints a
+          # human-readable summary in its place.
           scan-args: |-
             --recursive
             ./backend
-            --format=table
+            --format=json
+            --output=osv-results.json
 
       - name: Create issue on new vulnerabilities
         # Issue creation stays weekly-only to avoid opening a new issue on
@@ -72,12 +76,18 @@ jobs:
               labels: ['security', 'dependencies'],
             });
 
-      - name: Fail job on push/PR when vulnerabilities found
+      - name: Triage findings — fail only when a fix is published
         # continue-on-error above keeps the weekly run green (it reports via
-        # the issue instead); per-PR/push runs must actually fail so this
-        # can be a required check gating the merge.
+        # the issue instead); per-PR/push runs gate the merge, but only on
+        # advisories that can actually be acted on. OSV-Scanner exits non-zero
+        # for ANY known vulnerability, including ones with no released fix —
+        # gating on those would pin the check red until upstream ships,
+        # regardless of what the PR changed, and a permanently-red required
+        # check is one everybody learns to ignore. Findings with no fix are
+        # surfaced as warnings + job summary instead (and the govulncheck job
+        # covers whether they're actually reachable).
         if: steps.osv.outcome == 'failure' && github.event_name != 'schedule'
-        run: exit 1
+        run: python3 backend/scripts/osv_triage.py osv-results.json
 
   # ── govulncheck (reachability-aware scan) ─────────────
   # OSV-Scanner flags every known-vulnerable version in go.sum regardless of whether
