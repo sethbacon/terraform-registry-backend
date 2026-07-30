@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
@@ -304,16 +305,38 @@ func (h *SCMProviderHandlers) ListProviders(c *gin.Context) {
 	var providers []*scm.SCMProviderRecord
 	var err error
 
+	// The per-resource guard on /:id cannot help a list route, so membership is
+	// applied here (issues #718/#719). Previously an omitted organization_id
+	// listed EVERY organization's providers to any holder of the flat scm:read
+	// scope union, and an explicit organization_id was never checked against
+	// the caller's memberships at all — so listing was the enumeration step
+	// that made the per-provider attacks easy to aim.
+	isPlatformAdmin := false
+	if scopesVal, exists := c.Get("scopes"); exists {
+		if callerScopes, ok := scopesVal.([]string); ok {
+			isPlatformAdmin = auth.HasScope(callerScopes, auth.ScopeAdmin)
+		}
+	}
+
 	if orgIDStr != "" {
 		orgID, parseErr := uuid.Parse(orgIDStr)
 		if parseErr != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid organization_id"})
 			return
 		}
+		if !isPlatformAdmin && !h.callerIsMemberOf(c, orgID.String()) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Not a member of the requested organization"})
+			return
+		}
 		providers, err = h.scmRepo.ListProviders(c.Request.Context(), orgID)
-	} else {
-		// Pass uuid.Nil to list all providers
+	} else if isPlatformAdmin {
+		// Platform admins deliberately see every organization.
 		providers, err = h.scmRepo.ListProviders(c.Request.Context(), uuid.Nil)
+	} else {
+		// Everyone else gets the union of their own organizations rather than
+		// the whole estate. Fails closed: an error resolving memberships, or a
+		// caller with none, yields nothing rather than everything.
+		providers, err = h.listProvidersForCallerOrgs(c)
 	}
 
 	if err != nil {
@@ -585,4 +608,55 @@ func (h *SCMProviderHandlers) VerifyProvider(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"ok": true, "expires_at": token.ExpiresAt})
+}
+
+// callerIsMemberOf reports whether the authenticated caller holds any
+// membership in orgID. Fails closed on a missing principal or lookup error.
+func (h *SCMProviderHandlers) callerIsMemberOf(c *gin.Context, orgID string) bool {
+	userVal, exists := c.Get("user_id")
+	if !exists {
+		return false
+	}
+	userID, ok := userVal.(string)
+	if !ok || userID == "" {
+		return false
+	}
+	member, err := h.orgRepo.GetMemberWithRole(c.Request.Context(), orgID, userID)
+	if err != nil || member == nil {
+		return false
+	}
+	return true
+}
+
+// listProvidersForCallerOrgs returns the providers of every organization the
+// caller belongs to. A caller with no memberships gets an empty list, never the
+// full estate.
+func (h *SCMProviderHandlers) listProvidersForCallerOrgs(c *gin.Context) ([]*scm.SCMProviderRecord, error) {
+	userVal, exists := c.Get("user_id")
+	if !exists {
+		return []*scm.SCMProviderRecord{}, nil
+	}
+	userID, ok := userVal.(string)
+	if !ok || userID == "" {
+		return []*scm.SCMProviderRecord{}, nil
+	}
+
+	memberships, err := h.orgRepo.GetUserMemberships(c.Request.Context(), userID)
+	if err != nil {
+		return nil, err
+	}
+
+	out := []*scm.SCMProviderRecord{}
+	for _, m := range memberships {
+		orgID, parseErr := uuid.Parse(m.OrganizationID)
+		if parseErr != nil {
+			continue
+		}
+		providers, listErr := h.scmRepo.ListProviders(c.Request.Context(), orgID)
+		if listErr != nil {
+			return nil, listErr
+		}
+		out = append(out, providers...)
+	}
+	return out, nil
 }

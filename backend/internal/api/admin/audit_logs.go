@@ -4,10 +4,12 @@ package admin
 import (
 	"database/sql"
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
 
@@ -15,12 +17,16 @@ import (
 type AuditLogHandlers struct {
 	db        *sql.DB
 	auditRepo *repositories.AuditRepository
+	// orgRepo resolves the caller's memberships so audit reads can be scoped to
+	// the organizations they actually belong to (issue #719).
+	orgRepo *repositories.OrganizationRepository
 }
 
 // NewAuditLogHandlers creates a new AuditLogHandlers instance
 func NewAuditLogHandlers(db *sql.DB) *AuditLogHandlers {
 	return &AuditLogHandlers{
 		db:        db,
+		orgRepo:   repositories.NewOrganizationRepository(db),
 		auditRepo: repositories.NewAuditRepository(db),
 	}
 }
@@ -90,6 +96,61 @@ func (h *AuditLogHandlers) ListAuditLogsHandler() gin.HandlerFunc {
 				return
 			}
 			filters.EndDate = &t
+		}
+
+		// Tenant scoping (issue #719). audit:read is granted per-organization by
+		// the `auditor` role template, but it arrives in the session JWT as part
+		// of a flat, org-less scope union (#652) — so without this an auditor in
+		// one organization read every organization's audit trail.
+		//
+		// Platform admins deliberately still see the whole estate: an audit
+		// trail nobody can review across tenants is not much of an audit trail,
+		// and `admin` is an explicitly-granted platform-wide scope, consistent
+		// with the admin exemption in the per-org guards.
+		//
+		// BEHAVIOUR CHANGE worth calling out in release notes: an existing
+		// non-admin auditor who could previously see all organizations will now
+		// see only their own.
+		if !h.callerIsPlatformAdmin(c) {
+			orgIDs, scopeErr := h.callerOrgIDs(c)
+			if scopeErr != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to resolve organization memberships"})
+				return
+			}
+			if len(orgIDs) == 0 {
+				// No memberships: nothing is in scope. Fails closed rather than
+				// falling through to an unfiltered query. Returns the same
+				// AuditLogListResponse shape as every other path so clients
+				// don't have to special-case an empty result.
+				c.JSON(http.StatusOK, AuditLogListResponse{
+					Logs: []AuditLogResponse{},
+					Pagination: PaginationMeta{
+						Page:    page,
+						PerPage: perPage,
+						Total:   0,
+					},
+				})
+				return
+			}
+			if requested := c.Query("organization_id"); requested != "" {
+				if !slices.Contains(orgIDs, requested) {
+					c.JSON(http.StatusForbidden, gin.H{"error": "Not a member of the requested organization"})
+					return
+				}
+				filters.OrganizationID = &requested
+			} else if len(orgIDs) == 1 {
+				filters.OrganizationID = &orgIDs[0]
+			} else {
+				// The shared AuditFilters supports a single organization, so a
+				// multi-org caller must name one rather than silently receiving
+				// a partial or unscoped result.
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": "organization_id is required for callers belonging to multiple organizations",
+				})
+				return
+			}
+		} else if requested := c.Query("organization_id"); requested != "" {
+			filters.OrganizationID = &requested
 		}
 
 		logs, total, err := h.auditRepo.ListAuditLogs(c.Request.Context(), filters, perPage, offset)
@@ -169,4 +230,44 @@ func (h *AuditLogHandlers) GetAuditLogHandler() gin.HandlerFunc {
 			CreatedAt:      log.CreatedAt,
 		})
 	}
+}
+
+// callerIsPlatformAdmin reports whether the caller holds the platform-wide
+// admin wildcard, which is exempt from per-organization audit scoping.
+func (h *AuditLogHandlers) callerIsPlatformAdmin(c *gin.Context) bool {
+	scopesVal, exists := c.Get("scopes")
+	if !exists {
+		return false
+	}
+	callerScopes, ok := scopesVal.([]string)
+	if !ok {
+		return false
+	}
+	return auth.HasScope(callerScopes, auth.ScopeAdmin)
+}
+
+// callerOrgIDs returns the organizations the caller belongs to. A missing
+// principal yields an empty set (fail closed), while a lookup failure is
+// reported so the handler can 500 rather than silently widening scope.
+func (h *AuditLogHandlers) callerOrgIDs(c *gin.Context) ([]string, error) {
+	userVal, exists := c.Get("user_id")
+	if !exists {
+		return nil, nil
+	}
+	userID, ok := userVal.(string)
+	if !ok || userID == "" {
+		return nil, nil
+	}
+	if h.orgRepo == nil {
+		return nil, nil
+	}
+	memberships, err := h.orgRepo.GetUserMemberships(c.Request.Context(), userID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(memberships))
+	for _, m := range memberships {
+		out = append(out, m.OrganizationID)
+	}
+	return out, nil
 }

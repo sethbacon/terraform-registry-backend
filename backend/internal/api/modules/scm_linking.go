@@ -181,6 +181,32 @@ func (h *SCMLinkingHandler) LinkModuleToSCM(c *gin.Context) {
 		return
 	}
 
+	// The route's RequireModuleAccessByID guard authorized the caller against
+	// the MODULE's owning organization and published it as owner_org_id; the
+	// provider side was previously unchecked, so a caller authorized for their
+	// own module could bind it to another organization's SCM provider (issue
+	// #719). That link is durable and credential-bearing: syncs would then run
+	// against the other organization's provider credentials.
+	//
+	// Rejected for every caller including platform admins, deliberately
+	// departing from this codebase's usual admin-bypass convention: this is not
+	// "act on one organization's resource" (which admin may do) but "create a
+	// persistent cross-tenant credential path", which nothing in the product
+	// needs and which would be invisible after the fact.
+	if ownerOrgVal, exists := c.Get("owner_org_id"); exists {
+		ownerOrgID, _ := ownerOrgVal.(string)
+		providerOrgID := ""
+		if provider.OrganizationID != uuid.Nil {
+			providerOrgID = provider.OrganizationID.String()
+		}
+		if ownerOrgID != "" && providerOrgID != "" && ownerOrgID != providerOrgID {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "SCM provider belongs to a different organization than the module",
+			})
+			return
+		}
+	}
+
 	// Check if module is already linked
 	existing, err := h.scmRepo.GetModuleSourceRepo(c.Request.Context(), moduleID)
 	if err != nil {

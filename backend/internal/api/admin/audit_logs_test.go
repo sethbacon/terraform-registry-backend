@@ -8,6 +8,7 @@ import (
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
+	"github.com/terraform-registry/terraform-registry/internal/auth"
 )
 
 // ---------------------------------------------------------------------------
@@ -69,6 +70,14 @@ func newAuditLogRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	h := NewAuditLogHandlers(db)
 
 	r := gin.New()
+	// See the note in scm_providers_test.go: these routes are unreachable
+	// without an authenticated principal in production, so the default test
+	// principal is a platform admin. Non-admin tenant scoping is covered
+	// separately (issue #719).
+	r.Use(func(c *gin.Context) {
+		c.Set("scopes", []string{string(auth.ScopeAdmin)})
+		c.Set("user_id", "test-admin")
+	})
 	r.GET("/audit-logs", h.ListAuditLogsHandler())
 	r.GET("/audit-logs/:id", h.GetAuditLogHandler())
 

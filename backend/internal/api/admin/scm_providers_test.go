@@ -10,6 +10,7 @@ import (
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
+	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
@@ -69,6 +70,15 @@ func newSCMProviderRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	h := NewSCMProviderHandlers(&config.Config{}, scmRepo, orgRepo, cipher)
 
 	r := gin.New()
+	// These routes sit behind AuthMiddleware + RequireScope in production, so an
+	// unauthenticated principal can never reach the handler. Default the test
+	// router to a platform admin: it keeps each existing test exercising the
+	// behaviour it was written for, while tenant scoping for non-admins is
+	// covered separately (issue #719).
+	r.Use(func(c *gin.Context) {
+		c.Set("scopes", []string{string(auth.ScopeAdmin)})
+		c.Set("user_id", "test-admin")
+	})
 	r.POST("/scm-providers", h.CreateProvider)
 	r.GET("/scm-providers", h.ListProviders)
 	r.GET("/scm-providers/:id", h.GetProvider)
