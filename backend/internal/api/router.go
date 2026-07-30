@@ -658,6 +658,8 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		auditShipper:                auditShipper,
 		nsAuthz:                     nsAuthz,
 		scmRepo:                     scmRepo,
+		mirrorRepo:                  mirrorRepo,
+		rbacRepo:                    rbacRepo,
 		scanRepo:                    scanRepo,
 		moduleDocsRepo:              moduleDocsRepo,
 		policyEngine:                policyEngine,
