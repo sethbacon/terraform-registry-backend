@@ -84,52 +84,18 @@ If issues are found after upgrade:
 
 ## Version-Specific Upgrade Notes
 
-### 3.5.x → 3.6.0
-
-The exact version is whatever release first contains PRs #712 and #724 — confirm
-against `CHANGELOG.md`. Both entries below are **behavior changes that activate on
-upgrade with no configuration change**, so review them before deploying.
-
-**Audit configuration becomes active (#659, PR #712):**
-
-`audit.log_read_operations`, `audit.log_failed_requests` and `audit.shippers` were
-previously parsed and validated but **never actually used** — the audit middleware
-was wired with hardcoded `nil`s. That was the bug; those settings are now honored.
-
-If you already have any of them set, upgrading changes runtime behavior immediately:
-
-- `log_read_operations: true` — GET/read-path audit rows begin being written. On a
-  busy registry this can change audit table growth rate sharply; check retention and
-  disk headroom first.
-- `log_failed_requests: true` — failed-request rows begin being written.
-- `shippers: [...]` — a configured external shipper **starts receiving traffic**. The
-  registry begins making outbound calls to an endpoint that has never received them,
-  which may be unexpected volume for a webhook/SIEM target.
-
-**Recommended:** review your `audit.*` block before upgrading and comment out anything
-you did not intend to be live. To keep the previous effective behavior, unset these keys.
-
-**Audit log reads are scoped to the caller's organizations (#719, PR #724):**
-
-`GET /api/v1/admin/audit-logs` previously returned **every organization's** audit trail
-to any holder of `audit:read`. Because `audit:read` is granted per-organization by the
-`auditor` role template but arrives in the session token as part of a flat, org-less
-scope union, that crossed the tenant boundary.
-
-After upgrade:
-
-- Platform admins (the `admin` wildcard scope) still see all organizations.
-- A non-admin auditor sees only the organizations they belong to.
-- A caller belonging to **multiple** organizations must now pass `organization_id`
-  explicitly; without it the request returns `400` rather than a silently partial result.
-
-**Action required** if you have tooling, dashboards, or exports that read this endpoint
-with a non-admin token and expect estate-wide results: either grant that principal the
-`admin` scope deliberately, or update the caller to iterate per organization.
-
-**Migrations:** none for either change.
-
-**Rollback:** both are code-only; rolling back the binary restores the previous behavior.
+> **Coverage.** Detailed notes exist for the upgrade paths listed below: the
+> `0.6`–`0.10` series, the two major boundaries (`1.x → 2.0`, `2.x → 3.0`), and the
+> most recent release. The intervening minor releases are **not** individually
+> documented here — they introduced no breaking changes, which is why they were
+> released as minors. For anything not listed, `CHANGELOG.md` is authoritative:
+> every release is recorded there, and any breaking change appears under a
+> `⚠ BREAKING CHANGES` heading.
+>
+> Concretely, across every release from `0.10.1` to `3.5.0` there are exactly **two**
+> breaking changes, both captured below. Absence of a note for your specific version
+> pair means there was nothing version-specific to do beyond the standard procedure
+> above — not that the note is missing.
 
 ### 0.6.x → 0.7.0
 
@@ -217,6 +183,100 @@ with a non-admin token and expect estate-wide results: either grant that princip
 ```bash
 ./terraform-registry upgrade preflight --config config.yaml
 ```
+
+### 0.18.x → 1.0.0
+
+**No breaking changes.** 1.0.0 was a version marker (released via `Release-As: 1.0.0`
+in #316) signalling API stability, not a change in behaviour. Upgrade using the
+standard procedure.
+
+### 1.x → 2.0.0
+
+**Breaking Changes:**
+
+- Feature-table foreign keys are repointed from `public.{users,organizations}` to
+  `identity.{users,organizations}` (#451). This **drops and recreates 22 constraints**.
+
+**Applies to:** deployments that have completed the identity-schema cutover. On
+non-cutover deployments the migration is a **no-op**.
+
+**Migrations:**
+
+- `000038_feature_fk_to_identity` — the FK repoint described above.
+
+**Pre-flight:** run the preflight check, and on a large database expect the constraint
+recreation to hold locks briefly — schedule accordingly rather than during peak write
+traffic.
+
+**Rollback:** `000038` is reversible.
+
+### 2.x → 3.0.0
+
+**Breaking Changes:**
+
+- Adopts `terraform-suite-identity` v0.17.0 (#614), which brings three
+  behaviour changes worth checking before deploying:
+  - **`email_verified` is now enforced** on IdP logins. Users whose IdP does not
+    assert `email_verified` (or asserts `false`) will be refused. Verify your IdP
+    emits this claim before upgrading, or you can lock out your own users.
+  - **`ClientSecretCiphertext`** changes how SSO client secrets are stored.
+  - **`ScopeAdmin` guard** tightens which callers may grant the admin scope.
+
+**Also in 3.0.0** (not breaking, but security-relevant): OIDC/Azure AD logins are now
+bound with a nonce and PKCE (#612), and `/organizations/:id*` routes enforce
+per-organization membership (#611) — if you have automation using a token that held
+`organizations:write` via one organization to act on another, it will now receive 403.
+
+**Migrations:** none specific to the identity adoption.
+
+**Rollback:** code-only; rolling back the binary restores the previous behaviour.
+
+### 3.5.x → 3.6.0
+
+The exact version is whatever release first contains PRs #712 and #724 — confirm
+against `CHANGELOG.md`. Both entries below are **behavior changes that activate on
+upgrade with no configuration change**, so review them before deploying.
+
+**Audit configuration becomes active (#659, PR #712):**
+
+`audit.log_read_operations`, `audit.log_failed_requests` and `audit.shippers` were
+previously parsed and validated but **never actually used** — the audit middleware
+was wired with hardcoded `nil`s. That was the bug; those settings are now honored.
+
+If you already have any of them set, upgrading changes runtime behavior immediately:
+
+- `log_read_operations: true` — GET/read-path audit rows begin being written. On a
+  busy registry this can change audit table growth rate sharply; check retention and
+  disk headroom first.
+- `log_failed_requests: true` — failed-request rows begin being written.
+- `shippers: [...]` — a configured external shipper **starts receiving traffic**. The
+  registry begins making outbound calls to an endpoint that has never received them,
+  which may be unexpected volume for a webhook/SIEM target.
+
+**Recommended:** review your `audit.*` block before upgrading and comment out anything
+you did not intend to be live. To keep the previous effective behavior, unset these keys.
+
+**Audit log reads are scoped to the caller's organizations (#719, PR #724):**
+
+`GET /api/v1/admin/audit-logs` previously returned **every organization's** audit trail
+to any holder of `audit:read`. Because `audit:read` is granted per-organization by the
+`auditor` role template but arrives in the session token as part of a flat, org-less
+scope union, that crossed the tenant boundary.
+
+After upgrade:
+
+- Platform admins (the `admin` wildcard scope) still see all organizations.
+- A non-admin auditor sees only the organizations they belong to.
+- A caller belonging to **multiple** organizations must now pass `organization_id`
+  explicitly; without it the request returns `400` rather than a silently partial result.
+
+**Action required** if you have tooling, dashboards, or exports that read this endpoint
+with a non-admin token and expect estate-wide results: either grant that principal the
+`admin` scope deliberately, or update the caller to iterate per organization.
+
+**Migrations:** none for either change.
+
+**Rollback:** both are code-only; rolling back the binary restores the previous behavior.
 
 ---
 
