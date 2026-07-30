@@ -525,7 +525,7 @@ func serve(cfg *config.Config) error {
 	// running) is sent over listenErrCh instead of calling log.Fatalf here
 	// (issue #686): log.Fatalf calls os.Exit(1) directly from this goroutine,
 	// which would terminate the process immediately without running serve()'s
-	// deferred database.Close() or bgServices.Shutdown() below — worst-case
+	// deferred database.Close() or the bgServices.Shutdown() below — worst-case
 	// exactly during a resource-exhaustion incident. Sending the error back to
 	// the main goroutine instead lets the normal shutdown path run.
 	listenErrCh := make(chan error, 1)
@@ -560,18 +560,53 @@ func serve(cfg *config.Config) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := server.Shutdown(ctx); err != nil && listenErr == nil {
-		return fmt.Errorf("server forced to shutdown: %w", err)
-	}
-
-	// Stop background jobs and rate limiter goroutines
-	bgServices.Shutdown()
-
-	if listenErr != nil {
-		return fmt.Errorf("failed to start server: %w", listenErr)
+	if err := shutdownServices(ctx, server, bgServices.Shutdown, listenErr); err != nil {
+		return err
 	}
 
 	log.Println("Server stopped gracefully")
+	return nil
+}
+
+// serverShutdowner is the drain half of *http.Server, narrowed so the shutdown
+// sequence can be unit tested without binding a real listener.
+type serverShutdowner interface {
+	Shutdown(ctx context.Context) error
+}
+
+// shutdownServices drains the HTTP server and then stops background services,
+// returning the error that should end serve().
+//
+// Order matters and is preserved: the server drains first so in-flight requests
+// finish while the services they depend on (audit shipper, rate limiters) are
+// still running, and only then are those services stopped.
+//
+// stopBackground ALWAYS runs, including when the drain itself fails or hits its
+// timeout (issue #716). Previously the drain error returned early and skipped
+// it, so a shutdown that was already degraded — typically the 10s deadline
+// expiring with a slow request still in flight — also silently dropped the
+// audit shipper's buffered batch, losing exactly the records most useful for
+// explaining the slow shutdown. It is also the case where the flush matters
+// most, since the process is about to exit.
+//
+// Extracted from serve() for the same reason as waitForShutdownOrListenError:
+// serve() as a whole needs a live database, this logic does not.
+func shutdownServices(ctx context.Context, srv serverShutdowner, stopBackground func(), listenErr error) error {
+	shutdownErr := srv.Shutdown(ctx)
+
+	// Stop background jobs and rate limiter goroutines.
+	if stopBackground != nil {
+		stopBackground()
+	}
+
+	// A listener startup failure is the more useful error to surface, so it
+	// takes precedence over a drain error on that path (issue #686).
+	if listenErr != nil {
+		return fmt.Errorf("failed to start server: %w", listenErr)
+	}
+	if shutdownErr != nil {
+		return fmt.Errorf("server forced to shutdown: %w", shutdownErr)
+	}
 	return nil
 }
 
