@@ -440,6 +440,82 @@ func TestCollectRateLimiterBackends_Mixed(t *testing.T) {
 	}
 }
 
+// Issue #695: the credentialed-origin decision must not depend on
+// allowed_origins list order when a wildcard and an explicit origin are both
+// configured. An origin that is explicitly listed must always be treated as
+// an exact match (credentials allowed), regardless of where "*" sits in the
+// list.
+
+func TestCORSMiddleware_ExactMatchBeforeWildcard_WildcardFirst(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Security.CORS.AllowedOrigins = []string{"*", "https://a.com"}
+
+	r := gin.New()
+	r.Use(CORSMiddleware(cfg))
+	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Origin", "https://a.com")
+	r.ServeHTTP(w, req)
+
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "https://a.com" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want https://a.com", got)
+	}
+	if got := w.Header().Get("Access-Control-Allow-Credentials"); got != "true" {
+		t.Errorf("Access-Control-Allow-Credentials = %q, want true (exact origin match must grant credentials regardless of list order)", got)
+	}
+}
+
+// ExactFirst is a symmetry/completeness check: with the exact origin already
+// ahead of "*" in the list, a pre-fix break-on-first-match loop would reach
+// the same result, so this case alone does not distinguish pre-fix from
+// fixed behavior. The regression itself is caught by its WildcardFirst
+// sibling above, which fails under the pre-fix loop.
+func TestCORSMiddleware_ExactMatchBeforeWildcard_ExactFirst(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Security.CORS.AllowedOrigins = []string{"https://a.com", "*"}
+
+	r := gin.New()
+	r.Use(CORSMiddleware(cfg))
+	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Origin", "https://a.com")
+	r.ServeHTTP(w, req)
+
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "https://a.com" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want https://a.com", got)
+	}
+	if got := w.Header().Get("Access-Control-Allow-Credentials"); got != "true" {
+		t.Errorf("Access-Control-Allow-Credentials = %q, want true", got)
+	}
+}
+
+// A mixed config still falls back to the wildcard (no credentials) behavior
+// for origins that are NOT explicitly listed.
+func TestCORSMiddleware_MixedConfig_UnlistedOriginFallsBackToWildcard(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Security.CORS.AllowedOrigins = []string{"https://a.com", "*"}
+
+	r := gin.New()
+	r.Use(CORSMiddleware(cfg))
+	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Origin", "https://anything-else.com")
+	r.ServeHTTP(w, req)
+
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "https://anything-else.com" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want https://anything-else.com (reflected via wildcard rule)", got)
+	}
+	if got := w.Header().Get("Access-Control-Allow-Credentials"); got != "" {
+		t.Errorf("Access-Control-Allow-Credentials = %q, want empty (wildcard match must not grant credentials)", got)
+	}
+}
+
 func TestCORSMiddleware_WildcardNoOriginHeader(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Security.CORS.AllowedOrigins = []string{"*"}

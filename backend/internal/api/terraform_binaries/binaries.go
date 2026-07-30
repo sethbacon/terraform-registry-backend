@@ -51,21 +51,21 @@ func approvalVisible(status *string) bool {
 func (h *Handler) resolveConfig(c *gin.Context) (*models.TerraformMirrorConfig, bool) {
 	name := c.Param("name")
 	if name == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Mirror name is required"})
+		c.JSON(http.StatusBadRequest, gin.H{"errors": []string{"Mirror name is required"}})
 		return nil, false
 	}
 
 	cfg, err := h.repo.GetByName(c.Request.Context(), name)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to look up mirror"})
+		c.JSON(http.StatusInternalServerError, gin.H{"errors": []string{"Failed to look up mirror"}})
 		return nil, false
 	}
 	if cfg == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Mirror not found: " + name})
+		c.JSON(http.StatusNotFound, gin.H{"errors": []string{"Mirror not found: " + name}})
 		return nil, false
 	}
 	if !cfg.Enabled {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Mirror is not enabled: " + name})
+		c.JSON(http.StatusNotFound, gin.H{"errors": []string{"Mirror is not enabled: " + name}})
 		return nil, false
 	}
 
@@ -91,7 +91,7 @@ type PublicMirrorSummary struct {
 func (h *Handler) ListConfigs(c *gin.Context) {
 	configs, err := h.repo.ListEnabled(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list mirror configs"})
+		c.JSON(http.StatusInternalServerError, gin.H{"errors": []string{"Failed to list mirror configs"}})
 		return
 	}
 
@@ -126,7 +126,7 @@ func (h *Handler) ListVersions(c *gin.Context) {
 
 	versions, err := h.repo.ListVersions(c.Request.Context(), cfg.ID, true /* syncedOnly */)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list versions"})
+		c.JSON(http.StatusInternalServerError, gin.H{"errors": []string{"Failed to list versions"}})
 		return
 	}
 
@@ -164,11 +164,11 @@ func (h *Handler) GetLatestVersion(c *gin.Context) {
 
 	version, err := h.repo.GetLatestVersion(c.Request.Context(), cfg.ID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get latest version"})
+		c.JSON(http.StatusInternalServerError, gin.H{"errors": []string{"Failed to get latest version"}})
 		return
 	}
 	if version == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "No latest version available — run a sync first"})
+		c.JSON(http.StatusNotFound, gin.H{"errors": []string{"No latest version available — run a sync first"}})
 		return
 	}
 
@@ -209,7 +209,7 @@ func (h *Handler) GetVersion(c *gin.Context) {
 
 	version, err := h.repo.GetVersionByString(c.Request.Context(), cfg.ID, versionStr)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to query version"})
+		c.JSON(http.StatusInternalServerError, gin.H{"errors": []string{"Failed to query version"}})
 		return
 	}
 	if version == nil || version.SyncStatus == "pending" || !approvalVisible(version.ApprovalStatus) {
@@ -272,7 +272,7 @@ func (h *Handler) DownloadBinary(c *gin.Context) {
 	// Look up version
 	version, err := h.repo.GetVersionByString(c.Request.Context(), cfg.ID, versionStr)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to query version"})
+		c.JSON(http.StatusInternalServerError, gin.H{"errors": []string{"Failed to query version"}})
 		return
 	}
 	if version == nil || !approvalVisible(version.ApprovalStatus) {
@@ -283,7 +283,7 @@ func (h *Handler) DownloadBinary(c *gin.Context) {
 	// Look up platform
 	platform, err := h.repo.GetPlatform(c.Request.Context(), version.ID, osStr, archStr)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to query platform"})
+		c.JSON(http.StatusInternalServerError, gin.H{"errors": []string{"Failed to query platform"}})
 		return
 	}
 	if platform == nil {
@@ -294,7 +294,7 @@ func (h *Handler) DownloadBinary(c *gin.Context) {
 	// Ensure the binary has been synced to storage
 	if platform.SyncStatus != "synced" || platform.StorageKey == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"error":       "Binary not yet available — sync is in progress or has not been triggered",
+			"errors":      []string{"Binary not yet available — sync is in progress or has not been triggered"},
 			"sync_status": platform.SyncStatus,
 		})
 		return
@@ -303,7 +303,7 @@ func (h *Handler) DownloadBinary(c *gin.Context) {
 	// Generate pre-signed download URL (15-minute TTL)
 	downloadURL, err := h.storageBackend.GetURL(c.Request.Context(), *platform.StorageKey, 15*time.Minute)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate download URL"})
+		c.JSON(http.StatusInternalServerError, gin.H{"errors": []string{"Failed to generate download URL"}})
 		return
 	}
 

@@ -1,9 +1,13 @@
 package oci
 
 import (
+	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,7 +16,32 @@ import (
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
+	"github.com/terraform-registry/terraform-registry/internal/storage"
 )
+
+// stubStorage is a minimal storage.Storage implementation for exercising the
+// blob-download failure path.
+type stubStorage struct {
+	downloadErr error
+}
+
+func (s *stubStorage) Upload(_ context.Context, _ string, _ io.Reader, _ int64) (*storage.UploadResult, error) {
+	return nil, nil
+}
+func (s *stubStorage) Download(_ context.Context, _ string) (io.ReadCloser, error) {
+	if s.downloadErr != nil {
+		return nil, s.downloadErr
+	}
+	return io.NopCloser(bytes.NewReader(nil)), nil
+}
+func (s *stubStorage) Delete(_ context.Context, _ string) error { return nil }
+func (s *stubStorage) GetURL(_ context.Context, _ string, _ time.Duration) (string, error) {
+	return "", nil
+}
+func (s *stubStorage) Exists(_ context.Context, _ string) (bool, error) { return true, nil }
+func (s *stubStorage) GetMetadata(_ context.Context, _ string) (*storage.FileMetadata, error) {
+	return &storage.FileMetadata{}, nil
+}
 
 // ─── router builder ───────────────────────────────────────────────────────────
 
@@ -71,6 +100,12 @@ func TestPing(t *testing.T) {
 	if v := w.Header().Get("OCI-Distribution-Spec-Version"); v != ociSpecVersion {
 		t.Errorf("expected OCI-Distribution-Spec-Version=%s, got %q", ociSpecVersion, v)
 	}
+	// Issue #694: also emit the conventional Docker Registry v2 header that
+	// existing OCI/Docker tooling (oras, crane, containerd/distribution) checks
+	// for during /v2/ capability probing.
+	if v := w.Header().Get("Docker-Distribution-Api-Version"); v != "registry/2.0" {
+		t.Errorf("expected Docker-Distribution-Api-Version=registry/2.0, got %q", v)
+	}
 }
 
 // ─── PutManifest returns 405 ──────────────────────────────────────────────────
@@ -95,6 +130,10 @@ func TestPutManifest_NotSupported(t *testing.T) {
 	errors, _ := body["errors"].([]interface{})
 	if len(errors) == 0 {
 		t.Error("expected errors array")
+	}
+	// Issue #683: RFC 7231 §6.5.5 requires an Allow header on a 405 response.
+	if allow := w.Header().Get("Allow"); allow != "GET, HEAD" {
+		t.Errorf("expected Allow header 'GET, HEAD', got %q", allow)
 	}
 }
 
@@ -142,6 +181,141 @@ func TestGetManifest_NotFound(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "MANIFEST_UNKNOWN") {
 		t.Errorf("expected MANIFEST_UNKNOWN error, got: %s", w.Body.String())
+	}
+}
+
+// ─── GetManifest / HeadManifest — internal error (issue #682) ────────────────
+//
+// A transient failure (org lookup query error) must surface as the generic
+// OCI "UNKNOWN" code, not the "does not exist" MANIFEST_UNKNOWN code, so OCI
+// clients don't mistake a retryable server fault for permanent absence.
+
+func TestGetManifest_InternalError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
+		WithArgs("default").
+		WillReturnError(errors.New("db down"))
+
+	h := NewHandler(db, nil)
+	r := gin.New()
+	r.GET("/v2/:namespace/:name/:system/manifests/:reference", h.GetManifest)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/v2/hashicorp/consul/aws/manifests/1.0.0", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "MANIFEST_UNKNOWN") {
+		t.Errorf("500 response must not reuse MANIFEST_UNKNOWN, got: %s", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "UNKNOWN") {
+		t.Errorf("expected generic UNKNOWN error code, got: %s", w.Body.String())
+	}
+}
+
+func TestHeadManifest_InternalError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
+		WithArgs("default").
+		WillReturnError(errors.New("db down"))
+
+	h := NewHandler(db, nil)
+	r := gin.New()
+	r.HEAD("/v2/:namespace/:name/:system/manifests/:reference", h.HeadManifest)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodHead, "/v2/hashicorp/consul/aws/manifests/1.0.0", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "MANIFEST_UNKNOWN") {
+		t.Errorf("500 response must not reuse MANIFEST_UNKNOWN, got: %s", w.Body.String())
+	}
+}
+
+func TestGetBlob_InternalError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
+		WithArgs("default").
+		WillReturnError(errors.New("db down"))
+
+	h := NewHandler(db, nil)
+	r := gin.New()
+	r.GET("/v2/:namespace/:name/:system/blobs/:digest", h.GetBlob)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/v2/hashicorp/consul/aws/blobs/sha256:abc123", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "BLOB_UNKNOWN") {
+		t.Errorf("500 response must not reuse BLOB_UNKNOWN, got: %s", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "UNKNOWN") {
+		t.Errorf("expected generic UNKNOWN error code, got: %s", w.Body.String())
+	}
+}
+
+// TestGetBlob_StorageDownloadError — module version resolves fine but the
+// storage backend fails; this is also a transient 500 and must not reuse
+// BLOB_UNKNOWN.
+func TestGetBlob_StorageDownloadError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	const checksum = "abc123def456"
+
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
+		WithArgs("default").
+		WillReturnRows(orgRow("org-id", "default"))
+	mock.ExpectQuery("SELECT.*FROM modules").
+		WithArgs("org-id", "hashicorp", "consul", "aws").
+		WillReturnRows(moduleRow("mod-id", "org-id", "hashicorp", "consul", "aws"))
+	mock.ExpectQuery("SELECT.*FROM module_versions").
+		WithArgs("mod-id", checksum).
+		WillReturnRows(versionRow("ver-id", "mod-id", "1.0.0", "path.tar.gz", checksum, 512))
+
+	h := NewHandler(db, &stubStorage{downloadErr: errors.New("storage unavailable")})
+	r := gin.New()
+	r.GET("/v2/:namespace/:name/:system/blobs/:digest", h.GetBlob)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/v2/hashicorp/consul/aws/blobs/sha256:"+checksum, nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "BLOB_UNKNOWN") {
+		t.Errorf("500 response must not reuse BLOB_UNKNOWN, got: %s", w.Body.String())
 	}
 }
 
@@ -289,6 +463,43 @@ func TestHeadManifest_OK(t *testing.T) {
 }
 
 // ─── HeadBlob / GetBlob ───────────────────────────────────────────────────────
+
+// TestHeadBlob_InternalError — a transient failure (org lookup query error)
+// must surface as the generic OCI "UNKNOWN" code, not BLOB_UNKNOWN, so OCI
+// clients don't mistake a retryable server fault for permanent absence.
+// HeadBlob shares lookupVersionByDigest + ociErrorCode with GetBlob (already
+// covered by TestGetBlob_InternalError); this is HeadBlob's own regression
+// coverage for the same #682 fix.
+func TestHeadBlob_InternalError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
+		WithArgs("default").
+		WillReturnError(errors.New("db down"))
+
+	h := NewHandler(db, nil)
+	r := gin.New()
+	r.HEAD("/v2/:namespace/:name/:system/blobs/:digest", h.HeadBlob)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodHead, "/v2/hashicorp/consul/aws/blobs/sha256:abc123", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "BLOB_UNKNOWN") {
+		t.Errorf("500 response must not reuse BLOB_UNKNOWN, got: %s", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "UNKNOWN") {
+		t.Errorf("expected generic UNKNOWN error code, got: %s", w.Body.String())
+	}
+}
 
 // TestHeadBlob_InvalidDigest and TestGetBlob_InvalidDigest — no sha256: prefix → 400
 func TestHeadBlob_InvalidDigest(t *testing.T) {

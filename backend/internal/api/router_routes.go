@@ -189,10 +189,11 @@ func registerPublicRoutes(router *gin.Engine, d *publicRouteDeps) {
 		c.Redirect(http.StatusMovedPermanently, "/api-docs/")
 	})
 
-	// Raw Swagger JSON endpoint - serve embedded spec with runtime metadata
+	// Raw Swagger JSON endpoint - serve embedded spec with runtime metadata.
+	// CORS is governed by the globally-applied CORSMiddleware like every
+	// other route; do not set Access-Control-Allow-Origin here (issue #684).
 	router.GET("/swagger.json", func(c *gin.Context) {
 		c.Header("Content-Type", "application/json")
-		c.Header("Access-Control-Allow-Origin", "*")
 
 		data := docs.SwaggerJSON
 
@@ -249,10 +250,10 @@ func registerPublicRoutes(router *gin.Engine, d *publicRouteDeps) {
 	// at build time via swagger2openapi. Served without runtime metadata
 	// injection because downstream consumers (frontend typegen, provider
 	// oapi-codegen) only care about the route and schema surface, not
-	// terms-of-service / license fields.
+	// terms-of-service / license fields. CORS is governed by the
+	// globally-applied CORSMiddleware like every other route (issue #684).
 	router.GET("/openapi3.json", func(c *gin.Context) {
 		c.Header("Content-Type", "application/json")
-		c.Header("Access-Control-Allow-Origin", "*")
 		c.Data(http.StatusOK, "application/json", docs.OpenAPI3JSON)
 	})
 

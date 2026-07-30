@@ -48,7 +48,7 @@ func binaryMirrorAllowlistMiddleware(cidrs []string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		clientIP := net.ParseIP(c.ClientIP())
 		if clientIP == nil {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"errors": []string{"forbidden"}})
 			return
 		}
 		for _, ipNet := range nets {
@@ -57,7 +57,7 @@ func binaryMirrorAllowlistMiddleware(cidrs []string) gin.HandlerFunc {
 				return
 			}
 		}
-		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"errors": []string{"forbidden"}})
 	}
 }
 
@@ -68,7 +68,7 @@ func binaryMirrorAllowlistMiddleware(cidrs []string) gin.HandlerFunc {
 func binaryMirrorMTLSMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if c.Request.TLS == nil || len(c.Request.TLS.VerifiedChains) == 0 {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "client certificate required"})
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"errors": []string{"client certificate required"}})
 			return
 		}
 		c.Next()

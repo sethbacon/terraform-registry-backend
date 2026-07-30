@@ -50,13 +50,13 @@ func ListVersionsHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 		org, err := orgRepo.GetDefaultOrganization(c.Request.Context())
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to get organization context",
+				"errors": []string{"Failed to get organization context"},
 			})
 			return
 		}
 		if org == nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Default organization not found - please run migrations",
+				"errors": []string{"Default organization not found - please run migrations"},
 			})
 			return
 		}
@@ -65,7 +65,7 @@ func ListVersionsHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 		provider, err := providerRepo.GetProvider(c.Request.Context(), org.ID, namespace, providerType)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to query provider",
+				"errors": []string{"Failed to query provider"},
 			})
 			return
 		}
@@ -81,7 +81,7 @@ func ListVersionsHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 		versions, total, err := providerRepo.ListVersionsPaginated(c.Request.Context(), provider.ID, limit, offset)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to list provider versions",
+				"errors": []string{"Failed to list provider versions"},
 			})
 			return
 		}
@@ -94,7 +94,7 @@ func ListVersionsHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 			platforms, err := providerRepo.ListPlatforms(c.Request.Context(), v.ID)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{
-					"error": "Failed to list provider platforms",
+					"errors": []string{"Failed to list provider platforms"},
 				})
 				return
 			}

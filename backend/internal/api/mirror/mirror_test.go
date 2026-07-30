@@ -2,6 +2,7 @@ package mirror
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +19,26 @@ import (
 )
 
 var mirrorErrDB = errors.New("db error")
+
+// assertErrorsArrayBody fails the test unless the response body is shaped
+// {"errors": [...]}, the protocol-correct shape already used by the 404/502
+// pull-through paths of these same handlers. Issue #696 sibling: 500 paths
+// in mirror/index.go and mirror/platform_index.go must not fall back to a
+// singular {"error": "..."} string.
+func assertErrorsArrayBody(t *testing.T, w *httptest.ResponseRecorder) {
+	t.Helper()
+	var body map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding response body: %v; body=%s", err, w.Body.String())
+	}
+	if _, ok := body["error"]; ok {
+		t.Errorf(`response body uses singular "error" key, want "errors" array; body=%s`, w.Body.String())
+	}
+	errs, ok := body["errors"].([]interface{})
+	if !ok || len(errs) == 0 {
+		t.Errorf(`response body missing "errors" array; body=%s`, w.Body.String())
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Column definitions  (positional scans from the repositories)
@@ -91,6 +112,7 @@ func TestIndex_OrgDBError(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestIndex_OrgNotFound(t *testing.T) {
@@ -105,6 +127,7 @@ func TestIndex_OrgNotFound(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestIndex_ProviderDBError(t *testing.T) {
@@ -120,6 +143,7 @@ func TestIndex_ProviderDBError(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestIndex_ProviderNotFound(t *testing.T) {
@@ -153,6 +177,7 @@ func TestIndex_ListVersionsDBError(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestIndex_Success_NoVersions(t *testing.T) {
@@ -199,6 +224,7 @@ func TestPlatformIndex_OrgDBError(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestPlatformIndex_OrgNotFound(t *testing.T) {
@@ -212,6 +238,7 @@ func TestPlatformIndex_OrgNotFound(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestPlatformIndex_ProviderNotFound(t *testing.T) {
@@ -322,6 +349,7 @@ func TestPlatformIndex_ProviderDBError(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestPlatformIndex_GetVersionDBError(t *testing.T) {
@@ -339,6 +367,30 @@ func TestPlatformIndex_GetVersionDBError(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
+}
+
+// TestPlatformIndex_ApprovalStatusDBError covers the 500 path from a genuine
+// approval-status query failure (as opposed to sql.ErrNoRows, which means
+// "not gated" and is not an error). Issue #696 sibling.
+func TestPlatformIndex_ApprovalStatusDBError(t *testing.T) {
+	mock, r := newMirrorAPIRouter(t)
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
+		WillReturnRows(sampleMirrorAPIOrg())
+	mock.ExpectQuery("SELECT.*FROM providers.*WHERE.*organization_id").
+		WillReturnRows(sampleMirrorAPIProvider())
+	mock.ExpectQuery("SELECT.*FROM provider_versions WHERE provider_id").
+		WillReturnRows(sampleMirrorVersionGetRow())
+	mock.ExpectQuery("SELECT.*approval_status.*FROM mirrored_provider_versions").
+		WillReturnError(mirrorErrDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/providers/registry.terraform.io/hashicorp/aws/1.2.3.json", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestPlatformIndex_ListPlatformsDBError(t *testing.T) {
@@ -360,6 +412,7 @@ func TestPlatformIndex_ListPlatformsDBError(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestPlatformIndex_StorageInitError(t *testing.T) {
@@ -394,6 +447,7 @@ func TestPlatformIndex_StorageInitError(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestPlatformIndex_Success_EmptyPlatforms(t *testing.T) {
