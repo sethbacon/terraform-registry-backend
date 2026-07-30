@@ -67,6 +67,15 @@ func (h *OrganizationHandlers) revokeUserTokens(c *gin.Context, userID, reason s
 	}
 }
 
+// @Summary      List namespace ownership claims
+// @Description  List every namespace ownership claim with its resolved organization name, so operators can audit which organization owns each module/provider namespace.
+// @Tags         Organizations
+// @Security     Bearer
+// @Produce      json
+// @Success      200  {object}  admin.ListNamespaceClaimsResponse
+// @Failure      401  {object}  map[string]interface{}  "Unauthorized"
+// @Failure      500  {object}  map[string]interface{}  "Internal server error"
+// @Router       /api/v1/admin/namespaces [get]
 // ListNamespaceClaimsHandler lists every namespace ownership claim with its
 // resolved organization name, so operators can audit which organization owns
 // each module/provider namespace (issue #555). Organization names are resolved
@@ -108,6 +117,18 @@ func (h *OrganizationHandlers) ListNamespaceClaimsHandler() gin.HandlerFunc {
 	}
 }
 
+// @Summary      Get namespace ownership
+// @Description  Resolve the owning organization of a single namespace exactly as the mutation authorizer does: the claim when present, otherwise the artifact-row fallback. A namespace whose artifacts span multiple organizations without a claim is reported as ambiguous rather than guessed.
+// @Tags         Organizations
+// @Security     Bearer
+// @Produce      json
+// @Param        namespace  path  string  true  "Namespace name"
+// @Success      200  {object}  admin.NamespaceOwnershipResponse
+// @Failure      400  {object}  map[string]interface{}  "namespace is required"
+// @Failure      401  {object}  map[string]interface{}  "Unauthorized"
+// @Failure      404  {object}  map[string]interface{}  "Namespace is unclaimed and has no artifacts"
+// @Failure      500  {object}  map[string]interface{}  "Internal server error"
+// @Router       /api/v1/admin/namespaces/{namespace} [get]
 // GetNamespaceOwnershipHandler resolves the owning organization of a single
 // namespace exactly as the mutation authorizer does: the claim when present,
 // otherwise the artifact-row fallback (a namespace that predates claims or was

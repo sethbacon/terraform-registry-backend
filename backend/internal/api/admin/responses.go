@@ -314,6 +314,34 @@ type ListMirroredProvidersResponse struct {
 	Providers []MirroredProviderSummary `json:"providers"`
 }
 
+// NamespaceClaimItem describes one namespace ownership claim in the
+// ListNamespaceClaimsResponse.
+type NamespaceClaimItem struct {
+	Namespace        string    `json:"namespace"`
+	OrganizationID   string    `json:"organization_id"`
+	OrganizationName string    `json:"organization_name"`
+	ClaimedBy        string    `json:"claimed_by"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
+// ListNamespaceClaimsResponse is returned by GET /api/v1/admin/namespaces.
+type ListNamespaceClaimsResponse struct {
+	Namespaces []NamespaceClaimItem `json:"namespaces"`
+}
+
+// NamespaceOwnershipResponse is returned by GET /api/v1/admin/namespaces/{namespace}.
+// ClaimedBy and CreatedAt are only present when Source is "claim"; OwnerOrganizationIDs
+// is only present when Source is "ambiguous".
+type NamespaceOwnershipResponse struct {
+	Namespace            string     `json:"namespace"`
+	Source               string     `json:"source"`
+	OrganizationID       string     `json:"organization_id,omitempty"`
+	OrganizationName     string     `json:"organization_name,omitempty"`
+	ClaimedBy            string     `json:"claimed_by,omitempty"`
+	CreatedAt            *time.Time `json:"created_at,omitempty"`
+	OwnerOrganizationIDs []string   `json:"owner_organization_ids,omitempty"`
+}
+
 // AuditLogResponse represents a single audit log entry in list or get responses.
 type AuditLogResponse struct {
 	ID             string                 `json:"id"`

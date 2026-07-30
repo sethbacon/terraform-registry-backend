@@ -5,7 +5,7 @@ This document maps SOC 2 Trust Service Criteria to Terraform Registry features,
 configurations, and evidence sources. It is intended to assist compliance teams
 during SOC 2 Type II audits.
 
-**Last updated:** 2026-04-20
+**Last updated:** 2026-07-24
 **Applicable version:** 0.10.0+
 
 ---
@@ -123,6 +123,16 @@ during SOC 2 Type II audits.
 | P4.1     | Use limitation        | PII used only for auth/audit; not shared externally  | Audit shipper config (self-hosted destinations only) |
 | P6.1     | Data subject access   | User data export endpoint                            | `/admin/users/:id/export`                            |
 | P8.1     | Data quality          | IdP-sourced attributes; SCIM sync keeps data current | SCIM provisioning                                    |
+
+---
+
+## Review Schedule
+
+This mapping is reviewed on the same cadence as
+[docs/threat-model.md](../threat-model.md) §8 (on every major version release,
+when new authentication mechanisms or data stores/external integrations are
+introduced, and at least annually), so control mappings do not lag the
+codebase's actual test/CI maturity.
 
 ---
 

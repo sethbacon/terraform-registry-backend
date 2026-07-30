@@ -1307,6 +1307,16 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid logging level: %s (must be debug, info, warn, or error)", c.Logging.Level)
 	}
 
+	// Validate binary mirror auth mode. "" (unset) and "none" both mean no
+	// access control; any other unrecognized value used to be silently
+	// treated the same as "none" by BinaryMirrorAuthMiddleware (fail open on
+	// typo) -- reject it here instead so a misconfigured value stops startup
+	// rather than silently disabling access control.
+	validBinaryMirrorAuth := map[string]bool{"": true, "none": true, "allowlist": true, "mtls": true}
+	if !validBinaryMirrorAuth[c.BinaryMirror.Auth] {
+		return fmt.Errorf("invalid binary_mirror.auth: %s (must be none, allowlist, or mtls)", c.BinaryMirror.Auth)
+	}
+
 	if c.Scanning.Enabled {
 		if c.Scanning.BinaryPath == "" {
 			return fmt.Errorf("scanning.binary_path is required when scanning.enabled=true")

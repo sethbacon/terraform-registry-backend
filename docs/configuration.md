@@ -952,6 +952,11 @@ binary_mirror:
 When `auth=allowlist`, the client IP is resolved using the same `trusted_proxies` rules
 described in the Server section.
 
+> **Unrecognized values are rejected at startup.** `binary_mirror.auth` must be
+> one of `none`, `allowlist`, or `mtls` (or left unset, which behaves like
+> `none`); any other value fails config validation instead of starting the
+> server, so a typo can no longer silently disable access control.
+
 ---
 
 ## Policy Engine (OPA / Rego)

@@ -1,8 +1,8 @@
 <!-- markdownlint-disable MD013 MD060 -->
 # Threat Model — Terraform Registry
 
-**Document version:** 1.0
-**Last updated:** 2026-04-20
+**Document version:** 1.1
+**Last updated:** 2026-07-24
 **Methodology:** STRIDE (Spoofing, Tampering, Repudiation, Information Disclosure, Denial of Service, Elevation of Privilege)
 
 ---
@@ -69,6 +69,7 @@ Terraform modules and providers. It comprises:
 | **TB-5** | Backend → Redis: password-authenticated, optionally TLS-encrypted.                                |
 | **TB-6** | Backend → External IdP: OIDC/SAML/LDAP over TLS.                                                  |
 | **TB-7** | Backend → Scanner binary: local process invocation with constrained arguments.                    |
+| **TB-8** | Backend → Sibling Suite app (TSM): shared-secret-authenticated (`X-Suite-Service-Token`) outbound calls for audit federation and the "Consumed by" proxy; opt-in JWT issuer-trust widening via `TFR_SUITE_TRUSTED_ISSUERS`. Only active when `TFR_SUITE_SIBLING_URL` is configured. See [Suite Audit Federation](suite-audit-federation.md). |
 
 ## 4. Assets
 
@@ -82,6 +83,7 @@ Terraform modules and providers. It comprises:
 | Audit logs               | High        | Compliance evidence; must be tamper-resistant         |
 | User PII                 | Medium      | Email addresses, usernames, IdP identifiers           |
 | Scanner findings         | High        | Vulnerability data about hosted modules               |
+| Suite sibling service token | Critical | Shared secret (`TFR_SUITE_SIBLING_TOKEN`) authenticating outbound audit federation and "Consumed by" reads to the sibling Suite app |
 
 ## 5. STRIDE Analysis
 
@@ -94,6 +96,7 @@ Terraform modules and providers. It comprises:
 | S-3 | Attacker performs LDAP injection to bypass auth            | Backend LDAP connector | Parameterized LDAP queries with input escaping; bind DN validation                                                               | ✅ Implemented |
 | S-4 | Attacker hijacks session via XSS                           | Frontend               | httpOnly + Secure + SameSite=Lax cookies (Lax, not Strict, is required so the cookie survives the OIDC top-level redirect); CSP with nonces; no inline scripts | ✅ Implemented |
 | S-5 | DNS spoofing redirects IdP callbacks                       | Backend OIDC           | Strict redirect_uri validation; state parameter CSRF protection                                                                  | ✅ Implemented |
+| S-6 | Compromised/malicious sibling widens accepted JWT issuers, letting tokens it mints be trusted here | Backend JWT / Suite config (TB-8) | `TFR_SUITE_TRUSTED_ISSUERS` is an explicit operator opt-in allow-list, not derived automatically from suite discovery; only meaningful when `TFR_JWT_SECRET` is deliberately shared with the sibling | ⚙️ Operator-configured |
 
 ### 5.2 Tampering (T)
 
@@ -124,6 +127,8 @@ Terraform modules and providers. It comprises:
 | I-4 | Verbose error messages reveal internal topology  | Backend     | Production mode uses generic error messages; stack traces only in debug level; Swagger UI disabled by default in production  | ✅ Implemented |
 | I-5 | Scanner findings exposed to non-admin users      | Backend API | Scanner endpoints require `admin` or `scanning:read` scope                                                                   | ✅ Implemented |
 | I-6 | User PII enumeration via API                     | Backend API | User list endpoints require admin scope; user lookup by ID only (no email enumeration); rate limiting                        | ✅ Implemented |
+| I-7 | Leaked `TFR_SUITE_SIBLING_TOKEN` lets an attacker call the sibling's federated audit ingest and "Consumed by" consumers endpoint as this app (TB-8) | Suite federation (`suite.go`, audit webhook shipper) | Per-deployment shared secret injected via env/secret, never logged; the sibling gates its own endpoints on the header value | ⚙️ Operator-configured |
+| I-8 | Outbound "Consumed by" proxy call in `suite.go` (TB-8) uses a plain `http.Client` rather than the centralized `httpsafe` resolve-and-pin SSRF guard used for other operator-configured URLs (e.g. `policy.bundle_url`) | Backend suite proxy | Destination host is structurally fixed to the discovery-advertised sibling `PublicURL` (built via `net/url`, not string concatenation); user/module input is confined to query parameters | ⚠️ Partial — not yet routed through `httpsafe` |
 
 ### 5.5 Denial of Service (D)
 
@@ -145,6 +150,7 @@ Terraform modules and providers. It comprises:
 | E-3 | Container escape leads to host compromise            | Deployment   | Non-root container user; read-only root filesystem; dropped capabilities; seccomp/AppArmor profiles recommended in deployment docs       | ⚙️ Operator-configured |
 | E-4 | SQL injection leads to privilege escalation          | Backend      | Parameterized queries; DB user has minimum required grants (no SUPERUSER); separate migration user for DDL                               | ✅ Implemented |
 | E-5 | Path traversal in module/provider archive extraction | Backend      | Archive extraction validates paths; rejects entries with `..` components; temp directory isolation                                       | ✅ Implemented |
+| E-6 | Attacker with `modules:write`/`providers:write` publishes into or overwrites another organization's namespace (namespace hijacking, CWE-639) | Backend namespace authz | `namespace_claims` binds each namespace to the organization that first published into it; every module/provider mutation route checks the caller's organization against the claim (`internal/middleware/namespace_authz.go`); a namespace whose artifacts span multiple orgs without a claim is denied as ambiguous rather than guessed; read-only `/api/v1/admin/namespaces` API exposes current ownership for audit | ✅ Implemented |
 
 > **Status legend:** ✅ Implemented = enforced by the application; ⚠️ Partial =
 > partially enforced; ⚙️ Operator-configured = the application ships safe defaults

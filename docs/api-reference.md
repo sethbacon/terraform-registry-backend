@@ -104,6 +104,7 @@ These endpoints implement the HashiCorp protocols that `terraform init` and `ter
 | Provider Upload | `POST /api/v1/providers` | `providers:write` |
 | Users | `/api/v1/admin/users` | `admin:users` |
 | Organizations | `/api/v1/admin/organizations` | `admin:organizations` |
+| Namespace Ownership (read-only) | `/api/v1/admin/namespaces` | `organizations:read` |
 | API Keys | `/api/v1/apikeys` | `admin:apikeys` |
 | RBAC / Role Templates | `/api/v1/admin/roles` | `admin:roles` |
 | Mirror Configuration | `/api/v1/admin/mirrors` | `mirrors:manage` |

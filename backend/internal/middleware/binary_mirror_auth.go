@@ -17,8 +17,11 @@ import (
 //   - "mtls"      — requires a verified TLS client certificate on the connection; requests
 //     without one receive 403.
 //
-// Any unrecognised Auth value is treated as "none" to avoid accidentally locking out
-// operators who upgrade with a misconfigured value.
+// Any unrecognised Auth value is treated as "none" here as a defense-in-depth
+// default for callers that construct BinaryMirrorConfig directly (e.g. tests).
+// The normal config-loading path (config.Config.Validate) now rejects an
+// unrecognised binary_mirror.auth value at startup instead of silently
+// falling back to "none", so a typo can no longer reach this middleware.
 func BinaryMirrorAuthMiddleware(cfg config.BinaryMirrorConfig) gin.HandlerFunc {
 	switch cfg.Auth {
 	case "allowlist":

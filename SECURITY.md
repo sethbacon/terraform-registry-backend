@@ -3,10 +3,17 @@
 
 ## Supported Versions
 
+We support the latest `3.x` minor/patch release. Earlier major versions do not
+receive security fixes; upgrade to the latest `3.x` release before reporting
+an issue against an older version.
+
 | Version | Supported          |
 | ------- | ------------------ |
-| 1.0.x   | :white_check_mark: |
-| < 1.0   | :x:                |
+| 3.x     | :white_check_mark: |
+| < 3.0   | :x:                |
+
+This table is refreshed as part of the release-please version-bump PR whenever
+the supported major version changes.
 
 ## Reporting a Vulnerability
 
