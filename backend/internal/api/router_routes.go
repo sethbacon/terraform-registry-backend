@@ -856,17 +856,23 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 			// SCM OAuth callback (public endpoint, no auth required)
 			apiV1.GET("/scm-providers/:id/oauth/callback", scmOAuthHandlers.HandleOAuthCallback)
 
-			// Module SCM linking endpoints. Mutations additionally require
-			// namespace-org authorization for the target module (issue #555).
+			// Module SCM linking endpoints. Every route requires namespace-org
+			// authorization for the target module (issue #555): the reads are
+			// gated too, because GetModuleSCMInfo returns the link's
+			// webhook_url and that URL embeds the webhook secret, which is the
+			// sole credential for the unauthenticated
+			// POST /webhooks/scm/:module_source_repo_id/:secret endpoint. Left
+			// ungated, any holder of the flat modules:write scope union could
+			// read another organization's secret and drive its sync pipeline.
 			moduleSCMGroup := authenticatedGroup.Group("/admin/modules/:id/scm")
 			moduleSCMGroup.Use(middleware.RequireScope(auth.ScopeModulesWrite))
 			{
 				moduleSCMGroup.POST("", nsAuthz.RequireModuleAccessByID(auth.ScopeModulesWrite), scmLinkingHandler.LinkModuleToSCM)
-				moduleSCMGroup.GET("", scmLinkingHandler.GetModuleSCMInfo)
+				moduleSCMGroup.GET("", nsAuthz.RequireModuleAccessByID(auth.ScopeModulesWrite), scmLinkingHandler.GetModuleSCMInfo)
 				moduleSCMGroup.PUT("", nsAuthz.RequireModuleAccessByID(auth.ScopeModulesWrite), scmLinkingHandler.UpdateSCMLink)
 				moduleSCMGroup.DELETE("", nsAuthz.RequireModuleAccessByID(auth.ScopeModulesWrite), scmLinkingHandler.UnlinkModuleFromSCM)
 				moduleSCMGroup.POST("/sync", nsAuthz.RequireModuleAccessByID(auth.ScopeModulesWrite), scmLinkingHandler.TriggerManualSync)
-				moduleSCMGroup.GET("/events", scmLinkingHandler.GetWebhookEvents)
+				moduleSCMGroup.GET("/events", nsAuthz.RequireModuleAccessByID(auth.ScopeModulesWrite), scmLinkingHandler.GetWebhookEvents)
 			}
 
 			// Mirror management endpoints with granular RBAC
