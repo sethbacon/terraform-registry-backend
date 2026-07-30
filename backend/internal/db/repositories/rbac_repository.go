@@ -5,6 +5,7 @@ package repositories
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -133,6 +134,16 @@ func (r *RBACRepository) GetApprovalRequest(ctx context.Context, id uuid.UUID) (
 	return &req, err
 }
 
+// argPlaceholder formats a positional SQL placeholder ("$3") for the given
+// 1-based argument index. Extracted out of ListApprovalRequests so its
+// placeholder numbering is a directly testable unit rather than an inline
+// expression re-derived by tests (issue #693: the prior "$" +
+// string(rune('0'+argNum)) formula silently produced an invalid,
+// non-numeric character once argNum reached double digits).
+func argPlaceholder(argNum int) string {
+	return fmt.Sprintf("$%d", argNum)
+}
+
 // ListApprovalRequests lists approval requests with optional filters
 func (r *RBACRepository) ListApprovalRequests(ctx context.Context, orgID *uuid.UUID, status *models.ApprovalStatus) ([]*models.MirrorApprovalRequest, error) {
 	query := `SELECT mar.id, mar.mirror_config_id, mar.organization_id, mar.requested_by, mar.provider_namespace, mar.provider_name,
@@ -151,13 +162,13 @@ func (r *RBACRepository) ListApprovalRequests(ctx context.Context, orgID *uuid.U
 	argNum := 1
 
 	if orgID != nil {
-		query += ` AND mar.organization_id = $` + string(rune('0'+argNum))
+		query += ` AND mar.organization_id = ` + argPlaceholder(argNum)
 		args = append(args, *orgID)
 		argNum++
 	}
 
 	if status != nil {
-		query += ` AND mar.status = $` + string(rune('0'+argNum))
+		query += ` AND mar.status = ` + argPlaceholder(argNum)
 		args = append(args, *status)
 	}
 

@@ -373,6 +373,65 @@ func TestListApprovalRequests_Error(t *testing.T) {
 	}
 }
 
+// TestListApprovalRequests_BothFilters exercises both optional filters at once
+// so the org-ID placeholder ($1) and the status placeholder ($2) are both
+// generated in the same query, confirming argNum increments correctly and
+// each filter binds to its own placeholder when they combine. It does NOT by
+// itself distinguish the #693 fmt.Sprintf fix from the pre-fix single-digit
+// rune arithmetic it replaced: ListApprovalRequests has only two optional
+// filters, so argNum here never exceeds 2, and the old and new builders are
+// byte-identical for any single-digit argNum. See TestArgPlaceholder_AboveNine
+// below for a test that calls the extracted argPlaceholder helper directly at
+// argNum >= 10, where the two formulas diverge.
+func TestListApprovalRequests_BothFilters(t *testing.T) {
+	repo, mock := newRBACRepo(t)
+	orgID := uuid.New()
+	status := models.ApprovalStatusPending
+
+	mock.ExpectQuery(`SELECT mar\.id.*FROM mirror_approval_requests.*AND mar\.organization_id = \$1.*AND mar\.status = \$2`).
+		WithArgs(orgID, status).
+		WillReturnRows(sampleApprovalListRow())
+
+	reqs, err := repo.ListApprovalRequests(context.Background(), &orgID, &status)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(reqs) != 1 {
+		t.Errorf("len = %d, want 1", len(reqs))
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestArgPlaceholder_AboveNine calls the real argPlaceholder helper that
+// ListApprovalRequests uses for its placeholder numbering (#693), driving it
+// past the single-digit range where the pre-fix "$" + string(rune('0'+argNum))
+// formula silently produced an invalid, non-numeric placeholder character
+// instead of a correct multi-digit "$N" token. ListApprovalRequests' own two
+// optional filters can never drive argNum past 2, so this test exercises the
+// extracted helper directly rather than through the repository method — but
+// because it calls the production argPlaceholder function itself (not a
+// re-derived copy of its formula), it would fail immediately if that function
+// were ever reverted to rune arithmetic.
+func TestArgPlaceholder_AboveNine(t *testing.T) {
+	tests := []struct {
+		argNum int
+		want   string
+	}{
+		{argNum: 1, want: "$1"},
+		{argNum: 9, want: "$9"},
+		{argNum: 10, want: "$10"},
+		{argNum: 11, want: "$11"},
+		{argNum: 23, want: "$23"},
+	}
+	for _, tt := range tests {
+		if got := argPlaceholder(tt.argNum); got != tt.want {
+			t.Errorf("argPlaceholder(%d) = %q, want %q", tt.argNum, got, tt.want)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // UpdateApprovalStatus
 // ---------------------------------------------------------------------------
