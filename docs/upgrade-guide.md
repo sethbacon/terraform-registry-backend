@@ -84,6 +84,53 @@ If issues are found after upgrade:
 
 ## Version-Specific Upgrade Notes
 
+### 3.5.x → 3.6.0
+
+The exact version is whatever release first contains PRs #712 and #724 — confirm
+against `CHANGELOG.md`. Both entries below are **behavior changes that activate on
+upgrade with no configuration change**, so review them before deploying.
+
+**Audit configuration becomes active (#659, PR #712):**
+
+`audit.log_read_operations`, `audit.log_failed_requests` and `audit.shippers` were
+previously parsed and validated but **never actually used** — the audit middleware
+was wired with hardcoded `nil`s. That was the bug; those settings are now honored.
+
+If you already have any of them set, upgrading changes runtime behavior immediately:
+
+- `log_read_operations: true` — GET/read-path audit rows begin being written. On a
+  busy registry this can change audit table growth rate sharply; check retention and
+  disk headroom first.
+- `log_failed_requests: true` — failed-request rows begin being written.
+- `shippers: [...]` — a configured external shipper **starts receiving traffic**. The
+  registry begins making outbound calls to an endpoint that has never received them,
+  which may be unexpected volume for a webhook/SIEM target.
+
+**Recommended:** review your `audit.*` block before upgrading and comment out anything
+you did not intend to be live. To keep the previous effective behavior, unset these keys.
+
+**Audit log reads are scoped to the caller's organizations (#719, PR #724):**
+
+`GET /api/v1/admin/audit-logs` previously returned **every organization's** audit trail
+to any holder of `audit:read`. Because `audit:read` is granted per-organization by the
+`auditor` role template but arrives in the session token as part of a flat, org-less
+scope union, that crossed the tenant boundary.
+
+After upgrade:
+
+- Platform admins (the `admin` wildcard scope) still see all organizations.
+- A non-admin auditor sees only the organizations they belong to.
+- A caller belonging to **multiple** organizations must now pass `organization_id`
+  explicitly; without it the request returns `400` rather than a silently partial result.
+
+**Action required** if you have tooling, dashboards, or exports that read this endpoint
+with a non-admin token and expect estate-wide results: either grant that principal the
+`admin` scope deliberately, or update the caller to iterate per organization.
+
+**Migrations:** none for either change.
+
+**Rollback:** both are code-only; rolling back the binary restores the previous behavior.
+
 ### 0.6.x → 0.7.0
 
 **Breaking Changes:**
