@@ -33,6 +33,18 @@ var (
 		},
 		[]string{"org", "resource"},
 	)
+
+	// quotaBackendErrors is incremented each time a quota check fails (DB
+	// error) and the middleware fails open, allowing the request through
+	// unchecked (sibling of issue #661's rate-limiter fail-open metric —
+	// same "fail open on backend error with no alerting" defect signature).
+	quotaBackendErrors = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "registry_quota_backend_errors_total",
+			Help: "Total number of requests allowed through unchecked because a quota check failed (fail-open), by organization and resource type.",
+		},
+		[]string{"org", "resource"},
+	)
 )
 
 // QuotaChecker provides quota lookup and enforcement.
@@ -57,6 +69,7 @@ func (qc *QuotaChecker) CheckPublishQuota() gin.HandlerFunc {
 		exceeded, resetTime, err := qc.isPublishQuotaExceeded(c.Request.Context(), orgID)
 		if err != nil {
 			// On error, allow the request (fail open for availability)
+			quotaBackendErrors.WithLabelValues(orgID, "publishes").Inc()
 			c.Next()
 			return
 		}
@@ -88,6 +101,8 @@ func (qc *QuotaChecker) CheckDownloadQuota() gin.HandlerFunc {
 
 		exceeded, resetTime, err := qc.isDownloadQuotaExceeded(c.Request.Context(), orgID)
 		if err != nil {
+			// On error, allow the request (fail open for availability)
+			quotaBackendErrors.WithLabelValues(orgID, "downloads").Inc()
 			c.Next()
 			return
 		}

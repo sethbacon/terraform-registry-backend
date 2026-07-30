@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/safego"
 	"github.com/terraform-registry/terraform-registry/internal/scm"
 	"github.com/terraform-registry/terraform-registry/internal/scm/appcreds"
 	"github.com/terraform-registry/terraform-registry/internal/services"
@@ -511,11 +512,11 @@ func (h *SCMLinkingHandler) TriggerManualSync(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": connErr.Error()})
 			return
 		}
-		go func() {
+		safego.Go(func() {
 			if syncErr := h.publisher.TriggerManualSync(context.Background(), link, connector, token); syncErr != nil {
 				slog.Warn("manual sync failed", "module_id", moduleID, "error", syncErr)
 			}
-		}()
+		})
 		c.JSON(http.StatusAccepted, gin.H{"message": "sync triggered"})
 		return
 	}
@@ -616,7 +617,7 @@ func (h *SCMLinkingHandler) TriggerManualSync(c *gin.Context) {
 	// Trigger async sync in background using a new context
 	// (c.Request.Context() would be canceled when the HTTP response is sent)
 	slog.Debug("starting async sync", "module_id", moduleID, "owner", link.RepositoryOwner, "repo", link.RepositoryName)
-	go func() {
+	safego.Go(func() {
 		slog.Debug("running sync in goroutine", "module_id", moduleID)
 		if err := h.publisher.TriggerManualSync(context.Background(), link, connector, token); err != nil {
 			// Log error but don't fail the request
@@ -624,7 +625,7 @@ func (h *SCMLinkingHandler) TriggerManualSync(c *gin.Context) {
 		} else {
 			slog.Debug("manual sync completed successfully", "module_id", moduleID)
 		}
-	}()
+	})
 
 	c.JSON(http.StatusAccepted, gin.H{"message": "sync triggered"})
 }

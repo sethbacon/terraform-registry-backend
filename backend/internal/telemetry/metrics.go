@@ -233,6 +233,25 @@ var RateLimitRejectionsTotal = promauto.NewCounterVec(
 	[]string{"tier", "key_type"},
 )
 
+// RateLimitBackendErrorsTotal is a CounterVec with labels {tier, key_type}
+// incremented each time a rate limiter backend (e.g. Redis) returns an error
+// and the middleware fails open, allowing the request through unthrottled
+// (issue #661, CWE-636). tier/key_type match RateLimitRejectionsTotal. A
+// sustained Redis outage disables rate limiting fleet-wide for the affected
+// tier — including the auth brute-force guard and upload limits — with
+// otherwise only a log line to signal it; this metric makes that alertable.
+//
+// Example PromQL queries:
+//   - Backend error rate by tier: sum by (tier) (rate(rate_limit_backend_errors_total[5m]))
+//   - Alert on any sustained fail-open: rate(rate_limit_backend_errors_total[5m]) > 0
+var RateLimitBackendErrorsTotal = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "rate_limit_backend_errors_total",
+		Help: "Total number of requests allowed through unthrottled because the rate limiter backend returned an error (fail-open), by tier and key type.",
+	},
+	[]string{"tier", "key_type"},
+)
+
 // AppInfo is a GaugeVec that exposes build information as Prometheus labels.
 // Set once at startup with value 1 so the info is available via the /metrics endpoint.
 //

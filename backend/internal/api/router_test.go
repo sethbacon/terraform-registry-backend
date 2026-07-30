@@ -15,7 +15,10 @@ import (
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
+	"github.com/terraform-registry/terraform-registry/internal/audit"
+	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/middleware"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 )
@@ -598,5 +601,98 @@ func TestAllowLowEntropyEncryptionKey(t *testing.T) {
 				t.Errorf("allowLowEntropyEncryptionKey() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// registerAuthenticatedGroupMiddleware — regression test for issue #659.
+//
+// router_routes.go:511 (pre-fix) wired the authenticated route group with
+// middleware.AuditMiddleware(auditRepo), which hardcodes shipper=nil and
+// auditCfg=nil, making external audit shipping and the
+// LogReadOperations/LogFailedRequests config flags permanently unreachable in
+// production. This test drives a real request through the actual wiring
+// function the router uses (not just AuditMiddlewareWithShipper in
+// isolation) and asserts the configured shipper is actually invoked — it
+// fails if router_routes.go ever reverts to the old hardcoded-nil call.
+// ---------------------------------------------------------------------------
+
+// spyShipper is a minimal audit.Shipper that records shipped entries.
+type spyShipper struct {
+	shipped chan *audit.LogEntry
+}
+
+func (s *spyShipper) Ship(_ context.Context, entry *audit.LogEntry) error {
+	s.shipped <- entry
+	return nil
+}
+
+func (s *spyShipper) Close() error { return nil }
+
+func TestRegisterAuthenticatedGroupMiddleware_AuditShipsToRealShipper(t *testing.T) {
+	// GenerateJWT/ValidateJWT lazily initialize a shared, process-wide
+	// TokenManager (sync.Once) that requires TFR_JWT_SECRET outside dev mode.
+	t.Setenv("TFR_JWT_SECRET", "test-jwt-secret-for-router-wiring-test-32ch!!")
+
+	userDB, userMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New (user): %v", err)
+	}
+	defer userDB.Close()
+
+	userRepo := repositories.NewUserRepository(userDB)
+
+	userCols := []string{"id", "email", "name", "oidc_sub", "created_at", "updated_at"}
+	userMock.ExpectQuery("SELECT.*FROM users WHERE id").
+		WillReturnRows(sqlmock.NewRows(userCols).
+			AddRow("user-1", "test@example.com", "Test User", nil, time.Now(), time.Now()))
+
+	shipper := &spyShipper{shipped: make(chan *audit.LogEntry, 1)}
+
+	d := &apiV1RouteDeps{
+		cfg: &config.Config{
+			Audit: config.AuditConfig{LogReadOperations: true},
+		},
+		userRepo: userRepo,
+		// orgRepo, apiKeyRepo, tokenRepo, userTokenRevocationRepo: nil is safe —
+		// the JWT auth path uses scopes embedded in the token claims and skips
+		// revocation checks when the repos are nil (see AuthMiddleware).
+		auditRepo:    nil, // nil is safe: AuditMiddlewareWithShipper skips the DB write when nil
+		auditShipper: shipper,
+	}
+
+	router := gin.New()
+	apiV1 := router.Group("")
+	authenticatedGroup := apiV1.Group("")
+	registerAuthenticatedGroupMiddleware(authenticatedGroup, d)
+	authenticatedGroup.GET("/dummy", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	token, err := auth.GenerateJWT("user-1", "test@example.com", nil, time.Hour)
+	if err != nil {
+		t.Fatalf("GenerateJWT: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/dummy", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (request must pass auth to reach the audit middleware)", w.Code)
+	}
+
+	select {
+	case entry := <-shipper.shipped:
+		if entry.Action != "GET /dummy" {
+			t.Errorf("shipped entry action = %q, want %q", entry.Action, "GET /dummy")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("audit shipper.Ship was never called: the real auditShipper/cfg.Audit did not reach " +
+			"AuditMiddlewareWithShipper (regression for issue #659 — router wiring reverted to the " +
+			"hardcoded-nil middleware.AuditMiddleware(auditRepo))")
+	}
+
+	if err := userMock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled user-mock expectations: %v", err)
 	}
 }

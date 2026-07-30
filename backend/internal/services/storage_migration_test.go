@@ -1,8 +1,11 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"database/sql/driver"
+	"errors"
+	"io"
 	"testing"
 	"time"
 
@@ -11,6 +14,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/storage"
 
 	// Register the local storage backend for buildStorageFromConfig tests.
 	_ "github.com/terraform-registry/terraform-registry/internal/storage/local"
@@ -1348,4 +1352,106 @@ func TestBuildStorageFromConfig_GCS(t *testing.T) {
 
 	_, err := svc.buildStorageFromConfig(sc)
 	_ = err // Will fail at GCS client creation, but branch is exercised
+}
+
+// ---------------------------------------------------------------------------
+// migrateItem — panic recovery in the upload goroutine must not deadlock
+// ---------------------------------------------------------------------------
+
+// panicUploadStorage is a storage.Storage whose Upload panics before reading
+// from the supplied reader, simulating a nil-pointer dereference (or similar)
+// during request setup in a real backend.
+type panicUploadStorage struct{}
+
+func (panicUploadStorage) Upload(ctx context.Context, path string, reader io.Reader, size int64) (*storage.UploadResult, error) {
+	panic("simulated panic during upload request setup")
+}
+
+func (panicUploadStorage) Download(ctx context.Context, path string) (io.ReadCloser, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (panicUploadStorage) Delete(ctx context.Context, path string) error { return nil }
+
+func (panicUploadStorage) GetURL(ctx context.Context, path string, ttl time.Duration) (string, error) {
+	return "", nil
+}
+
+func (panicUploadStorage) Exists(ctx context.Context, path string) (bool, error) { return false, nil }
+
+func (panicUploadStorage) GetMetadata(ctx context.Context, path string) (*storage.FileMetadata, error) {
+	return nil, errors.New("not implemented")
+}
+
+// sourceStorage is a minimal storage.Storage that serves fixed content for Download.
+type sourceStorage struct {
+	content []byte
+}
+
+func (s sourceStorage) Upload(ctx context.Context, path string, reader io.Reader, size int64) (*storage.UploadResult, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s sourceStorage) Download(ctx context.Context, path string) (io.ReadCloser, error) {
+	return io.NopCloser(bytes.NewReader(s.content)), nil
+}
+
+func (s sourceStorage) Delete(ctx context.Context, path string) error { return nil }
+
+func (s sourceStorage) GetURL(ctx context.Context, path string, ttl time.Duration) (string, error) {
+	return "", nil
+}
+
+func (s sourceStorage) Exists(ctx context.Context, path string) (bool, error) { return false, nil }
+
+func (s sourceStorage) GetMetadata(ctx context.Context, path string) (*storage.FileMetadata, error) {
+	return &storage.FileMetadata{Size: int64(len(s.content))}, nil
+}
+
+// TestMigrateItem_UploadPanicDoesNotDeadlock is a regression test: a panic
+// inside tgtStorage.Upload (before it has read anything from the io.Pipe)
+// must not leave the caller's io.Copy(pw, reader) blocked forever on
+// pw.Write(). Without pr.CloseWithError in the recover block, this test
+// hangs instead of returning an error.
+func TestMigrateItem_UploadPanicDoesNotDeadlock(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	sqlxDB := sqlx.NewDb(db, "sqlmock")
+	repo := repositories.NewStorageMigrationRepository(sqlxDB)
+	svc := NewStorageMigrationService(repo, nil, nil, nil, nil, nil)
+
+	mock.ExpectExec("UPDATE storage_migration_items").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	item := &models.StorageMigrationItem{
+		ID:           "item-1",
+		ArtifactType: "module",
+		ArtifactID:   "artifact-1",
+		SourcePath:   "path/to/artifact.tgz",
+	}
+
+	src := sourceStorage{content: []byte("some artifact bytes")}
+	tgt := panicUploadStorage{}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- svc.migrateItem(context.Background(), src, tgt, item, "target-backend")
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected migrateItem to return an error after upload panic, got nil")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("migrateItem deadlocked after panic in tgtStorage.Upload (io.PipeReader was not closed on the panic path)")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled expectations: %v", err)
+	}
 }

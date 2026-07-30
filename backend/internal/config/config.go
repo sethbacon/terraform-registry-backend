@@ -347,6 +347,15 @@ type DatabaseConfig struct {
 	SSLMode            string `mapstructure:"ssl_mode"`
 	MaxConnections     int    `mapstructure:"max_connections"`
 	MinIdleConnections int    `mapstructure:"min_idle_connections"`
+	// StatementTimeoutSecs bounds how long a single query may run before
+	// Postgres cancels it, so a stuck or lock-contended query cannot hold a
+	// pooled connection indefinitely and exhaust MaxConnections (issue #664,
+	// CWE-400). 0 disables the timeout.
+	StatementTimeoutSecs int `mapstructure:"statement_timeout_secs"`
+	// IdleInTransactionTimeoutSecs bounds how long a session may sit idle
+	// inside an open transaction before Postgres cancels it. 0 disables the
+	// timeout.
+	IdleInTransactionTimeoutSecs int `mapstructure:"idle_in_transaction_timeout_secs"`
 }
 
 // StorageConfig holds storage backend configuration
@@ -808,6 +817,8 @@ func bindEnvVars(v *viper.Viper) error {
 		"database.ssl_mode",
 		"database.max_connections",
 		"database.min_idle_connections",
+		"database.statement_timeout_secs",
+		"database.idle_in_transaction_timeout_secs",
 		"identity_database.host",
 		"identity_database.port",
 		"identity_database.name",
@@ -816,6 +827,8 @@ func bindEnvVars(v *viper.Viper) error {
 		"identity_database.ssl_mode",
 		"identity_database.max_connections",
 		"identity_database.min_idle_connections",
+		"identity_database.statement_timeout_secs",
+		"identity_database.idle_in_transaction_timeout_secs",
 
 		// Server
 		"server.host",
@@ -1065,6 +1078,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("database.ssl_mode", "require")
 	v.SetDefault("database.max_connections", 25)
 	v.SetDefault("database.min_idle_connections", 5)
+	// Conservative defaults so a stuck or lock-contended query cannot hold a
+	// pooled connection indefinitely (issue #664, CWE-400). Set to 0 to
+	// disable, e.g. if a one-off migration needs more headroom.
+	v.SetDefault("database.statement_timeout_secs", 30)
+	v.SetDefault("database.idle_in_transaction_timeout_secs", 30)
 
 	// Identity database — empty defaults so each field falls back to the app
 	// database (above) unless TFR_IDENTITY_DATABASE_* overrides it.
@@ -1076,6 +1094,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("identity_database.ssl_mode", "")
 	v.SetDefault("identity_database.max_connections", 0)
 	v.SetDefault("identity_database.min_idle_connections", 0)
+	v.SetDefault("identity_database.statement_timeout_secs", 0)
+	v.SetDefault("identity_database.idle_in_transaction_timeout_secs", 0)
 
 	// Storage defaults
 	v.SetDefault("storage.default_backend", "local")
@@ -1362,12 +1382,60 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// GetDSN returns the PostgreSQL connection string
-func (c *DatabaseConfig) GetDSN() string {
+// baseDSN returns the "host=... sslmode=..." connection-parameter portion of
+// the DSN shared by GetDSN, GetDSNWithSearchPath, and GetMigrationDSN.
+func (c *DatabaseConfig) baseDSN() string {
 	return fmt.Sprintf(
 		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 		c.Host, c.Port, c.User, c.Password, c.Name, c.SSLMode,
 	)
+}
+
+// dsnOptions returns the libpq "-c key=value ..." options clause applied to
+// every registry database connection. StatementTimeoutSecs and
+// IdleInTransactionTimeoutSecs bound how long a single query (or an
+// idle-in-transaction session) may hold a connection out of the pool, so a
+// stuck or lock-contended query cannot exhaust the small, fixed-size
+// connection pool (issue #664, CWE-400); either can be left at 0 to disable.
+// extra appends further "-c key=value" clauses (e.g. search_path). Returns ""
+// if there is nothing to set.
+func (c *DatabaseConfig) dsnOptions(extra ...string) string {
+	opts := make([]string, 0, len(extra)+2)
+	if c.StatementTimeoutSecs > 0 {
+		opts = append(opts, fmt.Sprintf("-c statement_timeout=%ds", c.StatementTimeoutSecs))
+	}
+	if c.IdleInTransactionTimeoutSecs > 0 {
+		opts = append(opts, fmt.Sprintf("-c idle_in_transaction_session_timeout=%ds", c.IdleInTransactionTimeoutSecs))
+	}
+	for _, e := range extra {
+		opts = append(opts, "-c "+e)
+	}
+	return strings.Join(opts, " ")
+}
+
+// migrationDsnOptions is like dsnOptions but never sets statement_timeout.
+// Schema migrations run on a separate, short-lived connection (see
+// GetMigrationDSN) specifically so a full-table backfill or index build
+// (e.g. migrations/000020_search_indexes.up.sql,
+// 000031_backfill_scanner_name.up.sql) cannot be cancelled mid-run by the
+// operator's statement_timeout_secs, which is sized for request-serving
+// queries and would otherwise fail server startup outright. idle_in_transaction
+// is still applied since migrations execute statements without idling.
+func (c *DatabaseConfig) migrationDsnOptions() string {
+	opts := make([]string, 0, 1)
+	if c.IdleInTransactionTimeoutSecs > 0 {
+		opts = append(opts, fmt.Sprintf("-c idle_in_transaction_session_timeout=%ds", c.IdleInTransactionTimeoutSecs))
+	}
+	return strings.Join(opts, " ")
+}
+
+// GetDSN returns the PostgreSQL connection string
+func (c *DatabaseConfig) GetDSN() string {
+	base := c.baseDSN()
+	if opts := c.dsnOptions(); opts != "" {
+		base += fmt.Sprintf(" options='%s'", opts)
+	}
+	return base
 }
 
 // GetDSNWithSearchPath returns the DSN with the connection's search_path set, so
@@ -1375,7 +1443,18 @@ func (c *DatabaseConfig) GetDSN() string {
 // route identity data access at the dedicated identity schema while feature
 // tables fall back to public.
 func (c *DatabaseConfig) GetDSNWithSearchPath(searchPath string) string {
-	return c.GetDSN() + fmt.Sprintf(" options='-c search_path=%s'", searchPath)
+	return c.baseDSN() + fmt.Sprintf(" options='%s'", c.dsnOptions("search_path="+searchPath))
+}
+
+// GetMigrationDSN returns the DSN for the dedicated, short-lived connection
+// used to run schema migrations. It is identical to GetDSN() except
+// statement_timeout is never applied (see migrationDsnOptions).
+func (c *DatabaseConfig) GetMigrationDSN() string {
+	base := c.baseDSN()
+	if opts := c.migrationDsnOptions(); opts != "" {
+		base += fmt.Sprintf(" options='%s'", opts)
+	}
+	return base
 }
 
 // resolveIdentityDatabase fills any unset IdentityDatabase field from the primary
@@ -1407,6 +1486,12 @@ func (c *Config) resolveIdentityDatabase() {
 	}
 	if id.MinIdleConnections == 0 {
 		id.MinIdleConnections = c.Database.MinIdleConnections
+	}
+	if id.StatementTimeoutSecs == 0 {
+		id.StatementTimeoutSecs = c.Database.StatementTimeoutSecs
+	}
+	if id.IdleInTransactionTimeoutSecs == 0 {
+		id.IdleInTransactionTimeoutSecs = c.Database.IdleInTransactionTimeoutSecs
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/middleware"
+	"github.com/terraform-registry/terraform-registry/internal/safego"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 	"github.com/terraform-registry/terraform-registry/internal/telemetry"
 )
@@ -129,7 +130,7 @@ func ServeFileHandler(storageBackend storage.Storage, cfg *config.Config, db *sq
 		// Track provider downloads: path is providers/{namespace}/{type}/{version}/{os}/{arch}/{file}
 		if providerRepo != nil {
 			if ns, pt, ver, osName, arch, ok := parseProviderFilePath(filePath); ok {
-				go trackProviderDownload(providerRepo, orgRepo, ns, pt, ver, osName, arch)
+				safego.Go(func() { trackProviderDownload(providerRepo, orgRepo, ns, pt, ver, osName, arch) })
 				telemetry.ProviderDownloadsTotal.WithLabelValues(ns, pt, osName, arch).Inc()
 			}
 		}
@@ -151,7 +152,7 @@ func ServeFileHandler(storageBackend storage.Storage, cfg *config.Config, db *sq
 			// use rather than logging the raw path (issue #678 sibling).
 			action := "GET " + middleware.RedactSensitivePath(c.Request.URL.Path)
 			ip := c.ClientIP()
-			go func() {
+			safego.Go(func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 				if err := auditRepo.CreateAuditLog(ctx, &models.AuditLog{
@@ -161,7 +162,7 @@ func ServeFileHandler(storageBackend storage.Storage, cfg *config.Config, db *sq
 				}); err != nil {
 					slog.Error("failed to write audit log for file download", "error", err, "action", action)
 				}
-			}()
+			})
 		}
 
 		// Set response headers

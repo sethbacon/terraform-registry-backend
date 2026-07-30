@@ -17,6 +17,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/middleware"
+	"github.com/terraform-registry/terraform-registry/internal/safego"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 	"github.com/terraform-registry/terraform-registry/internal/telemetry"
 	"github.com/terraform-registry/terraform-registry/internal/validation"
@@ -113,12 +114,12 @@ func DownloadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Con
 
 		// Increment download counter asynchronously (don't block the response)
 		versionID := moduleVersion.ID
-		go func() {
+		safego.Go(func() {
 			// Use background context to avoid cancellation when request completes
 			if err := moduleRepo.IncrementDownloadCount(context.Background(), versionID); err != nil {
 				slog.Warn("failed to increment module download count", "version_id", versionID, "error", err)
 			}
-		}()
+		})
 
 		// Increment Prometheus download counter
 		telemetry.ModuleDownloadsTotal.WithLabelValues(namespace, system).Inc()
@@ -143,7 +144,7 @@ func DownloadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Con
 					orgIDStr = &s
 				}
 			}
-			go func() {
+			safego.Go(func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 				if err := auditRepo.CreateAuditLog(ctx, &models.AuditLog{
@@ -156,7 +157,7 @@ func DownloadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Con
 				}); err != nil {
 					slog.Error("failed to write audit log for module download", "error", err, "action", action)
 				}
-			}()
+			})
 		}
 
 		// Return 204 No Content with X-Terraform-Get header

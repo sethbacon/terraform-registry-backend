@@ -55,6 +55,7 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/tuf"
 	"github.com/sigstore/sigstore-go/pkg/util"
 	"github.com/sigstore/sigstore-go/pkg/verify"
+	"github.com/terraform-registry/terraform-registry/internal/safego"
 	"github.com/theupdateframework/go-tuf/v2/metadata/fetcher"
 
 	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
@@ -182,10 +183,10 @@ func fetchTrustRootBounded() (*root.TrustedRoot, error) {
 	// fake do, and go test -race catches exactly that race otherwise).
 	fetch := fetchTrustRoot
 	ch := make(chan fetchTrustRootResult, 1)
-	go func() {
+	safego.Go(func() {
 		r, err := fetch()
 		ch <- fetchTrustRootResult{r, err}
-	}()
+	})
 
 	select {
 	case res := <-ch:

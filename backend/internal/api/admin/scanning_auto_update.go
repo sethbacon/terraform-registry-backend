@@ -19,6 +19,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/jobs"
 	"github.com/terraform-registry/terraform-registry/internal/mirror"
+	"github.com/terraform-registry/terraform-registry/internal/safego"
 )
 
 // scanningAutoUpdateInput is the PUT /api/v1/admin/scanning/auto-update request body.
@@ -133,7 +134,7 @@ func (h *ScanningAutoUpdateHandler) Put(c *gin.Context) {
 	// discarded (issue #565 finding [40]).
 	if h.updateJob != nil {
 		_ = h.updateJob.Stop()
-		go func() { _ = h.updateJob.Start(context.Background()) }()
+		safego.Go(func() { _ = h.updateJob.Start(context.Background()) })
 	}
 
 	c.JSON(http.StatusOK, ScanningAutoUpdateResponse{

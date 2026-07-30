@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/terraform-registry/terraform-registry/internal/audit"
+	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 )
 
@@ -115,6 +116,106 @@ func TestMultiShipper_ContinuesAfterShipperError(t *testing.T) {
 	}
 	if srv2Count != 1 {
 		t.Errorf("second shipper received %d calls, want 1", srv2Count)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// NewMultiShipperFromConfig — issue #659: cfg.Audit.Shippers must actually
+// reach a real audit.Shipper instead of being wired up with hardcoded nils.
+// ---------------------------------------------------------------------------
+
+func TestNewMultiShipperFromConfig_Empty(t *testing.T) {
+	ms, err := audit.NewMultiShipperFromConfig(nil, nil)
+	if err != nil {
+		t.Fatalf("NewMultiShipperFromConfig(nil) error: %v", err)
+	}
+	if ms.Len() != 0 {
+		t.Errorf("Len() = %d, want 0", ms.Len())
+	}
+}
+
+func TestNewMultiShipperFromConfig_DisabledEntrySkipped(t *testing.T) {
+	cfgs := []config.AuditShipperConfig{
+		{Enabled: false, Type: "webhook", Webhook: &config.AuditWebhookConfig{URL: "http://example.com"}},
+	}
+	ms, err := audit.NewMultiShipperFromConfig(cfgs, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ms.Len() != 0 {
+		t.Errorf("Len() = %d, want 0 (disabled entry should not become an active shipper)", ms.Len())
+	}
+}
+
+func TestNewMultiShipperFromConfig_WebhookDeliversEntry(t *testing.T) {
+	var received bytes.Buffer
+	var gotHeader string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Get("X-Auth-Token")
+		received.ReadFrom(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cfgs := []config.AuditShipperConfig{
+		{
+			Enabled: true,
+			Type:    "webhook",
+			Webhook: &config.AuditWebhookConfig{
+				URL:         srv.URL,
+				Headers:     map[string]string{"X-Auth-Token": "secret"},
+				TimeoutSecs: 5,
+			},
+		},
+	}
+	ms, err := audit.NewMultiShipperFromConfig(cfgs, loopbackGuard)
+	if err != nil {
+		t.Fatalf("NewMultiShipperFromConfig error: %v", err)
+	}
+	if ms.Len() != 1 {
+		t.Fatalf("Len() = %d, want 1", ms.Len())
+	}
+	defer ms.Close()
+
+	if err := ms.Ship(context.Background(), &audit.LogEntry{Action: "config.test"}); err != nil {
+		t.Fatalf("Ship() error: %v", err)
+	}
+
+	var decoded audit.LogEntry
+	if err := json.Unmarshal(received.Bytes(), &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.Action != "config.test" {
+		t.Errorf("Action = %q, want config.test", decoded.Action)
+	}
+	if gotHeader != "secret" {
+		t.Errorf("X-Auth-Token = %q, want secret (config.AuditWebhookConfig.Headers not translated)", gotHeader)
+	}
+}
+
+func TestNewMultiShipperFromConfig_FileShipper(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.log")
+	cfgs := []config.AuditShipperConfig{
+		{Enabled: true, Type: "file", File: &config.AuditFileConfig{Path: path}},
+	}
+	ms, err := audit.NewMultiShipperFromConfig(cfgs, nil)
+	if err != nil {
+		t.Fatalf("NewMultiShipperFromConfig error: %v", err)
+	}
+	if ms.Len() != 1 {
+		t.Fatalf("Len() = %d, want 1", ms.Len())
+	}
+	defer ms.Close()
+
+	if err := ms.Ship(context.Background(), &audit.LogEntry{Action: "file.config.test"}); err != nil {
+		t.Fatalf("Ship() error: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !bytes.Contains(data, []byte("file.config.test")) {
+		t.Errorf("log file does not contain shipped entry: %s", data)
 	}
 }
 
@@ -344,6 +445,47 @@ func TestWebhookShipper_BatchFlushOnInterval(t *testing.T) {
 		// success — interval flush worked
 	case <-time.After(3 * time.Second):
 		t.Error("timed out waiting for interval flush")
+	}
+}
+
+// TestWebhookShipper_BatchFlushZeroTimeout reproduces issue #660: the
+// constructor defaults a local `timeout` to 10s only to build the http.Client,
+// but flushBatch used to derive its per-request context straight from
+// ws.cfg.Timeout, which stays the zero value the operator left unset.
+// context.WithTimeout(parent, 0) yields an already-expired deadline, so every
+// batched send failed immediately with "context deadline exceeded" even
+// though the caller left Timeout unset expecting the same 10s default the
+// underlying http.Client got. Batching with Timeout left unset (0) must still
+// successfully deliver.
+func TestWebhookShipper_BatchFlushZeroTimeout(t *testing.T) {
+	done := make(chan struct{}, 10)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		done <- struct{}{}
+	}))
+	defer srv.Close()
+
+	ws, err := audit.NewWebhookShipperWithGuard(&audit.WebhookConfig{
+		URL:           srv.URL,
+		Timeout:       0, // left unset — must not yield an already-expired context
+		BatchSize:     1, // triggers an immediate flush on the first entry
+		FlushInterval: 5 * time.Second,
+	}, loopbackGuard)
+	if err != nil {
+		t.Fatalf("NewWebhookShipper error: %v", err)
+	}
+	defer ws.Close()
+
+	if err := ws.Ship(context.Background(), &audit.LogEntry{Action: "zero-timeout-batch"}); err != nil {
+		t.Fatalf("Ship(1) error: %v", err)
+	}
+
+	select {
+	case <-done:
+		// success — the batch was delivered despite Timeout being unset
+	case <-time.After(3 * time.Second):
+		t.Error("timed out waiting for batch flush with Timeout=0; flushBatch is likely deriving an already-expired context from the zero cfg.Timeout instead of the defaulted value")
 	}
 }
 

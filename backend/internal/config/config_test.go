@@ -77,6 +77,136 @@ func TestGetDSNWithSearchPath(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// DatabaseConfig.GetDSN — statement_timeout / idle_in_transaction_session_timeout
+// (issue #664: no bound on a stuck/lock-contended query holding a pooled
+// connection).
+// ---------------------------------------------------------------------------
+
+func TestGetDSN_StatementTimeoutSet(t *testing.T) {
+	cfg := DatabaseConfig{
+		Host: "localhost", Port: 5432, User: "registry",
+		Password: "secret", Name: "terraform_registry", SSLMode: "require",
+		StatementTimeoutSecs: 30,
+	}
+	want := "host=localhost port=5432 user=registry password=secret dbname=terraform_registry sslmode=require options='-c statement_timeout=30s'"
+	if got := cfg.GetDSN(); got != want {
+		t.Errorf("GetDSN() = %q, want %q", got, want)
+	}
+}
+
+func TestGetDSN_BothTimeoutsSet(t *testing.T) {
+	cfg := DatabaseConfig{
+		Host: "localhost", Port: 5432, User: "registry",
+		Password: "secret", Name: "terraform_registry", SSLMode: "require",
+		StatementTimeoutSecs:         30,
+		IdleInTransactionTimeoutSecs: 45,
+	}
+	want := "host=localhost port=5432 user=registry password=secret dbname=terraform_registry sslmode=require" +
+		" options='-c statement_timeout=30s -c idle_in_transaction_session_timeout=45s'"
+	if got := cfg.GetDSN(); got != want {
+		t.Errorf("GetDSN() = %q, want %q", got, want)
+	}
+}
+
+func TestGetDSN_TimeoutZeroDisabled(t *testing.T) {
+	// 0 (the Go zero value, and what existing tests/callers construct without
+	// setting the field) must produce exactly the pre-#664 DSN with no
+	// options clause at all — no regression for configs that don't set it.
+	cfg := DatabaseConfig{
+		Host: "localhost", Port: 5432, User: "registry",
+		Password: "secret", Name: "terraform_registry", SSLMode: "require",
+	}
+	want := "host=localhost port=5432 user=registry password=secret dbname=terraform_registry sslmode=require"
+	if got := cfg.GetDSN(); got != want {
+		t.Errorf("GetDSN() = %q, want %q", got, want)
+	}
+}
+
+func TestResolveIdentityDatabase_InheritsTimeouts(t *testing.T) {
+	cfg := &Config{
+		Database: DatabaseConfig{
+			Host: "primary", StatementTimeoutSecs: 30, IdleInTransactionTimeoutSecs: 30,
+		},
+	}
+	cfg.resolveIdentityDatabase()
+	if cfg.IdentityDatabase.StatementTimeoutSecs != 30 {
+		t.Errorf("IdentityDatabase.StatementTimeoutSecs = %d, want 30 (inherited from Database)", cfg.IdentityDatabase.StatementTimeoutSecs)
+	}
+	if cfg.IdentityDatabase.IdleInTransactionTimeoutSecs != 30 {
+		t.Errorf("IdentityDatabase.IdleInTransactionTimeoutSecs = %d, want 30 (inherited from Database)", cfg.IdentityDatabase.IdleInTransactionTimeoutSecs)
+	}
+}
+
+func TestResolveIdentityDatabase_ExplicitTimeoutNotOverridden(t *testing.T) {
+	cfg := &Config{
+		Database:         DatabaseConfig{Host: "primary", StatementTimeoutSecs: 30},
+		IdentityDatabase: DatabaseConfig{StatementTimeoutSecs: 90},
+	}
+	cfg.resolveIdentityDatabase()
+	if cfg.IdentityDatabase.StatementTimeoutSecs != 90 {
+		t.Errorf("IdentityDatabase.StatementTimeoutSecs = %d, want 90 (explicit value preserved)", cfg.IdentityDatabase.StatementTimeoutSecs)
+	}
+}
+
+func TestGetDSNWithSearchPath_CombinesWithTimeouts(t *testing.T) {
+	cfg := DatabaseConfig{
+		Host: "localhost", Port: 5432, User: "registry",
+		Password: "secret", Name: "terraform_registry", SSLMode: "disable",
+		StatementTimeoutSecs: 30,
+	}
+	got := cfg.GetDSNWithSearchPath("identity,public")
+	want := "host=localhost port=5432 user=registry password=secret dbname=terraform_registry sslmode=disable" +
+		" options='-c statement_timeout=30s -c search_path=identity,public'"
+	if got != want {
+		t.Errorf("GetDSNWithSearchPath() = %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DatabaseConfig.GetMigrationDSN — regression coverage for the migration
+// connection excluding statement_timeout (default 30s, issue #664) so a
+// full-table backfill migration (e.g. migrations/000020_search_indexes.up.sql,
+// 000031_backfill_scanner_name.up.sql) cannot be cancelled mid-run and fail
+// server startup.
+// ---------------------------------------------------------------------------
+
+func TestGetMigrationDSN_OmitsStatementTimeout(t *testing.T) {
+	cfg := DatabaseConfig{
+		Host: "localhost", Port: 5432, User: "registry",
+		Password: "secret", Name: "terraform_registry", SSLMode: "require",
+		StatementTimeoutSecs: 30,
+	}
+	want := "host=localhost port=5432 user=registry password=secret dbname=terraform_registry sslmode=require"
+	if got := cfg.GetMigrationDSN(); got != want {
+		t.Errorf("GetMigrationDSN() = %q, want %q (statement_timeout must not appear)", got, want)
+	}
+}
+
+func TestGetMigrationDSN_KeepsIdleInTransactionTimeout(t *testing.T) {
+	cfg := DatabaseConfig{
+		Host: "localhost", Port: 5432, User: "registry",
+		Password: "secret", Name: "terraform_registry", SSLMode: "require",
+		StatementTimeoutSecs:         30,
+		IdleInTransactionTimeoutSecs: 45,
+	}
+	want := "host=localhost port=5432 user=registry password=secret dbname=terraform_registry sslmode=require" +
+		" options='-c idle_in_transaction_session_timeout=45s'"
+	if got := cfg.GetMigrationDSN(); got != want {
+		t.Errorf("GetMigrationDSN() = %q, want %q", got, want)
+	}
+}
+
+func TestGetMigrationDSN_NoTimeoutsSetMatchesGetDSN(t *testing.T) {
+	cfg := DatabaseConfig{
+		Host: "localhost", Port: 5432, User: "registry",
+		Password: "secret", Name: "terraform_registry", SSLMode: "require",
+	}
+	if got, want := cfg.GetMigrationDSN(), cfg.GetDSN(); got != want {
+		t.Errorf("GetMigrationDSN() = %q, want %q (should match GetDSN() when no timeouts are set)", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // ServerConfig.GetAddress
 // ---------------------------------------------------------------------------
 

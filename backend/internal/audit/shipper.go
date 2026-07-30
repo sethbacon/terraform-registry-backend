@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 )
 
@@ -154,6 +155,46 @@ func NewMultiShipperWithGuard(configs []ShipperConfig, egress *httpsafe.Guard) (
 	return ms, nil
 }
 
+// NewMultiShipperFromConfig builds a MultiShipper from the operator-facing
+// config.AuditShipperConfig list (internal/config), translating each entry to
+// this package's own ShipperConfig/WebhookConfig/SyslogConfig/FileConfig
+// types. egress widens the SSRF deny-list applied to webhook shippers exactly
+// as NewMultiShipperWithGuard (issue #659: this is what lets
+// cfg.Audit.Shippers actually reach a real Shipper at startup instead of
+// being wired up with hardcoded nils).
+func NewMultiShipperFromConfig(cfgs []config.AuditShipperConfig, egress *httpsafe.Guard) (*MultiShipper, error) {
+	converted := make([]ShipperConfig, 0, len(cfgs))
+	for _, c := range cfgs {
+		sc := ShipperConfig{Enabled: c.Enabled, Type: c.Type}
+		if c.Syslog != nil {
+			sc.Syslog = &SyslogConfig{
+				Network:  c.Syslog.Network,
+				Address:  c.Syslog.Address,
+				Tag:      c.Syslog.Tag,
+				Facility: c.Syslog.Facility,
+			}
+		}
+		if c.Webhook != nil {
+			sc.Webhook = &WebhookConfig{
+				URL:           c.Webhook.URL,
+				Headers:       c.Webhook.Headers,
+				Timeout:       time.Duration(c.Webhook.TimeoutSecs) * time.Second,
+				BatchSize:     c.Webhook.BatchSize,
+				FlushInterval: time.Duration(c.Webhook.FlushInterval) * time.Second,
+			}
+		}
+		if c.File != nil {
+			sc.File = &FileConfig{
+				Path:       c.File.Path,
+				MaxSizeMB:  c.File.MaxSizeMB,
+				MaxBackups: c.File.MaxBackups,
+			}
+		}
+		converted = append(converted, sc)
+	}
+	return NewMultiShipperWithGuard(converted, egress)
+}
+
 // Ship sends an entry to all configured shippers
 func (ms *MultiShipper) Ship(ctx context.Context, entry *LogEntry) error {
 	ms.mu.RLock()
@@ -168,6 +209,16 @@ func (ms *MultiShipper) Ship(ctx context.Context, entry *LogEntry) error {
 		}
 	}
 	return lastErr
+}
+
+// Len returns the number of active (enabled and successfully constructed)
+// shippers, so a caller can warn when shippers were configured in YAML but
+// none ended up active (e.g. all individually disabled, or a syslog entry
+// skipped as unsupported on this platform).
+func (ms *MultiShipper) Len() int {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	return len(ms.shippers)
 }
 
 // Close closes all shippers
@@ -187,6 +238,7 @@ func (ms *MultiShipper) Close() error {
 // WebhookShipper ships audit logs to a webhook
 type WebhookShipper struct {
 	cfg       *WebhookConfig
+	timeout   time.Duration // defaulted copy of cfg.Timeout; see NewWebhookShipperWithGuard
 	client    *http.Client
 	batchCh   chan *LogEntry
 	batch     []*LogEntry
@@ -213,6 +265,7 @@ func NewWebhookShipperWithGuard(cfg *WebhookConfig, egress *httpsafe.Guard) (*We
 
 	ws := &WebhookShipper{
 		cfg:     cfg,
+		timeout: timeout,
 		client:  httpsafe.NewClient(timeout, egress),
 		batchCh: make(chan *LogEntry, 1000),
 		batch:   make([]*LogEntry, 0),
@@ -277,7 +330,7 @@ func (ws *WebhookShipper) flushBatch() {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), ws.cfg.Timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), ws.timeout)
 	defer cancel()
 
 	if err := ws.sendRequest(ctx, data); err != nil {

@@ -33,6 +33,7 @@ import (
 	terraform_binaries "github.com/terraform-registry/terraform-registry/internal/api/terraform_binaries"
 	"github.com/terraform-registry/terraform-registry/internal/api/uitheme"
 	"github.com/terraform-registry/terraform-registry/internal/api/webhooks"
+	"github.com/terraform-registry/terraform-registry/internal/audit"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
@@ -323,6 +324,7 @@ type apiV1RouteDeps struct {
 	moduleAdminHandlers         *admin.ModuleAdminHandlers
 	providerAdminHandlers       *admin.ProviderAdminHandlers
 	auditRepo                   *repositories.AuditRepository
+	auditShipper                audit.Shipper
 	nsAuthz                     *middleware.NamespaceAuthorizer
 	scanRepo                    *repositories.ModuleScanRepository
 	moduleDocsRepo              *repositories.ModuleDocsRepository
@@ -360,6 +362,27 @@ type apiV1RouteDeps struct {
 	egressGuard                 *httpsafe.Guard
 }
 
+// registerAuthenticatedGroupMiddleware wires the middleware stack applied to
+// every authenticated API v1 route: auth, CSRF, per-principal and
+// per-organization rate limiting, and audit logging. Extracted into its own
+// function (rather than inlined in registerAPIV1Routes, which is
+// coverage:skip:integration-only and requires the full handler dependency
+// graph to construct) specifically so this wiring — in particular, passing
+// the real auditShipper and &cfg.Audit into AuditMiddlewareWithShipper rather
+// than the pre-#659 hardcoded nils — has a direct regression test
+// (TestRegisterAuthenticatedGroupMiddleware_AuditShipsToRealShipper).
+func registerAuthenticatedGroupMiddleware(authenticatedGroup *gin.RouterGroup, d *apiV1RouteDeps) {
+	authenticatedGroup.Use(middleware.AuthMiddleware(d.cfg, d.userRepo, d.apiKeyRepo, d.orgRepo, d.tokenRepo, d.userTokenRevocationRepo))
+	authenticatedGroup.Use(middleware.CSRFMiddleware(d.cfg)) // double-submit cookie CSRF protection + browser-origin Bearer allowlist
+	authenticatedGroup.Use(middleware.PrincipalRateLimitMiddleware(d.generalRateLimiter, d.principalOverrides))
+	authenticatedGroup.Use(middleware.OrgRateLimitMiddleware(d.generalRateLimiter, d.orgRateLimiter))
+	// Audit all authenticated actions. Ships to any configured external
+	// destinations and honors cfg.Audit.LogReadOperations/LogFailedRequests
+	// (issue #659 — previously always AuditMiddleware(auditRepo), which
+	// hardcodes shipper=nil and auditCfg=nil).
+	authenticatedGroup.Use(middleware.AuditMiddlewareWithShipper(d.auditRepo, d.auditShipper, &d.cfg.Audit))
+}
+
 // registerAPIV1Routes wires the /api/v1, /scim/v2, and webhook route table
 // onto router.
 // coverage:skip:integration-only — registers the /api/v1, /scim/v2, and webhook route table; tested via E2E
@@ -373,8 +396,6 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 	authRateLimiter := d.authRateLimiter
 	generalRateLimiter := d.generalRateLimiter
 	uploadRateLimiter := d.uploadRateLimiter
-	orgRateLimiter := d.orgRateLimiter
-	principalOverrides := d.principalOverrides
 	authHandlers := d.authHandlers
 	userRepo := d.userRepo
 	apiKeyRepo := d.apiKeyRepo
@@ -508,11 +529,7 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 
 		// Authenticated-only endpoints
 		authenticatedGroup := apiV1.Group("")
-		authenticatedGroup.Use(middleware.AuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo, userTokenRevocationRepo))
-		authenticatedGroup.Use(middleware.CSRFMiddleware(cfg)) // double-submit cookie CSRF protection + browser-origin Bearer allowlist
-		authenticatedGroup.Use(middleware.PrincipalRateLimitMiddleware(generalRateLimiter, principalOverrides))
-		authenticatedGroup.Use(middleware.OrgRateLimitMiddleware(generalRateLimiter, orgRateLimiter))
-		authenticatedGroup.Use(middleware.AuditMiddleware(auditRepo)) // Audit all authenticated actions
+		registerAuthenticatedGroupMiddleware(authenticatedGroup, d)
 		{
 			// Auth endpoints (require auth)
 			authenticatedGroup.POST("/auth/refresh", authHandlers.RefreshHandler())

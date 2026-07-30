@@ -316,9 +316,11 @@ func serve(cfg *config.Config) error {
 		// Run against the identity database (defaults to the app DB). Identity
 		// migrations are schema-qualified (identity.*), so a plain connection
 		// suffices; a dedicated connection lets identity live in a separate database
-		// (TFR_IDENTITY_DATABASE_*) without coupling to the app pool.
+		// (TFR_IDENTITY_DATABASE_*) without coupling to the app pool. Uses
+		// GetMigrationDSN() (not GetDSN()) so identity_database.statement_timeout_secs
+		// cannot cancel a long-running migration mid-run.
 		identityMigrateDB, mErr := db.Connect(
-			cfg.IdentityDatabase.GetDSN(),
+			cfg.IdentityDatabase.GetMigrationDSN(),
 			cfg.IdentityDatabase.MaxConnections, cfg.IdentityDatabase.MinIdleConnections,
 		)
 		if mErr != nil {
@@ -332,11 +334,24 @@ func serve(cfg *config.Config) error {
 		log.Println("Identity schema migrations completed successfully")
 	}
 
-	// Run migrations automatically on startup
+	// Run migrations automatically on startup, against a separate short-lived
+	// connection built from GetMigrationDSN() rather than the request-serving
+	// `database` pool: database.statement_timeout_secs defaults to 30s to
+	// protect request-serving queries (issue #664), but this codebase's own
+	// migration history includes full-table backfills (e.g.
+	// migrations/000020_search_indexes.up.sql,
+	// 000031_backfill_scanner_name.up.sql) that can legitimately run longer
+	// than that on a production-sized table.
 	log.Println("Running database migrations...")
-	if err := db.RunMigrations(database, "up"); err != nil {
+	migrateDB, mErr := db.Connect(cfg.Database.GetMigrationDSN(), cfg.Database.MaxConnections, cfg.Database.MinIdleConnections)
+	if mErr != nil {
+		return fmt.Errorf("failed to connect for migrations: %w", mErr)
+	}
+	if err := db.RunMigrations(migrateDB, "up"); err != nil {
+		_ = migrateDB.Close()
 		return fmt.Errorf("failed to run migrations: %w", err)
 	}
+	_ = migrateDB.Close()
 	log.Println("Database migrations completed successfully")
 
 	// Get migration version
@@ -505,7 +520,15 @@ func serve(cfg *config.Config) error {
 		TLSConfig:         serverTLSConfig,
 	}
 
-	// Start server in a goroutine
+	// Start server in a goroutine. A listener failure (bind failure, or an
+	// accept-loop failure such as fd exhaustion after the server has been
+	// running) is sent over listenErrCh instead of calling log.Fatalf here
+	// (issue #686): log.Fatalf calls os.Exit(1) directly from this goroutine,
+	// which would terminate the process immediately without running serve()'s
+	// deferred database.Close() or bgServices.Shutdown() below — worst-case
+	// exactly during a resource-exhaustion incident. Sending the error back to
+	// the main goroutine instead lets the normal shutdown path run.
+	listenErrCh := make(chan error, 1)
 	go func() {
 		log.Printf("Starting server on %s", cfg.Server.GetAddress())  // #nosec G706 -- config values from trusted config file/env, not user input
 		log.Printf("Base URL: %s", cfg.Server.BaseURL)                // #nosec G706 -- config values from trusted config file/env, not user input
@@ -522,30 +545,50 @@ func serve(cfg *config.Config) error {
 		}
 
 		if err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Failed to start server: %v", err)
+			listenErrCh <- err
 		}
 	}()
 
-	// Wait for interrupt signal
+	// Wait for either an interrupt signal or the listener goroutine reporting
+	// a startup/accept-loop failure.
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
 
-	log.Println("Shutting down server...")
+	listenErr := waitForShutdownOrListenError(quit, listenErrCh)
 
 	// Graceful shutdown with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := server.Shutdown(ctx); err != nil {
+	if err := server.Shutdown(ctx); err != nil && listenErr == nil {
 		return fmt.Errorf("server forced to shutdown: %w", err)
 	}
 
 	// Stop background jobs and rate limiter goroutines
 	bgServices.Shutdown()
 
+	if listenErr != nil {
+		return fmt.Errorf("failed to start server: %w", listenErr)
+	}
+
 	log.Println("Server stopped gracefully")
 	return nil
+}
+
+// waitForShutdownOrListenError blocks until either quit receives a shutdown
+// signal or listenErrCh delivers a listener startup/accept-loop failure
+// (issue #686), and returns the listener error, if any. Extracted from serve()
+// so the channel-selection logic itself — the fix for #686 — is unit
+// testable: serve() as a whole requires a live DB connection and is not.
+func waitForShutdownOrListenError(quit <-chan os.Signal, listenErrCh <-chan error) error {
+	select {
+	case <-quit:
+		log.Println("Shutting down server...")
+		return nil
+	case listenErr := <-listenErrCh:
+		log.Printf("Server listener failed: %v", listenErr)
+		return listenErr
+	}
 }
 
 // handleSetupToken checks if the initial setup wizard needs a setup token and
@@ -773,8 +816,10 @@ func identitySchemaName() string {
 }
 
 func runMigrations(cfg *config.Config, direction string) error {
-	// Connect to database
-	database, err := db.Connect(cfg.Database.GetDSN(), cfg.Database.MaxConnections, cfg.Database.MinIdleConnections)
+	// Connect to database. Uses GetMigrationDSN() (not GetDSN()) so
+	// database.statement_timeout_secs cannot cancel a long-running migration
+	// mid-run — see the identical comment in serve() for the full rationale.
+	database, err := db.Connect(cfg.Database.GetMigrationDSN(), cfg.Database.MaxConnections, cfg.Database.MinIdleConnections)
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}

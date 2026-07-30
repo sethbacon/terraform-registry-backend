@@ -23,6 +23,7 @@ func TestMetricRegistration(t *testing.T) {
 		{"MirrorSyncErrorsTotal", MirrorSyncErrorsTotal},
 		{"APIKeyExpiryNotificationsSentTotal", APIKeyExpiryNotificationsSentTotal},
 		{"RateLimitRejectionsTotal", RateLimitRejectionsTotal},
+		{"RateLimitBackendErrorsTotal", RateLimitBackendErrorsTotal},
 		{"AppInfo", AppInfo},
 		{"ModuleScanQueueDepth", ModuleScanQueueDepth},
 		{"ModuleScanDuration", ModuleScanDuration},
@@ -73,6 +74,10 @@ func TestMirrorSyncErrorsTotalLabels(t *testing.T) {
 
 func TestRateLimitRejectionsTotalLabels(t *testing.T) {
 	RateLimitRejectionsTotal.WithLabelValues("individual", "apikey").Inc()
+}
+
+func TestRateLimitBackendErrorsTotalLabels(t *testing.T) {
+	RateLimitBackendErrorsTotal.WithLabelValues("individual", "apikey").Inc()
 }
 
 func TestAppInfoLabels(t *testing.T) {

@@ -26,6 +26,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/mirror"
 	"github.com/terraform-registry/terraform-registry/internal/notify"
+	"github.com/terraform-registry/terraform-registry/internal/safego"
 	"github.com/terraform-registry/terraform-registry/internal/scanner/installer"
 )
 
@@ -384,11 +385,11 @@ func (j *ScannerUpdateJob) Activate(ctx context.Context, v *models.ScannerBinary
 		// must outlive the caller's ctx — which, via the admin install+activate handler,
 		// is the HTTP request context and would cancel the job the moment the request
 		// returns. context.Background() is therefore intentional here, not a leak.
-		go func() { // #nosec G118 -- long-lived daemon restart must not inherit the request-scoped caller ctx
+		safego.Go(func() { // #nosec G118 -- long-lived daemon restart must not inherit the request-scoped caller ctx
 			if err := j.scannerJob.Start(context.Background()); err != nil {
 				log.Printf("[scanner-update] scanner job failed to restart after activation: %v", err)
 			}
-		}()
+		})
 	}
 
 	if err := j.sbvRepo.MarkActive(ctx, v.ID); err != nil {

@@ -1170,7 +1170,8 @@ func (j *MirrorSyncJob) TriggerManualSync(ctx context.Context, mirrorID uuid.UUI
 
 	// Use a background context for the sync operation since the HTTP request
 	// context will be cancelled when the response is sent
-	go j.syncMirror(context.Background(), *config) // #nosec G118 -- request context cancels when response is sent; background context is required for async sync
+	configCopy := *config
+	safego.Go(func() { j.syncMirror(context.Background(), configCopy) }) // #nosec G118 -- request context cancels when response is sent; background context is required for async sync
 
 	return nil
 }

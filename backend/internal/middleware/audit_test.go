@@ -117,6 +117,63 @@ func TestAuditMiddleware_FailedWriteSkippedWhenLogFailedRequestsFalse(t *testing
 	}
 }
 
+func TestAuditMiddleware_ZeroValueConfigBehavesLikeNilConfig(t *testing.T) {
+	// Regression for issue #659: router.go now always passes a non-nil
+	// &cfg.Audit into AuditMiddlewareWithShipper (previously always nil). An
+	// unconfigured "audit:" YAML section zero-values to &config.AuditConfig{}
+	// (LogReadOperations=false, LogFailedRequests=false), which must behave
+	// identically to the old default (auditCfg == nil): reads and failed
+	// requests skipped, successful writes still shipped.
+	cfg := &config.AuditConfig{}
+
+	t.Run("GET skipped", func(t *testing.T) {
+		cs := newCaptureShipper(1)
+		r := gin.New()
+		r.Use(AuditMiddlewareWithShipper(nil, cs, cfg))
+		r.GET("/modules/test", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest(http.MethodGet, "/modules/test", nil)
+		r.ServeHTTP(w, req)
+
+		select {
+		case <-cs.ch:
+			t.Error("shipper called for GET with zero-value config, want no shipping (same as nil config)")
+		case <-time.After(100 * time.Millisecond):
+		}
+	})
+
+	t.Run("failed POST skipped", func(t *testing.T) {
+		cs := newCaptureShipper(1)
+		r := gin.New()
+		r.Use(AuditMiddlewareWithShipper(nil, cs, cfg))
+		r.POST("/modules/test", func(c *gin.Context) { c.Status(http.StatusBadRequest) })
+
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest(http.MethodPost, "/modules/test", nil)
+		r.ServeHTTP(w, req)
+
+		select {
+		case <-cs.ch:
+			t.Error("shipper called for failed POST with zero-value config, want no shipping (same as nil config)")
+		case <-time.After(100 * time.Millisecond):
+		}
+	})
+
+	t.Run("successful POST shipped", func(t *testing.T) {
+		cs := newCaptureShipper(1)
+		r := gin.New()
+		r.Use(AuditMiddlewareWithShipper(nil, cs, cfg))
+		r.POST("/modules/test", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest(http.MethodPost, "/modules/test", nil)
+		r.ServeHTTP(w, req)
+
+		cs.waitForEntry(t, 500*time.Millisecond)
+	})
+}
+
 // ---------------------------------------------------------------------------
 // AuditMiddlewareWithShipper — shipping path
 // ---------------------------------------------------------------------------
