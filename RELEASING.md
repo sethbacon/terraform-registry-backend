@@ -48,8 +48,22 @@ cosign verify \
 
 1. Find the open release-please PR (`chore(main): release X.Y.Z`) in the PR list.
 2. Review the CHANGELOG entries and version bump — adjust by merging additional `fix:` or `feat:` commits if needed.
-3. Squash-merge the release PR.
-4. Watch `release.yml` run in the Actions tab. No manual dispatch required.
+3. **Check whether the release needs an upgrade note.** Scan the CHANGELOG entries for
+   anything an operator must know *before* deploying, and if so add a section to
+   `docs/upgrade-guide.md` under "Version-Specific Upgrade Notes". Triggers:
+   - a `⚠ BREAKING CHANGES` heading (always needs a note);
+   - behaviour that changes on upgrade with no config change — e.g. configuration that
+     was previously inert becoming active, or a permission check becoming stricter, so
+     an existing caller starts getting 403;
+   - a migration that holds locks, rewrites a large table, or is irreversible;
+   - a new required configuration key, or a default that changes.
+
+   If none apply, add nothing — the guide states that absence of a note means there was
+   nothing version-specific to do, and that promise only holds if this step is honest.
+   This step exists because the guide previously drifted ~87 releases behind (#727)
+   purely by depending on someone remembering.
+4. Squash-merge the release PR.
+5. Watch `release.yml` run in the Actions tab. No manual dispatch required.
 
 ## Hotfix flow
 
