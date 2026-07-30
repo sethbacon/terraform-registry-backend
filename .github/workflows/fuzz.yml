@@ -53,11 +53,19 @@ jobs:
 
       - name: Run fuzz target for 10 minutes
         working-directory: backend
+        # -timeout must exceed -fuzztime. Go's default test timeout is also
+        # 10m, so with -fuzztime=10m and no -timeout the binary's deadline
+        # expires at the exact moment fuzzing exhausts its budget: the job
+        # then fails with "context deadline exceeded" *because* the target
+        # survived, i.e. it failed whenever it succeeded, and filed a
+        # crash-artifact issue with no crash artifact (issue #703). The extra
+        # 5m covers corpus loading, seed replay, and shutdown.
         run: |
           go test ${{ matrix.package }} \
             -run='^$' \
             -fuzz=${{ steps.target.outputs.name }} \
             -fuzztime=10m \
+            -timeout=15m \
             -v
 
       - name: Upload crash artifacts
