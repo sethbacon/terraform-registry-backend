@@ -19,8 +19,13 @@ services:
           memory: 1G
 
   backend:
-    # Use pre-built image in production (override build context)
-    image: ${REGISTRY_IMAGE:-ghcr.io/sethbacon/terraform-registry-backend}:${REGISTRY_TAG:-latest}
+    # Use pre-built image in production (override build context).
+    # REGISTRY_TAG has no default — it must be set explicitly to a pinned
+    # release version or digest. Defaulting to the mutable 'latest' tag would
+    # silently bypass the release pipeline's signing/attestation guarantees
+    # (cosign verify / gh attestation verify), since 'latest' is
+    # continuously republished by every main-branch build (#680).
+    image: ${REGISTRY_IMAGE:-ghcr.io/sethbacon/terraform-registry-backend}:${REGISTRY_TAG:?Set REGISTRY_TAG to a pinned release version (e.g. v3.5.0) or image digest — see docs/deployment.md for the cosign verify / gh attestation verify steps to run first}
     env_file:
       - .env.production
     environment:

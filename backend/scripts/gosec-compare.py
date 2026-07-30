@@ -22,7 +22,16 @@ from pathlib import Path
 
 
 def _anchor(code: str) -> str:
-    """Return the first two meaningful code lines, with gosec line-number prefixes stripped."""
+    """Return all meaningful code lines, with gosec line-number prefixes stripped.
+
+    Uses the full snippet gosec reports (not just the first two lines) so that
+    structurally similar but distinct findings — e.g. Go's repetitive
+    io.ReadAll(resp.Body)/resp.Body.Close() error-handling idiom recurring at
+    different call sites in the same file — don't collapse onto the same
+    fingerprint (#655). Line numbers are still stripped from each line so the
+    fingerprint keeps surviving line-number drift from unrelated edits
+    elsewhere in the file.
+    """
     stripped = []
     for raw in code.splitlines():
         s = raw.strip()
@@ -32,8 +41,6 @@ def _anchor(code: str) -> str:
         if ": " in s:
             s = s.split(": ", 1)[1].strip()
         stripped.append(s)
-        if len(stripped) == 2:
-            break
     return " | ".join(stripped)
 
 
