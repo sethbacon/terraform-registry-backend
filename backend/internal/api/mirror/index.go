@@ -50,13 +50,13 @@ func IndexHandler(db *sql.DB, _ *config.Config, pullThrough *services.PullThroug
 		org, err := orgRepo.GetDefaultOrganization(c.Request.Context())
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to get organization context",
+				"errors": []string{"Failed to get organization context"},
 			})
 			return
 		}
 		if org == nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Default organization not found - please run migrations",
+				"errors": []string{"Default organization not found - please run migrations"},
 			})
 			return
 		}
@@ -65,7 +65,7 @@ func IndexHandler(db *sql.DB, _ *config.Config, pullThrough *services.PullThroug
 		provider, err := providerRepo.GetProvider(c.Request.Context(), org.ID, namespace, providerType)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to query provider",
+				"errors": []string{"Failed to query provider"},
 			})
 			return
 		}
@@ -100,7 +100,7 @@ func IndexHandler(db *sql.DB, _ *config.Config, pullThrough *services.PullThroug
 		versions, err := providerRepo.ListVisibleVersions(c.Request.Context(), provider.ID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to list provider versions",
+				"errors": []string{"Failed to list provider versions"},
 			})
 			return
 		}
@@ -132,7 +132,7 @@ func IndexHandler(db *sql.DB, _ *config.Config, pullThrough *services.PullThroug
 		// [WARN] from terraform init.
 		data, err := json.Marshal(response)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to serialize response"})
+			c.JSON(http.StatusInternalServerError, gin.H{"errors": []string{"Failed to serialize response"}})
 			return
 		}
 		c.Data(http.StatusOK, "application/json", data)

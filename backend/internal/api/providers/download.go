@@ -70,13 +70,13 @@ func DownloadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Con
 		org, err := orgRepo.GetDefaultOrganization(c.Request.Context())
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to get organization context",
+				"errors": []string{"Failed to get organization context"},
 			})
 			return
 		}
 		if org == nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Default organization not found - please run migrations",
+				"errors": []string{"Default organization not found - please run migrations"},
 			})
 			return
 		}
@@ -85,7 +85,7 @@ func DownloadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Con
 		provider, err := providerRepo.GetProvider(c.Request.Context(), org.ID, namespace, providerType)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to query provider",
+				"errors": []string{"Failed to query provider"},
 			})
 			return
 		}
@@ -100,7 +100,7 @@ func DownloadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Con
 		providerVersion, err := providerRepo.GetVersion(c.Request.Context(), provider.ID, version)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to query provider version",
+				"errors": []string{"Failed to query provider version"},
 			})
 			return
 		}
@@ -120,7 +120,7 @@ func DownloadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Con
 		approvalStatus, err := providerRepo.GetVersionApprovalStatus(c.Request.Context(), providerVersion.ID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to query provider version",
+				"errors": []string{"Failed to query provider version"},
 			})
 			return
 		}
@@ -136,7 +136,7 @@ func DownloadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Con
 		platform, err := providerRepo.GetPlatform(c.Request.Context(), providerVersion.ID, os, arch)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to query provider platform",
+				"errors": []string{"Failed to query provider platform"},
 			})
 			return
 		}
@@ -152,7 +152,7 @@ func DownloadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Con
 		downloadURL, err := storageBackend.GetURL(c.Request.Context(), platform.StoragePath, 15*time.Minute)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to generate download URL",
+				"errors": []string{"Failed to generate download URL"},
 			})
 			return
 		}

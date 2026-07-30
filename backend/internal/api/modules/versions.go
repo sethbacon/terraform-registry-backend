@@ -52,13 +52,13 @@ func ListVersionsHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 		org, err := orgRepo.GetDefaultOrganization(c.Request.Context())
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to get organization context",
+				"errors": []string{"Failed to get organization context"},
 			})
 			return
 		}
 		if org == nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Default organization not found - please run migrations",
+				"errors": []string{"Default organization not found - please run migrations"},
 			})
 			return
 		}
@@ -67,7 +67,7 @@ func ListVersionsHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 		module, err := moduleRepo.GetModule(c.Request.Context(), org.ID, namespace, name, system)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to query module",
+				"errors": []string{"Failed to query module"},
 			})
 			return
 		}
@@ -83,7 +83,7 @@ func ListVersionsHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 		versions, total, err := moduleRepo.ListVersionsPaginated(c.Request.Context(), module.ID, limit, offset)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to list module versions",
+				"errors": []string{"Failed to list module versions"},
 			})
 			return
 		}

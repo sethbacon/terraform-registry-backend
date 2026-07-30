@@ -60,13 +60,13 @@ func DownloadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Con
 		org, err := orgRepo.GetDefaultOrganization(c.Request.Context())
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to get organization context",
+				"errors": []string{"Failed to get organization context"},
 			})
 			return
 		}
 		if org == nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Default organization not found - please run migrations",
+				"errors": []string{"Default organization not found - please run migrations"},
 			})
 			return
 		}
@@ -75,7 +75,7 @@ func DownloadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Con
 		module, err := moduleRepo.GetModule(c.Request.Context(), org.ID, namespace, name, system)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to query module",
+				"errors": []string{"Failed to query module"},
 			})
 			return
 		}
@@ -90,7 +90,7 @@ func DownloadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Con
 		moduleVersion, err := moduleRepo.GetVersion(c.Request.Context(), module.ID, version)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to query module version",
+				"errors": []string{"Failed to query module version"},
 			})
 			return
 		}
@@ -106,7 +106,7 @@ func DownloadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Con
 		downloadURL, err := storageBackend.GetURL(c.Request.Context(), moduleVersion.StoragePath, 15*time.Minute)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to generate download URL",
+				"errors": []string{"Failed to generate download URL"},
 			})
 			return
 		}

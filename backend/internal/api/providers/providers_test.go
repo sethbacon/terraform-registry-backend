@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"mime/multipart"
@@ -24,6 +25,25 @@ import (
 
 func init() {
 	gin.SetMode(gin.TestMode)
+}
+
+// assertErrorsArrayBody fails the test unless the response body is shaped
+// {"errors": [...]}, the protocol-correct shape already used by the 4xx
+// paths of these same handlers. Issue #696: 500 paths must not fall back to
+// a singular {"error": "..."} string.
+func assertErrorsArrayBody(t *testing.T, w *httptest.ResponseRecorder) {
+	t.Helper()
+	var body map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding response body: %v; body=%s", err, w.Body.String())
+	}
+	if _, ok := body["error"]; ok {
+		t.Errorf(`response body uses singular "error" key, want "errors" array; body=%s`, w.Body.String())
+	}
+	errs, ok := body["errors"].([]interface{})
+	if !ok || len(errs) == 0 {
+		t.Errorf(`response body missing "errors" array; body=%s`, w.Body.String())
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -236,6 +256,7 @@ func TestListVersionsHandler_OrgError(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestListVersionsHandler_OrgNotFound(t *testing.T) {
@@ -247,6 +268,7 @@ func TestListVersionsHandler_OrgNotFound(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestListVersionsHandler_ProviderError(t *testing.T) {
@@ -259,6 +281,7 @@ func TestListVersionsHandler_ProviderError(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestListVersionsHandler_ProviderNotFound(t *testing.T) {
@@ -284,6 +307,7 @@ func TestListVersionsHandler_VersionsError(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 // ---------------------------------------------------------------------------
@@ -374,6 +398,7 @@ func TestDownloadHandler_OrgError(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestDownloadHandler_ProviderNotFound(t *testing.T) {
@@ -482,6 +507,7 @@ func TestDownloadHandler_StorageError(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 // ---------------------------------------------------------------------------
@@ -1174,6 +1200,7 @@ func TestDownloadHandler_OrgNotFound(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500 (org not found): body=%s", w.Code, w.Body.String())
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestDownloadHandler_ProviderQueryError(t *testing.T) {
@@ -1186,6 +1213,7 @@ func TestDownloadHandler_ProviderQueryError(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500 (provider query error): body=%s", w.Code, w.Body.String())
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestDownloadHandler_VersionQueryError(t *testing.T) {
@@ -1200,6 +1228,7 @@ func TestDownloadHandler_VersionQueryError(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500 (version query error): body=%s", w.Code, w.Body.String())
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestDownloadHandler_PlatformQueryError(t *testing.T) {
@@ -1217,6 +1246,7 @@ func TestDownloadHandler_PlatformQueryError(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500 (platform query error): body=%s", w.Code, w.Body.String())
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestDownloadHandler_SuccessWithGPGKey(t *testing.T) {

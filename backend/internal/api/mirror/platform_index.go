@@ -84,13 +84,13 @@ func PlatformIndexHandler(db *sql.DB, cfg *config.Config, auditRepo *repositorie
 		org, err := orgRepo.GetDefaultOrganization(c.Request.Context())
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to get organization context",
+				"errors": []string{"Failed to get organization context"},
 			})
 			return
 		}
 		if org == nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Default organization not found - please run migrations",
+				"errors": []string{"Default organization not found - please run migrations"},
 			})
 			return
 		}
@@ -99,7 +99,7 @@ func PlatformIndexHandler(db *sql.DB, cfg *config.Config, auditRepo *repositorie
 		provider, err := providerRepo.GetProvider(c.Request.Context(), org.ID, namespace, providerType)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to query provider",
+				"errors": []string{"Failed to query provider"},
 			})
 			return
 		}
@@ -132,7 +132,7 @@ func PlatformIndexHandler(db *sql.DB, cfg *config.Config, auditRepo *repositorie
 		providerVersion, err := providerRepo.GetVersion(c.Request.Context(), provider.ID, version)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to query provider version",
+				"errors": []string{"Failed to query provider version"},
 			})
 			return
 		}
@@ -168,7 +168,7 @@ func PlatformIndexHandler(db *sql.DB, cfg *config.Config, auditRepo *repositorie
 		approvalStatus, err := providerRepo.GetVersionApprovalStatus(c.Request.Context(), providerVersion.ID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to query provider version",
+				"errors": []string{"Failed to query provider version"},
 			})
 			return
 		}
@@ -181,7 +181,7 @@ func PlatformIndexHandler(db *sql.DB, cfg *config.Config, auditRepo *repositorie
 		platforms, err := providerRepo.ListPlatforms(c.Request.Context(), providerVersion.ID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to list provider platforms",
+				"errors": []string{"Failed to list provider platforms"},
 			})
 			return
 		}
@@ -192,7 +192,7 @@ func PlatformIndexHandler(db *sql.DB, cfg *config.Config, auditRepo *repositorie
 		})
 		if storageErr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to initialize storage backend",
+				"errors": []string{"Failed to initialize storage backend"},
 			})
 			return
 		}
@@ -224,7 +224,7 @@ func PlatformIndexHandler(db *sql.DB, cfg *config.Config, auditRepo *repositorie
 			downloadURL, err := storageBackend.GetURL(c.Request.Context(), platform.StoragePath, 1*time.Hour)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{
-					"error": fmt.Sprintf("Failed to generate download URL for %s", platformKey),
+					"errors": []string{fmt.Sprintf("Failed to generate download URL for %s", platformKey)},
 				})
 				return
 			}
@@ -357,7 +357,7 @@ func PlatformIndexHandler(db *sql.DB, cfg *config.Config, auditRepo *repositorie
 		// [WARN] from terraform init.
 		data, err := json.Marshal(response)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to serialize response"})
+			c.JSON(http.StatusInternalServerError, gin.H{"errors": []string{"Failed to serialize response"}})
 			return
 		}
 		c.Data(http.StatusOK, "application/json", data)

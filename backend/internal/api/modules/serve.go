@@ -45,7 +45,7 @@ func ServeFileHandler(storageBackend storage.Storage, cfg *config.Config, db *sq
 		filePath := c.Param("filepath")
 		if filePath == "" {
 			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "File path is required",
+				"errors": []string{"File path is required"},
 			})
 			return
 		}
@@ -60,7 +60,7 @@ func ServeFileHandler(storageBackend storage.Storage, cfg *config.Config, db *sq
 		// call so that GET /v1/files/../../etc/passwd cannot escape the storage root.
 		if strings.Contains(filePath, "..") || strings.Contains(filePath, "//") {
 			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "Invalid file path",
+				"errors": []string{"Invalid file path"},
 			})
 			return
 		}
@@ -82,7 +82,7 @@ func ServeFileHandler(storageBackend storage.Storage, cfg *config.Config, db *sq
 							status, err := providerRepo.GetVersionApprovalStatus(c.Request.Context(), pv.ID)
 							if err == nil && status != nil && *status != models.VersionApprovalStatusApproved {
 								c.JSON(http.StatusNotFound, gin.H{
-									"error": "File not found",
+									"errors": []string{"File not found"},
 								})
 								return
 							}
@@ -96,13 +96,13 @@ func ServeFileHandler(storageBackend storage.Storage, cfg *config.Config, db *sq
 		exists, err := storageBackend.Exists(c.Request.Context(), filePath)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to check file existence",
+				"errors": []string{"Failed to check file existence"},
 			})
 			return
 		}
 		if !exists {
 			c.JSON(http.StatusNotFound, gin.H{
-				"error": "File not found",
+				"errors": []string{"File not found"},
 			})
 			return
 		}
@@ -111,7 +111,7 @@ func ServeFileHandler(storageBackend storage.Storage, cfg *config.Config, db *sq
 		metadata, err := storageBackend.GetMetadata(c.Request.Context(), filePath)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to get file metadata",
+				"errors": []string{"Failed to get file metadata"},
 			})
 			return
 		}
@@ -120,7 +120,7 @@ func ServeFileHandler(storageBackend storage.Storage, cfg *config.Config, db *sq
 		reader, err := storageBackend.Download(c.Request.Context(), filePath)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to read file",
+				"errors": []string{"Failed to read file"},
 			})
 			return
 		}
@@ -134,14 +134,19 @@ func ServeFileHandler(storageBackend storage.Storage, cfg *config.Config, db *sq
 			}
 		}
 
+		// Determine resource type and Content-Type from the path prefix.
+		// Provider archives are .zip; module archives are .tar.gz.
+		resourceType := "file"
+		contentType := "application/gzip"
+		if strings.HasPrefix(filePath, "providers/") {
+			resourceType = "provider"
+			contentType = "application/zip"
+		} else if strings.HasPrefix(filePath, "modules/") {
+			resourceType = "module"
+		}
+
 		// Audit log the file download event asynchronously
 		if auditRepo != nil {
-			resourceType := "file"
-			if strings.HasPrefix(filePath, "providers/") {
-				resourceType = "provider"
-			} else if strings.HasPrefix(filePath, "modules/") {
-				resourceType = "module"
-			}
 			// Route through the same redaction helper AuditMiddleware/LoggerMiddleware
 			// use rather than logging the raw path (issue #678 sibling).
 			action := "GET " + middleware.RedactSensitivePath(c.Request.URL.Path)
@@ -160,12 +165,12 @@ func ServeFileHandler(storageBackend storage.Storage, cfg *config.Config, db *sq
 		}
 
 		// Set response headers
-		c.Header("Content-Type", "application/gzip")
+		c.Header("Content-Type", contentType)
 		c.Header("Content-Disposition", "attachment")
 		c.Header("X-Checksum-SHA256", metadata.Checksum)
 
 		// Stream file to client
-		c.DataFromReader(http.StatusOK, metadata.Size, "application/gzip", reader, nil)
+		c.DataFromReader(http.StatusOK, metadata.Size, contentType, reader, nil)
 	}
 }
 

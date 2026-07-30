@@ -3,6 +3,7 @@ package middleware
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -10,6 +11,26 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 )
+
+// assertErrorsArrayBody fails the test unless the response body is shaped
+// {"errors": [...]}, the protocol-correct shape used by the terraform_binaries
+// handlers this middleware gates. Issue #696: the 403 paths here must not fall
+// back to a singular {"error": "..."} string that would mismatch the rest of
+// the /terraform/binaries endpoint family.
+func assertErrorsArrayBody(t *testing.T, w *httptest.ResponseRecorder) {
+	t.Helper()
+	var body map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding response body: %v; body=%s", err, w.Body.String())
+	}
+	if _, ok := body["error"]; ok {
+		t.Errorf(`response body uses singular "error" key, want "errors" array; body=%s`, w.Body.String())
+	}
+	errs, ok := body["errors"].([]interface{})
+	if !ok || len(errs) == 0 {
+		t.Errorf(`response body missing "errors" array; body=%s`, w.Body.String())
+	}
+}
 
 func newBinaryMirrorRouter(cfg config.BinaryMirrorConfig) *gin.Engine {
 	gin.SetMode(gin.TestMode)
@@ -70,6 +91,7 @@ func TestBinaryMirrorAuth_Allowlist_Denied(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for denied IP, got %d", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestBinaryMirrorAuth_Allowlist_EmptyList(t *testing.T) {
@@ -85,6 +107,7 @@ func TestBinaryMirrorAuth_Allowlist_EmptyList(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for empty allowlist, got %d", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestBinaryMirrorAuth_MTLS_NoTLS(t *testing.T) {
@@ -96,6 +119,7 @@ func TestBinaryMirrorAuth_MTLS_NoTLS(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for no TLS, got %d", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestBinaryMirrorAuth_MTLS_NoClientCert(t *testing.T) {
@@ -108,6 +132,7 @@ func TestBinaryMirrorAuth_MTLS_NoClientCert(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for TLS without client cert, got %d", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestBinaryMirrorAuth_MTLS_WithClientCert(t *testing.T) {

@@ -20,6 +20,25 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 )
 
+// assertErrorsArrayBody fails the test unless the response body is shaped
+// {"errors": [...]}, the protocol-correct shape already used by the 4xx
+// paths of these same handlers. Issue #696: 500 paths must not fall back to
+// a singular {"error": "..."} string.
+func assertErrorsArrayBody(t *testing.T, w *httptest.ResponseRecorder) {
+	t.Helper()
+	var body map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding response body: %v; body=%s", err, w.Body.String())
+	}
+	if _, ok := body["error"]; ok {
+		t.Errorf(`response body uses singular "error" key, want "errors" array; body=%s`, w.Body.String())
+	}
+	errs, ok := body["errors"].([]interface{})
+	if !ok || len(errs) == 0 {
+		t.Errorf(`response body missing "errors" array; body=%s`, w.Body.String())
+	}
+}
+
 // ---- constants & shared test data -------------------------------------------
 
 const (
@@ -239,6 +258,7 @@ func TestListVersions_MirrorNotFound(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusNotFound, w.Code)
+	assertErrorsArrayBody(t, w)
 }
 
 func TestListVersions_MirrorDisabled(t *testing.T) {
@@ -259,6 +279,7 @@ func TestListVersions_MirrorDisabled(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusNotFound, w.Code)
+	assertErrorsArrayBody(t, w)
 }
 
 func TestListVersions_DBError(t *testing.T) {
@@ -277,6 +298,7 @@ func TestListVersions_DBError(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assertErrorsArrayBody(t, w)
 }
 
 // ---- GetLatestVersion -------------------------------------------------------
@@ -324,6 +346,7 @@ func TestGetLatestVersion_NoLatest(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusNotFound, w.Code)
+	assertErrorsArrayBody(t, w)
 }
 
 // ---- GetVersion -------------------------------------------------------------
@@ -570,6 +593,13 @@ func TestDownloadBinary_PlatformPending(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+	// Issue #696: the 503 sync-pending body must use the protocol-correct
+	// errors[] array shape (matching every other error response in this
+	// handler) while still carrying sync_status for clients that poll it.
+	assertErrorsArrayBody(t, w)
+	var resp map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "pending", resp["sync_status"])
 }
 
 // ---- ListConfigs ------------------------------------------------------------
@@ -648,6 +678,7 @@ func TestListConfigs_DBError(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assertErrorsArrayBody(t, w)
 }
 
 // ---- ResolveConfig error paths ----------------------------------------------
@@ -664,6 +695,7 @@ func TestResolveConfig_GetByNameDBError(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assertErrorsArrayBody(t, w)
 }
 
 // ---- GetLatestVersion additional error paths --------------------------------
@@ -684,6 +716,7 @@ func TestGetLatestVersion_DBError(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assertErrorsArrayBody(t, w)
 }
 
 // ---- GetVersion additional error paths -------------------------------------
@@ -704,6 +737,7 @@ func TestGetVersion_DBError(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assertErrorsArrayBody(t, w)
 }
 
 // ---- DownloadBinary additional error paths ----------------------------------
@@ -724,6 +758,7 @@ func TestDownloadBinary_VersionDBError(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assertErrorsArrayBody(t, w)
 }
 
 func TestDownloadBinary_PlatformDBError(t *testing.T) {
@@ -746,6 +781,7 @@ func TestDownloadBinary_PlatformDBError(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assertErrorsArrayBody(t, w)
 }
 
 func TestDownloadBinary_StorageURLError(t *testing.T) {
@@ -769,4 +805,5 @@ func TestDownloadBinary_StorageURLError(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assertErrorsArrayBody(t, w)
 }

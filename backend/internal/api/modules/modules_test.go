@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"mime/multipart"
@@ -20,6 +21,25 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 )
+
+// assertErrorsArrayBody fails the test unless the response body is shaped
+// {"errors": [...]}, the protocol-correct shape already used by the 4xx
+// paths of these same handlers. Issue #696: 500 paths must not fall back to
+// a singular {"error": "..."} string.
+func assertErrorsArrayBody(t *testing.T, w *httptest.ResponseRecorder) {
+	t.Helper()
+	var body map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding response body: %v; body=%s", err, w.Body.String())
+	}
+	if _, ok := body["error"]; ok {
+		t.Errorf(`response body uses singular "error" key, want "errors" array; body=%s`, w.Body.String())
+	}
+	errs, ok := body["errors"].([]interface{})
+	if !ok || len(errs) == 0 {
+		t.Errorf(`response body missing "errors" array; body=%s`, w.Body.String())
+	}
+}
 
 func init() {
 	gin.SetMode(gin.TestMode)
@@ -216,6 +236,7 @@ func TestListVersionsHandler_OrgError(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestListVersionsHandler_OrgNotFound(t *testing.T) {
@@ -227,6 +248,7 @@ func TestListVersionsHandler_OrgNotFound(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestListVersionsHandler_ModuleError(t *testing.T) {
@@ -239,6 +261,7 @@ func TestListVersionsHandler_ModuleError(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestListVersionsHandler_ModuleNotFound(t *testing.T) {
@@ -264,6 +287,7 @@ func TestListVersionsHandler_VersionsError(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestListVersionsHandler_DeprecationBlock(t *testing.T) {
@@ -439,6 +463,7 @@ func TestDownloadHandler_OrgError(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestDownloadHandler_ModuleNotFound(t *testing.T) {
@@ -495,6 +520,7 @@ func TestDownloadHandler_StorageError(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 // ---------------------------------------------------------------------------
@@ -510,6 +536,7 @@ func TestServeFileHandler_SlashOnlyPath(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestServeFileHandler_NotFound(t *testing.T) {
@@ -520,6 +547,7 @@ func TestServeFileHandler_NotFound(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestServeFileHandler_ExistsError(t *testing.T) {
@@ -530,6 +558,7 @@ func TestServeFileHandler_ExistsError(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestServeFileHandler_MetadataError(t *testing.T) {
@@ -540,6 +569,7 @@ func TestServeFileHandler_MetadataError(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestServeFileHandler_Success(t *testing.T) {
@@ -549,6 +579,35 @@ func TestServeFileHandler_Success(t *testing.T) {
 	w := doGET(r, "/v1/files/path/to/file.tgz")
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+}
+
+// Issue #681: provider archives (.zip) must be served with Content-Type
+// application/zip, not the module archive's application/gzip.
+func TestServeFileHandler_ProviderContentType(t *testing.T) {
+	store := &mockStore{existsResult: true}
+	r := newServeRouter(t, store)
+
+	w := doGET(r, "/v1/files/providers/hashicorp/aws/1.0.0/linux/amd64/terraform-provider-aws.zip")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/zip" {
+		t.Errorf("Content-Type = %q, want application/zip", ct)
+	}
+}
+
+// Module archives keep the pre-existing application/gzip Content-Type.
+func TestServeFileHandler_ModuleContentType(t *testing.T) {
+	store := &mockStore{existsResult: true}
+	r := newServeRouter(t, store)
+
+	w := doGET(r, "/v1/files/modules/hashicorp/consul/aws/1.0.0.tar.gz")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/gzip" {
+		t.Errorf("Content-Type = %q, want application/gzip", ct)
 	}
 }
 
@@ -562,6 +621,7 @@ func TestServeFileHandler_PathTraversal(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400; body: %s", w.Code, w.Body.String())
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestServeFileHandler_DoubleSlashTraversal(t *testing.T) {
@@ -572,6 +632,7 @@ func TestServeFileHandler_DoubleSlashTraversal(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400; body: %s", w.Code, w.Body.String())
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 // TestServeFileHandler_URLEncodedTraversal documents how gin's wildcard param
@@ -600,6 +661,7 @@ func TestServeFileHandler_URLEncodedTraversal(t *testing.T) {
 			if w.Code != http.StatusBadRequest {
 				t.Errorf("status = %d, want 400; body: %s", w.Code, w.Body.String())
 			}
+			assertErrorsArrayBody(t, w)
 		})
 	}
 }
@@ -883,6 +945,7 @@ func TestDownloadHandler_OrgNotFound(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestDownloadHandler_ModuleError(t *testing.T) {
@@ -895,6 +958,7 @@ func TestDownloadHandler_ModuleError(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestDownloadHandler_VersionError(t *testing.T) {
@@ -908,6 +972,7 @@ func TestDownloadHandler_VersionError(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
+	assertErrorsArrayBody(t, w)
 }
 
 func TestDownloadHandler_SuccessWithAuditContext(t *testing.T) {

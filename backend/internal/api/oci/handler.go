@@ -65,6 +65,10 @@ func NewHandler(db *sql.DB, storageBackend storage.Storage) *Handler {
 // @Router       /v2/ [get]
 func (h *Handler) Ping(c *gin.Context) {
 	c.Header("OCI-Distribution-Spec-Version", ociSpecVersion)
+	// Docker Registry v2 API version header — conventionally checked by
+	// existing OCI/Docker Registry v2 tooling (oras, crane, containerd/distribution
+	// clients) during /v2/ capability probing.
+	c.Header("Docker-Distribution-Api-Version", "registry/2.0")
 	c.JSON(http.StatusOK, gin.H{})
 }
 
@@ -83,7 +87,7 @@ func (h *Handler) Ping(c *gin.Context) {
 func (h *Handler) HeadManifest(c *gin.Context) {
 	data, statusCode, err := h.buildManifestJSON(c)
 	if err != nil {
-		c.JSON(statusCode, ociErrors("MANIFEST_UNKNOWN", err.Error()))
+		c.JSON(statusCode, ociErrors(ociErrorCode(statusCode, "MANIFEST_UNKNOWN"), err.Error()))
 		return
 	}
 	digest := fmt.Sprintf("sha256:%x", sha256.Sum256(data))
@@ -109,7 +113,7 @@ func (h *Handler) HeadManifest(c *gin.Context) {
 func (h *Handler) GetManifest(c *gin.Context) {
 	data, statusCode, err := h.buildManifestJSON(c)
 	if err != nil {
-		c.JSON(statusCode, ociErrors("MANIFEST_UNKNOWN", err.Error()))
+		c.JSON(statusCode, ociErrors(ociErrorCode(statusCode, "MANIFEST_UNKNOWN"), err.Error()))
 		return
 	}
 	digest := fmt.Sprintf("sha256:%x", sha256.Sum256(data))
@@ -132,7 +136,7 @@ func (h *Handler) GetManifest(c *gin.Context) {
 func (h *Handler) HeadBlob(c *gin.Context) {
 	mv, statusCode, err := h.lookupVersionByDigest(c)
 	if err != nil {
-		c.JSON(statusCode, ociErrors("BLOB_UNKNOWN", err.Error()))
+		c.JSON(statusCode, ociErrors(ociErrorCode(statusCode, "BLOB_UNKNOWN"), err.Error()))
 		return
 	}
 	c.Header("Content-Type", mediaTypeLayer)
@@ -157,13 +161,13 @@ func (h *Handler) HeadBlob(c *gin.Context) {
 func (h *Handler) GetBlob(c *gin.Context) {
 	mv, statusCode, err := h.lookupVersionByDigest(c)
 	if err != nil {
-		c.JSON(statusCode, ociErrors("BLOB_UNKNOWN", err.Error()))
+		c.JSON(statusCode, ociErrors(ociErrorCode(statusCode, "BLOB_UNKNOWN"), err.Error()))
 		return
 	}
 
 	rc, err := h.storage.Download(c.Request.Context(), mv.StoragePath)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, ociErrors("BLOB_UNKNOWN", "failed to retrieve blob"))
+		c.JSON(http.StatusInternalServerError, ociErrors("UNKNOWN", "failed to retrieve blob"))
 		return
 	}
 	defer rc.Close() //nolint:errcheck
@@ -186,6 +190,8 @@ func (h *Handler) GetBlob(c *gin.Context) {
 // @Failure      405  {object}  map[string]interface{}
 // @Router       /v2/{namespace}/{name}/{system}/manifests/{reference} [put]
 func (h *Handler) PutManifest(c *gin.Context) {
+	// RFC 7231 §6.5.5 requires a 405 response to list the supported methods.
+	c.Header("Allow", "GET, HEAD")
 	c.JSON(http.StatusMethodNotAllowed, ociErrors("UNSUPPORTED",
 		"OCI push is not supported; use POST /api/v1/modules to publish modules"))
 }
@@ -305,4 +311,16 @@ type versionBlob struct {
 // ociErrors returns the standard OCI error body format.
 func ociErrors(code, message string) gin.H {
 	return gin.H{"errors": []gin.H{{"code": code, "message": message}}}
+}
+
+// ociErrorCode picks the OCI error code for a failed lookup: notFoundCode
+// (e.g. MANIFEST_UNKNOWN/BLOB_UNKNOWN) for genuine 4xx "does not exist"
+// responses, but the OCI-registered generic "UNKNOWN" code for 5xx internal
+// failures — reusing the not-found code there would misrepresent a
+// transient/retryable server fault as permanent absence.
+func ociErrorCode(statusCode int, notFoundCode string) string {
+	if statusCode >= http.StatusInternalServerError {
+		return "UNKNOWN"
+	}
+	return notFoundCode
 }

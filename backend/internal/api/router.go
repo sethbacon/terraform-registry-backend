@@ -874,19 +874,27 @@ func CORSMiddleware(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		origin := c.Request.Header.Get("Origin")
 
-		// Check if origin is allowed and track which rule matched
+		// Check if origin is allowed and track which rule matched. Scan for an
+		// exact origin match first, and only fall back to the wildcard rule if
+		// none is found — so credentialed-vs-not behavior for a given origin
+		// does not depend on where "*" sits in the configured list (issue #695).
 		allowed := false
 		matchedWildcard := false
+		hasWildcard := false
 		for _, allowedOrigin := range cfg.Security.CORS.AllowedOrigins {
 			if allowedOrigin == "*" {
-				allowed = true
-				matchedWildcard = true
-				break
+				hasWildcard = true
+				continue
 			}
 			if allowedOrigin == origin {
 				allowed = true
+				matchedWildcard = false
 				break
 			}
+		}
+		if !allowed && hasWildcard {
+			allowed = true
+			matchedWildcard = true
 		}
 
 		if allowed {
