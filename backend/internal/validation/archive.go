@@ -12,17 +12,22 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+
+	"github.com/terraform-registry/terraform-registry/internal/archivelimits"
 )
 
 const (
-	// MaxArchiveSize is the maximum size for a module archive (100MB)
-	MaxArchiveSize = 100 * 1024 * 1024
+	// MaxArchiveSize is the maximum size for a module archive (100MB). Sourced
+	// from archivelimits so this cannot silently drift from the cap
+	// archiver.ExtractTarGz enforces at extraction time.
+	MaxArchiveSize = archivelimits.MaxBytes
 
 	// MaxArchiveEntries bounds the number of tar entries in an archive. Without this,
 	// an archive of millions of zero-byte file entries never trips MaxArchiveSize (which
 	// only tracks decompressed body bytes) while still exhausting inodes/metadata when
-	// later extracted. A ~1MB gzip can encode ~2M such entries.
-	MaxArchiveEntries = 100000
+	// later extracted. A ~1MB gzip can encode ~2M such entries. Sourced from
+	// archivelimits so this cannot silently drift from archiver.ExtractTarGz's cap.
+	MaxArchiveEntries = archivelimits.MaxEntries
 )
 
 // ValidateArchive validates a tar.gz archive

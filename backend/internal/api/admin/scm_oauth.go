@@ -404,8 +404,11 @@ func (h *SCMOAuthHandlers) RefreshToken(c *gin.Context) {
 		return
 	}
 
-	// Refresh token using the refresh token string
-	newToken, err := connector.RenewToken(context.Background(), refreshToken)
+	// Refresh token using the refresh token string. Request-bound (issue #689
+	// sibling): this is a synchronous external SCM provider call made before any
+	// response is written, consistent with the c.Request.Context() used for the
+	// token/provider lookups above.
+	newToken, err := connector.RenewToken(c.Request.Context(), refreshToken)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("token refresh failed: %v", err)})
 		return

@@ -347,16 +347,22 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 
 		// Check state expiration (5 minutes)
 		if time.Since(sessionState.CreatedAt) > 5*time.Minute {
-			// State was already consumed by Load (single-use in Redis) but check TTL anyway
+			// State was already consumed by Load (single-use in both the Redis and
+			// in-memory stores) but check TTL anyway
 			callbackError("state_expired", "Login session expired. Please try logging in again.")
 			return
 		}
 
-		// State was already atomically consumed by Load (Redis) or needs explicit delete (memory).
-		// Explicit delete is a no-op for Redis since Load already removed it.
+		// State was already atomically consumed by Load (both the Redis and
+		// in-memory stores delete on read); this Delete is a no-op belt-and-braces
+		// call in case a future StateStore implementation is not read-consuming.
 		_ = h.stateStore.Delete(c.Request.Context(), state)
 
-		ctx := context.Background()
+		// Request-bound: the OIDC/AzureAD code exchange, ID-token verification, and
+		// user-info extraction below are synchronous external IdP calls made before
+		// any response is written, so they should observe this request's
+		// cancellation/deadline like the state-store calls above.
+		ctx := c.Request.Context()
 
 		var sub, email, name string
 		var err error
@@ -1224,7 +1230,11 @@ func (h *AuthHandlers) SAMLACSHandler() gin.HandlerFunc {
 		// Use NameID as the unique subject identifier
 		sub := fmt.Sprintf("saml:%s:%s", idpName, userInfo.NameID)
 
-		ctx := context.Background()
+		// Request-bound, matching CallbackHandler (issue #689): the user
+		// lookup/creation and scope-fetch calls below are synchronous and made
+		// before any response is written, so they should observe this request's
+		// cancellation/deadline like the state-store calls above.
+		ctx := c.Request.Context()
 
 		if err := h.guardEmailRebind(ctx, sub, userInfo.Email); err != nil {
 			callbackError("email_bound", err.Error())

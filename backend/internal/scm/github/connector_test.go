@@ -559,19 +559,49 @@ func TestVerifyDeliverySignature_WrongSecret(t *testing.T) {
 	}
 }
 
+// TestVerifyDeliverySignature_MissingPrefix asserts that a too-short header
+// value fails verification. This is NOT prefix enforcement: the shared
+// scm.VerifyHMACSHA256Signature helper (issue #667) trims an optional
+// "sha256=" prefix rather than requiring one, so both connectors can share
+// one implementation despite Bitbucket Data Center sending the digest with
+// or without it. This fixture fails only because "734cc62f32841568"
+// hex-decodes to 8 bytes, the wrong length for a SHA-256 digest (32 bytes) —
+// see TestVerifyDeliverySignature_ValidDigestWithoutPrefix_IsAccepted for
+// the case a same-length unprefixed digest IS accepted.
 func TestVerifyDeliverySignature_MissingPrefix(t *testing.T) {
 	c, _ := NewGitHubConnector(&scm.ConnectorSettings{})
 	valid := c.VerifyDeliverySignature([]byte("hello"), "734cc62f32841568", "mysecret")
 	if valid {
-		t.Error("expected false when sha256= prefix is missing")
+		t.Error("expected false: decoded digest is the wrong length for a SHA-256 HMAC")
+	}
+}
+
+// TestVerifyDeliverySignature_ValidDigestWithoutPrefix_IsAccepted pins the
+// shared HMAC helper's deliberate behavior (issue #667): a correctly
+// computed digest is accepted whether or not it carries the "sha256="
+// prefix, unlike the old GitHub-only implementation which used
+// strings.HasPrefix and rejected an unprefixed digest outright. GitHub's
+// real webhook deliveries always include the prefix, so this case is not
+// reachable in practice — this test exists so the behavior change is
+// visible and intentional rather than accidental.
+func TestVerifyDeliverySignature_ValidDigestWithoutPrefix_IsAccepted(t *testing.T) {
+	c, _ := NewGitHubConnector(&scm.ConnectorSettings{})
+	mac := hmac.New(sha256.New, []byte("mysecret"))
+	mac.Write([]byte("hello"))
+	digest := hex.EncodeToString(mac.Sum(nil))
+
+	if !c.VerifyDeliverySignature([]byte("hello"), digest, "mysecret") {
+		t.Error("expected true: a correct digest is accepted even without the sha256= prefix")
 	}
 }
 
 func TestVerifyDeliverySignature_EmptySecret(t *testing.T) {
-	// When no secret is configured, validation is skipped.
+	// Fail closed: an unconfigured secret means the signature cannot be
+	// verified, so the delivery must be rejected. This unifies GitHub with
+	// the Bitbucket Data Center connector's empty-secret policy (issue #667).
 	c, _ := NewGitHubConnector(&scm.ConnectorSettings{})
-	if !c.VerifyDeliverySignature([]byte("payload"), "sha256=anything", "") {
-		t.Error("expected true when no secret configured")
+	if c.VerifyDeliverySignature([]byte("payload"), "sha256=anything", "") {
+		t.Error("expected false when no secret configured (fail closed)")
 	}
 }
 

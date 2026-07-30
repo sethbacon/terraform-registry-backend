@@ -84,6 +84,40 @@ func TestMemoryStateStore_ReserveExpires(t *testing.T) {
 	}
 }
 
+// TestMemoryStateStore_LoadIsSingleUse is a regression test for issue #675:
+// Load previously returned the stored state without deleting it, requiring a
+// separate Delete call to make it single-use. Two concurrent callers could
+// both observe a live entry before either deleted it. Load must now
+// atomically consume the entry (mirroring RedisStateStore's GET+DEL), so a
+// second Load for the same state — simulating a replay that raced the first
+// caller's Delete — must see it as already gone.
+func TestMemoryStateStore_LoadIsSingleUse(t *testing.T) {
+	store := NewMemoryStateStore(time.Hour)
+	defer store.Close()
+	ctx := context.Background()
+
+	data := &SessionState{State: "single-use-test", ProviderType: "oidc"}
+	if err := store.Save(ctx, "single-use-test", data, 10*time.Minute); err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+
+	first, err := store.Load(ctx, "single-use-test")
+	if err != nil {
+		t.Fatalf("first Load() error: %v", err)
+	}
+	if first == nil {
+		t.Fatal("first Load() = nil, want the saved session state")
+	}
+
+	second, err := store.Load(ctx, "single-use-test")
+	if err != nil {
+		t.Fatalf("second Load() error: %v", err)
+	}
+	if second != nil {
+		t.Error("second Load() for the same state = non-nil, want nil (state must be single-use)")
+	}
+}
+
 func TestMemoryStateStore_LoadNonExistent(t *testing.T) {
 	store := NewMemoryStateStore(time.Hour)
 	defer store.Close()
