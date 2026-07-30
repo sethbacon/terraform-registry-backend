@@ -658,9 +658,15 @@ func (c *GitLabConnector) ParseDelivery(payloadBytes []byte, httpHeaders map[str
 // VerifyDeliverySignature validates a GitLab webhook token.
 // GitLab sends the configured secret token verbatim in the X-Gitlab-Token header.
 // A constant-time comparison is used to prevent timing attacks.
+//
+// Both sharedSecret and signatureHeader are required: an unconfigured secret,
+// or a delivery with no token header, is treated as unverifiable and
+// rejected rather than skipped, matching the fail-closed policy applied to
+// the GitHub/Bitbucket HMAC verification (scm.VerifyHMACSHA256Signature) and
+// this codebase's fail-closed convention for authentication checks.
 func (c *GitLabConnector) VerifyDeliverySignature(payloadBytes []byte, signatureHeader, sharedSecret string) bool {
-	if sharedSecret == "" {
-		return true
+	if sharedSecret == "" || signatureHeader == "" {
+		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(signatureHeader), []byte(sharedSecret)) == 1
 }

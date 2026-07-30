@@ -6,9 +6,6 @@ package github
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -588,25 +585,12 @@ func (c *GitHubConnector) ParseDelivery(payloadBytes []byte, httpHeaders map[str
 
 // VerifyDeliverySignature validates a GitHub HMAC-SHA256 webhook signature.
 // GitHub sets the X-Hub-Signature-256 header to "sha256=<hex>" where the hex
-// value is HMAC-SHA256(secret, payload).
+// value is HMAC-SHA256(secret, payload). Delegates to the shared
+// scm.VerifyHMACSHA256Signature helper (also used by the Bitbucket Data
+// Center connector) so both connectors apply the same fail-closed
+// empty-secret/empty-header policy.
 func (c *GitHubConnector) VerifyDeliverySignature(payloadBytes []byte, signatureHeader, sharedSecret string) bool {
-	if sharedSecret == "" {
-		// No secret configured — skip validation.
-		return true
-	}
-	const prefix = "sha256="
-	if !strings.HasPrefix(signatureHeader, prefix) {
-		return false
-	}
-	gotHex := strings.TrimPrefix(signatureHeader, prefix)
-	got, err := hex.DecodeString(gotHex)
-	if err != nil {
-		return false
-	}
-	mac := hmac.New(sha256.New, []byte(sharedSecret))
-	mac.Write(payloadBytes)
-	expected := mac.Sum(nil)
-	return hmac.Equal(got, expected)
+	return scm.VerifyHMACSHA256Signature(payloadBytes, signatureHeader, sharedSecret)
 }
 
 // Helper methods

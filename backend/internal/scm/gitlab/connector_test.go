@@ -535,8 +535,24 @@ func TestVerifyDeliverySignature_Mismatch(t *testing.T) {
 
 func TestVerifyDeliverySignature_EmptySecret(t *testing.T) {
 	c, _ := NewGitLabConnector(&scm.ConnectorSettings{})
-	if !c.VerifyDeliverySignature([]byte("payload"), "anytoken", "") {
-		t.Error("expected true when no secret configured")
+	if c.VerifyDeliverySignature([]byte("payload"), "anytoken", "") {
+		t.Error("expected false (fail closed) when no secret configured")
+	}
+}
+
+func TestVerifyDeliverySignature_EmptyHeader(t *testing.T) {
+	c, _ := NewGitLabConnector(&scm.ConnectorSettings{})
+	if c.VerifyDeliverySignature([]byte("payload"), "", "mytoken") {
+		t.Error("expected false (fail closed) when no token header is present")
+	}
+	// The case above (empty header, non-empty secret) already fails closed
+	// under the pre-fix code too, via the length-mismatch in
+	// ConstantTimeCompare, so it does not by itself guard the fail-open
+	// regression this function was fixed for. Also exercise header AND
+	// secret both empty: pre-fix, an empty sharedSecret alone short-circuited
+	// to "true" (fail open) regardless of the header.
+	if c.VerifyDeliverySignature([]byte("payload"), "", "") {
+		t.Error("expected false (fail closed) when neither token header nor secret is present")
 	}
 }
 

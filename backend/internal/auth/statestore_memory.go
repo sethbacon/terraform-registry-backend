@@ -65,7 +65,12 @@ func (s *MemoryStateStore) Save(_ context.Context, state string, data *SessionSt
 	return nil
 }
 
-// Load retrieves and returns a session state. Returns nil, nil if not found or expired.
+// Load retrieves and atomically deletes the session state (single-use token),
+// mirroring RedisStateStore's atomic GET+DEL. Returns nil, nil if not found or
+// expired. Deleting on every successful read (not just the expiry branch)
+// closes a Load-then-Delete race: without this, two concurrent callers
+// presenting the same state could both observe a live entry before either one
+// deletes it, so the state token would not be strictly single-use.
 func (s *MemoryStateStore) Load(_ context.Context, state string) (*SessionState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -73,8 +78,8 @@ func (s *MemoryStateStore) Load(_ context.Context, state string) (*SessionState,
 	if !ok {
 		return nil, nil
 	}
+	delete(s.entries, state)
 	if time.Now().After(e.expiresAt) {
-		delete(s.entries, state)
 		return nil, nil
 	}
 	return e.data, nil

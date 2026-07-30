@@ -1034,22 +1034,7 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 			}
 		}
 
-		// SCIM 2.0 provisioning endpoints — bearer token auth only (no CSRF, no cookie auth).
-		// Require admin or scim:provision scope.
-		scimGroup := router.Group("/scim/v2")
-		scimGroup.Use(middleware.AuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo, userTokenRevocationRepo))
-		scimGroup.Use(middleware.RequireScope(auth.ScopeSCIMProvision))
-		{
-			scimHandlers := scim.NewHandlers(cfg, db)
-			scimGroup.GET("/Users", scimHandlers.ListUsers())
-			scimGroup.GET("/Users/:id", scimHandlers.GetUser())
-			scimGroup.POST("/Users", scimHandlers.CreateUser())
-			scimGroup.PUT("/Users/:id", scimHandlers.PutUser())
-			scimGroup.PATCH("/Users/:id", scimHandlers.PatchUser())
-			scimGroup.DELETE("/Users/:id", scimHandlers.DeleteUser())
-			scimGroup.GET("/Groups", scimHandlers.ListGroups())
-			scimGroup.GET("/Groups/:id", scimHandlers.GetGroup())
-		}
+		registerSCIMRoutes(router, d)
 
 		// Development-only endpoints (guarded by DevModeMiddleware)
 		devGroup := apiV1.Group("/dev")
@@ -1071,4 +1056,41 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 	router.POST("/webhooks/scm/:module_source_repo_id/:secret", scmWebhookHandler.HandleWebhook)
 	// Single-use approval token redemption — no auth, token possession is the credential.
 	router.POST("/webhooks/approvals/:token", approvalWebhookHandler.RedeemApprovalToken)
+}
+
+// registerSCIMRoutes wires the SCIM 2.0 provisioning group onto router.
+// Extracted from registerAPIV1Routes (same pattern as registerPublicRoutes /
+// registerAPIV1Routes themselves, issue #565 finding [39]) so the group's
+// middleware ordering can be exercised directly by a test against the real
+// production wiring instead of a stand-in gin.Engine.
+//
+// SCIM 2.0 provisioning endpoints — bearer token auth only (no CSRF, no cookie auth).
+// Require admin or scim:provision scope. Audited and rate-limited the same as
+// every other authenticated mutating route (authenticatedGroup above): external
+// IdP-driven user/group provisioning should leave the same audit trail and be
+// subject to the same abuse protection as admin-initiated mutations.
+func registerSCIMRoutes(router *gin.Engine, d *apiV1RouteDeps) {
+	scimGroup := router.Group("/scim/v2")
+	scimGroup.Use(middleware.AuthMiddleware(d.cfg, d.userRepo, d.apiKeyRepo, d.orgRepo, d.tokenRepo, d.userTokenRevocationRepo))
+	scimGroup.Use(middleware.PrincipalRateLimitMiddleware(d.generalRateLimiter, d.principalOverrides))
+	scimGroup.Use(middleware.OrgRateLimitMiddleware(d.generalRateLimiter, d.orgRateLimiter))
+	scimGroup.Use(middleware.AuditMiddleware(d.auditRepo))
+	// RequireScope runs last so a scope-check failure still passes through
+	// rate limiting and auditing above, matching how every other
+	// authenticated mutating route in this file orders RBAC after the
+	// group's rate-limit/audit middleware (see advisoryAdminGroup /
+	// policyGroup above, and the per-route RequireScope calls under
+	// authenticatedGroup).
+	scimGroup.Use(middleware.RequireScope(auth.ScopeSCIMProvision))
+	{
+		scimHandlers := scim.NewHandlers(d.cfg, d.db)
+		scimGroup.GET("/Users", scimHandlers.ListUsers())
+		scimGroup.GET("/Users/:id", scimHandlers.GetUser())
+		scimGroup.POST("/Users", scimHandlers.CreateUser())
+		scimGroup.PUT("/Users/:id", scimHandlers.PutUser())
+		scimGroup.PATCH("/Users/:id", scimHandlers.PatchUser())
+		scimGroup.DELETE("/Users/:id", scimHandlers.DeleteUser())
+		scimGroup.GET("/Groups", scimHandlers.ListGroups())
+		scimGroup.GET("/Groups/:id", scimHandlers.GetGroup())
+	}
 }

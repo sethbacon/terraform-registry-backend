@@ -11,23 +11,27 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/terraform-registry/terraform-registry/internal/archivelimits"
 )
 
-// maxExtractBytes is the cumulative decompressed-bytes limit across all entries;
-// matches the 100 MB cap enforced by validation.ValidateArchive at upload time.
-const maxExtractBytes = 100 << 20 // 100 MB total
+// maxExtractBytes is the cumulative decompressed-bytes limit across all entries.
+// Sourced from archivelimits so this cannot silently drift from the cap
+// validation.ValidateArchive enforces at upload time.
+const maxExtractBytes = archivelimits.MaxBytes
 
 // maxExtractEntries bounds the number of tar entries extracted. Without this, an
 // archive of millions of zero-byte file entries writes 0 body bytes (never tripping
 // maxExtractBytes) while still exhausting inodes/metadata on the extraction worker.
 // A ~1MB gzip can encode ~2M such entries, so this must be checked independently of
-// the byte cap. Matches the cap enforced by validation.ValidateArchive at upload time.
-const maxExtractEntries = 100000
+// the byte cap. Sourced from archivelimits so this cannot silently drift from
+// validation.ValidateArchive's cap.
+const maxExtractEntries = archivelimits.MaxEntries
 
 // maxCompressedInputBytes bounds the compressed (gzip) input stream itself, mirroring
 // validation.ValidateArchive's io.LimitReader wrap. Without this, ExtractTarGz would
 // read an unbounded compressed stream even though the decompressed output is capped.
-const maxCompressedInputBytes = 100 << 20 // 100 MB
+const maxCompressedInputBytes = archivelimits.MaxBytes
 
 // ExtractTarGz extracts a gzipped tar archive from reader into destDir.
 // Enforces path traversal protection, a 100 MB cumulative extraction limit, a

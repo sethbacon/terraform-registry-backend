@@ -6,9 +6,6 @@ package bitbucket
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -428,25 +425,13 @@ func (c *BitbucketDCConnector) ParseDelivery(payloadBytes []byte, httpHeaders ma
 	}, nil
 }
 
-// VerifyDeliverySignature validates webhook authenticity using HMAC-SHA256
+// VerifyDeliverySignature validates webhook authenticity using HMAC-SHA256.
+// BB DC uses the "sha256=<hex>" format. Delegates to the shared
+// scm.VerifyHMACSHA256Signature helper (also used by the GitHub connector) so
+// both connectors apply the same fail-closed empty-secret/empty-header
+// policy.
 func (c *BitbucketDCConnector) VerifyDeliverySignature(payloadBytes []byte, signatureHeader, sharedSecret string) bool {
-	if signatureHeader == "" || sharedSecret == "" {
-		return false
-	}
-
-	// BB DC uses "sha256=<hex>" format
-	sig, _ := strings.CutPrefix(signatureHeader, "sha256=")
-
-	expectedSig, err := hex.DecodeString(sig)
-	if err != nil {
-		return false
-	}
-
-	mac := hmac.New(sha256.New, []byte(sharedSecret))
-	mac.Write(payloadBytes)
-	computedSig := mac.Sum(nil)
-
-	return hmac.Equal(expectedSig, computedSig)
+	return scm.VerifyHMACSHA256Signature(payloadBytes, signatureHeader, sharedSecret)
 }
 
 // Helper methods

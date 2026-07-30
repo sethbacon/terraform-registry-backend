@@ -217,6 +217,11 @@ func getResourceType(c *gin.Context) string {
 		return "setup"
 	case strings.HasPrefix(fullPath, "/api/v1/auth"):
 		return "auth"
+	// SCIM 2.0 provisioning is mounted directly on the router at /scim/v2,
+	// not under /api/v1, so it needs its own case rather than falling
+	// through to "unknown".
+	case strings.HasPrefix(fullPath, "/scim/v2"):
+		return "scim_provisioning"
 	default:
 		return "unknown"
 	}

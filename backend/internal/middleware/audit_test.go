@@ -237,6 +237,10 @@ func TestAuditMiddleware_ResourceTypeDetection(t *testing.T) {
 		// and the forward-compat /admin/binary-mirror prefix both audit as "binary_mirror".
 		{"/api/v1/admin/terraform-mirrors/some-id", "binary_mirror"},
 		{"/api/v1/admin/binary-mirror/x", "binary_mirror"},
+		// SCIM 2.0 provisioning is mounted directly at /scim/v2 (not under
+		// /api/v1) and must be audited distinctly rather than falling through
+		// to "unknown" — see issue #666.
+		{"/scim/v2/Users", "scim_provisioning"},
 		{"/other/z", "unknown"},
 	}
 
