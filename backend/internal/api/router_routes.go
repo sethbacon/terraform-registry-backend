@@ -330,6 +330,8 @@ type apiV1RouteDeps struct {
 	auditShipper                audit.Shipper
 	nsAuthz                     *middleware.NamespaceAuthorizer
 	scmRepo                     *repositories.SCMRepository
+	mirrorRepo                  *repositories.MirrorRepository
+	rbacRepo                    *repositories.RBACRepository
 	scanRepo                    *repositories.ModuleScanRepository
 	moduleDocsRepo              *repositories.ModuleDocsRepository
 	policyEngine                *policy.PolicyEngine
@@ -898,16 +900,24 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 			mirrorsGroup := authenticatedGroup.Group("/admin/mirrors")
 			{
 				// Read operations - require mirrors:read (or mirrors:manage or admin)
+				// As with the SCM provider family, every /:id route re-derives
+				// the caller's scope in the organization owning THAT mirror
+				// configuration; the group-level RequireScope only sees the
+				// flat org-less scope union (issues #652/#719).
+				mirrorConfigOrg := func(scope auth.Scope) gin.HandlerFunc {
+					return nsAuthz.RequireOrgScopeForResource(scope, mirrorConfigOrgResolver(d.mirrorRepo))
+				}
+
 				mirrorsGroup.GET("", middleware.RequireScope(auth.ScopeMirrorsRead), mirrorHandlers.ListMirrorConfigs)
-				mirrorsGroup.GET("/:id", middleware.RequireScope(auth.ScopeMirrorsRead), mirrorHandlers.GetMirrorConfig)
-				mirrorsGroup.GET("/:id/status", middleware.RequireScope(auth.ScopeMirrorsRead), mirrorHandlers.GetMirrorStatus)
-				mirrorsGroup.GET("/:id/providers", middleware.RequireScope(auth.ScopeMirrorsRead), mirrorHandlers.ListMirroredProviders)
+				mirrorsGroup.GET("/:id", middleware.RequireScope(auth.ScopeMirrorsRead), mirrorConfigOrg(auth.ScopeMirrorsRead), mirrorHandlers.GetMirrorConfig)
+				mirrorsGroup.GET("/:id/status", middleware.RequireScope(auth.ScopeMirrorsRead), mirrorConfigOrg(auth.ScopeMirrorsRead), mirrorHandlers.GetMirrorStatus)
+				mirrorsGroup.GET("/:id/providers", middleware.RequireScope(auth.ScopeMirrorsRead), mirrorConfigOrg(auth.ScopeMirrorsRead), mirrorHandlers.ListMirroredProviders)
 
 				// Management operations - require mirrors:manage (or admin)
 				mirrorsGroup.POST("", middleware.RequireScope(auth.ScopeMirrorsManage), mirrorHandlers.CreateMirrorConfig)
-				mirrorsGroup.PUT("/:id", middleware.RequireScope(auth.ScopeMirrorsManage), mirrorHandlers.UpdateMirrorConfig)
-				mirrorsGroup.DELETE("/:id", middleware.RequireScope(auth.ScopeMirrorsManage), mirrorHandlers.DeleteMirrorConfig)
-				mirrorsGroup.POST("/:id/sync", middleware.RequireScope(auth.ScopeMirrorsManage), mirrorHandlers.TriggerSync)
+				mirrorsGroup.PUT("/:id", middleware.RequireScope(auth.ScopeMirrorsManage), mirrorConfigOrg(auth.ScopeMirrorsManage), mirrorHandlers.UpdateMirrorConfig)
+				mirrorsGroup.DELETE("/:id", middleware.RequireScope(auth.ScopeMirrorsManage), mirrorConfigOrg(auth.ScopeMirrorsManage), mirrorHandlers.DeleteMirrorConfig)
+				mirrorsGroup.POST("/:id/sync", middleware.RequireScope(auth.ScopeMirrorsManage), mirrorConfigOrg(auth.ScopeMirrorsManage), mirrorHandlers.TriggerSync)
 			}
 
 			// Terraform Binary Mirror admin endpoints (multi-config)
@@ -950,12 +960,24 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 			// Mirror Approval Requests
 			approvalsGroup := authenticatedGroup.Group("/admin/approvals")
 			{
+				// Per-org re-derivation for the /:id routes (issue #719). Not
+				// applied to PUT /:id/review, which already requires the
+				// platform-wide admin scope that this guard deliberately
+				// exempts — adding it there would be dead weight, not defence.
+				approvalOrg := func(scope auth.Scope) gin.HandlerFunc {
+					return nsAuthz.RequireOrgScopeForResource(scope, approvalRequestOrgResolver(d.rbacRepo))
+				}
+
 				approvalsGroup.GET("", middleware.RequireScope(auth.ScopeMirrorsRead), rbacHandlers.ListApprovalRequests)
-				approvalsGroup.GET("/:id", middleware.RequireScope(auth.ScopeMirrorsRead), rbacHandlers.GetApprovalRequest)
+				approvalsGroup.GET("/:id", middleware.RequireScope(auth.ScopeMirrorsRead), approvalOrg(auth.ScopeMirrorsRead), rbacHandlers.GetApprovalRequest)
 				approvalsGroup.POST("", middleware.RequireScope(auth.ScopeMirrorsManage), rbacHandlers.CreateApprovalRequest)
 				approvalsGroup.PUT("/:id/review", middleware.RequireScope(auth.ScopeAdmin), rbacHandlers.ReviewApproval)
 				// Generate a single-use token that allows out-of-band (email/Slack) approval.
-				approvalsGroup.POST("/:id/token", middleware.RequireScope(auth.ScopeMirrorsManage), rbacHandlers.GenerateApprovalToken)
+				// Guarded per-org: the redemption endpoint
+				// (POST /webhooks/approvals/:token) is unauthenticated, so
+				// minting a token for another organization's request would hand
+				// over a working credential.
+				approvalsGroup.POST("/:id/token", middleware.RequireScope(auth.ScopeMirrorsManage), approvalOrg(auth.ScopeMirrorsManage), rbacHandlers.GenerateApprovalToken)
 			}
 
 			// Version Approvals (provider + terraform mirror version gate)
@@ -1146,5 +1168,63 @@ func scmProviderOrgResolver(scmRepo *repositories.SCMRepository) middleware.Reso
 			return "", true, nil
 		}
 		return provider.OrganizationID.String(), true, nil
+	}
+}
+
+// mirrorConfigOrgResolver adapts MirrorRepository to
+// middleware.ResourceOrgResolver for /admin/mirrors/:id (issue #719).
+// mirror_configurations.organization_id is nullable, so an unowned row
+// resolves to ("", true, nil) and the guard treats it as admin-only.
+func mirrorConfigOrgResolver(mirrorRepo *repositories.MirrorRepository) middleware.ResourceOrgResolver {
+	return func(ctx context.Context, id string) (string, bool, error) {
+		if mirrorRepo == nil {
+			return "", false, errors.New("mirror repository not configured")
+		}
+		configID, err := uuid.Parse(id)
+		if err != nil {
+			return "", false, nil
+		}
+		config, err := mirrorRepo.GetByID(ctx, configID)
+		if err != nil {
+			return "", false, err
+		}
+		if config == nil {
+			return "", false, nil
+		}
+		if config.OrganizationID == nil || *config.OrganizationID == uuid.Nil {
+			return "", true, nil
+		}
+		return config.OrganizationID.String(), true, nil
+	}
+}
+
+// approvalRequestOrgResolver adapts RBACRepository to
+// middleware.ResourceOrgResolver for /admin/approvals/:id (issue #719).
+//
+// This one matters more than a typical read guard: GenerateApprovalToken mints
+// a single-use token whose redemption endpoint
+// (POST /webhooks/approvals/:token) is unauthenticated — possession of the
+// token is the credential — so an unguarded route let a caller mint an
+// approval for another organization's pending mirror request.
+func approvalRequestOrgResolver(rbacRepo *repositories.RBACRepository) middleware.ResourceOrgResolver {
+	return func(ctx context.Context, id string) (string, bool, error) {
+		if rbacRepo == nil {
+			return "", false, errors.New("rbac repository not configured")
+		}
+		requestID, err := uuid.Parse(id)
+		if err != nil {
+			return "", false, nil
+		}
+		req, err := rbacRepo.GetApprovalRequest(ctx, requestID)
+		if err != nil {
+			return "", false, err
+		}
+		if req == nil {
+			return "", false, nil
+		}
+		if req.OrganizationID == nil || *req.OrganizationID == uuid.Nil {
+			return "", true, nil
+		}
+		return req.OrganizationID.String(), true, nil
 	}
 }
