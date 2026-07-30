@@ -254,14 +254,18 @@ type ProviderPlatformItem struct {
 
 // ProviderVersionItem represents a version entry inside a provider detail response.
 type ProviderVersionItem struct {
-	ID                 string                 `json:"id"`
-	Version            string                 `json:"version"`
-	Protocols          []string               `json:"protocols"`
-	Platforms          []ProviderPlatformItem `json:"platforms"`
-	Deprecated         bool                   `json:"deprecated"`
-	DeprecatedAt       interface{}            `json:"deprecated_at,omitempty"`
-	DeprecationMessage interface{}            `json:"deprecation_message,omitempty"`
-	CreatedAt          time.Time              `json:"created_at"`
+	ID         string                 `json:"id"`
+	Version    string                 `json:"version"`
+	Protocols  []string               `json:"protocols"`
+	Platforms  []ProviderPlatformItem `json:"platforms"`
+	Deprecated bool                   `json:"deprecated"`
+	// Signed reports whether this version carries a GPG public key, so admins
+	// can distinguish unsigned publishes at a glance without cross-referencing
+	// providers.require_signing (issue #658).
+	Signed             bool        `json:"signed"`
+	DeprecatedAt       interface{} `json:"deprecated_at,omitempty"`
+	DeprecationMessage interface{} `json:"deprecation_message,omitempty"`
+	CreatedAt          time.Time   `json:"created_at"`
 }
 
 // ProviderDetailResponse is returned by GET /api/v1/providers/{namespace}/{type}.

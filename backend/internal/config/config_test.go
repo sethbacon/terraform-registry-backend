@@ -535,7 +535,7 @@ func TestValidate(t *testing.T) {
 	t.Run("policy bundle_url http allowed when host allowlisted", func(t *testing.T) {
 		cfg := minimalValidConfig()
 		cfg.Security.Egress.Allowlist = []string{"bundles.internal.example.com"}
-		cfg.Policy = PolicyConfig{Enabled: true, Mode: "block", BundleURL: "http://bundles.internal.example.com/bundle.tar.gz"}
+		cfg.Policy = PolicyConfig{Enabled: true, Mode: "block", BundleURL: "http://bundles.internal.example.com/bundle.tar.gz", BundleSHA256: strings.Repeat("a", 64)}
 		if err := cfg.Validate(); err != nil {
 			t.Errorf("Validate() unexpected error for allow-listed http bundle_url: %v", err)
 		}
@@ -544,7 +544,7 @@ func TestValidate(t *testing.T) {
 	t.Run("policy bundle_url private address allowed when allowlisted", func(t *testing.T) {
 		cfg := minimalValidConfig()
 		cfg.Security.Egress.Allowlist = []string{"10.1.2.0/24"}
-		cfg.Policy = PolicyConfig{Enabled: true, Mode: "block", BundleURL: "https://10.1.2.3/bundle.tar.gz"}
+		cfg.Policy = PolicyConfig{Enabled: true, Mode: "block", BundleURL: "https://10.1.2.3/bundle.tar.gz", BundleSHA256: strings.Repeat("a", 64)}
 		if err := cfg.Validate(); err != nil {
 			t.Errorf("Validate() unexpected error for allow-listed private bundle_url: %v", err)
 		}
@@ -587,6 +587,26 @@ func TestValidate(t *testing.T) {
 		cfg.BinaryMirror.Auth = "allowlst" // typo for "allowlist"
 		if err := cfg.Validate(); err == nil {
 			t.Error("Validate() expected error for misspelled binary_mirror.auth, got nil")
+		}
+	})
+
+	// -------------------------------------------------------------------
+	// Integrity pin: policy.bundle_sha256 (issue #556, finding [15])
+	// -------------------------------------------------------------------
+
+	t.Run("policy bundle_url without bundle_sha256 is rejected (no unpinned bundle by default)", func(t *testing.T) {
+		cfg := minimalValidConfig()
+		cfg.Policy = PolicyConfig{Enabled: true, Mode: "block", BundleURL: "https://bundles.example.com/bundle.tar.gz"}
+		if err := cfg.Validate(); err == nil {
+			t.Error("Validate() expected error for bundle_url without a bundle_sha256 pin, got nil")
+		}
+	})
+
+	t.Run("policy bundle_url with bundle_sha256 pin is accepted", func(t *testing.T) {
+		cfg := minimalValidConfig()
+		cfg.Policy = PolicyConfig{Enabled: true, Mode: "block", BundleURL: "https://bundles.example.com/bundle.tar.gz", BundleSHA256: strings.Repeat("a", 64)}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate() unexpected error for bundle_url with bundle_sha256 pin: %v", err)
 		}
 	})
 }

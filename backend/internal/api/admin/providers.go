@@ -98,6 +98,10 @@ func (h *ProviderAdminHandlers) GetProvider(c *gin.Context) {
 			"protocols":  v.Protocols,
 			"platforms":  platformsList,
 			"deprecated": v.Deprecated,
+			// signed surfaces whether this version carries a GPG public key,
+			// so admins can distinguish unsigned publishes at a glance
+			// without cross-referencing providers.require_signing (issue #658).
+			"signed":     v.GPGPublicKey != "",
 			"created_at": v.CreatedAt,
 		}
 		if v.DeprecatedAt != nil {

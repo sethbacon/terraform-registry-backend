@@ -1338,6 +1338,88 @@ func TestBuildStorageFromConfig_S3(t *testing.T) {
 	_ = err // Will fail at actual S3 client creation, but branch is exercised
 }
 
+// ---------------------------------------------------------------------------
+// migrateItem — orphaned target blob cleanup on partial failure (issue #685)
+// ---------------------------------------------------------------------------
+
+// fakeMigrationStorage is a minimal storage.Storage double that records
+// deleted paths, for asserting the cleanup path without a real storage backend.
+type fakeMigrationStorage struct {
+	existsResult bool
+	deletedPaths []string
+}
+
+func (f *fakeMigrationStorage) Upload(_ context.Context, path string, reader io.Reader, size int64) (*storage.UploadResult, error) {
+	// migrateItem streams via io.Pipe, so Upload must drain reader — otherwise
+	// the writing goroutine blocks forever on the unread pipe.
+	if _, err := io.Copy(io.Discard, reader); err != nil {
+		return nil, err
+	}
+	return &storage.UploadResult{Path: path, Size: size}, nil
+}
+func (f *fakeMigrationStorage) Download(_ context.Context, _ string) (io.ReadCloser, error) {
+	return io.NopCloser(bytes.NewReader([]byte("data"))), nil
+}
+func (f *fakeMigrationStorage) Delete(_ context.Context, path string) error {
+	f.deletedPaths = append(f.deletedPaths, path)
+	return nil
+}
+func (f *fakeMigrationStorage) GetURL(_ context.Context, _ string, _ time.Duration) (string, error) {
+	return "", nil
+}
+func (f *fakeMigrationStorage) Exists(_ context.Context, _ string) (bool, error) {
+	return f.existsResult, nil
+}
+func (f *fakeMigrationStorage) GetMetadata(_ context.Context, _ string) (*storage.FileMetadata, error) {
+	return &storage.FileMetadata{Size: 4}, nil
+}
+
+// TestMigrateItem_UpdateBackendRefFailure_CleansUpOrphanedTargetBlob covers
+// updateBackendRef failing after migrateItem already uploaded the artifact to
+// the target storage backend successfully: the now-orphaned target blob must
+// be deleted rather than left behind with no corresponding backend reference
+// (same defect class as the provider-upload and terraform-mirror
+// signature-file paths fixed for issue #685).
+func TestMigrateItem_UpdateBackendRefFailure_CleansUpOrphanedTargetBlob(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	sqlxDB := sqlx.NewDb(db, "sqlmock")
+	repo := repositories.NewStorageMigrationRepository(sqlxDB)
+	svc := NewStorageMigrationService(repo, nil, nil, nil, nil, nil)
+
+	mock.ExpectExec("UPDATE storage_migration_items SET status").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE module_versions").
+		WillReturnError(&testDBError{"backend ref update failed"})
+
+	srcStorage := &fakeMigrationStorage{}
+	tgtStorage := &fakeMigrationStorage{}
+	item := &models.StorageMigrationItem{
+		ID:           "item-1",
+		ArtifactType: "module",
+		ArtifactID:   "artifact-123",
+		SourcePath:   "/modules/m1.zip",
+	}
+
+	if err := svc.migrateItem(context.Background(), srcStorage, tgtStorage, item, "s3"); err == nil {
+		t.Fatal("expected error from updateBackendRef failure, got nil")
+	}
+
+	found := false
+	for _, p := range tgtStorage.deletedPaths {
+		if p == item.SourcePath {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected orphaned target blob %q to be deleted after backend-ref update failure; deleted=%v", item.SourcePath, tgtStorage.deletedPaths)
+	}
+}
+
 func TestBuildStorageFromConfig_GCS(t *testing.T) {
 	svc := NewStorageMigrationService(nil, nil, nil, nil, nil, &config.Config{})
 	sc := &models.StorageConfig{

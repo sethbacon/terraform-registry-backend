@@ -51,6 +51,7 @@ type Config struct {
 	CVE             CVEConfig             `mapstructure:"cve"`
 	ReleasesGPGKeys ReleasesGPGKeysConfig `mapstructure:"releases_gpg_keys"`
 	Suite           SuiteConfig           `mapstructure:"suite"`
+	Providers       ProvidersConfig       `mapstructure:"providers"`
 }
 
 // AuditRetentionConfig controls the background audit log cleanup job.
@@ -121,13 +122,31 @@ type PolicyConfig struct {
 	// BundleURL is the HTTPS URL of the .tar.gz Rego bundle. Plain HTTP is only
 	// accepted when the bundle host is covered by security.egress.allowlist.
 	BundleURL string `mapstructure:"bundle_url"`
-	// BundleSHA256 optionally pins the expected SHA-256 (hex) of the bundle
-	// archive. When set, a fetched bundle whose digest does not match is
-	// rejected and the previously loaded policies are kept (fail closed).
+	// BundleSHA256 pins the expected SHA-256 (hex) of the bundle archive. A
+	// fetched bundle whose digest does not match is rejected and the
+	// previously loaded policies are kept (fail closed). Required by
+	// Validate() whenever Enabled is true and BundleURL is set — an unpinned
+	// remote bundle is not a supported configuration (issue #556).
 	BundleSHA256 string `mapstructure:"bundle_sha256"`
 	// BundleRefreshInterval is how often (in seconds) the bundle is re-fetched in the background.
 	// 0 means no background refresh.
 	BundleRefreshInterval int `mapstructure:"bundle_refresh_interval"`
+}
+
+// ProvidersConfig controls policy enforcement on the provider-publish endpoint
+// (POST /api/v1/providers).
+type ProvidersConfig struct {
+	// RequireSigning, when true, rejects a provider version publish unless the
+	// version carries a GPG public key and a GPG-verified shasums_signature_file
+	// (checked once per version — subsequent platform uploads against an
+	// already-signed version may omit them, per the endpoint's existing
+	// "attach once per version" behavior). Default false: unsigned provider
+	// binaries are accepted, matching the registry protocol's allowance for
+	// Terraform CLI to install a provider with an "(unauthenticated)" note.
+	// Enabling this closes the gap where any authenticated publisher —
+	// including a compromised account — could distribute a binary whose
+	// integrity rests solely on a self-computed SHA256 (issue #658, CWE-347).
+	RequireSigning bool `mapstructure:"require_signing"`
 }
 
 // CVEConfig controls the scheduled OSV.dev vulnerability polling feature.
@@ -605,6 +624,12 @@ type CORSConfig struct {
 }
 
 // MTLSConfig holds mutual TLS client authentication configuration.
+//
+// IMPORTANT — no revocation checking (CRL/OCSP): a client certificate issued
+// under ClientCAFile authenticates until it expires, even if revoked. For
+// high-assurance deployments, mandate short-lived client certificates so the
+// revocation exposure window is bounded (see internal/auth/mtls/tlsconfig.go,
+// issue #674).
 type MTLSConfig struct {
 	Enabled      bool                 `mapstructure:"enabled"`
 	ClientCAFile string               `mapstructure:"client_ca_file"`
@@ -1376,6 +1401,14 @@ func (c *Config) Validate() error {
 		}
 		if err := egressGuard.ValidateURL(c.Policy.BundleURL); err != nil {
 			return fmt.Errorf("policy.bundle_url: %w", err)
+		}
+		// The bundle's .rego files become active upload policy the moment
+		// they're loaded; without a pinned digest a compromised or MITM'd
+		// bundle host could silently substitute policy logic with nothing to
+		// detect it. Fail closed: require the pin rather than defaulting to
+		// unpinned (issue #556, finding [15]).
+		if c.Policy.BundleSHA256 == "" {
+			return fmt.Errorf("policy.bundle_sha256 is required when policy.enabled=true and policy.bundle_url is set — pin the expected SHA-256 digest of the bundle archive so a compromised or MITM'd bundle host cannot silently substitute upload policy logic")
 		}
 	}
 

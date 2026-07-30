@@ -675,6 +675,13 @@ func (p *SCMPublisher) publishModuleVersion(
 	}
 
 	if err := p.moduleRepo.CreateVersion(ctx, moduleVersion); err != nil {
+		// The blob uploaded above now has no corresponding DB row — clean it
+		// up rather than leaving it orphaned (issue #685, same defect as the
+		// provider-upload and terraform-mirror signature-file paths).
+		if delErr := p.storageBackend.Delete(ctx, storagePath); delErr != nil {
+			slog.Error("scm-publisher: failed to clean up orphaned storage artifact", // #nosec G706 -- logged value is application-internal (constructed storage path); not raw user-controlled request input
+				"path", storagePath, "error", delErr)
+		}
 		return "", fmt.Errorf("create version: %w", err)
 	}
 

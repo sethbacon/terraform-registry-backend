@@ -3,7 +3,9 @@
 package jobs
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -15,6 +17,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/mirror"
+	"github.com/terraform-registry/terraform-registry/internal/storage"
 )
 
 // newTestTerraformSyncJob returns a job with nil dependencies — sufficient for
@@ -208,5 +211,161 @@ func TestSyncOnePlatform_AcceptsWellFormedFilename(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// storeVersionVerificationFiles / syncOnePlatform — orphaned blob cleanup on
+// partial failure (issue #685)
+// ---------------------------------------------------------------------------
+
+// fakeMirrorStorage is a minimal storage.Storage double that records deleted
+// paths, for asserting the cleanup path without a real storage backend.
+type fakeMirrorStorage struct {
+	deletedPaths []string
+}
+
+func (f *fakeMirrorStorage) Upload(_ context.Context, path string, _ io.Reader, _ int64) (*storage.UploadResult, error) {
+	return &storage.UploadResult{Path: path, Size: 1}, nil
+}
+func (f *fakeMirrorStorage) Download(_ context.Context, _ string) (io.ReadCloser, error) {
+	return io.NopCloser(bytes.NewReader(nil)), nil
+}
+func (f *fakeMirrorStorage) Delete(_ context.Context, path string) error {
+	f.deletedPaths = append(f.deletedPaths, path)
+	return nil
+}
+func (f *fakeMirrorStorage) GetURL(_ context.Context, _ string, _ time.Duration) (string, error) {
+	return "", nil
+}
+func (f *fakeMirrorStorage) Exists(_ context.Context, _ string) (bool, error) { return true, nil }
+func (f *fakeMirrorStorage) GetMetadata(_ context.Context, _ string) (*storage.FileMetadata, error) {
+	return &storage.FileMetadata{}, nil
+}
+
+// TestStoreVersionVerificationFiles_UpdateFailure_CleansUpOrphanedBlobs covers
+// UpdateVersionSignatureStorage failing after the SHA256SUMS and SHA256SUMS.sig
+// blobs were already uploaded successfully: both orphaned blobs must be
+// deleted rather than left behind with no corresponding DB row (same defect
+// class as the provider-upload signature-file path fixed in issue #685).
+func TestStoreVersionVerificationFiles_UpdateFailure_CleansUpOrphanedBlobs(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	sqlxDB := sqlx.NewDb(db, "sqlmock")
+	repo := repositories.NewTerraformMirrorRepository(sqlxDB)
+	fakeStorage := &fakeMirrorStorage{}
+	job := NewTerraformMirrorSyncJob(repo, fakeStorage, "local")
+
+	mock.ExpectExec("UPDATE terraform_versions").WillReturnError(errors.New("db error"))
+
+	cfg := &models.TerraformMirrorConfig{Name: "test-mirror", Tool: "terraform"}
+	job.storeVersionVerificationFiles(context.Background(), cfg, "1.9.0", uuid.New(), []byte("sums-data"), []byte("sig-data"), nil, nil)
+
+	wantSums := "terraform-binaries/1.9.0/SHA256SUMS"
+	wantSig := "terraform-binaries/1.9.0/SHA256SUMS.terraform.sig"
+	for _, want := range []string{wantSums, wantSig} {
+		found := false
+		for _, p := range fakeStorage.deletedPaths {
+			if p == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("expected orphaned blob %q to be deleted after signature-storage DB update failure; deleted=%v", want, fakeStorage.deletedPaths)
+		}
+	}
+}
+
+// TestStoreVersionVerificationFiles_UpdateFailure_PreservesPreExistingSumsBlob
+// covers the same UpdateVersionSignatureStorage failure, but for a version
+// that already had a SHA256SUMS blob persisted from an earlier sync run
+// (existingSumsKey non-nil). Storage paths are deterministic, so this call's
+// SHA256SUMS upload overwrites that same blob in place — deleting it on
+// failure would destroy content a pre-existing, untouched DB row still
+// references. Only the newly-uploaded (unreferenced) signature blob should be
+// cleaned up. This is the terraform-mirror-sync sibling of
+// TestUploadHandler_SignatureStorageUpdateFailure_PreservesPreExistingSumsBlob
+// (issue #685).
+func TestStoreVersionVerificationFiles_UpdateFailure_PreservesPreExistingSumsBlob(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	sqlxDB := sqlx.NewDb(db, "sqlmock")
+	repo := repositories.NewTerraformMirrorRepository(sqlxDB)
+	fakeStorage := &fakeMirrorStorage{}
+	job := NewTerraformMirrorSyncJob(repo, fakeStorage, "local")
+
+	mock.ExpectExec("UPDATE terraform_versions").WillReturnError(errors.New("db error"))
+
+	cfg := &models.TerraformMirrorConfig{Name: "test-mirror", Tool: "terraform"}
+	existingSumsKey := "terraform-binaries/1.9.0/SHA256SUMS"
+	job.storeVersionVerificationFiles(context.Background(), cfg, "1.9.0", uuid.New(), []byte("sums-data"), []byte("sig-data"), &existingSumsKey, nil)
+
+	for _, p := range fakeStorage.deletedPaths {
+		if p == existingSumsKey {
+			t.Errorf("pre-existing SUMS blob %q must not be deleted (an untouched DB row still references it); deleted=%v", existingSumsKey, fakeStorage.deletedPaths)
+		}
+	}
+
+	wantSig := "terraform-binaries/1.9.0/SHA256SUMS.terraform.sig"
+	found := false
+	for _, p := range fakeStorage.deletedPaths {
+		if p == wantSig {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected newly-uploaded (unreferenced) sig blob %q to be deleted; deleted=%v", wantSig, fakeStorage.deletedPaths)
+	}
+}
+
+// TestSyncOnePlatform_UpdateSyncStatusFailure_CleansUpOrphanedBlob covers
+// UpdatePlatformSyncStatus failing after the platform's binary blob was
+// already uploaded successfully: the orphaned blob must be deleted and the
+// failure logged rather than silently discarded, mirroring the cleanup added
+// to storeVersionVerificationFiles above for the same defect class (#685).
+func TestSyncOnePlatform_UpdateSyncStatusFailure_CleansUpOrphanedBlob(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	sqlxDB := sqlx.NewDb(db, "sqlmock")
+	repo := repositories.NewTerraformMirrorRepository(sqlxDB)
+	fakeStorage := &fakeMirrorStorage{}
+	job := NewTerraformMirrorSyncJob(repo, fakeStorage, "local")
+
+	mock.ExpectExec("UPDATE terraform_version_platforms").WillReturnError(errors.New("db error"))
+
+	platform := models.TerraformVersionPlatform{
+		ID:          uuid.New(),
+		OS:          "linux",
+		Arch:        "amd64",
+		UpstreamURL: "https://releases.example.com/terraform_1.9.0_linux_amd64.zip",
+		Filename:    "terraform_1.9.0_linux_amd64.zip",
+	}
+
+	ok := job.syncOnePlatform(context.Background(), &fakeReleasesClient{binary: "fake-binary-contents"}, "1.9.0", platform, nil, false, nil)
+	if ok {
+		t.Error("expected syncOnePlatform to report failure when UpdatePlatformSyncStatus fails")
+	}
+
+	wantPath := "terraform-binaries/1.9.0/linux/amd64/terraform_1.9.0_linux_amd64.zip"
+	found := false
+	for _, p := range fakeStorage.deletedPaths {
+		if p == wantPath {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected orphaned blob %q to be deleted after sync-status DB update failure; deleted=%v", wantPath, fakeStorage.deletedPaths)
 	}
 }

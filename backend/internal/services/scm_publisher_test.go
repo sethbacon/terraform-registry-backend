@@ -10,8 +10,13 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	sqlmock "github.com/DATA-DOG/go-sqlmock"
+	"github.com/google/uuid"
+	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/scm"
+	"github.com/terraform-registry/terraform-registry/internal/storage"
 )
 
 // ---------------------------------------------------------------------------
@@ -586,5 +591,99 @@ func TestWithModuleDocs_ReturnsPublisher(t *testing.T) {
 	got := p.WithModuleDocs(nil)
 	if got != p {
 		t.Error("WithModuleDocs should return the same *SCMPublisher")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// publishModuleVersion — orphaned blob cleanup on partial failure (issue #685)
+// ---------------------------------------------------------------------------
+
+// fakePublisherStorage is a minimal storage.Storage double that records
+// deleted paths, for asserting the cleanup path without a real storage backend.
+type fakePublisherStorage struct {
+	deletedPaths []string
+}
+
+func (f *fakePublisherStorage) Upload(_ context.Context, path string, _ io.Reader, size int64) (*storage.UploadResult, error) {
+	return &storage.UploadResult{Path: path, Size: size}, nil
+}
+func (f *fakePublisherStorage) Download(_ context.Context, _ string) (io.ReadCloser, error) {
+	return io.NopCloser(bytes.NewReader(nil)), nil
+}
+func (f *fakePublisherStorage) Delete(_ context.Context, path string) error {
+	f.deletedPaths = append(f.deletedPaths, path)
+	return nil
+}
+func (f *fakePublisherStorage) GetURL(_ context.Context, _ string, _ time.Duration) (string, error) {
+	return "", nil
+}
+func (f *fakePublisherStorage) Exists(_ context.Context, _ string) (bool, error) { return false, nil }
+func (f *fakePublisherStorage) GetMetadata(_ context.Context, _ string) (*storage.FileMetadata, error) {
+	return &storage.FileMetadata{}, nil
+}
+
+// TestPublishModuleVersion_CreateVersionFailure_CleansUpOrphanedBlob covers
+// moduleRepo.CreateVersion failing after the module archive was already
+// uploaded to storage successfully: the orphaned blob must be deleted rather
+// than left behind with no corresponding DB row, mirroring the cleanup
+// already present in the manual module-upload handler
+// (internal/api/modules/upload.go) for the same defect class (#685). This
+// path is reachable from both ProcessTagPush (SCM webhook auto-publish) and
+// processTagForManualSync.
+func TestPublishModuleVersion_CreateVersionFailure_CleansUpOrphanedBlob(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	moduleID := uuid.New()
+	now := time.Now()
+	mock.ExpectQuery("FROM modules m").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "organization_id", "namespace", "name", "system", "description", "source",
+			"created_by", "created_at", "updated_at", "created_by_name",
+			"deprecated", "deprecated_at", "deprecation_message", "successor_module_id",
+		}).AddRow(
+			moduleID.String(), "org-1", "acme", "vm", "azurerm", nil, nil,
+			nil, now, now, nil,
+			false, nil, nil, nil,
+		))
+	mock.ExpectQuery("INSERT INTO module_versions").WillReturnError(errors.New("db error"))
+
+	fakeStorage := &fakePublisherStorage{}
+	p := &SCMPublisher{
+		tempDir:        t.TempDir(),
+		moduleRepo:     repositories.NewModuleRepository(db),
+		storageBackend: fakeStorage,
+	}
+
+	archiveData := makeGitHubTarGz(t, "repo-abc123", map[string]string{
+		"main.tf": `resource "null_resource" "x" {}`,
+	})
+	connector := &mockConnector{archiveData: archiveData}
+
+	moduleSourceRepo := &scm.ModuleSourceRepoRecord{
+		ID:              uuid.New(),
+		ModuleID:        moduleID,
+		RepositoryOwner: "owner",
+		RepositoryName:  "repo",
+		ModulePath:      "/",
+	}
+	hook := &scm.IncomingHook{CommitSHA: "abc123", TagName: "v1.0.0"}
+
+	if _, err := p.publishModuleVersion(context.Background(), connector, nil, moduleSourceRepo, hook, "1.0.0"); err == nil {
+		t.Fatal("expected error from CreateVersion failure, got nil")
+	}
+
+	wantPath := "modules/acme/vm/azurerm/vm-1.0.0.tar.gz"
+	found := false
+	for _, p := range fakeStorage.deletedPaths {
+		if p == wantPath {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected orphaned blob %q to be deleted after CreateVersion DB failure; deleted=%v", wantPath, fakeStorage.deletedPaths)
 	}
 }

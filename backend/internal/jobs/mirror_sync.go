@@ -1096,6 +1096,12 @@ func (j *MirrorSyncJob) syncPlatformBinary(
 	}
 
 	if err := j.providerRepo.CreatePlatform(ctx, platformRecord); err != nil {
+		// The blob uploaded above now has no corresponding DB row — clean it
+		// up rather than leaving it orphaned (issue #685, same defect as the
+		// provider-upload and terraform-mirror signature-file paths).
+		if delErr := j.storageBackend.Delete(ctx, uploadResult.Path); delErr != nil {
+			log.Printf("failed to clean up orphaned storage artifact %q: %v", uploadResult.Path, delErr)
+		}
 		return fmt.Errorf("failed to create platform record: %w", err)
 	}
 
