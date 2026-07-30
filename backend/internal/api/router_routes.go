@@ -9,16 +9,19 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/sethbacon/terraform-suite-identity/identity/suite"
 	"github.com/terraform-registry/terraform-registry/docs"
@@ -326,6 +329,7 @@ type apiV1RouteDeps struct {
 	auditRepo                   *repositories.AuditRepository
 	auditShipper                audit.Shipper
 	nsAuthz                     *middleware.NamespaceAuthorizer
+	scmRepo                     *repositories.SCMRepository
 	scanRepo                    *repositories.ModuleScanRepository
 	moduleDocsRepo              *repositories.ModuleDocsRepository
 	policyEngine                *policy.PolicyEngine
@@ -826,31 +830,44 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 			// SCM Provider management
 			scmProvidersGroup := authenticatedGroup.Group("/scm-providers")
 			{
+				// Every /:id route additionally re-derives the caller's scope in
+				// the organization that owns THAT provider (issue #718). The
+				// group-level RequireScope only checks the flat, org-less scope
+				// union from the session JWT (issue #652), so without this a
+				// caller holding scm:manage via membership in one organization
+				// could repoint, re-credential, or delete another
+				// organization's provider — and /repositories would enumerate
+				// the target org's private repos using that org's own shared
+				// app credentials.
+				scmProviderOrg := func(scope auth.Scope) gin.HandlerFunc {
+					return nsAuthz.RequireOrgScopeForResource(scope, scmProviderOrgResolver(d.scmRepo))
+				}
+
 				// Read operations require scm:read
 				scmProvidersGroup.GET("", middleware.RequireScope(auth.ScopeSCMRead), scmProviderHandlers.ListProviders)
-				scmProvidersGroup.GET("/:id", middleware.RequireScope(auth.ScopeSCMRead), scmProviderHandlers.GetProvider)
+				scmProvidersGroup.GET("/:id", middleware.RequireScope(auth.ScopeSCMRead), scmProviderOrg(auth.ScopeSCMRead), scmProviderHandlers.GetProvider)
 
 				// Management operations require scm:manage
 				scmProvidersGroup.POST("", middleware.RequireScope(auth.ScopeSCMManage), scmProviderHandlers.CreateProvider)
-				scmProvidersGroup.PUT("/:id", middleware.RequireScope(auth.ScopeSCMManage), scmProviderHandlers.UpdateProvider)
-				scmProvidersGroup.DELETE("/:id", middleware.RequireScope(auth.ScopeSCMManage), scmProviderHandlers.DeleteProvider)
+				scmProvidersGroup.PUT("/:id", middleware.RequireScope(auth.ScopeSCMManage), scmProviderOrg(auth.ScopeSCMManage), scmProviderHandlers.UpdateProvider)
+				scmProvidersGroup.DELETE("/:id", middleware.RequireScope(auth.ScopeSCMManage), scmProviderOrg(auth.ScopeSCMManage), scmProviderHandlers.DeleteProvider)
 
 				// Verify shared app credentials by minting a token (app auth modes only)
-				scmProvidersGroup.POST("/:id/verify", middleware.RequireScope(auth.ScopeSCMManage), scmProviderHandlers.VerifyProvider)
+				scmProvidersGroup.POST("/:id/verify", middleware.RequireScope(auth.ScopeSCMManage), scmProviderOrg(auth.ScopeSCMManage), scmProviderHandlers.VerifyProvider)
 
 				// OAuth flow endpoints require scm:manage
-				scmProvidersGroup.GET("/:id/oauth/authorize", middleware.RequireScope(auth.ScopeSCMManage), scmOAuthHandlers.InitiateOAuth)
-				scmProvidersGroup.GET("/:id/oauth/token", middleware.RequireScope(auth.ScopeSCMRead), scmOAuthHandlers.GetTokenStatus)
-				scmProvidersGroup.DELETE("/:id/oauth/token", middleware.RequireScope(auth.ScopeSCMManage), scmOAuthHandlers.RevokeOAuth)
-				scmProvidersGroup.POST("/:id/oauth/refresh", middleware.RequireScope(auth.ScopeSCMManage), scmOAuthHandlers.RefreshToken)
+				scmProvidersGroup.GET("/:id/oauth/authorize", middleware.RequireScope(auth.ScopeSCMManage), scmProviderOrg(auth.ScopeSCMManage), scmOAuthHandlers.InitiateOAuth)
+				scmProvidersGroup.GET("/:id/oauth/token", middleware.RequireScope(auth.ScopeSCMRead), scmProviderOrg(auth.ScopeSCMRead), scmOAuthHandlers.GetTokenStatus)
+				scmProvidersGroup.DELETE("/:id/oauth/token", middleware.RequireScope(auth.ScopeSCMManage), scmProviderOrg(auth.ScopeSCMManage), scmOAuthHandlers.RevokeOAuth)
+				scmProvidersGroup.POST("/:id/oauth/refresh", middleware.RequireScope(auth.ScopeSCMManage), scmProviderOrg(auth.ScopeSCMManage), scmOAuthHandlers.RefreshToken)
 
 				// PAT-based auth (e.g., Bitbucket Data Center)
-				scmProvidersGroup.POST("/:id/token", middleware.RequireScope(auth.ScopeSCMManage), scmOAuthHandlers.SavePATToken)
+				scmProvidersGroup.POST("/:id/token", middleware.RequireScope(auth.ScopeSCMManage), scmProviderOrg(auth.ScopeSCMManage), scmOAuthHandlers.SavePATToken)
 
 				// Repository listing - requires scm:read
-				scmProvidersGroup.GET("/:id/repositories", middleware.RequireScope(auth.ScopeSCMRead), scmOAuthHandlers.ListRepositories)
-				scmProvidersGroup.GET("/:id/repositories/:owner/:repo/tags", middleware.RequireScope(auth.ScopeSCMRead), scmOAuthHandlers.ListRepositoryTags)
-				scmProvidersGroup.GET("/:id/repositories/:owner/:repo/branches", middleware.RequireScope(auth.ScopeSCMRead), scmOAuthHandlers.ListRepositoryBranches)
+				scmProvidersGroup.GET("/:id/repositories", middleware.RequireScope(auth.ScopeSCMRead), scmProviderOrg(auth.ScopeSCMRead), scmOAuthHandlers.ListRepositories)
+				scmProvidersGroup.GET("/:id/repositories/:owner/:repo/tags", middleware.RequireScope(auth.ScopeSCMRead), scmProviderOrg(auth.ScopeSCMRead), scmOAuthHandlers.ListRepositoryTags)
+				scmProvidersGroup.GET("/:id/repositories/:owner/:repo/branches", middleware.RequireScope(auth.ScopeSCMRead), scmProviderOrg(auth.ScopeSCMRead), scmOAuthHandlers.ListRepositoryBranches)
 			}
 
 			// SCM OAuth callback (public endpoint, no auth required)
@@ -1098,5 +1115,36 @@ func registerSCIMRoutes(router *gin.Engine, d *apiV1RouteDeps) {
 		scimGroup.DELETE("/Users/:id", scimHandlers.DeleteUser())
 		scimGroup.GET("/Groups", scimHandlers.ListGroups())
 		scimGroup.GET("/Groups/:id", scimHandlers.GetGroup())
+	}
+}
+
+// scmProviderOrgResolver adapts SCMRepository to middleware.ResourceOrgResolver
+// for the /scm-providers/:id family (issue #718).
+//
+// scm_providers.organization_id is nullable, so a legacy row with no owner
+// resolves to ("", true, nil) — "found, but unowned" — which the guard treats
+// as admin-only rather than open. A nil repository resolves to an error rather
+// than a pass, so a wiring mistake fails closed instead of silently disabling
+// the check.
+func scmProviderOrgResolver(scmRepo *repositories.SCMRepository) middleware.ResourceOrgResolver {
+	return func(ctx context.Context, id string) (string, bool, error) {
+		if scmRepo == nil {
+			return "", false, errors.New("scm repository not configured")
+		}
+		providerID, err := uuid.Parse(id)
+		if err != nil {
+			return "", false, nil
+		}
+		provider, err := scmRepo.GetProvider(ctx, providerID)
+		if err != nil {
+			return "", false, err
+		}
+		if provider == nil {
+			return "", false, nil
+		}
+		if provider.OrganizationID == uuid.Nil {
+			return "", true, nil
+		}
+		return provider.OrganizationID.String(), true, nil
 	}
 }
