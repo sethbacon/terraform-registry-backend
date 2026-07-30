@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"os"
 	"regexp"
@@ -272,5 +273,76 @@ func TestWaitForShutdownOrListenError_ListenerErrorWinsWhenBothReady(t *testing.
 	err := waitForShutdownOrListenError(quit, listenErrCh)
 	if err == nil {
 		t.Error("waitForShutdownOrListenError() = nil, want the delayed listener error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// shutdownServices (issue #716)
+// ---------------------------------------------------------------------------
+
+// stubShutdowner records that Shutdown ran and returns a fixed error.
+type stubShutdowner struct {
+	err    error
+	called bool
+}
+
+func (s *stubShutdowner) Shutdown(context.Context) error {
+	s.called = true
+	return s.err
+}
+
+// The regression case: a graceful shutdown that itself fails or times out must
+// still stop background services. Before #716 the drain error returned early,
+// skipping bgServices.Shutdown() — and with it the audit shipper's final flush.
+func TestShutdownServices_DrainError_StillStopsBackground(t *testing.T) {
+	srv := &stubShutdowner{err: errors.New("context deadline exceeded")}
+	stopped := false
+
+	err := shutdownServices(context.Background(), srv, func() { stopped = true }, nil)
+
+	if !stopped {
+		t.Error("background services were not stopped after a failed drain (issue #716)")
+	}
+	if err == nil {
+		t.Error("expected the drain error to be returned")
+	}
+}
+
+func TestShutdownServices_CleanShutdown(t *testing.T) {
+	srv := &stubShutdowner{}
+	stopped := false
+
+	if err := shutdownServices(context.Background(), srv, func() { stopped = true }, nil); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if !srv.called {
+		t.Error("server drain was not attempted")
+	}
+	if !stopped {
+		t.Error("background services were not stopped")
+	}
+}
+
+// A listener startup failure must still drain and stop background services, and
+// its error takes precedence over any drain error (issue #686 behaviour, kept).
+func TestShutdownServices_ListenError_TakesPrecedenceAndStopsBackground(t *testing.T) {
+	srv := &stubShutdowner{err: errors.New("drain failed")}
+	stopped := false
+	listenErr := errors.New("bind: address already in use")
+
+	err := shutdownServices(context.Background(), srv, func() { stopped = true }, listenErr)
+
+	if !stopped {
+		t.Error("background services were not stopped on the listener-error path")
+	}
+	if err == nil || !errors.Is(err, listenErr) {
+		t.Errorf("err = %v, want the listener error to take precedence", err)
+	}
+}
+
+func TestShutdownServices_NilStopBackground_DoesNotPanic(t *testing.T) {
+	srv := &stubShutdowner{}
+	if err := shutdownServices(context.Background(), srv, nil, nil); err != nil {
+		t.Errorf("unexpected error: %v", err)
 	}
 }
