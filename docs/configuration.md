@@ -969,6 +969,40 @@ described in the Server section.
 
 ---
 
+## Provider Publishing (Signing Policy)
+
+Policy enforcement on the provider-publish endpoint (`POST /api/v1/providers`). Disabled
+by default: `gpg_public_key`, `shasums_file`, and `shasums_signature_file` are optional on
+upload, matching the registry protocol's allowance for Terraform CLI to install an unsigned
+provider with an "(unauthenticated)" note.
+
+```yaml
+providers:
+  require_signing: false   # require a GPG-verified signature before accepting a provider version
+```
+
+When `require_signing: true`, a provider version's first platform upload must include
+`gpg_public_key`, `shasums_file`, and a GPG-verified `shasums_signature_file` — the upload
+is rejected with `400 Bad Request` before any version record is created. This is checked
+once per version: once a version has a persisted, verified signature (from its first
+platform upload), later platform uploads for that same version may omit the signing
+fields entirely. If a later upload for an existing version supplies a *new*
+`gpg_public_key` together with a `shasums_file` and a matching, GPG-verified
+`shasums_signature_file` (e.g. after a key rotation), the new key is persisted onto the
+version record. A bare `gpg_public_key` with no accompanying verified signature is never
+persisted onto an existing version — otherwise the advertised signing key could be
+swapped without any proof it actually signed that version's checksums.
+
+For the same reason, once a version has a persisted signature, a later upload may not
+supply `shasums_file` on its own (with no `shasums_signature_file`): the SHA256SUMS
+storage path is deterministic, so such a re-upload would silently overwrite the
+already-verified checksums with unverified content while the version kept advertising
+its old (now-mismatched) signature. That request is rejected with `400 Bad Request`; a
+re-upload of `shasums_file` against an already-signed version must always come with a
+matching, GPG-verified `shasums_signature_file` in the same request.
+
+---
+
 ## Policy Engine (OPA / Rego)
 
 An optional OPA/Rego policy engine that can warn on or block actions. Disabled by
@@ -979,8 +1013,14 @@ policy:
   enabled: false
   mode: warn                          # warn (log and continue) | block (reject)
   bundle_url: ""                      # HTTP/HTTPS URL of the .tar.gz Rego bundle
+  bundle_sha256: ""                   # required when enabled=true and bundle_url is set; expected SHA-256 (hex) of the bundle archive
   bundle_refresh_interval: 0          # seconds between background bundle re-fetches; 0 = no refresh
 ```
+
+`bundle_sha256` pins the expected digest of the bundle archive so a compromised or
+MITM'd bundle host cannot silently substitute the policy logic that governs uploads.
+When `enabled: true` and `bundle_url` is set, startup fails validation unless
+`bundle_sha256` is also set.
 
 ---
 

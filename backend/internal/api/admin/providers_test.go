@@ -713,6 +713,43 @@ func TestGetProvider_OrgFound_Success_WithVersionsAndPlatforms(t *testing.T) {
 	if resp["versions"] == nil {
 		t.Error("response missing 'versions' key")
 	}
+	versions := resp["versions"].([]interface{})
+	if got := versions[0].(map[string]interface{})["signed"]; got != false {
+		t.Errorf("versions[0].signed = %v, want false (gpg_public_key empty)", got)
+	}
+}
+
+// TestGetProvider_OrgFound_Success_SurfacesSignedVersion is the regression
+// test for the low-severity finding on issue #658 ("no admin/audit surfacing
+// of unsigned provider versions"): a version with a non-empty gpg_public_key
+// must be reported as signed:true so admins can distinguish it from an
+// unsigned publish without cross-referencing providers.require_signing.
+func TestGetProvider_OrgFound_Success_SurfacesSignedVersion(t *testing.T) {
+	mock, r := newProviderRouter(t)
+
+	expectOrgFound(mock)
+	mock.ExpectQuery("SELECT.*FROM providers").
+		WillReturnRows(sampleProviderRow())
+	protocols := []byte(`["6.0"]`)
+	mock.ExpectQuery("SELECT.*FROM provider_versions").
+		WillReturnRows(sqlmock.NewRows(versionCols).
+			AddRow("ver-1", "prov-1", "5.0.0", protocols, "armored-gpg-key", "", "",
+				nil, nil, // shasum_storage_key, shasum_signature_storage_key
+				nil, nil, false, nil, nil, time.Now()))
+	mock.ExpectQuery("SELECT.*FROM provider_platforms").
+		WillReturnRows(emptyPlatformRows())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/providers/hashicorp/aws", nil))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	resp := getJSON(w)
+	versions := resp["versions"].([]interface{})
+	if got := versions[0].(map[string]interface{})["signed"]; got != true {
+		t.Errorf("versions[0].signed = %v, want true (gpg_public_key set)", got)
+	}
 }
 
 func TestGetProvider_OrgFound_ProviderNotFound(t *testing.T) {

@@ -38,6 +38,18 @@ import (
 // verified identity via a trusted header, which this package does not
 // implement. mTLS only works when this server terminates TLS itself
 // (security.tls.enabled=true).
+//
+// IMPORTANT — no revocation checking (CRL/OCSP). This tls.Config only
+// chain-verifies a presented client certificate against ClientCAs; Go's
+// stdlib TLS stack performs no CRL or OCSP lookup by default, and no
+// VerifyPeerCertificate hook is installed here to add one. A revoked-but-
+// unexpired client certificate therefore still authenticates and is mapped to
+// its configured subject scopes — a compromised machine credential cannot be
+// promptly invalidated short of rotating the CA or waiting out cert expiry
+// (issue #674). For high-assurance deployments, mandate short-lived client
+// certificates so the exposure window is bounded, or add CRL/OCSP
+// verification via a VerifyPeerCertificate callback before relying on this
+// package to revoke access mid-lifetime.
 func BuildServerTLSConfig(cfg config.MTLSConfig) (*tls.Config, error) {
 	if !cfg.Enabled {
 		return nil, nil

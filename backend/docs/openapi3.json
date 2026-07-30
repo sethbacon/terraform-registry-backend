@@ -10098,7 +10098,7 @@
                         "Bearer": []
                     }
                 ],
-                "description": "Uploads a new provider version binary and associated files. Provider identity (namespace, type, version, os, arch) is supplied as multipart form fields, not path params. Requires providers:write scope.",
+                "description": "Uploads a new provider version binary and associated files. Provider identity (namespace, type, version, os, arch) is supplied as multipart form fields, not path params. Requires providers:write scope. If the registry has providers.require_signing enabled, gpg_public_key, shasums_file, and shasums_signature_file become mandatory for a version's first platform upload.",
                 "tags": [
                     "Providers"
                 ],
@@ -17649,6 +17649,10 @@
                         "items": {
                             "type": "string"
                         }
+                    },
+                    "signed": {
+                        "description": "Signed reports whether this version carries a GPG public key, so admins\ncan distinguish unsigned publishes at a glance without cross-referencing\nproviders.require_signing (issue #658).",
+                        "type": "boolean"
                     },
                     "version": {
                         "type": "string"

@@ -56,9 +56,24 @@ type mockStore struct {
 	uploadErr    error
 	uploadResult *storage.UploadResult
 	deleteErr    error
+	// uploadFailSuffix, when non-empty, makes Upload fail (with uploadErr, or
+	// a generic error if unset) only for paths ending in this suffix —
+	// letting a test simulate one file of a multi-file upload sequence
+	// failing after an earlier one already succeeded, without affecting the
+	// other tests that rely on the unconditional uploadErr.
+	uploadFailSuffix string
+	// deletedPaths records every path passed to Delete, so tests can assert
+	// that a partial-failure cleanup happened (issue #685).
+	deletedPaths []string
 }
 
-func (m *mockStore) Upload(_ context.Context, _ string, _ io.Reader, _ int64) (*storage.UploadResult, error) {
+func (m *mockStore) Upload(_ context.Context, path string, _ io.Reader, _ int64) (*storage.UploadResult, error) {
+	if m.uploadFailSuffix != "" && strings.HasSuffix(path, m.uploadFailSuffix) {
+		if m.uploadErr != nil {
+			return nil, m.uploadErr
+		}
+		return nil, errors.New("mock upload failure")
+	}
 	if m.uploadErr != nil {
 		return nil, m.uploadErr
 	}
@@ -70,7 +85,10 @@ func (m *mockStore) Upload(_ context.Context, _ string, _ io.Reader, _ int64) (*
 func (m *mockStore) Download(_ context.Context, _ string) (io.ReadCloser, error) {
 	return io.NopCloser(bytes.NewReader(nil)), nil
 }
-func (m *mockStore) Delete(_ context.Context, _ string) error { return m.deleteErr }
+func (m *mockStore) Delete(_ context.Context, path string) error {
+	m.deletedPaths = append(m.deletedPaths, path)
+	return m.deleteErr
+}
 func (m *mockStore) GetURL(_ context.Context, _ string, _ time.Duration) (string, error) {
 	return m.getURLResult, m.getURLErr
 }
@@ -581,10 +599,17 @@ func buildUploadRequestWithFiles(
 
 func newUploadRouter(t *testing.T, store *mockStore) (sqlmock.Sqlmock, *gin.Engine) {
 	t.Helper()
+	return newUploadRouterWithConfig(t, store, &config.Config{})
+}
+
+// newUploadRouterWithConfig is newUploadRouter with a caller-supplied config,
+// for tests that need non-default settings (e.g. providers.require_signing).
+func newUploadRouterWithConfig(t *testing.T, store *mockStore, cfg *config.Config) (sqlmock.Sqlmock, *gin.Engine) {
+	t.Helper()
 	db, mock, _ := sqlmock.New()
 	t.Cleanup(func() { db.Close() })
 	r := gin.New()
-	r.POST("/v1/providers", UploadHandler(db, store, &config.Config{}))
+	r.POST("/v1/providers", UploadHandler(db, store, cfg))
 	return mock, r
 }
 
@@ -911,7 +936,7 @@ func TestUploadHandler_RejectsSignatureWithoutGPGKey(t *testing.T) {
 // matrix here would only test the same code through a different door.
 
 // TestUploadHandler_StoresShasumsFileWithoutSignature exercises the happy
-// path of storeUploadedSignatureFiles when the caller supplies only the
+// path of persistSignatureFiles when the caller supplies only the
 // SHA256SUMS file (no signature). No GPG verification is required, so this
 // covers the storage upload and the UPDATE-version SQL step without needing
 // a real key/signature pair.
@@ -928,7 +953,7 @@ func TestUploadHandler_StoresShasumsFileWithoutSignature(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(providerVersionGetCols))
 	mock.ExpectQuery("INSERT INTO provider_versions").
 		WillReturnRows(sqlmock.NewRows(providerVersionInsertCols).AddRow("ver-new", time.Now()))
-	// storeUploadedSignatureFiles -> UpdateVersionSignatureStorage UPDATE.
+	// persistSignatureFiles -> UpdateVersionSignatureStorage UPDATE.
 	mock.ExpectExec("UPDATE provider_versions").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	// Back to the main flow.
@@ -950,6 +975,580 @@ func TestUploadHandler_StoresShasumsFileWithoutSignature(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusCreated {
 		t.Errorf("status = %d, want 201; body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// UploadHandler — providers.require_signing policy (issue #658)
+// ---------------------------------------------------------------------------
+
+// generateProviderTestGPGEntity returns an armored public key and its
+// matching entity, for building a real signature in the require_signing
+// happy-path test below.
+func generateProviderTestGPGEntity(t *testing.T) (armoredPubKey string, entity *openpgp.Entity) {
+	t.Helper()
+	entity, err := openpgp.NewEntity("Test User", "test", "test@example.com", nil)
+	if err != nil {
+		t.Fatalf("openpgp.NewEntity() error: %v", err)
+	}
+	var buf bytes.Buffer
+	w, err := armor.Encode(&buf, openpgp.PublicKeyType, nil)
+	if err != nil {
+		t.Fatalf("armor.Encode() error: %v", err)
+	}
+	if err := entity.Serialize(w); err != nil {
+		t.Fatalf("entity.Serialize() error: %v", err)
+	}
+	w.Close()
+	return buf.String(), entity
+}
+
+// armoredProviderDetachSign creates an ASCII-armored detached signature of
+// data using entity.
+func armoredProviderDetachSign(t *testing.T, data []byte, entity *openpgp.Entity) string {
+	t.Helper()
+	var buf bytes.Buffer
+	w, err := armor.Encode(&buf, openpgp.SignatureType, nil)
+	if err != nil {
+		t.Fatalf("armor.Encode() for signature error: %v", err)
+	}
+	if err := openpgp.DetachSign(w, entity, bytes.NewReader(data), nil); err != nil {
+		t.Fatalf("openpgp.DetachSign() error: %v", err)
+	}
+	w.Close()
+	return buf.String()
+}
+
+func TestUploadHandler_RequireSigning_RejectsUnsignedUpload(t *testing.T) {
+	store := &mockStore{}
+	cfg := &config.Config{}
+	cfg.Providers.RequireSigning = true
+	mock, r := newUploadRouterWithConfig(t, store, cfg)
+	uploadHappyPathExpectations(mock)
+	// No platform-query / insert-platform expectations — the request must be
+	// rejected before that point.
+
+	req := buildUploadRequest(t, "/v1/providers", map[string]string{
+		"namespace": "hashicorp",
+		"type":      "aws",
+		"version":   "4.0.0",
+		"os":        "linux",
+		"arch":      "amd64",
+	}, makeValidZIP(t))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 (signing required): body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "requires signed provider publishes") {
+		t.Errorf("body should explain the signing requirement; got: %s", w.Body.String())
+	}
+}
+
+func TestUploadHandler_RequireSigning_AllowsSignedUpload(t *testing.T) {
+	armoredPubKey, entity := generateProviderTestGPGEntity(t)
+	sumsData := []byte("abc123def  terraform-provider-aws_4.0.0_linux_amd64.zip\n")
+	sigData := armoredProviderDetachSign(t, sumsData, entity)
+
+	store := &mockStore{}
+	cfg := &config.Config{}
+	cfg.Providers.RequireSigning = true
+	mock, r := newUploadRouterWithConfig(t, store, cfg)
+	uploadHappyPathExpectations(mock)
+	mock.ExpectExec("UPDATE provider_versions").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT.*FROM provider_platforms.*WHERE provider_version_id").
+		WillReturnRows(sqlmock.NewRows(platformCols))
+	mock.ExpectQuery("INSERT INTO provider_platforms").
+		WillReturnRows(sqlmock.NewRows(platformInsertCols).AddRow("plat-new"))
+
+	req := buildUploadRequestWithFiles(t, "/v1/providers", map[string]string{
+		"namespace":      "hashicorp",
+		"type":           "aws",
+		"version":        "4.0.0",
+		"os":             "linux",
+		"arch":           "amd64",
+		"gpg_public_key": armoredPubKey,
+	}, makeValidZIP(t), map[string][]byte{
+		"shasums_file":           sumsData,
+		"shasums_signature_file": []byte(sigData),
+	})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201 (signed upload allowed): body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestUploadHandler_RequireSigning_AllowsLaterPlatformWithoutFiles exercises
+// the "checked once per version" behavior: once a version already has a
+// persisted shasum_signature_storage_key (from an earlier platform upload),
+// later platform uploads for the same version may omit the signing fields
+// entirely, matching the endpoint's existing "attach once per version" design.
+func TestUploadHandler_RequireSigning_AllowsLaterPlatformWithoutFiles(t *testing.T) {
+	store := &mockStore{}
+	cfg := &config.Config{}
+	cfg.Providers.RequireSigning = true
+	mock, r := newUploadRouterWithConfig(t, store, cfg)
+
+	mock.ExpectQuery("SELECT.*FROM organizations").WillReturnRows(sampleOrgRow())
+	mock.ExpectQuery("SELECT.*FROM providers.*WHERE").WillReturnRows(sqlmock.NewRows(providerCols))
+	mock.ExpectQuery("INSERT INTO providers").
+		WillReturnRows(sqlmock.NewRows(providerInsertCols).AddRow("prov-1", time.Now(), time.Now()))
+	// GetVersion -> found, already signed from a prior platform upload.
+	mock.ExpectQuery("SELECT.*FROM provider_versions.*WHERE provider_id.*AND version").
+		WillReturnRows(sqlmock.NewRows(providerVersionGetCols).
+			AddRow("ver-1", "prov-1", "4.0.0", sampleProtocolsJSON, "armored-key",
+				"", "",
+				strPtr("providers/hashicorp/aws/4.0.0/SHA256SUMS"), strPtr("providers/hashicorp/aws/4.0.0/SHA256SUMS.sig"),
+				nil,
+				false, nil, nil, time.Now()))
+	// No shasums_file/shasums_signature_file this time — persistSignatureFiles no-ops.
+	mock.ExpectQuery("SELECT.*FROM provider_platforms.*WHERE provider_version_id").
+		WillReturnRows(sqlmock.NewRows(platformCols))
+	mock.ExpectQuery("INSERT INTO provider_platforms").
+		WillReturnRows(sqlmock.NewRows(platformInsertCols).AddRow("plat-new"))
+
+	req := buildUploadRequest(t, "/v1/providers", map[string]string{
+		"namespace": "hashicorp",
+		"type":      "aws",
+		"version":   "4.0.0",
+		"os":        "darwin",
+		"arch":      "arm64",
+	}, makeValidZIP(t))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201 (later platform on already-signed version): body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestUploadHandler_RequireSigning_RejectsBeforeCreatingVersionRow is the
+// regression test for the blocking finding on issue #658: the require_signing
+// gate must run BEFORE providerRepo.CreateVersion, so a rejected request never
+// commits an unsigned provider_versions row. No "INSERT INTO provider_versions"
+// expectation is registered on the mock at all — if the handler regressed to
+// creating the version before the gate check, that unmocked call would error
+// out of order and the assertions below (400 + exact error message +
+// ExpectationsWereMet) would fail.
+func TestUploadHandler_RequireSigning_RejectsBeforeCreatingVersionRow(t *testing.T) {
+	store := &mockStore{}
+	cfg := &config.Config{}
+	cfg.Providers.RequireSigning = true
+	mock, r := newUploadRouterWithConfig(t, store, cfg)
+
+	mock.ExpectQuery("SELECT.*FROM organizations").WillReturnRows(sampleOrgRow())
+	mock.ExpectQuery("SELECT.*FROM providers.*WHERE").WillReturnRows(sqlmock.NewRows(providerCols))
+	mock.ExpectQuery("INSERT INTO providers").
+		WillReturnRows(sqlmock.NewRows(providerInsertCols).AddRow("prov-new", time.Now(), time.Now()))
+	mock.ExpectQuery("SELECT.*FROM provider_versions.*WHERE provider_id.*AND version").
+		WillReturnRows(sqlmock.NewRows(providerVersionGetCols))
+	// Deliberately no "INSERT INTO provider_versions" expectation, and no
+	// platform-query / insert-platform expectations — the request must be
+	// rejected right after the version lookup, before any of that runs.
+
+	req := buildUploadRequest(t, "/v1/providers", map[string]string{
+		"namespace": "hashicorp",
+		"type":      "aws",
+		"version":   "4.0.0",
+		"os":        "linux",
+		"arch":      "amd64",
+	}, makeValidZIP(t))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 (signing required, rejected before version creation): body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "requires signed provider publishes") {
+		t.Errorf("body should explain the signing requirement; got: %s", w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unexpected/unfulfilled SQL calls (version row must not be created before the gate check): %v", err)
+	}
+}
+
+// TestUploadHandler_PersistsGPGKeyOnExistingVersion is the regression test for
+// the "new high" finding on issue #658: a request against an existing
+// provider_versions row must persist a newly supplied gpg_public_key via
+// UpdateVersionGPGKey, not silently drop it. Without this, a later signed
+// platform upload could satisfy the require_signing gate (via
+// ShasumSignatureStorageKey) while gpg_public_key stayed empty forever, since
+// it was previously only ever set inside the "create new version" branch.
+//
+// The new key is only persisted when THIS request also supplies a
+// shasums_file and a matching, GPG-verified shasums_signature_file — proving
+// the key actually signed this version's checksums. See
+// TestUploadHandler_DoesNotPersistUnverifiedGPGKeyOnExistingVersion for the
+// negative case (blocking finding on #658: an unverified bare gpg_public_key
+// must never overwrite the persisted key).
+func TestUploadHandler_PersistsGPGKeyOnExistingVersion(t *testing.T) {
+	armoredPubKey, entity := generateProviderTestGPGEntity(t)
+	sumsData := []byte("abc123def  terraform-provider-aws_4.0.0_linux_amd64.zip\n")
+	sigData := armoredProviderDetachSign(t, sumsData, entity)
+
+	store := &mockStore{}
+	mock, r := newUploadRouter(t, store)
+
+	mock.ExpectQuery("SELECT.*FROM organizations").WillReturnRows(sampleOrgRow())
+	mock.ExpectQuery("SELECT.*FROM providers.*WHERE").WillReturnRows(sampleProviderRow())
+	mock.ExpectQuery("UPDATE providers").
+		WillReturnRows(sqlmock.NewRows([]string{"updated_at"}).AddRow(time.Now()))
+	// GetVersion -> found, with gpg_public_key empty (e.g. an earlier unsigned
+	// attempt, or a platform upload that predates key rotation).
+	mock.ExpectQuery("SELECT.*FROM provider_versions.*WHERE provider_id.*AND version").
+		WillReturnRows(sampleProviderVersionGetRow())
+	// The GPG key must be persisted onto the existing version row (UpdateVersionGPGKey)...
+	mock.ExpectExec("UPDATE provider_versions").WillReturnResult(sqlmock.NewResult(0, 1))
+	// ...and persistSignatureFiles persists the freshly-verified SUMS/sig storage keys.
+	mock.ExpectExec("UPDATE provider_versions").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT.*FROM provider_platforms.*WHERE provider_version_id").
+		WillReturnRows(sqlmock.NewRows(platformCols))
+	mock.ExpectQuery("INSERT INTO provider_platforms").
+		WillReturnRows(sqlmock.NewRows(platformInsertCols).AddRow("plat-new"))
+
+	req := buildUploadRequestWithFiles(t, "/v1/providers", map[string]string{
+		"namespace":      "hashicorp",
+		"type":           "aws",
+		"version":        "4.0.0",
+		"os":             "linux",
+		"arch":           "amd64",
+		"gpg_public_key": armoredPubKey,
+	}, makeValidZIP(t), map[string][]byte{
+		"shasums_file":           sumsData,
+		"shasums_signature_file": []byte(sigData),
+	})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201 (gpg key persisted onto existing version): body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expected UpdateVersionGPGKey to run against the existing version row: %v", err)
+	}
+}
+
+// TestUploadHandler_DoesNotPersistUnverifiedGPGKeyOnExistingVersion is the
+// regression test for the blocking finding on issue #658: a request against
+// an existing provider_versions row that supplies only gpg_public_key (no
+// shasums_file/shasums_signature_file) must NOT call UpdateVersionGPGKey.
+// Without this gate, any authenticated upload could overwrite the persisted
+// signing key with a value never verified against the version's checksums —
+// including on an already-signed version, since alreadySigned lets the
+// require_signing gate pass on this request regardless of its own signing
+// status. No "UPDATE provider_versions" mock expectation is registered at
+// all: if the handler regressed to the unconditional update, the unmocked
+// call would error out of order and ExpectationsWereMet would fail.
+func TestUploadHandler_DoesNotPersistUnverifiedGPGKeyOnExistingVersion(t *testing.T) {
+	armoredPubKey, _ := generateProviderTestGPGEntity(t)
+
+	store := &mockStore{}
+	mock, r := newUploadRouter(t, store)
+
+	mock.ExpectQuery("SELECT.*FROM organizations").WillReturnRows(sampleOrgRow())
+	mock.ExpectQuery("SELECT.*FROM providers.*WHERE").WillReturnRows(sampleProviderRow())
+	mock.ExpectQuery("UPDATE providers").
+		WillReturnRows(sqlmock.NewRows([]string{"updated_at"}).AddRow(time.Now()))
+	// GetVersion -> found, already fully signed by a prior platform upload.
+	mock.ExpectQuery("SELECT.*FROM provider_versions.*WHERE provider_id.*AND version").
+		WillReturnRows(sqlmock.NewRows(providerVersionGetCols).
+			AddRow("ver-1", "prov-1", "4.0.0", sampleProtocolsJSON, "original-armored-key",
+				"", "",
+				strPtr("providers/hashicorp/aws/4.0.0/SHA256SUMS"), strPtr("providers/hashicorp/aws/4.0.0/SHA256SUMS.sig"),
+				nil,
+				false, nil, nil, time.Now()))
+	// Deliberately no "UPDATE provider_versions" expectation — an unverified
+	// gpg_public_key must not trigger UpdateVersionGPGKey, and no
+	// shasums_file/shasums_signature_file was supplied so persistSignatureFiles
+	// no-ops too.
+	mock.ExpectQuery("SELECT.*FROM provider_platforms.*WHERE provider_version_id").
+		WillReturnRows(sqlmock.NewRows(platformCols))
+	mock.ExpectQuery("INSERT INTO provider_platforms").
+		WillReturnRows(sqlmock.NewRows(platformInsertCols).AddRow("plat-new"))
+
+	req := buildUploadRequest(t, "/v1/providers", map[string]string{
+		"namespace":      "hashicorp",
+		"type":           "aws",
+		"version":        "4.0.0",
+		"os":             "darwin",
+		"arch":           "arm64",
+		"gpg_public_key": armoredPubKey, // differs from "original-armored-key", but unverified
+	}, makeValidZIP(t))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201 (platform upload still succeeds): body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unexpected/unfulfilled SQL calls (unverified gpg_public_key must not persist): %v", err)
+	}
+}
+
+// TestUploadHandler_RejectsShasumsFileOnlyReuploadAgainstSignedVersion is the
+// regression test for the #658 follow-up finding: a version that already has
+// a persisted shasum_signature_storage_key must not have its SHA256SUMS
+// content silently replaced by a shasums_file-only re-upload with no
+// accompanying signature. Storage paths are deterministic, so such a
+// re-upload would overwrite the existing (verified) SUMS blob in place while
+// the DB's shasum_signature_storage_key kept pointing at the untouched old
+// .sig file — the version would keep looking signed even though its SUMS
+// content had changed with no verification at all, silently undoing the
+// require_signing guarantee that a signed version stays properly signed. No
+// "UPDATE provider_versions" expectation (beyond the provider metadata
+// update) is registered — the request must be rejected right after the
+// version lookup, before persistSignatureFiles or the platform query run.
+func TestUploadHandler_RejectsShasumsFileOnlyReuploadAgainstSignedVersion(t *testing.T) {
+	store := &mockStore{}
+	mock, r := newUploadRouter(t, store)
+
+	mock.ExpectQuery("SELECT.*FROM organizations").WillReturnRows(sampleOrgRow())
+	mock.ExpectQuery("SELECT.*FROM providers.*WHERE").WillReturnRows(sampleProviderRow())
+	mock.ExpectQuery("UPDATE providers").
+		WillReturnRows(sqlmock.NewRows([]string{"updated_at"}).AddRow(time.Now()))
+	// GetVersion -> found, already fully signed by a prior upload.
+	mock.ExpectQuery("SELECT.*FROM provider_versions.*WHERE provider_id.*AND version").
+		WillReturnRows(sqlmock.NewRows(providerVersionGetCols).
+			AddRow("ver-1", "prov-1", "4.0.0", sampleProtocolsJSON, "original-armored-key",
+				"", "",
+				strPtr("providers/hashicorp/aws/4.0.0/SHA256SUMS"), strPtr("providers/hashicorp/aws/4.0.0/SHA256SUMS.sig"),
+				nil,
+				false, nil, nil, time.Now()))
+	// Deliberately no further expectations: the bare shasums_file re-upload
+	// must be rejected right after the version lookup.
+
+	req := buildUploadRequestWithFiles(t, "/v1/providers", map[string]string{
+		"namespace": "hashicorp",
+		"type":      "aws",
+		"version":   "4.0.0",
+		"os":        "darwin",
+		"arch":      "arm64",
+	}, makeValidZIP(t), map[string][]byte{
+		"shasums_file": []byte("evil-attacker-controlled-sums-content\n"),
+	})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 (shasums_file-only re-upload against a signed version): body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "already signed") {
+		t.Errorf("body should explain the already-signed rejection; got: %s", w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unexpected/unfulfilled SQL calls (shasums_file-only re-upload must be rejected before persistSignatureFiles runs): %v", err)
+	}
+}
+
+// TestUploadHandler_AllowsReSignAgainstAlreadySignedVersion is the positive
+// counterpart to TestUploadHandler_RejectsShasumsFileOnlyReuploadAgainstSignedVersion:
+// a version that already has a persisted signature can still be legitimately
+// re-signed (e.g. key rotation, or adding a platform with refreshed SUMS
+// content) as long as this same request supplies a matching, GPG-verified
+// shasums_signature_file alongside shasums_file.
+func TestUploadHandler_AllowsReSignAgainstAlreadySignedVersion(t *testing.T) {
+	armoredPubKey, entity := generateProviderTestGPGEntity(t)
+	sumsData := []byte("abc123def  terraform-provider-aws_4.0.0_linux_amd64.zip\ndef456abc  terraform-provider-aws_4.0.0_darwin_arm64.zip\n")
+	sigData := armoredProviderDetachSign(t, sumsData, entity)
+
+	store := &mockStore{}
+	mock, r := newUploadRouter(t, store)
+
+	mock.ExpectQuery("SELECT.*FROM organizations").WillReturnRows(sampleOrgRow())
+	mock.ExpectQuery("SELECT.*FROM providers.*WHERE").WillReturnRows(sampleProviderRow())
+	mock.ExpectQuery("UPDATE providers").
+		WillReturnRows(sqlmock.NewRows([]string{"updated_at"}).AddRow(time.Now()))
+	// GetVersion -> found, already signed with a different (rotated-away-from) key.
+	mock.ExpectQuery("SELECT.*FROM provider_versions.*WHERE provider_id.*AND version").
+		WillReturnRows(sqlmock.NewRows(providerVersionGetCols).
+			AddRow("ver-1", "prov-1", "4.0.0", sampleProtocolsJSON, "original-armored-key",
+				"", "",
+				strPtr("providers/hashicorp/aws/4.0.0/SHA256SUMS"), strPtr("providers/hashicorp/aws/4.0.0/SHA256SUMS.sig"),
+				nil,
+				false, nil, nil, time.Now()))
+	// UpdateVersionGPGKey (the newly-verified key differs from the stored one).
+	mock.ExpectExec("UPDATE provider_versions").WillReturnResult(sqlmock.NewResult(0, 1))
+	// persistSignatureFiles -> UpdateVersionSignatureStorage.
+	mock.ExpectExec("UPDATE provider_versions").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT.*FROM provider_platforms.*WHERE provider_version_id").
+		WillReturnRows(sqlmock.NewRows(platformCols))
+	mock.ExpectQuery("INSERT INTO provider_platforms").
+		WillReturnRows(sqlmock.NewRows(platformInsertCols).AddRow("plat-new"))
+
+	req := buildUploadRequestWithFiles(t, "/v1/providers", map[string]string{
+		"namespace":      "hashicorp",
+		"type":           "aws",
+		"version":        "4.0.0",
+		"os":             "darwin",
+		"arch":           "arm64",
+		"gpg_public_key": armoredPubKey,
+	}, makeValidZIP(t), map[string][]byte{
+		"shasums_file":           sumsData,
+		"shasums_signature_file": []byte(sigData),
+	})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201 (legitimate re-sign of an already-signed version): body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unexpected/unfulfilled SQL calls: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// UploadHandler — orphaned signature-file blobs on partial failure (issue #685)
+// ---------------------------------------------------------------------------
+
+// TestUploadHandler_SigUploadFailure_CleansUpOrphanedSumsBlob covers the
+// SHA256SUMS.sig upload failing after SHA256SUMS already uploaded
+// successfully: the now-orphaned SUMS blob must be deleted rather than left
+// behind with no corresponding DB row.
+func TestUploadHandler_SigUploadFailure_CleansUpOrphanedSumsBlob(t *testing.T) {
+	armoredPubKey, entity := generateProviderTestGPGEntity(t)
+	sumsData := []byte("abc123def  terraform-provider-aws_4.0.0_linux_amd64.zip\n")
+	sigData := armoredProviderDetachSign(t, sumsData, entity)
+
+	store := &mockStore{uploadFailSuffix: "SHA256SUMS.sig"}
+	mock, r := newUploadRouter(t, store)
+	uploadHappyPathExpectations(mock)
+	// No platform-query / insert-platform expectations — the request must be
+	// rejected before that point.
+
+	req := buildUploadRequestWithFiles(t, "/v1/providers", map[string]string{
+		"namespace":      "hashicorp",
+		"type":           "aws",
+		"version":        "4.0.0",
+		"os":             "linux",
+		"arch":           "amd64",
+		"gpg_public_key": armoredPubKey,
+	}, makeValidZIP(t), map[string][]byte{
+		"shasums_file":           sumsData,
+		"shasums_signature_file": []byte(sigData),
+	})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500 (sig upload failure): body=%s", w.Code, w.Body.String())
+	}
+	wantPath := "providers/hashicorp/aws/4.0.0/SHA256SUMS"
+	found := false
+	for _, p := range store.deletedPaths {
+		if p == wantPath {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected orphaned SUMS blob %q to be deleted after sig upload failure; deleted=%v", wantPath, store.deletedPaths)
+	}
+}
+
+// TestUploadHandler_SignatureStorageUpdateFailure_CleansUpOrphanedSumsBlob
+// covers UpdateVersionSignatureStorage failing after the SHA256SUMS blob was
+// already uploaded successfully: the orphaned blob must be deleted.
+func TestUploadHandler_SignatureStorageUpdateFailure_CleansUpOrphanedSumsBlob(t *testing.T) {
+	store := &mockStore{}
+	mock, r := newUploadRouter(t, store)
+	uploadHappyPathExpectations(mock)
+	mock.ExpectExec("UPDATE provider_versions").WillReturnError(errDB2)
+	// No platform-query / insert-platform expectations — the request must be
+	// rejected before that point.
+
+	req := buildUploadRequestWithFiles(t, "/v1/providers", map[string]string{
+		"namespace": "hashicorp",
+		"type":      "aws",
+		"version":   "4.0.0",
+		"os":        "linux",
+		"arch":      "amd64",
+	}, makeValidZIP(t), map[string][]byte{
+		"shasums_file": []byte("abc123def  terraform-provider-aws_4.0.0_linux_amd64.zip\n"),
+	})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500 (signature storage update failure): body=%s", w.Code, w.Body.String())
+	}
+	wantPath := "providers/hashicorp/aws/4.0.0/SHA256SUMS"
+	found := false
+	for _, p := range store.deletedPaths {
+		if p == wantPath {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected orphaned SUMS blob %q to be deleted after signature-storage DB update failure; deleted=%v", wantPath, store.deletedPaths)
+	}
+}
+
+// TestUploadHandler_SignatureStorageUpdateFailure_PreservesPreExistingSumsBlob
+// is the regression test for the "new low" finding on issue #685: storage
+// paths for SHA256SUMS/SHA256SUMS.sig are deterministic per version, so a
+// legitimate re-upload (key rotation) overwrites an already-persisted blob in
+// place rather than creating a new one. If persistSignatureFiles then fails
+// (here, the UpdateVersionSignatureStorage DB write), cleanup must NOT delete
+// a blob that a pre-existing DB row still references — that row was never
+// touched, since the UPDATE failed, and would otherwise be left pointing at
+// nothing. Only the sig blob, which is genuinely new to this call (the
+// version had no signature before), is deleted.
+func TestUploadHandler_SignatureStorageUpdateFailure_PreservesPreExistingSumsBlob(t *testing.T) {
+	armoredPubKey, entity := generateProviderTestGPGEntity(t)
+	sumsData := []byte("abc123def  terraform-provider-aws_4.0.0_linux_amd64.zip\n")
+	sigData := armoredProviderDetachSign(t, sumsData, entity)
+
+	store := &mockStore{}
+	mock, r := newUploadRouter(t, store)
+
+	mock.ExpectQuery("SELECT.*FROM organizations").WillReturnRows(sampleOrgRow())
+	mock.ExpectQuery("SELECT.*FROM providers.*WHERE").WillReturnRows(sampleProviderRow())
+	mock.ExpectQuery("UPDATE providers").
+		WillReturnRows(sqlmock.NewRows([]string{"updated_at"}).AddRow(time.Now()))
+	// GetVersion -> found, with a SUMS blob already persisted from an earlier
+	// upload that supplied shasums_file but no gpg_public_key/signature yet
+	// (a legal combination — see TestUploadHandler_StoresShasumsFileWithoutSignature).
+	mock.ExpectQuery("SELECT.*FROM provider_versions.*WHERE provider_id.*AND version").
+		WillReturnRows(sqlmock.NewRows(providerVersionGetCols).
+			AddRow("ver-1", "prov-1", "4.0.0", sampleProtocolsJSON, "",
+				"", "",
+				strPtr("providers/hashicorp/aws/4.0.0/SHA256SUMS"), nil,
+				nil,
+				false, nil, nil, time.Now()))
+	// This request supplies a verified signature, so the UpdateVersionGPGKey
+	// branch fires first (and succeeds) before persistSignatureFiles re-uploads
+	// SUMS (overwriting the existing blob) and its DB write fails.
+	mock.ExpectExec("UPDATE provider_versions").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE provider_versions").WillReturnError(errDB2)
+	// No platform-query / insert-platform expectations — the request must be
+	// rejected before that point.
+
+	req := buildUploadRequestWithFiles(t, "/v1/providers", map[string]string{
+		"namespace":      "hashicorp",
+		"type":           "aws",
+		"version":        "4.0.0",
+		"os":             "linux",
+		"arch":           "amd64",
+		"gpg_public_key": armoredPubKey,
+	}, makeValidZIP(t), map[string][]byte{
+		"shasums_file":           sumsData,
+		"shasums_signature_file": []byte(sigData),
+	})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500 (signature storage update failure): body=%s", w.Code, w.Body.String())
+	}
+
+	preExistingSumsPath := "providers/hashicorp/aws/4.0.0/SHA256SUMS"
+	for _, p := range store.deletedPaths {
+		if p == preExistingSumsPath {
+			t.Errorf("pre-existing SUMS blob %q must not be deleted (an untouched DB row still references it); deleted=%v", preExistingSumsPath, store.deletedPaths)
+		}
+	}
+
+	newSigPath := "providers/hashicorp/aws/4.0.0/SHA256SUMS.sig"
+	found := false
+	for _, p := range store.deletedPaths {
+		if p == newSigPath {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected newly-uploaded (unreferenced) sig blob %q to be deleted; deleted=%v", newSigPath, store.deletedPaths)
 	}
 }
 

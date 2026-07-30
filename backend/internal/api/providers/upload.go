@@ -31,7 +31,7 @@ const (
 )
 
 // @Summary      Upload provider version
-// @Description  Uploads a new provider version binary and associated files. Provider identity (namespace, type, version, os, arch) is supplied as multipart form fields, not path params. Requires providers:write scope.
+// @Description  Uploads a new provider version binary and associated files. Provider identity (namespace, type, version, os, arch) is supplied as multipart form fields, not path params. Requires providers:write scope. If the registry has providers.require_signing enabled, gpg_public_key, shasums_file, and shasums_signature_file become mandatory for a version's first platform upload.
 // @Tags         Providers
 // @Security     Bearer
 // @Accept       multipart/form-data
@@ -141,6 +141,19 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 			}
 			// Normalize the key
 			gpgPublicKey = validation.NormalizeGPGKey(gpgPublicKey)
+		}
+
+		// Read and verify the optional shasums_file / shasums_signature_file
+		// multipart fields up front, before anything is written to storage or
+		// the database. This lets the providers.require_signing policy gate
+		// below (issue #658) reject an unsigned or invalid-signature publish
+		// before a version row is ever created — previously this validation
+		// happened after providerRepo.CreateVersion, so a rejected request
+		// still left a permanent unsigned version row behind.
+		sumsBytes, sigBytes, sumsProvided, sigProvided, sigErr := readSignatureUpload(c, gpgPublicKey)
+		if sigErr != nil {
+			// readSignatureUpload has already written the HTTP error.
+			return
 		}
 
 		// Get uploaded file
@@ -298,6 +311,45 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 			return
 		}
 
+		// Admin-configurable signing policy (issue #658): when enabled, a
+		// version publish is only accepted once it carries a GPG-verified
+		// shasums_signature_file — either supplied and verified by this very
+		// request (sigProvided, verified above by readSignatureUpload) or
+		// already persisted on the version from a prior platform upload
+		// (ShasumSignatureStorageKey). This is checked BEFORE
+		// providerRepo.CreateVersion runs so a rejected request never leaves
+		// a version row behind; later platform uploads for an
+		// already-signed version may omit the signing fields entirely.
+		alreadySigned := providerVersion != nil && providerVersion.ShasumSignatureStorageKey != nil
+		if cfg.Providers.RequireSigning && !alreadySigned && !sigProvided {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "This registry requires signed provider publishes: gpg_public_key, shasums_file, and shasums_signature_file are required (providers.require_signing)",
+			})
+			return
+		}
+
+		// A version that is already signed (ShasumSignatureStorageKey set from
+		// a prior upload) must not have its SHA256SUMS content silently
+		// replaced by a bare shasums_file re-upload with no accompanying,
+		// verified shasums_signature_file: storage paths are deterministic
+		// (persistSignatureFiles below), so that re-upload would overwrite
+		// the existing SUMS blob in place while shasum_signature_storage_key
+		// keeps pointing at the old .sig file — the version would keep
+		// *looking* signed (both storage-key columns still set) even though
+		// the SUMS content backing that signature had changed with no
+		// verification at all. Left unchecked, this silently undoes the
+		// require_signing guarantee that a version, once signed, stays
+		// properly signed. Reject unless this same request also supplies a
+		// verified shasums_signature_file (persistSignatureFiles then
+		// overwrites both files together, atomically re-establishing a
+		// matching pair).
+		if alreadySigned && sumsProvided && !sigProvided {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "this provider version is already signed: re-uploading shasums_file requires a matching, GPG-verified shasums_signature_file in the same request",
+			})
+			return
+		}
+
 		if providerVersion == nil {
 			// Create new version. ShasumURL/ShasumSignatureURL stay empty here —
 			// they're populated by the mirror sync path for mirrored providers.
@@ -323,15 +375,40 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 				})
 				return
 			}
+		} else if sigProvided && gpgPublicKey != "" && gpgPublicKey != providerVersion.GPGPublicKey {
+			// The version already exists (e.g. an earlier platform upload for
+			// it, or an earlier unsigned attempt). Persist a newly supplied
+			// GPG key so it isn't silently dropped: without this, a later
+			// signed request could satisfy the require_signing gate above
+			// (via ShasumSignatureStorageKey) while gpg_public_key stayed
+			// empty forever, since it was previously only ever set inside
+			// this "create new version" branch (issue #658).
+			//
+			// Gated on sigProvided: readSignatureUpload has already verified
+			// (above) that THIS gpgPublicKey signed the shasums_file supplied
+			// in THIS same request. Without that gate, any authenticated
+			// upload could overwrite the persisted key with an unverified
+			// value — including on a version that is already signed
+			// (alreadySigned above lets the require_signing gate pass on this
+			// request regardless), desyncing the advertised signing_keys
+			// entry from the key that actually produced SHA256SUMS.sig.
+			if err := providerRepo.UpdateVersionGPGKey(c.Request.Context(), providerVersion.ID, gpgPublicKey); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"error": fmt.Sprintf("Failed to update provider version GPG key: %v", err),
+				})
+				return
+			}
+			providerVersion.GPGPublicKey = gpgPublicKey
 		}
 
-		// Optional: accept shasums_file and shasums_signature_file. These are
-		// per-version files, so we only need to store them once. Subsequent
-		// platform uploads against the same version can omit them; if provided,
-		// we'll re-validate and overwrite (the operator may be re-uploading the
-		// signed files after a key rotation).
-		if storeErr := storeUploadedSignatureFiles(c, storageBackend, providerRepo, providerVersion, namespace, providerType, version, gpgPublicKey); storeErr != nil {
-			// storeUploadedSignatureFiles has already written the HTTP error.
+		// Persist the already-validated shasums_file / shasums_signature_file
+		// bytes read by readSignatureUpload above. These are per-version
+		// files, so we only need to store them once. Subsequent platform
+		// uploads against the same version can omit them; if provided, we'll
+		// overwrite (the operator may be re-uploading the signed files after
+		// a key rotation).
+		if storeErr := persistSignatureFiles(c, storageBackend, providerRepo, providerVersion, namespace, providerType, version, sumsBytes, sigBytes, sumsProvided, sigProvided); storeErr != nil {
+			// persistSignatureFiles has already written the HTTP error.
 			return
 		}
 
@@ -430,40 +507,36 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 	}
 }
 
-// storeUploadedSignatureFiles handles the optional shasums_file and
-// shasums_signature_file multipart inputs:
-// coverage:skip:integration-only — performs storage backend uploads and DB writes that require a live storage service; parameter validation and error paths are exercised by unit tests (TestUploadHandler_Rejects* and TestUploadHandler_StoresShasumsFileWithoutSignature).
+// readSignatureUpload reads the optional shasums_file and
+// shasums_signature_file multipart inputs and, when a signature is supplied,
+// verifies it — all before anything is written to storage or the database.
+// Splitting this validation out from persistSignatureFiles (below) lets
+// UploadHandler evaluate the providers.require_signing policy gate (issue
+// #658) before providerRepo.CreateVersion runs.
 //
-//   - If neither file is provided, no-op.
+//   - If neither file is provided, returns (nil, nil, false, false, nil).
 //   - If shasums_signature_file is provided, shasums_file AND a non-empty
 //     gpg_public_key form value are required; the signature is verified
-//     against the SUMS before persistence (rejected with 400 on failure).
-//   - If only shasums_file is provided (no signature), it is stored as-is.
+//     against the SUMS (rejected with 400 on failure).
+//   - If only shasums_file is provided (no signature), no verification is
+//     needed.
 //
-// On success the version row's storage-key columns are updated and the
-// download handler will start returning pre-signed URLs for these files.
-// On any error this function writes the HTTP response and returns a
-// non-nil error so the caller can abort the upload flow.
-func storeUploadedSignatureFiles(
-	c *gin.Context,
-	storageBackend storage.Storage,
-	providerRepo *repositories.ProviderRepository,
-	providerVersion *models.ProviderVersion,
-	namespace, providerType, version, gpgPublicKey string,
-) error {
-	sumsBytes, sumsProvided, err := readOptionalMultipartFile(c, "shasums_file")
+// On any error this function writes the HTTP response and returns a non-nil
+// error so the caller can abort the upload flow.
+func readSignatureUpload(c *gin.Context, gpgPublicKey string) (sumsBytes, sigBytes []byte, sumsProvided, sigProvided bool, err error) {
+	sumsBytes, sumsProvided, err = readOptionalMultipartFile(c, "shasums_file")
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return err
+		return nil, nil, false, false, err
 	}
-	sigBytes, sigProvided, err := readOptionalMultipartFile(c, "shasums_signature_file")
+	sigBytes, sigProvided, err = readOptionalMultipartFile(c, "shasums_signature_file")
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return err
+		return nil, nil, false, false, err
 	}
 
 	if !sumsProvided && !sigProvided {
-		return nil
+		return nil, nil, false, false, nil
 	}
 
 	if sigProvided {
@@ -471,23 +544,81 @@ func storeUploadedSignatureFiles(
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error": "shasums_signature_file requires shasums_file in the same upload",
 			})
-			return fmt.Errorf("sig without sums")
+			return nil, nil, false, false, fmt.Errorf("sig without sums")
 		}
 		if gpgPublicKey == "" {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error": "shasums_signature_file requires gpg_public_key to verify the signature",
 			})
-			return fmt.Errorf("sig without gpg key")
+			return nil, nil, false, false, fmt.Errorf("sig without gpg key")
 		}
 		if verifyErr := validation.VerifySignature(gpgPublicKey, sumsBytes, sigBytes); verifyErr != nil {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error": fmt.Sprintf("shasums signature failed GPG verification: %v", verifyErr),
 			})
-			return verifyErr
+			return nil, nil, false, false, verifyErr
 		}
 	}
 
+	return sumsBytes, sigBytes, sumsProvided, sigProvided, nil
+}
+
+// persistSignatureFiles uploads the already-validated shasums_file /
+// shasums_signature_file bytes returned by readSignatureUpload (above) to
+// storage and records their storage keys on providerVersion:
+// coverage:skip:integration-only — performs storage backend uploads and DB writes that require a live storage service; parameter validation and error paths are exercised by unit tests (TestUploadHandler_Rejects* and TestUploadHandler_StoresShasumsFileWithoutSignature).
+//
+// On success the version row's storage-key columns are updated and the
+// download handler will start returning pre-signed URLs for these files.
+// On any error this function writes the HTTP response and returns a
+// non-nil error so the caller can abort the upload flow.
+func persistSignatureFiles(
+	c *gin.Context,
+	storageBackend storage.Storage,
+	providerRepo *repositories.ProviderRepository,
+	providerVersion *models.ProviderVersion,
+	namespace, providerType, version string,
+	sumsBytes, sigBytes []byte,
+	sumsProvided, sigProvided bool,
+) error {
+	if !sumsProvided && !sigProvided {
+		return nil
+	}
+
+	// Storage paths are deterministic per version (providers/{ns}/{type}/{ver}/SHA256SUMS[.sig]),
+	// so a re-upload (e.g. a key rotation on an already-signed version)
+	// overwrites the existing blob in place rather than creating a new one.
+	// Record whether each key was already persisted *before* this call so
+	// cleanup below never deletes a blob a pre-existing DB row still
+	// references: only paths genuinely new to this call may be removed on
+	// failure (issue #685).
+	hadExistingSumsKey := providerVersion.ShasumStorageKey != nil
+	hadExistingSigKey := providerVersion.ShasumSignatureStorageKey != nil
+
 	var sumsKey, sigKey *string
+
+	// cleanupUploaded deletes whichever of sumsKey/sigKey this call already
+	// wrote to storage, mirroring the main upload path's cleanup (~lines 300,
+	// 401): a later failure in this function must not leave an orphaned blob
+	// with no corresponding storage-key column (issue #685). A key that
+	// already pointed at a pre-existing, DB-referenced blob is left alone —
+	// deleting it here would destroy a previously-working signed version
+	// whose row was never touched (the UPDATE that would have repointed it
+	// is exactly what failed).
+	cleanupUploaded := func() {
+		if sumsKey != nil && !hadExistingSumsKey {
+			if delErr := storageBackend.Delete(c.Request.Context(), *sumsKey); delErr != nil {
+				slog.Error("failed to clean up orphaned storage artifact", // #nosec G706 -- logged value is application-internal (config string, integer, or application-constructed path); not raw user-controlled request input
+					"path", *sumsKey, "error", delErr)
+			}
+		}
+		if sigKey != nil && !hadExistingSigKey {
+			if delErr := storageBackend.Delete(c.Request.Context(), *sigKey); delErr != nil {
+				slog.Error("failed to clean up orphaned storage artifact", // #nosec G706 -- logged value is application-internal (config string, integer, or application-constructed path); not raw user-controlled request input
+					"path", *sigKey, "error", delErr)
+			}
+		}
+	}
 
 	if sumsProvided {
 		path := fmt.Sprintf("providers/%s/%s/%s/SHA256SUMS", namespace, providerType, version)
@@ -503,6 +634,7 @@ func storeUploadedSignatureFiles(
 	if sigProvided {
 		path := fmt.Sprintf("providers/%s/%s/%s/SHA256SUMS.sig", namespace, providerType, version)
 		if _, upErr := storageBackend.Upload(c.Request.Context(), path, bytes.NewReader(sigBytes), int64(len(sigBytes))); upErr != nil {
+			cleanupUploaded()
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": fmt.Sprintf("Failed to upload SHA256SUMS signature: %v", upErr),
 			})
@@ -512,6 +644,7 @@ func storeUploadedSignatureFiles(
 	}
 
 	if updErr := providerRepo.UpdateVersionSignatureStorage(c.Request.Context(), providerVersion.ID, sumsKey, sigKey); updErr != nil {
+		cleanupUploaded()
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": fmt.Sprintf("Failed to persist signature storage keys: %v", updErr),
 		})

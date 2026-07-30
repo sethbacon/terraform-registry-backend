@@ -1,7 +1,9 @@
 package jobs
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -611,5 +613,86 @@ func TestSyncPlatformBinary_AcceptsWellFormedFilename(t *testing.T) {
 	wantPath := "providers/hashicorp/aws/5.0.0/linux/amd64/terraform-provider-aws_5.0.0_linux_amd64.zip"
 	if gotStorage.uploadedPath != wantPath {
 		t.Errorf("uploaded path = %q, want %q", gotStorage.uploadedPath, wantPath)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// syncPlatformBinary — orphaned blob cleanup on partial failure (issue #685)
+// ---------------------------------------------------------------------------
+
+// fakeSyncUpstreamClient implements mirror.UpstreamRegistryClient with a
+// canned package descriptor and binary body, for driving syncPlatformBinary
+// without real HTTP.
+type fakeSyncUpstreamClient struct {
+	pkgInfo *mirror.ProviderPackageResponse
+	body    []byte
+}
+
+func (f *fakeSyncUpstreamClient) DiscoverServices(_ context.Context) (*mirror.ServiceDiscoveryResponse, error) {
+	return nil, nil
+}
+func (f *fakeSyncUpstreamClient) ListProviderVersions(_ context.Context, _, _ string) ([]mirror.ProviderVersion, error) {
+	return nil, nil
+}
+func (f *fakeSyncUpstreamClient) GetProviderPackage(_ context.Context, _, _, _, _, _ string) (*mirror.ProviderPackageResponse, error) {
+	return f.pkgInfo, nil
+}
+func (f *fakeSyncUpstreamClient) DownloadFile(_ context.Context, _ string) ([]byte, error) {
+	return f.body, nil
+}
+func (f *fakeSyncUpstreamClient) DownloadFileStream(_ context.Context, _ string) (*mirror.DownloadStream, error) {
+	return &mirror.DownloadStream{Body: io.NopCloser(bytes.NewReader(f.body)), ContentLength: int64(len(f.body))}, nil
+}
+func (f *fakeSyncUpstreamClient) GetProviderDocIndexByVersion(_ context.Context, _, _, _ string) ([]mirror.ProviderDocEntry, error) {
+	return nil, nil
+}
+func (f *fakeSyncUpstreamClient) GetProviderDocContent(_ context.Context, _ string) (string, error) {
+	return "", nil
+}
+
+// TestSyncPlatformBinary_CreatePlatformFailure_CleansUpOrphanedBlob covers
+// providerRepo.CreatePlatform failing after the binary was already uploaded
+// to storage successfully: the now-orphaned blob must be deleted rather than
+// left behind with no corresponding provider_platforms row (same defect
+// class as the provider-upload and terraform-mirror signature-file paths
+// fixed for issue #685).
+func TestSyncPlatformBinary_CreatePlatformFailure_CleansUpOrphanedBlob(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	providerRepo := repositories.NewProviderRepository(db)
+	fakeStorage := &fakeMirrorStorage{}
+	job := NewMirrorSyncJob(nil, providerRepo, nil, nil, fakeStorage, "local")
+
+	fakeUpstream := &fakeSyncUpstreamClient{
+		pkgInfo: &mirror.ProviderPackageResponse{
+			Filename:    "terraform-provider-aws_5.0.0_linux_amd64.zip",
+			DownloadURL: "https://example.invalid/download",
+		},
+		body: []byte("fake-binary-content"),
+	}
+
+	mock.ExpectQuery("INSERT INTO provider_platforms").WillReturnError(errors.New("db error"))
+
+	versionRecord := &models.ProviderVersion{ID: "ver-1"}
+	platform := mirror.ProviderPlatform{OS: "linux", Arch: "amd64"}
+
+	err = job.syncPlatformBinary(context.Background(), fakeUpstream, versionRecord, "hashicorp", "aws", "5.0.0", platform, nil)
+	if err == nil {
+		t.Fatal("syncPlatformBinary() error = nil, want error from CreatePlatform failure")
+	}
+
+	wantPath := "providers/hashicorp/aws/5.0.0/linux/amd64/terraform-provider-aws_5.0.0_linux_amd64.zip"
+	found := false
+	for _, p := range fakeStorage.deletedPaths {
+		if p == wantPath {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected orphaned blob %q to be deleted after CreatePlatform failure; deleted=%v", wantPath, fakeStorage.deletedPaths)
 	}
 }

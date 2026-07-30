@@ -401,9 +401,11 @@ func (j *TerraformMirrorSyncJob) performSync(
 
 	// Group platforms by version ID so we only fetch SUMS once per version.
 	type platformGroup struct {
-		version   string
-		versionID uuid.UUID
-		platforms []models.TerraformVersionPlatform
+		version         string
+		versionID       uuid.UUID
+		platforms       []models.TerraformVersionPlatform
+		existingSumsKey *string
+		existingSigKey  *string
 	}
 	dbVersions, versionsErr := j.repo.ListVersions(ctx, cfg.ID, false)
 	if versionsErr != nil {
@@ -419,8 +421,10 @@ func (j *TerraformMirrorSyncJob) performSync(
 		if _, ok := groups[p.VersionID]; !ok {
 			if vv, found := versionByID[p.VersionID]; found {
 				groups[p.VersionID] = &platformGroup{
-					version:   vv.Version,
-					versionID: vv.ID,
+					version:         vv.Version,
+					versionID:       vv.ID,
+					existingSumsKey: vv.SumsStorageKey,
+					existingSigKey:  vv.SigStorageKey,
 				}
 			}
 		}
@@ -430,7 +434,7 @@ func (j *TerraformMirrorSyncJob) performSync(
 	}
 
 	for _, group := range groups {
-		vs, ps, vf := j.syncVersionBinaries(ctx, client, cfg, group.version, group.versionID, group.platforms)
+		vs, ps, vf := j.syncVersionBinaries(ctx, client, cfg, group.version, group.versionID, group.platforms, group.existingSumsKey, group.existingSigKey)
 		versionsSynced += vs
 		platformsSynced += ps
 		versionsFailed += vf
@@ -486,6 +490,7 @@ func (j *TerraformMirrorSyncJob) syncVersionBinaries(
 	version string,
 	versionID uuid.UUID,
 	platforms []models.TerraformVersionPlatform,
+	existingSumsKey, existingSigKey *string,
 ) (versionsSynced, platformsSynced, versionsFailed int) {
 	_ = j.repo.UpdateVersionSyncStatus(ctx, versionID, "syncing", nil)
 
@@ -533,7 +538,7 @@ func (j *TerraformMirrorSyncJob) syncVersionBinaries(
 	// Persist SHA256SUMS (always, if we fetched it) and the GPG signature
 	// (only when GPG verification succeeded). These are served by the public
 	// download endpoint so clients can verify integrity offline.
-	j.storeVersionVerificationFiles(ctx, cfg, version, versionID, sumsRaw, verifiedSigBytes)
+	j.storeVersionVerificationFiles(ctx, cfg, version, versionID, sumsRaw, verifiedSigBytes, existingSumsKey, existingSigKey)
 
 	// If GPG verification succeeded, back-fill the flag on any already-synced
 	// platforms for this version (they were skipped by ListPendingPlatforms but
@@ -598,10 +603,23 @@ func (j *TerraformMirrorSyncJob) storeVersionVerificationFiles(
 	versionID uuid.UUID,
 	sumsRaw []byte,
 	sigBytes []byte,
+	existingSumsKey, existingSigKey *string,
 ) {
 	if len(sumsRaw) == 0 && len(sigBytes) == 0 {
 		return
 	}
+
+	// Storage paths are deterministic per version
+	// (terraform-binaries/{version}/SHA256SUMS[.tool.sig]), so a re-upload
+	// (e.g. a backfill run repeating over an already-stored version)
+	// overwrites the existing blob in place rather than creating a new one.
+	// Record whether each key was already persisted *before* this call so the
+	// cleanup below never deletes a blob a pre-existing DB row still
+	// references: only paths genuinely new to this call may be removed on
+	// failure (issue #685, same defect as the provider-upload signature-file
+	// path in internal/api/providers/upload.go).
+	hadExistingSumsKey := existingSumsKey != nil && *existingSumsKey != ""
+	hadExistingSigKey := existingSigKey != nil && *existingSigKey != ""
 
 	var sumsKey, sigKey *string
 
@@ -629,6 +647,23 @@ func (j *TerraformMirrorSyncJob) storeVersionVerificationFiles(
 
 	if err := j.repo.UpdateVersionSignatureStorage(ctx, versionID, sumsKey, sigKey); err != nil {
 		log.Printf("[terraform-mirror] failed to persist signature storage keys for %s@%s: %v", version, cfg.Name, err)
+		// The blob(s) uploaded above now have no corresponding DB row —
+		// clean them up rather than leaving them orphaned (issue #685, same
+		// defect as the provider-upload signature-file path). A key that
+		// already pointed at a pre-existing, DB-referenced blob is left
+		// alone — deleting it here would destroy a previously-working stored
+		// file whose row was never touched (the UPDATE that would have
+		// repointed it is exactly what failed).
+		if sumsKey != nil && !hadExistingSumsKey {
+			if delErr := j.storageBackend.Delete(ctx, *sumsKey); delErr != nil {
+				log.Printf("[terraform-mirror] failed to clean up orphaned storage artifact %q for %s@%s: %v", *sumsKey, version, cfg.Name, delErr)
+			}
+		}
+		if sigKey != nil && !hadExistingSigKey {
+			if delErr := j.storageBackend.Delete(ctx, *sigKey); delErr != nil {
+				log.Printf("[terraform-mirror] failed to clean up orphaned storage artifact %q for %s@%s: %v", *sigKey, version, cfg.Name, delErr)
+			}
+		}
 	}
 }
 
@@ -739,7 +774,16 @@ func (j *TerraformMirrorSyncJob) syncOnePlatform(
 	}
 
 	backendName := j.storageBackendName
-	_ = j.repo.UpdatePlatformSyncStatus(ctx, p.ID, "synced", &storagePath, &backendName, sha256Verified, sumsGPGVerified, attestationVerified, nil)
+	if statusErr := j.repo.UpdatePlatformSyncStatus(ctx, p.ID, "synced", &storagePath, &backendName, sha256Verified, sumsGPGVerified, attestationVerified, nil); statusErr != nil {
+		log.Printf("[terraform-mirror] failed to persist sync status for %s %s/%s: %v", version, p.OS, p.Arch, statusErr)
+		// The blob uploaded above now has no corresponding DB row — clean it
+		// up rather than leaving it orphaned (issue #685, same defect as
+		// storeVersionVerificationFiles above).
+		if delErr := j.storageBackend.Delete(ctx, storagePath); delErr != nil {
+			log.Printf("[terraform-mirror] failed to clean up orphaned storage artifact %q for %s %s/%s: %v", storagePath, version, p.OS, p.Arch, delErr)
+		}
+		return false
+	}
 	log.Printf("[terraform-mirror] stored %s %s/%s -> %s", version, p.OS, p.Arch, storagePath)
 	return true
 }
@@ -937,7 +981,7 @@ func (j *TerraformMirrorSyncJob) backfillSignatureStorage(
 
 		// Reuse the same upload helper used during the normal sync path so
 		// storage path conventions and DB updates stay consistent.
-		j.storeVersionVerificationFiles(ctx, cfg, sv.Version, sv.ID, sumsRaw, verifiedSigBytes)
+		j.storeVersionVerificationFiles(ctx, cfg, sv.Version, sv.ID, sumsRaw, verifiedSigBytes, sv.SumsStorageKey, sv.SigStorageKey)
 	}
 
 	return nil

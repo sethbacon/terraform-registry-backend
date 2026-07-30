@@ -537,6 +537,14 @@ func (s *StorageMigrationService) migrateItem(
 
 	// Update the backend reference in module_versions or provider_platforms
 	if err := s.updateBackendRef(ctx, item, targetBackendType); err != nil {
+		// The blob just uploaded to tgtStorage now has no corresponding backend
+		// reference — clean it up rather than leaving it orphaned (issue #685,
+		// same defect as the provider-upload and terraform-mirror signature-file
+		// paths).
+		if delErr := tgtStorage.Delete(ctx, item.SourcePath); delErr != nil {
+			slog.Error("failed to clean up orphaned storage artifact", // #nosec G706 -- logged value is application-internal (constructed storage path); not raw user-controlled request input
+				"path", item.SourcePath, "error", delErr)
+		}
 		return fmt.Errorf("failed to update backend reference: %w", err)
 	}
 
