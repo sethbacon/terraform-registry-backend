@@ -18,6 +18,8 @@ database:
   password: ${DATABASE_PASSWORD}
   ssl_mode: prefer
   max_connections: 25
+  # statement_timeout_secs: 30            # cancel queries running longer than this; 0 disables (default 30)
+  # idle_in_transaction_timeout_secs: 30  # cancel sessions idle inside an open transaction; 0 disables (default 30)
 
 storage:
   default_backend: local # Options: azure, s3, local

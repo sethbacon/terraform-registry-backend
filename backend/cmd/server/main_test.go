@@ -2,9 +2,11 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"os"
 	"regexp"
 	"testing"
+	"time"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/jmoiron/sqlx"
@@ -215,5 +217,60 @@ func TestHandleSetupToken_PendingFeature_RearmWhenExplicitlyAllowed(t *testing.T
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet sqlmock expectations (should mint a token when rearm is allowed): %v", err)
+	}
+}
+
+// TestWaitForShutdownOrListenError_QuitSignal and
+// TestWaitForShutdownOrListenError_ListenerError are regression tests for
+// issue #686: a listener startup/accept-loop failure (bind failure, or fd
+// exhaustion after the server has been running) used to call log.Fatalf
+// directly inside the listener goroutine, which calls os.Exit(1) and skips
+// serve()'s deferred database.Close() and bgServices.Shutdown(). The fix
+// sends the error over a channel back to the main goroutine instead, so the
+// normal shutdown path always runs. These tests assert the channel-selection
+// logic that fix depends on: a listener error must be returned (not
+// discarded, not treated the same as a clean quit signal), and a normal quit
+// signal must still return nil.
+func TestWaitForShutdownOrListenError_QuitSignal(t *testing.T) {
+	quit := make(chan os.Signal, 1)
+	listenErrCh := make(chan error, 1)
+
+	quit <- os.Interrupt
+
+	err := waitForShutdownOrListenError(quit, listenErrCh)
+	if err != nil {
+		t.Errorf("waitForShutdownOrListenError() = %v, want nil for a normal quit signal", err)
+	}
+}
+
+func TestWaitForShutdownOrListenError_ListenerError(t *testing.T) {
+	quit := make(chan os.Signal, 1)
+	listenErrCh := make(chan error, 1)
+
+	wantErr := errors.New("listen tcp :8080: bind: address already in use")
+	listenErrCh <- wantErr
+
+	err := waitForShutdownOrListenError(quit, listenErrCh)
+	if err != wantErr {
+		t.Errorf("waitForShutdownOrListenError() = %v, want %v", err, wantErr)
+	}
+}
+
+func TestWaitForShutdownOrListenError_ListenerErrorWinsWhenBothReady(t *testing.T) {
+	// If both channels have a pending value, either is a legal select outcome
+	// in general, but this test only sends to listenErrCh so there is no
+	// ambiguity — it guards against a future edit reordering the select cases
+	// in a way that stops checking listenErrCh at all.
+	quit := make(chan os.Signal, 1)
+	listenErrCh := make(chan error, 1)
+
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		listenErrCh <- errors.New("accept loop failure")
+	}()
+
+	err := waitForShutdownOrListenError(quit, listenErrCh)
+	if err == nil {
+		t.Error("waitForShutdownOrListenError() = nil, want the delayed listener error")
 	}
 }

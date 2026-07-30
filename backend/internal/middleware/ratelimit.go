@@ -224,6 +224,7 @@ func RateLimitMiddleware(backend RateLimiterBackend) gin.HandlerFunc {
 		allowed, remaining, err := backend.Allow(c.Request.Context(), principal)
 		if err != nil {
 			slog.Warn("rate limiter backend error, allowing request", "error", err, "rate_limit_bucket", principal)
+			telemetry.RateLimitBackendErrorsTotal.WithLabelValues(tierFromPrincipal(principal), keyTypeFromPrincipal(principal)).Inc()
 			c.Next()
 			return
 		}
@@ -264,6 +265,7 @@ func OrgRateLimitMiddleware(individual RateLimiterBackend, orgBackend RateLimite
 		allowed, remaining, err := individual.Allow(c.Request.Context(), principal)
 		if err != nil {
 			slog.Warn("rate limiter backend error, allowing request", "error", err, "rate_limit_bucket", principal)
+			telemetry.RateLimitBackendErrorsTotal.WithLabelValues("individual", keyTypeFromPrincipal(principal)).Inc()
 			c.Next()
 			return
 		}
@@ -288,6 +290,7 @@ func OrgRateLimitMiddleware(individual RateLimiterBackend, orgBackend RateLimite
 					orgAllowed, orgRemaining, orgErr := orgBackend.Allow(c.Request.Context(), orgKey)
 					if orgErr != nil {
 						slog.Warn("org rate limiter backend error, allowing request", "error", orgErr, "org_key", orgKey)
+						telemetry.RateLimitBackendErrorsTotal.WithLabelValues("organization", "org").Inc()
 					} else if !orgAllowed {
 						c.Header("X-RateLimit-Remaining", strconv.Itoa(orgRemaining))
 						c.Header("Retry-After", "60")
@@ -368,6 +371,7 @@ func PrincipalRateLimitMiddleware(defaultBackend RateLimiterBackend, overrides *
 		allowed, remaining, err := backend.Allow(c.Request.Context(), principal)
 		if err != nil {
 			slog.Warn("rate limiter backend error, allowing request", "error", err, "rate_limit_bucket", principal)
+			telemetry.RateLimitBackendErrorsTotal.WithLabelValues("principal", keyTypeFromPrincipal(principal)).Inc()
 			c.Next()
 			return
 		}

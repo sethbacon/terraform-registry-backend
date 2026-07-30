@@ -18,6 +18,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/notify"
 	"github.com/terraform-registry/terraform-registry/internal/policy"
+	"github.com/terraform-registry/terraform-registry/internal/safego"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 	"github.com/terraform-registry/terraform-registry/internal/telemetry"
 	"github.com/terraform-registry/terraform-registry/internal/validation"
@@ -375,7 +376,7 @@ func notifyModulePublished(mailer *notify.Mailer, notifier *notify.Notifier, cfg
 		namespace, name, system, version,
 	)
 
-	go func() {
+	safego.Go(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 
@@ -395,5 +396,5 @@ func notifyModulePublished(mailer *notify.Mailer, notifier *notify.Notifier, cfg
 		if err := mailer.Send(recipients, subject, body); err != nil {
 			slog.Warn("failed to send module-published notification email", "error", err)
 		}
-	}()
+	})
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/safego"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 )
 
@@ -189,7 +190,7 @@ func (s *StorageMigrationService) StartMigration(ctx context.Context, sourceConf
 	// Launch background execution
 	bgCtx, cancel := context.WithCancel(context.Background())
 	s.cancelFuncs.Store(migrationID, cancel)
-	go s.executeMigration(bgCtx, migrationID)
+	safego.Go(func() { s.executeMigration(bgCtx, migrationID) })
 
 	return migration, nil
 }
@@ -408,7 +409,8 @@ func (s *StorageMigrationService) executeMigration(ctx context.Context, migratio
 
 			wg.Add(1)
 			sem <- struct{}{}
-			go func(itm *models.StorageMigrationItem) {
+			itm := item
+			safego.Go(func() {
 				defer wg.Done()
 				defer func() { <-sem }()
 
@@ -428,7 +430,7 @@ func (s *StorageMigrationService) executeMigration(ctx context.Context, migratio
 				if total%10 == 0 {
 					s.updateProgress(migrationID, &migrated, &failed, &skipped)
 				}
-			}(item)
+			})
 		}
 
 		wg.Wait()
@@ -498,6 +500,22 @@ func (s *StorageMigrationService) migrateItem(
 
 	go func() {
 		defer close(uploadDone)
+		// Recover locally (rather than via safego.Go) so a panic inside Upload
+		// still sets uploadErr instead of leaving it nil, which would make the
+		// caller below treat a crashed upload as a silent success.
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("recovered panic in storage migration upload", "panic", r)
+				if uploadErr == nil {
+					uploadErr = fmt.Errorf("panic during upload: %v", r)
+				}
+				// Unblock the caller's io.Copy(pw, reader): without closing pr here,
+				// a panic before Upload has drained pr would leave pw.Write() blocked
+				// forever (io.Pipe only unblocks on a matching Read or Close), leaking
+				// the calling goroutine and its worker-pool slot.
+				_ = pr.CloseWithError(uploadErr)
+			}
+		}()
 		_, uploadErr = tgtStorage.Upload(ctx, item.SourcePath, pr, size)
 		if uploadErr != nil {
 			_ = pr.CloseWithError(uploadErr)

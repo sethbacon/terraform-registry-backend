@@ -18,6 +18,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/middleware"
+	"github.com/terraform-registry/terraform-registry/internal/safego"
 	"github.com/terraform-registry/terraform-registry/internal/services"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 	"github.com/terraform-registry/terraform-registry/internal/telemetry"
@@ -317,11 +318,11 @@ func PlatformIndexHandler(db *sql.DB, cfg *config.Config, auditRepo *repositorie
 				for _, platform := range platforms {
 					if platform.OS == clientOS && platform.Arch == clientArch {
 						platformID := platform.ID
-						go func() {
+						safego.Go(func() {
 							if err := providerRepo.IncrementDownloadCount(context.Background(), platformID); err != nil {
 								slog.Error("failed to increment download count for mirror provider", "error", err)
 							}
-						}()
+						})
 						telemetry.ProviderDownloadsTotal.WithLabelValues(namespace, providerType, clientOS, clientArch).Inc()
 						break
 					}
@@ -337,7 +338,7 @@ func PlatformIndexHandler(db *sql.DB, cfg *config.Config, auditRepo *repositorie
 			action := "GET " + middleware.RedactSensitivePath(c.Request.URL.Path)
 			ip := c.ClientIP()
 			versionIDForAudit := providerVersion.ID
-			go func() {
+			safego.Go(func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 				if err := auditRepo.CreateAuditLog(ctx, &models.AuditLog{
@@ -348,7 +349,7 @@ func PlatformIndexHandler(db *sql.DB, cfg *config.Config, auditRepo *repositorie
 				}); err != nil {
 					slog.Error("failed to write audit log for mirror platform index", "error", err, "action", action)
 				}
-			}()
+			})
 		}
 
 		// Use c.Data with plain "application/json" (no charset) to satisfy the

@@ -27,6 +27,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/jobs"
+	"github.com/terraform-registry/terraform-registry/internal/safego"
 	"github.com/terraform-registry/terraform-registry/internal/scanner"
 	"github.com/terraform-registry/terraform-registry/internal/scanner/installer"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
@@ -804,11 +805,11 @@ func (h *Handlers) SaveScanningConfig(c *gin.Context) {
 	// If scanning was just enabled at runtime, kick off the scanner job so that
 	// pending scans are processed immediately without a server restart.
 	if input.Enabled && h.scannerJob != nil {
-		go func() {
+		safego.Go(func() {
 			if err := h.scannerJob.Start(context.Background()); err != nil {
 				slog.Warn("setup: scanner job failed to start after config save", "error", err)
 			}
-		}()
+		})
 	}
 
 	c.JSON(http.StatusOK, SaveScanningConfigResponse{

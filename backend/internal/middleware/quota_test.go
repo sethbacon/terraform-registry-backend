@@ -8,6 +8,7 @@ import (
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 func TestNewQuotaChecker(t *testing.T) {
@@ -103,6 +104,8 @@ func TestCheckPublishQuota_DBError_FailOpen(t *testing.T) {
 
 	mock.ExpectQuery("SELECT").WillReturnError(sqlmock.ErrCancelled)
 
+	before := testutil.ToFloat64(quotaBackendErrors.WithLabelValues("org-1", "publishes"))
+
 	qc := NewQuotaChecker(db)
 	r := quotaRouter(qc, "publish")
 
@@ -112,6 +115,12 @@ func TestCheckPublishQuota_DBError_FailOpen(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200 (fail open on DB error)", w.Code)
+	}
+	// Sibling of issue #661: a fail-open quota check must be alertable, not
+	// just a silent pass-through.
+	after := testutil.ToFloat64(quotaBackendErrors.WithLabelValues("org-1", "publishes"))
+	if after != before+1 {
+		t.Errorf("quotaBackendErrors{org-1,publishes} = %v, want %v", after, before+1)
 	}
 }
 
@@ -177,6 +186,8 @@ func TestCheckDownloadQuota_DBError_FailOpen(t *testing.T) {
 
 	mock.ExpectQuery("SELECT").WillReturnError(sqlmock.ErrCancelled)
 
+	before := testutil.ToFloat64(quotaBackendErrors.WithLabelValues("org-1", "downloads"))
+
 	qc := NewQuotaChecker(db)
 	r := quotaRouter(qc, "download")
 
@@ -186,6 +197,10 @@ func TestCheckDownloadQuota_DBError_FailOpen(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200 (fail open)", w.Code)
+	}
+	after := testutil.ToFloat64(quotaBackendErrors.WithLabelValues("org-1", "downloads"))
+	if after != before+1 {
+		t.Errorf("quotaBackendErrors{org-1,downloads} = %v, want %v", after, before+1)
 	}
 }
 

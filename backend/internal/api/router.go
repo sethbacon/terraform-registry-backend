@@ -36,6 +36,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/api/setup"
 	terraform_binaries "github.com/terraform-registry/terraform-registry/internal/api/terraform_binaries"
 	"github.com/terraform-registry/terraform-registry/internal/api/webhooks"
+	"github.com/terraform-registry/terraform-registry/internal/audit"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/auth/mtls"
 	"github.com/terraform-registry/terraform-registry/internal/config"
@@ -74,6 +75,11 @@ type BackgroundServices struct {
 	jobs               *jobs.Registry
 	rateLimiters       []middleware.RateLimiterBackend
 	principalOverrides *middleware.PrincipalOverrideLimiters
+	// auditShipper is non-nil only when cfg.Audit.Shippers configured at least
+	// one active shipper (issue #659). Closed on shutdown so a batching
+	// WebhookShipper flushes its remaining entries and a FileShipper closes
+	// its file handle, rather than being abandoned mid-process-exit.
+	auditShipper audit.Shipper
 }
 
 // Shutdown stops all background goroutines. It should be called after the HTTP
@@ -91,6 +97,11 @@ func (bg *BackgroundServices) Shutdown() {
 	}
 	if bg.principalOverrides != nil {
 		_ = bg.principalOverrides.Close()
+	}
+	if bg.auditShipper != nil {
+		if err := bg.auditShipper.Close(); err != nil {
+			slog.Error("failed to close audit shipper", "error", err)
+		}
 	}
 	slog.Info("all background services stopped")
 }
@@ -135,6 +146,24 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	}
 	if err := scm.ConfigureEgress(cfg.Security.Egress.Allowlist); err != nil {
 		log.Fatalf("failed to configure SCM connector egress policy: %v", err)
+	}
+
+	// Construct the real audit external-shipping subsystem from cfg.Audit so
+	// AuditMiddlewareWithShipper below is no longer wired up with hardcoded
+	// nils (issue #659): previously audit.NewMultiShipperWithGuard's
+	// WebhookShipper/SyslogShipper/FileShipper were fully implemented but
+	// unreachable dead code, and cfg.Audit.LogReadOperations/LogFailedRequests
+	// were silently ignored regardless of what an operator configured.
+	auditShipperMS, err := audit.NewMultiShipperFromConfig(cfg.Audit.Shippers, egressGuard)
+	if err != nil {
+		log.Fatalf("invalid audit.shippers config: %v", err)
+	}
+	var auditShipper audit.Shipper
+	if auditShipperMS.Len() > 0 {
+		auditShipper = auditShipperMS
+		slog.Info("audit external shipping active", "shippers", auditShipperMS.Len())
+	} else if len(cfg.Audit.Shippers) > 0 {
+		slog.Warn("audit.shippers is configured but no shipper is active (all disabled, or unsupported on this platform); external audit shipping is a no-op")
 	}
 
 	// Initialize storage backend
@@ -626,6 +655,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		moduleAdminHandlers:         moduleAdminHandlers,
 		providerAdminHandlers:       providerAdminHandlers,
 		auditRepo:                   auditRepo,
+		auditShipper:                auditShipper,
 		nsAuthz:                     nsAuthz,
 		scanRepo:                    scanRepo,
 		moduleDocsRepo:              moduleDocsRepo,
@@ -673,6 +703,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		jobs:               jobRegistry,
 		rateLimiters:       collectRateLimiterBackends(authRateLimiter, generalRateLimiter, uploadRateLimiter, orgRateLimiter),
 		principalOverrides: principalOverrides,
+		auditShipper:       auditShipper,
 	}
 
 	return router, bg

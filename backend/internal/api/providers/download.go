@@ -17,6 +17,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/middleware"
+	"github.com/terraform-registry/terraform-registry/internal/safego"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 	"github.com/terraform-registry/terraform-registry/internal/telemetry"
 	"github.com/terraform-registry/terraform-registry/internal/validation"
@@ -188,12 +189,12 @@ func DownloadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Con
 
 		// Increment download counter asynchronously (don't block the response)
 		platformID := platform.ID
-		go func() {
+		safego.Go(func() {
 			// Use background context to avoid cancellation when request completes
 			if err := providerRepo.IncrementDownloadCount(context.Background(), platformID); err != nil {
 				slog.Warn("failed to increment provider download count", "platform_id", platformID, "error", err)
 			}
-		}()
+		})
 
 		// Increment Prometheus download counter
 		telemetry.ProviderDownloadsTotal.WithLabelValues(namespace, providerType, os, arch).Inc()
@@ -218,7 +219,7 @@ func DownloadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Con
 					orgIDStr = &s
 				}
 			}
-			go func() {
+			safego.Go(func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 				if err := auditRepo.CreateAuditLog(ctx, &models.AuditLog{
@@ -231,7 +232,7 @@ func DownloadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Con
 				}); err != nil {
 					slog.Error("failed to write audit log for provider download", "error", err, "action", action)
 				}
-			}()
+			})
 		}
 
 		// Format response per Terraform Provider Registry Protocol spec

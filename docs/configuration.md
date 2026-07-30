@@ -156,6 +156,16 @@ database:
 
 `min_idle_connections` (env `TFR_DATABASE_MIN_IDLE_CONNECTIONS`, default `5`) sets the minimum number of idle connections kept warm in the pool, so the first requests after an idle period do not pay the connection-establishment cost.
 
+### Query Timeouts
+
+`statement_timeout_secs` (env `TFR_DATABASE_STATEMENT_TIMEOUT_SECS`, default `30`) bounds how long a single query may run before PostgreSQL cancels it, so a stuck or lock-contended query cannot hold a pooled connection indefinitely and exhaust `max_connections`. Set to `0` to disable.
+
+`idle_in_transaction_timeout_secs` (env `TFR_DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_SECS`, default `30`) bounds how long a session may sit idle inside an open transaction before PostgreSQL cancels it. Set to `0` to disable.
+
+Both settings apply only to request-serving connections. Schema migrations (automatic on startup, or via `server migrate up`/`down`) always run on a separate connection that ignores `statement_timeout_secs`, since a large one-off backfill or index build can legitimately run longer than the timeout sized for normal request traffic.
+
+The identity database (below) has its own `statement_timeout_secs` / `idle_in_transaction_timeout_secs` (env `TFR_IDENTITY_DATABASE_STATEMENT_TIMEOUT_SECS` / `TFR_IDENTITY_DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_SECS`) that default to inheriting the primary database's values when unset.
+
 ---
 
 ## Server

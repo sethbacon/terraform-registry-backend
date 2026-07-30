@@ -17,6 +17,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/notify"
+	"github.com/terraform-registry/terraform-registry/internal/safego"
 )
 
 // RBACHandlers handles RBAC-related API endpoints
@@ -106,7 +107,7 @@ func (h *RBACHandlers) notifyApprovalPending(approval *models.MirrorApprovalRequ
 		target, approval.Reason,
 	)
 
-	go func() {
+	safego.Go(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 
@@ -125,7 +126,7 @@ func (h *RBACHandlers) notifyApprovalPending(approval *models.MirrorApprovalRequ
 		if err := h.mailer.Send(recipients, subject, body); err != nil {
 			slog.Warn("failed to send approval-pending notification email", "error", err)
 		}
-	}()
+	})
 }
 
 // ============================================================================

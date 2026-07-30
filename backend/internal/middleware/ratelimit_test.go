@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -9,7 +10,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/telemetry"
 )
 
 // ---------------------------------------------------------------------------
@@ -651,5 +654,118 @@ func TestPrincipalRateLimitMiddleware_NilDefault(t *testing.T) {
 	// Should pass through when default is nil
 	if w.Code == http.StatusTooManyRequests {
 		t.Error("should pass through when default backend is nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Backend-error fail-open path (issue #661): a rate limiter backend error
+// (e.g. a Redis outage) must still let the request through — that behavior is
+// intentional for availability — but must now also be alertable via
+// telemetry.RateLimitBackendErrorsTotal instead of only a log line.
+// ---------------------------------------------------------------------------
+
+// erroringRateLimiterBackend always fails, simulating a backend outage (e.g.
+// Redis unreachable).
+type erroringRateLimiterBackend struct{}
+
+func (erroringRateLimiterBackend) Allow(_ context.Context, _ string) (bool, int, error) {
+	return false, 0, errors.New("simulated backend outage")
+}
+func (erroringRateLimiterBackend) RemainingTokens(_ context.Context, _ string) (int, error) {
+	return 0, errors.New("simulated backend outage")
+}
+func (erroringRateLimiterBackend) Close() error { return nil }
+
+func TestRateLimitMiddleware_BackendError_FailsOpenAndIncrementsMetric(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	before := testutil.ToFloat64(telemetry.RateLimitBackendErrorsTotal.WithLabelValues("individual", "ip"))
+
+	r := gin.New()
+	r.Use(RateLimitMiddleware(erroringRateLimiterBackend{}))
+	r.GET("/", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.0.9.1:1234"
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 (backend error must fail open)", w.Code)
+	}
+	after := testutil.ToFloat64(telemetry.RateLimitBackendErrorsTotal.WithLabelValues("individual", "ip"))
+	if after != before+1 {
+		t.Errorf("RateLimitBackendErrorsTotal{individual,ip} = %v, want %v", after, before+1)
+	}
+}
+
+func TestOrgRateLimitMiddleware_IndividualBackendError_FailsOpenAndIncrementsMetric(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	before := testutil.ToFloat64(telemetry.RateLimitBackendErrorsTotal.WithLabelValues("individual", "ip"))
+
+	r := gin.New()
+	r.Use(OrgRateLimitMiddleware(erroringRateLimiterBackend{}, nil))
+	r.GET("/", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.0.9.2:1234"
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 (backend error must fail open)", w.Code)
+	}
+	after := testutil.ToFloat64(telemetry.RateLimitBackendErrorsTotal.WithLabelValues("individual", "ip"))
+	if after != before+1 {
+		t.Errorf("RateLimitBackendErrorsTotal{individual,ip} = %v, want %v", after, before+1)
+	}
+}
+
+func TestOrgRateLimitMiddleware_OrgBackendError_FailsOpenAndIncrementsMetric(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	individual := newTestLimiter(600, 10)
+	defer individual.Stop()
+
+	before := testutil.ToFloat64(telemetry.RateLimitBackendErrorsTotal.WithLabelValues("organization", "org"))
+
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set("organization_id", "org-with-broken-backend")
+		c.Next()
+	})
+	r.Use(OrgRateLimitMiddleware(individual, erroringRateLimiterBackend{}))
+	r.GET("/", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.0.9.3:1234"
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 (org backend error must fail open)", w.Code)
+	}
+	after := testutil.ToFloat64(telemetry.RateLimitBackendErrorsTotal.WithLabelValues("organization", "org"))
+	if after != before+1 {
+		t.Errorf("RateLimitBackendErrorsTotal{organization,org} = %v, want %v", after, before+1)
+	}
+}
+
+func TestPrincipalRateLimitMiddleware_BackendError_FailsOpenAndIncrementsMetric(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	before := testutil.ToFloat64(telemetry.RateLimitBackendErrorsTotal.WithLabelValues("principal", "user"))
+
+	mw := PrincipalRateLimitMiddleware(erroringRateLimiterBackend{}, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest("GET", "/test", nil)
+	c.Set("user_id", "some-user")
+	mw(c)
+
+	if w.Code != http.StatusOK && w.Code != 0 {
+		t.Errorf("status = %d, want 200/unset (backend error must fail open)", w.Code)
+	}
+	after := testutil.ToFloat64(telemetry.RateLimitBackendErrorsTotal.WithLabelValues("principal", "user"))
+	if after != before+1 {
+		t.Errorf("RateLimitBackendErrorsTotal{principal,user} = %v, want %v", after, before+1)
 	}
 }

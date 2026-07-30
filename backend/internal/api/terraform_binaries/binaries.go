@@ -22,6 +22,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/middleware"
+	"github.com/terraform-registry/terraform-registry/internal/safego"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 	"github.com/terraform-registry/terraform-registry/internal/telemetry"
 	"github.com/terraform-registry/terraform-registry/internal/validation"
@@ -330,11 +331,11 @@ func (h *Handler) DownloadBinary(c *gin.Context) {
 
 	// Increment Prometheus download counter and persist to DB (non-blocking).
 	telemetry.TerraformBinaryDownloadsTotal.WithLabelValues(versionStr, osStr, archStr).Inc()
-	go func() {
+	safego.Go(func() {
 		if err := h.repo.IncrementDownloadCount(context.Background(), platform.ID); err != nil {
 			log.Printf("[terraform-binaries] download count increment failed for platform %s: %v", platform.ID, err)
 		}
-	}()
+	})
 
 	// Audit log the download event asynchronously
 	if h.auditRepo != nil {
@@ -356,7 +357,7 @@ func (h *Handler) DownloadBinary(c *gin.Context) {
 				orgIDStr = &s
 			}
 		}
-		go func() {
+		safego.Go(func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if err := h.auditRepo.CreateAuditLog(ctx, &models.AuditLog{
@@ -369,7 +370,7 @@ func (h *Handler) DownloadBinary(c *gin.Context) {
 			}); err != nil {
 				slog.Error("failed to write audit log for binary download", "error", err, "action", action)
 			}
-		}()
+		})
 	}
 
 	c.JSON(http.StatusOK, models.TerraformBinaryDownloadResponse{

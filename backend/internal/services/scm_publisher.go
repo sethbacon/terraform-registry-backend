@@ -24,6 +24,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/safego"
 	"github.com/terraform-registry/terraform-registry/internal/scm"
 	"github.com/terraform-registry/terraform-registry/internal/scm/appcreds"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
@@ -455,7 +456,8 @@ func (p *SCMPublisher) TriggerManualSync(ctx context.Context, moduleSourceRepo *
 			slog.Warn("failed to check existing version", "version", version, "error", err)
 		} else if existing != nil {
 			slog.Debug("version already exists; checking for missing docs", "version", version)
-			go p.reanalyzeExistingVersion(ctx, moduleSourceRepo.ModuleID.String(), existing)
+			moduleIDStr := moduleSourceRepo.ModuleID.String()
+			safego.Go(func() { p.reanalyzeExistingVersion(ctx, moduleIDStr, existing) })
 			continue
 		}
 
@@ -470,7 +472,7 @@ func (p *SCMPublisher) TriggerManualSync(ctx context.Context, moduleSourceRepo *
 		// Process this tag push (without a webhook log ID since this is manual)
 		// We'll pass a nil UUID since webhook logging isn't applicable here
 		slog.Debug("starting goroutine to process tag", "tag", tag.TagName, "commit", tag.TargetCommit)
-		go p.processTagForManualSync(ctx, moduleSourceRepo, hook, connector, token)
+		safego.Go(func() { p.processTagForManualSync(ctx, moduleSourceRepo, hook, connector, token) })
 	}
 
 	slog.Debug("manual sync tag matching complete", "matching_tags", matchingTags, "total_tags", len(tags))
