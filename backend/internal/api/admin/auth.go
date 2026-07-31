@@ -554,6 +554,38 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 // GET /api/v1/auth/logout
 func (h *AuthHandlers) LogoutHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		c.Redirect(http.StatusFound, h.endSession(c))
+	}
+}
+
+// @Summary      Log out (CSRF-safe)
+// @Description  Revokes the session JWT, clears the auth and CSRF cookies, and returns where the client should navigate next — the OIDC end_session_endpoint when one is configured, otherwise the frontend home page. Unlike GET /auth/logout this is covered by the double-submit CSRF check, so it cannot be triggered by a cross-site navigation. Returns 200 with a redirect_url rather than a 302 because an XHR cannot follow a cross-origin redirect to the IdP.
+// @Tags         Authentication
+// @Produce      json
+// @Success      200  {object}  map[string]interface{}  "redirect_url to navigate to"
+// @Failure      403  {object}  map[string]interface{}  "CSRF token missing or invalid"
+// @Router       /api/v1/auth/logout [post]
+// LogoutPostHandler is the CSRF-safe counterpart to LogoutHandler (#274 in the
+// state-manager repo; the same GET-only logout exists here). CSRFMiddleware
+// exempts safe methods, and with SameSite the auth cookie still rides a
+// cross-site top-level GET navigation, so an attacker-controlled link can force
+// a logout. Making it a POST brings it under the double-submit check.
+//
+// The GET route is retained for now: the shared terraform-suite-ui AuthProvider
+// drives logout for this app and the sibling state manager, so both backends
+// must accept POST before the frontend can move.
+// POST /api/v1/auth/logout
+func (h *AuthHandlers) LogoutPostHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"redirect_url": h.endSession(c)})
+	}
+}
+
+// endSession performs the teardown both logout routes share — revoke the JWT,
+// clear the auth and CSRF cookies — and returns where the caller should end up.
+// Kept as one function so the two verbs cannot drift apart.
+func (h *AuthHandlers) endSession(c *gin.Context) string {
+	{
 		// Revoke the current JWT if present
 		if claims, exists := c.Get("jwt_claims"); exists {
 			if jwtClaims, ok := claims.(*auth.Claims); ok && jwtClaims.JTI != "" {
@@ -601,14 +633,13 @@ func (h *AuthHandlers) LogoutHandler() gin.HandlerFunc {
 					// security concern of storing raw ID tokens in localStorage.
 					q.Set("client_id", h.cfg.Auth.OIDC.ClientID)
 					logoutURL.RawQuery = q.Encode()
-					c.Redirect(http.StatusFound, logoutURL.String())
-					return
+					return logoutURL.String()
 				}
 			}
 		}
 
-		// No OIDC end_session_endpoint available — redirect to the frontend home page.
-		c.Redirect(http.StatusFound, postLogoutRedirect)
+		// No OIDC end_session_endpoint available — the frontend home page.
+		return postLogoutRedirect
 	}
 }
 

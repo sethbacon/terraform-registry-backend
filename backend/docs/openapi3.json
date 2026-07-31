@@ -7812,6 +7812,37 @@
                         }
                     }
                 }
+            },
+            "post": {
+                "description": "Revokes the session JWT, clears the auth and CSRF cookies, and returns where the client should navigate next — the OIDC end_session_endpoint when one is configured, otherwise the frontend home page. Unlike GET /auth/logout this is covered by the double-submit CSRF check, so it cannot be triggered by a cross-site navigation. Returns 200 with a redirect_url rather than a 302 because an XHR cannot follow a cross-origin redirect to the IdP.",
+                "tags": [
+                    "Authentication"
+                ],
+                "summary": "Log out (CSRF-safe)",
+                "responses": {
+                    "200": {
+                        "description": "redirect_url to navigate to",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "CSRF token missing or invalid",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    }
+                }
             }
         },
         "/api/v1/auth/me": {

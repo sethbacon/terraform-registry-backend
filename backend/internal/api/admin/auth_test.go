@@ -24,6 +24,7 @@ import (
 	samlpkg "github.com/terraform-registry/terraform-registry/internal/auth/saml"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/middleware"
 )
 
 // ---------------------------------------------------------------------------
@@ -2407,5 +2408,129 @@ func TestApplyLDAPGroupMappings_NothingConfigured(t *testing.T) {
 	if err := h.applyLDAPGroupMappings(context.Background(), "user-1",
 		[]string{"cn=x,ou=groups,dc=example,dc=com"}); err != nil {
 		t.Errorf("expected nil error, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// LogoutPostHandler — CSRF-safe logout (#274)
+// ---------------------------------------------------------------------------
+
+// POST /auth/logout does the same teardown as the GET route but answers 200
+// with the destination in the body. An XHR cannot usefully follow a
+// cross-origin 302 to the IdP's end_session_endpoint, so the SPA navigates
+// itself using redirect_url.
+func TestLogoutPostHandler_ReturnsRedirectURLNotRedirect(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Server.PublicURL = "https://app.example.com"
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
+
+	r := gin.New()
+	r.POST("/auth/logout", h.LogoutPostHandler())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/auth/logout", nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if loc := w.Header().Get("Location"); loc != "" {
+		t.Errorf("must not redirect; got Location = %q", loc)
+	}
+	if !strings.Contains(w.Body.String(), `"redirect_url":"https://app.example.com/"`) {
+		t.Errorf("body = %s, want redirect_url to the frontend root", w.Body.String())
+	}
+
+	var authCleared, csrfCleared bool
+	for _, ck := range w.Result().Cookies() {
+		if ck.Name == "tfr_auth_token" && ck.MaxAge < 0 {
+			authCleared = true
+		}
+		if ck.Name == "tfr_csrf" && ck.MaxAge < 0 {
+			csrfCleared = true
+		}
+	}
+	if !authCleared || !csrfCleared {
+		t.Errorf("cookies not cleared (auth=%v csrf=%v)", authCleared, csrfCleared)
+	}
+}
+
+// The two verbs must tear the session down identically — POST exists to change
+// the CSRF posture, not the logout semantics.
+func TestLogoutPostMatchesGetTeardown(t *testing.T) {
+	newRec := func(method string) *httptest.ResponseRecorder {
+		db, _, _ := sqlmock.New()
+		t.Cleanup(func() { db.Close() })
+		cfg := &config.Config{}
+		cfg.Server.PublicURL = "https://app.example.com"
+		h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
+		r := gin.New()
+		r.GET("/auth/logout", h.LogoutHandler())
+		r.POST("/auth/logout", h.LogoutPostHandler())
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(method, "/auth/logout", nil))
+		return w
+	}
+	get, post := newRec(http.MethodGet), newRec(http.MethodPost)
+
+	cookies := func(w *httptest.ResponseRecorder) map[string]int {
+		out := map[string]int{}
+		for _, ck := range w.Result().Cookies() {
+			out[ck.Name] = ck.MaxAge
+		}
+		return out
+	}
+	gotGet, gotPost := cookies(get), cookies(post)
+	if len(gotGet) != len(gotPost) {
+		t.Fatalf("cookie teardown differs: GET %v vs POST %v", gotGet, gotPost)
+	}
+	for name, age := range gotGet {
+		if gotPost[name] != age {
+			t.Errorf("cookie %q: GET MaxAge=%d, POST MaxAge=%d", name, age, gotPost[name])
+		}
+	}
+	if loc := get.Header().Get("Location"); !strings.Contains(post.Body.String(), loc) {
+		t.Errorf("POST redirect_url does not match GET Location %q: %s", loc, post.Body.String())
+	}
+}
+
+// The POST route is only worth adding if CSRFMiddleware actually covers it —
+// this group is the PUBLIC one and does not inherit the authenticated group's
+// middleware, so the protection is attached per-route in router_routes.go. This
+// asserts the composition, not just the handler: a forged cross-site POST (no
+// X-CSRF-Token) must be rejected, while a proper double-submit succeeds.
+func TestLogoutPost_CSRFMiddlewareRejectsForgedRequest(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Server.PublicURL = "https://app.example.com"
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
+
+	r := gin.New()
+	r.POST("/auth/logout", middleware.CSRFMiddleware(cfg), h.LogoutPostHandler())
+
+	// Forged: cookie-authenticated victim; the attacker cannot read the CSRF
+	// cookie cross-origin, so cannot set a matching header.
+	forged := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	forged.AddCookie(&http.Cookie{Name: "tfr_auth_token", Value: "v"})
+	forged.AddCookie(&http.Cookie{Name: "tfr_csrf", Value: "secret-token"})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, forged)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("forged logout: status = %d, want 403 (%s)", w.Code, w.Body.String())
+	}
+
+	// Legitimate: the SPA echoes the cookie value in the header.
+	ok := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	ok.AddCookie(&http.Cookie{Name: "tfr_auth_token", Value: "v"})
+	ok.AddCookie(&http.Cookie{Name: "tfr_csrf", Value: "secret-token"})
+	ok.Header.Set("X-CSRF-Token", "secret-token")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, ok)
+	if w.Code != http.StatusOK {
+		t.Errorf("legitimate logout: status = %d, want 200 (%s)", w.Code, w.Body.String())
 	}
 }
