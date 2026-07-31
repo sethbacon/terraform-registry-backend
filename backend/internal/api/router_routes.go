@@ -486,6 +486,13 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 			authGroup.GET("/login", authHandlers.LoginHandler())
 			authGroup.GET("/callback", authHandlers.CallbackHandler())
 			authGroup.GET("/logout", authHandlers.LogoutHandler())
+			// CSRF-safe logout. This group is the PUBLIC one, so it does not
+			// inherit registerAuthenticatedGroupMiddleware's CSRFMiddleware —
+			// it has to be attached to this route explicitly, otherwise the
+			// POST form would be exactly as forgeable as the GET one it
+			// replaces. GET stays until the shared suite frontend moves over
+			// (the sibling state manager carries the same route).
+			authGroup.POST("/logout", middleware.CSRFMiddleware(cfg), authHandlers.LogoutPostHandler())
 			authGroup.GET("/providers", authHandlers.ProvidersHandler())
 
 			// SAML endpoints
