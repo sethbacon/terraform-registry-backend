@@ -539,25 +539,6 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 	}
 }
 
-// @Summary      OIDC logout
-// @Description  Revokes the current JWT, clears the auth cookie, and when OIDC is active, redirects the browser to the provider's end_session_endpoint to terminate the SSO session. Falls back to a plain redirect to the frontend login page for non-OIDC setups.
-// @Tags         Authentication
-// @Accept       json
-// @Produce      json
-// @Param        post_logout_redirect_uri  query  string  false  "URL to redirect to after the provider logs out (defaults to frontend /login)"
-// @Success      302  {object}  string  "Redirects to OIDC end_session_endpoint or frontend /login"
-// @Failure      401  {object}  map[string]interface{}  "Unauthorized — no valid session"
-// @Failure      500  {object}  map[string]interface{}  "Internal server error"
-// @Router       /api/v1/auth/logout [get]
-// LogoutHandler revokes the current JWT, clears the auth cookie, and terminates
-// the OIDC SSO session by redirecting to the provider's end_session_endpoint.
-// GET /api/v1/auth/logout
-func (h *AuthHandlers) LogoutHandler() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.Redirect(http.StatusFound, h.endSession(c))
-	}
-}
-
 // @Summary      Log out (CSRF-safe)
 // @Description  Revokes the session JWT, clears the auth and CSRF cookies, and returns where the client should navigate next — the OIDC end_session_endpoint when one is configured, otherwise the frontend home page. Unlike GET /auth/logout this is covered by the double-submit CSRF check, so it cannot be triggered by a cross-site navigation. Returns 200 with a redirect_url rather than a 302 because an XHR cannot follow a cross-origin redirect to the IdP.
 // @Tags         Authentication

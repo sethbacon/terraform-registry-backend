@@ -7762,57 +7762,6 @@
             }
         },
         "/api/v1/auth/logout": {
-            "get": {
-                "description": "Revokes the current JWT, clears the auth cookie, and when OIDC is active, redirects the browser to the provider's end_session_endpoint to terminate the SSO session. Falls back to a plain redirect to the frontend login page for non-OIDC setups.",
-                "tags": [
-                    "Authentication"
-                ],
-                "summary": "OIDC logout",
-                "parameters": [
-                    {
-                        "description": "URL to redirect to after the provider logs out (defaults to frontend /login)",
-                        "name": "post_logout_redirect_uri",
-                        "in": "query",
-                        "schema": {
-                            "type": "string"
-                        }
-                    }
-                ],
-                "responses": {
-                    "302": {
-                        "description": "Redirects to OIDC end_session_endpoint or frontend /login",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized — no valid session",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "type": "object",
-                                    "additionalProperties": true
-                                }
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal server error",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "type": "object",
-                                    "additionalProperties": true
-                                }
-                            }
-                        }
-                    }
-                }
-            },
             "post": {
                 "description": "Revokes the session JWT, clears the auth and CSRF cookies, and returns where the client should navigate next — the OIDC end_session_endpoint when one is configured, otherwise the frontend home page. Unlike GET /auth/logout this is covered by the double-submit CSRF check, so it cannot be triggered by a cross-site navigation. Returns 200 with a redirect_url rather than a 302 because an XHR cannot follow a cross-origin redirect to the IdP.",
                 "tags": [

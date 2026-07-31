@@ -675,10 +675,10 @@ func TestApplyGroupMappings_EmptyGroupsNoDefault(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// LogoutHandler — nil OIDC provider, redirects to frontend home
+// Logout destination resolution (POST is the only logout verb)
 // ---------------------------------------------------------------------------
 
-func TestLogoutHandler_NoOIDC_RedirectsToHome(t *testing.T) {
+func TestLogout_NoOIDC_ReturnsFrontendHome(t *testing.T) {
 	db, _, _ := sqlmock.New()
 	defer db.Close()
 
@@ -687,21 +687,20 @@ func TestLogoutHandler_NoOIDC_RedirectsToHome(t *testing.T) {
 	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 
 	r := gin.New()
-	r.GET("/auth/logout", h.LogoutHandler())
+	r.POST("/auth/logout", h.LogoutPostHandler())
 
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/auth/logout", nil))
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/auth/logout", nil))
 
-	if w.Code != http.StatusFound {
-		t.Errorf("status = %d, want 302", w.Code)
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
 	}
-	loc := w.Header().Get("Location")
-	if loc != "https://app.example.com/" {
-		t.Errorf("Location = %q, want %q", loc, "https://app.example.com/")
+	if !strings.Contains(w.Body.String(), `"redirect_url":"https://app.example.com/"`) {
+		t.Errorf("body = %s, want the frontend root", w.Body.String())
 	}
 }
 
-func TestLogoutHandler_BaseURL_Fallback(t *testing.T) {
+func TestLogout_BaseURL_Fallback(t *testing.T) {
 	db, _, _ := sqlmock.New()
 	defer db.Close()
 
@@ -710,17 +709,16 @@ func TestLogoutHandler_BaseURL_Fallback(t *testing.T) {
 	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 
 	r := gin.New()
-	r.GET("/auth/logout", h.LogoutHandler())
+	r.POST("/auth/logout", h.LogoutPostHandler())
 
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/auth/logout", nil))
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/auth/logout", nil))
 
-	if w.Code != http.StatusFound {
-		t.Errorf("status = %d, want 302", w.Code)
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
 	}
-	loc := w.Header().Get("Location")
-	if loc != "http://localhost:8080/" {
-		t.Errorf("Location = %q, want %q", loc, "http://localhost:8080/")
+	if !strings.Contains(w.Body.String(), `"redirect_url":"http://localhost:8080/"`) {
+		t.Errorf("body = %s, want the base-URL fallback", w.Body.String())
 	}
 }
 
@@ -2454,45 +2452,6 @@ func TestLogoutPostHandler_ReturnsRedirectURLNotRedirect(t *testing.T) {
 	}
 	if !authCleared || !csrfCleared {
 		t.Errorf("cookies not cleared (auth=%v csrf=%v)", authCleared, csrfCleared)
-	}
-}
-
-// The two verbs must tear the session down identically — POST exists to change
-// the CSRF posture, not the logout semantics.
-func TestLogoutPostMatchesGetTeardown(t *testing.T) {
-	newRec := func(method string) *httptest.ResponseRecorder {
-		db, _, _ := sqlmock.New()
-		t.Cleanup(func() { db.Close() })
-		cfg := &config.Config{}
-		cfg.Server.PublicURL = "https://app.example.com"
-		h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
-		r := gin.New()
-		r.GET("/auth/logout", h.LogoutHandler())
-		r.POST("/auth/logout", h.LogoutPostHandler())
-		w := httptest.NewRecorder()
-		r.ServeHTTP(w, httptest.NewRequest(method, "/auth/logout", nil))
-		return w
-	}
-	get, post := newRec(http.MethodGet), newRec(http.MethodPost)
-
-	cookies := func(w *httptest.ResponseRecorder) map[string]int {
-		out := map[string]int{}
-		for _, ck := range w.Result().Cookies() {
-			out[ck.Name] = ck.MaxAge
-		}
-		return out
-	}
-	gotGet, gotPost := cookies(get), cookies(post)
-	if len(gotGet) != len(gotPost) {
-		t.Fatalf("cookie teardown differs: GET %v vs POST %v", gotGet, gotPost)
-	}
-	for name, age := range gotGet {
-		if gotPost[name] != age {
-			t.Errorf("cookie %q: GET MaxAge=%d, POST MaxAge=%d", name, age, gotPost[name])
-		}
-	}
-	if loc := get.Header().Get("Location"); !strings.Contains(post.Body.String(), loc) {
-		t.Errorf("POST redirect_url does not match GET Location %q: %s", loc, post.Body.String())
 	}
 }
 
