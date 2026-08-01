@@ -142,6 +142,7 @@ func main() {
 		os.Exit(2)
 	}
 
+	scanned := 0
 	graph := map[*types.Func]*node{}
 	reduceSinks := map[*types.Func]bool{}
 	jwtSinks := map[*types.Func]bool{}
@@ -153,10 +154,17 @@ func main() {
 		}
 		// Only analyse first-party code: the scanned module plus any extra
 		// pattern the caller asked for (shared identity module).
-		if !firstParty(p.PkgPath) {
+		//
+		// The scanned module is always in scope regardless of its import path
+		// -- deciding scope from a hardcoded prefix list silently reported
+		// "0 sites" when this tool was first pointed at a repo whose module
+		// path was not on the list, which is the worst possible failure mode
+		// for a signature. -prefixes only widens scope to dependencies.
+		inModule := p.Module != nil && p.Module.Main
+		if !inModule && !firstParty(p.PkgPath) {
 			return
 		}
-		inModule := p.Module == nil || p.Module.Main
+		scanned++
 		for _, f := range p.Syntax {
 			for _, d := range f.Decls {
 				fd, ok := d.(*ast.FuncDecl)
@@ -203,6 +211,17 @@ func main() {
 			}
 		}
 	})
+
+	if scanned == 0 {
+		fmt.Fprintf(os.Stderr, "credlifecycle: no first-party packages with syntax were loaded from %q -- "+
+			"the scan is vacuous, not clean. Check that the path is a Go module root.\n", *root)
+		os.Exit(2)
+	}
+	if len(reduceSinks) == 0 {
+		fmt.Fprintln(os.Stderr, "credlifecycle: no authority-reducing sinks derived -- "+
+			"the identity data layer was not in scope. Pass its package pattern as an argument.")
+		os.Exit(2)
+	}
 
 	dump("DERIVED authority-reducing sinks", reduceSinks)
 	dump("DERIVED jwt-invalidation sinks", jwtSinks)
