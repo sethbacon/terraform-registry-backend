@@ -120,10 +120,15 @@ func newRBACRouterWithRevocation(t *testing.T, withRevocation bool) (sqlmock.Sql
 	sqlxDB := sqlx.NewDb(db, "sqlmock")
 	rbacRepo := repositories.NewRBACRepository(sqlxDB)
 	var userRevocations *repositories.UserTokenRevocationRepository
+	var apiKeys *repositories.APIKeyRepository
 	if withRevocation {
 		userRevocations = repositories.NewUserTokenRevocationRepository(db)
+		// The API-key half of the sweep (issue #732) runs over the same mocked
+		// connection, so the org-bound key lookup/delete are ordinary
+		// expectations on `mock` like the watermark write.
+		apiKeys = repositories.NewAPIKeyRepository(db)
 	}
-	h := NewRBACHandlers(rbacRepo, userRevocations)
+	h := NewRBACHandlers(rbacRepo, userRevocations, apiKeys)
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
@@ -335,25 +340,30 @@ func TestRBACUpdateRoleTemplate_Success(t *testing.T) {
 	}
 }
 
-// Issue #559 finding [9]: editing a role template's scopes must revoke the
-// outstanding tokens of every member currently assigned that template, so the
-// new scopes take effect immediately rather than waiting out the JWT TTL.
+// Issue #559 finding [9] plus issue #732: editing a role template's scopes must
+// sweep BOTH credential families that snapshot those scopes for every member
+// currently assigned the template — the JWT revoke-all watermark and the
+// member's API keys in the organization where they hold it — so the new scopes
+// take effect immediately rather than waiting out the JWT TTL (JWTs) or never
+// (keys).
 func TestRBACUpdateRoleTemplate_ScopesChanged_RevokesMemberTokens(t *testing.T) {
 	mock, r := newRBACRouterWithRevocation(t, true)
 	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
 		WillReturnRows(sampleRTRow()) // scopes = testRTScopes = ["modules:read","providers:write"]
 	mock.ExpectExec("UPDATE role_templates.*SET display_name").
 		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectQuery("SELECT DISTINCT user_id FROM organization_members WHERE role_template_id").
-		WillReturnRows(sqlmock.NewRows([]string{"user_id"}).
-			AddRow("member-1").
-			AddRow("member-2"))
+	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_members WHERE role_template_id").
+		WillReturnRows(sqlmock.NewRows([]string{"user_id", "organization_id"}).
+			AddRow("member-1", "org-1").
+			AddRow("member-2", "org-2"))
 	mock.ExpectExec("INSERT INTO user_token_revocations").
 		WithArgs("member-1").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	expectOrgKeySweep(mock, "member-1", "org-1", "key-m1")
 	mock.ExpectExec("INSERT INTO user_token_revocations").
 		WithArgs("member-2").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	expectOrgKeySweep(mock, "member-2", "org-2", "key-m2")
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("PUT", "/role-templates/"+knownUUID,
@@ -451,18 +461,20 @@ func TestRBACDeleteRoleTemplate_RevokesMemberTokens(t *testing.T) {
 	mock, r := newRBACRouterWithRevocation(t, true)
 	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
 		WillReturnRows(sampleRTRow())
-	mock.ExpectQuery("SELECT DISTINCT user_id FROM organization_members WHERE role_template_id").
-		WillReturnRows(sqlmock.NewRows([]string{"user_id"}).
-			AddRow("member-1").
-			AddRow("member-2"))
+	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_members WHERE role_template_id").
+		WillReturnRows(sqlmock.NewRows([]string{"user_id", "organization_id"}).
+			AddRow("member-1", "org-1").
+			AddRow("member-2", "org-2"))
 	mock.ExpectExec("DELETE FROM role_templates WHERE id").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("INSERT INTO user_token_revocations").
 		WithArgs("member-1").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	expectOrgKeySweep(mock, "member-1", "org-1", "key-m1")
 	mock.ExpectExec("INSERT INTO user_token_revocations").
 		WithArgs("member-2").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	expectOrgKeySweep(mock, "member-2", "org-2", "key-m2")
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/role-templates/"+knownUUID, nil))
@@ -483,7 +495,7 @@ func TestRBACDeleteRoleTemplate_MemberLookupDBError_StillDeletes(t *testing.T) {
 	mock, r := newRBACRouterWithRevocation(t, true)
 	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
 		WillReturnRows(sampleRTRow())
-	mock.ExpectQuery("SELECT DISTINCT user_id FROM organization_members WHERE role_template_id").
+	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_members WHERE role_template_id").
 		WillReturnError(errDB)
 	mock.ExpectExec("DELETE FROM role_templates WHERE id").
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -1118,7 +1130,7 @@ func newRBACRouterWithOrg(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 
 	sqlxDB := sqlx.NewDb(db, "sqlmock")
 	rbacRepo := repositories.NewRBACRepository(sqlxDB)
-	h := NewRBACHandlers(rbacRepo, nil)
+	h := NewRBACHandlers(rbacRepo, nil, nil)
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
@@ -1513,7 +1525,7 @@ func newRBACRouterNoUser(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 
 	sqlxDB := sqlx.NewDb(db, "sqlmock")
 	rbacRepo := repositories.NewRBACRepository(sqlxDB)
-	h := NewRBACHandlers(rbacRepo, nil)
+	h := NewRBACHandlers(rbacRepo, nil, nil)
 
 	r := gin.New()
 	// No user_id middleware — exercises context-absent code paths

@@ -40,6 +40,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/auth/mtls"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/credlifecycle"
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
@@ -408,8 +409,18 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		oidcStateStore = auth.NewMemoryStateStore(5 * time.Minute)
 	}
 
+	// credSweeper invalidates BOTH credential families that snapshot a
+	// principal's derived authority (JWT sessions via the revoke-all watermark,
+	// API keys via the api_keys row) whenever a lifecycle event reduces that
+	// authority. userTokenRevocationRepo lives on the registry connection and
+	// apiKeyRepo on the identity connection, so the two halves cannot be
+	// constructed from a single handle -- it is built once here and injected
+	// wherever an authority-reducing handler lives (issues #732, #736).
+	credSweeper := credlifecycle.NewSweeper(userTokenRevocationRepo, apiKeyRepo)
+
 	var authHandlers *admin.AuthHandlers
-	authHandlers, err = admin.NewAuthHandlers(cfg, identityDB, oidcConfigRepo, tokenRepo, oidcStateStore, admin.WithSAMLEgressGuard(egressGuard))
+	authHandlers, err = admin.NewAuthHandlers(cfg, identityDB, oidcConfigRepo, tokenRepo, oidcStateStore,
+		admin.WithSAMLEgressGuard(egressGuard), admin.WithCredentialSweeper(credSweeper))
 	if err != nil {
 		log.Fatalf("Failed to initialize auth handlers: %v", err)
 	}
@@ -450,7 +461,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 
 	// Role-template CRUD follows the identity schema; mirror methods stay public.
 	rbacRepo := repositories.NewRBACRepositoryWithIdentity(sqlxDB, identitySqlxDB)
-	rbacHandlers := admin.NewRBACHandlers(rbacRepo, userTokenRevocationRepo).WithNotifications(&cfg.Notifications, &cfg.CVE)
+	rbacHandlers := admin.NewRBACHandlers(rbacRepo, userTokenRevocationRepo, apiKeyRepo).WithNotifications(&cfg.Notifications, &cfg.CVE)
 
 	// Initialize audit log handlers
 	auditLogHandlers := admin.NewAuditLogHandlers(identityDB)
@@ -652,6 +663,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		orgRepo:                     orgRepo,
 		tokenRepo:                   tokenRepo,
 		userTokenRevocationRepo:     userTokenRevocationRepo,
+		credSweeper:                 credSweeper,
 		moduleAdminHandlers:         moduleAdminHandlers,
 		providerAdminHandlers:       providerAdminHandlers,
 		auditRepo:                   auditRepo,

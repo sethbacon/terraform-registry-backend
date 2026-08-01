@@ -22,6 +22,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/auth/oidc"
 	samlpkg "github.com/terraform-registry/terraform-registry/internal/auth/saml"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/credlifecycle"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/middleware"
@@ -45,6 +46,13 @@ type AuthHandlers struct {
 	// samlEgressGuard widens the SSRF deny-list applied when fetching a SAML
 	// IdP's metadata_url (nil = strict). Set via WithSAMLEgressGuard.
 	samlEgressGuard *httpsafe.Guard
+	// creds sweeps the credentials stranded by the deprovisioning branch of
+	// reconcileGroupMemberships: when a login no longer carries the IdP group
+	// that granted an organization, the membership is removed but the member's
+	// org-bound API keys -- whose organization_id and scopes are frozen on the
+	// api_keys row -- would otherwise keep working forever (issue #732).
+	// Set via WithCredentialSweeper; nil is a no-op.
+	creds *credlifecycle.Sweeper
 }
 
 // AuthHandlersOption configures optional AuthHandlers construction behavior.
@@ -55,6 +63,12 @@ type AuthHandlersOption func(*AuthHandlers)
 // only reachable at an internal address.
 func WithSAMLEgressGuard(g *httpsafe.Guard) AuthHandlersOption {
 	return func(h *AuthHandlers) { h.samlEgressGuard = g }
+}
+
+// WithCredentialSweeper wires the credential sweep used by the IdP
+// group-mapping deprovisioning branch of reconcileGroupMemberships.
+func WithCredentialSweeper(s *credlifecycle.Sweeper) AuthHandlersOption {
+	return func(h *AuthHandlers) { h.creds = s }
 }
 
 // NewAuthHandlers creates a new AuthHandlers instance.
@@ -1051,6 +1065,18 @@ func (h *AuthHandlers) reconcileGroupMemberships(ctx context.Context, userID str
 			if err := h.orgRepo.RemoveMember(ctx, org.ID, userID); err != nil {
 				return fmt.Errorf("revoke member org=%s user=%s: %w", org.ID, userID, err)
 			}
+			// Removing the membership does not touch the member's API keys,
+			// whose organization_id and scopes are frozen on the api_keys row
+			// and which authorizeOrgAccess still treats as authoritative --
+			// the IdP would believe it had offboarded a user who kept a
+			// working publish credential into this org's namespaces (issue
+			// #732). OrgKeysOnly deliberately leaves the JWT watermark alone:
+			// this runs a few hundred microseconds before the same request
+			// mints the user's new session token, and moving the watermark
+			// would make that token compare as revoked (see OrgKeysOnly's doc).
+			// The new token is derived from GetUserCombinedScopes after this
+			// removal, so it already carries the reduced authority.
+			h.creds.OrgKeysOnly(ctx, userID, org.ID, provider+" group mapping revoked")
 			slog.Info(provider+" group mapping revoked", "user_id", userID, "org", orgName)
 		default:
 			// Not wanted and not a member → nothing to do.

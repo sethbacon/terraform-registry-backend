@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/credlifecycle"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
@@ -35,16 +36,60 @@ type Handlers struct {
 	db       *sql.DB
 	userRepo *repositories.UserRepository
 	orgRepo  *repositories.OrganizationRepository
+	// creds invalidates the credentials of a user this IdP feed deprovisions.
+	//
+	// SCIM is the primary IdP-driven offboarding channel: it is what fires when
+	// HR disables an account. Every deactivation path here used to strip
+	// organization memberships and nothing else (issue #736) -- the deactivated
+	// user kept a fully working session for the remainder of the 24h JWT
+	// lifetime and kept their API keys permanently, because both families
+	// snapshot their authority at issue time. That is directly inconsistent
+	// with the admin path, which goes out of its way to sweep on the analogous
+	// membership removal.
+	//
+	// May be nil (no sweep) so the handler set stays constructible without the
+	// revocation subsystem.
+	creds *credlifecycle.Sweeper
+}
+
+// Option configures optional Handlers construction behaviour.
+type Option func(*Handlers)
+
+// WithCredentialSweeper wires the credential sweep used by the deprovisioning
+// paths (DELETE /Users/{id}, and active=false via PUT or PATCH).
+func WithCredentialSweeper(s *credlifecycle.Sweeper) Option {
+	return func(h *Handlers) { h.creds = s }
 }
 
 // NewHandlers creates a SCIM handler set.
-func NewHandlers(cfg *config.Config, db *sql.DB) *Handlers {
-	return &Handlers{
+func NewHandlers(cfg *config.Config, db *sql.DB, opts ...Option) *Handlers {
+	h := &Handlers{
 		cfg:      cfg,
 		db:       db,
 		userRepo: repositories.NewUserRepository(db),
 		orgRepo:  repositories.NewOrganizationRepository(db),
 	}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
+}
+
+// deprovision invalidates every credential family belonging to a user this
+// SCIM feed has just deactivated or deleted: their JWT sessions and every API
+// key they hold in every organization. Best-effort and non-fatal — the
+// membership strip has already committed, and SCIM clients retry aggressively
+// on 5xx, so a sweep failure is logged rather than turned into an error the
+// IdP would replay.
+func (h *Handlers) deprovision(ctx context.Context, userID, reason string) {
+	if h.creds == nil {
+		return
+	}
+	out := h.creds.UserDeprovisioned(ctx, userID, reason)
+	slog.Info("scim: credentials revoked for deprovisioned user",
+		"id", userID, "reason", reason,
+		"tokens_revoked", out.TokensRevoked, "api_keys_revoked", out.KeysRevoked,
+		"incomplete", out.Incomplete)
 }
 
 // --- SCIM Resource types ---
@@ -367,6 +412,9 @@ func (h *Handlers) PutUser() gin.HandlerFunc {
 
 		if !req.Active {
 			_ = h.orgRepo.RemoveAllMembershipsForUser(ctx, userID)
+			// Memberships alone are not the user's authority: their JWT
+			// sessions and API keys carry a snapshot of it (issue #736).
+			h.deprovision(ctx, userID, "scim: user deactivated via PUT")
 			slog.Info("scim: user deactivated via PUT", "id", userID)
 		}
 
@@ -407,6 +455,12 @@ func (h *Handlers) DeleteUser() gin.HandlerFunc {
 			scimError(c, http.StatusInternalServerError, "Failed to deactivate user")
 			return
 		}
+
+		// This is a SOFT delete: the users row survives, so nothing cascades
+		// to api_keys and nothing makes AuthMiddleware's user lookup fail.
+		// Without an explicit sweep the "deleted" user keeps a live session and
+		// permanently valid API keys (issue #736).
+		h.deprovision(ctx, userID, "scim: user deleted")
 
 		slog.Info("scim: user deactivated", "id", userID, "email", user.Email)
 		c.Status(http.StatusNoContent)
@@ -486,6 +540,9 @@ func (h *Handlers) applyReplaceOp(ctx context.Context, user *models.User, op SCI
 		}
 		if !active {
 			_ = h.orgRepo.RemoveAllMembershipsForUser(ctx, user.ID)
+			// Same deprovisioning event as PUT active=false, reached through
+			// the PATCH "replace active" op (issue #736).
+			h.deprovision(ctx, user.ID, "scim: user deactivated via PATCH")
 			slog.Info("scim: user deactivated via PATCH", "id", user.ID)
 		}
 	case "username", "emails[type eq \"work\"].value":
@@ -501,6 +558,10 @@ func (h *Handlers) applyReplaceOp(ctx context.Context, user *models.User, op SCI
 		if m, ok := op.Value.(map[string]interface{}); ok {
 			if v, ok := m["active"].(bool); ok && !v {
 				_ = h.orgRepo.RemoveAllMembershipsForUser(ctx, user.ID)
+				// Pathless PATCH carrying {"active": false} is the same
+				// deprovisioning event as the "active" path above and must
+				// sweep identically (issue #736).
+				h.deprovision(ctx, user.ID, "scim: user deactivated via pathless PATCH")
 			}
 			if v, ok := m["userName"].(string); ok && v != "" {
 				user.Email = v

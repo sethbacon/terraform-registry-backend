@@ -672,53 +672,61 @@ func TestListPendingApprovals_DBError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ListRoleTemplateMemberUserIDs (issue #559 finding [9]: revoking the tokens
-// of every member assigned a role template whose scopes changed)
+// ListRoleTemplateMemberships (issue #559 finding [9] plus issue #732: sweeping
+// the JWTs *and* the org-bound API keys of every member assigned a role
+// template whose scopes changed -- the API-key half needs the organization,
+// which is why the query returns pairs rather than bare user IDs)
 // ---------------------------------------------------------------------------
 
-func TestListRoleTemplateMemberUserIDs_Success(t *testing.T) {
+func TestListRoleTemplateMemberships_Success(t *testing.T) {
 	repo, mock := newRBACRepo(t)
 	id := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 
-	mock.ExpectQuery("SELECT DISTINCT user_id FROM organization_members WHERE role_template_id").
+	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_members WHERE role_template_id").
 		WithArgs(id).
-		WillReturnRows(sqlmock.NewRows([]string{"user_id"}).
-			AddRow("user-1").
-			AddRow("user-2"))
+		WillReturnRows(sqlmock.NewRows([]string{"user_id", "organization_id"}).
+			AddRow("user-1", "org-1").
+			AddRow("user-2", "org-2"))
 
-	userIDs, err := repo.ListRoleTemplateMemberUserIDs(context.Background(), id)
+	memberships, err := repo.ListRoleTemplateMemberships(context.Background(), id)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(userIDs) != 2 || userIDs[0] != "user-1" || userIDs[1] != "user-2" {
-		t.Errorf("unexpected user IDs: %v", userIDs)
+	if len(memberships) != 2 {
+		t.Fatalf("expected 2 memberships, got %v", memberships)
+	}
+	if memberships[0].UserID != "user-1" || memberships[0].OrganizationID != "org-1" {
+		t.Errorf("unexpected first membership: %+v", memberships[0])
+	}
+	if memberships[1].UserID != "user-2" || memberships[1].OrganizationID != "org-2" {
+		t.Errorf("unexpected second membership: %+v", memberships[1])
 	}
 }
 
-func TestListRoleTemplateMemberUserIDs_Empty(t *testing.T) {
+func TestListRoleTemplateMemberships_Empty(t *testing.T) {
 	repo, mock := newRBACRepo(t)
 	id := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 
-	mock.ExpectQuery("SELECT DISTINCT user_id FROM organization_members WHERE role_template_id").
-		WillReturnRows(sqlmock.NewRows([]string{"user_id"}))
+	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_members WHERE role_template_id").
+		WillReturnRows(sqlmock.NewRows([]string{"user_id", "organization_id"}))
 
-	userIDs, err := repo.ListRoleTemplateMemberUserIDs(context.Background(), id)
+	memberships, err := repo.ListRoleTemplateMemberships(context.Background(), id)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(userIDs) != 0 {
-		t.Errorf("expected no user IDs, got %v", userIDs)
+	if len(memberships) != 0 {
+		t.Errorf("expected no memberships, got %v", memberships)
 	}
 }
 
-func TestListRoleTemplateMemberUserIDs_DBError(t *testing.T) {
+func TestListRoleTemplateMemberships_DBError(t *testing.T) {
 	repo, mock := newRBACRepo(t)
 	id := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 
-	mock.ExpectQuery("SELECT DISTINCT user_id FROM organization_members WHERE role_template_id").
+	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_members WHERE role_template_id").
 		WillReturnError(errDB)
 
-	_, err := repo.ListRoleTemplateMemberUserIDs(context.Background(), id)
+	_, err := repo.ListRoleTemplateMemberships(context.Background(), id)
 	if err == nil {
 		t.Error("expected error")
 	}

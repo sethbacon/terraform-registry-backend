@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/credlifecycle"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/validation"
@@ -21,12 +22,17 @@ type OrganizationHandlers struct {
 	db        *sql.DB
 	orgRepo   *repositories.OrganizationRepository
 	claimRepo *repositories.NamespaceClaimRepository
-	// userRevocations moves the affected user's revoke-all watermark when a
-	// membership's role template changes or a member is removed, so outstanding
-	// JWTs (which embed scopes at login) stop validating immediately instead of
-	// carrying the old privileges until expiry (issue #559 finding [9]).
-	// May be nil in tests; revocation is skipped when unset.
-	userRevocations *repositories.UserTokenRevocationRepository
+	// creds invalidates BOTH credential families that snapshot a member's
+	// org-derived authority when that authority is reduced: the JWT revoke-all
+	// watermark (issue #559 finding [9]) and the member's org-bound API keys
+	// (issue #732). Sweeping only the JWTs left an offboarded member holding a
+	// working modules:write/providers:write credential into the organization's
+	// namespaces forever, because AuthMiddleware reads an API key's scopes and
+	// organization_id straight off the api_keys row.
+	//
+	// May be nil in tests; the sweep is skipped when unset, matching the
+	// pre-existing convention that the revocation subsystem is wired as a unit.
+	creds *credlifecycle.Sweeper
 }
 
 // NewOrganizationHandlers creates a new OrganizationHandlers instance. db
@@ -44,27 +50,42 @@ type OrganizationHandlers struct {
 // middleware uses, so the pre-delete ownership check in
 // DeleteOrganizationHandler queries the database that actually has the data.
 func NewOrganizationHandlers(cfg *config.Config, db *sql.DB, claimRepo *repositories.NamespaceClaimRepository, userRevocations *repositories.UserTokenRevocationRepository) *OrganizationHandlers {
-	return &OrganizationHandlers{
-		cfg:             cfg,
-		db:              db,
-		orgRepo:         repositories.NewOrganizationRepository(db),
-		claimRepo:       claimRepo,
-		userRevocations: userRevocations,
+	h := &OrganizationHandlers{
+		cfg:       cfg,
+		db:        db,
+		orgRepo:   repositories.NewOrganizationRepository(db),
+		claimRepo: claimRepo,
 	}
+	// The API-key half of the sweep rides the same wiring gate as the JWT half:
+	// db here is the identity connection that owns api_keys, so the repository
+	// can be constructed locally, but leaving the sweeper nil when the caller
+	// did not wire revocation preserves the documented "revocation is skipped
+	// when unset" contract that existing callers and tests rely on.
+	if userRevocations != nil {
+		h.creds = credlifecycle.NewSweeper(userRevocations, repositories.NewAPIKeyRepository(db))
+	}
+	return h
 }
 
-// revokeUserTokens moves a user's revoke-all watermark after a privilege
-// change. Best-effort by design: the privilege change itself has already been
-// committed, so a failed revocation is logged loudly rather than turned into a
-// misleading error response (retrying the admin action re-runs the revocation).
-func (h *OrganizationHandlers) revokeUserTokens(c *gin.Context, userID, reason string) {
-	if h.userRevocations == nil {
-		return
+// revokeOrgCredentials invalidates every credential family carrying a snapshot
+// of the authority userID derived from orgID: the JWT revoke-all watermark and
+// the user's org-bound API keys.
+//
+// Best-effort by design: the privilege change itself has already been
+// committed, so a failed sweep is logged loudly rather than turned into a
+// misleading error response (retrying the admin action re-runs the sweep).
+// Returns true when the sweep completed, false when some part of it did not,
+// so the handler can surface revocation_incomplete to the caller.
+func (h *OrganizationHandlers) revokeOrgCredentials(c *gin.Context, userID, orgID, reason string) bool {
+	if h.creds == nil {
+		return true
 	}
-	if err := h.userRevocations.RevokeAllUserTokens(c.Request.Context(), userID); err != nil {
-		slog.Error("failed to revoke user tokens after privilege change",
-			"user_id", userID, "reason", reason, "error", err)
+	out := h.creds.OrgAuthorityReduced(c.Request.Context(), userID, orgID, reason)
+	if out.Incomplete {
+		slog.Error("credential sweep incomplete after privilege change",
+			"user_id", userID, "organization_id", orgID, "reason", reason)
 	}
+	return !out.Incomplete
 }
 
 // @Summary      List namespace ownership claims
@@ -833,11 +854,12 @@ func (h *OrganizationHandlers) UpdateMemberHandler() gin.HandlerFunc {
 		}
 
 		// A role-template reassignment changes the scopes a fresh JWT would embed
-		// for this user; revoke their outstanding tokens so the change takes
-		// effect immediately rather than waiting out the JWT TTL (issue #559
-		// finding [9]).
+		// for this user, and equally invalidates the scope snapshot frozen on
+		// their org-bound API keys at creation time; sweep both so the change
+		// takes effect immediately rather than waiting out the JWT TTL (issue
+		// #559 finding [9]) or, for the keys, forever (issue #732).
 		if !stringPtrEqual(oldRoleTemplateID, req.RoleTemplateID) {
-			h.revokeUserTokens(c, userID, "organization member role template changed")
+			h.revokeOrgCredentials(c, userID, orgID, "organization member role template changed")
 		}
 
 		// Get member with role template info for response
@@ -896,7 +918,7 @@ func (h *OrganizationHandlers) RemoveMemberHandler() gin.HandlerFunc {
 		// caller below), never an unwarranted one.
 		var wasMember *models.OrganizationMemberWithUser
 		revocationCheckFailed := false
-		if h.userRevocations != nil {
+		if h.creds != nil {
 			var err error
 			wasMember, err = h.orgRepo.GetMemberWithRole(c.Request.Context(), orgID, userID)
 			if err != nil {
@@ -915,18 +937,24 @@ func (h *OrganizationHandlers) RemoveMemberHandler() gin.HandlerFunc {
 		}
 
 		// The removed member's outstanding JWTs still carry the org-derived
-		// scopes they had at login; revoke them so removal takes effect
-		// immediately instead of waiting out the JWT TTL (issue #559 finding
-		// [9]) -- but only when membership actually existed and was removed.
+		// scopes they had at login, and their API keys still carry BOTH those
+		// scopes and this organization's ID -- and authorizeOrgAccess treats a
+		// key's org binding as authoritative. Removal that swept only the JWTs
+		// left a working publish credential into this org's namespaces with no
+		// expiry at all (issue #732). Sweep both, but only when membership
+		// actually existed and was removed.
 		if wasMember != nil {
-			h.revokeUserTokens(c, userID, "removed from organization")
+			if !h.revokeOrgCredentials(c, userID, orgID, "removed from organization") {
+				revocationCheckFailed = true
+			}
 		}
 
 		response := gin.H{"message": "Member removed successfully"}
 		if revocationCheckFailed {
-			// The removal itself succeeded, but we couldn't determine
-			// whether to revoke the user's tokens -- surface that so the
-			// caller doesn't assume the incident is fully closed.
+			// The removal itself succeeded, but either we couldn't determine
+			// whether to sweep the user's credentials, or the sweep itself
+			// partially failed -- surface that so the caller doesn't assume
+			// the incident is fully closed.
 			response["revocation_incomplete"] = true
 		}
 		c.JSON(http.StatusOK, response)

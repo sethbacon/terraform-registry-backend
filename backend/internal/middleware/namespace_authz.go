@@ -434,19 +434,38 @@ func (a *NamespaceAuthorizer) authorizeOrgAccess(c *gin.Context, ownerOrgID stri
 		return 0, ""
 	}
 
-	// API keys are bound to exactly one organization at creation time; that
-	// binding is authoritative for the key regardless of the owning user's
-	// other memberships.
+	// API keys are bound to exactly one organization at creation time. That
+	// binding scopes the key to a single organization, but it is NOT on its own
+	// evidence that the key's owner still belongs to that organization: the
+	// binding is a snapshot frozen on the api_keys row, and treating it as
+	// authoritative meant a member removed from the org kept full access
+	// through the key (issue #732). Re-verify the owner's current membership
+	// here, at the point of use, so a stale key fails closed even if some
+	// lifecycle path forgot to sweep it.
 	if keyVal, exists := c.Get("api_key"); exists {
 		apiKey, ok := keyVal.(*models.APIKey)
 		if !ok {
 			return http.StatusForbidden, "Invalid API key context"
 		}
 		if apiKey.OrganizationID != "" {
-			if apiKey.OrganizationID == ownerOrgID {
+			if apiKey.OrganizationID != ownerOrgID {
+				return http.StatusForbidden, "Namespace is owned by another organization"
+			}
+			// Keys with no owning user are organization service credentials:
+			// there is no membership to re-verify, so the binding stands alone
+			// (their lifecycle is the organization's, and organization deletion
+			// cascades the row away).
+			if apiKey.UserID == nil || *apiKey.UserID == "" {
 				return 0, ""
 			}
-			return http.StatusForbidden, "Namespace is owned by another organization"
+			member, err := a.orgRepo.GetMemberWithRole(c.Request.Context(), ownerOrgID, *apiKey.UserID)
+			if err != nil {
+				return http.StatusInternalServerError, "Failed to check organization membership"
+			}
+			if member == nil {
+				return http.StatusForbidden, "API key owner is no longer a member of the owning organization"
+			}
+			return 0, ""
 		}
 		// Keys without an organization binding (legacy rows) fall through to
 		// the owning user's membership check below.

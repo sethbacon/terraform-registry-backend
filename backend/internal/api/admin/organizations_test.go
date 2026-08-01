@@ -806,9 +806,11 @@ func TestRemoveMember_Success(t *testing.T) {
 	}
 }
 
-// Issue #559 finding [9]: removing a member must revoke their outstanding
-// tokens so the removal takes effect immediately rather than waiting out the
-// JWT TTL.
+// Issue #559 finding [9] plus issue #732: removing a member must invalidate
+// both credential families that snapshot their org-derived authority -- the
+// JWT revoke-all watermark and the member's org-bound API keys -- so the
+// removal takes effect immediately rather than waiting out the JWT TTL (JWTs)
+// or never (keys).
 func TestRemoveMember_RevokesUserTokens(t *testing.T) {
 	mock, r := newOrgRouterWithRevocation(t, true)
 
@@ -819,6 +821,7 @@ func TestRemoveMember_RevokesUserTokens(t *testing.T) {
 	mock.ExpectExec("INSERT INTO user_token_revocations").
 		WithArgs("user-1").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	expectOrgKeySweep(mock, "user-1", "org-1", "key-1")
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/organizations/org-1/members/user-1", nil))
@@ -843,12 +846,17 @@ func TestRemoveMember_RevocationErrorDoesNotFailRequest(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("INSERT INTO user_token_revocations").
 		WillReturnError(errDB)
+	// The JWT half failing must not skip the API-key half.
+	expectOrgKeySweep(mock, "user-1", "org-1", "key-1")
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/organizations/org-1/members/user-1", nil))
 
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200 even though revocation failed: body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("API-key sweep must still run when the token revocation fails: %v", err)
 	}
 }
 
@@ -1109,6 +1117,7 @@ func TestUpdateMember_RoleTemplateChanged_RevokesUserTokens(t *testing.T) {
 	mock.ExpectExec("INSERT INTO user_token_revocations").
 		WithArgs("user-1").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	expectOrgKeySweep(mock, "user-1", "org-1", "key-1")
 	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
 		WillReturnRows(sampleMemberWithRoleRow())
 
