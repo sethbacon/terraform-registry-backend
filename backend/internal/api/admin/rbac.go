@@ -13,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/credlifecycle"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
@@ -52,6 +53,14 @@ type RBACHandlers struct {
 	// here. Set via WithOrgRepo; nil makes every non-admin scope empty, which
 	// fails closed (issue #719).
 	orgRepo *repositories.OrganizationRepository
+
+	// mirrorRepo resolves the organization owning the mirror configuration an
+	// approval request is filed against. CreateApprovalRequest is handed a
+	// mirror_config_id off the wire and nothing else, so this is the only way
+	// it can derive the row's tenancy from the resource rather than from the
+	// requester. Set via WithMirrorRepo; nil fails the create axis closed
+	// (issue #719).
+	mirrorRepo *repositories.MirrorRepository
 }
 
 // NewRBACHandlers creates a new RBAC handlers instance. apiKeys backs the
@@ -68,6 +77,59 @@ func NewRBACHandlers(rbacRepo *repositories.RBACRepository, userRevocations *rep
 func (h *RBACHandlers) WithOrgRepo(orgRepo *repositories.OrganizationRepository) *RBACHandlers {
 	h.orgRepo = orgRepo
 	return h
+}
+
+// WithMirrorRepo wires in the mirror repository so CreateApprovalRequest can
+// resolve the owning organization of the mirror configuration named in the
+// request body. Returns the handler for chaining.
+func (h *RBACHandlers) WithMirrorRepo(mirrorRepo *repositories.MirrorRepository) *RBACHandlers {
+	h.mirrorRepo = mirrorRepo
+	return h
+}
+
+// approvalTargetOrg resolves the organization that owns the mirror
+// configuration an approval request is being filed against, and authorizes the
+// caller in it. Returns (orgID, true) on success; on failure the response has
+// already been written.
+//
+// GUARD approval-create-config-org (issue #719).
+func (h *RBACHandlers) approvalTargetOrg(c *gin.Context, mirrorConfigID uuid.UUID) (*uuid.UUID, bool) {
+	if h.mirrorRepo == nil {
+		// Wired without a mirror repository: the owning organization cannot be
+		// established, so the write cannot be authorized. Denying is the only
+		// safe answer — the alternative is the unguarded behaviour this guard
+		// replaces.
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Mirror configuration lookup is not available"})
+		return nil, false
+	}
+
+	cfg, err := h.mirrorRepo.GetByID(c.Request.Context(), mirrorConfigID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to resolve mirror configuration"})
+		return nil, false
+	}
+	if cfg == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Mirror configuration not found"})
+		return nil, false
+	}
+
+	ownerOrg := ""
+	if cfg.OrganizationID != nil {
+		ownerOrg = cfg.OrganizationID.String()
+	}
+
+	scope, ok := resolveTenantScope(c, h.orgRepo, auth.ScopeMirrorsManage)
+	if !ok {
+		return nil, false
+	}
+	if !scope.Permits(ownerOrg) {
+		// Same unowned-row contract as everywhere else: a mirror configuration
+		// with a NULL organization is a platform-administrator concern.
+		c.JSON(http.StatusForbidden, gin.H{"error": "Not a member of the organization owning this mirror configuration"})
+		return nil, false
+	}
+
+	return cfg.OrganizationID, true
 }
 
 // WithNotifications wires in the shared notifications/CVE config so
@@ -511,7 +573,7 @@ func (h *RBACHandlers) ListApprovalRequests(c *gin.Context) {
 	// approvals; supply someone else's and it listed theirs. Either way this is
 	// the enumeration step for POST /admin/approvals/:id/token, whose minted
 	// token is redeemable without authentication.
-	scope, ok := resolveTenantScope(c, h.orgRepo)
+	scope, ok := resolveTenantScope(c, h.orgRepo, auth.ScopeMirrorsRead)
 	if !ok {
 		return
 	}
@@ -627,22 +689,32 @@ func (h *RBACHandlers) CreateApprovalRequest(c *gin.Context) {
 		return
 	}
 
+	// GUARD approval-create-config-org (issue #719). The create-axis sibling of
+	// the approval list and /:id reads this batch guarded, and it was left
+	// unguarded in a subtler way than the others: it names no organization at
+	// all, it names a MIRROR CONFIG, and the row's organization was taken from
+	// the caller's own ambient context instead of from the config being
+	// approved against. So a caller could file an approval request against
+	// another organization's mirror configuration and have it stamped with
+	// their own organization — the row then reads as theirs to every downstream
+	// per-org guard, including POST /admin/approvals/:id/token, which mints a
+	// credential redeemable without authentication.
+	//
+	// The owning organization is resolved from the CONFIG, and the caller must
+	// hold mirrors:manage there. Deriving the row's tenancy from the resource
+	// it points at, rather than from the requester, is what makes the /:id
+	// guards downstream mean anything.
+	orgID, ok := h.approvalTargetOrg(c, mirrorConfigID)
+	if !ok {
+		return
+	}
+
 	// Get user ID from context
 	var requestedBy *uuid.UUID
 	if userIDStr, exists := c.Get("user_id"); exists {
 		if idStr, ok := userIDStr.(string); ok {
 			if id, err := uuid.Parse(idStr); err == nil {
 				requestedBy = &id
-			}
-		}
-	}
-
-	// Get organization ID from context
-	var orgID *uuid.UUID
-	if orgIDStr, exists := c.Get("organization_id"); exists {
-		if idStr, ok := orgIDStr.(string); ok {
-			if id, err := uuid.Parse(idStr); err == nil {
-				orgID = &id
 			}
 		}
 	}
@@ -760,7 +832,7 @@ func (h *RBACHandlers) ListMirrorPolicies(c *gin.Context) {
 	// asked for, so an omitted or foreign organization_id read across tenants.
 	// Mirror policies are the allow/deny rules governing what another
 	// organization is permitted to mirror.
-	scope, ok := resolveTenantScope(c, h.orgRepo)
+	scope, ok := resolveTenantScope(c, h.orgRepo, auth.ScopeMirrorsRead)
 	if !ok {
 		return
 	}
@@ -785,12 +857,26 @@ func (h *RBACHandlers) ListMirrorPolicies(c *gin.Context) {
 		return
 	}
 
-	// Policies with a NULL organization_id are global (platform-wide) rules and
-	// govern every tenant, so they stay visible; only another organization's
-	// rows are filtered out.
+	// GUARD policy-list-unowned-rows (issue #719). A policy with a NULL
+	// organization_id is visible to platform administrators only — the same
+	// answer middleware.RequireOrgScopeForResource gives on GET /:id of THIS
+	// resource ("Resource is not owned by any organization"), and the same
+	// answer tenantscope.Scope.Permits gives everywhere else.
+	//
+	// An earlier revision of this batch let the list axis through on the theory
+	// that a NULL policy is a global rule everyone is governed by, while the
+	// /:id axis it added in the same diff refused it. That is the #719 defect
+	// in miniature: two axes of one resource disagreeing about who owns a row.
+	// Whichever reading is right, the two axes must not each pick their own,
+	// and between "show it" and "deny it" a remediation takes the closed one:
+	// scope.Permits is the single definition, and it says no.
 	visible := make([]*models.MirrorPolicy, 0, len(policies))
 	for _, p := range policies {
-		if p.OrganizationID == nil || scope.Permits(p.OrganizationID.String()) {
+		ownerOrg := ""
+		if p.OrganizationID != nil {
+			ownerOrg = p.OrganizationID.String()
+		}
+		if scope.Permits(ownerOrg) {
 			visible = append(visible, p)
 		}
 	}
@@ -875,14 +961,42 @@ func (h *RBACHandlers) CreateMirrorPolicy(c *gin.Context) {
 		return
 	}
 
+	// GUARD policy-create-target-org (issue #719). The create-axis sibling of
+	// the policy list and /:id reads this batch guarded, and it was left
+	// unguarded: organization_id comes off the request body and a
+	// mirror_policies row was written under it with no membership check. A
+	// mirror policy is an allow/deny rule over what a tenant may mirror, so
+	// planting one in another organization silently changes what that
+	// organization is permitted to pull.
+	//
+	// A NULL organization_id (field omitted) means a GLOBAL policy governing
+	// every tenant, so resolveTargetOrganization is not the right helper here —
+	// it would bind an omitted field to the caller's own organization and
+	// quietly change what this endpoint creates. Instead: an explicit
+	// organization must be one the caller holds the scope in, and creating a
+	// global policy stays a platform-administrator action.
 	var orgID *uuid.UUID
-	if req.OrganizationID != nil {
+	if req.OrganizationID != nil && *req.OrganizationID != "" {
 		id, err := uuid.Parse(*req.OrganizationID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid organization ID"})
 			return
 		}
+		if !requireTenantScopeForOrg(c, h.orgRepo, auth.ScopeMirrorsManage, id.String()) {
+			return
+		}
 		orgID = &id
+	} else {
+		scope, ok := resolveTenantScope(c, h.orgRepo, auth.ScopeMirrorsManage)
+		if !ok {
+			return
+		}
+		if !scope.PlatformAdmin {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "organization_id is required: a policy with no organization is a global policy and may only be created by a platform administrator",
+			})
+			return
+		}
 	}
 
 	// Get creator ID from context

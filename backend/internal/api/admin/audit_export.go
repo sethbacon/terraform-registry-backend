@@ -40,15 +40,14 @@ func (h *AuditLogHandlers) ExportAuditLogs(appVersion string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// GUARD audit-export-tenant-scope (issue #719).
 		//
-		// MITIGATION, not the fix. The fix is in the shared module
-		// (terraform-suite-identity identity/store:
-		// AuditRepository.StreamAuditLogs now REQUIRES an AuditScope so the
-		// predicate is applied in SQL), but this consumer pins v0.20.3, whose
-		// StreamAuditLogs takes no scope. Rows are therefore filtered as they
-		// are streamed. Replace with a scoped query once the module bump lands
-		// — the current form still reads every organization's rows out of the
-		// database, it just does not emit them.
-		scope, ok := resolveTenantScope(c, h.orgRepo)
+		// The scope is a query constraint, not an output filter: StreamAuditLogs
+		// requires an AuditScope and puts the organization predicate into the
+		// SQL, so the database never returns another tenant's rows to this
+		// process at all. An earlier revision filtered rows as they were
+		// streamed, which produced the same bytes on the wire while still
+		// reading every organization's audit trail out of the database — the
+		// leak moved, it did not close.
+		auditScope, ok := h.auditScope(c)
 		if !ok {
 			return
 		}
@@ -81,7 +80,7 @@ func (h *AuditLogHandlers) ExportAuditLogs(appVersion string) gin.HandlerFunc {
 			return
 		}
 
-		rows, err := h.auditRepo.StreamAuditLogs(c.Request.Context(), startDate, endDate)
+		rows, err := h.auditRepo.StreamAuditLogs(c.Request.Context(), startDate, endDate, auditScope)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to query audit logs for export"})
 			return
@@ -119,10 +118,12 @@ func (h *AuditLogHandlers) ExportAuditLogs(appVersion string) gin.HandlerFunc {
 				return
 			}
 
-			// GUARD audit-export-row-filter (issue #719): every emitted row must
-			// belong to an organization the caller is a member of. Fails closed
-			// on a NULL organization_id, which only a platform admin may see.
-			if !scope.PermitsPtr(entry.OrganizationID) {
+			// GUARD audit-export-row-filter (issue #719): defence in depth
+			// behind the SQL predicate above, not the tenant check itself. It
+			// costs one comparison per row and it is what catches a future
+			// refactor that reintroduces an unscoped stream — the failure mode
+			// this whole batch exists to stop repeating.
+			if !auditScope.PermitsOrganization(orgIDOrEmpty(entry.OrganizationID)) {
 				continue
 			}
 
@@ -151,6 +152,15 @@ func (h *AuditLogHandlers) ExportAuditLogs(appVersion string) gin.HandlerFunc {
 			c.Writer.Flush()
 		}
 	}
+}
+
+// orgIDOrEmpty flattens a nullable organization_id to the empty string
+// AuditScope uses for "no owning organization".
+func orgIDOrEmpty(orgID *string) string {
+	if orgID == nil {
+		return ""
+	}
+	return *orgID
 }
 
 // auditExportRow is a flat struct used for NDJSON serialization of a single audit log entry.

@@ -25,8 +25,10 @@ func newVersionApprovalRepo(t *testing.T) (*VersionApprovalRepository, sqlmock.S
 	return NewVersionApprovalRepository(sqlx.NewDb(db, "sqlmock")), mock
 }
 
+// versionApprovalCols mirrors the union-branch column order, including the
+// organization_id the mandatory tenant predicate matches on (issue #719).
 var versionApprovalCols = []string{
-	"id", "type", "version", "approval_status",
+	"id", "type", "version", "approval_status", "organization_id",
 	"provider_namespace", "provider_name",
 	"mirror_config_name", "mirror_config_id",
 	"gpg_verified", "shasum_verified", "synced_at",
@@ -46,13 +48,15 @@ func TestVersionApprovalList_Success(t *testing.T) {
 	cfgID := uuid.New()
 	ns, name := "hashicorp", "aws"
 	gpg, sha := true, true
+	orgID := uuid.New()
 	rows := sqlmock.NewRows(versionApprovalCols).AddRow(
-		id, "provider", "5.0.0", "pending_approval",
+		id, "provider", "5.0.0", "pending_approval", orgID,
 		ns, name, "prod-mirror", cfgID, gpg, sha, time.Now(),
 	)
 	mock.ExpectQuery(`SELECT \* FROM`).WillReturnRows(rows)
 
-	items, total, err := repo.List(context.Background(), VersionApprovalFilter{Status: "pending_approval"})
+	items, total, err := repo.List(context.Background(),
+		VersionApprovalFilter{Status: "pending_approval", AllOrganizations: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -107,7 +111,7 @@ func TestVersionApprovalList_Empty(t *testing.T) {
 	mock.ExpectQuery(`SELECT \* FROM`).
 		WillReturnRows(sqlmock.NewRows(versionApprovalCols))
 
-	items, total, err := repo.List(context.Background(), VersionApprovalFilter{})
+	items, total, err := repo.List(context.Background(), VersionApprovalFilter{AllOrganizations: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -120,7 +124,7 @@ func TestVersionApprovalList_CountError(t *testing.T) {
 	repo, mock := newVersionApprovalRepo(t)
 	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM`).WillReturnError(fmt.Errorf("db error"))
 
-	if _, _, err := repo.List(context.Background(), VersionApprovalFilter{}); err == nil {
+	if _, _, err := repo.List(context.Background(), VersionApprovalFilter{AllOrganizations: true}); err == nil {
 		t.Fatal("expected error")
 	}
 }
@@ -135,7 +139,7 @@ func TestVersionApprovalPendingCount(t *testing.T) {
 		WithArgs(models.VersionApprovalStatusPending).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(7))
 
-	got, err := repo.PendingCount(context.Background())
+	got, err := repo.PendingCount(context.Background(), VersionApprovalFilter{AllOrganizations: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

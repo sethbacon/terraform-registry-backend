@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 
+	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
@@ -27,9 +28,16 @@ func newVersionApprovalRouter(t *testing.T) (*gin.Engine, sqlmock.Sqlmock) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	repo := repositories.NewVersionApprovalRepository(sqlx.NewDb(db, "sqlmock"))
-	h := NewVersionApprovalHandler(repo)
+	h := NewVersionApprovalHandler(repo).
+		WithOrgRepo(repositories.NewOrganizationRepository(db))
 
 	r := gin.New()
+	// Platform administrator. These tests cover the version-approval mechanics
+	// (filters, error paths, bulk shapes), not tenancy; since #719 every read
+	// axis here resolves a tenant scope first, and admin is the principal those
+	// guards deliberately exempt. Cross-tenant denial for this family is
+	// asserted by the class table in tenant_scope_class_test.go.
+	r.Use(func(c *gin.Context) { c.Set("scopes", []string{string(auth.ScopeAdmin)}) })
 	g := r.Group("/admin/version-approvals")
 	g.GET("", h.List)
 	g.GET("/pending-count", h.PendingCount)
@@ -41,8 +49,10 @@ func newVersionApprovalRouter(t *testing.T) (*gin.Engine, sqlmock.Sqlmock) {
 	return r, mock
 }
 
+// vaCols mirrors the union-branch column order, including the organization_id
+// the tenant predicate matches on (issue #719).
 var vaCols = []string{
-	"id", "type", "version", "approval_status",
+	"id", "type", "version", "approval_status", "organization_id",
 	"provider_namespace", "provider_name",
 	"mirror_config_name", "mirror_config_id",
 	"gpg_verified", "shasum_verified", "synced_at",
@@ -55,7 +65,7 @@ func TestVAHandler_List(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectQuery(`SELECT \* FROM`).
 		WillReturnRows(sqlmock.NewRows(vaCols).AddRow(
-			uuid.New(), "provider", "5.0.0", "pending_approval",
+			uuid.New(), "provider", "5.0.0", "pending_approval", nil,
 			"hashicorp", "aws", "prod", uuid.New(), true, true, time.Now(),
 		))
 
@@ -270,6 +280,12 @@ func TestVAHandler_Events(t *testing.T) {
 		"id", "mirrored_provider_version_id", "terraform_version_id",
 		"action", "performed_by", "performed_by_name", "notes", "auto_approve_rule", "created_at",
 	}
+	// The events axis first resolves the version's owning organization so the
+	// trail cannot be read across tenants by id (issue #719, GUARD
+	// version-approval-events-scope).
+	mock.ExpectQuery(`SELECT va\.organization_id FROM`).
+		WithArgs(id).
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}).AddRow(nil))
 	mock.ExpectQuery(`FROM version_approval_events`).
 		WithArgs(id).
 		WillReturnRows(sqlmock.NewRows(cols).AddRow(

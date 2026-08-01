@@ -1,18 +1,11 @@
-// tenant_scope.go provides the single per-request tenant constraint used by
-// every admin LIST and CREATE route over an organization-owned table.
+// tenant_scope.go is this package's handler-side entry point to the shared
+// tenant constraint in internal/tenantscope. The resolver itself lives there
+// because the class spans packages (internal/api/scim has instances too); what
+// stays here is the HTTP shape — write the 500, write the 403, tell the handler
+// to return.
 //
-// Why this exists as shared infrastructure rather than as another copy of the
-// same six lines: issues #718/#719 are not one missing check, they are a CLASS
-// — organization-owned resource x access axis (list | by-id | export | create |
-// update | delete). The per-resource middleware
-// (middleware.RequireOrgScopeForResource) already covers the ":id" axes, because
-// it can resolve the row's owning organization from the path. It cannot cover
-// the list axis (no row named yet) nor the create axis (the row does not exist
-// and the organization arrives in the request body). Those two axes were being
-// hand-rolled per handler family — SCMProviderHandlers grew callerIsMemberOf,
-// AuditLogHandlers grew callerOrgIDs — and each new family re-opened the hole.
-//
-// TenantScope is that check, once. Its zero value permits nothing.
+// See internal/tenantscope for the authority model, the unowned-row contract
+// and why the check is a required parameter rather than an optional filter.
 package admin
 
 import (
@@ -22,100 +15,26 @@ import (
 
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/tenantscope"
 )
 
-// TenantScope is the set of organizations a request may read or write.
-//
-// The zero value denies everything, so a handler that fails to resolve a scope
-// — or resolves one for a principal with no memberships — returns nothing
-// rather than the whole estate.
-type TenantScope struct {
-	// PlatformAdmin marks a caller holding the platform-wide admin wildcard.
-	// That scope deliberately crosses organization boundaries, consistently
-	// with middleware.authorizeOrgAccess and the per-resource guards.
-	PlatformAdmin bool
-	// OrgIDs are the organizations the caller is a verified member of.
-	OrgIDs []string
+// TenantScope is the set of organizations a request may read or write. Alias
+// rather than a second type: one definition, one Permits, one unowned-row
+// contract.
+type TenantScope = tenantscope.Scope
+
+// callerTenantScope resolves the caller's tenant scope for the scope this route
+// requires. Thin pass-through to tenantscope.Resolve, kept so the call sites in
+// this package read the same as they did.
+func callerTenantScope(c *gin.Context, orgRepo *repositories.OrganizationRepository, required auth.Scope) (TenantScope, error) {
+	return tenantscope.Resolve(c, orgRepo, required)
 }
 
-// Permits reports whether a row owned by orgID is inside the scope. An empty
-// orgID means an unowned (NULL organization_id) row: visible only to a platform
-// admin, matching RequireOrgScopeForResource's handling of the same case.
-func (s TenantScope) Permits(orgID string) bool {
-	if s.PlatformAdmin {
-		return true
-	}
-	if orgID == "" {
-		return false
-	}
-	for _, id := range s.OrgIDs {
-		if id == orgID {
-			return true
-		}
-	}
-	return false
-}
-
-// PermitsPtr is Permits for the nullable organization_id columns that most of
-// these tables actually use.
-func (s TenantScope) PermitsPtr(orgID *string) bool {
-	if orgID == nil {
-		return s.Permits("")
-	}
-	return s.Permits(*orgID)
-}
-
-// Empty reports whether the scope can select nothing at all.
-func (s TenantScope) Empty() bool { return !s.PlatformAdmin && len(s.OrgIDs) == 0 }
-
-// callerTenantScope resolves the caller's tenant scope from the request
-// context. It fails closed: a missing principal yields an empty scope, and a
-// membership lookup failure is reported so the handler can 500 rather than
-// silently widening to every organization.
-//
-// GUARD tenant-scope-resolver (issues #718/#719).
-func callerTenantScope(c *gin.Context, orgRepo *repositories.OrganizationRepository) (TenantScope, error) {
-	scope := TenantScope{}
-
-	if scopesVal, exists := c.Get("scopes"); exists {
-		if callerScopes, ok := scopesVal.([]string); ok {
-			scope.PlatformAdmin = auth.HasScope(callerScopes, auth.ScopeAdmin)
-		}
-	}
-	if scope.PlatformAdmin {
-		return scope, nil
-	}
-
-	userVal, exists := c.Get("user_id")
-	if !exists {
-		return scope, nil
-	}
-	userID, ok := userVal.(string)
-	if !ok || userID == "" {
-		return scope, nil
-	}
-	if orgRepo == nil {
-		// A handler wired without an organization repository cannot verify
-		// membership. Denying is the only safe answer; returning the unfiltered
-		// result would be the very defect this file exists to close.
-		return scope, nil
-	}
-
-	memberships, err := orgRepo.GetUserMemberships(c.Request.Context(), userID)
-	if err != nil {
-		return TenantScope{}, err
-	}
-	for _, m := range memberships {
-		scope.OrgIDs = append(scope.OrgIDs, m.OrganizationID)
-	}
-	return scope, nil
-}
-
-// resolveTenantScope is the handler-side entry point: it resolves the scope and,
-// on a lookup failure, writes the 500 and reports ok=false so the caller can
-// simply return.
-func resolveTenantScope(c *gin.Context, orgRepo *repositories.OrganizationRepository) (TenantScope, bool) {
-	scope, err := callerTenantScope(c, orgRepo)
+// resolveTenantScope is the handler-side entry point: it resolves the scope
+// and, on a lookup failure, writes the 500 and reports ok=false so the caller
+// can simply return.
+func resolveTenantScope(c *gin.Context, orgRepo *repositories.OrganizationRepository, required auth.Scope) (TenantScope, bool) {
+	scope, err := callerTenantScope(c, orgRepo, required)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to resolve organization memberships"})
 		return TenantScope{}, false
@@ -123,27 +42,110 @@ func resolveTenantScope(c *gin.Context, orgRepo *repositories.OrganizationReposi
 	return scope, true
 }
 
-// requireTenantScopeForOrg authorizes a WRITE that names its target
-// organization in the request body — the create axis, and any update that
-// re-parents a row into a different organization. The per-resource route guard
-// cannot do this: it binds the row's CURRENT owner, and says nothing about the
-// owner the caller is asking for.
+// resolveTargetOrganization decides which organization a CREATE — or an UPDATE
+// that re-parents a row — is allowed to write to, and is the only sanctioned
+// way for a handler in this package to answer that question.
 //
-// An empty requested organization means "leave it to the server default" and is
-// allowed through; the handler is responsible for choosing that default.
+// requestedOrgID is what the caller put in the request body, which is one of
+// three things, and the previous guard only handled the first:
+//
+//	a foreign UUID  -> must be an organization the caller actually holds the
+//	                   scope in. Checked before and still checked.
+//	OMITTED ("")    -> used to fall straight through to GetDefaultOrganization
+//	                   with NO membership check, so a non-member of the default
+//	                   organization planted rows in it simply by leaving the
+//	                   field out. The old guard documented that allow-through as
+//	                   intentional; it was the hole, not a simplification.
+//	EMPTY STRING    -> on the update axis, nulled organization_id. NULL is not
+//	                   "no tenant": jobs/mirror_sync.go resolves a mirror
+//	                   configuration's NULL organization back to the DEFAULT
+//	                   organization, so an empty string re-parented the row into
+//	                   the default org — the exact defect the re-parent guard was
+//	                   added to close, reachable by sending "" instead of the
+//	                   default org's UUID.
+//
+// The omitted case is resolved from the CALLER's own tenancy, never from a
+// server-side default the caller may not belong to: a single in-scope
+// organization is used automatically, anything ambiguous is refused. That is
+// the same fail-closed rule middleware.resolveCallerOrg already applies to a
+// first namespace publish, and it is applied here so the two create paths
+// cannot disagree.
+//
+// Returns (orgID, true) on success, where an empty orgID means the caller is a
+// platform admin and no default organization exists — the caller's own
+// pre-existing fallback then applies. On failure the response has already been
+// written.
 //
 // GUARD tenant-scope-target-org (issue #719).
-func requireTenantScopeForOrg(c *gin.Context, orgRepo *repositories.OrganizationRepository, requestedOrgID string) bool {
-	if requestedOrgID == "" {
-		return true
-	}
-	scope, ok := resolveTenantScope(c, orgRepo)
+func resolveTargetOrganization(
+	c *gin.Context,
+	orgRepo *repositories.OrganizationRepository,
+	required auth.Scope,
+	requestedOrgID string,
+) (string, bool) {
+	scope, ok := resolveTenantScope(c, orgRepo, required)
 	if !ok {
+		return "", false
+	}
+
+	if requestedOrgID != "" {
+		if !scope.Permits(requestedOrgID) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Not a member of the requested organization"})
+			return "", false
+		}
+		return requestedOrgID, true
+	}
+
+	// No organization named. A platform admin is acting as a registry operator
+	// and keeps the historical default-organization fallback; everyone else is
+	// bound to their own tenancy.
+	if scope.PlatformAdmin {
+		if orgRepo == nil {
+			return "", true
+		}
+		defaultOrg, err := orgRepo.GetDefaultOrganization(c.Request.Context())
+		if err != nil || defaultOrg == nil {
+			return "", true
+		}
+		return defaultOrg.ID, true
+	}
+
+	switch len(scope.OrgIDs) {
+	case 0:
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "No organization context: you do not hold the required scope in any organization",
+		})
+		return "", false
+	case 1:
+		return scope.OrgIDs[0], true
+	default:
+		// Fail closed rather than guess. Guessing is how the default
+		// organization became a dumping ground for other tenants' rows.
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Ambiguous organization: specify organization_id — you hold the required scope in more than one organization",
+		})
+		return "", false
+	}
+}
+
+// requireTenantScopeForOrg authorizes a write against an explicitly named
+// target organization. Unlike resolveTargetOrganization it has no opinion about
+// the omitted case, so it is only for call sites that have already established
+// a non-empty target.
+//
+// GUARD tenant-scope-target-org (issue #719).
+func requireTenantScopeForOrg(
+	c *gin.Context,
+	orgRepo *repositories.OrganizationRepository,
+	required auth.Scope,
+	requestedOrgID string,
+) bool {
+	if requestedOrgID == "" {
+		// Never silently allowed: a caller reaching this helper with no target
+		// has skipped the decision resolveTargetOrganization exists to make.
+		c.JSON(http.StatusBadRequest, gin.H{"error": "organization_id is required"})
 		return false
 	}
-	if !scope.Permits(requestedOrgID) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Not a member of the requested organization"})
-		return false
-	}
-	return true
+	_, ok := resolveTargetOrganization(c, orgRepo, required, requestedOrgID)
+	return ok
 }

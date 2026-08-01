@@ -103,6 +103,19 @@ func emptyMPListRows() *sqlmock.Rows {
 // Router helper
 // ---------------------------------------------------------------------------
 
+// expectApprovalConfigLookup primes the mirror-configuration read that
+// CreateApprovalRequest performs to derive the approval row's owning
+// organization from the CONFIG rather than from the requester (issue #719,
+// GUARD approval-create-config-org). The row is returned unowned; the tests
+// using it run as a platform administrator, for whom that resolves.
+func expectApprovalConfigLookup(mock sqlmock.Sqlmock) {
+	mock.ExpectQuery("SELECT.*FROM mirror_configurations.*WHERE id").
+		WillReturnRows(sqlmock.NewRows(mirrorCfgCols).AddRow(
+			knownUUID, "cfg", nil, "https://registry.terraform.io", nil,
+			nil, nil, nil, nil, true, 24, nil, nil, nil,
+			time.Now(), time.Now(), nil))
+}
+
 func newRBACRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	t.Helper()
 	return newRBACRouterWithRevocation(t, false)
@@ -132,7 +145,11 @@ func newRBACRouterWithRevocation(t *testing.T, withRevocation bool) (sqlmock.Sql
 		apiKeys = repositories.NewAPIKeyRepository(db)
 	}
 	h := NewRBACHandlers(rbacRepo, userRevocations, apiKeys).
-		WithOrgRepo(repositories.NewOrganizationRepository(db))
+		WithOrgRepo(repositories.NewOrganizationRepository(db)).
+		// CreateApprovalRequest resolves the owning organization of the mirror
+		// configuration named in the body before writing the row (issue #719),
+		// so the handler needs the mirror repository wired here too.
+		WithMirrorRepo(repositories.NewMirrorRepository(sqlxDB))
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
@@ -692,6 +709,7 @@ func TestRBACCreateApproval_MissingFields(t *testing.T) {
 
 func TestRBACCreateApproval_Success(t *testing.T) {
 	mock, r := newRBACRouter(t)
+	expectApprovalConfigLookup(mock)
 	mock.ExpectExec("INSERT INTO mirror_approval_requests").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -1168,6 +1186,7 @@ func TestRBACCreateApproval_InvalidMirrorConfigID(t *testing.T) {
 
 func TestRBACCreateApproval_DBError(t *testing.T) {
 	mock, r := newRBACRouter(t)
+	expectApprovalConfigLookup(mock)
 	mock.ExpectExec("INSERT INTO mirror_approval_requests").
 		WillReturnError(errDB)
 
@@ -1231,12 +1250,19 @@ func newRBACRouterWithOrg(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 
 	sqlxDB := sqlx.NewDb(db, "sqlmock")
 	rbacRepo := repositories.NewRBACRepository(sqlxDB)
-	h := NewRBACHandlers(rbacRepo, nil, nil)
+	h := NewRBACHandlers(rbacRepo, nil, nil).
+		WithOrgRepo(repositories.NewOrganizationRepository(db)).
+		WithMirrorRepo(repositories.NewMirrorRepository(sqlxDB))
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
 		c.Set("user_id", knownUserUUID)
-		c.Set("organization_id", knownUUID)
+		// A DIFFERENT organization from the one owning the mirror config the
+		// test files against. Before #719's approval-create-config-org guard the
+		// row was stamped with this ambient value; it must now come from the
+		// configuration instead.
+		c.Set("organization_id", knownUserUUID)
+		c.Set("scopes", []string{string(auth.ScopeMirrorsManage)})
 		c.Next()
 	})
 
@@ -1445,8 +1471,27 @@ func TestRBACGetApproval_Found(t *testing.T) {
 // CreateApprovalRequest — with organization_id in context
 // ---------------------------------------------------------------------------
 
-func TestRBACCreateApproval_WithOrgContext(t *testing.T) {
+// TestRBACCreateApproval_OrgComesFromConfigNotContext pins GUARD
+// approval-create-config-org (issue #719). The approval row's organization used
+// to be read from the REQUESTER's ambient context, so a caller could file a
+// request against another organization's mirror configuration and have the row
+// stamped as their own — after which every downstream per-org guard, including
+// the one on POST /approvals/:id/token, agreed it was theirs.
+//
+// The row's tenancy must be derived from the configuration it points at.
+func TestRBACCreateApproval_OrgComesFromConfigNotContext(t *testing.T) {
 	mock, r := newRBACRouterWithOrg(t)
+	// The configuration belongs to knownUUID; the caller's ambient
+	// organization_id is knownUserUUID.
+	mock.ExpectQuery("SELECT.*FROM mirror_configurations.*WHERE id").
+		WillReturnRows(sqlmock.NewRows(mirrorCfgCols).AddRow(
+			knownUUID, "cfg", nil, "https://registry.terraform.io", knownUUID,
+			nil, nil, nil, nil, true, 24, nil, nil, nil,
+			time.Now(), time.Now(), nil))
+	mock.ExpectQuery("(?s)FROM organization_members").
+		WillReturnRows(sqlmock.NewRows(membershipCols).AddRow(
+			knownUUID, "Owner", "role-1", time.Now(),
+			"devops", "DevOps", []byte(`["mirrors:manage"]`)))
 	mock.ExpectExec("INSERT INTO mirror_approval_requests").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -1459,7 +1504,13 @@ func TestRBACCreateApproval_WithOrgContext(t *testing.T) {
 		})))
 
 	if w.Code != http.StatusCreated {
-		t.Errorf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+		t.Fatalf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+	}
+	resp := getJSON(w)
+	if resp["organization_id"] != knownUUID {
+		t.Errorf("organization_id = %v, want %s (the mirror configuration's owner, "+
+			"not the caller's ambient organization) — guard "+
+			"approval-create-config-org missing?", resp["organization_id"], knownUUID)
 	}
 }
 
@@ -1626,10 +1677,16 @@ func newRBACRouterNoUser(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 
 	sqlxDB := sqlx.NewDb(db, "sqlmock")
 	rbacRepo := repositories.NewRBACRepository(sqlxDB)
-	h := NewRBACHandlers(rbacRepo, nil, nil)
+	h := NewRBACHandlers(rbacRepo, nil, nil).
+		WithOrgRepo(repositories.NewOrganizationRepository(db)).
+		WithMirrorRepo(repositories.NewMirrorRepository(sqlxDB))
 
 	r := gin.New()
-	// No user_id middleware — exercises context-absent code paths
+	// No user_id — exercises the context-absent code paths (an API-key
+	// principal with no user binding). The admin scope is still installed:
+	// since #719 every create axis here resolves a tenant scope, and "no
+	// principal at all may create rows" is the guard working, not a fixture.
+	r.Use(func(c *gin.Context) { c.Set("scopes", []string{string(auth.ScopeAdmin)}) })
 
 	r.POST("/approvals", h.CreateApprovalRequest)
 	r.PUT("/approvals/:id/review", h.ReviewApproval)
@@ -1644,6 +1701,7 @@ func newRBACRouterNoUser(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 
 func TestRBACCreateApproval_ResponseIncludesRequestedBy(t *testing.T) {
 	mock, r := newRBACRouter(t)
+	expectApprovalConfigLookup(mock)
 	mock.ExpectExec("INSERT INTO mirror_approval_requests").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -1665,6 +1723,7 @@ func TestRBACCreateApproval_ResponseIncludesRequestedBy(t *testing.T) {
 
 func TestRBACCreateApproval_NoUserInContext(t *testing.T) {
 	mock, r := newRBACRouterNoUser(t)
+	expectApprovalConfigLookup(mock)
 	mock.ExpectExec("INSERT INTO mirror_approval_requests").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -1686,6 +1745,7 @@ func TestRBACCreateApproval_NoUserInContext(t *testing.T) {
 
 func TestRBACCreateApproval_WithProviderName(t *testing.T) {
 	mock, r := newRBACRouter(t)
+	expectApprovalConfigLookup(mock)
 	mock.ExpectExec("INSERT INTO mirror_approval_requests").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 

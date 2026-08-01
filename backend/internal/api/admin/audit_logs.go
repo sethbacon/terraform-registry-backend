@@ -4,11 +4,12 @@ package admin
 import (
 	"database/sql"
 	"net/http"
-	"slices"
 	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
 
@@ -97,62 +98,33 @@ func (h *AuditLogHandlers) ListAuditLogsHandler() gin.HandlerFunc {
 			filters.EndDate = &t
 		}
 
-		// Tenant scoping (issue #719). audit:read is granted per-organization by
-		// the `auditor` role template, but it arrives in the session JWT as part
-		// of a flat, org-less scope union (#652) — so without this an auditor in
-		// one organization read every organization's audit trail.
+		// GUARD audit-list-tenant-scope (issue #719). audit:read is granted
+		// per-organization by the `auditor` role template, but it arrives in the
+		// session JWT as part of a flat, org-less scope union (#652) — so
+		// without this an auditor in one organization read every organization's
+		// audit trail.
 		//
 		// Platform admins deliberately still see the whole estate: an audit
 		// trail nobody can review across tenants is not much of an audit trail,
 		// and `admin` is an explicitly-granted platform-wide scope, consistent
 		// with the admin exemption in the per-org guards.
 		//
-		// BEHAVIOUR CHANGE worth calling out in release notes: an existing
+		// BEHAVIOUR CHANGE, documented in docs/upgrade-guide.md: an existing
 		// non-admin auditor who could previously see all organizations will now
 		// see only their own.
-		if !h.callerIsPlatformAdmin(c) {
-			orgIDs, scopeErr := h.callerOrgIDs(c)
-			if scopeErr != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to resolve organization memberships"})
+		auditScope, ok := h.auditScope(c)
+		if !ok {
+			return
+		}
+		if requested := c.Query("organization_id"); requested != "" {
+			if !auditScope.PermitsOrganization(requested) {
+				c.JSON(http.StatusForbidden, gin.H{"error": "Not a member of the requested organization"})
 				return
 			}
-			if len(orgIDs) == 0 {
-				// No memberships: nothing is in scope. Fails closed rather than
-				// falling through to an unfiltered query. Returns the same
-				// AuditLogListResponse shape as every other path so clients
-				// don't have to special-case an empty result.
-				c.JSON(http.StatusOK, AuditLogListResponse{
-					Logs: []AuditLogResponse{},
-					Pagination: PaginationMeta{
-						Page:    page,
-						PerPage: perPage,
-						Total:   0,
-					},
-				})
-				return
-			}
-			if requested := c.Query("organization_id"); requested != "" {
-				if !slices.Contains(orgIDs, requested) {
-					c.JSON(http.StatusForbidden, gin.H{"error": "Not a member of the requested organization"})
-					return
-				}
-				filters.OrganizationID = &requested
-			} else if len(orgIDs) == 1 {
-				filters.OrganizationID = &orgIDs[0]
-			} else {
-				// The shared AuditFilters supports a single organization, so a
-				// multi-org caller must name one rather than silently receiving
-				// a partial or unscoped result.
-				c.JSON(http.StatusBadRequest, gin.H{
-					"error": "organization_id is required for callers belonging to multiple organizations",
-				})
-				return
-			}
-		} else if requested := c.Query("organization_id"); requested != "" {
 			filters.OrganizationID = &requested
 		}
 
-		logs, total, err := h.auditRepo.ListAuditLogs(c.Request.Context(), filters, perPage, offset)
+		logs, total, err := h.auditRepo.ListAuditLogs(c.Request.Context(), filters, auditScope, perPage, offset)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve audit logs"})
 			return
@@ -214,26 +186,22 @@ func (h *AuditLogHandlers) GetAuditLogHandler() gin.HandlerFunc {
 		// ids within one's own tenant, while entry ids are UUIDs discoverable
 		// from cross-referenced metadata elsewhere in the API.
 		//
-		// MITIGATION, not the fix. The fix is in the shared module
-		// (terraform-suite-identity identity/store: AuditRepository.GetAuditLog
-		// now REQUIRES an AuditScope), but this consumer pins v0.20.3, whose
-		// GetAuditLog takes no scope. This check therefore filters after the
-		// read instead of constraining the query, and must be replaced by
-		// passing an AuditScope once the module bump lands.
-		scope, ok := resolveTenantScope(c, h.orgRepo)
+		// The scope is passed INTO the query, not applied to its result: the
+		// database must stop returning the row, not return it for this handler
+		// to discard. GetAuditLog reports an out-of-scope entry as absent, so
+		// this route cannot be used to probe for the existence of another
+		// organization's audit entries either.
+		auditScope, ok := h.auditScope(c)
 		if !ok {
 			return
 		}
 
-		log, err := h.auditRepo.GetAuditLog(c.Request.Context(), logID)
+		log, err := h.auditRepo.GetAuditLog(c.Request.Context(), logID, auditScope)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve audit log entry"})
 			return
 		}
-		if log == nil || !scope.PermitsPtr(log.OrganizationID) {
-			// Out-of-scope entries are reported as missing, not forbidden, so
-			// this route cannot be used to probe for the existence of another
-			// organization's audit entries.
+		if log == nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Audit log entry not found"})
 			return
 		}
@@ -254,25 +222,30 @@ func (h *AuditLogHandlers) GetAuditLogHandler() gin.HandlerFunc {
 	}
 }
 
-// callerIsPlatformAdmin reports whether the caller holds the platform-wide
-// admin wildcard, which is exempt from per-organization audit scoping.
+// auditScope translates this request's tenant scope into the store.AuditScope
+// that every audit read accessor requires, writing the 500 and reporting
+// ok=false on a membership lookup failure.
 //
-// Delegates to the family-wide resolver in tenant_scope.go rather than reading
-// the context itself: three routes over this one resource must agree on who the
-// caller is, and three private copies of that decision is how the list axis and
-// the by-id axis came to disagree in the first place.
-func (h *AuditLogHandlers) callerIsPlatformAdmin(c *gin.Context) bool {
-	scope, err := callerTenantScope(c, nil)
-	return err == nil && scope.PlatformAdmin
-}
-
-// callerOrgIDs returns the organizations the caller belongs to. A missing
-// principal yields an empty set (fail closed), while a lookup failure is
-// reported so the handler can 500 rather than silently widening scope.
-func (h *AuditLogHandlers) callerOrgIDs(c *gin.Context) ([]string, error) {
-	scope, err := callerTenantScope(c, h.orgRepo)
-	if err != nil {
-		return nil, err
+// One helper for all three axes on purpose: three private copies of "who is
+// asking" is how the list axis and the by-id axis came to disagree in the first
+// place. It is also the single place where the registry's answer to "what about
+// rows with no organization" is stated — AuditScopeOrganizations, not
+// AuditScopeOrganizationsAndUnowned, because on this deployment an audit entry
+// with a NULL organization_id is an unattributed row rather than a platform
+// event, and the same rule governs every other org-owned table here
+// (internal/tenantscope, Scope.Permits). terraform-state-manager, whose NULLs
+// genuinely are platform events, is the consumer the ...AndUnowned variant
+// exists for.
+func (h *AuditLogHandlers) auditScope(c *gin.Context) (repositories.AuditScope, bool) {
+	scope, ok := resolveTenantScope(c, h.orgRepo, auth.ScopeAuditRead)
+	if !ok {
+		return repositories.AuditScope{}, false
 	}
-	return scope.OrgIDs, nil
+	if scope.PlatformAdmin {
+		return repositories.AuditScopeAllOrganizations(), true
+	}
+	// A caller with no qualifying organization gets the fail-closed scope,
+	// which every accessor short-circuits to an empty result — not an
+	// unfiltered query.
+	return repositories.AuditScopeOrganizations(scope.OrgIDs...), true
 }

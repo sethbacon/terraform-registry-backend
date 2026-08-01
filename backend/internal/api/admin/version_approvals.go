@@ -17,6 +17,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
@@ -24,11 +25,45 @@ import (
 // VersionApprovalHandler holds dependencies for the version-approval endpoints.
 type VersionApprovalHandler struct {
 	repo *repositories.VersionApprovalRepository
+	// orgRepo resolves the caller's memberships so the read endpoints can be
+	// scoped to the organizations owning the mirror configurations that
+	// produced each gated version. Set via WithOrgRepo; nil makes every
+	// non-admin scope empty, which fails closed (issue #719).
+	orgRepo *repositories.OrganizationRepository
 }
 
 // NewVersionApprovalHandler constructs a VersionApprovalHandler.
 func NewVersionApprovalHandler(repo *repositories.VersionApprovalRepository) *VersionApprovalHandler {
 	return &VersionApprovalHandler{repo: repo}
+}
+
+// WithOrgRepo wires in the organization repository so the version-approval READ
+// routes can be scoped to the caller's organizations. Returns the handler for
+// chaining.
+func (h *VersionApprovalHandler) WithOrgRepo(orgRepo *repositories.OrganizationRepository) *VersionApprovalHandler {
+	h.orgRepo = orgRepo
+	return h
+}
+
+// tenantFilter builds the mandatory tenant constraint shared by every
+// version-approval read axis, writing the 500 and reporting ok=false on a
+// membership lookup failure.
+//
+// GUARD version-approval-tenant-scope (issue #719). This whole route family was
+// missed by the first pass: the handler built a filter straight from query
+// parameters with no organization predicate at all, so any holder of the flat
+// mirrors:read scope union saw every tenant's gated provider versions, their
+// mirror configuration names and ids, and a pending count that moved with other
+// organizations' activity.
+func (h *VersionApprovalHandler) tenantFilter(c *gin.Context) (repositories.VersionApprovalFilter, bool) {
+	scope, ok := resolveTenantScope(c, h.orgRepo, auth.ScopeMirrorsRead)
+	if !ok {
+		return repositories.VersionApprovalFilter{}, false
+	}
+	return repositories.VersionApprovalFilter{
+		AllOrganizations: scope.PlatformAdmin,
+		OrganizationIDs:  scope.OrgIDs,
+	}, true
 }
 
 // currentUserID extracts the authenticated user's UUID from the gin context,
@@ -66,13 +101,17 @@ func (h *VersionApprovalHandler) List(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 
-	items, total, err := h.repo.List(c.Request.Context(), repositories.VersionApprovalFilter{
-		Status:   c.Query("status"),
-		Type:     c.Query("type"),
-		ConfigID: c.Query("config_id"),
-		Limit:    limit,
-		Offset:   offset,
-	})
+	filter, ok := h.tenantFilter(c)
+	if !ok {
+		return
+	}
+	filter.Status = c.Query("status")
+	filter.Type = c.Query("type")
+	filter.ConfigID = c.Query("config_id")
+	filter.Limit = limit
+	filter.Offset = offset
+
+	items, total, err := h.repo.List(c.Request.Context(), filter)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list version approvals"})
 		return
@@ -90,7 +129,11 @@ func (h *VersionApprovalHandler) List(c *gin.Context) {
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/admin/version-approvals/pending-count [get]
 func (h *VersionApprovalHandler) PendingCount(c *gin.Context) {
-	count, err := h.repo.PendingCount(c.Request.Context())
+	filter, ok := h.tenantFilter(c)
+	if !ok {
+		return
+	}
+	count, err := h.repo.PendingCount(c.Request.Context(), filter)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to count pending approvals"})
 		return
@@ -227,6 +270,27 @@ func (h *VersionApprovalHandler) Events(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid version id"})
+		return
+	}
+
+	// GUARD version-approval-events-scope (issue #719): the by-id axis of the
+	// same resource the list axis scopes. The event trail names who approved
+	// what and when, with free-text notes, and the row is addressable by a bare
+	// UUID — so without resolving the version's owning organization first, the
+	// scoping on List was worth nothing to anyone holding an id.
+	scope, ok := resolveTenantScope(c, h.orgRepo, auth.ScopeMirrorsRead)
+	if !ok {
+		return
+	}
+	ownerOrg, found, err := h.repo.OrganizationForVersion(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to resolve version ownership"})
+		return
+	}
+	// Out-of-scope versions read as absent, matching the audit by-id axis, so
+	// this route cannot be used to probe for another organization's rows.
+	if !found || !scope.PermitsPtr(ownerOrg) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Version not found"})
 		return
 	}
 

@@ -223,34 +223,35 @@ func (h *SCMProviderHandlers) CreateProvider(c *gin.Context) {
 		return
 	}
 
-	// Resolve organization ID: use the provided value, or fall back to the default organization.
-	orgID := uuid.Nil
+	// GUARD scm-create-target-org (issue #719). The sibling of
+	// mirror-create-target-org, and the create axis of the family whose read
+	// and /:id axes #718 already closed. Every /:id route re-derives the
+	// caller's scope in the owning organization, and ListProviders scopes the
+	// list — but the create axis took organization_id from the body unchecked,
+	// so a caller could plant a provider (with credentials they control) inside
+	// another organization and have that org's modules sync from it.
+	//
+	// As on the mirror create axis, the OMITTED case goes through the same
+	// guard rather than round it: uuid.Nil used to fall straight through to
+	// GetDefaultOrganization with no membership check, so a non-member of the
+	// default organization installed an SCM provider in it by leaving the field
+	// out of the body.
+	requestedOrg := ""
 	if req.OrganizationID != nil && *req.OrganizationID != uuid.Nil {
-		// GUARD scm-create-target-org (issue #719). The sibling of
-		// mirror-create-target-org, and the create axis of the family whose
-		// read and /:id axes #718 already closed. Every /:id route re-derives
-		// the caller's scope in the owning organization, and ListProviders
-		// scopes the list — but the create axis took organization_id from the
-		// body unchecked, so a caller could plant a provider (with credentials
-		// they control) inside another organization and have that org's modules
-		// sync from it.
-		if !requireTenantScopeForOrg(c, h.orgRepo, req.OrganizationID.String()) {
-			return
-		}
-		orgID = *req.OrganizationID
+		requestedOrg = req.OrganizationID.String()
 	}
-	if orgID == uuid.Nil {
-		defaultOrg, err := h.orgRepo.GetDefaultOrganization(c.Request.Context())
-		if err != nil || defaultOrg == nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "no organization found — create an organization before adding an SCM provider"})
-			return
-		}
-		parsed, parseErr := uuid.Parse(defaultOrg.ID)
-		if parseErr != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to resolve organization"})
-			return
-		}
-		orgID = parsed
+	targetOrg, ok := resolveTargetOrganization(c, h.orgRepo, auth.ScopeSCMManage, requestedOrg)
+	if !ok {
+		return
+	}
+	if targetOrg == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no organization found — create an organization before adding an SCM provider"})
+		return
+	}
+	orgID, err := uuid.Parse(targetOrg)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to resolve organization"})
+		return
 	}
 
 	// Check for a duplicate before inserting to return 409 instead of letting
@@ -313,21 +314,30 @@ func (h *SCMProviderHandlers) CreateProvider(c *gin.Context) {
 func (h *SCMProviderHandlers) ListProviders(c *gin.Context) {
 	orgIDStr := c.Query("organization_id")
 
+	// GUARD scm-list-tenant-scope (issues #718/#719).
+	//
+	// The per-resource guard on /:id cannot help a list route, so the scope is
+	// applied here. Previously an omitted organization_id listed EVERY
+	// organization's providers to any holder of the flat scm:read scope union,
+	// and an explicit organization_id was never checked against the caller's
+	// memberships at all — so listing was the enumeration step that made the
+	// per-provider attacks easy to aim.
+	//
+	// This used to resolve through two private helpers in this file
+	// (callerIsMemberOf, listProvidersForCallerOrgs) that checked BARE
+	// MEMBERSHIP and never looked at the API-key principal. That made this
+	// route strictly weaker than the /:id routes beside it, which go through
+	// middleware.authorizeOrgAccess and require the scope in the owning
+	// organization. Two implementations of one check is the divergence #719 is
+	// about, so both helpers are gone and this goes through the shared
+	// resolver like every other axis.
+	scope, ok := resolveTenantScope(c, h.orgRepo, auth.ScopeSCMRead)
+	if !ok {
+		return
+	}
+
 	var providers []*scm.SCMProviderRecord
 	var err error
-
-	// The per-resource guard on /:id cannot help a list route, so membership is
-	// applied here (issues #718/#719). Previously an omitted organization_id
-	// listed EVERY organization's providers to any holder of the flat scm:read
-	// scope union, and an explicit organization_id was never checked against
-	// the caller's memberships at all — so listing was the enumeration step
-	// that made the per-provider attacks easy to aim.
-	isPlatformAdmin := false
-	if scopesVal, exists := c.Get("scopes"); exists {
-		if callerScopes, ok := scopesVal.([]string); ok {
-			isPlatformAdmin = auth.HasScope(callerScopes, auth.ScopeAdmin)
-		}
-	}
 
 	if orgIDStr != "" {
 		orgID, parseErr := uuid.Parse(orgIDStr)
@@ -335,19 +345,30 @@ func (h *SCMProviderHandlers) ListProviders(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid organization_id"})
 			return
 		}
-		if !isPlatformAdmin && !h.callerIsMemberOf(c, orgID.String()) {
+		if !scope.Permits(orgID.String()) {
 			c.JSON(http.StatusForbidden, gin.H{"error": "Not a member of the requested organization"})
 			return
 		}
 		providers, err = h.scmRepo.ListProviders(c.Request.Context(), orgID)
-	} else if isPlatformAdmin {
+	} else if scope.PlatformAdmin {
 		// Platform admins deliberately see every organization.
 		providers, err = h.scmRepo.ListProviders(c.Request.Context(), uuid.Nil)
 	} else {
-		// Everyone else gets the union of their own organizations rather than
-		// the whole estate. Fails closed: an error resolving memberships, or a
-		// caller with none, yields nothing rather than everything.
-		providers, err = h.listProvidersForCallerOrgs(c)
+		// Everyone else gets the union of the organizations they hold scm:read
+		// in. Fails closed: a caller with none yields nothing, never everything.
+		providers = []*scm.SCMProviderRecord{}
+		for _, id := range scope.OrgIDs {
+			orgID, parseErr := uuid.Parse(id)
+			if parseErr != nil {
+				continue
+			}
+			owned, listErr := h.scmRepo.ListProviders(c.Request.Context(), orgID)
+			if listErr != nil {
+				err = listErr
+				break
+			}
+			providers = append(providers, owned...)
+		}
 	}
 
 	if err != nil {
@@ -619,55 +640,4 @@ func (h *SCMProviderHandlers) VerifyProvider(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"ok": true, "expires_at": token.ExpiresAt})
-}
-
-// callerIsMemberOf reports whether the authenticated caller holds any
-// membership in orgID. Fails closed on a missing principal or lookup error.
-func (h *SCMProviderHandlers) callerIsMemberOf(c *gin.Context, orgID string) bool {
-	userVal, exists := c.Get("user_id")
-	if !exists {
-		return false
-	}
-	userID, ok := userVal.(string)
-	if !ok || userID == "" {
-		return false
-	}
-	member, err := h.orgRepo.GetMemberWithRole(c.Request.Context(), orgID, userID)
-	if err != nil || member == nil {
-		return false
-	}
-	return true
-}
-
-// listProvidersForCallerOrgs returns the providers of every organization the
-// caller belongs to. A caller with no memberships gets an empty list, never the
-// full estate.
-func (h *SCMProviderHandlers) listProvidersForCallerOrgs(c *gin.Context) ([]*scm.SCMProviderRecord, error) {
-	userVal, exists := c.Get("user_id")
-	if !exists {
-		return []*scm.SCMProviderRecord{}, nil
-	}
-	userID, ok := userVal.(string)
-	if !ok || userID == "" {
-		return []*scm.SCMProviderRecord{}, nil
-	}
-
-	memberships, err := h.orgRepo.GetUserMemberships(c.Request.Context(), userID)
-	if err != nil {
-		return nil, err
-	}
-
-	out := []*scm.SCMProviderRecord{}
-	for _, m := range memberships {
-		orgID, parseErr := uuid.Parse(m.OrganizationID)
-		if parseErr != nil {
-			continue
-		}
-		providers, listErr := h.scmRepo.ListProviders(c.Request.Context(), orgID)
-		if listErr != nil {
-			return nil, listErr
-		}
-		out = append(out, providers...)
-	}
-	return out, nil
 }

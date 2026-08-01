@@ -63,9 +63,9 @@ func newNonAdminSCMRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 
 func TestSCMList_NonAdmin_ForeignOrgFilter_Denied(t *testing.T) {
 	mock, r := newNonAdminSCMRouter(t)
-	// Not a member of the requested organization (GetMemberWithRole shape).
+	// Not a member of the requested organization (GetUserMemberships shape).
 	mock.ExpectQuery("(?s)FROM organization_members").
-		WillReturnRows(sqlmock.NewRows(memberRoleCols))
+		WillReturnRows(sqlmock.NewRows(membershipCols))
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("GET", "/scm-providers?organization_id="+orgBeta, nil))
@@ -77,10 +77,14 @@ func TestSCMList_NonAdmin_ForeignOrgFilter_Denied(t *testing.T) {
 
 func TestSCMList_NonAdmin_OwnOrgFilter_Allowed(t *testing.T) {
 	mock, r := newNonAdminSCMRouter(t)
+	// GetUserMemberships shape, not GetMemberWithRole: the explicit-org branch
+	// now resolves through the SHARED tenant-scope resolver, the same one the
+	// unfiltered branch uses, instead of this file's own callerIsMemberOf
+	// (which checked bare membership and ignored role-template scopes).
 	mock.ExpectQuery("(?s)FROM organization_members").
-		WillReturnRows(sqlmock.NewRows(memberRoleCols).AddRow(
-			orgAlpha, scopeUserID, "role-viewer", time.Now(),
-			"Scoped", "scoped@test.com", "viewer", "Viewer", []byte(`["scm:read"]`),
+		WillReturnRows(sqlmock.NewRows(membershipCols).AddRow(
+			orgAlpha, "Alpha", "role-viewer", time.Now(),
+			"viewer", "Viewer", []byte(`["scm:read"]`),
 		))
 	mock.ExpectQuery("(?s)FROM scm_providers").WillReturnRows(sqlmock.NewRows(scmProvCols))
 
@@ -167,19 +171,38 @@ func TestListAuditLogs_NonAdmin_ForeignOrgFilter_Denied(t *testing.T) {
 	}
 }
 
-func TestListAuditLogs_NonAdmin_MultiOrg_RequiresExplicitOrg(t *testing.T) {
+// TestListAuditLogs_NonAdmin_MultiOrg_ScopesToAllOwnOrgs replaces the former
+// TestListAuditLogs_NonAdmin_MultiOrg_RequiresExplicitOrg.
+//
+// That test asserted a 400: the consumer-side workaround for a shared
+// AuditFilters that could only carry ONE organization, so a multi-org auditor
+// had to name one rather than silently receive a partial or unscoped result.
+// The shared module now takes an AuditScope carrying the whole allowlist, so
+// the workaround is gone and the caller is scoped to every organization they
+// hold audit:read in — one statement, one predicate, no 400.
+//
+// The property that matters is unchanged and is what this asserts: the
+// statement carries the tenant predicate. Remove it and the query no longer
+// matches the expectation, so this row goes red.
+func TestListAuditLogs_NonAdmin_MultiOrg_ScopesToAllOwnOrgs(t *testing.T) {
 	mock, r := newNonAdminAuditRouter(t)
 	mock.ExpectQuery("(?s)FROM organization_members").
 		WillReturnRows(sqlmock.NewRows(membershipCols).
 			AddRow(orgAlpha, "Alpha", "r1", time.Now(), "auditor", "Auditor", []byte(`["audit:read"]`)).
 			AddRow(orgBeta, "Beta", "r2", time.Now(), "auditor", "Auditor", []byte(`["audit:read"]`)))
+	mock.ExpectQuery(`SELECT COUNT.*FROM audit_logs.*organization_id = ANY`).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery(`SELECT al\.id.*FROM audit_logs.*organization_id = ANY`).
+		WillReturnRows(sqlmock.NewRows(auditLogListCols))
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("GET", "/audit-logs", nil))
 
-	// A multi-org caller must name one rather than silently receiving a
-	// partial — or worse, unscoped — result.
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400 (multi-org caller must specify organization_id)", w.Code)
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("audit list did not carry the organization predicate for a "+
+			"multi-org caller — guard audit-list-tenant-scope missing?: %v", err)
 	}
 }

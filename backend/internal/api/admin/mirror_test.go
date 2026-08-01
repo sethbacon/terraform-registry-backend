@@ -815,10 +815,15 @@ func TestMirrorCreate_WithUserIDContext(t *testing.T) {
 	h := NewMirrorHandler(mirrorRepo, orgRepo2, repositories.NewProviderRepository(db))
 
 	r := gin.New()
-	// Inject user_id as uuid.UUID into context before the handler
+	// Inject user_id as uuid.UUID into context before the handler. The admin
+	// scope goes with it: since #719 the create axis resolves a tenant scope
+	// before falling back to the default organization (GUARD
+	// mirror-create-target-org), and this test is about the createdBy
+	// extraction from a uuid.UUID context value, not about tenancy.
 	userUUID := uuid.MustParse(knownUUID)
 	r.POST("/mirrors", func(c *gin.Context) {
 		c.Set("user_id", userUUID)
+		c.Set("scopes", []string{string(auth.ScopeAdmin)})
 		h.CreateMirrorConfig(c)
 	})
 

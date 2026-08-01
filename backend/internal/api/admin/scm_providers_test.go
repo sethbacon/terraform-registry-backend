@@ -355,6 +355,15 @@ func TestSCMCreate_AllowlistedBaseURLSucceeds(t *testing.T) {
 		WithEgressGuard(httpsafe.MustGuard("10.5.0.0/16"))
 
 	r := gin.New()
+	// Platform administrator: these routes sit behind AuthMiddleware +
+	// RequireScope in production, and since #719 the create axis resolves a
+	// tenant scope before choosing a target organization (GUARD
+	// scm-create-target-org). Admin is the principal that guard exempts, so the
+	// default-organization fallback these tests exercise still applies.
+	r.Use(func(c *gin.Context) {
+		c.Set("scopes", []string{string(auth.ScopeAdmin)})
+		c.Set("user_id", "test-admin")
+	})
 	r.POST("/scm-providers", h.CreateProvider)
 
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").

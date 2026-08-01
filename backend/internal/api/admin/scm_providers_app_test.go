@@ -14,6 +14,7 @@ import (
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
+	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/scm/appcreds"
@@ -50,6 +51,15 @@ func newSCMProviderAppRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 		WithMinter(appcreds.NewMinter(cipher, scmRepo))
 
 	r := gin.New()
+	// Platform administrator: these routes sit behind AuthMiddleware +
+	// RequireScope in production, and since #719 the create axis resolves a
+	// tenant scope before choosing a target organization (GUARD
+	// scm-create-target-org). Admin is the principal that guard exempts, so the
+	// default-organization fallback these tests exercise still applies.
+	r.Use(func(c *gin.Context) {
+		c.Set("scopes", []string{string(auth.ScopeAdmin)})
+		c.Set("user_id", "test-admin")
+	})
 	r.POST("/scm-providers", h.CreateProvider)
 	r.POST("/scm-providers/:id/verify", h.VerifyProvider)
 	return mock, r
