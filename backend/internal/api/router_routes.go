@@ -416,7 +416,6 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 	userTokenRevocationRepo := d.userTokenRevocationRepo
 	moduleAdminHandlers := d.moduleAdminHandlers
 	providerAdminHandlers := d.providerAdminHandlers
-	auditRepo := d.auditRepo
 	nsAuthz := d.nsAuthz
 	scanRepo := d.scanRepo
 	moduleDocsRepo := d.moduleDocsRepo
@@ -1010,8 +1009,17 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 			// Mirror Policies
 			policiesGroup := authenticatedGroup.Group("/admin/policies")
 			{
+				// GET /:id is gated on mirrors:read, not admin, so the flat
+				// org-less scope union alone let any member of any organization
+				// read another organization's mirror policy. The mutations below
+				// keep the platform-admin gate, which the per-org guard exempts
+				// anyway (issue #719).
+				policyOrg := func(scope auth.Scope) gin.HandlerFunc {
+					return nsAuthz.RequireOrgScopeForResource(scope, mirrorPolicyOrgResolver(d.rbacRepo))
+				}
+
 				policiesGroup.GET("", middleware.RequireScope(auth.ScopeMirrorsRead), rbacHandlers.ListMirrorPolicies)
-				policiesGroup.GET("/:id", middleware.RequireScope(auth.ScopeMirrorsRead), rbacHandlers.GetMirrorPolicy)
+				policiesGroup.GET("/:id", middleware.RequireScope(auth.ScopeMirrorsRead), policyOrg(auth.ScopeMirrorsRead), rbacHandlers.GetMirrorPolicy)
 				policiesGroup.POST("", middleware.RequireScope(auth.ScopeAdmin), rbacHandlers.CreateMirrorPolicy)
 				policiesGroup.PUT("/:id", middleware.RequireScope(auth.ScopeAdmin), rbacHandlers.UpdateMirrorPolicy)
 				policiesGroup.DELETE("/:id", middleware.RequireScope(auth.ScopeAdmin), rbacHandlers.DeleteMirrorPolicy)
@@ -1071,7 +1079,7 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 			auditLogsGroup := authenticatedGroup.Group("/admin/audit-logs")
 			{
 				auditLogsGroup.GET("", middleware.RequireScope(auth.ScopeAuditRead), auditLogHandlers.ListAuditLogsHandler())
-				auditLogsGroup.GET("/export", middleware.RequireScope(auth.ScopeAuditRead), admin.ExportAuditLogs(auditRepo, AppVersion))
+				auditLogsGroup.GET("/export", middleware.RequireScope(auth.ScopeAuditRead), auditLogHandlers.ExportAuditLogs(AppVersion))
 				auditLogsGroup.GET("/:id", middleware.RequireScope(auth.ScopeAuditRead), auditLogHandlers.GetAuditLogHandler())
 			}
 
@@ -1241,5 +1249,38 @@ func approvalRequestOrgResolver(rbacRepo *repositories.RBACRepository) middlewar
 			return "", true, nil
 		}
 		return req.OrganizationID.String(), true, nil
+	}
+}
+
+// mirrorPolicyOrgResolver adapts RBACRepository to
+// middleware.ResourceOrgResolver for /admin/policies/:id (issue #719).
+//
+// The mirror-policy family was the one #719 route family that got no per-org
+// guard at all: its mutations sit behind the platform-wide admin scope, which
+// hid the fact that GET /:id only requires mirrors:read — a scope the flat
+// session union hands out on the strength of membership in any single
+// organization. mirror_policies.organization_id is nullable and NULL means a
+// GLOBAL policy, which every tenant is already governed by, so an unowned row
+// resolves to ("", true, nil) and the guard's admin-only branch applies.
+func mirrorPolicyOrgResolver(rbacRepo *repositories.RBACRepository) middleware.ResourceOrgResolver {
+	return func(ctx context.Context, id string) (string, bool, error) {
+		if rbacRepo == nil {
+			return "", false, errors.New("rbac repository not configured")
+		}
+		policyID, err := uuid.Parse(id)
+		if err != nil {
+			return "", false, nil
+		}
+		policy, err := rbacRepo.GetMirrorPolicy(ctx, policyID)
+		if err != nil {
+			return "", false, err
+		}
+		if policy == nil {
+			return "", false, nil
+		}
+		if policy.OrganizationID == nil || *policy.OrganizationID == uuid.Nil {
+			return "", true, nil
+		}
+		return policy.OrganizationID.String(), true, nil
 	}
 }

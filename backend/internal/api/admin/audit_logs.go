@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
 
@@ -206,12 +205,35 @@ func (h *AuditLogHandlers) GetAuditLogHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		logID := c.Param("id")
 
+		// GUARD audit-byid-tenant-scope (issue #719).
+		//
+		// The by-id axis of the same resource the list axis already scopes.
+		// The #719 fix landed on ListAuditLogsHandler only, so any holder of
+		// the flat audit:read scope union could still read any single entry of
+		// any organization by id — and ListAuditLogs conveniently hands out the
+		// ids within one's own tenant, while entry ids are UUIDs discoverable
+		// from cross-referenced metadata elsewhere in the API.
+		//
+		// MITIGATION, not the fix. The fix is in the shared module
+		// (terraform-suite-identity identity/store: AuditRepository.GetAuditLog
+		// now REQUIRES an AuditScope), but this consumer pins v0.20.3, whose
+		// GetAuditLog takes no scope. This check therefore filters after the
+		// read instead of constraining the query, and must be replaced by
+		// passing an AuditScope once the module bump lands.
+		scope, ok := resolveTenantScope(c, h.orgRepo)
+		if !ok {
+			return
+		}
+
 		log, err := h.auditRepo.GetAuditLog(c.Request.Context(), logID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve audit log entry"})
 			return
 		}
-		if log == nil {
+		if log == nil || !scope.PermitsPtr(log.OrganizationID) {
+			// Out-of-scope entries are reported as missing, not forbidden, so
+			// this route cannot be used to probe for the existence of another
+			// organization's audit entries.
 			c.JSON(http.StatusNotFound, gin.H{"error": "Audit log entry not found"})
 			return
 		}
@@ -234,40 +256,23 @@ func (h *AuditLogHandlers) GetAuditLogHandler() gin.HandlerFunc {
 
 // callerIsPlatformAdmin reports whether the caller holds the platform-wide
 // admin wildcard, which is exempt from per-organization audit scoping.
+//
+// Delegates to the family-wide resolver in tenant_scope.go rather than reading
+// the context itself: three routes over this one resource must agree on who the
+// caller is, and three private copies of that decision is how the list axis and
+// the by-id axis came to disagree in the first place.
 func (h *AuditLogHandlers) callerIsPlatformAdmin(c *gin.Context) bool {
-	scopesVal, exists := c.Get("scopes")
-	if !exists {
-		return false
-	}
-	callerScopes, ok := scopesVal.([]string)
-	if !ok {
-		return false
-	}
-	return auth.HasScope(callerScopes, auth.ScopeAdmin)
+	scope, err := callerTenantScope(c, nil)
+	return err == nil && scope.PlatformAdmin
 }
 
 // callerOrgIDs returns the organizations the caller belongs to. A missing
 // principal yields an empty set (fail closed), while a lookup failure is
 // reported so the handler can 500 rather than silently widening scope.
 func (h *AuditLogHandlers) callerOrgIDs(c *gin.Context) ([]string, error) {
-	userVal, exists := c.Get("user_id")
-	if !exists {
-		return nil, nil
-	}
-	userID, ok := userVal.(string)
-	if !ok || userID == "" {
-		return nil, nil
-	}
-	if h.orgRepo == nil {
-		return nil, nil
-	}
-	memberships, err := h.orgRepo.GetUserMemberships(c.Request.Context(), userID)
+	scope, err := callerTenantScope(c, h.orgRepo)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]string, 0, len(memberships))
-	for _, m := range memberships {
-		out = append(out, m.OrganizationID)
-	}
-	return out, nil
+	return scope.OrgIDs, nil
 }

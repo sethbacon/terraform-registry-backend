@@ -461,7 +461,9 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 
 	// Role-template CRUD follows the identity schema; mirror methods stay public.
 	rbacRepo := repositories.NewRBACRepositoryWithIdentity(sqlxDB, identitySqlxDB)
-	rbacHandlers := admin.NewRBACHandlers(rbacRepo, userTokenRevocationRepo, apiKeyRepo).WithNotifications(&cfg.Notifications, &cfg.CVE)
+	rbacHandlers := admin.NewRBACHandlers(rbacRepo, userTokenRevocationRepo, apiKeyRepo).
+		WithNotifications(&cfg.Notifications, &cfg.CVE).
+		WithOrgRepo(orgRepo)
 
 	// Initialize audit log handlers
 	auditLogHandlers := admin.NewAuditLogHandlers(identityDB)

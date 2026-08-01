@@ -13,6 +13,7 @@ import (
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
+	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
 
@@ -130,11 +131,18 @@ func newRBACRouterWithRevocation(t *testing.T, withRevocation bool) (sqlmock.Sql
 		// expectations on `mock` like the watermark write.
 		apiKeys = repositories.NewAPIKeyRepository(db)
 	}
-	h := NewRBACHandlers(rbacRepo, userRevocations, apiKeys)
+	h := NewRBACHandlers(rbacRepo, userRevocations, apiKeys).
+		WithOrgRepo(repositories.NewOrganizationRepository(db))
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
 		c.Set("user_id", knownUserUUID)
+		// Platform admin: these tests cover RBAC/approval/policy mechanics, not
+		// tenancy, and admin is the principal every #719 tenant-scope guard
+		// deliberately exempts. Cross-tenant behaviour for the list axes is
+		// owned by tenant_scope_class_test.go, and for the /:id axes by
+		// internal/api/mirror_approval_routes_test.go.
+		c.Set("scopes", []string{string(auth.ScopeAdmin)})
 		c.Next()
 	})
 

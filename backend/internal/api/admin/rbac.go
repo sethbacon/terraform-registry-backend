@@ -44,6 +44,14 @@ type RBACHandlers struct {
 	// channels (webhook/Slack/Teams/email), in addition to the direct
 	// recipients email above. Set via WithNotifier; nil is a no-op.
 	notifier *notify.Notifier
+
+	// orgRepo resolves the caller's memberships for the list axes of the
+	// org-owned resources this handler serves (mirror policies, mirror approval
+	// requests). The per-resource route guard covers their /:id axes; a list has
+	// no row in the path to resolve an owner from, so the check has to happen
+	// here. Set via WithOrgRepo; nil makes every non-admin scope empty, which
+	// fails closed (issue #719).
+	orgRepo *repositories.OrganizationRepository
 }
 
 // NewRBACHandlers creates a new RBAC handlers instance. apiKeys backs the
@@ -52,6 +60,14 @@ type RBACHandlers struct {
 // disables the sweep entirely (the pre-existing test convention).
 func NewRBACHandlers(rbacRepo *repositories.RBACRepository, userRevocations *repositories.UserTokenRevocationRepository, apiKeys *repositories.APIKeyRepository) *RBACHandlers {
 	return &RBACHandlers{rbacRepo: rbacRepo, creds: credlifecycle.NewSweeper(userRevocations, apiKeys)}
+}
+
+// WithOrgRepo wires in the organization repository so the mirror-policy and
+// approval-request LIST routes can be scoped to the caller's organizations.
+// Returns the handler for chaining.
+func (h *RBACHandlers) WithOrgRepo(orgRepo *repositories.OrganizationRepository) *RBACHandlers {
+	h.orgRepo = orgRepo
+	return h
 }
 
 // WithNotifications wires in the shared notifications/CVE config so
@@ -487,11 +503,28 @@ func (h *RBACHandlers) DeleteRoleTemplate(c *gin.Context) {
 // ListApprovalRequests lists all approval requests
 // GET /api/v1/admin/approvals
 func (h *RBACHandlers) ListApprovalRequests(c *gin.Context) {
+	// GUARD approval-list-tenant-scope (issue #719).
+	//
+	// organization_id here is a caller-supplied query parameter, so the fact
+	// that the repository query has an organization predicate proves nothing:
+	// omit the parameter and it listed every organization's pending mirror
+	// approvals; supply someone else's and it listed theirs. Either way this is
+	// the enumeration step for POST /admin/approvals/:id/token, whose minted
+	// token is redeemable without authentication.
+	scope, ok := resolveTenantScope(c, h.orgRepo)
+	if !ok {
+		return
+	}
+
 	var orgID *uuid.UUID
 	if orgIDStr := c.Query("organization_id"); orgIDStr != "" {
 		id, err := uuid.Parse(orgIDStr)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid organization ID"})
+			return
+		}
+		if !scope.Permits(id.String()) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Not a member of the requested organization"})
 			return
 		}
 		orgID = &id
@@ -509,7 +542,18 @@ func (h *RBACHandlers) ListApprovalRequests(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, requests)
+	visible := make([]*models.MirrorApprovalRequest, 0, len(requests))
+	for _, r := range requests {
+		ownerOrg := ""
+		if r.OrganizationID != nil {
+			ownerOrg = r.OrganizationID.String()
+		}
+		if scope.Permits(ownerOrg) {
+			visible = append(visible, r)
+		}
+	}
+
+	c.JSON(http.StatusOK, visible)
 }
 
 // @Summary      Get approval request
@@ -711,11 +755,25 @@ func (h *RBACHandlers) ReviewApproval(c *gin.Context) {
 // ListMirrorPolicies lists all mirror policies
 // GET /api/v1/admin/policies
 func (h *RBACHandlers) ListMirrorPolicies(c *gin.Context) {
+	// GUARD policy-list-tenant-scope (issue #719). Same shape as
+	// approval-list-tenant-scope: the organization filter is whatever the caller
+	// asked for, so an omitted or foreign organization_id read across tenants.
+	// Mirror policies are the allow/deny rules governing what another
+	// organization is permitted to mirror.
+	scope, ok := resolveTenantScope(c, h.orgRepo)
+	if !ok {
+		return
+	}
+
 	var orgID *uuid.UUID
 	if orgIDStr := c.Query("organization_id"); orgIDStr != "" {
 		id, err := uuid.Parse(orgIDStr)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid organization ID"})
+			return
+		}
+		if !scope.Permits(id.String()) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Not a member of the requested organization"})
 			return
 		}
 		orgID = &id
@@ -727,7 +785,17 @@ func (h *RBACHandlers) ListMirrorPolicies(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, policies)
+	// Policies with a NULL organization_id are global (platform-wide) rules and
+	// govern every tenant, so they stay visible; only another organization's
+	// rows are filtered out.
+	visible := make([]*models.MirrorPolicy, 0, len(policies))
+	for _, p := range policies {
+		if p.OrganizationID == nil || scope.Permits(p.OrganizationID.String()) {
+			visible = append(visible, p)
+		}
+	}
+
+	c.JSON(http.StatusOK, visible)
 }
 
 // @Summary      Get mirror policy

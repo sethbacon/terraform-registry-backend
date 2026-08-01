@@ -124,6 +124,15 @@ func (h *MirrorHandler) CreateMirrorConfig(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid organization ID"})
 			return
 		}
+		// GUARD mirror-create-target-org (issue #719): the create axis takes its
+		// organization straight from the request body, so no route guard can
+		// bind it — there is no existing row to resolve an owner from. Without
+		// this, any holder of the flat mirrors:manage scope union could plant a
+		// mirror configuration inside another organization, where it becomes a
+		// pull-through source for that tenant's providers.
+		if !requireTenantScopeForOrg(c, h.orgRepo, parsed.String()) {
+			return
+		}
 		orgID = &parsed
 	} else {
 		// Default to the default organization so mirrored providers are discoverable
@@ -223,13 +232,37 @@ func (h *MirrorHandler) CreateMirrorConfig(c *gin.Context) {
 func (h *MirrorHandler) ListMirrorConfigs(c *gin.Context) {
 	enabledOnly := c.Query("enabled") == "true"
 
+	// GUARD mirror-list-tenant-scope (issue #719).
+	//
+	// The per-resource guard on /admin/mirrors/:id cannot help the list axis:
+	// there is no row named in the path to resolve an owner from. Left
+	// unscoped, this route enumerated every organization's mirror
+	// configurations — upstream registry URLs, filters and sync state — to any
+	// holder of the flat mirrors:read scope union, and handed out the very ids
+	// the per-resource routes are keyed on.
+	scope, ok := resolveTenantScope(c, h.orgRepo)
+	if !ok {
+		return
+	}
+
 	configs, err := h.mirrorRepo.List(c.Request.Context(), enabledOnly)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list mirror configurations: " + err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"mirrors": configs})
+	visible := make([]models.MirrorConfiguration, 0, len(configs))
+	for _, cfg := range configs {
+		orgID := ""
+		if cfg.OrganizationID != nil {
+			orgID = cfg.OrganizationID.String()
+		}
+		if scope.Permits(orgID) {
+			visible = append(visible, cfg)
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"mirrors": visible})
 }
 
 // @Summary      Get mirror configuration
@@ -394,6 +427,16 @@ func (h *MirrorHandler) UpdateMirrorConfig(c *gin.Context) {
 			parsed, err := uuid.Parse(*req.OrganizationID)
 			if err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid organization ID"})
+				return
+			}
+			// GUARD mirror-update-reparent-org (issue #719): the route's
+			// per-resource guard authorized the caller against this row's
+			// CURRENT owner. It says nothing about the owner being asked for.
+			// Without this check, a caller legitimately holding mirrors:manage
+			// in org A could re-parent A's mirror configuration into org B and
+			// then keep operating it under B's tenancy — a write across the
+			// tenant boundary that every by-id read guard would still pass.
+			if !requireTenantScopeForOrg(c, h.orgRepo, parsed.String()) {
 				return
 			}
 			config.OrganizationID = &parsed

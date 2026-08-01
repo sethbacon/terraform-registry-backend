@@ -226,6 +226,17 @@ func (h *SCMProviderHandlers) CreateProvider(c *gin.Context) {
 	// Resolve organization ID: use the provided value, or fall back to the default organization.
 	orgID := uuid.Nil
 	if req.OrganizationID != nil && *req.OrganizationID != uuid.Nil {
+		// GUARD scm-create-target-org (issue #719). The sibling of
+		// mirror-create-target-org, and the create axis of the family whose
+		// read and /:id axes #718 already closed. Every /:id route re-derives
+		// the caller's scope in the owning organization, and ListProviders
+		// scopes the list — but the create axis took organization_id from the
+		// body unchecked, so a caller could plant a provider (with credentials
+		// they control) inside another organization and have that org's modules
+		// sync from it.
+		if !requireTenantScopeForOrg(c, h.orgRepo, req.OrganizationID.String()) {
+			return
+		}
 		orgID = *req.OrganizationID
 	}
 	if orgID == uuid.Nil {

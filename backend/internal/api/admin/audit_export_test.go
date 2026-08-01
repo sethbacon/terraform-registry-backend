@@ -9,7 +9,7 @@ import (
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
-	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/auth"
 )
 
 // ---------------------------------------------------------------------------
@@ -24,10 +24,15 @@ func newAuditExportRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	}
 	t.Cleanup(func() { db.Close() })
 
-	auditRepo := repositories.NewAuditRepository(db)
-
 	r := gin.New()
-	r.GET("/audit-logs/export", ExportAuditLogs(auditRepo, "test"))
+	// These tests exercise the NDJSON/OCSF encoding, not tenancy, so they run as
+	// a platform admin — the principal the #719 tenant-scope guard deliberately
+	// exempts. Cross-tenant behaviour is owned by tenant_scope_class_test.go.
+	r.Use(func(c *gin.Context) {
+		c.Set("scopes", []string{string(auth.ScopeAdmin)})
+		c.Set("user_id", "admin-user")
+	})
+	r.GET("/audit-logs/export", NewAuditLogHandlers(db).ExportAuditLogs("test"))
 
 	return mock, r
 }

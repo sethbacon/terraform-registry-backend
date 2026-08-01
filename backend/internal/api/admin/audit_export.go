@@ -8,7 +8,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/audit"
-	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
 
 // @Summary      Export audit logs
@@ -30,9 +29,30 @@ import (
 // @Failure      403  {object}  map[string]interface{}  "Forbidden — audit:read scope required"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/admin/audit-logs/export [get]
+// ExportAuditLogs is a method on AuditLogHandlers rather than a free function
+// so that it shares the audit-log family's tenant scope resolver with
+// ListAuditLogsHandler and GetAuditLogHandler. It used to be a package-level
+// function taking only the audit repository, which is precisely why it had no
+// way to know who was asking: the #719 fix scoped the list handler and could
+// not reach this axis at all.
 // coverage:skip:requires-database
-func ExportAuditLogs(auditRepo *repositories.AuditRepository, appVersion string) gin.HandlerFunc {
+func (h *AuditLogHandlers) ExportAuditLogs(appVersion string) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// GUARD audit-export-tenant-scope (issue #719).
+		//
+		// MITIGATION, not the fix. The fix is in the shared module
+		// (terraform-suite-identity identity/store:
+		// AuditRepository.StreamAuditLogs now REQUIRES an AuditScope so the
+		// predicate is applied in SQL), but this consumer pins v0.20.3, whose
+		// StreamAuditLogs takes no scope. Rows are therefore filtered as they
+		// are streamed. Replace with a scoped query once the module bump lands
+		// — the current form still reads every organization's rows out of the
+		// database, it just does not emit them.
+		scope, ok := resolveTenantScope(c, h.orgRepo)
+		if !ok {
+			return
+		}
+
 		now := time.Now().UTC()
 		startDate := now.AddDate(0, 0, -30)
 		endDate := now
@@ -61,7 +81,7 @@ func ExportAuditLogs(auditRepo *repositories.AuditRepository, appVersion string)
 			return
 		}
 
-		rows, err := auditRepo.StreamAuditLogs(c.Request.Context(), startDate, endDate)
+		rows, err := h.auditRepo.StreamAuditLogs(c.Request.Context(), startDate, endDate)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to query audit logs for export"})
 			return
@@ -97,6 +117,13 @@ func ExportAuditLogs(auditRepo *repositories.AuditRepository, appVersion string)
 			); err != nil {
 				// Cannot write a JSON error at this point because headers are already sent.
 				return
+			}
+
+			// GUARD audit-export-row-filter (issue #719): every emitted row must
+			// belong to an organization the caller is a member of. Fails closed
+			// on a NULL organization_id, which only a platform admin may see.
+			if !scope.PermitsPtr(entry.OrganizationID) {
+				continue
 			}
 
 			if metadataJSON != nil {
