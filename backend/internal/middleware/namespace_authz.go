@@ -376,7 +376,7 @@ func (a *NamespaceAuthorizer) authorizeNamespaceMutation(c *gin.Context, namespa
 		return false
 	}
 
-	callerOrgID, status, msg := a.resolveCallerOrg(c)
+	callerOrgID, status, msg := a.resolveCallerOrg(c, scope)
 	if status != 0 {
 		abortNamespaceAuthz(c, status, msg)
 		return false
@@ -387,13 +387,29 @@ func (a *NamespaceAuthorizer) authorizeNamespaceMutation(c *gin.Context, namespa
 		abortNamespaceAuthz(c, http.StatusInternalServerError, "Failed to claim namespace")
 		return false
 	}
-	if claim.OrganizationID != callerOrgID {
-		// Lost a concurrent first-publish race to another organization; the
-		// caller must now qualify against the winner.
-		if status, msg := a.authorizeOrgAccess(c, claim.OrganizationID, scope); status != 0 {
-			abortNamespaceAuthz(c, status, msg)
-			return false
-		}
+	// Re-check UNCONDITIONALLY against the claim's actual owner, not only when
+	// the caller lost a concurrent first-publish race.
+	//
+	// Checking only the race-loss branch meant the ordinary winning path -- by
+	// far the common one -- performed no authorization at all beyond
+	// resolveCallerOrg's own derivation, so whichever organization
+	// resolveCallerOrg happened to name was accepted without any check that
+	// the caller currently holds `scope` in it. That is the same
+	// snapshot-trusted-at-the-point-of-use defect as #732, reached through the
+	// claim path instead of the owned-namespace path: an API key bound to an
+	// organization whose owner had since been removed could claim a brand-new
+	// namespace and publish into it with zero membership queries.
+	//
+	// authorizeOrgAccess is the single place that answers "may this caller
+	// write here, right now"; running it on every path (won race, lost race,
+	// explicit organization_id, sole membership) means no first-publish route
+	// can bypass it. On the org-bound-key path this repeats the check
+	// resolveCallerOrg already made -- deliberately, so neither guard is
+	// load-bearing alone -- at the cost of one extra membership read on a
+	// once-per-namespace request.
+	if status, msg := a.authorizeOrgAccess(c, claim.OrganizationID, scope); status != 0 {
+		abortNamespaceAuthz(c, status, msg)
+		return false
 	}
 
 	// Audit the ownership binding: a namespace's owner is set exactly once, so
@@ -451,21 +467,7 @@ func (a *NamespaceAuthorizer) authorizeOrgAccess(c *gin.Context, ownerOrgID stri
 			if apiKey.OrganizationID != ownerOrgID {
 				return http.StatusForbidden, "Namespace is owned by another organization"
 			}
-			// Keys with no owning user are organization service credentials:
-			// there is no membership to re-verify, so the binding stands alone
-			// (their lifecycle is the organization's, and organization deletion
-			// cascades the row away).
-			if apiKey.UserID == nil || *apiKey.UserID == "" {
-				return 0, ""
-			}
-			member, err := a.orgRepo.GetMemberWithRole(c.Request.Context(), ownerOrgID, *apiKey.UserID)
-			if err != nil {
-				return http.StatusInternalServerError, "Failed to check organization membership"
-			}
-			if member == nil {
-				return http.StatusForbidden, "API key owner is no longer a member of the owning organization"
-			}
-			return 0, ""
+			return a.verifyKeyOwnerAuthority(c, apiKey, ownerOrgID, scope)
 		}
 		// Keys without an organization binding (legacy rows) fall through to
 		// the owning user's membership check below.
@@ -491,6 +493,51 @@ func (a *NamespaceAuthorizer) authorizeOrgAccess(c *gin.Context, ownerOrgID stri
 		return http.StatusForbidden, "Missing required scope in the owning organization"
 	}
 
+	return 0, ""
+}
+
+// verifyKeyOwnerAuthority re-derives, at the point of use, the authority an
+// organization-bound API key asserts: that its owner is still a member of that
+// organization AND that the member's current role template still grants the
+// scope the request needs.
+//
+// Both halves matter and neither is implied by the key. The api_keys row
+// freezes organization_id AND scopes at creation, and AuthMiddleware copies
+// both straight into the request context, so without this the key keeps
+// serving a snapshot of an authority its owner may no longer hold. Omitting
+// the scope half specifically -- which the org-bound branch previously did,
+// while the legacy unbound branch enforced it -- let a member downgraded to a
+// read-only role template keep publishing through a key issued under their old
+// role, i.e. the org-bound path was strictly weaker than the legacy one.
+//
+// The lifecycle sweep (internal/credlifecycle) deletes such keys when the
+// authority is reduced; this is the point-of-use guard that makes a key that
+// escaped a sweep fail closed anyway.
+func (a *NamespaceAuthorizer) verifyKeyOwnerAuthority(c *gin.Context, apiKey *models.APIKey, orgID string, scope auth.Scope) (int, string) {
+	// Keys with no owning user are organization service credentials: there is
+	// no membership to re-verify, so the binding stands alone (their lifecycle
+	// is the organization's, and organization deletion cascades the row away).
+	//
+	// This branch is only safe because no supported path produces a userless
+	// key by ACCIDENT: identity.api_keys.user_id is ON DELETE SET NULL, so
+	// deleting a principal would otherwise silently convert their personal
+	// keys into keys that land here and skip the membership check entirely.
+	// Every user-deletion site therefore sweeps the principal's keys before
+	// the row goes away (admin.UserHandlers.DeleteUserHandler,
+	// services.UserService.EraseUser, the SCIM deprovisioning paths).
+	if apiKey.UserID == nil || *apiKey.UserID == "" {
+		return 0, ""
+	}
+	member, err := a.orgRepo.GetMemberWithRole(c.Request.Context(), orgID, *apiKey.UserID)
+	if err != nil {
+		return http.StatusInternalServerError, "Failed to check organization membership"
+	}
+	if member == nil {
+		return http.StatusForbidden, "API key owner is no longer a member of the owning organization"
+	}
+	if !auth.HasScope(member.RoleTemplateScopes, scope) {
+		return http.StatusForbidden, "Missing required scope in the owning organization"
+	}
 	return 0, ""
 }
 
@@ -540,12 +587,23 @@ func (a *NamespaceAuthorizer) ownerOrgForArtifact(ctx context.Context, namespace
 // new namespace to. Returns (orgID, 0, "") on success, otherwise an HTTP
 // status and message. Fails closed when no organization can be derived from
 // the caller's identity.
-func (a *NamespaceAuthorizer) resolveCallerOrg(c *gin.Context) (string, int, string) {
-	// Org-scoped API keys carry their organization directly and are the
-	// strongest trust anchor: the binding is fixed at key creation and cannot
-	// be influenced by the request body.
+func (a *NamespaceAuthorizer) resolveCallerOrg(c *gin.Context, scope auth.Scope) (string, int, string) {
+	// Org-scoped API keys carry their organization directly: the binding is
+	// fixed at key creation and cannot be influenced by the request body.
+	//
+	// That makes the binding unforgeable, NOT current. It is a snapshot, and
+	// returning it unverified here was the same defect as #732 with the check
+	// simply omitted: an API key bound to an organization its owner had since
+	// been removed from could name that organization as the owner of a
+	// brand-new namespace, permanently claiming it, and publish into it.
+	// Re-verify the owner's standing before the binding is allowed to create
+	// a durable ownership record -- checking only after ClaimNamespace would
+	// still let a stale key squat namespaces on requests that then 403.
 	if keyVal, exists := c.Get("api_key"); exists {
 		if apiKey, ok := keyVal.(*models.APIKey); ok && apiKey.OrganizationID != "" {
+			if status, msg := a.verifyKeyOwnerAuthority(c, apiKey, apiKey.OrganizationID, scope); status != 0 {
+				return "", status, msg
+			}
 			return apiKey.OrganizationID, 0, ""
 		}
 	}

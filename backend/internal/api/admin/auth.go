@@ -1076,7 +1076,9 @@ func (h *AuthHandlers) reconcileGroupMemberships(ctx context.Context, userID str
 			// would make that token compare as revoked (see OrgKeysOnly's doc).
 			// The new token is derived from GetUserCombinedScopes after this
 			// removal, so it already carries the reduced authority.
-			h.creds.OrgKeysOnly(ctx, userID, org.ID, provider+" group mapping revoked")
+			// retained is nil: the user is no longer a member of this org, so
+			// every key bound to it over-asks.
+			h.creds.OrgKeysOnly(ctx, userID, org.ID, nil, provider+" group mapping revoked")
 			slog.Info(provider+" group mapping revoked", "user_id", userID, "org", orgName)
 		default:
 			// Not wanted and not a member → nothing to do.

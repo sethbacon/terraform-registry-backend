@@ -435,7 +435,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// handler's namespace cascade and the stats handler's feature-table counts
 	// fall back to public via the identity connection's search_path.
 	apiKeyHandlers := admin.NewAPIKeyHandlers(cfg, identityDB)
-	userHandlers := admin.NewUserHandlers(cfg, identityDB)
+	userHandlers := admin.NewUserHandlers(cfg, identityDB, admin.WithUserCredentialSweeper(credSweeper))
 	orgHandlers := admin.NewOrganizationHandlers(cfg, identityDB, nsClaimRepo, userTokenRevocationRepo)
 	statsHandlers := admin.NewStatsHandler(identitySqlxDB, &cfg.Scanning)
 	mirrorHandlers := admin.NewMirrorHandler(mirrorRepo, orgRepo, providerRepo)
@@ -456,7 +456,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 
 	// GDPR data-subject handlers (Article 15/17/20). Registered under
 	// /api/v1/admin/users/:id/{export,erase} below.
-	userSvc := services.NewUserService(identityDB)
+	userSvc := services.NewUserService(identityDB).WithCredentialSweeper(credSweeper)
 	gdprHandlers := admin.NewGDPRHandlers(userSvc)
 
 	// Role-template CRUD follows the identity schema; mirror methods stay public.

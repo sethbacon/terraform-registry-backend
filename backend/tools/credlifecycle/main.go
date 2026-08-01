@@ -52,8 +52,17 @@ import (
 
 var (
 	// A row that GRANTS derived authority is deleted, re-pointed, or narrowed.
+	//
+	// `delete from organizations` belongs here even though it names no
+	// principal: organization_members.organization_id is ON DELETE CASCADE, so
+	// dropping an organization silently reduces every one of its members'
+	// authority. Omitting the verb is how DeleteOrganizationHandler escaped an
+	// earlier run of this signature -- a reduction the vocabulary could not
+	// spell was a reduction the enumeration could not find. (The \b matters:
+	// "organization_members" must not match here, it has its own pattern.)
 	reReduce = regexp.MustCompile(`(?is)` + strings.Join([]string{
 		`delete\s+from\s+organization_members`,
+		`delete\s+from\s+organizations\b`,
 		`delete\s+from\s+users\b`,
 		`delete\s+from\s+role_templates`,
 		`update\s+organization_members\s+set[^;]*role_template_id`,
@@ -67,11 +76,58 @@ var (
 		`update\s+user_token_revocations`,
 	}, "|"))
 
-	reAPIKey = regexp.MustCompile(`(?is)` + strings.Join([]string{
-		`delete\s+from\s+api_keys`,
-		`update\s+api_keys\s+set[^;]*(is_active|revoked|expires_at)`,
-	}, "|"))
+	// A DELETE is unambiguous. An UPDATE is not, and is classified by
+	// isKeyInvalidatingUpdate below rather than by a regexp: the previous
+	// pattern `update api_keys set[^;]*(is_active|revoked|expires_at)` also
+	// matched the ORDINARY key-edit path
+	//
+	//	UPDATE api_keys SET name = $2, description = $3, scopes = $4, expires_at = $5
+	//
+	// (identity/store.APIKeyRepository.Update), so any future site that merely
+	// RENAMED a key would have scored as having swept it. A signature that
+	// counts an edit as a revocation cannot detect a missing revocation.
+	reAPIKeyDelete = regexp.MustCompile(`(?is)delete\s+from\s+api_keys`)
+
+	// The SET clause of an `UPDATE api_keys`, captured for column analysis.
+	reAPIKeyUpdate = regexp.MustCompile(`(?is)update\s+api_keys\s+set\s+([^;]*?)(?:\s+where\b|$)`)
+
+	// Columns whose assignment retires a key rather than editing it.
+	revocationColumns = map[string]bool{
+		"is_active": true, "revoked": true, "revoked_at": true,
+		"expires_at": true, "deleted_at": true, "disabled": true,
+	}
+
+	// Left-hand side of one assignment in a SET clause.
+	reAssignedColumn = regexp.MustCompile(`(?i)([a-z_][a-z0-9_]*)\s*=`)
 )
+
+// isKeyInvalidatingUpdate reports whether an `UPDATE api_keys` in this body
+// retires keys rather than editing them.
+//
+// The rule: EVERY column the statement assigns must be a revocation column,
+// and there must be at least one. `SET expires_at = NOW()` and
+// `SET is_active = false` are revocations; `SET name = $2, ..., expires_at =
+// $5` is an edit that merely happens to touch a revocation column, and
+// `SET last_used_at = $2` is neither.
+func isKeyInvalidatingUpdate(body string) bool {
+	for _, m := range reAPIKeyUpdate.FindAllStringSubmatch(body, -1) {
+		assigned := reAssignedColumn.FindAllStringSubmatch(m[1], -1)
+		if len(assigned) == 0 {
+			continue
+		}
+		allRevoking := true
+		for _, a := range assigned {
+			if !revocationColumns[strings.ToLower(a[1])] {
+				allRevoking = false
+				break
+			}
+		}
+		if allRevoking {
+			return true
+		}
+	}
+	return false
+}
 
 // exemptions are sites the analysis reaches but which are NOT instances of the
 // defect, each with the concrete technical reason. Keyed by the full type-
@@ -96,11 +152,22 @@ var exemptions = map[string]struct {
 	"(*github.com/terraform-registry/terraform-registry/internal/api/admin.AuthHandlers).SAMLACSHandler":            {"JWT", "caller of reconcileGroupMemberships"},
 	"(*github.com/terraform-registry/terraform-registry/internal/api/admin.AuthHandlers).LDAPLoginHandler":          {"JWT", "caller of reconcileGroupMemberships"},
 
-	// Hard DELETE FROM users. api_keys.user_id is ON DELETE CASCADE, so every
-	// key vanishes with the row; and AuthMiddleware aborts 401 "User not found"
-	// when a JWT's subject no longer resolves. Both families are invalidated by
-	// the schema plus the auth path rather than by an explicit sweep.
-	"(*github.com/terraform-registry/terraform-registry/internal/api/admin.UserHandlers).DeleteUserHandler": {"*", "FK ON DELETE CASCADE removes api_keys; AuthMiddleware 401s a JWT whose user is gone"},
+	// NOTE: admin.UserHandlers.DeleteUserHandler was exempted here on the
+	// grounds that "api_keys.user_id is ON DELETE CASCADE, so every key
+	// vanishes with the row". That premise was FALSE for the schema that
+	// actually serves this table. Only the registry's own legacy
+	// public.api_keys declares CASCADE
+	// (internal/db/migrations/000001_initial_schema.up.sql:60); the shared
+	// identity schema declares
+	//
+	//	identity.api_keys.user_id UUID REFERENCES identity.users(id) ON DELETE SET NULL
+	//
+	// so deleting a principal DETACHED its keys instead of destroying them,
+	// leaving userless org-bound rows that the namespace authorizer reads as
+	// organization service credentials and exempts from membership checks.
+	// The exemption is removed and the site now sweeps explicitly. Leaving
+	// this as a comment rather than deleting it: an exemption is a claim about
+	// the world, and this one records how to check the claim.
 
 	// First-boot setup promoting the bootstrap admin. It reaches the shared
 	// UpdateMemberRole implementation, but the direction is an authority
@@ -204,7 +271,7 @@ func main() {
 				if reJWT.MatchString(body) {
 					jwtSinks[obj] = true
 				}
-				if reAPIKey.MatchString(body) {
+				if reAPIKeyDelete.MatchString(body) || isKeyInvalidatingUpdate(body) {
 					keySinks[obj] = true
 				}
 				graph[obj] = n

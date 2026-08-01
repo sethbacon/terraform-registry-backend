@@ -911,6 +911,59 @@ func TestRemoveMember_NotAMember_SkipsRevocation(t *testing.T) {
 	}
 }
 
+// The API-KEY half of the sweep failing must surface as revocation_incomplete
+// just as the JWT half does.
+//
+// This is the half that matters most: a JWT expires on its own, but an API key
+// whose deletion failed is a permanently valid publish credential into the
+// organization's namespaces. Reporting a plain 200 here would tell the
+// administrator the offboarding was complete when the credential that outlives
+// everything is still live.
+func TestRemoveMember_APIKeyRevocationFails_FlagsIncomplete(t *testing.T) {
+	mock, r := newOrgRouterWithRevocation(t, true)
+	logs := captureSlogOutput(t)
+
+	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
+		WillReturnRows(sampleMemberWithRoleRow())
+	mock.ExpectExec("DELETE FROM organization_members").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	// The JWT half succeeds ...
+	mock.ExpectExec("INSERT INTO user_token_revocations").
+		WithArgs("user-1").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	// ... and the API-key half fails on the delete.
+	mock.ExpectQuery("(?s)FROM api_keys ak.*ak.organization_id").
+		WithArgs("user-1", "org-1").
+		WillReturnRows(sqlmock.NewRows(akListCols).
+			AddRow("key-stuck", "user-1", "org-1", "CI Key", nil, "hashedkey", "tfr_abc123",
+				testKeyScopes, nil, nil, nil, time.Now(), nil))
+	mock.ExpectExec("DELETE FROM api_keys WHERE id").
+		WithArgs("key-stuck").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/organizations/org-1/members/user-1", nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (the removal itself succeeded): body=%s", w.Code, w.Body.String())
+	}
+	var body struct {
+		RevocationIncomplete bool `json:"revocation_incomplete"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed to decode response body: %v: body=%s", err, w.Body.String())
+	}
+	if !body.RevocationIncomplete {
+		t.Errorf("expected revocation_incomplete=true when the API-key half failed, got body=%s", w.Body.String())
+	}
+	if !strings.Contains(logs.String(), "failed to revoke org-bound API key") {
+		t.Errorf("expected the API-key revocation failure to be logged; logs: %s", logs.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
 // A failed membership check must not block the removal itself (that lookup
 // only feeds the revocation decision, not RemoveMember), but must surface
 // that the revocation sweep may not have happened rather than returning an

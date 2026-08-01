@@ -102,8 +102,18 @@ type SCIMUser struct {
 	UserName   string      `json:"userName"`
 	Name       *SCIMName   `json:"name,omitempty"`
 	Emails     []SCIMEmail `json:"emails,omitempty"`
-	Active     bool        `json:"active"`
-	Meta       SCIMMeta    `json:"meta"`
+	// Active is a POINTER so an omitted "active" is distinguishable from an
+	// explicit "active": false.
+	//
+	// As a plain bool it zero-valued to false on every PUT that did not
+	// mention the attribute, and PutUser reads false as "deprovision" -- which
+	// since #736 means removing every organization membership AND irreversibly
+	// deleting every API key the user holds in every organization. A partial
+	// PUT from an IdP (or any client updating only a display name) would
+	// silently destroy the user's credentials fleet-wide. Deprovisioning must
+	// require the IdP to actually say active=false.
+	Active *bool    `json:"active,omitempty"`
+	Meta   SCIMMeta `json:"meta"`
 }
 
 // SCIMName is the SCIM name sub-object.
@@ -410,7 +420,9 @@ func (h *Handlers) PutUser() gin.HandlerFunc {
 			}
 		}
 
-		if !req.Active {
+		// Only an EXPLICIT active=false deprovisions. An omitted attribute
+		// leaves the user's authority (and credentials) untouched.
+		if req.Active != nil && !*req.Active {
 			_ = h.orgRepo.RemoveAllMembershipsForUser(ctx, userID)
 			// Memberships alone are not the user's authority: their JWT
 			// sessions and API keys carry a snapshot of it (issue #736).
@@ -597,6 +609,11 @@ func userToSCIM(u *models.User, baseURL string) SCIMUser {
 		emails = append(emails, SCIMEmail{Value: u.Email, Type: "work", Primary: true})
 	}
 
+	// Always rendered explicitly on the way out: existing users are active
+	// (deactivated users have no memberships). Only the INBOUND direction
+	// needs to distinguish omitted from false.
+	active := true
+
 	return SCIMUser{
 		Schemas:    []string{SchemaUser},
 		ID:         u.ID,
@@ -604,7 +621,7 @@ func userToSCIM(u *models.User, baseURL string) SCIMUser {
 		UserName:   u.Email,
 		Name:       &SCIMName{Formatted: u.Name},
 		Emails:     emails,
-		Active:     true, // Active is always true for existing users; deactivated users have no memberships
+		Active:     &active,
 		Meta: SCIMMeta{
 			ResourceType: "User",
 			Created:      u.CreatedAt.Format(time.RFC3339),

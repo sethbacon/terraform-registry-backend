@@ -30,6 +30,30 @@ updates:
       - dependency-name: "github.com/golang-migrate/migrate/v4"
         update-types: [ "version-update:semver-major" ]
 
+  # backend/tools/credlifecycle is a SEPARATE Go module (its own go.mod), so the
+  # /backend entry above does not see it: Dependabot resolves one manifest per
+  # directory and does not recurse into nested modules. It is the repository's
+  # first nested module; without this entry its golang.org/x/tools dependency
+  # would never be updated and CI would never build it.
+  - package-ecosystem: gomod
+    directory: /backend/tools/credlifecycle
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: UTC
+    reviewers:
+      - maintainers
+    labels:
+      - dependencies
+      - go
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      go-dependencies:
+        patterns:
+          - "*"
+
   # ---------------------------------------------------------------------------
   # Docker (backend/)
   # ---------------------------------------------------------------------------

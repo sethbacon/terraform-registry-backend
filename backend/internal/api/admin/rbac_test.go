@@ -1,10 +1,12 @@
 package admin
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -348,6 +350,7 @@ func TestRBACUpdateRoleTemplate_Success(t *testing.T) {
 // (keys).
 func TestRBACUpdateRoleTemplate_ScopesChanged_RevokesMemberTokens(t *testing.T) {
 	mock, r := newRBACRouterWithRevocation(t, true)
+	logs := captureSlogOutput(t)
 	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
 		WillReturnRows(sampleRTRow()) // scopes = testRTScopes = ["modules:read","providers:write"]
 	mock.ExpectExec("UPDATE role_templates.*SET display_name").
@@ -359,18 +362,25 @@ func TestRBACUpdateRoleTemplate_ScopesChanged_RevokesMemberTokens(t *testing.T) 
 	mock.ExpectExec("INSERT INTO user_token_revocations").
 		WithArgs("member-1").
 		WillReturnResult(sqlmock.NewResult(1, 1))
-	expectOrgKeySweep(mock, "member-1", "org-1", "key-m1")
+	// member-1's key asks for providers:write, which the narrowed template no
+	// longer grants → deleted.
+	expectOrgKeySweepScoped(mock, "member-1", "org-1", "key-m1", []byte(`["providers:write"]`))
 	mock.ExpectExec("INSERT INTO user_token_revocations").
 		WithArgs("member-2").
 		WillReturnResult(sqlmock.NewResult(1, 1))
-	expectOrgKeySweep(mock, "member-2", "org-2", "key-m2")
+	// member-2's key asks only for modules:read, which the new template still
+	// grants → listed but NOT deleted. Deleting it would destroy a working,
+	// unrecoverable credential that is entirely within the member's remaining
+	// authority; no DELETE is registered, so sqlmock fails the test if one is
+	// issued.
+	expectOrgKeyList(mock, "member-2", "org-2", "key-m2", []byte(`["modules:read"]`))
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("PUT", "/role-templates/"+knownUUID,
 		jsonBody(map[string]interface{}{
 			"name":         "reader",
 			"display_name": "Reader Updated",
-			"scopes":       []string{"modules:read"}, // differs from testRTScopes
+			"scopes":       []string{"modules:read"}, // narrower than testRTScopes
 		})))
 
 	if w.Code != http.StatusOK {
@@ -379,6 +389,89 @@ func TestRBACUpdateRoleTemplate_ScopesChanged_RevokesMemberTokens(t *testing.T) 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("revocation sweep was not issued: %v", err)
 	}
+	// member-2's key must not be touched at all. Asserted on the logs rather
+	// than on sqlmock: an unregistered DELETE is returned to the sweeper as an
+	// error, which its best-effort handling logs and swallows, so
+	// ExpectationsWereMet() would still pass. The sweeper names the key in
+	// both its success and its failure log, so the id appearing at all means
+	// a deletion was attempted.
+	if strings.Contains(logs.String(), "key-m2") {
+		t.Errorf("a key entirely within the retained authority was swept; logs: %s", logs.String())
+	}
+}
+
+// A scope WIDENING must not sweep anything. Every credential frozen under the
+// old, narrower template still asks for no more than its holder now has, so
+// revoking sessions and irreversibly deleting API keys would destroy working
+// credentials fleet-wide as a side effect of GRANTING permission. Asserted by
+// registering no member-lookup or revocation expectations: sqlmock fails the
+// test if the handler issues any.
+func TestRBACUpdateRoleTemplate_ScopesWidened_SkipsRevocation(t *testing.T) {
+	mock, r := newRBACRouterWithRevocation(t, true)
+	logs := captureSlogOutput(t)
+	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+		WillReturnRows(sampleRTRow()) // scopes = testRTScopes = ["modules:read","providers:write"]
+	mock.ExpectExec("UPDATE role_templates.*SET display_name").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/role-templates/"+knownUUID,
+		jsonBody(map[string]interface{}{
+			"name":         "reader",
+			"display_name": "Reader Updated",
+			// A strict superset: everything the template granted before, plus
+			// modules:write.
+			"scopes": []string{"modules:read", "providers:write", "modules:write"},
+		})))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	assertNoSweepAttempted(t, mock, logs, "a scope widening")
+}
+
+// assertNoSweepAttempted fails when the handler tried to sweep at all.
+//
+// mock.ExpectationsWereMet() alone is NOT sufficient here: sqlmock only checks
+// that every REGISTERED expectation fired, so an unexpected extra statement is
+// returned to the caller as an error and then swallowed by the sweep's
+// deliberate best-effort error handling, leaving the test green. The member
+// lookup is the sweep's first statement, so its failure log is the reliable
+// signal that a sweep was attempted.
+func assertNoSweepAttempted(t *testing.T, mock sqlmock.Sqlmock, logs *bytes.Buffer, what string) {
+	t.Helper()
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("%s must not sweep any credential: %v", what, err)
+	}
+	if strings.Contains(logs.String(), "failed to list role template members for credential revocation") {
+		t.Errorf("%s attempted a credential sweep; logs: %s", what, logs.String())
+	}
+}
+
+// A pure REORDERING of an unchanged scope set must not sweep anything either.
+// The previous gate compared the two slices index-wise, so swapping two
+// entries in the UI read as a scope change and hard-deleted every affected
+// member's org-bound API keys.
+func TestRBACUpdateRoleTemplate_ScopesReordered_SkipsRevocation(t *testing.T) {
+	mock, r := newRBACRouterWithRevocation(t, true)
+	logs := captureSlogOutput(t)
+	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+		WillReturnRows(sampleRTRow()) // scopes = testRTScopes = ["modules:read","providers:write"]
+	mock.ExpectExec("UPDATE role_templates.*SET display_name").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/role-templates/"+knownUUID,
+		jsonBody(map[string]interface{}{
+			"name":         "reader",
+			"display_name": "Reader Updated",
+			"scopes":       []string{"providers:write", "modules:read"}, // same set, swapped
+		})))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	assertNoSweepAttempted(t, mock, logs, "a pure reordering")
 }
 
 // A display-name/description-only edit that leaves scopes unchanged must not

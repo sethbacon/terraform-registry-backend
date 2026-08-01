@@ -54,11 +54,33 @@ func withScopesAndUser(scopes []string, userID string) func(c *gin.Context) {
 	}
 }
 
+// withAPIKey injects an organization service credential: an org-bound key with
+// NO owning user, whose lifecycle is the organization's and which therefore has
+// no membership to re-verify.
 func withAPIKey(orgID string, scopes []string) func(c *gin.Context) {
 	return func(c *gin.Context) {
 		c.Set("scopes", scopes)
 		c.Set("api_key", &models.APIKey{OrganizationID: orgID, Scopes: scopes})
 	}
+}
+
+// withAPIKeyOwnedBy injects an org-bound key that belongs to a user. Unlike a
+// service credential, this key's authority is derived from its owner's current
+// membership and role template, so every use must re-verify both.
+func withAPIKeyOwnedBy(orgID, userID string, scopes []string) func(c *gin.Context) {
+	return func(c *gin.Context) {
+		c.Set("scopes", scopes)
+		c.Set("user_id", userID)
+		c.Set("api_key", &models.APIKey{OrganizationID: orgID, UserID: &userID, Scopes: scopes})
+	}
+}
+
+// memberRow builds a GetMemberWithRole result row for the given role scopes.
+func memberRow(orgID, userID string, roleScopes string) *sqlmock.Rows {
+	return sqlmock.NewRows(memberRoleColsMW).AddRow(
+		orgID, userID, "role-pub", time.Now(),
+		"Pub User", "pub@test.com", "publisher", "Publisher", []byte(roleScopes),
+	)
 }
 
 func doNamespaceReq(r *gin.Engine, method, path string) *httptest.ResponseRecorder {
@@ -316,6 +338,10 @@ func TestRequirePublishAccessFromForm_FirstClaim_BindsToCallerOrg(t *testing.T) 
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectQuery("SELECT.*FROM namespace_claims").
 		WillReturnRows(sqlmock.NewRows(claimCols).AddRow("newteam", nsOrgA, nil, time.Now()))
+	// The claim's owner is re-checked unconditionally after ClaimNamespace,
+	// which is also what enforces the required scope on this path.
+	mock.ExpectQuery("SELECT.*FROM organization_members.*JOIN.*role_templates").
+		WillReturnRows(memberRow(nsOrgA, nsUserID, `["modules:write"]`))
 
 	r := gin.New()
 	r.POST("/modules",
@@ -424,7 +450,9 @@ func TestRequirePublishAccessFromForm_AmbiguousMemberships_NonAdminDenied(t *tes
 	}
 }
 
-func TestRequirePublishAccessFromForm_APIKeyOrg_FirstClaim(t *testing.T) {
+// A service credential (no owning user) still claims directly: there is no
+// membership to re-verify, so no membership query is issued.
+func TestRequirePublishAccessFromForm_APIKeyServiceCredential_FirstClaim(t *testing.T) {
 	mock, authz := newNamespaceAuthzTestDeps(t)
 
 	mock.ExpectQuery("SELECT.*FROM namespace_claims").
@@ -446,7 +474,136 @@ func TestRequirePublishAccessFromForm_APIKeyOrg_FirstClaim(t *testing.T) {
 	r.ServeHTTP(w, multipartRequest(t, map[string]string{"namespace": "ci-team", "name": "vpc", "system": "aws"}))
 
 	if w.Code != http.StatusCreated {
-		t.Errorf("status = %d, want 201 (API key org claims directly, no membership query): body=%s", w.Code, w.Body.String())
+		t.Errorf("status = %d, want 201 (service credential has no membership to re-verify): body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet/unexpected expectations: %v", err)
+	}
+}
+
+// A USER-owned org-bound key on the first-claim path must re-verify its owner's
+// current membership and role scopes -- twice: once in resolveCallerOrg, before
+// the durable claim row is created, and once after ClaimNamespace against the
+// claim's actual owner. Previously this path issued NO membership query at all.
+func TestRequirePublishAccessFromForm_APIKeyOwned_FirstClaim_ReverifiesMembership(t *testing.T) {
+	mock, authz := newNamespaceAuthzTestDeps(t)
+
+	mock.ExpectQuery("SELECT.*FROM namespace_claims").
+		WillReturnRows(sqlmock.NewRows(claimCols))
+	mock.ExpectQuery("SELECT DISTINCT organization_id FROM").
+		WillReturnRows(sqlmock.NewRows(artifactOrgCols))
+	// resolveCallerOrg re-verifies before the claim is created.
+	mock.ExpectQuery("SELECT.*FROM organization_members.*JOIN.*role_templates").
+		WillReturnRows(memberRow(nsOrgA, nsUserID, `["modules:write"]`))
+	mock.ExpectExec("INSERT INTO namespace_claims").
+		WithArgs("ci-team", nsOrgA, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery("SELECT.*FROM namespace_claims").
+		WillReturnRows(sqlmock.NewRows(claimCols).AddRow("ci-team", nsOrgA, nil, time.Now()))
+	// authorizeOrgAccess re-verifies against the claim's owner, unconditionally.
+	mock.ExpectQuery("SELECT.*FROM organization_members.*JOIN.*role_templates").
+		WillReturnRows(memberRow(nsOrgA, nsUserID, `["modules:write"]`))
+
+	r := gin.New()
+	r.POST("/modules",
+		contextSetter(withAPIKeyOwnedBy(nsOrgA, nsUserID, []string{string(auth.ScopeModulesWrite)})),
+		authz.RequirePublishAccessFromForm(auth.ScopeModulesWrite, 100<<20),
+		func(c *gin.Context) { c.JSON(http.StatusCreated, gin.H{"ok": true}) })
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, multipartRequest(t, map[string]string{"namespace": "ci-team", "name": "vpc", "system": "aws"}))
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want 201 (current member with the scope may claim): body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet/unexpected expectations (both membership re-checks required): %v", err)
+	}
+}
+
+// THE BYPASS, as a test: a key bound to org-aaa whose owner is no longer a
+// member must not be able to claim a brand-new namespace. The claim row must
+// never be inserted -- a 403 that still records ownership would let a stale key
+// squat namespaces.
+func TestRequirePublishAccessFromForm_APIKeyOwnerRemoved_FirstClaimDenied(t *testing.T) {
+	mock, authz := newNamespaceAuthzTestDeps(t)
+
+	mock.ExpectQuery("SELECT.*FROM namespace_claims").
+		WillReturnRows(sqlmock.NewRows(claimCols))
+	mock.ExpectQuery("SELECT DISTINCT organization_id FROM").
+		WillReturnRows(sqlmock.NewRows(artifactOrgCols))
+	// Owner is gone from the organization the key is bound to.
+	mock.ExpectQuery("SELECT.*FROM organization_members.*JOIN.*role_templates").
+		WillReturnRows(sqlmock.NewRows(memberRoleColsMW))
+
+	r := gin.New()
+	r.POST("/modules",
+		contextSetter(withAPIKeyOwnedBy(nsOrgA, nsUserID, []string{string(auth.ScopeModulesWrite)})),
+		authz.RequirePublishAccessFromForm(auth.ScopeModulesWrite, 100<<20),
+		func(c *gin.Context) { c.JSON(http.StatusCreated, gin.H{"ok": true}) })
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, multipartRequest(t, map[string]string{"namespace": "ci-team", "name": "vpc", "system": "aws"}))
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (stale key may not claim a new namespace): body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet/unexpected expectations (no claim insert expected): %v", err)
+	}
+}
+
+// A member downgraded to a read-only role template whose key sweep failed must
+// not publish through the org-bound key: the key's frozen scopes are not
+// evidence of current authority.
+func TestRequirePublishAccessFromForm_APIKeyOwnerDowngraded_FirstClaimDenied(t *testing.T) {
+	mock, authz := newNamespaceAuthzTestDeps(t)
+
+	mock.ExpectQuery("SELECT.*FROM namespace_claims").
+		WillReturnRows(sqlmock.NewRows(claimCols))
+	mock.ExpectQuery("SELECT DISTINCT organization_id FROM").
+		WillReturnRows(sqlmock.NewRows(artifactOrgCols))
+	// Still a member, but the role template no longer grants modules:write.
+	mock.ExpectQuery("SELECT.*FROM organization_members.*JOIN.*role_templates").
+		WillReturnRows(memberRow(nsOrgA, nsUserID, `["modules:read"]`))
+
+	r := gin.New()
+	r.POST("/modules",
+		contextSetter(withAPIKeyOwnedBy(nsOrgA, nsUserID, []string{string(auth.ScopeModulesWrite)})),
+		authz.RequirePublishAccessFromForm(auth.ScopeModulesWrite, 100<<20),
+		func(c *gin.Context) { c.JSON(http.StatusCreated, gin.H{"ok": true}) })
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, multipartRequest(t, map[string]string{"namespace": "ci-team", "name": "vpc", "system": "aws"}))
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (downgraded member may not publish through a stale key): body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet/unexpected expectations (no claim insert expected): %v", err)
+	}
+}
+
+// The same downgrade on an ALREADY-OWNED namespace: authorizeOrgAccess's
+// org-bound-key branch must enforce the role template's scopes, exactly as the
+// legacy unbound-key/JWT branch does.
+func TestRequireNamespaceAccessFromPath_APIKeyOwnerDowngraded_Denied(t *testing.T) {
+	mock, authz := newNamespaceAuthzTestDeps(t)
+
+	mock.ExpectQuery("SELECT.*FROM namespace_claims").
+		WillReturnRows(sqlmock.NewRows(claimCols).AddRow("acme", nsOrgA, nil, time.Now()))
+	mock.ExpectQuery("SELECT.*FROM organization_members.*JOIN.*role_templates").
+		WillReturnRows(memberRow(nsOrgA, nsUserID, `["modules:read"]`))
+
+	r := gin.New()
+	r.DELETE("/modules/:namespace/:name/:system",
+		contextSetter(withAPIKeyOwnedBy(nsOrgA, nsUserID, []string{string(auth.ScopeModulesWrite)})),
+		authz.RequireNamespaceAccessFromPath(auth.ScopeModulesWrite),
+		func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+
+	w := doNamespaceReq(r, "DELETE", "/modules/acme/vpc/aws")
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (org-bound key must satisfy the role template scope): body=%s", w.Code, w.Body.String())
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet/unexpected expectations: %v", err)
@@ -539,6 +696,10 @@ func TestRequirePublishAccessFromForm_NonAdminExplicitOrg_Member_Claims(t *testi
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectQuery("SELECT.*FROM namespace_claims").
 		WillReturnRows(sqlmock.NewRows(claimCols).AddRow("newteam", nsOrgB, nil, time.Now()))
+	// resolveCallerOrg proves membership but not the required SCOPE in the
+	// chosen org; the unconditional post-claim check supplies that.
+	mock.ExpectQuery("SELECT.*FROM organization_members.*JOIN.*role_templates").
+		WillReturnRows(memberRow(nsOrgB, nsUserID, `["modules:write"]`))
 
 	r := gin.New()
 	r.POST("/modules",

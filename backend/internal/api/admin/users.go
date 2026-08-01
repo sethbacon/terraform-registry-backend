@@ -3,11 +3,13 @@ package admin
 
 import (
 	"database/sql"
+	"log/slog"
 	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/credlifecycle"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
@@ -18,16 +20,32 @@ type UserHandlers struct {
 	db       *sql.DB
 	userRepo *repositories.UserRepository
 	orgRepo  *repositories.OrganizationRepository
+	// creds invalidates the credential families a deleted principal would
+	// otherwise leave behind. May be nil in tests; the sweep is skipped.
+	creds *credlifecycle.Sweeper
+}
+
+// UserHandlersOption configures optional UserHandlers dependencies.
+type UserHandlersOption func(*UserHandlers)
+
+// WithUserCredentialSweeper wires the credential sweeper used when a principal
+// is deleted.
+func WithUserCredentialSweeper(s *credlifecycle.Sweeper) UserHandlersOption {
+	return func(h *UserHandlers) { h.creds = s }
 }
 
 // NewUserHandlers creates a new UserHandlers instance
-func NewUserHandlers(cfg *config.Config, db *sql.DB) *UserHandlers {
-	return &UserHandlers{
+func NewUserHandlers(cfg *config.Config, db *sql.DB, opts ...UserHandlersOption) *UserHandlers {
+	h := &UserHandlers{
 		cfg:      cfg,
 		db:       db,
 		userRepo: repositories.NewUserRepository(db),
 		orgRepo:  repositories.NewOrganizationRepository(db),
 	}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 // @Summary      List users
@@ -317,6 +335,41 @@ func (h *UserHandlers) DeleteUserHandler() gin.HandlerFunc {
 				"error": "User not found",
 			})
 			return
+		}
+
+		// Sweep the principal's credentials BEFORE the row goes away.
+		//
+		// It is tempting to rely on the FK cascade here, and the registry's own
+		// legacy schema does declare api_keys.user_id ON DELETE CASCADE
+		// (internal/db/migrations/000001_initial_schema.up.sql). The shared
+		// identity schema -- which is what the identity connection actually
+		// serves, and which owns this table in the shared-database deployment
+		// mode -- declares the opposite:
+		//
+		//	identity.api_keys.user_id UUID REFERENCES identity.users(id) ON DELETE SET NULL
+		//
+		// So deleting a principal DETACHES its API keys rather than destroying
+		// them, and a detached key is worse than an orphan: it is an org-bound
+		// key with a NULL user_id, which is exactly the shape
+		// NamespaceAuthorizer.verifyKeyOwnerAuthority reads as an organization
+		// SERVICE credential and exempts from any membership check. Deleting a
+		// user would silently promote their personal keys to unattributable,
+		// permanently valid org credentials.
+		//
+		// The sweep must therefore run first: after the delete there is no
+		// user_id left to find the rows by. If the delete then fails the user
+		// keeps their account but loses their credentials -- the fail-closed
+		// direction, and recoverable by re-issuing keys.
+		if h.creds != nil {
+			out := h.creds.UserDeprovisioned(c.Request.Context(), userID, "user deleted by administrator")
+			if out.Incomplete {
+				slog.Error("credential sweep incomplete before user deletion; deleting anyway would detach surviving keys",
+					"user_id", userID)
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"error": "Failed to revoke the user's credentials; user was not deleted",
+				})
+				return
+			}
 		}
 
 		// Delete user (cascading deletes will handle related records)

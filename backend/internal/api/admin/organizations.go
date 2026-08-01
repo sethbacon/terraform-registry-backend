@@ -76,16 +76,40 @@ func NewOrganizationHandlers(cfg *config.Config, db *sql.DB, claimRepo *reposito
 // misleading error response (retrying the admin action re-runs the sweep).
 // Returns true when the sweep completed, false when some part of it did not,
 // so the handler can surface revocation_incomplete to the caller.
-func (h *OrganizationHandlers) revokeOrgCredentials(c *gin.Context, userID, orgID, reason string) bool {
+//
+// retained is the scope set the user still holds in orgID after the change
+// (nil for a removal); keys asking for no more than that are left alone
+// because deleting an API key is irreversible.
+func (h *OrganizationHandlers) revokeOrgCredentials(c *gin.Context, userID, orgID string, retained []string, reason string) bool {
 	if h.creds == nil {
 		return true
 	}
-	out := h.creds.OrgAuthorityReduced(c.Request.Context(), userID, orgID, reason)
+	out := h.creds.OrgAuthorityReduced(c.Request.Context(), userID, orgID, retained, reason)
 	if out.Incomplete {
 		slog.Error("credential sweep incomplete after privilege change",
 			"user_id", userID, "organization_id", orgID, "reason", reason)
 	}
 	return !out.Incomplete
+}
+
+// retainedOrgScopes reads the scopes a member still derives from an
+// organization after a role change, for use as the sweep's retention filter.
+//
+// A lookup failure returns nil, i.e. "retains nothing", which sweeps every
+// key. That is the fail-closed direction and the right one here: the caller
+// has just reduced or reassigned this member's role, and we cannot prove any
+// key is still within the new authority.
+func (h *OrganizationHandlers) retainedOrgScopes(c *gin.Context, orgID, userID string) []string {
+	member, err := h.orgRepo.GetMemberWithRole(c.Request.Context(), orgID, userID)
+	if err != nil {
+		slog.Error("failed to read post-change role scopes; sweeping all org-bound keys for this member",
+			"user_id", userID, "organization_id", orgID, "error", err)
+		return nil
+	}
+	if member == nil {
+		return nil
+	}
+	return member.RoleTemplateScopes
 }
 
 // @Summary      List namespace ownership claims
@@ -667,6 +691,37 @@ func (h *OrganizationHandlers) DeleteOrganizationHandler() gin.HandlerFunc {
 			return
 		}
 
+		// Snapshot the membership before the delete. Deleting an organization
+		// cascades organization_members away, so this is an authority
+		// reduction for every member -- reached through a verb
+		// (DELETE FROM organizations) rather than an explicit member removal,
+		// which is precisely why it was missed.
+		//
+		// The api_keys half is genuinely handled by the schema here:
+		// api_keys.organization_id is ON DELETE CASCADE in BOTH the legacy and
+		// the identity schema (unlike user_id, see DeleteUserHandler), so the
+		// org's keys really do vanish with it. The JWT half does not: a
+		// member's session token carries the UNION of their scopes across all
+		// their organizations, computed at login, and nothing re-derives it.
+		// A member of this org plus one other keeps exercising the deleted
+		// org's scopes on every route gated only on RequireScope until their
+		// token expires.
+		//
+		// Best-effort, like every other site: a lookup failure is surfaced via
+		// revocation_incomplete rather than blocking an otherwise valid delete.
+		var members []*models.OrganizationMember
+		sweepIncomplete := false
+		if h.creds != nil {
+			var listErr error
+			members, listErr = h.orgRepo.ListMembers(c.Request.Context(), orgID)
+			if listErr != nil {
+				slog.Error("failed to list organization members before deletion; their sessions will not be revoked",
+					"organization_id", orgID, "error", listErr)
+				members = nil
+				sweepIncomplete = true
+			}
+		}
+
 		// Delete organization (cascading deletes will handle related records)
 		if err := h.orgRepo.Delete(c.Request.Context(), orgID); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
@@ -675,9 +730,21 @@ func (h *OrganizationHandlers) DeleteOrganizationHandler() gin.HandlerFunc {
 			return
 		}
 
-		c.JSON(http.StatusOK, gin.H{
-			"message": "Organization deleted successfully",
-		})
+		// retained is nil: the organization is gone, so no member derives
+		// anything from it any more. The key half is a no-op in practice
+		// (the FK cascade already removed the rows); the watermark is what
+		// actually retires the stale scope union.
+		for _, m := range members {
+			if !h.revokeOrgCredentials(c, m.UserID, orgID, nil, "organization deleted") {
+				sweepIncomplete = true
+			}
+		}
+
+		response := gin.H{"message": "Organization deleted successfully"}
+		if sweepIncomplete {
+			response["revocation_incomplete"] = true
+		}
+		c.JSON(http.StatusOK, response)
 	}
 }
 
@@ -858,8 +925,14 @@ func (h *OrganizationHandlers) UpdateMemberHandler() gin.HandlerFunc {
 		// their org-bound API keys at creation time; sweep both so the change
 		// takes effect immediately rather than waiting out the JWT TTL (issue
 		// #559 finding [9]) or, for the keys, forever (issue #732).
+		//
+		// The new template's scopes are the retention filter: a promotion
+		// (publisher -> owner) leaves every existing key within the new
+		// authority, so nothing is deleted, while a demotion deletes exactly
+		// the keys that now over-ask.
 		if !stringPtrEqual(oldRoleTemplateID, req.RoleTemplateID) {
-			h.revokeOrgCredentials(c, userID, orgID, "organization member role template changed")
+			h.revokeOrgCredentials(c, userID, orgID, h.retainedOrgScopes(c, orgID, userID),
+				"organization member role template changed")
 		}
 
 		// Get member with role template info for response
@@ -943,8 +1016,10 @@ func (h *OrganizationHandlers) RemoveMemberHandler() gin.HandlerFunc {
 		// left a working publish credential into this org's namespaces with no
 		// expiry at all (issue #732). Sweep both, but only when membership
 		// actually existed and was removed.
+		// retained is nil: a removed member derives nothing from this
+		// organization any more, so every org-bound key they hold over-asks.
 		if wasMember != nil {
-			if !h.revokeOrgCredentials(c, userID, orgID, "removed from organization") {
+			if !h.revokeOrgCredentials(c, userID, orgID, nil, "removed from organization") {
 				revocationCheckFailed = true
 			}
 		}

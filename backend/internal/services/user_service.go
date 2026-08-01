@@ -11,17 +11,30 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
+
+	"github.com/terraform-registry/terraform-registry/internal/credlifecycle"
 )
 
 // UserService provides GDPR data-subject operations.
 type UserService struct {
 	db *sql.DB
+	// creds invalidates the credential families that survive an erasure. May
+	// be nil, in which case the sweep is skipped.
+	creds *credlifecycle.Sweeper
 }
 
 // NewUserService creates a new UserService.
 func NewUserService(db *sql.DB) *UserService {
 	return &UserService{db: db}
+}
+
+// WithCredentialSweeper wires the credential sweeper used by EraseUser.
+// Returns the service for chaining.
+func (s *UserService) WithCredentialSweeper(sweeper *credlifecycle.Sweeper) *UserService {
+	s.creds = sweeper
+	return s
 }
 
 // UserDataExport is the full data export bundle for a single user (GDPR Art. 15/20).
@@ -215,14 +228,38 @@ func (s *UserService) EraseUser(ctx context.Context, userID string, erasedBy str
 		return fmt.Errorf("failed to remove memberships: %w", err)
 	}
 
-	// 4. Revoke any active JWT sessions
-	_, _ = tx.ExecContext(ctx, `
-		INSERT INTO revoked_tokens (token_id, revoked_at)
-		SELECT id, NOW() FROM user_sessions WHERE user_id = $1
-	`, userID)
-
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit erasure: %w", err)
+	}
+
+	// 4. Revoke any active JWT sessions.
+	//
+	// This step used to be an in-transaction
+	//
+	//	INSERT INTO revoked_tokens (token_id, revoked_at)
+	//	SELECT id, NOW() FROM user_sessions WHERE user_id = $1
+	//
+	// with its error deliberately discarded (`_, _ =`). There is no
+	// user_sessions table anywhere in this repository's migrations or in the
+	// shared identity schema, and the registry does not keep server-side
+	// sessions at all -- a JWT is self-contained and is stopped only by a JTI
+	// denylist hit or by the per-user revoke-all watermark. So the statement
+	// always errored, the error was swallowed, and the erasure revoked
+	// nothing: an "erased" user's outstanding sessions kept working, carrying
+	// the scope union they had at login, until the token expired. It also made
+	// the erasure LOOK swept to any reviewer (and to the enumeration
+	// signature) because the SQL text mentions revoked_tokens.
+	//
+	// The real mechanism is the watermark, which lives on a different
+	// connection from this transaction and so cannot be part of it. Running it
+	// after the commit keeps the erasure atomic and reports the sweep result
+	// separately.
+	if s.creds != nil {
+		if out := s.creds.UserDeprovisioned(ctx, userID, "gdpr erasure"); out.Incomplete {
+			slog.Error("credential sweep incomplete after GDPR erasure; the user's sessions may still be live",
+				"user_id", userID, "erased_by", erasedBy)
+			return fmt.Errorf("user data erased but credential revocation was incomplete for %s", userID)
+		}
 	}
 
 	return nil

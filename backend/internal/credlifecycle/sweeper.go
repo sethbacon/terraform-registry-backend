@@ -37,8 +37,35 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
+
+// AuthorityRetained reports whether every scope in have is still granted by
+// retained -- i.e. whether a credential frozen with `have` still asks for no
+// more than the principal currently holds.
+//
+// This is the whole difference between "the authority changed" and "the
+// authority was REDUCED", and the sweep must key off the latter. Deleting API
+// keys is irreversible (a key's secret is shown exactly once and is not
+// recoverable), so a sweep triggered by an authority INCREASE, or by a mere
+// reordering of an unchanged scope list, destroys working credentials
+// fleet-wide for no security benefit.
+//
+// Comparison is by scope semantics, not by slice identity: auth.HasScope
+// resolves the "admin" wildcard and the read/write implications, so
+// ["modules:read"] is retained under ["modules:write"], and everything is
+// retained under ["admin"]. An empty `retained` grants nothing, so any
+// credential carrying at least one scope is not retained; a credential with no
+// scopes grants nothing and is vacuously retained.
+func AuthorityRetained(have, retained []string) bool {
+	for _, s := range have {
+		if !auth.HasScope(retained, auth.Scope(s)) {
+			return false
+		}
+	}
+	return true
+}
 
 // Sweeper invalidates the credential families derived from an authority that
 // has just been reduced.
@@ -74,7 +101,10 @@ func NewSweeper(userRevocations *repositories.UserTokenRevocationRepository, api
 type Outcome struct {
 	TokensRevoked bool
 	KeysRevoked   int
-	Incomplete    bool
+	// KeysRetained counts keys the sweep deliberately left alone because every
+	// scope they carry is still granted by the principal's remaining authority.
+	KeysRetained int
+	Incomplete   bool
 }
 
 // OrgAuthorityReduced invalidates the credentials a user derives from ONE
@@ -82,17 +112,23 @@ type Outcome struct {
 // included this org) and every API key bound to that organization.
 //
 // Use for membership removal and for a membership's role-template change: in
-// both cases the org-bound key's stored scopes are a snapshot of an authority
-// the user no longer has, and middleware.AuthMiddleware will keep serving that
-// snapshot until the row is gone.
-func (s *Sweeper) OrgAuthorityReduced(ctx context.Context, userID, orgID, reason string) Outcome {
+// both cases the org-bound key's stored scopes may be a snapshot of an
+// authority the user no longer has, and middleware.AuthMiddleware will keep
+// serving that snapshot until the row is gone.
+//
+// retained is the scope set the principal STILL holds in orgID after the
+// change -- the new role template's scopes for a reassignment, nil for a
+// removal. Only keys asking for more than that are deleted; see
+// AuthorityRetained.
+func (s *Sweeper) OrgAuthorityReduced(ctx context.Context, userID, orgID string, retained []string, reason string) Outcome {
 	if s == nil {
 		return Outcome{}
 	}
 	out := s.revokeTokens(ctx, userID, reason)
-	keys, incomplete := s.revokeOrgKeys(ctx, userID, orgID, reason)
-	out.KeysRevoked = keys
-	out.Incomplete = out.Incomplete || incomplete
+	keyOut := s.revokeOrgKeys(ctx, userID, orgID, retained, reason)
+	out.KeysRevoked = keyOut.KeysRevoked
+	out.KeysRetained = keyOut.KeysRetained
+	out.Incomplete = out.Incomplete || keyOut.Incomplete
 	return out
 }
 
@@ -109,12 +145,11 @@ func (s *Sweeper) OrgAuthorityReduced(ctx context.Context, userID, orgID, reason
 // The fresh token is issued from GetUserCombinedScopes AFTER the membership was
 // removed, so it already carries the reduced authority; the API keys are the
 // family that would otherwise survive the deprovisioning indefinitely.
-func (s *Sweeper) OrgKeysOnly(ctx context.Context, userID, orgID, reason string) Outcome {
+func (s *Sweeper) OrgKeysOnly(ctx context.Context, userID, orgID string, retained []string, reason string) Outcome {
 	if s == nil {
 		return Outcome{}
 	}
-	keys, incomplete := s.revokeOrgKeys(ctx, userID, orgID, reason)
-	return Outcome{KeysRevoked: keys, Incomplete: incomplete}
+	return s.revokeOrgKeys(ctx, userID, orgID, retained, reason)
 }
 
 // UserDeprovisioned invalidates every credential the user holds anywhere: JWT
@@ -162,31 +197,42 @@ func (s *Sweeper) revokeTokens(ctx context.Context, userID, reason string) Outco
 	return Outcome{TokensRevoked: true}
 }
 
-// revokeOrgKeys deletes every API key owned by userID and bound to orgID.
-// Deletion (rather than scope narrowing) matches the recommendation on #732
-// and the existing posture for the JWT family, which is likewise invalidated
-// wholesale rather than re-scoped.
-func (s *Sweeper) revokeOrgKeys(ctx context.Context, userID, orgID, reason string) (int, bool) {
+// revokeOrgKeys deletes the API keys owned by userID and bound to orgID whose
+// frozen scopes are no longer covered by `retained`.
+//
+// Deletion (rather than scope narrowing) is the mechanism, matching the
+// recommendation on #732 and the posture for the JWT family, which is likewise
+// invalidated wholesale rather than re-scoped. But the mechanism is
+// irreversible -- an API key's secret is displayed once at creation and cannot
+// be recovered -- so it is applied per key and only where the key actually
+// over-asks. Without that filter, an authority INCREASE or a cosmetic
+// reordering of a role template's scope list would hard-delete every affected
+// member's keys fleet-wide.
+func (s *Sweeper) revokeOrgKeys(ctx context.Context, userID, orgID string, retained []string, reason string) Outcome {
 	if s.apiKeys == nil || orgID == "" {
-		return 0, false
+		return Outcome{}
 	}
 	keys, err := s.apiKeys.ListByUserAndOrganization(ctx, userID, orgID)
 	if err != nil {
 		slog.Error("credlifecycle: failed to list org-bound API keys for revocation",
 			"user_id", userID, "organization_id", orgID, "reason", reason, "error", err)
-		return 0, true
+		return Outcome{Incomplete: true}
 	}
-	revoked, incomplete := 0, false
+	var out Outcome
 	for _, k := range keys {
+		if AuthorityRetained(k.Scopes, retained) {
+			out.KeysRetained++
+			continue
+		}
 		if err := s.apiKeys.RevokeAPIKey(ctx, k.ID); err != nil {
 			slog.Error("credlifecycle: failed to revoke org-bound API key",
 				"api_key_id", k.ID, "user_id", userID, "organization_id", orgID, "reason", reason, "error", err)
-			incomplete = true
+			out.Incomplete = true
 			continue
 		}
-		revoked++
+		out.KeysRevoked++
 		slog.Info("credlifecycle: API key revoked",
 			"api_key_id", k.ID, "user_id", userID, "organization_id", orgID, "reason", reason)
 	}
-	return revoked, incomplete
+	return out
 }

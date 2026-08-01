@@ -274,9 +274,66 @@ After upgrade:
 with a non-admin token and expect estate-wide results: either grant that principal the
 `admin` scope deliberately, or update the caller to iterate per organization.
 
-**Migrations:** none for either change.
+**Credential invalidation on authority reduction (#732, #736):**
 
-**Rollback:** both are code-only; rolling back the binary restores the previous behavior.
+Reducing a principal's authority now invalidates the credentials that carry a
+*snapshot* of it. Previously only JWT sessions were swept, and only at some events;
+API keys were never swept at all, because an API key's scopes **and** its owning
+`organization_id` are frozen on the `api_keys` row at creation and are read straight
+back out by the auth middleware. An offboarded member kept a working
+`modules:write` / `providers:write` credential into the organization's namespaces
+indefinitely.
+
+These sweeps **activate on upgrade with no configuration change**, and they DELETE
+API keys. An API key's secret is displayed once at creation and cannot be recovered:
+a deleted key must be re-issued and re-distributed to whatever consumes it (CI
+pipelines, Terraform `credentials` blocks, automation). Review the list below against
+your own automation before upgrading.
+
+Events that now delete a principal's organization-bound API keys:
+
+- Removal from an organization (`DELETE /api/v1/organizations/:id/members/:user_id`).
+- A member's role-template reassignment (`PUT .../members/:user_id`) — **only** when
+  the new template grants strictly less; a promotion deletes nothing.
+- A role template's scopes being **narrowed**, or the template being deleted. Adding
+  scopes, or merely reordering the list, sweeps nothing.
+- IdP group-mapping deprovisioning at OIDC/SAML/LDAP login.
+- User deletion (`DELETE /api/v1/users/:id`) and GDPR erasure
+  (`POST /api/v1/admin/users/:id/erase`).
+
+Only keys asking for **more than the principal retains** are deleted; a key entirely
+within the remaining authority survives. Scope comparison honors the `admin` wildcard
+and the read/write implications, and is order-insensitive.
+
+**SCIM deactivation now destroys credentials.** `DELETE /scim/v2/Users/{id}`, and a
+PUT or PATCH setting `active: false`, now revoke the user's sessions and delete
+**every** API key they hold in **every** organization — not just their memberships.
+If your IdP deactivates and later reactivates users (a common lifecycle for
+contractors or leave-of-absence), reactivation restores memberships but **cannot**
+restore API keys; they must be re-issued.
+
+> **SCIM PUT semantics changed with this.** `active` is now optional: a PUT that
+> **omits** it leaves the user's authority untouched, where previously an omitted
+> `active` was indistinguishable from `active: false` and silently deprovisioned the
+> user. If you have an IdP or script relying on a partial PUT to deactivate users,
+> it must now send `"active": false` explicitly.
+
+Responses from these endpoints may carry `revocation_incomplete: true`. The authority
+change itself succeeded, but part of the credential sweep did not — treat it as an
+open incident and re-run the action.
+
+**Also in this change:** an organization-bound API key is re-verified at the point of
+use. A key whose owner has left the organization, or whose role template no longer
+grants the required scope, is now rejected (`403`) on namespace mutations even if some
+lifecycle path failed to sweep it. Long-lived keys belonging to users who have since
+been offboarded or downgraded will begin failing on upgrade — that is the intended
+correction, but audit for it before deploying if you have service automation running
+under a personal key.
+
+**Migrations:** none for any change in this section.
+
+**Rollback:** all are code-only; rolling back the binary restores the previous
+behavior. Note that API keys deleted by a sweep are **not** restored by a rollback.
 
 ---
 

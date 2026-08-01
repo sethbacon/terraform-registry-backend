@@ -80,7 +80,7 @@ func (h *RBACHandlers) WithNotifier(n *notify.Notifier) *RBACHandlers {
 // Best-effort: the scope edit has already been committed, so a lookup or
 // revocation failure is logged rather than turned into a misleading error
 // response for an otherwise-successful edit.
-func (h *RBACHandlers) revokeRoleTemplateMemberCredentials(c *gin.Context, roleTemplateID uuid.UUID, reason string) {
+func (h *RBACHandlers) revokeRoleTemplateMemberCredentials(c *gin.Context, roleTemplateID uuid.UUID, retained []string, reason string) {
 	if h.creds == nil {
 		return
 	}
@@ -90,19 +90,19 @@ func (h *RBACHandlers) revokeRoleTemplateMemberCredentials(c *gin.Context, roleT
 			"role_template_id", roleTemplateID, "reason", reason, "error", err)
 		return
 	}
-	h.sweepRoleTemplateMemberships(c, memberships, roleTemplateID, reason)
+	h.sweepRoleTemplateMemberships(c, memberships, roleTemplateID, retained, reason)
 }
 
 // sweepRoleTemplateMemberships runs the credential sweep over an already-loaded
 // membership set. DeleteRoleTemplate has to snapshot the memberships BEFORE the
 // delete commits (the FK is ON DELETE SET NULL), so it cannot use the
 // load-then-sweep helper above.
-func (h *RBACHandlers) sweepRoleTemplateMemberships(c *gin.Context, memberships []repositories.RoleTemplateMembership, roleTemplateID uuid.UUID, reason string) {
+func (h *RBACHandlers) sweepRoleTemplateMemberships(c *gin.Context, memberships []repositories.RoleTemplateMembership, roleTemplateID uuid.UUID, retained []string, reason string) {
 	if h.creds == nil {
 		return
 	}
 	for _, m := range memberships {
-		out := h.creds.OrgAuthorityReduced(c.Request.Context(), m.UserID, m.OrganizationID, reason)
+		out := h.creds.OrgAuthorityReduced(c.Request.Context(), m.UserID, m.OrganizationID, retained, reason)
 		if out.Incomplete {
 			slog.Error("credential sweep incomplete after role template change",
 				"user_id", m.UserID, "organization_id", m.OrganizationID,
@@ -319,7 +319,14 @@ func (h *RBACHandlers) UpdateRoleTemplate(c *gin.Context) {
 		return
 	}
 
-	scopesChanged := !stringSlicesEqual(existing.Scopes, req.Scopes)
+	// Only a REDUCTION invalidates anything. Adding scopes, or reordering an
+	// otherwise identical list, leaves every existing credential asking for no
+	// more than its holder still has -- and sweeping on those would revoke
+	// every affected member's sessions and irreversibly delete their org-bound
+	// API keys fleet-wide for a change that granted them more, not less.
+	// AuthorityRetained compares by scope semantics rather than slice order,
+	// so a pure reordering is correctly a no-op.
+	authorityReduced := !credlifecycle.AuthorityRetained(existing.Scopes, req.Scopes)
 
 	existing.DisplayName = req.DisplayName
 	existing.Description = &req.Description
@@ -331,34 +338,18 @@ func (h *RBACHandlers) UpdateRoleTemplate(c *gin.Context) {
 		return
 	}
 
-	// A scope edit changes what a fresh JWT would embed for every member
+	// A scope REDUCTION changes what a fresh JWT would embed for every member
 	// currently assigned this template, and equally strands the scope snapshot
 	// frozen on those members' API keys, which are never re-derived from the
 	// template (issue #732); sweep both so the change takes effect immediately
 	// instead of waiting out the JWT TTL (issue #559 finding [9]) or, for the
-	// keys, never. Display-name/description-only edits don't affect scopes, so
-	// skip the sweep for those.
-	if scopesChanged {
-		h.revokeRoleTemplateMemberCredentials(c, id, "role template scopes edited")
+	// keys, never. req.Scopes is what those members retain, so keys that ask
+	// for no more than the new list survive.
+	if authorityReduced {
+		h.revokeRoleTemplateMemberCredentials(c, id, req.Scopes, "role template scopes reduced")
 	}
 
 	c.JSON(http.StatusOK, existing)
-}
-
-// stringSlicesEqual reports whether two scope slices contain the same elements
-// in the same order. Role template scopes are stored and rendered as an
-// ordered list, so this is a simple index-wise comparison rather than a
-// set comparison.
-func stringSlicesEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // @Summary      Delete role template
@@ -438,7 +429,10 @@ func (h *RBACHandlers) DeleteRoleTemplate(c *gin.Context) {
 	// committed, so a revocation failure here is logged rather than turned
 	// into a misleading error response for an otherwise-successful deletion,
 	// matching revokeRoleTemplateMemberCredentials' own best-effort posture.
-	h.sweepRoleTemplateMemberships(c, memberships, id, "role template deleted")
+	// retained is nil: the template is gone, so its members retain none of the
+	// scopes it granted (their membership rows are ON DELETE SET NULL'd to no
+	// role template at all).
+	h.sweepRoleTemplateMemberships(c, memberships, id, nil, "role template deleted")
 
 	response := gin.H{"message": "Role template deleted"}
 	if revocationLookupFailed {

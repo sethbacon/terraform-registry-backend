@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,7 +22,28 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/middleware"
+	"github.com/terraform-registry/terraform-registry/internal/services"
 )
+
+// multipartPublishRequest builds the multipart POST a module publish uses, so
+// the first-claim rows drive RequirePublishAccessFromForm the way a real
+// publish does.
+func multipartPublishRequest(t *testing.T, fields map[string]string) *http.Request {
+	t.Helper()
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	for k, v := range fields {
+		if err := w.WriteField(k, v); err != nil {
+			t.Fatalf("WriteField(%q): %v", k, err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("multipart Close: %v", err)
+	}
+	req := httptest.NewRequest("POST", "/modules", &body)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	return req
+}
 
 // ---------------------------------------------------------------------------
 // Class test: authority-reduction must invalidate every credential family
@@ -49,18 +72,34 @@ import (
 // key owner's current membership instead of trusting the key's frozen org
 // binding, so a stale key fails closed.
 
-// expectOrgKeySweep registers the two statements that revoke every API key
-// userID holds in orgID: the org-scoped list, then the delete of the one key
-// it returns.
+// expectOrgKeySweep registers the two statements that revoke an API key userID
+// holds in orgID: the org-scoped list, then the delete of the one key it
+// returns. The key carries testKeyScopes, which no reduced authority in this
+// file still grants, so it is always the delete case.
 func expectOrgKeySweep(mock sqlmock.Sqlmock, userID, orgID, keyID string) {
+	expectOrgKeySweepScoped(mock, userID, orgID, keyID, testKeyScopes)
+}
+
+// expectOrgKeySweepScoped is expectOrgKeySweep with the swept key's frozen
+// scopes stated explicitly. The sweep only deletes keys asking for MORE than
+// the principal retains, so a row whose reduction leaves testKeyScopes intact
+// must name a scope the reduction actually removes.
+func expectOrgKeySweepScoped(mock sqlmock.Sqlmock, userID, orgID, keyID string, scopes []byte) {
+	expectOrgKeyList(mock, userID, orgID, keyID, scopes)
+	mock.ExpectExec("DELETE FROM api_keys WHERE id").
+		WithArgs(keyID).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+}
+
+// expectOrgKeyList registers ONLY the org-scoped list, with no following
+// delete: the caller is asserting that this key is RETAINED because every
+// scope it carries is still granted after the change.
+func expectOrgKeyList(mock sqlmock.Sqlmock, userID, orgID, keyID string, scopes []byte) {
 	mock.ExpectQuery("(?s)FROM api_keys ak.*ak.organization_id").
 		WithArgs(userID, orgID).
 		WillReturnRows(sqlmock.NewRows(akListCols).
 			AddRow(keyID, userID, orgID, "CI Key", nil, "hashedkey", "tfr_abc123",
-				testKeyScopes, nil, nil, nil, time.Now(), nil))
-	mock.ExpectExec("DELETE FROM api_keys WHERE id").
-		WithArgs(keyID).
-		WillReturnResult(sqlmock.NewResult(1, 1))
+				scopes, nil, nil, nil, time.Now(), nil))
 }
 
 // expectAllKeysSweep registers the statements that revoke every API key userID
@@ -109,6 +148,84 @@ func expectSCIMDeprovisionSweep(mock sqlmock.Sqlmock, userID string) {
 		WithArgs(userID).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	expectAllKeysSweep(mock, userID, "key-scim")
+}
+
+// A PUT that does not mention "active" must not deprovision anything.
+//
+// SCIMUser.Active was a plain bool, so an omitted attribute zero-valued to
+// false and PutUser read that as "deactivate": a partial PUT from an IdP -- or
+// any client updating only a display name -- silently stripped every
+// organization membership and, once #736 wired the sweep in, irreversibly
+// deleted every API key the user held in every organization. Asserted by
+// registering ONLY the lookup and the update: sqlmock fails the test if the
+// handler issues a membership delete, a watermark write, or any key statement.
+func TestSCIMPutUser_OmittedActive_DoesNotDeprovision(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	logs := captureSlogOutput(t)
+	r := newSCIMDeprovisionRouter(db)
+	mock.ExpectQuery("SELECT.*FROM users.*WHERE id").
+		WillReturnRows(scimUserRows("user-scim"))
+	mock.ExpectExec("UPDATE users").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/scim/v2/Users/user-scim",
+		bytes.NewBufferString(`{"userName":"jane@example.com","name":{"formatted":"Jane R Doe"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("a PUT omitting \"active\" deprovisioned the user: %v", err)
+	}
+	// The decisive assertion. sqlmock cannot carry it alone: the membership
+	// delete's error is discarded by design (`_ =`) and the sweep swallows its
+	// own failures, so every extra statement a wrongly-triggered deprovision
+	// issues would be absorbed and ExpectationsWereMet() would still pass.
+	if strings.Contains(logs.String(), "scim: user deactivated via PUT") {
+		t.Errorf("a PUT that never mentioned \"active\" deprovisioned the user; logs: %s", logs.String())
+	}
+}
+
+// The explicit form still deprovisions -- the fix must not disable the
+// feature, only require the IdP to actually say it. (The full sweep for this
+// path is asserted as a row in the class table above; this is the paired
+// negative/positive control for the pointer semantics.)
+func TestSCIMPutUser_ExplicitActiveFalse_StillDeprovisions(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	r := newSCIMDeprovisionRouter(db)
+	mock.ExpectQuery("SELECT.*FROM users.*WHERE id").
+		WillReturnRows(scimUserRows("user-scim"))
+	expectSCIMDeprovisionSweep(mock, "user-scim")
+	mock.ExpectExec("UPDATE users").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("PUT", "/scim/v2/Users/user-scim",
+		bytes.NewBufferString(`{"userName":"jane@example.com","active":false}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("an explicit active=false must still deprovision: %v", err)
+	}
 }
 
 type credLifecycleCase struct {
@@ -164,10 +281,16 @@ func TestCredentialLifecycleClass_AuthorityReductionInvalidatesAllCredentialFami
 					WillReturnRows(sampleOrgMemberRowWithRole(oldRoleTemplateUUID))
 				mock.ExpectExec("UPDATE organization_members").
 					WillReturnResult(sqlmock.NewResult(1, 1))
+				// The scopes the member RETAINS under the new role template
+				// decide which keys over-ask. sampleMemberWithRoleRow carries
+				// modules:read, so a key with providers:write is deleted.
+				mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
+					WillReturnRows(sampleMemberWithRoleRow())
 				mock.ExpectExec("INSERT INTO user_token_revocations").
 					WithArgs("user-1").
 					WillReturnResult(sqlmock.NewResult(1, 1))
-				expectOrgKeySweep(mock, "user-1", "org-1", "key-rerole")
+				expectOrgKeySweepScoped(mock, "user-1", "org-1", "key-rerole",
+					[]byte(`["providers:write"]`))
 				mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
 					WillReturnRows(sampleMemberWithRoleRow())
 
@@ -200,7 +323,10 @@ func TestCredentialLifecycleClass_AuthorityReductionInvalidatesAllCredentialFami
 				mock.ExpectExec("INSERT INTO user_token_revocations").
 					WithArgs("member-1").
 					WillReturnResult(sqlmock.NewResult(1, 1))
-				expectOrgKeySweep(mock, "member-1", "org-1", "key-rt-edit")
+				// The key carries providers:write, which the narrowed template
+				// no longer grants, so it over-asks and is deleted.
+				expectOrgKeySweepScoped(mock, "member-1", "org-1", "key-rt-edit",
+					[]byte(`["providers:write"]`))
 
 				w := httptest.NewRecorder()
 				r.ServeHTTP(w, httptest.NewRequest("PUT", "/role-templates/"+knownUUID,
@@ -355,6 +481,222 @@ func TestCredentialLifecycleClass_AuthorityReductionInvalidatesAllCredentialFami
 				r.ServeHTTP(w, req)
 				if w.Code != http.StatusOK {
 					t.Fatalf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+				}
+			},
+		},
+		{
+			// Reached through DELETE FROM organizations cascading
+			// organization_members -- a reduce verb the enumeration signature's
+			// vocabulary did not originally contain, which is why this site was
+			// missed. The api_keys half really is handled by the FK
+			// (organization_id is ON DELETE CASCADE in both schemas); the JWT
+			// half is not, because a member's token carries a cross-org scope
+			// union computed at login.
+			site: "admin.OrganizationHandlers.DeleteOrganizationHandler / DELETE /api/v1/organizations/:id",
+			run: func(t *testing.T, db *sql.DB, mock sqlmock.Sqlmock) {
+				h := NewOrganizationHandlers(&config.Config{}, db,
+					repositories.NewNamespaceClaimRepository(db),
+					repositories.NewUserTokenRevocationRepository(db))
+				r := gin.New()
+				r.DELETE("/organizations/:id", h.DeleteOrganizationHandler())
+
+				mock.ExpectQuery("SELECT.*FROM organizations WHERE id").
+					WillReturnRows(sqlmock.NewRows(authOrgCols).
+						AddRow("org-1", "acme", "Acme Corp", nil, nil, time.Now(), time.Now()))
+				mock.ExpectQuery("SELECT COUNT.*FROM namespace_claims").
+					WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+				mock.ExpectQuery("SELECT EXISTS").
+					WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+				// Members are snapshotted BEFORE the delete: the cascade
+				// removes them, so afterwards there is nobody left to sweep.
+				mock.ExpectQuery("SELECT.*FROM organization_members WHERE organization_id").
+					WillReturnRows(sqlmock.NewRows(authMemberCols).
+						AddRow("org-1", "user-1", nil, time.Now()))
+				mock.ExpectExec("DELETE FROM organizations").
+					WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectExec("INSERT INTO user_token_revocations").
+					WithArgs("user-1").
+					WillReturnResult(sqlmock.NewResult(1, 1))
+				expectOrgKeySweep(mock, "user-1", "org-1", "key-org-deleted")
+
+				w := httptest.NewRecorder()
+				r.ServeHTTP(w, httptest.NewRequest("DELETE", "/organizations/org-1", nil))
+				if w.Code != http.StatusOK {
+					t.Fatalf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+				}
+			},
+		},
+		{
+			// Previously EXEMPTED on the false premise that
+			// api_keys.user_id is ON DELETE CASCADE. It is CASCADE only in the
+			// registry's legacy schema; identity.api_keys declares ON DELETE
+			// SET NULL, so the delete detached the principal's keys into
+			// userless org-bound rows that the namespace authorizer reads as
+			// organization service credentials. The sweep runs BEFORE the
+			// delete because afterwards there is no user_id left to find the
+			// rows by.
+			site: "admin.UserHandlers.DeleteUserHandler / DELETE /api/v1/users/:id",
+			run: func(t *testing.T, db *sql.DB, mock sqlmock.Sqlmock) {
+				h := NewUserHandlers(&config.Config{}, db, WithUserCredentialSweeper(
+					credlifecycle.NewSweeper(
+						repositories.NewUserTokenRevocationRepository(db),
+						repositories.NewAPIKeyRepository(db))))
+				r := gin.New()
+				r.DELETE("/users/:id", h.DeleteUserHandler())
+
+				mock.ExpectQuery("SELECT.*FROM users.*WHERE id").
+					WillReturnRows(scimUserRows("user-1"))
+				mock.ExpectExec("INSERT INTO user_token_revocations").
+					WithArgs("user-1").
+					WillReturnResult(sqlmock.NewResult(1, 1))
+				expectAllKeysSweep(mock, "user-1", "key-deleted-user")
+				mock.ExpectExec("DELETE FROM users").
+					WillReturnResult(sqlmock.NewResult(0, 1))
+
+				w := httptest.NewRecorder()
+				r.ServeHTTP(w, httptest.NewRequest("DELETE", "/users/user-1", nil))
+				if w.Code != http.StatusOK {
+					t.Fatalf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+				}
+			},
+		},
+		{
+			// EraseUser deletes api_keys inside its transaction but its JWT
+			// step was an INSERT ... SELECT FROM user_sessions -- a table that
+			// exists in no migration in this repository -- with its error
+			// discarded. It always failed, so an "erased" user kept live
+			// sessions, while the SQL text made the site LOOK swept.
+			site: "services.UserService.EraseUser / POST /api/v1/admin/users/:id/erase",
+			run: func(t *testing.T, db *sql.DB, mock sqlmock.Sqlmock) {
+				svc := services.NewUserService(db).WithCredentialSweeper(
+					credlifecycle.NewSweeper(
+						repositories.NewUserTokenRevocationRepository(db),
+						repositories.NewAPIKeyRepository(db)))
+				r := gin.New()
+				r.Use(func(c *gin.Context) { c.Set("user_id", knownUserUUID) })
+				r.POST("/users/:id/erase", NewGDPRHandlers(svc).EraseUserHandler())
+
+				mock.ExpectBegin()
+				mock.ExpectQuery("SELECT EXISTS").
+					WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+				mock.ExpectExec("UPDATE users").
+					WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectExec("DELETE FROM api_keys WHERE user_id").
+					WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectExec("DELETE FROM organization_members").
+					WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectCommit()
+				// The real JWT mechanism: the per-user revoke-all watermark,
+				// which lives on a different connection and so runs after the
+				// commit.
+				mock.ExpectExec("INSERT INTO user_token_revocations").
+					WithArgs("user-1").
+					WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectQuery("(?s)FROM api_keys ak.*WHERE ak.user_id").
+					WithArgs("user-1").
+					WillReturnRows(sqlmock.NewRows(akListCols))
+
+				w := httptest.NewRecorder()
+				r.ServeHTTP(w, httptest.NewRequest("POST", "/users/user-1/erase", nil))
+				if w.Code != http.StatusOK {
+					t.Fatalf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+				}
+			},
+		},
+		{
+			// The org-bound key path is no WEAKER than the legacy unbound one:
+			// a member downgraded to a read-only role template cannot publish
+			// through a key issued under their old role, even though the key's
+			// frozen scopes still say modules:write.
+			site: "middleware.NamespaceAuthorizer.verifyKeyOwnerAuthority (org-bound API key, owner downgraded)",
+			run: func(t *testing.T, db *sql.DB, mock sqlmock.Sqlmock) {
+				authz := middleware.NewNamespaceAuthorizer(
+					repositories.NewOrganizationRepository(db),
+					repositories.NewNamespaceClaimRepository(db),
+					repositories.NewModuleRepository(db),
+					repositories.NewProviderRepository(db))
+
+				mock.ExpectQuery("SELECT.*FROM namespace_claims").
+					WillReturnRows(sqlmock.NewRows([]string{"namespace", "organization_id", "claimed_by", "created_at"}).
+						AddRow("acme", "org-1", nil, time.Now()))
+				// Still a member, but the role template grants only read.
+				mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
+					WillReturnRows(sqlmock.NewRows(memberRoleCols).AddRow(
+						"org-1", "user-1", "rt-viewer", time.Now(),
+						"Alice", "alice@example.com", "viewer", "Viewer",
+						[]byte(`["modules:read"]`)))
+
+				owner := "user-1"
+				r := gin.New()
+				r.DELETE("/modules/:namespace/:name/:system",
+					func(c *gin.Context) {
+						c.Set("scopes", []string{string(auth.ScopeModulesWrite)})
+						c.Set("user_id", owner)
+						c.Set("api_key", &models.APIKey{
+							ID:             "key-downgraded",
+							UserID:         &owner,
+							OrganizationID: "org-1",
+							Scopes:         []string{string(auth.ScopeModulesWrite)},
+						})
+					},
+					authz.RequireNamespaceAccessFromPath(auth.ScopeModulesWrite),
+					func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+
+				w := httptest.NewRecorder()
+				r.ServeHTTP(w, httptest.NewRequest("DELETE", "/modules/acme/vpc/aws", nil))
+				if w.Code != http.StatusForbidden {
+					t.Fatalf("status = %d, want 403 (downgraded owner must not publish through a stale key): body=%s",
+						w.Code, w.Body.String())
+				}
+			},
+		},
+		{
+			// The FIRST-CLAIM path, which previously performed no
+			// authorization at all on the winning branch: resolveCallerOrg
+			// returned the key's frozen organization binding as "the strongest
+			// trust anchor" and authorizeOrgAccess ran only when the caller
+			// LOST a concurrent claim race. A key bound to an org its owner had
+			// left could claim a brand-new namespace and publish: 201, zero
+			// membership queries.
+			site: "middleware.NamespaceAuthorizer.resolveCallerOrg (org-bound API key, first claim, owner removed)",
+			run: func(t *testing.T, db *sql.DB, mock sqlmock.Sqlmock) {
+				authz := middleware.NewNamespaceAuthorizer(
+					repositories.NewOrganizationRepository(db),
+					repositories.NewNamespaceClaimRepository(db),
+					repositories.NewModuleRepository(db),
+					repositories.NewProviderRepository(db))
+
+				mock.ExpectQuery("SELECT.*FROM namespace_claims").
+					WillReturnRows(sqlmock.NewRows([]string{"namespace", "organization_id", "claimed_by", "created_at"}))
+				mock.ExpectQuery("SELECT DISTINCT organization_id FROM").
+					WillReturnRows(sqlmock.NewRows([]string{"organization_id"}))
+				// Owner is no longer a member. No INSERT INTO namespace_claims
+				// is registered: a stale key must not even squat the namespace.
+				mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
+					WillReturnRows(sqlmock.NewRows(memberRoleCols))
+
+				owner := "user-1"
+				r := gin.New()
+				r.POST("/modules",
+					func(c *gin.Context) {
+						c.Set("scopes", []string{string(auth.ScopeModulesWrite)})
+						c.Set("user_id", owner)
+						c.Set("api_key", &models.APIKey{
+							ID:             "key-stale-claimer",
+							UserID:         &owner,
+							OrganizationID: "org-1",
+							Scopes:         []string{string(auth.ScopeModulesWrite)},
+						})
+					},
+					authz.RequirePublishAccessFromForm(auth.ScopeModulesWrite, 100<<20),
+					func(c *gin.Context) { c.JSON(http.StatusCreated, gin.H{"ok": true}) })
+
+				w := httptest.NewRecorder()
+				r.ServeHTTP(w, multipartPublishRequest(t, map[string]string{
+					"namespace": "brand-new", "name": "vpc", "system": "aws"}))
+				if w.Code != http.StatusForbidden {
+					t.Fatalf("status = %d, want 403 (stale key must not claim a new namespace): body=%s",
+						w.Code, w.Body.String())
 				}
 			},
 		},
