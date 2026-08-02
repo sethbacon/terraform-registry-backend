@@ -514,19 +514,30 @@ func (a *NamespaceAuthorizer) authorizeOrgAccess(c *gin.Context, ownerOrgID stri
 // authority is reduced; this is the point-of-use guard that makes a key that
 // escaped a sweep fail closed anyway.
 func (a *NamespaceAuthorizer) verifyKeyOwnerAuthority(c *gin.Context, apiKey *models.APIKey, orgID string, scope auth.Scope) (int, string) {
-	// Keys with no owning user are organization service credentials: there is
-	// no membership to re-verify, so the binding stands alone (their lifecycle
-	// is the organization's, and organization deletion cascades the row away).
+	// A key with no owning user is REFUSED, not waved through as an
+	// "organization service credential".
 	//
-	// This branch is only safe because no supported path produces a userless
-	// key by ACCIDENT: identity.api_keys.user_id is ON DELETE SET NULL, so
-	// deleting a principal would otherwise silently convert their personal
-	// keys into keys that land here and skip the membership check entirely.
-	// Every user-deletion site therefore sweeps the principal's keys before
-	// the row goes away (admin.UserHandlers.DeleteUserHandler,
-	// services.UserService.EraseUser, the SCIM deprovisioning paths).
+	// That was the previous reading, and it was wrong for this product: the
+	// registry mints an API key in exactly two places -- CreateAPIKeyHandler,
+	// which sets UserID from the authenticated caller, and RotateAPIKeyHandler,
+	// which copies the old key's UserID -- and the identity store has exactly
+	// one INSERT. No supported path produces a userless key. What DOES produce
+	// one is identity.api_keys.user_id being ON DELETE SET NULL: deleting a
+	// principal detaches their personal keys, and this branch then read the
+	// detachment as a promotion to a credential exempt from every membership
+	// check.
+	//
+	// Sweeping at every user-deletion site closes that going forward, but the
+	// keys detached BEFORE this shipped are already in the table, which is the
+	// whole premise of #732. Failing closed here is what covers them without
+	// depending on a data migration having run (migration 000050 drains the
+	// population on the other routes; see docs/upgrade-guide.md).
+	//
+	// The cost of being wrong is bounded and visible: an operator who really
+	// did hand-create a userless service key gets a clear 403 and can re-issue
+	// it through the API, which binds it to a real principal.
 	if apiKey.UserID == nil || *apiKey.UserID == "" {
-		return 0, ""
+		return http.StatusForbidden, "API key has no owning user; re-issue it through the API key endpoints"
 	}
 	member, err := a.orgRepo.GetMemberWithRole(c.Request.Context(), orgID, *apiKey.UserID)
 	if err != nil {

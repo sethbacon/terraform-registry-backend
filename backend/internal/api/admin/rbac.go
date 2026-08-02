@@ -79,36 +79,43 @@ func (h *RBACHandlers) WithNotifier(n *notify.Notifier) *RBACHandlers {
 //
 // Best-effort: the scope edit has already been committed, so a lookup or
 // revocation failure is logged rather than turned into a misleading error
-// response for an otherwise-successful edit.
-func (h *RBACHandlers) revokeRoleTemplateMemberCredentials(c *gin.Context, roleTemplateID uuid.UUID, retained []string, reason string) {
+// response for an otherwise-successful edit. It is REPORTED, though: the
+// returned bool is false when any part of the sweep did not land, so the
+// handler can surface revocation_incomplete instead of answering a clean 200
+// for an authority reduction whose credentials are still live.
+func (h *RBACHandlers) revokeRoleTemplateMemberCredentials(c *gin.Context, roleTemplateID uuid.UUID, retained []string, reason string) bool {
 	if h.creds == nil {
-		return
+		return true
 	}
 	memberships, err := h.rbacRepo.ListRoleTemplateMemberships(c.Request.Context(), roleTemplateID)
 	if err != nil {
 		slog.Error("failed to list role template members for credential revocation",
 			"role_template_id", roleTemplateID, "reason", reason, "error", err)
-		return
+		return false
 	}
-	h.sweepRoleTemplateMemberships(c, memberships, roleTemplateID, retained, reason)
+	return h.sweepRoleTemplateMemberships(c, memberships, roleTemplateID, retained, reason)
 }
 
 // sweepRoleTemplateMemberships runs the credential sweep over an already-loaded
 // membership set. DeleteRoleTemplate has to snapshot the memberships BEFORE the
 // delete commits (the FK is ON DELETE SET NULL), so it cannot use the
-// load-then-sweep helper above.
-func (h *RBACHandlers) sweepRoleTemplateMemberships(c *gin.Context, memberships []repositories.RoleTemplateMembership, roleTemplateID uuid.UUID, retained []string, reason string) {
+// load-then-sweep helper above. Returns false when any member's sweep was
+// incomplete.
+func (h *RBACHandlers) sweepRoleTemplateMemberships(c *gin.Context, memberships []repositories.RoleTemplateMembership, roleTemplateID uuid.UUID, retained []string, reason string) bool {
 	if h.creds == nil {
-		return
+		return true
 	}
+	complete := true
 	for _, m := range memberships {
 		out := h.creds.OrgAuthorityReduced(c.Request.Context(), m.UserID, m.OrganizationID, retained, reason)
 		if out.Incomplete {
 			slog.Error("credential sweep incomplete after role template change",
 				"user_id", m.UserID, "organization_id", m.OrganizationID,
 				"role_template_id", roleTemplateID, "reason", reason)
+			complete = false
 		}
 	}
+	return complete
 }
 
 // notifyApprovalPending emails the configured admin recipients and fans out
@@ -275,7 +282,7 @@ func (h *RBACHandlers) CreateRoleTemplate(c *gin.Context) {
 }
 
 // @Summary      Update role template
-// @Description  Update an existing custom role template. Cannot modify system role templates. Requires admin scope.
+// @Description  Update an existing custom role template. Cannot modify system role templates. Requires admin scope. When the edit NARROWS the template's scopes, the affected members' sessions and over-asking API keys are revoked; if that sweep does not fully land the 200 body carries an extra `revocation_incomplete: true` field.
 // @Tags         RBAC
 // @Security     Bearer
 // @Accept       json
@@ -345,8 +352,20 @@ func (h *RBACHandlers) UpdateRoleTemplate(c *gin.Context) {
 	// instead of waiting out the JWT TTL (issue #559 finding [9]) or, for the
 	// keys, never. req.Scopes is what those members retain, so keys that ask
 	// for no more than the new list survive.
-	if authorityReduced {
-		h.revokeRoleTemplateMemberCredentials(c, id, req.Scopes, "role template scopes reduced")
+	//
+	// A failed sweep is surfaced to the caller, exactly as DeleteRoleTemplate,
+	// RemoveMemberHandler and DeleteOrganizationHandler do. Narrowing a
+	// template's scopes and receiving a clean 200 while the affected members'
+	// API keys are still live is the same silent failure those handlers were
+	// changed to stop reporting as success.
+	if authorityReduced && !h.revokeRoleTemplateMemberCredentials(c, id, req.Scopes, "role template scopes reduced") {
+		// Embedding promotes the template's own fields, so the success body is
+		// unchanged apart from the added flag.
+		c.JSON(http.StatusOK, struct {
+			*models.RoleTemplate
+			RevocationIncomplete bool `json:"revocation_incomplete"`
+		}{existing, true})
+		return
 	}
 
 	c.JSON(http.StatusOK, existing)
@@ -432,7 +451,12 @@ func (h *RBACHandlers) DeleteRoleTemplate(c *gin.Context) {
 	// retained is nil: the template is gone, so its members retain none of the
 	// scopes it granted (their membership rows are ON DELETE SET NULL'd to no
 	// role template at all).
-	h.sweepRoleTemplateMemberships(c, memberships, id, nil, "role template deleted")
+	if !h.sweepRoleTemplateMemberships(c, memberships, id, nil, "role template deleted") {
+		// The members were known but at least one sweep failed -- the same
+		// "reduction landed, credentials did not" state the lookup failure
+		// below reports, reached one step later.
+		revocationLookupFailed = true
+	}
 
 	response := gin.H{"message": "Role template deleted"}
 	if revocationLookupFailed {

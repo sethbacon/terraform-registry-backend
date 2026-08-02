@@ -208,6 +208,42 @@ func AuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, a
 			c.Set("organization_id", apiKey.OrganizationID)
 			c.Set("scopes", apiKey.Scopes)
 
+			// Re-derive the key's authority HERE, where the binding is
+			// established, rather than only at the two call sites that happened
+			// to have the check (NamespaceAuthorizer.authorizeOrgAccess and
+			// resolveCallerOrg).
+			//
+			// organization_id and scopes are both frozen on the api_keys row at
+			// creation, and the two Set calls above copy them into the context
+			// for EVERY route. Only module/provider mutations run through the
+			// namespace authorizer; everything else -- the admin surface,
+			// /apikeys, SCIM, quota and rate-limit bucketing -- consumed the
+			// snapshot with no re-derivation at all, so a member who had been
+			// removed or downgraded kept the authority their key was minted
+			// with on all of those routes.
+			//
+			// COST, stated rather than implied: one indexed membership read per
+			// API-key-authenticated request. It lands on a path that already
+			// does a key-prefix query, a bcrypt comparison (which dominates the
+			// request's latency by orders of magnitude) and a user load, so it
+			// is roughly a 30% increase in query count and a rounding error in
+			// latency. Leaving the check only at the namespace authorizer would
+			// also have been a cost decision -- just an unstated one, paid in
+			// authority instead of milliseconds.
+			//
+			// A nil orgRepo means the subsystem is not wired (unit tests) and
+			// the re-derivation is skipped, matching how the tokenRepo and
+			// userRevocations checks on the JWT path above behave. Every
+			// production wiring in router_routes.go passes the real repository.
+			if orgRepo != nil && apiKey.OrganizationID != "" {
+				scopes, status, msg := currentKeyScopes(c.Request.Context(), orgRepo, apiKey)
+				if status != 0 {
+					c.AbortWithStatusJSON(status, gin.H{"error": msg})
+					return
+				}
+				c.Set("scopes", scopes)
+			}
+
 			// Load user if exists
 			if apiKey.UserID != nil {
 				user, _ := userRepo.GetUserByID(c.Request.Context(), *apiKey.UserID)
@@ -226,6 +262,48 @@ func AuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, a
 			"error": "Invalid credentials",
 		})
 	}
+}
+
+// currentKeyScopes re-derives what an organization-bound API key may currently
+// ask for, from its owner's CURRENT membership rather than from the snapshot
+// frozen on the api_keys row.
+//
+// It returns (scopes, 0, "") when the key still stands, otherwise an HTTP
+// status and message. Every failure direction is closed:
+//
+//   - No owning user. Not an "organization service credential": the registry
+//     mints keys only through CreateAPIKeyHandler (UserID from the
+//     authenticated caller) and RotateAPIKeyHandler (copies it), so a NULL
+//     user_id means the owner was deleted and identity.api_keys' ON DELETE SET
+//     NULL detached the row. See verifyKeyOwnerAuthority and migration 000050.
+//   - Owner no longer a member of the bound organization. The binding is a
+//     snapshot, not evidence of current standing (issue #732).
+//   - Lookup failure. 500 rather than serving the frozen snapshot.
+//
+// On success the key's frozen scopes are INTERSECTED with what the owner's
+// current role template grants, by scope semantics (auth.HasScope resolves the
+// "admin" wildcard and the read/write implications). A key can never ask for
+// more than its owner currently holds in the organization it is bound to; the
+// lifecycle sweep normally deletes such a key first, which makes this a no-op
+// in steady state and a backstop when a sweep did not land.
+func currentKeyScopes(ctx context.Context, orgRepo *repositories.OrganizationRepository, apiKey *models.APIKey) ([]string, int, string) {
+	if apiKey.UserID == nil || *apiKey.UserID == "" {
+		return nil, http.StatusUnauthorized, "API key has no owning user; re-issue it through the API key endpoints"
+	}
+	member, err := orgRepo.GetMemberWithRole(ctx, apiKey.OrganizationID, *apiKey.UserID)
+	if err != nil {
+		return nil, http.StatusInternalServerError, "Failed to verify API key organization membership"
+	}
+	if member == nil {
+		return nil, http.StatusUnauthorized, "API key owner is no longer a member of the bound organization"
+	}
+	scopes := make([]string, 0, len(apiKey.Scopes))
+	for _, s := range apiKey.Scopes {
+		if auth.HasScope(member.RoleTemplateScopes, auth.Scope(s)) {
+			scopes = append(scopes, s)
+		}
+	}
+	return scopes, 0, ""
 }
 
 // OptionalAuthMiddleware - same as AuthMiddleware but doesn't abort if no auth
@@ -315,12 +393,29 @@ func OptionalAuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepos
 					_ = apiKeyRepo.UpdateLastUsed(ctx, apiKey.ID)
 				})
 
+				// Same point-of-establishment re-derivation as AuthMiddleware
+				// (see currentKeyScopes). A key whose owner has left the bound
+				// organization is not an error here -- this middleware guards
+				// optionally-authenticated public registry endpoints -- so the
+				// request simply continues UNAUTHENTICATED, exactly as a
+				// revoked JWT does above. That is the fail-closed direction:
+				// private artifacts stop resolving for the stale key.
+				scopes := apiKey.Scopes
+				if orgRepo != nil && apiKey.OrganizationID != "" {
+					current, status, _ := currentKeyScopes(c.Request.Context(), orgRepo, apiKey)
+					if status != 0 {
+						c.Next()
+						return
+					}
+					scopes = current
+				}
+
 				// Set context values
 				c.Set("api_key", apiKey)
 				c.Set("api_key_id", apiKey.ID)
 				c.Set("auth_method", "api_key")
 				c.Set("organization_id", apiKey.OrganizationID)
-				c.Set("scopes", apiKey.Scopes)
+				c.Set("scopes", scopes)
 
 				// Load user if exists
 				if apiKey.UserID != nil {

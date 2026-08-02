@@ -54,10 +54,17 @@ func withScopesAndUser(scopes []string, userID string) func(c *gin.Context) {
 	}
 }
 
-// withAPIKey injects an organization service credential: an org-bound key with
-// NO owning user, whose lifecycle is the organization's and which therefore has
-// no membership to re-verify.
-func withAPIKey(orgID string, scopes []string) func(c *gin.Context) {
+// withUserlessAPIKey injects an org-bound key with NO owning user.
+//
+// This used to be called withAPIKey and was described as an "organization
+// service credential" with no membership to re-verify. That premise was wrong:
+// the registry mints keys only through CreateAPIKeyHandler (UserID from the
+// authenticated caller) and RotateAPIKeyHandler (copies it), so no supported
+// path produces a userless key. What produces one is
+// identity.api_keys.user_id being ON DELETE SET NULL -- i.e. the owner was
+// DELETED and the row was detached. Such a key is now refused, so this helper
+// exists to model the orphan, not a legitimate caller.
+func withUserlessAPIKey(orgID string, scopes []string) func(c *gin.Context) {
 	return func(c *gin.Context) {
 		c.Set("scopes", scopes)
 		c.Set("api_key", &models.APIKey{OrganizationID: orgID, Scopes: scopes})
@@ -187,9 +194,11 @@ func TestRequireNamespaceAccessFromPath_APIKeyOrgMismatch_Denied(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM namespace_claims").
 		WillReturnRows(sqlmock.NewRows(claimCols).AddRow("acme", nsOrgB, nil, time.Now()))
 
+	// No membership lookup is registered: the binding mismatch is decided
+	// before the owner's standing is ever consulted.
 	r := gin.New()
 	r.DELETE("/modules/:namespace/:name/:system",
-		contextSetter(withAPIKey(nsOrgA, []string{string(auth.ScopeModulesWrite)})),
+		contextSetter(withAPIKeyOwnedBy(nsOrgA, nsUserID, []string{string(auth.ScopeModulesWrite)})),
 		authz.RequireNamespaceAccessFromPath(auth.ScopeModulesWrite),
 		func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
 
@@ -204,16 +213,49 @@ func TestRequireNamespaceAccessFromPath_APIKeyOrgMatch_Allowed(t *testing.T) {
 
 	mock.ExpectQuery("SELECT.*FROM namespace_claims").
 		WillReturnRows(sqlmock.NewRows(claimCols).AddRow("acme", nsOrgA, nil, time.Now()))
+	// A matching binding is necessary but not sufficient: the owner's current
+	// membership and role scopes decide it.
+	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
+		WillReturnRows(memberRow(nsOrgA, nsUserID, `["modules:write"]`))
 
 	r := gin.New()
 	r.DELETE("/modules/:namespace/:name/:system",
-		contextSetter(withAPIKey(nsOrgA, []string{string(auth.ScopeModulesWrite)})),
+		contextSetter(withAPIKeyOwnedBy(nsOrgA, nsUserID, []string{string(auth.ScopeModulesWrite)})),
 		authz.RequireNamespaceAccessFromPath(auth.ScopeModulesWrite),
 		func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
 
 	w := doNamespaceReq(r, "DELETE", "/modules/acme/vpc/aws")
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200 (API key org matches owner): body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet/unexpected expectations: %v", err)
+	}
+}
+
+// An org-bound key with no owning user is REFUSED rather than accepted as an
+// organization service credential. identity.api_keys.user_id is ON DELETE SET
+// NULL, so a userless row is a key detached by a user deletion, and this branch
+// used to hand it a membership-check exemption. No membership query is
+// registered: the refusal must not depend on one.
+func TestRequireNamespaceAccessFromPath_UserlessAPIKey_Denied(t *testing.T) {
+	mock, authz := newNamespaceAuthzTestDeps(t)
+
+	mock.ExpectQuery("SELECT.*FROM namespace_claims").
+		WillReturnRows(sqlmock.NewRows(claimCols).AddRow("acme", nsOrgA, nil, time.Now()))
+
+	r := gin.New()
+	r.DELETE("/modules/:namespace/:name/:system",
+		contextSetter(withUserlessAPIKey(nsOrgA, []string{string(auth.ScopeModulesWrite)})),
+		authz.RequireNamespaceAccessFromPath(auth.ScopeModulesWrite),
+		func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+
+	w := doNamespaceReq(r, "DELETE", "/modules/acme/vpc/aws")
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (a key orphaned by a user deletion must not authorize): body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet/unexpected expectations: %v", err)
 	}
 }
 
@@ -450,34 +492,33 @@ func TestRequirePublishAccessFromForm_AmbiguousMemberships_NonAdminDenied(t *tes
 	}
 }
 
-// A service credential (no owning user) still claims directly: there is no
-// membership to re-verify, so no membership query is issued.
-func TestRequirePublishAccessFromForm_APIKeyServiceCredential_FirstClaim(t *testing.T) {
+// A userless key cannot claim a namespace either. This test asserted the
+// opposite -- that a "service credential" claims directly, with no membership
+// query -- which made the orphaned-key exemption look like a feature. No
+// INSERT INTO namespace_claims is registered: a detached key must not even
+// squat the namespace.
+func TestRequirePublishAccessFromForm_UserlessAPIKey_CannotClaim(t *testing.T) {
 	mock, authz := newNamespaceAuthzTestDeps(t)
 
 	mock.ExpectQuery("SELECT.*FROM namespace_claims").
 		WillReturnRows(sqlmock.NewRows(claimCols))
 	mock.ExpectQuery("SELECT DISTINCT organization_id FROM").
 		WillReturnRows(sqlmock.NewRows(artifactOrgCols))
-	mock.ExpectExec("INSERT INTO namespace_claims").
-		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectQuery("SELECT.*FROM namespace_claims").
-		WillReturnRows(sqlmock.NewRows(claimCols).AddRow("ci-team", nsOrgA, nil, time.Now()))
 
 	r := gin.New()
 	r.POST("/modules",
-		contextSetter(withAPIKey(nsOrgA, []string{string(auth.ScopeModulesWrite)})),
+		contextSetter(withUserlessAPIKey(nsOrgA, []string{string(auth.ScopeModulesWrite)})),
 		authz.RequirePublishAccessFromForm(auth.ScopeModulesWrite, 100<<20),
 		func(c *gin.Context) { c.JSON(http.StatusCreated, gin.H{"ok": true}) })
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, multipartRequest(t, map[string]string{"namespace": "ci-team", "name": "vpc", "system": "aws"}))
 
-	if w.Code != http.StatusCreated {
-		t.Errorf("status = %d, want 201 (service credential has no membership to re-verify): body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (a key orphaned by a user deletion must not claim a namespace): body=%s", w.Code, w.Body.String())
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet/unexpected expectations: %v", err)
+		t.Errorf("unmet/unexpected expectations (no claim insert expected): %v", err)
 	}
 }
 
@@ -754,18 +795,24 @@ func TestRequirePublishAccessFromForm_APIKeyOrg_IgnoresExplicitOrg(t *testing.T)
 		WillReturnRows(sqlmock.NewRows(claimCols)) // unclaimed
 	mock.ExpectQuery("SELECT DISTINCT organization_id FROM").
 		WillReturnRows(sqlmock.NewRows(artifactOrgCols)) // no artifacts
-	// API key binding is authoritative: the claim binds to the key's org
-	// (nsOrgA), NOT the attacker-supplied organization_id form field (nsOrgB).
-	// No membership query is issued.
+	// API key binding is authoritative over the request body: the claim binds
+	// to the key's org (nsOrgA), NOT the attacker-supplied organization_id form
+	// field (nsOrgB). The binding is still re-verified against the owner's
+	// current membership -- once in resolveCallerOrg before the durable claim
+	// row is written, once afterwards against the claim's actual owner.
+	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
+		WillReturnRows(memberRow(nsOrgA, nsUserID, `["modules:write"]`))
 	mock.ExpectExec("INSERT INTO namespace_claims").
 		WithArgs("ci-team", nsOrgA, sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectQuery("SELECT.*FROM namespace_claims").
 		WillReturnRows(sqlmock.NewRows(claimCols).AddRow("ci-team", nsOrgA, nil, time.Now()))
+	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
+		WillReturnRows(memberRow(nsOrgA, nsUserID, `["modules:write"]`))
 
 	r := gin.New()
 	r.POST("/modules",
-		contextSetter(withAPIKey(nsOrgA, []string{string(auth.ScopeModulesWrite)})),
+		contextSetter(withAPIKeyOwnedBy(nsOrgA, nsUserID, []string{string(auth.ScopeModulesWrite)})),
 		authz.RequirePublishAccessFromForm(auth.ScopeModulesWrite, 100<<20),
 		func(c *gin.Context) { c.JSON(http.StatusCreated, gin.H{"ok": true}) })
 

@@ -910,3 +910,206 @@ func TestOptionalAuthMiddleware_RevokeAllWatermark_ContinuesUnauthenticated(t *t
 }
 
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// AuthMiddleware / OptionalAuthMiddleware — an organization-bound API key is
+// re-derived where the binding is ESTABLISHED, not only where the namespace
+// authorizer happens to look (issues #732, #736).
+//
+// api_keys freezes organization_id AND scopes at creation, and the middleware
+// copies both into the request context for every route. The re-verification
+// used to live only inside NamespaceAuthorizer.authorizeOrgAccess, which wraps
+// module/provider mutations and nothing else, so every other authenticated
+// route — the admin surface, /apikeys, SCIM — consumed the frozen snapshot with
+// no check at all.
+// ---------------------------------------------------------------------------
+
+var memberWithRoleCols = []string{
+	"organization_id", "user_id", "role_template_id", "created_at",
+	"user_name", "user_email",
+	"role_template_name", "role_template_display_name", "role_template_scopes",
+}
+
+// expectKeyOwnerMembership queues the GetMemberWithRole lookup the middleware
+// now makes for an org-bound key. A nil scopes slice means "no such member".
+func expectKeyOwnerMembership(mock sqlmock.Sqlmock, orgID, userID string, roleScopes []byte) {
+	q := mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN")
+	if roleScopes == nil {
+		q.WillReturnRows(sqlmock.NewRows(memberWithRoleCols))
+		return
+	}
+	q.WillReturnRows(sqlmock.NewRows(memberWithRoleCols).AddRow(
+		orgID, userID, "rt-1", time.Now(),
+		"Test User", "test@example.com",
+		"viewer", "Viewer", roleScopes))
+}
+
+// apiKeyAuthRouter wires AuthMiddleware over mocked repositories and returns
+// the router plus the api-key and org mocks. handler observes the resolved
+// context.
+func apiKeyAuthRouter(t *testing.T, handler gin.HandlerFunc) (*gin.Engine, sqlmock.Sqlmock, sqlmock.Sqlmock) {
+	t.Helper()
+	apiKeyDB, apiKeyMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New (apikey): %v", err)
+	}
+	t.Cleanup(func() { apiKeyDB.Close() })
+	userDB, userMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New (user): %v", err)
+	}
+	t.Cleanup(func() { userDB.Close() })
+	orgRepo, orgMock := newOrgRepo(t)
+
+	// The user load only runs once the key survives re-verification, so it is
+	// registered unconditionally and simply goes unused on the reject paths.
+	userMock.ExpectQuery("SELECT.*FROM users WHERE id").
+		WillReturnRows(sqlmock.NewRows(jwtUserCols).
+			AddRow("user-1", "test@example.com", "Test User", nil, time.Now(), time.Now()))
+
+	r := gin.New()
+	r.Use(AuthMiddleware(nil, repositories.NewUserRepository(userDB),
+		repositories.NewAPIKeyRepository(apiKeyDB), orgRepo, nil, nil))
+	r.GET("/", handler)
+	return r, apiKeyMock, orgMock
+}
+
+// expectAPIKeyLookup queues the prefix lookup that authenticates the bearer
+// token, returning an org-bound key with the given owner and frozen scopes.
+func expectAPIKeyLookup(mock sqlmock.Sqlmock, token string, userID *string, scopes []byte) {
+	hashBytes, _ := bcrypt.GenerateFromPassword([]byte(token), bcrypt.MinCost)
+	mock.ExpectQuery("SELECT.*FROM api_keys.*WHERE.*key_prefix").
+		WillReturnRows(sqlmock.NewRows(apiKeyPrefixCols).AddRow(
+			"key-1", userID, "org-1", "CI Key", nil, string(hashBytes), token[:10],
+			scopes, nil, nil, nil, time.Now(),
+		))
+}
+
+func doKeyRequest(r *gin.Engine, token string) *httptest.ResponseRecorder {
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	r.ServeHTTP(w, req)
+	return w
+}
+
+// The headline case: the key's owner has been removed from the organization it
+// is bound to. Nothing about the key itself changed, and no namespace
+// middleware is in the chain, so before this the request was served with the
+// full frozen scope set.
+func TestAuthMiddleware_OrgBoundAPIKey_OwnerRemoved_Rejected(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	reached := false
+	token := "tfr_stalekey_1"
+	userID := "user-1"
+	r, keyMock, orgMock := apiKeyAuthRouter(t, func(c *gin.Context) {
+		reached = true
+		c.Status(http.StatusOK)
+	})
+	expectAPIKeyLookup(keyMock, token, &userID, []byte(`["modules:write"]`))
+	expectKeyOwnerMembership(orgMock, "org-1", userID, nil)
+
+	if w := doKeyRequest(r, token); w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (owner is no longer a member): body=%s", w.Code, w.Body.String())
+	}
+	if reached {
+		t.Error("the handler ran for a key whose owner had left the bound organization")
+	}
+}
+
+// A key with no owning user is refused rather than treated as an organization
+// service credential: identity.api_keys.user_id is ON DELETE SET NULL, so a
+// userless row means the owner was deleted, not that a service account exists.
+func TestAuthMiddleware_OrgBoundAPIKey_NoOwningUser_Rejected(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	token := "tfr_orphaned_1"
+	r, keyMock, _ := apiKeyAuthRouter(t, func(c *gin.Context) { c.Status(http.StatusOK) })
+	expectAPIKeyLookup(keyMock, token, nil, []byte(`["modules:write"]`))
+	// No membership lookup is registered: there is no owner to look up, and the
+	// refusal must not depend on one.
+
+	if w := doKeyRequest(r, token); w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (userless key): body=%s", w.Code, w.Body.String())
+	}
+}
+
+// The owner is still a member but has been downgraded. The key keeps working
+// for what the owner still holds and loses exactly the scopes they lost — the
+// frozen list is intersected with the current role template, by scope
+// semantics rather than by string equality.
+func TestAuthMiddleware_OrgBoundAPIKey_OwnerDowngraded_ScopesNarrowed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var got []string
+	token := "tfr_downgrd_1"
+	userID := "user-1"
+	r, keyMock, orgMock := apiKeyAuthRouter(t, func(c *gin.Context) {
+		if v, ok := c.Get("scopes"); ok {
+			got, _ = v.([]string)
+		}
+		c.Status(http.StatusOK)
+	})
+	expectAPIKeyLookup(keyMock, token, &userID, []byte(`["modules:read","modules:write"]`))
+	expectKeyOwnerMembership(orgMock, "org-1", userID, []byte(`["modules:read"]`))
+
+	if w := doKeyRequest(r, token); w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (the key is still valid for what the owner retains): body=%s", w.Code, w.Body.String())
+	}
+	if len(got) != 1 || got[0] != "modules:read" {
+		t.Errorf("scopes = %v, want [modules:read]: a downgraded owner's key must not keep serving the scope snapshot", got)
+	}
+}
+
+// A member whose role template grants the admin wildcard keeps every scope on
+// the key: the intersection is by scope semantics (auth.HasScope), not by set
+// membership, so "admin" still covers "modules:write".
+func TestAuthMiddleware_OrgBoundAPIKey_AdminRoleTemplate_KeepsScopes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var got []string
+	token := "tfr_adminky_1"
+	userID := "user-1"
+	r, keyMock, orgMock := apiKeyAuthRouter(t, func(c *gin.Context) {
+		if v, ok := c.Get("scopes"); ok {
+			got, _ = v.([]string)
+		}
+		c.Status(http.StatusOK)
+	})
+	expectAPIKeyLookup(keyMock, token, &userID, []byte(`["modules:write"]`))
+	expectKeyOwnerMembership(orgMock, "org-1", userID, []byte(`["admin"]`))
+
+	if w := doKeyRequest(r, token); w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	if len(got) != 1 || got[0] != "modules:write" {
+		t.Errorf("scopes = %v, want [modules:write]: an admin role template retains every key scope", got)
+	}
+}
+
+// OptionalAuthMiddleware guards optionally-authenticated public endpoints, so a
+// stale key must not abort the request — it must continue UNAUTHENTICATED, the
+// same downgrade a revoked JWT gets. Private artifacts then stop resolving.
+func TestOptionalAuthMiddleware_OrgBoundAPIKey_OwnerRemoved_ContinuesUnauthenticated(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	apiKeyDB, keyMock, _ := sqlmock.New()
+	t.Cleanup(func() { apiKeyDB.Close() })
+	orgRepo, orgMock := newOrgRepo(t)
+
+	var keyWasSet bool
+	r := gin.New()
+	r.Use(OptionalAuthMiddleware(nil, nil, repositories.NewAPIKeyRepository(apiKeyDB), orgRepo, nil, nil))
+	r.GET("/", func(c *gin.Context) {
+		_, keyWasSet = c.Get("api_key")
+		c.Status(http.StatusOK)
+	})
+
+	token := "tfr_optstal_1"
+	userID := "user-1"
+	expectAPIKeyLookup(keyMock, token, &userID, []byte(`["modules:read"]`))
+	expectKeyOwnerMembership(orgMock, "org-1", userID, nil)
+
+	if w := doKeyRequest(r, token); w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (optional auth always passes through): body=%s", w.Code, w.Body.String())
+	}
+	if keyWasSet {
+		t.Error("a key whose owner had left the bound organization was still installed in the request context")
+	}
+}

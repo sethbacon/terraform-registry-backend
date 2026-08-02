@@ -142,9 +142,27 @@ func (s *Sweeper) OrgAuthorityReduced(ctx context.Context, userID, orgID string,
 // (RFC 7519). Moving the watermark there would make the freshly minted token
 // compare as revoked — TokensRevokedSince deliberately resolves that
 // same-second ambiguity toward "revoked" — and the user could never log in.
-// The fresh token is issued from GetUserCombinedScopes AFTER the membership was
-// removed, so it already carries the reduced authority; the API keys are the
-// family that would otherwise survive the deprovisioning indefinitely.
+//
+// EXACTLY WHAT THE EXEMPTION COVERS, AND WHAT IT DOES NOT.
+//
+// Covered: the token minted by THIS request. It is issued from
+// GetUserCombinedScopes AFTER the membership change committed, so it already
+// carries the reduced authority — moving the watermark would buy nothing and
+// would break login.
+//
+// NOT covered — the residual: the user's OTHER live sessions, minted at
+// EARLIER logins. Those carry the pre-reduction scope union and nothing here
+// retires them; they stay valid until their own TTL expires. The same-second
+// race justifies leaving the watermark alone for this request's token only,
+// and it is a strictly narrower claim than "no JWT needs revoking here".
+//
+// The residual is accepted because the alternative is a login that can never
+// succeed, and because the exposure is bounded by the JWT TTL, whereas the
+// API-key family — the one this call does sweep — would otherwise survive the
+// deprovisioning indefinitely. An operator who needs an IdP-driven reduction to
+// retire every existing session immediately must take the administrative path
+// (RemoveMemberHandler / UpdateMemberHandler / the role-template endpoints),
+// which calls OrgAuthorityReduced and does move the watermark.
 func (s *Sweeper) OrgKeysOnly(ctx context.Context, userID, orgID string, retained []string, reason string) Outcome {
 	if s == nil {
 		return Outcome{}

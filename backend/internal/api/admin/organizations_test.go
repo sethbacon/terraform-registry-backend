@@ -1609,3 +1609,55 @@ func TestCreateOrganization_ExistenceCheckError(t *testing.T) {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
 }
+
+// UpdateMemberHandler must report a failed sweep the way RemoveMemberHandler
+// does. A demotion that answers a clean 200 while the member's sessions and
+// over-asking API keys are still live tells the admin the privilege change
+// took effect when it only half did.
+func TestUpdateMemberHandler_SweepFails_ReportsRevocationIncomplete(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	h := NewOrganizationHandlers(&config.Config{}, db,
+		repositories.NewNamespaceClaimRepository(db),
+		repositories.NewUserTokenRevocationRepository(db))
+	r := gin.New()
+	r.PUT("/organizations/:id/members/:user_id", h.UpdateMemberHandler())
+
+	mock.ExpectQuery("SELECT scopes FROM role_templates WHERE id").
+		WillReturnRows(sqlmock.NewRows([]string{"scopes"}).AddRow([]byte(`[]`)))
+	mock.ExpectQuery("SELECT.*FROM organization_members WHERE organization_id").
+		WillReturnRows(sampleOrgMemberRowWithRole(oldRoleTemplateUUID))
+	mock.ExpectExec("UPDATE organization_members").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
+		WillReturnRows(sampleMemberWithRoleRow())
+	// The JWT half of the sweep fails after the reassignment committed.
+	mock.ExpectExec("INSERT INTO user_token_revocations").
+		WillReturnError(errDB)
+	expectOrgKeySweepScoped(mock, "user-1", "org-1", "key-rerole-incomplete",
+		[]byte(`["providers:write"]`))
+	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
+		WillReturnRows(sampleMemberWithRoleRow())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/organizations/org-1/members/user-1",
+		bytes.NewBufferString(`{"role_template_id": "`+newRoleTemplateUUID+`"}`)))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (the reassignment itself succeeded): body=%s", w.Code, w.Body.String())
+	}
+	var body struct {
+		RevocationIncomplete bool `json:"revocation_incomplete"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed to decode response body: %v: body=%s", err, w.Body.String())
+	}
+	if !body.RevocationIncomplete {
+		t.Errorf("expected revocation_incomplete=true after a failed sweep, got body=%s", w.Body.String())
+	}
+}

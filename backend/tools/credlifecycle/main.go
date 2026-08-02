@@ -31,6 +31,24 @@
 // Sites are reported at their outermost enclosing FuncDecl, which for gin is
 // the handler constructor (e.g. RemoveMemberHandler) — the stable identity a
 // route maps to.
+//
+// PHASE 3b — BRANCH GRANULARITY. Phase 3 asks the question per FUNCTION, and a
+//
+//	function is the wrong unit whenever it reduces authority in more than one
+//	mutually exclusive branch. reconcileGroupMemberships is exactly that: its
+//	`!wanted && isMember` branch removes a membership AND sweeps the org's API
+//	keys, while its `wanted && isMember` branch commits a role reassignment —
+//	which is a REDUCTION whenever the new template grants less — and swept
+//	nothing. The function reached both families, so Phase 3 scored it OK and
+//	the unswept branch survived a clean run of this signature.
+//
+//	So for every authority-reducing call that sits inside a conditional
+//	branch, Phase 3b re-asks the question with the coverage available to THAT
+//	branch: the calls inside the branch itself, plus the function's own
+//	unconditional statements (a sweep placed after the switch covers every
+//	arm). A family the function has but this branch does not is a defect,
+//	reported at the branch.
+
 package main
 
 import (
@@ -145,9 +163,15 @@ var exemptions = map[string]struct {
 	// the same request mints the user's new session token, whose iat is floored
 	// to the second, so the watermark would revoke the token being issued and
 	// the user could never log in. The new token is derived AFTER the removal
-	// and so already carries the reduced authority. See
-	// credlifecycle.Sweeper.OrgKeysOnly.
-	"(*github.com/terraform-registry/terraform-registry/internal/api/admin.AuthHandlers).reconcileGroupMemberships": {"JWT", "fresh token minted in the same request already carries reduced scopes; watermark would revoke it"},
+	// and so already carries the reduced authority.
+	//
+	// The exemption is NARROWER than it looks, and is granted knowingly: it
+	// covers the token minted by THIS request, not the user's other live
+	// sessions from earlier logins, which keep the pre-reduction scope union
+	// until their TTL expires. See credlifecycle.Sweeper.OrgKeysOnly, which
+	// states the residual in full, and docs/upgrade-guide.md, which states it
+	// to operators.
+	"(*github.com/terraform-registry/terraform-registry/internal/api/admin.AuthHandlers).reconcileGroupMemberships": {"JWT", "this request's fresh token already carries reduced scopes and the watermark would revoke it; other live sessions are a stated residual"},
 	"(*github.com/terraform-registry/terraform-registry/internal/api/admin.AuthHandlers).CallbackHandler":           {"JWT", "caller of reconcileGroupMemberships"},
 	"(*github.com/terraform-registry/terraform-registry/internal/api/admin.AuthHandlers).SAMLACSHandler":            {"JWT", "caller of reconcileGroupMemberships"},
 	"(*github.com/terraform-registry/terraform-registry/internal/api/admin.AuthHandlers).LDAPLoginHandler":          {"JWT", "caller of reconcileGroupMemberships"},
@@ -185,6 +209,12 @@ type node struct {
 	pos      string
 	inModule bool
 	callees  map[*types.Func]bool
+	// fd/info/fset are retained for the branch-granular pass (Phase 3b), which
+	// needs the syntax back to ask which conditional arm a reducing call sits
+	// in. The flattened callee set above cannot answer that.
+	fd   *ast.FuncDecl
+	info *types.Info
+	fset *token.FileSet
 }
 
 func main() {
@@ -247,6 +277,9 @@ func main() {
 					pos:      trimPos(p.Fset.Position(fd.Pos()).String()),
 					inModule: inModule,
 					callees:  map[*types.Func]bool{},
+					fd:       fd,
+					info:     p.TypesInfo,
+					fset:     p.Fset,
 				}
 				var sb strings.Builder
 				astutil.Apply(fd, func(c *astutil.Cursor) bool {
@@ -328,8 +361,21 @@ func main() {
 		return out
 	}
 
-	type row struct{ id, pos, missing, exempt string }
+	reachOf := func(f *types.Func) map[string]bool { return reach(f, map[*types.Func]bool{}) }
+
+	type row struct{ id, pos, missing, exempt, note string }
 	var sites, defects []row
+	// applyExemption blanks `missing` when an exemption covers exactly the
+	// families that are absent. Shared by the function-level and branch-level
+	// rows so a branch cannot be reported under an exemption its function does
+	// not have, nor escape one its function does.
+	applyExemption := func(id string, r *row) {
+		if ex, ok := exemptions[id]; ok && r.missing != "" &&
+			(ex.tolerate == "*" || ex.tolerate == r.missing) {
+			r.exempt = ex.reason
+			r.missing = ""
+		}
+	}
 	for obj, n := range graph {
 		if !n.inModule || reduceSinks[obj] {
 			continue
@@ -352,23 +398,34 @@ func main() {
 		if !direct && !obj.Exported() {
 			continue
 		}
-		var miss []string
-		if !r["jwt"] {
-			miss = append(miss, "JWT")
-		}
-		if !r["key"] {
-			miss = append(miss, "APIKEY")
-		}
 		id := obj.FullName()
-		rw := row{id: id, pos: n.pos, missing: strings.Join(miss, "+")}
-		if ex, ok := exemptions[id]; ok && len(miss) > 0 &&
-			(ex.tolerate == "*" || ex.tolerate == rw.missing) {
-			rw.exempt = ex.reason
-			rw.missing = ""
-		}
+		rw := row{id: id, pos: n.pos, missing: missingFamilies(r)}
+		applyExemption(id, &rw)
 		sites = append(sites, rw)
 		if rw.missing != "" {
 			defects = append(defects, rw)
+		}
+
+		// Phase 3b: the same question, per conditional arm. Only families the
+		// FUNCTION has are asked for -- one the function lacks entirely is
+		// already reported (or exempted) by the row above, and reporting it
+		// again at every branch would be noise.
+		for _, g := range branchGaps(n, reduceSinks, reachOf) {
+			g.missing = subtractFamilies(g.missing, rw.missing)
+			if g.missing == "" {
+				continue
+			}
+			brw := row{
+				id:      id,
+				pos:     g.pos,
+				missing: g.missing,
+				note:    "branch: " + g.desc,
+			}
+			applyExemption(id, &brw)
+			sites = append(sites, brw)
+			if brw.missing != "" {
+				defects = append(defects, brw)
+			}
 		}
 	}
 	sort.Slice(sites, func(i, j int) bool { return sites[i].pos < sites[j].pos })
@@ -384,6 +441,9 @@ func main() {
 			st = "EXEMPT"
 		}
 		line := fmt.Sprintf("%-26s %-78s %s", st, s.id, s.pos)
+		if s.note != "" {
+			line += "\n" + strings.Repeat(" ", 27) + s.note
+		}
 		if s.exempt != "" {
 			line += "\n" + strings.Repeat(" ", 27) + "reason: " + s.exempt
 		}
@@ -392,6 +452,203 @@ func main() {
 	fmt.Printf("\n%d site(s), %d defect(s)\n", len(sites), len(defects))
 	if len(defects) > 0 {
 		os.Exit(1)
+	}
+}
+
+// missingFamilies renders the invalidation families absent from a reach set.
+func missingFamilies(r map[string]bool) string {
+	var miss []string
+	if !r["jwt"] {
+		miss = append(miss, "JWT")
+	}
+	if !r["key"] {
+		miss = append(miss, "APIKEY")
+	}
+	return strings.Join(miss, "+")
+}
+
+// subtractFamilies removes from `have` every family already named in `also`, so
+// a branch never re-reports a gap its enclosing function is reported for.
+func subtractFamilies(have, also string) string {
+	if also == "" || have == "" {
+		return have
+	}
+	drop := map[string]bool{}
+	for _, f := range strings.Split(also, "+") {
+		drop[f] = true
+	}
+	var keep []string
+	for _, f := range strings.Split(have, "+") {
+		if !drop[f] {
+			keep = append(keep, f)
+		}
+	}
+	return strings.Join(keep, "+")
+}
+
+// gap is one authority-reducing call whose own conditional arm does not reach
+// an invalidation family the enclosing function reaches elsewhere.
+type gap struct {
+	pos     string
+	missing string
+	desc    string
+}
+
+// branchGaps runs Phase 3b over one function: for every call to an
+// authority-reducing sink that sits inside a conditional arm, it recomputes the
+// invalidation coverage from that arm's own statements plus the function's
+// unconditional ones, and reports the families the arm cannot reach.
+//
+// The "plus unconditional" half matters: the common and correct shape is a
+// switch that decides WHAT changed followed by a single sweep afterwards, and
+// counting only the arm's own statements would call every one of those a
+// defect. Statements in a SIBLING arm never count -- that is the whole point,
+// and precisely the mistake the function-level pass made.
+func branchGaps(n *node, reduceSinks map[*types.Func]bool, reachOf func(*types.Func) map[string]bool) []gap {
+	if n.fd == nil || n.info == nil || n.fd.Body == nil {
+		return nil
+	}
+	parent := parentMap(n.fd)
+
+	var allCalls []*ast.CallExpr
+	var reduceCalls []*ast.CallExpr
+	ast.Inspect(n.fd, func(x ast.Node) bool {
+		ce, ok := x.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		allCalls = append(allCalls, ce)
+		// REACHES a reducing sink, not just IS one. The arm that missed the
+		// sweep called (*OrganizationRepository).UpdateMemberRole, a one-line
+		// convenience wrapper around the UpdateMemberRoleTemplate sink; keying
+		// on direct sink identity found the sibling arm's RemoveMember (which
+		// carries its own DELETE) and nothing else, so the pass reproduced the
+		// very blindness it exists to remove.
+		if f, _ := typeutil.Callee(n.info, ce).(*types.Func); f != nil && reachOf(f)["reduce"] {
+			reduceCalls = append(reduceCalls, ce)
+		}
+		return true
+	})
+
+	var out []gap
+	seen := map[string]bool{}
+	for _, rc := range reduceCalls {
+		arm, cond := enclosingBranch(rc, n.fd, parent)
+		if arm == nil {
+			// Unconditional reduction: the function-level pass already asks the
+			// question at the right granularity.
+			continue
+		}
+		inArm := subtreeCalls(arm)
+		inCond := subtreeCalls(cond)
+
+		fams := map[string]bool{}
+		for _, ce := range allCalls {
+			if !inArm[ce] && inCond[ce] {
+				continue // a sibling arm's statement; not available here
+			}
+			f, _ := typeutil.Callee(n.info, ce).(*types.Func)
+			if f == nil {
+				continue
+			}
+			for k := range reachOf(f) {
+				fams[k] = true
+			}
+		}
+		miss := missingFamilies(fams)
+		if miss == "" {
+			continue
+		}
+		pos := trimPos(n.fset.Position(rc.Pos()).String())
+		if seen[pos] {
+			continue
+		}
+		seen[pos] = true
+		out = append(out, gap{
+			pos:     pos,
+			missing: miss,
+			desc: fmt.Sprintf("%s arm at %s reduces authority without sweeping; a sibling arm does",
+				branchKind(arm), trimPos(n.fset.Position(arm.Pos()).String())),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].pos < out[j].pos })
+	return out
+}
+
+// parentMap indexes every node under root by its parent, so a call expression
+// can be walked back up to the conditional arm containing it.
+func parentMap(root ast.Node) map[ast.Node]ast.Node {
+	parent := map[ast.Node]ast.Node{}
+	var stack []ast.Node
+	ast.Inspect(root, func(x ast.Node) bool {
+		if x == nil {
+			stack = stack[:len(stack)-1]
+			return false
+		}
+		if len(stack) > 0 {
+			parent[x] = stack[len(stack)-1]
+		}
+		stack = append(stack, x)
+		return true
+	})
+	return parent
+}
+
+// enclosingBranch returns the INNERMOST conditional arm containing x (a switch
+// case, a select case, or an if/else block) and the OUTERMOST conditional
+// statement containing it. Both are nil when x is unconditional within fd.
+func enclosingBranch(x ast.Node, fd *ast.FuncDecl, parent map[ast.Node]ast.Node) (arm ast.Node, cond ast.Node) {
+	for cur := ast.Node(x); cur != nil && cur != ast.Node(fd); cur = parent[cur] {
+		p := parent[cur]
+		switch cur.(type) {
+		case *ast.CaseClause, *ast.CommClause:
+			if arm == nil {
+				arm = cur
+			}
+		case *ast.BlockStmt:
+			// The Body or the Else of an if statement is an arm; a bare block,
+			// a loop body or a function body is not.
+			if ifs, ok := p.(*ast.IfStmt); ok && arm == nil && (ifs.Body == cur || ifs.Else == cur) {
+				arm = cur
+			}
+		}
+		switch cur.(type) {
+		case *ast.IfStmt, *ast.SwitchStmt, *ast.TypeSwitchStmt, *ast.SelectStmt:
+			cond = cur // keep climbing: the last one wins, i.e. the outermost
+		}
+	}
+	if arm == nil {
+		return nil, nil
+	}
+	if cond == nil {
+		cond = arm
+	}
+	return arm, cond
+}
+
+// subtreeCalls is the set of call expressions syntactically inside root.
+func subtreeCalls(root ast.Node) map[*ast.CallExpr]bool {
+	out := map[*ast.CallExpr]bool{}
+	if root == nil {
+		return out
+	}
+	ast.Inspect(root, func(x ast.Node) bool {
+		if ce, ok := x.(*ast.CallExpr); ok {
+			out[ce] = true
+		}
+		return true
+	})
+	return out
+}
+
+func branchKind(arm ast.Node) string {
+	switch arm.(type) {
+	case *ast.CaseClause:
+		return "switch-case"
+	case *ast.CommClause:
+		return "select-case"
+	default:
+		return "if/else"
 	}
 }
 

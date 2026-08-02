@@ -407,6 +407,116 @@ func TestCredentialLifecycleClass_AuthorityReductionInvalidatesAllCredentialFami
 			},
 		},
 		{
+			// The OTHER reducing arm of the same switch as the row above, and
+			// the one the fix originally missed. An IdP group change can map a
+			// user to a LOWER role (owner -> viewer); that arm commits the
+			// reduction through UpdateMemberRole and swept nothing, while its
+			// sibling swept the org's keys. Because the enclosing function
+			// reached both credential families through the sibling, neither the
+			// class table nor the enumeration signature scored it as a gap --
+			// which is why the signature now asks the question per branch.
+			site: "admin.AuthHandlers.reconcileGroupMemberships (IdP role-reassignment branch, demotion)",
+			run: func(t *testing.T, db *sql.DB, mock sqlmock.Sqlmock) {
+				cfg := &config.Config{}
+				cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
+					{Group: "platform-team", Organization: "acme", Role: "viewer"},
+				}
+				h, err := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour),
+					WithCredentialSweeper(credlifecycle.NewSweeper(
+						repositories.NewUserTokenRevocationRepository(db),
+						repositories.NewAPIKeyRepository(db))))
+				if err != nil {
+					t.Fatalf("NewAuthHandlers: %v", err)
+				}
+
+				mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
+					WithArgs("acme").
+					WillReturnRows(sqlmock.NewRows(authOrgCols).
+						AddRow("org-1", "acme", "Acme Corp", nil, nil, time.Now(), time.Now()))
+				// Already a member, under the template they are about to lose.
+				oldRole := "rt-owner"
+				mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
+					WillReturnRows(sqlmock.NewRows(authMemberCols).
+						AddRow("org-1", "user-1", &oldRole, time.Now()))
+				// The guard's lookup doubles as the retention filter: "viewer"
+				// grants read only, so it is what the member retains.
+				expectRoleScopesLookup(mock, "viewer", []string{"modules:read"})
+				mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
+					WithArgs("viewer").
+					WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-viewer"))
+				mock.ExpectExec("UPDATE organization_members").
+					WillReturnResult(sqlmock.NewResult(0, 1))
+				// The key was minted under the owner template and still asks
+				// for modules:write, which viewer does not grant.
+				expectOrgKeySweepScoped(mock, "user-1", "org-1", "key-idp-demoted",
+					[]byte(`["modules:write"]`))
+
+				// The login still carries "platform-team" -- it now maps to a
+				// weaker role, which is the whole point: this is a reduction
+				// that never touches the deprovision branch.
+				if err := h.applyGroupMappings(context.Background(), "user-1", []string{"platform-team"}); err != nil {
+					t.Fatalf("applyGroupMappings: %v", err)
+				}
+			},
+		},
+		{
+			// Paired negative control for the row above. Deleting an API key is
+			// irreversible, so sweeping on every reconciliation -- i.e. on every
+			// login, for every managed org -- would destroy working credentials
+			// fleet-wide.
+			//
+			// sqlmock cannot carry this assertion alone: an unregistered DELETE
+			// returns an error, and the sweep swallows its own errors by design
+			// (the authority change has already committed), so a wrongly
+			// deleted key would still leave ExpectationsWereMet() green. The
+			// decisive assertion is the log: the sweeper announces every key it
+			// revokes and every revocation it fails, and a RETAINED key
+			// produces neither line.
+			site: "admin.AuthHandlers.reconcileGroupMemberships (IdP role-reassignment branch, promotion retains keys)",
+			run: func(t *testing.T, db *sql.DB, mock sqlmock.Sqlmock) {
+				logs := captureSlogOutput(t)
+				cfg := &config.Config{}
+				cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
+					{Group: "platform-team", Organization: "acme", Role: "publisher"},
+				}
+				h, err := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour),
+					WithCredentialSweeper(credlifecycle.NewSweeper(
+						repositories.NewUserTokenRevocationRepository(db),
+						repositories.NewAPIKeyRepository(db))))
+				if err != nil {
+					t.Fatalf("NewAuthHandlers: %v", err)
+				}
+
+				mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
+					WithArgs("acme").
+					WillReturnRows(sqlmock.NewRows(authOrgCols).
+						AddRow("org-1", "acme", "Acme Corp", nil, nil, time.Now(), time.Now()))
+				oldRole := "rt-viewer"
+				mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
+					WillReturnRows(sqlmock.NewRows(authMemberCols).
+						AddRow("org-1", "user-1", &oldRole, time.Now()))
+				expectRoleScopesLookup(mock, "publisher", []string{"modules:read", "modules:write"})
+				mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
+					WithArgs("publisher").
+					WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-publisher"))
+				mock.ExpectExec("UPDATE organization_members").
+					WillReturnResult(sqlmock.NewResult(0, 1))
+				// modules:read is still granted by the new template, so the key
+				// asks for nothing it lost: listed, and left alone.
+				expectOrgKeyList(mock, "user-1", "org-1", "key-idp-promoted", testKeyScopes)
+
+				if err := h.applyGroupMappings(context.Background(), "user-1", []string{"platform-team"}); err != nil {
+					t.Fatalf("applyGroupMappings: %v", err)
+				}
+				for _, forbidden := range []string{"API key revoked", "failed to revoke org-bound API key"} {
+					if strings.Contains(logs.String(), forbidden) {
+						t.Errorf("a promotion deleted an API key that is still within the new authority (log contains %q); logs: %s",
+							forbidden, logs.String())
+					}
+				}
+			},
+		},
+		{
 			// #736 primary instance.
 			site: "scim.Handlers.DeleteUser / DELETE /scim/v2/Users/:id",
 			run: func(t *testing.T, db *sql.DB, mock sqlmock.Sqlmock) {
@@ -696,6 +806,53 @@ func TestCredentialLifecycleClass_AuthorityReductionInvalidatesAllCredentialFami
 					"namespace": "brand-new", "name": "vpc", "system": "aws"}))
 				if w.Code != http.StatusForbidden {
 					t.Fatalf("status = %d, want 403 (stale key must not claim a new namespace): body=%s",
+						w.Code, w.Body.String())
+				}
+			},
+		},
+		{
+			// The BACKWARD population. identity.api_keys.user_id is ON DELETE
+			// SET NULL, so every user deletion that happened before the sweep
+			// shipped left a userless org-bound row behind -- and the authorizer
+			// read exactly those rows as "organization service credentials",
+			// exempt from the membership check. They are not: the registry mints
+			// keys only through CreateAPIKeyHandler (UserID from the
+			// authenticated caller) and RotateAPIKeyHandler (copies it), so no
+			// supported path produces one. The branch fails closed, which covers
+			// the population without depending on migration 000050 having run.
+			//
+			// No membership query is registered: there is no owner to look up,
+			// and the refusal must not depend on one.
+			site: "middleware.NamespaceAuthorizer.verifyKeyOwnerAuthority (userless org-bound key orphaned by a user deletion)",
+			run: func(t *testing.T, db *sql.DB, mock sqlmock.Sqlmock) {
+				authz := middleware.NewNamespaceAuthorizer(
+					repositories.NewOrganizationRepository(db),
+					repositories.NewNamespaceClaimRepository(db),
+					repositories.NewModuleRepository(db),
+					repositories.NewProviderRepository(db))
+
+				mock.ExpectQuery("SELECT.*FROM namespace_claims").
+					WillReturnRows(sqlmock.NewRows([]string{"namespace", "organization_id", "claimed_by", "created_at"}).
+						AddRow("acme", "org-1", nil, time.Now()))
+
+				r := gin.New()
+				r.DELETE("/modules/:namespace/:name/:system",
+					func(c *gin.Context) {
+						c.Set("scopes", []string{string(auth.ScopeModulesWrite)})
+						c.Set("api_key", &models.APIKey{
+							ID:             "key-orphaned",
+							UserID:         nil,
+							OrganizationID: "org-1",
+							Scopes:         []string{string(auth.ScopeModulesWrite)},
+						})
+					},
+					authz.RequireNamespaceAccessFromPath(auth.ScopeModulesWrite),
+					func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+
+				w := httptest.NewRecorder()
+				r.ServeHTTP(w, httptest.NewRequest("DELETE", "/modules/acme/vpc/aws", nil))
+				if w.Code != http.StatusForbidden {
+					t.Fatalf("status = %d, want 403 (a key detached by a user deletion must not authorize): body=%s",
 						w.Code, w.Body.String())
 				}
 			},

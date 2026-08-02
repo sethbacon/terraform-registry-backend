@@ -857,7 +857,7 @@ type UpdateMemberRequest struct {
 }
 
 // @Summary      Update organization member
-// @Description  Update a member's role template within an organization.
+// @Description  Update a member's role template within an organization. A reassignment revokes the member's sessions and any org-bound API key that over-asks under the new template; if that sweep does not fully land the 200 body carries an extra `revocation_incomplete: true` field.
 // @Tags         Organizations
 // @Security     Bearer
 // @Accept       json
@@ -930,24 +930,28 @@ func (h *OrganizationHandlers) UpdateMemberHandler() gin.HandlerFunc {
 		// (publisher -> owner) leaves every existing key within the new
 		// authority, so nothing is deleted, while a demotion deletes exactly
 		// the keys that now over-ask.
+		//
+		// A failed sweep is surfaced as revocation_incomplete, matching
+		// RemoveMemberHandler: a clean 200 on a demotion whose credentials are
+		// still live is the silent failure this whole change is about.
+		revocationIncomplete := false
 		if !stringPtrEqual(oldRoleTemplateID, req.RoleTemplateID) {
-			h.revokeOrgCredentials(c, userID, orgID, h.retainedOrgScopes(c, orgID, userID),
+			revocationIncomplete = !h.revokeOrgCredentials(c, userID, orgID,
+				h.retainedOrgScopes(c, orgID, userID),
 				"organization member role template changed")
 		}
 
 		// Get member with role template info for response
 		memberWithRole, err := h.orgRepo.GetMemberWithRole(c.Request.Context(), orgID, userID)
+		response := gin.H{"member": memberWithRole}
 		if err != nil {
 			// Return basic member info if we can't get role details
-			c.JSON(http.StatusOK, gin.H{
-				"member": member,
-			})
-			return
+			response = gin.H{"member": member}
 		}
-
-		c.JSON(http.StatusOK, gin.H{
-			"member": memberWithRole,
-		})
+		if revocationIncomplete {
+			response["revocation_incomplete"] = true
+		}
+		c.JSON(http.StatusOK, response)
 	}
 }
 
