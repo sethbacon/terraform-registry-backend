@@ -81,6 +81,10 @@ func NewHandlers(cfg *config.Config, db *sql.DB, opts ...Option) *Handlers {
 // membership strip has already committed, and SCIM clients retry aggressively
 // on 5xx, so a sweep failure is logged rather than turned into an error the
 // IdP would replay.
+//
+// Reached only through deprovisionUser (tenant_scope.go), which pairs it
+// structurally with the membership removal so no deactivation path can take
+// one half without the other (issues #719/#736).
 func (h *Handlers) deprovision(ctx context.Context, userID, reason string) {
 	if h.creds == nil {
 		return
@@ -425,15 +429,14 @@ func (h *Handlers) PutUser() gin.HandlerFunc {
 		if req.Active != nil && !*req.Active {
 			// GUARD scim-deprovision-tenant-scope (issue #719): see
 			// tenant_scope.go. Memberships are removed only where the caller
-			// may act, not in every organization on the platform.
-			if err := h.deprovisionUser(c, userID); err != nil {
+			// may act, not in every organization on the platform, and the
+			// helper also sweeps the user's JWT sessions and API keys, which
+			// carry a snapshot of the removed authority (issue #736).
+			if err := h.deprovisionUser(c, userID, "scim: user deactivated via PUT"); err != nil {
 				slog.Error("scim: deactivate user failed", "id", userID, "error", err)
 				scimError(c, http.StatusInternalServerError, "Failed to deactivate user")
 				return
 			}
-			// Memberships alone are not the user's authority: their JWT
-			// sessions and API keys carry a snapshot of it (issue #736).
-			h.deprovision(ctx, userID, "scim: user deactivated via PUT")
 			slog.Info("scim: user deactivated via PUT", "id", userID)
 		}
 
@@ -470,17 +473,16 @@ func (h *Handlers) DeleteUser() gin.HandlerFunc {
 		}
 
 		// GUARD scim-deprovision-tenant-scope (issue #719): see tenant_scope.go.
-		if err := h.deprovisionUser(c, userID); err != nil {
+		// The helper also sweeps the user's credentials (issue #736). That
+		// matters here because this is a SOFT delete: the users row survives,
+		// so nothing cascades to api_keys and nothing makes AuthMiddleware's
+		// user lookup fail — without the sweep the "deleted" user would keep a
+		// live session and permanently valid API keys.
+		if err := h.deprovisionUser(c, userID, "scim: user deleted"); err != nil {
 			slog.Error("scim: deactivate user failed", "id", userID, "error", err)
 			scimError(c, http.StatusInternalServerError, "Failed to deactivate user")
 			return
 		}
-
-		// This is a SOFT delete: the users row survives, so nothing cascades
-		// to api_keys and nothing makes AuthMiddleware's user lookup fail.
-		// Without an explicit sweep the "deleted" user keeps a live session and
-		// permanently valid API keys (issue #736).
-		h.deprovision(ctx, userID, "scim: user deleted")
 
 		slog.Info("scim: user deactivated", "id", userID, "email", user.Email)
 		c.Status(http.StatusNoContent)
@@ -564,13 +566,13 @@ func (h *Handlers) applyReplaceOp(c *gin.Context, user *models.User, op SCIMOper
 		}
 		if !active {
 			// GUARD scim-deprovision-tenant-scope (issue #719): see tenant_scope.go.
-			if err := h.deprovisionUser(c, user.ID); err != nil {
+			// Same deprovisioning event as PUT active=false, reached through
+			// the PATCH "replace active" op; the helper sweeps the same
+			// credential families (issue #736).
+			if err := h.deprovisionUser(c, user.ID, "scim: user deactivated via PATCH"); err != nil {
 				slog.Error("scim: deactivate user failed", "id", user.ID, "error", err)
 				return
 			}
-			// Same deprovisioning event as PUT active=false, reached through
-			// the PATCH "replace active" op (issue #736).
-			h.deprovision(c.Request.Context(), user.ID, "scim: user deactivated via PATCH")
 			slog.Info("scim: user deactivated via PATCH", "id", user.ID)
 		}
 	case "username", "emails[type eq \"work\"].value":
@@ -587,15 +589,13 @@ func (h *Handlers) applyReplaceOp(c *gin.Context, user *models.User, op SCIMOper
 			if v, ok := m["active"].(bool); ok && !v {
 				// GUARD scim-deprovision-tenant-scope (issue #719): the pathless
 				// PATCH form is the fourth deactivation path over this table and
-				// was as unscoped as the other three.
-				if err := h.deprovisionUser(c, user.ID); err != nil {
+				// was as unscoped as the other three. It is the same
+				// deprovisioning event as the "active" path above and sweeps
+				// identically (issue #736) through the shared helper.
+				if err := h.deprovisionUser(c, user.ID, "scim: user deactivated via pathless PATCH"); err != nil {
 					slog.Error("scim: deactivate user failed", "id", user.ID, "error", err)
 					return
 				}
-				// Pathless PATCH carrying {"active": false} is the same
-				// deprovisioning event as the "active" path above and must
-				// sweep identically (issue #736).
-				h.deprovision(c.Request.Context(), user.ID, "scim: user deactivated via pathless PATCH")
 			}
 			if v, ok := m["userName"].(string); ok && v != "" {
 				user.Email = v
