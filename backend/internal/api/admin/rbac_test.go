@@ -1,10 +1,12 @@
 package admin
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -120,10 +122,15 @@ func newRBACRouterWithRevocation(t *testing.T, withRevocation bool) (sqlmock.Sql
 	sqlxDB := sqlx.NewDb(db, "sqlmock")
 	rbacRepo := repositories.NewRBACRepository(sqlxDB)
 	var userRevocations *repositories.UserTokenRevocationRepository
+	var apiKeys *repositories.APIKeyRepository
 	if withRevocation {
 		userRevocations = repositories.NewUserTokenRevocationRepository(db)
+		// The API-key half of the sweep (issue #732) runs over the same mocked
+		// connection, so the org-bound key lookup/delete are ordinary
+		// expectations on `mock` like the watermark write.
+		apiKeys = repositories.NewAPIKeyRepository(db)
 	}
-	h := NewRBACHandlers(rbacRepo, userRevocations)
+	h := NewRBACHandlers(rbacRepo, userRevocations, apiKeys)
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
@@ -335,32 +342,45 @@ func TestRBACUpdateRoleTemplate_Success(t *testing.T) {
 	}
 }
 
-// Issue #559 finding [9]: editing a role template's scopes must revoke the
-// outstanding tokens of every member currently assigned that template, so the
-// new scopes take effect immediately rather than waiting out the JWT TTL.
+// Issue #559 finding [9] plus issue #732: editing a role template's scopes must
+// sweep BOTH credential families that snapshot those scopes for every member
+// currently assigned the template — the JWT revoke-all watermark and the
+// member's API keys in the organization where they hold it — so the new scopes
+// take effect immediately rather than waiting out the JWT TTL (JWTs) or never
+// (keys).
 func TestRBACUpdateRoleTemplate_ScopesChanged_RevokesMemberTokens(t *testing.T) {
 	mock, r := newRBACRouterWithRevocation(t, true)
+	logs := captureSlogOutput(t)
 	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
 		WillReturnRows(sampleRTRow()) // scopes = testRTScopes = ["modules:read","providers:write"]
 	mock.ExpectExec("UPDATE role_templates.*SET display_name").
 		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectQuery("SELECT DISTINCT user_id FROM organization_members WHERE role_template_id").
-		WillReturnRows(sqlmock.NewRows([]string{"user_id"}).
-			AddRow("member-1").
-			AddRow("member-2"))
+	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_members WHERE role_template_id").
+		WillReturnRows(sqlmock.NewRows([]string{"user_id", "organization_id"}).
+			AddRow("member-1", "org-1").
+			AddRow("member-2", "org-2"))
 	mock.ExpectExec("INSERT INTO user_token_revocations").
 		WithArgs("member-1").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	// member-1's key asks for providers:write, which the narrowed template no
+	// longer grants → deleted.
+	expectOrgKeySweepScoped(mock, "member-1", "org-1", "key-m1", []byte(`["providers:write"]`))
 	mock.ExpectExec("INSERT INTO user_token_revocations").
 		WithArgs("member-2").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	// member-2's key asks only for modules:read, which the new template still
+	// grants → listed but NOT deleted. Deleting it would destroy a working,
+	// unrecoverable credential that is entirely within the member's remaining
+	// authority; no DELETE is registered, so sqlmock fails the test if one is
+	// issued.
+	expectOrgKeyList(mock, "member-2", "org-2", "key-m2", []byte(`["modules:read"]`))
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("PUT", "/role-templates/"+knownUUID,
 		jsonBody(map[string]interface{}{
 			"name":         "reader",
 			"display_name": "Reader Updated",
-			"scopes":       []string{"modules:read"}, // differs from testRTScopes
+			"scopes":       []string{"modules:read"}, // narrower than testRTScopes
 		})))
 
 	if w.Code != http.StatusOK {
@@ -369,6 +389,89 @@ func TestRBACUpdateRoleTemplate_ScopesChanged_RevokesMemberTokens(t *testing.T) 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("revocation sweep was not issued: %v", err)
 	}
+	// member-2's key must not be touched at all. Asserted on the logs rather
+	// than on sqlmock: an unregistered DELETE is returned to the sweeper as an
+	// error, which its best-effort handling logs and swallows, so
+	// ExpectationsWereMet() would still pass. The sweeper names the key in
+	// both its success and its failure log, so the id appearing at all means
+	// a deletion was attempted.
+	if strings.Contains(logs.String(), "key-m2") {
+		t.Errorf("a key entirely within the retained authority was swept; logs: %s", logs.String())
+	}
+}
+
+// A scope WIDENING must not sweep anything. Every credential frozen under the
+// old, narrower template still asks for no more than its holder now has, so
+// revoking sessions and irreversibly deleting API keys would destroy working
+// credentials fleet-wide as a side effect of GRANTING permission. Asserted by
+// registering no member-lookup or revocation expectations: sqlmock fails the
+// test if the handler issues any.
+func TestRBACUpdateRoleTemplate_ScopesWidened_SkipsRevocation(t *testing.T) {
+	mock, r := newRBACRouterWithRevocation(t, true)
+	logs := captureSlogOutput(t)
+	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+		WillReturnRows(sampleRTRow()) // scopes = testRTScopes = ["modules:read","providers:write"]
+	mock.ExpectExec("UPDATE role_templates.*SET display_name").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/role-templates/"+knownUUID,
+		jsonBody(map[string]interface{}{
+			"name":         "reader",
+			"display_name": "Reader Updated",
+			// A strict superset: everything the template granted before, plus
+			// modules:write.
+			"scopes": []string{"modules:read", "providers:write", "modules:write"},
+		})))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	assertNoSweepAttempted(t, mock, logs, "a scope widening")
+}
+
+// assertNoSweepAttempted fails when the handler tried to sweep at all.
+//
+// mock.ExpectationsWereMet() alone is NOT sufficient here: sqlmock only checks
+// that every REGISTERED expectation fired, so an unexpected extra statement is
+// returned to the caller as an error and then swallowed by the sweep's
+// deliberate best-effort error handling, leaving the test green. The member
+// lookup is the sweep's first statement, so its failure log is the reliable
+// signal that a sweep was attempted.
+func assertNoSweepAttempted(t *testing.T, mock sqlmock.Sqlmock, logs *bytes.Buffer, what string) {
+	t.Helper()
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("%s must not sweep any credential: %v", what, err)
+	}
+	if strings.Contains(logs.String(), "failed to list role template members for credential revocation") {
+		t.Errorf("%s attempted a credential sweep; logs: %s", what, logs.String())
+	}
+}
+
+// A pure REORDERING of an unchanged scope set must not sweep anything either.
+// The previous gate compared the two slices index-wise, so swapping two
+// entries in the UI read as a scope change and hard-deleted every affected
+// member's org-bound API keys.
+func TestRBACUpdateRoleTemplate_ScopesReordered_SkipsRevocation(t *testing.T) {
+	mock, r := newRBACRouterWithRevocation(t, true)
+	logs := captureSlogOutput(t)
+	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+		WillReturnRows(sampleRTRow()) // scopes = testRTScopes = ["modules:read","providers:write"]
+	mock.ExpectExec("UPDATE role_templates.*SET display_name").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/role-templates/"+knownUUID,
+		jsonBody(map[string]interface{}{
+			"name":         "reader",
+			"display_name": "Reader Updated",
+			"scopes":       []string{"providers:write", "modules:read"}, // same set, swapped
+		})))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	assertNoSweepAttempted(t, mock, logs, "a pure reordering")
 }
 
 // A display-name/description-only edit that leaves scopes unchanged must not
@@ -451,18 +554,20 @@ func TestRBACDeleteRoleTemplate_RevokesMemberTokens(t *testing.T) {
 	mock, r := newRBACRouterWithRevocation(t, true)
 	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
 		WillReturnRows(sampleRTRow())
-	mock.ExpectQuery("SELECT DISTINCT user_id FROM organization_members WHERE role_template_id").
-		WillReturnRows(sqlmock.NewRows([]string{"user_id"}).
-			AddRow("member-1").
-			AddRow("member-2"))
+	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_members WHERE role_template_id").
+		WillReturnRows(sqlmock.NewRows([]string{"user_id", "organization_id"}).
+			AddRow("member-1", "org-1").
+			AddRow("member-2", "org-2"))
 	mock.ExpectExec("DELETE FROM role_templates WHERE id").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("INSERT INTO user_token_revocations").
 		WithArgs("member-1").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	expectOrgKeySweep(mock, "member-1", "org-1", "key-m1")
 	mock.ExpectExec("INSERT INTO user_token_revocations").
 		WithArgs("member-2").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	expectOrgKeySweep(mock, "member-2", "org-2", "key-m2")
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/role-templates/"+knownUUID, nil))
@@ -483,7 +588,7 @@ func TestRBACDeleteRoleTemplate_MemberLookupDBError_StillDeletes(t *testing.T) {
 	mock, r := newRBACRouterWithRevocation(t, true)
 	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
 		WillReturnRows(sampleRTRow())
-	mock.ExpectQuery("SELECT DISTINCT user_id FROM organization_members WHERE role_template_id").
+	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_members WHERE role_template_id").
 		WillReturnError(errDB)
 	mock.ExpectExec("DELETE FROM role_templates WHERE id").
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -1118,7 +1223,7 @@ func newRBACRouterWithOrg(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 
 	sqlxDB := sqlx.NewDb(db, "sqlmock")
 	rbacRepo := repositories.NewRBACRepository(sqlxDB)
-	h := NewRBACHandlers(rbacRepo, nil)
+	h := NewRBACHandlers(rbacRepo, nil, nil)
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
@@ -1513,7 +1618,7 @@ func newRBACRouterNoUser(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 
 	sqlxDB := sqlx.NewDb(db, "sqlmock")
 	rbacRepo := repositories.NewRBACRepository(sqlxDB)
-	h := NewRBACHandlers(rbacRepo, nil)
+	h := NewRBACHandlers(rbacRepo, nil, nil)
 
 	r := gin.New()
 	// No user_id middleware — exercises context-absent code paths
@@ -1796,5 +1901,117 @@ func TestRBACEvaluatePolicy_RequiresApproval(t *testing.T) {
 	}
 	if resp["requires_approval"] != true {
 		t.Errorf("requires_approval = %v, want true", resp["requires_approval"])
+	}
+}
+
+// UpdateRoleTemplate must report a failed sweep, exactly as DeleteRoleTemplate,
+// RemoveMemberHandler and DeleteOrganizationHandler do. Narrowing a template's
+// scopes and getting a clean 200 while the affected members' API keys are still
+// live is the silent failure this whole change exists to stop reporting as
+// success: the edit landed, the credentials carrying the old authority did not
+// go away, and the admin had no way to know.
+func TestRBACUpdateRoleTemplate_SweepFails_ReportsRevocationIncomplete(t *testing.T) {
+	mock, r := newRBACRouterWithRevocation(t, true)
+	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+		WillReturnRows(sampleRTRow()) // scopes = ["modules:read","providers:write"]
+	mock.ExpectExec("UPDATE role_templates.*SET display_name").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	// The member lookup that drives the sweep fails after the edit committed.
+	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_members").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/role-templates/"+knownUUID,
+		jsonBody(map[string]interface{}{
+			"name":         "reader",
+			"display_name": "Reader Updated",
+			"scopes":       []string{"modules:read"}, // strictly narrower
+		})))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (the edit itself succeeded): body=%s", w.Code, w.Body.String())
+	}
+	var body struct {
+		DisplayName          string `json:"display_name"`
+		RevocationIncomplete bool   `json:"revocation_incomplete"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed to decode response body: %v: body=%s", err, w.Body.String())
+	}
+	if !body.RevocationIncomplete {
+		t.Errorf("expected revocation_incomplete=true after a failed sweep, got body=%s", w.Body.String())
+	}
+	// The template itself is still the response body — the flag is additive.
+	if body.DisplayName != "Reader Updated" {
+		t.Errorf("display_name = %q, want %q: the success body must not change shape", body.DisplayName, "Reader Updated")
+	}
+}
+
+// The happy path must NOT carry the flag, or it means nothing.
+func TestRBACUpdateRoleTemplate_SweepSucceeds_NoRevocationIncomplete(t *testing.T) {
+	mock, r := newRBACRouterWithRevocation(t, true)
+	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+		WillReturnRows(sampleRTRow())
+	mock.ExpectExec("UPDATE role_templates.*SET display_name").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_members").
+		WillReturnRows(sqlmock.NewRows([]string{"user_id", "organization_id"}).
+			AddRow("member-1", "org-1"))
+	mock.ExpectExec("INSERT INTO user_token_revocations").
+		WithArgs("member-1").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	expectOrgKeySweepScoped(mock, "member-1", "org-1", "key-rt-ok",
+		[]byte(`["providers:write"]`))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/role-templates/"+knownUUID,
+		jsonBody(map[string]interface{}{
+			"name":         "reader",
+			"display_name": "Reader Updated",
+			"scopes":       []string{"modules:read"},
+		})))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	if bytes.Contains(w.Body.Bytes(), []byte("revocation_incomplete")) {
+		t.Errorf("a successful sweep must not report revocation_incomplete: body=%s", w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("revocation sweep was not issued: %v", err)
+	}
+}
+
+// DeleteRoleTemplate reported revocation_incomplete only when the member
+// LOOKUP failed. A lookup that succeeds followed by a sweep that fails leaves
+// the caller in exactly the same state -- template gone, credentials live --
+// and must report the same way.
+func TestRBACDeleteRoleTemplate_SweepFails_ReportsRevocationIncomplete(t *testing.T) {
+	mock, r := newRBACRouterWithRevocation(t, true)
+	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+		WillReturnRows(sampleRTRow())
+	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_members").
+		WillReturnRows(sqlmock.NewRows([]string{"user_id", "organization_id"}).
+			AddRow("member-1", "org-1"))
+	mock.ExpectExec("DELETE FROM role_templates WHERE id").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec("INSERT INTO user_token_revocations").
+		WillReturnError(errDB)
+	expectOrgKeySweep(mock, "member-1", "org-1", "key-rt-del-incomplete")
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/role-templates/"+knownUUID, nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (the delete itself succeeded): body=%s", w.Code, w.Body.String())
+	}
+	var body struct {
+		RevocationIncomplete bool `json:"revocation_incomplete"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed to decode response body: %v: body=%s", err, w.Body.String())
+	}
+	if !body.RevocationIncomplete {
+		t.Errorf("expected revocation_incomplete=true after a failed sweep, got body=%s", w.Body.String())
 	}
 }

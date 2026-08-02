@@ -3,11 +3,15 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
+
+	"github.com/terraform-registry/terraform-registry/internal/credlifecycle"
+	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
 
 func TestNewUserService(t *testing.T) {
@@ -166,15 +170,100 @@ func TestEraseUser_Success(t *testing.T) {
 	mock.ExpectExec("DELETE FROM organization_members").
 		WithArgs("user-1").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO revoked_tokens").
-		WithArgs("user-1").
-		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectCommit()
 
 	svc := NewUserService(db)
 	err := svc.EraseUser(context.Background(), "user-1", "admin-1")
 	if err != nil {
 		t.Fatalf("EraseUser() = %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// The JWT half of an erasure used to be an in-transaction
+//
+//	INSERT INTO revoked_tokens (token_id, revoked_at)
+//	SELECT id, NOW() FROM user_sessions WHERE user_id = $1
+//
+// whose error was discarded. No `user_sessions` table exists in any migration
+// in this repository or in the shared identity schema — the registry keeps no
+// server-side sessions — so the statement always failed and the erasure
+// revoked nothing, while the SQL text made the site read as swept. (The test
+// above asserted that statement was issued, which is why the gap survived: it
+// ratified the presence of the text, not the effect.)
+//
+// The real mechanism is the per-user revoke-all watermark, which lives on a
+// different connection and so runs after the commit.
+func TestEraseUser_RevokesSessionsAndKeysAfterCommit(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT EXISTS").
+		WithArgs("user-1").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+	mock.ExpectExec("UPDATE users").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("DELETE FROM api_keys").
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec("DELETE FROM organization_members").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	mock.ExpectExec("INSERT INTO user_token_revocations").
+		WithArgs("user-1").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery("(?s)FROM api_keys ak.*WHERE ak.user_id").
+		WithArgs("user-1").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "user_id", "organization_id", "name", "description",
+			"key_hash", "key_prefix", "scopes", "expires_at", "last_used_at",
+			"expiry_notification_sent_at", "created_at", "user_name"}))
+
+	svc := NewUserService(db).WithCredentialSweeper(credlifecycle.NewSweeper(
+		repositories.NewUserTokenRevocationRepository(db),
+		repositories.NewAPIKeyRepository(db)))
+	if err := svc.EraseUser(context.Background(), "user-1", "admin-1"); err != nil {
+		t.Fatalf("EraseUser() = %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("the erasure did not revoke the user's sessions: %v", err)
+	}
+}
+
+// A sweep failure must not be reported as a clean erasure: the record is
+// anonymized but the user's sessions may still be live.
+func TestEraseUser_SweepFails_ReturnsError(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT EXISTS").
+		WithArgs("user-1").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+	mock.ExpectExec("UPDATE users").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("DELETE FROM api_keys").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("DELETE FROM organization_members").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectCommit()
+	mock.ExpectExec("INSERT INTO user_token_revocations").
+		WithArgs("user-1").
+		WillReturnError(errors.New("watermark write failed"))
+	mock.ExpectQuery("(?s)FROM api_keys ak.*WHERE ak.user_id").
+		WithArgs("user-1").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "user_id", "organization_id", "name", "description",
+			"key_hash", "key_prefix", "scopes", "expires_at", "last_used_at",
+			"expiry_notification_sent_at", "created_at", "user_name"}))
+
+	svc := NewUserService(db).WithCredentialSweeper(credlifecycle.NewSweeper(
+		repositories.NewUserTokenRevocationRepository(db),
+		repositories.NewAPIKeyRepository(db)))
+	if err := svc.EraseUser(context.Background(), "user-1", "admin-1"); err == nil {
+		t.Fatal("EraseUser() = nil despite an incomplete credential sweep")
 	}
 }
 

@@ -102,8 +102,6 @@ func TestEraseUserHandler_Success(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("DELETE FROM organization_members").WithArgs("user-1").
 		WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec("INSERT INTO revoked_tokens").WithArgs("user-1").
-		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectCommit()
 
 	svc := services.NewUserService(db)
@@ -160,8 +158,6 @@ func TestEraseUserHandler_NoAuthContext(t *testing.T) {
 	mock.ExpectExec("DELETE FROM api_keys").WithArgs("user-1").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("DELETE FROM organization_members").WithArgs("user-1").
-		WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec("INSERT INTO revoked_tokens").WithArgs("user-1").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectCommit()
 

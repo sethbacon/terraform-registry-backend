@@ -1,0 +1,17 @@
+-- no-op: un-expiring the quarantined keys is not meaningful.
+--
+-- The up migration does not record which rows it touched, and it cannot be
+-- inferred afterwards: `expires_at = NOW()` is indistinguishable from a key an
+-- operator expired deliberately. Blanket-clearing expires_at on every userless
+-- row would RE-ARM exactly the credentials the migration retired, which is the
+-- opposite of a rollback.
+--
+-- An operator who can positively identify a userless key as a deliberately
+-- hand-created organization service credential can restore it individually:
+--
+--   UPDATE identity.api_keys SET expires_at = NULL WHERE id = '<uuid>';
+--
+-- Note that the point-of-use guard still refuses userless org-bound keys on
+-- namespace mutations (middleware.NamespaceAuthorizer.verifyKeyOwnerAuthority),
+-- so re-arming the row alone does not restore publish access; that guard is
+-- code, and rolling the binary back is what reverts it.

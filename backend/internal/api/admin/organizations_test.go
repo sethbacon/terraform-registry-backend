@@ -806,9 +806,11 @@ func TestRemoveMember_Success(t *testing.T) {
 	}
 }
 
-// Issue #559 finding [9]: removing a member must revoke their outstanding
-// tokens so the removal takes effect immediately rather than waiting out the
-// JWT TTL.
+// Issue #559 finding [9] plus issue #732: removing a member must invalidate
+// both credential families that snapshot their org-derived authority -- the
+// JWT revoke-all watermark and the member's org-bound API keys -- so the
+// removal takes effect immediately rather than waiting out the JWT TTL (JWTs)
+// or never (keys).
 func TestRemoveMember_RevokesUserTokens(t *testing.T) {
 	mock, r := newOrgRouterWithRevocation(t, true)
 
@@ -819,6 +821,7 @@ func TestRemoveMember_RevokesUserTokens(t *testing.T) {
 	mock.ExpectExec("INSERT INTO user_token_revocations").
 		WithArgs("user-1").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	expectOrgKeySweep(mock, "user-1", "org-1", "key-1")
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/organizations/org-1/members/user-1", nil))
@@ -843,12 +846,17 @@ func TestRemoveMember_RevocationErrorDoesNotFailRequest(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("INSERT INTO user_token_revocations").
 		WillReturnError(errDB)
+	// The JWT half failing must not skip the API-key half.
+	expectOrgKeySweep(mock, "user-1", "org-1", "key-1")
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/organizations/org-1/members/user-1", nil))
 
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200 even though revocation failed: body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("API-key sweep must still run when the token revocation fails: %v", err)
 	}
 }
 
@@ -900,6 +908,59 @@ func TestRemoveMember_NotAMember_SkipsRevocation(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), "revoke") {
 		t.Errorf("a revocation was attempted even though the removed user was never a member; logs: %s", logs.String())
+	}
+}
+
+// The API-KEY half of the sweep failing must surface as revocation_incomplete
+// just as the JWT half does.
+//
+// This is the half that matters most: a JWT expires on its own, but an API key
+// whose deletion failed is a permanently valid publish credential into the
+// organization's namespaces. Reporting a plain 200 here would tell the
+// administrator the offboarding was complete when the credential that outlives
+// everything is still live.
+func TestRemoveMember_APIKeyRevocationFails_FlagsIncomplete(t *testing.T) {
+	mock, r := newOrgRouterWithRevocation(t, true)
+	logs := captureSlogOutput(t)
+
+	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
+		WillReturnRows(sampleMemberWithRoleRow())
+	mock.ExpectExec("DELETE FROM organization_members").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	// The JWT half succeeds ...
+	mock.ExpectExec("INSERT INTO user_token_revocations").
+		WithArgs("user-1").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	// ... and the API-key half fails on the delete.
+	mock.ExpectQuery("(?s)FROM api_keys ak.*ak.organization_id").
+		WithArgs("user-1", "org-1").
+		WillReturnRows(sqlmock.NewRows(akListCols).
+			AddRow("key-stuck", "user-1", "org-1", "CI Key", nil, "hashedkey", "tfr_abc123",
+				testKeyScopes, nil, nil, nil, time.Now(), nil))
+	mock.ExpectExec("DELETE FROM api_keys WHERE id").
+		WithArgs("key-stuck").
+		WillReturnError(errDB)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/organizations/org-1/members/user-1", nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (the removal itself succeeded): body=%s", w.Code, w.Body.String())
+	}
+	var body struct {
+		RevocationIncomplete bool `json:"revocation_incomplete"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed to decode response body: %v: body=%s", err, w.Body.String())
+	}
+	if !body.RevocationIncomplete {
+		t.Errorf("expected revocation_incomplete=true when the API-key half failed, got body=%s", w.Body.String())
+	}
+	if !strings.Contains(logs.String(), "failed to revoke org-bound API key") {
+		t.Errorf("expected the API-key revocation failure to be logged; logs: %s", logs.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
 	}
 }
 
@@ -1109,6 +1170,7 @@ func TestUpdateMember_RoleTemplateChanged_RevokesUserTokens(t *testing.T) {
 	mock.ExpectExec("INSERT INTO user_token_revocations").
 		WithArgs("user-1").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	expectOrgKeySweep(mock, "user-1", "org-1", "key-1")
 	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
 		WillReturnRows(sampleMemberWithRoleRow())
 
@@ -1545,5 +1607,57 @@ func TestCreateOrganization_ExistenceCheckError(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+// UpdateMemberHandler must report a failed sweep the way RemoveMemberHandler
+// does. A demotion that answers a clean 200 while the member's sessions and
+// over-asking API keys are still live tells the admin the privilege change
+// took effect when it only half did.
+func TestUpdateMemberHandler_SweepFails_ReportsRevocationIncomplete(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	h := NewOrganizationHandlers(&config.Config{}, db,
+		repositories.NewNamespaceClaimRepository(db),
+		repositories.NewUserTokenRevocationRepository(db))
+	r := gin.New()
+	r.PUT("/organizations/:id/members/:user_id", h.UpdateMemberHandler())
+
+	mock.ExpectQuery("SELECT scopes FROM role_templates WHERE id").
+		WillReturnRows(sqlmock.NewRows([]string{"scopes"}).AddRow([]byte(`[]`)))
+	mock.ExpectQuery("SELECT.*FROM organization_members WHERE organization_id").
+		WillReturnRows(sampleOrgMemberRowWithRole(oldRoleTemplateUUID))
+	mock.ExpectExec("UPDATE organization_members").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
+		WillReturnRows(sampleMemberWithRoleRow())
+	// The JWT half of the sweep fails after the reassignment committed.
+	mock.ExpectExec("INSERT INTO user_token_revocations").
+		WillReturnError(errDB)
+	expectOrgKeySweepScoped(mock, "user-1", "org-1", "key-rerole-incomplete",
+		[]byte(`["providers:write"]`))
+	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
+		WillReturnRows(sampleMemberWithRoleRow())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/organizations/org-1/members/user-1",
+		bytes.NewBufferString(`{"role_template_id": "`+newRoleTemplateUUID+`"}`)))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (the reassignment itself succeeded): body=%s", w.Code, w.Body.String())
+	}
+	var body struct {
+		RevocationIncomplete bool `json:"revocation_incomplete"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed to decode response body: %v: body=%s", err, w.Body.String())
+	}
+	if !body.RevocationIncomplete {
+		t.Errorf("expected revocation_incomplete=true after a failed sweep, got body=%s", w.Body.String())
 	}
 }

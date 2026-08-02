@@ -42,27 +42,41 @@ func NewRBACRepositoryWithIdentity(db, identityDB *sqlx.DB) *RBACRepository {
 	}
 }
 
-// ListRoleTemplateMemberUserIDs returns the distinct user IDs of organization
-// members currently assigned the given role template. Used to revoke the
-// outstanding tokens of every affected user when a role template's scopes are
-// edited or the template is deleted (issue #559 finding [9]).
-func (r *RBACRepository) ListRoleTemplateMemberUserIDs(ctx context.Context, roleTemplateID uuid.UUID) ([]string, error) {
-	query := `SELECT DISTINCT user_id FROM organization_members WHERE role_template_id = $1`
+// RoleTemplateMembership identifies one (user, organization) pair currently
+// assigned a role template.
+type RoleTemplateMembership struct {
+	UserID         string
+	OrganizationID string
+}
+
+// ListRoleTemplateMemberships returns the distinct (user, organization) pairs
+// of organization members currently assigned the given role template.
+//
+// The organization is returned alongside the user because the two credential
+// families invalidated when a template's scopes change or the template is
+// deleted have different shapes: the JWT revoke-all watermark is per-user
+// (issue #559 finding [9]), while an API key snapshots BOTH the scopes and one
+// organization_id, so only the affected member's keys in the organizations
+// where they actually held this template must be revoked (issue #732). Without
+// the organization this query cannot express the second sweep without either
+// over-revoking (every key the member holds anywhere) or not revoking at all.
+func (r *RBACRepository) ListRoleTemplateMemberships(ctx context.Context, roleTemplateID uuid.UUID) ([]RoleTemplateMembership, error) {
+	query := `SELECT DISTINCT user_id, organization_id FROM organization_members WHERE role_template_id = $1`
 	rows, err := r.identityDB.QueryContext(ctx, query, roleTemplateID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var userIDs []string
+	var out []RoleTemplateMembership
 	for rows.Next() {
-		var userID string
-		if err := rows.Scan(&userID); err != nil {
+		var m RoleTemplateMembership
+		if err := rows.Scan(&m.UserID, &m.OrganizationID); err != nil {
 			return nil, err
 		}
-		userIDs = append(userIDs, userID)
+		out = append(out, m)
 	}
-	return userIDs, rows.Err()
+	return out, rows.Err()
 }
 
 // ============================================================================

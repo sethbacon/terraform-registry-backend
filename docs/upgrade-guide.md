@@ -274,9 +274,146 @@ After upgrade:
 with a non-admin token and expect estate-wide results: either grant that principal the
 `admin` scope deliberately, or update the caller to iterate per organization.
 
-**Migrations:** none for either change.
+**Credential invalidation on authority reduction (#732, #736):**
 
-**Rollback:** both are code-only; rolling back the binary restores the previous behavior.
+Reducing a principal's authority now invalidates the credentials that carry a
+*snapshot* of it. Previously only JWT sessions were swept, and only at some events;
+API keys were never swept at all, because an API key's scopes **and** its owning
+`organization_id` are frozen on the `api_keys` row at creation and are read straight
+back out by the auth middleware. An offboarded member kept a working
+`modules:write` / `providers:write` credential into the organization's namespaces
+indefinitely.
+
+These sweeps **activate on upgrade with no configuration change**, and they DELETE
+API keys. An API key's secret is displayed once at creation and cannot be recovered:
+a deleted key must be re-issued and re-distributed to whatever consumes it (CI
+pipelines, Terraform `credentials` blocks, automation). Review the list below against
+your own automation before upgrading.
+
+Events that now delete a principal's organization-bound API keys:
+
+- Removal from an organization (`DELETE /api/v1/organizations/:id/members/:user_id`).
+- A member's role-template reassignment (`PUT .../members/:user_id`) — **only** when
+  the new template grants strictly less; a promotion deletes nothing.
+- A role template's scopes being **narrowed**, or the template being deleted. Adding
+  scopes, or merely reordering the list, sweeps nothing.
+- IdP group-mapping deprovisioning at OIDC/SAML/LDAP login.
+- An IdP group change that maps a user to a **lower** role at OIDC/SAML/LDAP login —
+  same rule as the administrative reassignment above: a promotion deletes nothing, a
+  demotion deletes exactly the keys that now over-ask. Note that this fires on
+  *login*, so it applies to users your IdP re-scopes without anyone touching the
+  registry.
+- User deletion (`DELETE /api/v1/users/:id`) and GDPR erasure
+  (`POST /api/v1/admin/users/:id/erase`).
+
+Only keys asking for **more than the principal retains** are deleted; a key entirely
+within the remaining authority survives. Scope comparison honors the `admin` wildcard
+and the read/write implications, and is order-insensitive.
+
+**SCIM deactivation now destroys credentials.** `DELETE /scim/v2/Users/{id}`, and a
+PUT or PATCH setting `active: false`, now revoke the user's sessions and delete
+**every** API key they hold in **every** organization — not just their memberships.
+If your IdP deactivates and later reactivates users (a common lifecycle for
+contractors or leave-of-absence), reactivation restores memberships but **cannot**
+restore API keys; they must be re-issued.
+
+> **SCIM PUT semantics changed with this.** `active` is now optional: a PUT that
+> **omits** it leaves the user's authority untouched, where previously an omitted
+> `active` was indistinguishable from `active: false` and silently deprovisioned the
+> user. If you have an IdP or script relying on a partial PUT to deactivate users,
+> it must now send `"active": false` explicitly.
+
+**Sessions the IdP login path does not revoke.** At OIDC/SAML/LDAP login the API-key
+family is swept but the JWT revoke-all watermark is deliberately **not** moved: the
+reconciliation runs microseconds before the same request mints the user's new session
+token, whose `iat` is floored to the second, so moving the watermark would revoke the
+token being issued and the user could never log in. The token minted by that login is
+derived after the change and already carries the reduced authority. The user's
+**other** live sessions, from earlier logins, are **not** covered — they keep the
+pre-reduction scopes until their own TTL expires. If you need an IdP-driven reduction
+to retire every existing session immediately, perform the equivalent administrative
+action (member removal, role reassignment, or a role-template edit), which does move
+the watermark.
+
+Responses from these endpoints may carry `revocation_incomplete: true`. The authority
+change itself succeeded, but part of the credential sweep did not — treat it as an
+open incident and re-run the action. This is now reported by
+`PUT /api/v1/admin/role-templates/{id}` and `PUT /api/v1/organizations/{id}/members/{user_id}`
+as well, which previously answered a clean `200` regardless. On those two endpoints the
+flag is an **additional field on the existing success body**, not a new envelope.
+
+**Also in this change: organization-bound API keys are re-verified at the point their
+binding is established, not only on namespace mutations.**
+
+`AuthMiddleware` and `OptionalAuthMiddleware` now look up the key owner's current
+membership on every API-key-authenticated request, and:
+
+- **reject the key (`401`)** when its owner is no longer a member of the organization
+  it is bound to;
+- **narrow the request's scopes** to the intersection of the key's frozen scopes and
+  what the owner's current role template grants (by scope semantics, so an `admin`
+  role template retains everything);
+- **reject the key (`401`)** when it has no owning user — see the migration note below.
+
+This costs **one additional indexed query per API-key request**, on a path that already
+performs a key-prefix lookup, a bcrypt comparison, and a user load. Previously the
+re-verification existed only inside the namespace authorizer, so any route not wrapped
+by it — the admin surface, `/apikeys`, SCIM — consumed the frozen `organization_id` and
+scope list with no check at all.
+
+Long-lived keys belonging to users who have since been offboarded or downgraded will
+begin failing on upgrade. That is the intended correction, but **audit for it before
+deploying** if you have automation running under a personal key.
+
+**Migration `000050_quarantine_orphaned_api_keys` — read this if you have ever deleted
+a user.**
+
+In the shared identity schema, `identity.api_keys.user_id` is
+`REFERENCES identity.users(id) ON DELETE SET NULL`. Deleting a principal therefore
+**detached** their API keys instead of destroying them, and the detached row kept its
+`organization_id` and its frozen scopes. Until this release the authorizer read a
+userless organization-bound key as an "organization service credential" and skipped the
+membership check entirely — so a deleted user's key kept publishing into that
+organization's namespaces.
+
+The code changes close this going forward (every user-deletion site sweeps first) and
+fail closed at the point of use. Neither helps rows that were **already** detached, so
+this migration retires them: every `api_keys` row with `user_id IS NULL` and no earlier
+expiry has `expires_at` set to `NOW()`. It runs against `identity.api_keys` when the
+identity schema exists and against `public.api_keys` always, logs a `WARNING` with the
+row count when it changes anything, and is idempotent.
+
+Retiring **all** of them is safe because the registry has no way to mint one: API keys
+are created only by `POST /api/v1/apikeys` (owner taken from the authenticated caller)
+and by key rotation (which copies the previous owner). A userless row is either a
+detached personal key or a hand-written `INSERT`.
+
+- **If you deliberately created a userless key by direct SQL**, it is now expired *and*
+  refused by the point-of-use guard. Re-issue it through the API so it is bound to a
+  real principal; a service account with its own membership is the supported shape.
+- **The down migration is a no-op.** `expires_at = NOW()` is indistinguishable from an
+  expiry an operator set on purpose, so blanket-clearing it would re-arm exactly the
+  credentials the migration retired. Individual rows can be restored by hand
+  (`UPDATE identity.api_keys SET expires_at = NULL WHERE id = '<uuid>'`), though the
+  point-of-use guard still refuses userless keys until the binary is rolled back.
+- **Non-default `TFR_IDENTITY_SCHEMA_NAME`:** the migration hardcodes the `identity.`
+  schema literal, exactly like migrations `000038` and `000045`. Edit the file, or run
+  the statement by hand, if you renamed the schema.
+
+To see what will be quarantined before you upgrade:
+
+```sql
+SELECT id, organization_id, name, key_prefix, scopes, created_at, last_used_at
+  FROM identity.api_keys
+ WHERE user_id IS NULL AND (expires_at IS NULL OR expires_at > NOW());
+```
+
+**Migrations:** `000050_quarantine_orphaned_api_keys` (data-only; irreversible down).
+No other change in this section requires one.
+
+**Rollback:** the code changes are all code-only; rolling back the binary restores the
+previous behavior. Note that API keys deleted by a sweep are **not** restored by a
+rollback, and neither are the keys quarantined by migration `000050`.
 
 ---
 

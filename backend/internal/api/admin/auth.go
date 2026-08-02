@@ -22,6 +22,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/auth/oidc"
 	samlpkg "github.com/terraform-registry/terraform-registry/internal/auth/saml"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/credlifecycle"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/middleware"
@@ -45,6 +46,13 @@ type AuthHandlers struct {
 	// samlEgressGuard widens the SSRF deny-list applied when fetching a SAML
 	// IdP's metadata_url (nil = strict). Set via WithSAMLEgressGuard.
 	samlEgressGuard *httpsafe.Guard
+	// creds sweeps the credentials stranded by the deprovisioning branch of
+	// reconcileGroupMemberships: when a login no longer carries the IdP group
+	// that granted an organization, the membership is removed but the member's
+	// org-bound API keys -- whose organization_id and scopes are frozen on the
+	// api_keys row -- would otherwise keep working forever (issue #732).
+	// Set via WithCredentialSweeper; nil is a no-op.
+	creds *credlifecycle.Sweeper
 }
 
 // AuthHandlersOption configures optional AuthHandlers construction behavior.
@@ -55,6 +63,12 @@ type AuthHandlersOption func(*AuthHandlers)
 // only reachable at an internal address.
 func WithSAMLEgressGuard(g *httpsafe.Guard) AuthHandlersOption {
 	return func(h *AuthHandlers) { h.samlEgressGuard = g }
+}
+
+// WithCredentialSweeper wires the credential sweep used by the IdP
+// group-mapping deprovisioning branch of reconcileGroupMemberships.
+func WithCredentialSweeper(s *credlifecycle.Sweeper) AuthHandlersOption {
+	return func(h *AuthHandlers) { h.creds = s }
 }
 
 // NewAuthHandlers creates a new AuthHandlers instance.
@@ -1014,32 +1028,60 @@ func (h *AuthHandlers) reconcileGroupMemberships(ctx context.Context, userID str
 		}
 
 		role, wanted := desiredRole[orgName]
-		// rejectIfNotProvisionable refuses the automatic, IdP-driven role
+		// resolveProvisionableRole refuses the automatic, IdP-driven role
 		// assignment when the resolved role_template carries auth.ScopeAdmin —
 		// see guardProvisionableRole's doc for the full rationale (#604).
 		// Deliberately does NOT flip `wanted` to false: on rejection this must
 		// skip the assignment, not fall through to the revoke branch below and
 		// tear down an existing (possibly unrelated, legitimately-granted)
 		// membership.
-		rejectIfNotProvisionable := func() bool {
-			if guardErr := h.guardProvisionableRole(ctx, role); guardErr != nil {
+		//
+		// On acceptance it also yields the mapped template's scopes, which are
+		// what the member will hold in this org once the write commits — the
+		// retention filter the reassignment branch's sweep needs, obtained from
+		// the lookup the guard was already making.
+		resolveProvisionableRole := func() ([]string, bool) {
+			scopes, guardErr := h.guardProvisionableRole(ctx, role)
+			if guardErr != nil {
 				slog.Warn(provider+" group mapping rejected: resolved role is not automatically provisionable by an IdP-driven mapping; a human admin must grant it explicitly",
 					"user_id", userID, "org", orgName, "role", role, "error", guardErr)
-				return true
+				return nil, false
 			}
-			return false
+			return scopes, true
 		}
 		switch {
 		case wanted && isMember:
-			if rejectIfNotProvisionable() {
+			retained, ok := resolveProvisionableRole()
+			if !ok {
 				continue
 			}
 			if err := h.orgRepo.UpdateMemberRole(ctx, org.ID, userID, role); err != nil {
 				return fmt.Errorf("update member role org=%s user=%s role=%s: %w", org.ID, userID, role, err)
 			}
+			// An IdP group change can map the user to a LOWER role than they
+			// held (owner -> viewer), and this branch commits that reduction.
+			// The member's org-bound API keys froze their scopes at creation
+			// under the OLD template and nothing re-derives them, so without
+			// this the demotion is cosmetic for the API-key family exactly as
+			// the missing sweep on the removal branch was (issue #732).
+			//
+			// `retained` is the NEW template's scopes, so this is a no-op for
+			// the far more common promotion or same-role re-login: only keys
+			// asking for more than the new template grants are deleted (see
+			// credlifecycle.AuthorityRetained). Deleting an API key is
+			// irreversible, so sweeping on every reconciliation — every login,
+			// for every managed org — would be indefensible.
+			//
+			// OrgKeysOnly, not OrgAuthorityReduced: the JWT watermark is left
+			// alone here for the same reason as the removal branch below, and
+			// with the same residual. See OrgKeysOnly's doc.
+			h.creds.OrgKeysOnly(ctx, userID, org.ID, retained, provider+" group mapping role reassigned")
 			slog.Info(provider+" group mapping applied", "user_id", userID, "org", orgName, "role", role)
 		case wanted && !isMember:
-			if rejectIfNotProvisionable() {
+			// The scopes are not needed on this branch: adding a membership is
+			// an authority INCREASE, and no credential of this user in this org
+			// can be a snapshot of an authority they did not have.
+			if _, ok := resolveProvisionableRole(); !ok {
 				continue
 			}
 			if err := h.orgRepo.AddMemberWithParams(ctx, org.ID, userID, role); err != nil {
@@ -1051,6 +1093,23 @@ func (h *AuthHandlers) reconcileGroupMemberships(ctx context.Context, userID str
 			if err := h.orgRepo.RemoveMember(ctx, org.ID, userID); err != nil {
 				return fmt.Errorf("revoke member org=%s user=%s: %w", org.ID, userID, err)
 			}
+			// Removing the membership does not touch the member's API keys,
+			// whose organization_id and scopes are frozen on the api_keys row
+			// and which authorizeOrgAccess still treats as authoritative --
+			// the IdP would believe it had offboarded a user who kept a
+			// working publish credential into this org's namespaces (issue
+			// #732). OrgKeysOnly deliberately leaves the JWT watermark alone:
+			// this runs a few hundred microseconds before the same request
+			// mints the user's new session token, and moving the watermark
+			// would make that token compare as revoked. That covers THIS
+			// request's token, which is derived from GetUserCombinedScopes
+			// after the removal and so already carries the reduced authority;
+			// it does NOT cover the user's other live sessions from earlier
+			// logins, which keep the pre-removal scope union until their TTL
+			// expires. See OrgKeysOnly's doc for the residual in full.
+			// retained is nil: the user is no longer a member of this org, so
+			// every key bound to it over-asks.
+			h.creds.OrgKeysOnly(ctx, userID, org.ID, nil, provider+" group mapping revoked")
 			slog.Info(provider+" group mapping revoked", "user_id", userID, "org", orgName)
 		default:
 			// Not wanted and not a member → nothing to do.

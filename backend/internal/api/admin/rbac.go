@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/credlifecycle"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/notify"
@@ -23,12 +24,15 @@ import (
 // RBACHandlers handles RBAC-related API endpoints
 type RBACHandlers struct {
 	rbacRepo *repositories.RBACRepository
-	// userRevocations moves the revoke-all watermark for every member currently
-	// assigned a role template when that template's scopes are edited, so their
-	// outstanding JWTs (which embed scopes at login) stop validating immediately
-	// instead of carrying the old scopes until expiry (issue #559 finding [9]).
-	// May be nil in tests; revocation is skipped when unset.
-	userRevocations *repositories.UserTokenRevocationRepository
+	// creds invalidates BOTH credential families that snapshot the scopes of a
+	// role template when that template is edited or deleted: the per-user JWT
+	// revoke-all watermark (issue #559 finding [9]) and the affected members'
+	// API keys in the organizations where they held the template (issue #732).
+	// An API key's scopes are stored on the api_keys row at creation and are
+	// never re-derived from the template, so editing or deleting the template
+	// had no effect on keys at all.
+	// May be nil in tests; the sweep is skipped when unset.
+	creds *credlifecycle.Sweeper
 
 	// notifCfg, cveCfg, and mailer back the approval_pending notification sent
 	// when a new mirror approval request is created. Set via WithNotifications;
@@ -42,9 +46,12 @@ type RBACHandlers struct {
 	notifier *notify.Notifier
 }
 
-// NewRBACHandlers creates a new RBAC handlers instance
-func NewRBACHandlers(rbacRepo *repositories.RBACRepository, userRevocations *repositories.UserTokenRevocationRepository) *RBACHandlers {
-	return &RBACHandlers{rbacRepo: rbacRepo, userRevocations: userRevocations}
+// NewRBACHandlers creates a new RBAC handlers instance. apiKeys backs the
+// API-key half of the credential sweep and lives on the identity connection;
+// it may be nil, in which case only the JWT half runs. Passing nil for both
+// disables the sweep entirely (the pre-existing test convention).
+func NewRBACHandlers(rbacRepo *repositories.RBACRepository, userRevocations *repositories.UserTokenRevocationRepository, apiKeys *repositories.APIKeyRepository) *RBACHandlers {
+	return &RBACHandlers{rbacRepo: rbacRepo, creds: credlifecycle.NewSweeper(userRevocations, apiKeys)}
 }
 
 // WithNotifications wires in the shared notifications/CVE config so
@@ -65,26 +72,50 @@ func (h *RBACHandlers) WithNotifier(n *notify.Notifier) *RBACHandlers {
 	return h
 }
 
-// revokeRoleTemplateMemberTokens revokes the outstanding tokens of every member
-// currently assigned roleTemplateID. Best-effort: the scope edit has already
-// been committed, so a lookup or revocation failure is logged rather than
-// turned into a misleading error response for an otherwise-successful edit.
-func (h *RBACHandlers) revokeRoleTemplateMemberTokens(c *gin.Context, roleTemplateID uuid.UUID, reason string) {
-	if h.userRevocations == nil {
-		return
+// revokeRoleTemplateMemberCredentials sweeps every credential family carrying a
+// snapshot of roleTemplateID's scopes, for every member currently assigned it:
+// their JWT revoke-all watermark and their API keys in the organization where
+// they hold the template.
+//
+// Best-effort: the scope edit has already been committed, so a lookup or
+// revocation failure is logged rather than turned into a misleading error
+// response for an otherwise-successful edit. It is REPORTED, though: the
+// returned bool is false when any part of the sweep did not land, so the
+// handler can surface revocation_incomplete instead of answering a clean 200
+// for an authority reduction whose credentials are still live.
+func (h *RBACHandlers) revokeRoleTemplateMemberCredentials(c *gin.Context, roleTemplateID uuid.UUID, retained []string, reason string) bool {
+	if h.creds == nil {
+		return true
 	}
-	userIDs, err := h.rbacRepo.ListRoleTemplateMemberUserIDs(c.Request.Context(), roleTemplateID)
+	memberships, err := h.rbacRepo.ListRoleTemplateMemberships(c.Request.Context(), roleTemplateID)
 	if err != nil {
-		slog.Error("failed to list role template members for token revocation",
+		slog.Error("failed to list role template members for credential revocation",
 			"role_template_id", roleTemplateID, "reason", reason, "error", err)
-		return
+		return false
 	}
-	for _, userID := range userIDs {
-		if err := h.userRevocations.RevokeAllUserTokens(c.Request.Context(), userID); err != nil {
-			slog.Error("failed to revoke user tokens after role template change",
-				"user_id", userID, "role_template_id", roleTemplateID, "reason", reason, "error", err)
+	return h.sweepRoleTemplateMemberships(c, memberships, roleTemplateID, retained, reason)
+}
+
+// sweepRoleTemplateMemberships runs the credential sweep over an already-loaded
+// membership set. DeleteRoleTemplate has to snapshot the memberships BEFORE the
+// delete commits (the FK is ON DELETE SET NULL), so it cannot use the
+// load-then-sweep helper above. Returns false when any member's sweep was
+// incomplete.
+func (h *RBACHandlers) sweepRoleTemplateMemberships(c *gin.Context, memberships []repositories.RoleTemplateMembership, roleTemplateID uuid.UUID, retained []string, reason string) bool {
+	if h.creds == nil {
+		return true
+	}
+	complete := true
+	for _, m := range memberships {
+		out := h.creds.OrgAuthorityReduced(c.Request.Context(), m.UserID, m.OrganizationID, retained, reason)
+		if out.Incomplete {
+			slog.Error("credential sweep incomplete after role template change",
+				"user_id", m.UserID, "organization_id", m.OrganizationID,
+				"role_template_id", roleTemplateID, "reason", reason)
+			complete = false
 		}
 	}
+	return complete
 }
 
 // notifyApprovalPending emails the configured admin recipients and fans out
@@ -251,7 +282,7 @@ func (h *RBACHandlers) CreateRoleTemplate(c *gin.Context) {
 }
 
 // @Summary      Update role template
-// @Description  Update an existing custom role template. Cannot modify system role templates. Requires admin scope.
+// @Description  Update an existing custom role template. Cannot modify system role templates. Requires admin scope. When the edit NARROWS the template's scopes, the affected members' sessions and over-asking API keys are revoked; if that sweep does not fully land the 200 body carries an extra `revocation_incomplete: true` field.
 // @Tags         RBAC
 // @Security     Bearer
 // @Accept       json
@@ -295,7 +326,14 @@ func (h *RBACHandlers) UpdateRoleTemplate(c *gin.Context) {
 		return
 	}
 
-	scopesChanged := !stringSlicesEqual(existing.Scopes, req.Scopes)
+	// Only a REDUCTION invalidates anything. Adding scopes, or reordering an
+	// otherwise identical list, leaves every existing credential asking for no
+	// more than its holder still has -- and sweeping on those would revoke
+	// every affected member's sessions and irreversibly delete their org-bound
+	// API keys fleet-wide for a change that granted them more, not less.
+	// AuthorityRetained compares by scope semantics rather than slice order,
+	// so a pure reordering is correctly a no-op.
+	authorityReduced := !credlifecycle.AuthorityRetained(existing.Scopes, req.Scopes)
 
 	existing.DisplayName = req.DisplayName
 	existing.Description = &req.Description
@@ -307,32 +345,30 @@ func (h *RBACHandlers) UpdateRoleTemplate(c *gin.Context) {
 		return
 	}
 
-	// A scope edit changes what a fresh JWT would embed for every member
-	// currently assigned this template; revoke their outstanding tokens so the
-	// change takes effect immediately instead of waiting out the JWT TTL
-	// (issue #559 finding [9]). Display-name/description-only edits don't
-	// affect scopes, so skip the revocation sweep for those.
-	if scopesChanged {
-		h.revokeRoleTemplateMemberTokens(c, id, "role template scopes edited")
+	// A scope REDUCTION changes what a fresh JWT would embed for every member
+	// currently assigned this template, and equally strands the scope snapshot
+	// frozen on those members' API keys, which are never re-derived from the
+	// template (issue #732); sweep both so the change takes effect immediately
+	// instead of waiting out the JWT TTL (issue #559 finding [9]) or, for the
+	// keys, never. req.Scopes is what those members retain, so keys that ask
+	// for no more than the new list survive.
+	//
+	// A failed sweep is surfaced to the caller, exactly as DeleteRoleTemplate,
+	// RemoveMemberHandler and DeleteOrganizationHandler do. Narrowing a
+	// template's scopes and receiving a clean 200 while the affected members'
+	// API keys are still live is the same silent failure those handlers were
+	// changed to stop reporting as success.
+	if authorityReduced && !h.revokeRoleTemplateMemberCredentials(c, id, req.Scopes, "role template scopes reduced") {
+		// Embedding promotes the template's own fields, so the success body is
+		// unchanged apart from the added flag.
+		c.JSON(http.StatusOK, struct {
+			*models.RoleTemplate
+			RevocationIncomplete bool `json:"revocation_incomplete"`
+		}{existing, true})
+		return
 	}
 
 	c.JSON(http.StatusOK, existing)
-}
-
-// stringSlicesEqual reports whether two scope slices contain the same elements
-// in the same order. Role template scopes are stored and rendered as an
-// ordered list, so this is a simple index-wise comparison rather than a
-// set comparison.
-func stringSlicesEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // @Summary      Delete role template
@@ -374,7 +410,7 @@ func (h *RBACHandlers) DeleteRoleTemplate(c *gin.Context) {
 
 	// Snapshot the affected members before the delete: the FK is ON DELETE SET
 	// NULL, so a member's role_template_id is gone the instant the delete
-	// commits, and ListRoleTemplateMemberUserIDs would find nobody afterward.
+	// commits, and ListRoleTemplateMemberships would find nobody afterward.
 	// This lookup only feeds the best-effort revocation loop below and is not
 	// itself a precondition for the deletion, so a failure here is logged and
 	// swallowed rather than blocking the delete: the security-relevant action
@@ -384,15 +420,15 @@ func (h *RBACHandlers) DeleteRoleTemplate(c *gin.Context) {
 	// pre-check, and like that handler, a failed lookup here is surfaced to
 	// the caller via revocation_incomplete rather than silently masked behind
 	// an identical success response.
-	var memberUserIDs []string
+	var memberships []repositories.RoleTemplateMembership
 	revocationLookupFailed := false
-	if h.userRevocations != nil {
+	if h.creds != nil {
 		var lookupErr error
-		memberUserIDs, lookupErr = h.rbacRepo.ListRoleTemplateMemberUserIDs(c.Request.Context(), id)
+		memberships, lookupErr = h.rbacRepo.ListRoleTemplateMemberships(c.Request.Context(), id)
 		if lookupErr != nil {
-			slog.Error("failed to look up role template members before deletion; affected members' tokens will not be revoked",
+			slog.Error("failed to look up role template members before deletion; affected members' credentials will not be revoked",
 				"role_template_id", id, "error", lookupErr)
-			memberUserIDs = nil
+			memberships = nil
 			revocationLookupFailed = true
 		}
 	}
@@ -404,24 +440,29 @@ func (h *RBACHandlers) DeleteRoleTemplate(c *gin.Context) {
 
 	// Deleting the template unconditionally removes its scopes from every
 	// member who held it (unlike an edit, there's no "was this a no-op"
-	// question to gate on) -- revoke their outstanding tokens so the change
-	// takes effect immediately instead of waiting out the JWT TTL (issue #559
-	// finding [9]). The delete has already committed, so a revocation
-	// failure here is logged rather than turned into a misleading error
-	// response for an otherwise-successful deletion, matching
-	// revokeRoleTemplateMemberTokens' own best-effort posture.
-	for _, userID := range memberUserIDs {
-		if err := h.userRevocations.RevokeAllUserTokens(c.Request.Context(), userID); err != nil {
-			slog.Error("failed to revoke user tokens after role template deletion",
-				"user_id", userID, "role_template_id", id, "error", err)
-		}
+	// question to gate on) -- sweep both credential families that snapshot
+	// those scopes: the JWT watermark, which otherwise carries them until the
+	// TTL expires (issue #559 finding [9]), and the members' org-bound API
+	// keys, which otherwise carry them forever because nothing re-derives a
+	// key's scopes from its role template (issue #732). The delete has already
+	// committed, so a revocation failure here is logged rather than turned
+	// into a misleading error response for an otherwise-successful deletion,
+	// matching revokeRoleTemplateMemberCredentials' own best-effort posture.
+	// retained is nil: the template is gone, so its members retain none of the
+	// scopes it granted (their membership rows are ON DELETE SET NULL'd to no
+	// role template at all).
+	if !h.sweepRoleTemplateMemberships(c, memberships, id, nil, "role template deleted") {
+		// The members were known but at least one sweep failed -- the same
+		// "reduction landed, credentials did not" state the lookup failure
+		// below reports, reached one step later.
+		revocationLookupFailed = true
 	}
 
 	response := gin.H{"message": "Role template deleted"}
 	if revocationLookupFailed {
 		// The delete itself succeeded, but we couldn't determine which
-		// members to revoke -- surface that so the caller doesn't assume the
-		// affected members' tokens were actually invalidated.
+		// members to sweep -- surface that so the caller doesn't assume the
+		// affected members' credentials were actually invalidated.
 		response["revocation_incomplete"] = true
 	}
 	c.JSON(http.StatusOK, response)

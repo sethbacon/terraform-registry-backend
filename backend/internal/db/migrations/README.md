@@ -52,6 +52,7 @@ This document catalogs all database migrations, their reversibility, and rollbac
 | 000043 | `setup_notifications`                  | ✅ Yes         | Drops notification-config columns; persisted SMTP config lost |
 | 000044 | `scanner_binary_versions`              | ✅ Yes         | Drops the scanner-binary-versions table and approval-event column |
 | 000045 | `namespace_org_claims`                 | ✅ Yes         | Drops the namespace-ownership table; bindings are re-derived from artifacts on re-apply |
+| 000050 | `quarantine_orphaned_api_keys`         | ⚠️ No-op down  | Data-only: expires `api_keys` rows with `user_id IS NULL` (detached by a user deletion under `ON DELETE SET NULL`). The down cannot distinguish them from deliberately expired keys, so re-arming would undo the retirement; restore individual rows by hand. See `docs/upgrade-guide.md` |
 
 ## How to Run Migrations
 

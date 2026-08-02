@@ -4220,7 +4220,7 @@
                         "Bearer": []
                     }
                 ],
-                "description": "Update an existing custom role template. Cannot modify system role templates. Requires admin scope.",
+                "description": "Update an existing custom role template. Cannot modify system role templates. Requires admin scope. When the edit NARROWS the template's scopes, the affected members' sessions and over-asking API keys are revoked; if that sweep does not fully land the 200 body carries an extra `revocation_incomplete: true` field.",
                 "tags": [
                     "RBAC"
                 ],
@@ -9911,7 +9911,7 @@
                         "Bearer": []
                     }
                 ],
-                "description": "Update a member's role template within an organization.",
+                "description": "Update a member's role template within an organization. A reassignment revokes the member's sessions and any org-bound API key that over-asks under the new template; if that sweep does not fully land the 200 body carries an extra `revocation_incomplete: true` field.",
                 "tags": [
                     "Organizations"
                 ],
@@ -20888,6 +20888,7 @@
                 "type": "object",
                 "properties": {
                     "active": {
+                        "description": "Active is a POINTER so an omitted \"active\" is distinguishable from an\nexplicit \"active\": false.\n\nAs a plain bool it zero-valued to false on every PUT that did not\nmention the attribute, and PutUser reads false as \"deprovision\" -- which\nsince #736 means removing every organization membership AND irreversibly\ndeleting every API key the user holds in every organization. A partial\nPUT from an IdP (or any client updating only a display name) would\nsilently destroy the user's credentials fleet-wide. Deprovisioning must\nrequire the IdP to actually say active=false.",
                         "type": "boolean"
                     },
                     "emails": {

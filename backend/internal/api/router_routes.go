@@ -39,6 +39,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/audit"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/credlifecycle"
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
@@ -307,23 +308,28 @@ func registerPublicRoutes(router *gin.Engine, d *publicRouteDeps) {
 
 // apiV1RouteDeps holds every dependency registerAPIV1Routes needs.
 type apiV1RouteDeps struct {
-	cfg                         *config.Config
-	db                          *sql.DB
-	storageBackend              storage.Storage
-	sqlxDB                      *sqlx.DB
-	oidcConfigRepo              *repositories.OIDCConfigRepository
-	setupHandlers               *setup.Handlers
-	authRateLimiter             middleware.RateLimiterBackend
-	generalRateLimiter          middleware.RateLimiterBackend
-	uploadRateLimiter           middleware.RateLimiterBackend
-	orgRateLimiter              middleware.RateLimiterBackend
-	principalOverrides          *middleware.PrincipalOverrideLimiters
-	authHandlers                *admin.AuthHandlers
-	userRepo                    *repositories.UserRepository
-	apiKeyRepo                  *repositories.APIKeyRepository
-	orgRepo                     *repositories.OrganizationRepository
-	tokenRepo                   *repositories.TokenRepository
-	userTokenRevocationRepo     *repositories.UserTokenRevocationRepository
+	cfg                     *config.Config
+	db                      *sql.DB
+	storageBackend          storage.Storage
+	sqlxDB                  *sqlx.DB
+	oidcConfigRepo          *repositories.OIDCConfigRepository
+	setupHandlers           *setup.Handlers
+	authRateLimiter         middleware.RateLimiterBackend
+	generalRateLimiter      middleware.RateLimiterBackend
+	uploadRateLimiter       middleware.RateLimiterBackend
+	orgRateLimiter          middleware.RateLimiterBackend
+	principalOverrides      *middleware.PrincipalOverrideLimiters
+	authHandlers            *admin.AuthHandlers
+	userRepo                *repositories.UserRepository
+	apiKeyRepo              *repositories.APIKeyRepository
+	orgRepo                 *repositories.OrganizationRepository
+	tokenRepo               *repositories.TokenRepository
+	userTokenRevocationRepo *repositories.UserTokenRevocationRepository
+	// credSweeper invalidates every credential family that snapshots a
+	// principal's derived authority when a lifecycle event reduces it
+	// (issues #732, #736). Built once in NewRouter because its two halves
+	// live on different connections.
+	credSweeper                 *credlifecycle.Sweeper
 	moduleAdminHandlers         *admin.ModuleAdminHandlers
 	providerAdminHandlers       *admin.ProviderAdminHandlers
 	auditRepo                   *repositories.AuditRepository
@@ -1137,7 +1143,7 @@ func registerSCIMRoutes(router *gin.Engine, d *apiV1RouteDeps) {
 	// authenticatedGroup).
 	scimGroup.Use(middleware.RequireScope(auth.ScopeSCIMProvision))
 	{
-		scimHandlers := scim.NewHandlers(d.cfg, d.db)
+		scimHandlers := scim.NewHandlers(d.cfg, d.db, scim.WithCredentialSweeper(d.credSweeper))
 		scimGroup.GET("/Users", scimHandlers.ListUsers())
 		scimGroup.GET("/Users/:id", scimHandlers.GetUser())
 		scimGroup.POST("/Users", scimHandlers.CreateUser())
