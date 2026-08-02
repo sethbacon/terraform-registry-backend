@@ -896,8 +896,18 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 				scmProvidersGroup.GET("/:id/repositories/:owner/:repo/branches", middleware.RequireScope(auth.ScopeSCMRead), scmProviderOrg(auth.ScopeSCMRead), scmOAuthHandlers.ListRepositoryBranches)
 			}
 
-			// SCM OAuth callback (public endpoint, no auth required)
-			apiV1.GET("/scm-providers/:id/oauth/callback", scmOAuthHandlers.HandleOAuthCallback)
+			// SCM OAuth callback (public endpoint, no auth required).
+			//
+			// The caller is anonymous, so possession of the single-use state
+			// nonce minted by /oauth/authorize is the whole credential — see
+			// HandleOAuthCallback's GUARD (scm-oauth-callback). It is rate
+			// limited on the same authRateLimiter as /api/v1/auth/*, the other
+			// family of unauthenticated credential-redeeming routes: without a
+			// limiter an anonymous caller may grind state guesses (and drive
+			// upstream token-endpoint exchanges) at will.
+			apiV1.GET("/scm-providers/:id/oauth/callback",
+				middleware.RateLimitMiddleware(authRateLimiter),
+				scmOAuthHandlers.HandleOAuthCallback)
 
 			// Module SCM linking endpoints. Every route requires namespace-org
 			// authorization for the target module (issue #555): the reads are

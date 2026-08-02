@@ -30,6 +30,17 @@ type SessionState struct {
 	// SAML login. It is echoed back by the IdP as InResponseTo and validated
 	// at the ACS to bind the assertion to a request this SP actually made.
 	SAMLRequestID string `json:"saml_request_id,omitempty"`
+	// SCMUserID is the already-authenticated user who started an SCM connector
+	// authorization flow (GET /api/v1/scm-providers/:id/oauth/authorize). That
+	// flow's callback carries no auth middleware, so this stored value — not
+	// anything in the callback request — is the only legitimate source of the
+	// principal whose scm_oauth_tokens row the callback writes. Set only when
+	// ProviderType is "scm".
+	SCMUserID string `json:"scm_user_id,omitempty"`
+	// SCMProviderID is the SCM provider the state was minted for. The callback
+	// rejects a state whose provider does not match its :id path parameter, so
+	// a state issued for one provider cannot file a token under another.
+	SCMProviderID string `json:"scm_provider_id,omitempty"`
 }
 
 // StateStore is the interface for OIDC session state persistence.

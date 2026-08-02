@@ -7,16 +7,32 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/scm"
 	"github.com/terraform-registry/terraform-registry/internal/scm/appcreds"
+)
+
+const (
+	// scmStateProviderType tags a SessionState as belonging to the SCM
+	// connector flow rather than to a login. The two flows share one store, so
+	// each callback must refuse the other's states: an OIDC login state
+	// presented here has no SCMUserID, and an SCM state presented at
+	// /api/v1/auth/callback falls through that handler's switch to
+	// "unknown_provider".
+	scmStateProviderType = "scm"
+	// scmStateTTL bounds how long an SCM authorization flow may stay in-flight,
+	// matching the login flow's 10 minutes (LoginHandler).
+	scmStateTTL = 10 * time.Minute
+	// scmStateMaxAge is the freshness bound re-checked at the callback, matching
+	// CallbackHandler. Belt-and-braces against a store whose TTL did not fire.
+	scmStateMaxAge = 5 * time.Minute
 )
 
 // SCMOAuthHandlers handles SCM OAuth flows
@@ -26,6 +42,7 @@ type SCMOAuthHandlers struct {
 	userRepo    *repositories.UserRepository
 	tokenCipher *crypto.TokenCipher
 	minter      appcreds.SharedMinter
+	stateStore  auth.StateStore
 }
 
 // NewSCMOAuthHandlers creates a new SCM OAuth handlers instance
@@ -42,6 +59,19 @@ func NewSCMOAuthHandlers(cfg *config.Config, scmRepo *repositories.SCMRepository
 // app auth mode (entra_app/github_app). Returns the handler for chaining.
 func (h *SCMOAuthHandlers) WithMinter(minter appcreds.SharedMinter) *SCMOAuthHandlers {
 	h.minter = minter
+	return h
+}
+
+// WithStateStore wires in the session state store used to mint and redeem OAuth
+// state nonces. This is the same store the OIDC/SAML login flows use, so the
+// two OAuth flows share one implementation of "unguessable, server-side,
+// single-use, expiring".
+//
+// Without it both InitiateOAuth and HandleOAuthCallback fail closed: there is no
+// safe fallback, because a state this server cannot verify it issued is not a
+// credential, and the callback has no other binding to a principal.
+func (h *SCMOAuthHandlers) WithStateStore(store auth.StateStore) *SCMOAuthHandlers {
+	h.stateStore = store
 	return h
 }
 
@@ -122,8 +152,34 @@ func (h *SCMOAuthHandlers) InitiateOAuth(c *gin.Context) {
 		return
 	}
 
+	// Mint a single-use state nonce bound server-side to this user and provider.
+	// The callback is unauthenticated, so this nonce is the sole thing tying a
+	// returning authorization code to the principal who started the flow: it has
+	// to be an unguessable credential, not a rendering of ids the caller already
+	// knows. Same generateState() + StateStore the login flow uses.
+	if h.stateStore == nil {
+		slog.Error("SCM OAuth state store not configured; refusing to start flow")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "OAuth state store not configured"})
+		return
+	}
+	state, err := generateState()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate OAuth state"})
+		return
+	}
+	if err := h.stateStore.Save(c.Request.Context(), state, &auth.SessionState{
+		State:         state,
+		CreatedAt:     time.Now(),
+		ProviderType:  scmStateProviderType,
+		SCMUserID:     userID.String(),
+		SCMProviderID: providerID.String(),
+	}, scmStateTTL); err != nil {
+		slog.Error("failed to save SCM OAuth state", "provider_id", providerID, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save OAuth state"})
+		return
+	}
+
 	// Generate authorization URL
-	state := fmt.Sprintf("%s:%s", userID, providerID)
 	authURL := connector.AuthorizationEndpoint(state, []string{})
 
 	c.JSON(http.StatusOK, gin.H{
@@ -138,9 +194,9 @@ func (h *SCMOAuthHandlers) InitiateOAuth(c *gin.Context) {
 // @Produce      json
 // @Param        id     path   string  true  "SCM provider ID (UUID)"
 // @Param        code   query  string  true  "Authorization code from SCM provider"
-// @Param        state  query  string  true  "State parameter (userID:providerID)"
+// @Param        state  query  string  true  "Single-use state nonce issued by /oauth/authorize (64 hex chars)"
 // @Success      302    "Redirect to frontend success page"
-// @Failure      400  {object}  map[string]interface{}  "Invalid provider ID, code, or state"
+// @Failure      400  {object}  map[string]interface{}  "Invalid provider ID or code; or state that is unknown, expired, already used, or minted for a different provider"
 // @Failure      404  {object}  map[string]interface{}  "Provider not found"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/scm-providers/{id}/oauth/callback [get]
@@ -162,15 +218,77 @@ func (h *SCMOAuthHandlers) HandleOAuthCallback(c *gin.Context) {
 		return
 	}
 
-	// Parse state to get user ID (format: "userID:providerID")
-	stateParts := strings.SplitN(state, ":", 2)
-	if len(stateParts) != 2 {
+	// GUARD (scm-oauth-callback): resolve the principal from the server-side
+	// session state, never from the request.
+	//
+	// This route carries no auth middleware, so `state` is the whole credential.
+	// Before this guard existed it was fmt.Sprintf("%s:%s", userID, providerID)
+	// — two UUIDs, guessable, never stored, never single-use — and the handler
+	// parsed the user id straight out of it. That was exploitable in BOTH
+	// directions:
+	//   - attacker → victim: complete OAuth against the attacker's own SCM
+	//     account, submit the code with state=<victim-uuid>:anything, and
+	//     scm_oauth_tokens' ON CONFLICT (user_id, scm_provider_id) DO UPDATE
+	//     replaces the victim's stored token with the attacker's;
+	//   - victim → attacker: lure the victim through an authorize URL carrying
+	//     state=<attacker-uuid>:… and the victim's freshly minted SCM token is
+	//     filed under the attacker's user id.
+	// Either way the connector is a module-publishing source path, so this is a
+	// supply-chain injection route, not just an account-linking nuisance.
+	//
+	// Load is read-consuming in both StateStore backends, so a replay finds
+	// nothing; a state that was never issued finds nothing; the TTL plus the
+	// CreatedAt bound below reject a stale one.
+	if h.stateStore == nil {
+		slog.Error("SCM OAuth state store not configured; refusing callback")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "OAuth state store not configured"})
+		return
+	}
+	if state == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing state parameter"})
+		return
+	}
+	sessionState, err := h.stateStore.Load(c.Request.Context(), state)
+	if err != nil {
+		slog.Error("failed to load SCM OAuth state", "provider_id", providerID, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to validate state parameter"})
+		return
+	}
+	if sessionState == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid, expired, or already-used state parameter"})
+		return
+	}
+	// Belt-and-braces: consume it explicitly in case a future StateStore
+	// implementation is not read-consuming (mirrors CallbackHandler).
+	_ = h.stateStore.Delete(c.Request.Context(), state)
+
+	// A login state must not be redeemable here. Only states minted by
+	// InitiateOAuth carry this provider type — and only those carry an SCMUserID.
+	if sessionState.ProviderType != scmStateProviderType {
+		slog.Warn("SCM OAuth callback presented a non-SCM state",
+			"provider_id", providerID, "state_provider_type", sessionState.ProviderType)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid state parameter"})
 		return
 	}
-	userID, err := uuid.Parse(stateParts[0])
+	if time.Since(sessionState.CreatedAt) > scmStateMaxAge {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid, expired, or already-used state parameter"})
+		return
+	}
+	// The state is bound to one provider. A state minted for provider A must not
+	// be redeemable at provider B's callback, which would file a token obtained
+	// from one SCM under a different provider's connection.
+	if sessionState.SCMProviderID != providerID.String() {
+		slog.Warn("SCM OAuth state provider mismatch",
+			"path_provider_id", providerID, "state_provider_id", sessionState.SCMProviderID)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "state parameter does not match this provider"})
+		return
+	}
+	// The principal. Taken from the stored record this server wrote at authorize
+	// time, never from the request.
+	userID, err := uuid.Parse(sessionState.SCMUserID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user ID in state"})
+		slog.Error("SCM OAuth state carries an unparseable user id", "provider_id", providerID)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid state parameter"})
 		return
 	}
 
