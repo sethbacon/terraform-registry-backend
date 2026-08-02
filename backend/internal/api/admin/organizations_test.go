@@ -13,6 +13,7 @@ import (
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
+	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
@@ -86,6 +87,14 @@ func newOrgRouterWithRevocation(t *testing.T, withRevocation bool) (sqlmock.Sqlm
 	h := NewOrganizationHandlers(&config.Config{}, db, repositories.NewNamespaceClaimRepository(db), userRevocations)
 
 	r := gin.New()
+	// These tests exercise repository wiring, response shapes and error paths,
+	// not tenancy. They previously ran with NO principal at all and were still
+	// served every organization's rows — which is the #719 defect, not a test
+	// fixture. They now run as a platform administrator, the principal for whom
+	// the platform-wide view is the intended behaviour. Cross-tenant denial is
+	// asserted separately, by the class table in tenant_scope_class_test.go,
+	// with a non-admin principal.
+	r.Use(func(c *gin.Context) { c.Set("scopes", []string{string(auth.ScopeAdmin)}) })
 	r.GET("/organizations", h.ListOrganizationsHandler())
 	r.GET("/organizations/search", h.SearchOrganizationsHandler())
 	r.GET("/organizations/:id", h.GetOrganizationHandler())

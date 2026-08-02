@@ -267,8 +267,16 @@ After upgrade:
 
 - Platform admins (the `admin` wildcard scope) still see all organizations.
 - A non-admin auditor sees only the organizations they belong to.
-- A caller belonging to **multiple** organizations must now pass `organization_id`
-  explicitly; without it the request returns `400` rather than a silently partial result.
+- A caller belonging to **multiple** organizations had to pass `organization_id`
+  explicitly, or the request returned `400`.
+
+> **Superseded — read the 3.6.x → 3.7.0 section below before relying on this.**
+> The `400` for multi-organization callers was a workaround for a shared audit
+> filter that could carry only one organization at a time. It is **gone**: such a
+> caller is now scoped to every organization they hold `audit:read` in, in a
+> single request. The 3.6.0 fix also covered only the **list** endpoint; the
+> by-id read and the export stream kept returning every tenant's rows until
+> 3.7.0.
 
 **Action required** if you have tooling, dashboards, or exports that read this endpoint
 with a non-admin token and expect estate-wide results: either grant that principal the
@@ -414,6 +422,205 @@ No other change in this section requires one.
 **Rollback:** the code changes are all code-only; rolling back the binary restores the
 previous behavior. Note that API keys deleted by a sweep are **not** restored by a
 rollback, and neither are the keys quarantined by migration `000050`.
+
+### 3.6.x → 3.7.0
+
+The exact version is whatever release first contains the tenant-scoping batch for
+issue #719 — confirm against `CHANGELOG.md`.
+
+Every entry below is a **behavior change that activates on upgrade with no
+configuration change**. The common thread: routes that read, list, create or
+delete rows of an organization-owned table now bind the row's owning
+organization to one the caller is a verified member of. Previously several did
+not, so a principal scoped to one organization could see or act on another's
+rows.
+
+> **REQUIRES A SHARED-MODULE BUMP.** The audit-log half of this work lives in
+> `terraform-suite-identity` (`identity/store`), where the three audit read
+> accessors gained a mandatory `AuditScope` parameter. This release does not
+> build against `terraform-suite-identity v0.20.3`; the module must be published
+> and the dependency bumped first. See "Shared module" below.
+
+**Who is affected in general:** any non-admin automation — CI tokens, dashboards,
+exporters, provisioning scripts — that relied on a route returning estate-wide
+results. Platform admins (the `admin` wildcard scope) are unaffected everywhere
+below; that scope deliberately crosses organization boundaries.
+
+**1. Membership is no longer sufficient — the role template must grant the scope.**
+
+The biggest single behavior change, and the one most likely to surprise. A
+request is now scoped to the organizations where the caller's **role template**
+grants the scope the route requires, not merely to the organizations they belong
+to. A viewer in an organization can no longer list what an operator there may
+manage. This aligns the list/create axes with the `/:id` axes of the same
+families, which already required the scope in the target organization.
+
+*Action:* if automation loses access to a route it previously reached, check the
+principal's role template in that organization — it is likely missing the
+route's scope (`mirrors:read`, `mirrors:manage`, `scm:manage`,
+`organizations:read`, `audit:read`).
+
+**2. Organization-bound API keys now work on these routes — and are confined to
+their organization.**
+
+An API key carries an organization binding fixed at creation. That binding is now
+authoritative for the key. Two consequences:
+
+- A **userless** organization service key (`api_keys.user_id IS NULL`, the normal
+  shape for CI) previously had no memberships to resolve and silently received
+  empty lists and `403`s **on its own organization**. It now works.
+- A key issued to a user who belongs to other organizations is confined to the
+  organization the key names, regardless of the owner's other memberships.
+
+**3. Creating a row without naming an organization no longer lands in the default
+organization.**
+
+`POST /api/v1/admin/mirrors` and `POST /api/v1/scm-providers` used to fall back to
+the default organization when `organization_id` was omitted, with no membership
+check — so a non-member wrote into the default organization by leaving the field
+out. Now:
+
+- A **platform admin** keeps the default-organization fallback.
+- A caller with the required scope in exactly **one** organization gets that one.
+- A caller with the scope in **more than one** organization receives `400` and
+  must name `organization_id` explicitly.
+- A caller with the scope in **no** organization receives `403`.
+
+*Action:* multi-organization automation that creates mirrors or SCM providers
+must start sending `organization_id`.
+
+**4. `{"organization_id": ""}` on `PUT /api/v1/admin/mirrors/:id` is now
+platform-admin only.**
+
+An empty string cleared the column, and a mirror configuration with a NULL
+organization is resolved back to the **default organization** at sync time — so
+this re-parented the row into the default organization without naming it. Only
+platform admins may clear the field; everyone else receives `403`.
+
+**5. Rows with no owning organization are visible to platform admins only, on
+every route.**
+
+One rule now applies everywhere: a NULL `organization_id` means "no tenant has
+been asserted", not "belongs to everyone". Concretely:
+
+- `GET /api/v1/admin/policies` no longer returns global (NULL-organization)
+  mirror policies to non-admins. It previously did, while `GET
+  /api/v1/admin/policies/:id` refused the same rows to the same caller — the two
+  axes disagreed, and they now agree on the closed answer.
+- `GET /api/v1/admin/version-approvals` no longer shows terraform-binary or
+  scanner-binary versions to non-admins. Those hang off platform-level configs
+  with no organization at all. Provider-mirror versions are unaffected and remain
+  visible to members of the owning organization.
+- `POST /api/v1/admin/policies` with `organization_id` omitted creates a global
+  policy and is now platform-admin only; other callers receive `403` and must
+  name an organization.
+
+*Action:* if a non-admin dashboard relied on seeing global policies or terraform
+binary approvals, grant `admin` deliberately or move that view behind an
+admin-scoped credential.
+
+**6. Approval requests take their organization from the mirror configuration, not
+from the requester.**
+
+`POST /api/v1/admin/approvals` previously stamped the new row with the
+**requester's** ambient organization. It now resolves the owning organization of
+the `mirror_config_id` in the body and requires `mirrors:manage` there. Filing a
+request against another organization's mirror configuration returns `403`.
+
+Note the response body change: `organization_id` on the created approval is now
+the configuration's owner. Automation that asserted it matched the caller's
+organization must be updated.
+
+**7. Newly scoped read endpoints.**
+
+These previously returned platform-wide results to any holder of the route's
+scope and are now scoped to the caller's organizations:
+
+| Endpoint | Note |
+| --- | --- |
+| `GET /api/v1/admin/audit-logs/:id` | out-of-scope entries report `404`, not `403` |
+| `GET /api/v1/admin/audit-logs/export` | the predicate is applied in SQL; the stream never carries other tenants' rows |
+| `GET /api/v1/admin/version-approvals` | plus `/pending-count`, which now counts only in-scope versions |
+| `GET /api/v1/admin/version-approvals/:id/events` | out-of-scope versions report `404` |
+| `GET /api/v1/admin/namespaces` | and `/:namespace`, which reports `404` for out-of-scope namespaces |
+| `GET /api/v1/organizations` | non-admins see only their own organizations; `total` changes accordingly |
+| `GET /api/v1/organizations/search` | searches within the caller's organizations only |
+| `GET /api/v1/admin/modules/:id` | `403` for a module owned by another organization; previously any holder of `modules:read` could fetch the whole row, `organization_id` included, by UUID |
+| `GET /api/v1/admin/providers/:id` | `403` for a provider owned by another organization; same shape as the module route above |
+
+The two by-id artifact reads are the READ siblings of `PUT /api/v1/admin/modules/:id`
+and `PUT /api/v1/admin/providers/:id`, which have carried namespace-organization
+authorization since #555. They now use the same authorizer, so ownership is
+resolved identically on both axes: the namespace claim wins, falling back to the
+artifact row's own organization. The public protocol reads
+(`GET /api/v1/modules/:namespace/:name/:system` and friends) are unchanged —
+they resolve against the default organization and were never cross-tenant.
+
+The dashboard's pending-approval badge will drop for non-admin users — it was
+previously counting other tenants' pending versions.
+
+**8. SCIM deprovisioning is confined to the provisioner's organizations.**
+
+`DELETE /scim/v2/Users/:id`, `PUT` with `active:false`, and both `PATCH replace`
+forms all removed the target's memberships in **every** organization. They now
+remove memberships only where the caller holds `scim:provision`; skipped
+organizations are logged at INFO with the user and organization id.
+
+*Action, important:* if your IdP integration authenticates with a non-admin
+credential, a leaver will now be deprovisioned only from the organizations that
+credential covers — a **partial** deprovision that previously appeared total.
+Give the IdP connector an `admin`-scoped credential to preserve estate-wide
+deprovisioning, which is the intended configuration for a SCIM connector.
+
+**Shared module:** this release requires a `terraform-suite-identity` version
+newer than `v0.20.3`. `AuditRepository.ListAuditLogs`, `.GetAuditLog` and
+`.StreamAuditLogs` take a mandatory `AuditScope`; its zero value selects nothing,
+so a caller that forgets tenancy gets no rows rather than every tenant's.
+
+#### Required merge order
+
+This is a **breaking change to a shared module consumed by two backends**, so the
+three repositories cannot be merged independently. The signature change is not
+additive: the accessors gained a required parameter, so any consumer still on
+`v0.20.3` fails to compile the moment it is bumped, and any consumer left
+un-bumped keeps the leak. Merge in this order:
+
+1. **`terraform-suite-identity`** — merge and **publish** the `AuditScope` work as
+   a new tagged release (a minor bump: the three accessor signatures are
+   source-breaking for every caller).
+2. **`terraform-registry-backend`** (this repository) — bump `backend/go.mod` off
+   `terraform-suite-identity v0.20.3` to the tag from step 1, then merge. **The
+   branch as staged deliberately still pins `v0.20.3` and therefore does not
+   build**: the pin is the forcing function that keeps step 1 from being skipped.
+   Do not paper over it with a `replace` directive — a `replace` makes the build
+   green locally while the published artifact still embeds `v0.20.3` and contains
+   no `AuditScope` symbol at all.
+3. **`terraform-state-manager-backend`** — bump to the same tag and update its
+   three call sites (`internal/api/admin.go`, `internal/api/admin_write.go`,
+   `internal/api/admin_audit_export.go`). Tracked as
+   `sethbacon/terraform-state-manager-backend#331`.
+
+Steps 2 and 3 may land in either order once step 1 is published, but **both must
+land in the same release round**: a consumer left on `v0.20.3` still returns every
+tenant's audit rows.
+
+TSM should pass **`AuditScopeOrganizationsAndUnowned(...)`**, not
+`AuditScopeOrganizations(...)`. That is not a preference — it is the exact
+semantics of the in-memory filter TSM already applies today
+(`internal/api/admin.go`, `auditLogsInAdminOrgs`), which passes through rows whose
+`organization_id` is absent and otherwise requires the caller to hold `admin` in
+the owning organization. TSM writes such rows deliberately
+(`internal/api/audit_ingest.go` nils the column for federated ingest). Choosing
+`AuditScopeOrganizations` would silently *hide* platform events that organization
+admins are the intended reviewers of; choosing `AuditScopeAllOrganizations` would
+restore the leak. The push-down is exact, not approximate: `identity.audit_logs.organization_id`
+is a nullable `UUID`, so it is either NULL or a real organization — the empty-string
+case the in-memory filter also tolerates is unrepresentable in the column.
+
+**Migrations:** none.
+
+**Rollback:** code-only; rolling back the binary restores the previous behavior.
+Rolling back also requires reverting the shared-module bump.
 
 ---
 

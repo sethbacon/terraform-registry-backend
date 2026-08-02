@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 )
@@ -31,12 +32,33 @@ func NewVersionApprovalRepository(db *sqlx.DB) *VersionApprovalRepository {
 }
 
 // VersionApprovalFilter narrows the list query. Empty fields mean "no filter".
+//
+// OrganizationIDs and AllOrganizations are NOT "no filter when empty": they are
+// the mandatory tenant constraint, and the zero value selects nothing. Same
+// reasoning as the shared identity store's AuditScope — an omitted tenant
+// predicate must not mean "every tenant", or every new caller re-opens
+// terraform-registry#719 on this table (issue #719).
 type VersionApprovalFilter struct {
 	Status   string // pending_approval | approved | rejected
 	Type     string // provider | terraform
 	ConfigID string // mirror config UUID
 	Limit    int
 	Offset   int
+
+	// OrganizationIDs is the allowlist of organizations whose gated versions
+	// may be returned, resolved from the caller's memberships.
+	OrganizationIDs []string
+	// AllOrganizations is the explicit platform-wide read. It is the ONLY way
+	// to get an unfiltered statement, and it also admits the org-less rows
+	// (terraform binary mirrors and scanner binaries have no owning
+	// organization at all).
+	AllOrganizations bool
+}
+
+// matchesNothing reports whether the filter's tenant constraint can never
+// select a row.
+func (f VersionApprovalFilter) matchesNothing() bool {
+	return !f.AllOrganizations && len(f.OrganizationIDs) == 0
 }
 
 // semverOrder is the reusable "highest semver first" ordering applied to a
@@ -50,6 +72,7 @@ const semverOrder = `COALESCE(CAST(NULLIF(SPLIT_PART(REGEXP_REPLACE(REGEXP_REPLA
 const providerSelect = `
 	SELECT mpv.id AS id, 'provider' AS type, mpv.upstream_version AS version,
 	       mpv.approval_status AS approval_status,
+	       mc.organization_id AS organization_id,
 	       mp.upstream_namespace AS provider_namespace,
 	       mp.upstream_type AS provider_name,
 	       mc.name AS mirror_config_name, mc.id AS mirror_config_id,
@@ -65,6 +88,7 @@ const providerSelect = `
 const terraformSelect = `
 	SELECT tv.id AS id, 'terraform' AS type, tv.version AS version,
 	       tv.approval_status AS approval_status,
+	       NULL::uuid AS organization_id,
 	       NULL::text AS provider_namespace, NULL::text AS provider_name,
 	       tmc.name AS mirror_config_name, tmc.id AS mirror_config_id,
 	       EXISTS(SELECT 1 FROM terraform_version_platforms p WHERE p.version_id = tv.id AND p.gpg_verified) AS gpg_verified,
@@ -79,6 +103,7 @@ const terraformSelect = `
 const scannerSelect = `
 	SELECT sbv.id AS id, 'scanner' AS type, sbv.version AS version,
 	       sbv.approval_status AS approval_status,
+	       NULL::uuid AS organization_id,
 	       NULL::text AS provider_namespace, NULL::text AS provider_name,
 	       'Security Scanner' AS mirror_config_name,
 	       '00000000-0000-0000-0000-000000000000'::uuid AS mirror_config_id,
@@ -105,6 +130,13 @@ func innerQuery(typeFilter string) string {
 // (ignoring limit/offset). status and config_id are applied as $1/$2 which the
 // inner branches expose through the va.* outer alias.
 func (r *VersionApprovalRepository) List(ctx context.Context, f VersionApprovalFilter) ([]models.VersionApproval, int, error) {
+	// GUARD version-approval-list-scope (issue #719): fail closed without a
+	// round trip. A caller with no organizations has an empty approvals queue,
+	// not the whole estate's.
+	if f.matchesNothing() {
+		return []models.VersionApproval{}, 0, nil
+	}
+
 	var statusArg, configArg interface{}
 	if f.Status != "" {
 		statusArg = f.Status
@@ -113,14 +145,25 @@ func (r *VersionApprovalRepository) List(ctx context.Context, f VersionApprovalF
 		configArg = f.ConfigID
 	}
 
+	// The tenant predicate is applied FIRST and unconditionally, so no
+	// combination of the caller-supplied status/type/config filters can produce
+	// an unscoped statement. Org-less rows (terraform binary mirrors, scanner
+	// binaries) have no owning organization and are therefore visible to the
+	// platform-wide read only — the same unowned-row contract every other
+	// org-owned table in this codebase uses (internal/tenantscope).
 	where := `WHERE ($1::text IS NULL OR va.approval_status = $1)
 	            AND ($2::uuid IS NULL OR va.mirror_config_id = $2)`
+	args := []interface{}{statusArg, configArg}
+	if !f.AllOrganizations {
+		where += ` AND va.organization_id = ANY($3)`
+		args = append(args, pq.Array(f.OrganizationIDs))
+	}
 
 	inner := innerQuery(f.Type)
 
 	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM (%s) AS va %s", inner, where)
 	var total int
-	if err := r.db.QueryRowContext(ctx, countQuery, statusArg, configArg).Scan(&total); err != nil {
+	if err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("failed to count version approvals: %w", err)
 	}
 
@@ -139,7 +182,7 @@ func (r *VersionApprovalRepository) List(ctx context.Context, f VersionApprovalF
 	)
 
 	var items []models.VersionApproval
-	if err := r.db.SelectContext(ctx, &items, listQuery, statusArg, configArg); err != nil {
+	if err := r.db.SelectContext(ctx, &items, listQuery, args...); err != nil {
 		return nil, 0, fmt.Errorf("failed to list version approvals: %w", err)
 	}
 	if items == nil {
@@ -148,16 +191,64 @@ func (r *VersionApprovalRepository) List(ctx context.Context, f VersionApprovalF
 	return items, total, nil
 }
 
-// PendingCount returns the number of versions awaiting approval across both
-// provider and terraform mirrors. Used for the dashboard badge.
-func (r *VersionApprovalRepository) PendingCount(ctx context.Context) (int, error) {
-	const q = `
-		SELECT
-		  (SELECT COUNT(*) FROM mirrored_provider_versions WHERE approval_status = $1) +
-		  (SELECT COUNT(*) FROM terraform_versions WHERE approval_status = $1) +
-		  (SELECT COUNT(*) FROM scanner_binary_versions WHERE approval_status = $1)`
+// OrganizationForVersion resolves the organization owning a gated version row.
+// Returns (orgID, true, nil) when the version exists — orgID nil meaning an
+// org-less row — and (nil, false, nil) when no gated version has that id.
+//
+// Used by the per-version event trail, which is otherwise addressable by a
+// bare UUID with no tenant predicate anywhere (issue #719).
+func (r *VersionApprovalRepository) OrganizationForVersion(ctx context.Context, versionID uuid.UUID) (*string, bool, error) {
+	q := fmt.Sprintf("SELECT va.organization_id FROM (%s) AS va WHERE va.id = $1", innerQuery(""))
+
+	var orgID *string
+	err := r.db.QueryRowContext(ctx, q, versionID).Scan(&orgID)
+	if err == sql.ErrNoRows {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to resolve version organization: %w", err)
+	}
+	return orgID, true, nil
+}
+
+// PendingCount returns the number of versions awaiting approval that the given
+// scope may see. Used for the dashboard badge.
+//
+// GUARD version-approval-count-scope (issue #719). The badge is a read of the
+// same org-owned rows as List, so it carries the same predicate: an unscoped
+// count told a member of one organization exactly how many approvals were
+// pending across every other tenant, and moved whenever theirs did.
+func (r *VersionApprovalRepository) PendingCount(ctx context.Context, f VersionApprovalFilter) (int, error) {
+	if f.matchesNothing() {
+		return 0, nil
+	}
+
+	if f.AllOrganizations {
+		const q = `
+			SELECT
+			  (SELECT COUNT(*) FROM mirrored_provider_versions WHERE approval_status = $1) +
+			  (SELECT COUNT(*) FROM terraform_versions WHERE approval_status = $1) +
+			  (SELECT COUNT(*) FROM scanner_binary_versions WHERE approval_status = $1)`
+		var count int
+		if err := r.db.QueryRowContext(ctx, q, models.VersionApprovalStatusPending).Scan(&count); err != nil {
+			return 0, fmt.Errorf("failed to count pending approvals: %w", err)
+		}
+		return count, nil
+	}
+
+	// Scoped: only provider versions have an owning organization to match on.
+	// terraform_versions and scanner_binary_versions hang off platform-level
+	// configs with no organization column at all, so they are outside every
+	// non-platform scope and contribute nothing here.
+	const scopedQuery = `
+		SELECT COUNT(*)
+		FROM mirrored_provider_versions mpv
+		JOIN mirrored_providers mp ON mp.id = mpv.mirrored_provider_id
+		JOIN mirror_configurations mc ON mc.id = mp.mirror_config_id
+		WHERE mpv.approval_status = $1 AND mc.organization_id = ANY($2)`
 	var count int
-	if err := r.db.QueryRowContext(ctx, q, models.VersionApprovalStatusPending).Scan(&count); err != nil {
+	if err := r.db.QueryRowContext(ctx, scopedQuery,
+		models.VersionApprovalStatusPending, pq.Array(f.OrganizationIDs)).Scan(&count); err != nil {
 		return 0, fmt.Errorf("failed to count pending approvals: %w", err)
 	}
 	return count, nil

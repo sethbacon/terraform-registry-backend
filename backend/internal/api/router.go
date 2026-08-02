@@ -448,7 +448,8 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	tfMirrorAdminHandler.SetStorageBackend(storageBackend) // delete stored binaries when a version is removed
 	tfMirrorAdminHandler.SetEgressGuard(egressGuard)
 	releasesGPGKeysAdminHandler := admin.NewReleasesGPGKeysHandler(releasesKeyRepo, tfMirrorRepo, cfg.ReleasesGPGKeys)
-	versionApprovalHandler := admin.NewVersionApprovalHandler(repositories.NewVersionApprovalRepository(sqlxDB))
+	versionApprovalHandler := admin.NewVersionApprovalHandler(repositories.NewVersionApprovalRepository(sqlxDB)).
+		WithOrgRepo(orgRepo)
 	providerAdminHandlers := admin.NewProviderAdminHandlers(db, storageBackend, cfg)
 	moduleAdminHandlers := admin.NewModuleAdminHandlers(db, storageBackend, cfg).
 		WithModuleDocs(moduleDocsRepo).
@@ -461,7 +462,10 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 
 	// Role-template CRUD follows the identity schema; mirror methods stay public.
 	rbacRepo := repositories.NewRBACRepositoryWithIdentity(sqlxDB, identitySqlxDB)
-	rbacHandlers := admin.NewRBACHandlers(rbacRepo, userTokenRevocationRepo, apiKeyRepo).WithNotifications(&cfg.Notifications, &cfg.CVE)
+	rbacHandlers := admin.NewRBACHandlers(rbacRepo, userTokenRevocationRepo, apiKeyRepo).
+		WithNotifications(&cfg.Notifications, &cfg.CVE).
+		WithOrgRepo(orgRepo).
+		WithMirrorRepo(mirrorRepo)
 
 	// Initialize audit log handlers
 	auditLogHandlers := admin.NewAuditLogHandlers(identityDB)

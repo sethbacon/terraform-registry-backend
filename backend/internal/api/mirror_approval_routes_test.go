@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 
+	"github.com/terraform-registry/terraform-registry/internal/api/admin"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
@@ -18,10 +19,11 @@ import (
 )
 
 const (
-	mirrorCfgID   = "66666666-6666-6666-6666-666666666666"
-	approvalReqID = "77777777-7777-7777-7777-777777777777"
-	foreignOrgID  = "88888888-8888-8888-8888-888888888888"
-	mirrorUserID  = "user-mirror-cross-org"
+	mirrorCfgID    = "66666666-6666-6666-6666-666666666666"
+	approvalReqID  = "77777777-7777-7777-7777-777777777777"
+	foreignOrgID   = "88888888-8888-8888-8888-888888888888"
+	mirrorUserID   = "user-mirror-cross-org"
+	mirrorPolicyID = "99999999-9999-4999-8999-999999999999"
 )
 
 var memberRoleColsAPI = []string{
@@ -79,6 +81,9 @@ func crossOrgRouteCase(t *testing.T, method, path string, scopes []string, seed 
 		),
 		mirrorRepo: repositories.NewMirrorRepository(sqlxDB),
 		rbacRepo:   repositories.NewRBACRepositoryWithIdentity(sqlxDB, sqlxDB),
+		// Registration dereferences this handler set; production wiring always
+		// supplies it (issue #719 moved the export route onto it).
+		auditLogHandlers: admin.NewAuditLogHandlers(db),
 	})
 
 	w := httptest.NewRecorder()
@@ -155,6 +160,41 @@ func TestApprovalRoutes_CrossOrg_Denied(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if code := crossOrgRouteCase(t, tc.method, tc.path, scopes, seedForeignApprovalRequest); code != http.StatusForbidden {
 				t.Errorf("%s %s: status = %d, want 403 (approval request belongs to another organization)",
+					tc.method, tc.path, code)
+			}
+		})
+	}
+}
+
+func seedForeignMirrorPolicy(mock sqlmock.Sqlmock) {
+	mock.ExpectQuery("FROM mirror_policies").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "organization_id", "name", "description", "policy_type",
+			"upstream_registry", "namespace_pattern", "provider_pattern",
+			"priority", "is_active", "requires_approval", "created_at", "updated_at", "created_by",
+		}).AddRow(
+			mirrorPolicyID, foreignOrgID, "beta-allow", nil, "allow",
+			nil, nil, nil, 10, true, false, time.Now(), time.Now(), nil,
+		))
+}
+
+// Issue #719: /admin/policies was the one route family in the issue that got no
+// per-org guard at all. Its mutations sit behind the platform-wide admin scope,
+// which masked the fact that GET /:id only requires mirrors:read — a scope the
+// flat, org-less session union hands out on the strength of membership in any
+// single organization. Mirror policies are the allow/deny rules governing what
+// an organization may mirror.
+func TestMirrorPolicyRoutes_CrossOrg_Denied(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	os.Setenv("TFR_JWT_SECRET", "test-jwt-secret-that-is-32-chars!!")
+
+	scopes := []string{string(auth.ScopeMirrorsRead)}
+	for _, tc := range []struct{ name, method, path string }{
+		{"read policy", http.MethodGet, "/api/v1/admin/policies/" + mirrorPolicyID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if code := crossOrgRouteCase(t, tc.method, tc.path, scopes, seedForeignMirrorPolicy); code != http.StatusForbidden {
+				t.Errorf("%s %s: status = %d, want 403 (mirror policy owned by another organization)",
 					tc.method, tc.path, code)
 			}
 		})

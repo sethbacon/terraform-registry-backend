@@ -1,0 +1,151 @@
+// tenant_scope.go is this package's handler-side entry point to the shared
+// tenant constraint in internal/tenantscope. The resolver itself lives there
+// because the class spans packages (internal/api/scim has instances too); what
+// stays here is the HTTP shape — write the 500, write the 403, tell the handler
+// to return.
+//
+// See internal/tenantscope for the authority model, the unowned-row contract
+// and why the check is a required parameter rather than an optional filter.
+package admin
+
+import (
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+
+	"github.com/terraform-registry/terraform-registry/internal/auth"
+	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/tenantscope"
+)
+
+// TenantScope is the set of organizations a request may read or write. Alias
+// rather than a second type: one definition, one Permits, one unowned-row
+// contract.
+type TenantScope = tenantscope.Scope
+
+// callerTenantScope resolves the caller's tenant scope for the scope this route
+// requires. Thin pass-through to tenantscope.Resolve, kept so the call sites in
+// this package read the same as they did.
+func callerTenantScope(c *gin.Context, orgRepo *repositories.OrganizationRepository, required auth.Scope) (TenantScope, error) {
+	return tenantscope.Resolve(c, orgRepo, required)
+}
+
+// resolveTenantScope is the handler-side entry point: it resolves the scope
+// and, on a lookup failure, writes the 500 and reports ok=false so the caller
+// can simply return.
+func resolveTenantScope(c *gin.Context, orgRepo *repositories.OrganizationRepository, required auth.Scope) (TenantScope, bool) {
+	scope, err := callerTenantScope(c, orgRepo, required)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to resolve organization memberships"})
+		return TenantScope{}, false
+	}
+	return scope, true
+}
+
+// resolveTargetOrganization decides which organization a CREATE — or an UPDATE
+// that re-parents a row — is allowed to write to, and is the only sanctioned
+// way for a handler in this package to answer that question.
+//
+// requestedOrgID is what the caller put in the request body, which is one of
+// three things, and the previous guard only handled the first:
+//
+//	a foreign UUID  -> must be an organization the caller actually holds the
+//	                   scope in. Checked before and still checked.
+//	OMITTED ("")    -> used to fall straight through to GetDefaultOrganization
+//	                   with NO membership check, so a non-member of the default
+//	                   organization planted rows in it simply by leaving the
+//	                   field out. The old guard documented that allow-through as
+//	                   intentional; it was the hole, not a simplification.
+//	EMPTY STRING    -> on the update axis, nulled organization_id. NULL is not
+//	                   "no tenant": jobs/mirror_sync.go resolves a mirror
+//	                   configuration's NULL organization back to the DEFAULT
+//	                   organization, so an empty string re-parented the row into
+//	                   the default org — the exact defect the re-parent guard was
+//	                   added to close, reachable by sending "" instead of the
+//	                   default org's UUID.
+//
+// The omitted case is resolved from the CALLER's own tenancy, never from a
+// server-side default the caller may not belong to: a single in-scope
+// organization is used automatically, anything ambiguous is refused. That is
+// the same fail-closed rule middleware.resolveCallerOrg already applies to a
+// first namespace publish, and it is applied here so the two create paths
+// cannot disagree.
+//
+// Returns (orgID, true) on success, where an empty orgID means the caller is a
+// platform admin and no default organization exists — the caller's own
+// pre-existing fallback then applies. On failure the response has already been
+// written.
+//
+// GUARD tenant-scope-target-org (issue #719).
+func resolveTargetOrganization(
+	c *gin.Context,
+	orgRepo *repositories.OrganizationRepository,
+	required auth.Scope,
+	requestedOrgID string,
+) (string, bool) {
+	scope, ok := resolveTenantScope(c, orgRepo, required)
+	if !ok {
+		return "", false
+	}
+
+	if requestedOrgID != "" {
+		if !scope.Permits(requestedOrgID) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Not a member of the requested organization"})
+			return "", false
+		}
+		return requestedOrgID, true
+	}
+
+	// No organization named. A platform admin is acting as a registry operator
+	// and keeps the historical default-organization fallback; everyone else is
+	// bound to their own tenancy.
+	if scope.PlatformAdmin {
+		if orgRepo == nil {
+			return "", true
+		}
+		defaultOrg, err := orgRepo.GetDefaultOrganization(c.Request.Context())
+		if err != nil || defaultOrg == nil {
+			return "", true
+		}
+		return defaultOrg.ID, true
+	}
+
+	switch len(scope.OrgIDs) {
+	case 0:
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "No organization context: you do not hold the required scope in any organization",
+		})
+		return "", false
+	case 1:
+		return scope.OrgIDs[0], true
+	default:
+		// Fail closed rather than guess. Guessing is how the default
+		// organization became a dumping ground for other tenants' rows.
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Ambiguous organization: specify organization_id — you hold the required scope in more than one organization",
+		})
+		return "", false
+	}
+}
+
+// requireTenantScopeForOrg authorizes a write against an explicitly named
+// target organization. Unlike resolveTargetOrganization it has no opinion about
+// the omitted case, so it is only for call sites that have already established
+// a non-empty target.
+//
+// GUARD tenant-scope-target-org (issue #719).
+func requireTenantScopeForOrg(
+	c *gin.Context,
+	orgRepo *repositories.OrganizationRepository,
+	required auth.Scope,
+	requestedOrgID string,
+) bool {
+	if requestedOrgID == "" {
+		// Never silently allowed: a caller reaching this helper with no target
+		// has skipped the decision resolveTargetOrganization exists to make.
+		c.JSON(http.StatusBadRequest, gin.H{"error": "organization_id is required"})
+		return false
+	}
+	_, ok := resolveTargetOrganization(c, orgRepo, required, requestedOrgID)
+	return ok
+}

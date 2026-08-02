@@ -359,7 +359,7 @@ func (h *Handlers) PatchUser() gin.HandlerFunc {
 		for _, op := range patchReq.Operations {
 			switch strings.ToLower(op.Op) {
 			case "replace":
-				h.applyReplaceOp(ctx, user, op)
+				h.applyReplaceOp(c, user, op)
 			default:
 				// Ignore unsupported ops per SCIM spec
 			}
@@ -423,7 +423,14 @@ func (h *Handlers) PutUser() gin.HandlerFunc {
 		// Only an EXPLICIT active=false deprovisions. An omitted attribute
 		// leaves the user's authority (and credentials) untouched.
 		if req.Active != nil && !*req.Active {
-			_ = h.orgRepo.RemoveAllMembershipsForUser(ctx, userID)
+			// GUARD scim-deprovision-tenant-scope (issue #719): see
+			// tenant_scope.go. Memberships are removed only where the caller
+			// may act, not in every organization on the platform.
+			if err := h.deprovisionUser(c, userID); err != nil {
+				slog.Error("scim: deactivate user failed", "id", userID, "error", err)
+				scimError(c, http.StatusInternalServerError, "Failed to deactivate user")
+				return
+			}
 			// Memberships alone are not the user's authority: their JWT
 			// sessions and API keys carry a snapshot of it (issue #736).
 			h.deprovision(ctx, userID, "scim: user deactivated via PUT")
@@ -462,7 +469,8 @@ func (h *Handlers) DeleteUser() gin.HandlerFunc {
 			return
 		}
 
-		if err := h.orgRepo.RemoveAllMembershipsForUser(ctx, userID); err != nil {
+		// GUARD scim-deprovision-tenant-scope (issue #719): see tenant_scope.go.
+		if err := h.deprovisionUser(c, userID); err != nil {
 			slog.Error("scim: deactivate user failed", "id", userID, "error", err)
 			scimError(c, http.StatusInternalServerError, "Failed to deactivate user")
 			return
@@ -538,7 +546,11 @@ func (h *Handlers) GetGroup() gin.HandlerFunc {
 
 // --- Helpers ---
 
-func (h *Handlers) applyReplaceOp(ctx context.Context, user *models.User, op SCIMOperation) {
+// applyReplaceOp takes the gin context rather than a bare context.Context
+// because the deactivation branches must know WHO is asking: the tenant scope
+// of a SCIM deprovision is a property of the caller, not of the request
+// deadline (issue #719).
+func (h *Handlers) applyReplaceOp(c *gin.Context, user *models.User, op SCIMOperation) {
 	path := strings.ToLower(op.Path)
 
 	switch path {
@@ -551,10 +563,14 @@ func (h *Handlers) applyReplaceOp(ctx context.Context, user *models.User, op SCI
 			active = strings.EqualFold(v, "true")
 		}
 		if !active {
-			_ = h.orgRepo.RemoveAllMembershipsForUser(ctx, user.ID)
+			// GUARD scim-deprovision-tenant-scope (issue #719): see tenant_scope.go.
+			if err := h.deprovisionUser(c, user.ID); err != nil {
+				slog.Error("scim: deactivate user failed", "id", user.ID, "error", err)
+				return
+			}
 			// Same deprovisioning event as PUT active=false, reached through
 			// the PATCH "replace active" op (issue #736).
-			h.deprovision(ctx, user.ID, "scim: user deactivated via PATCH")
+			h.deprovision(c.Request.Context(), user.ID, "scim: user deactivated via PATCH")
 			slog.Info("scim: user deactivated via PATCH", "id", user.ID)
 		}
 	case "username", "emails[type eq \"work\"].value":
@@ -569,11 +585,17 @@ func (h *Handlers) applyReplaceOp(ctx context.Context, user *models.User, op SCI
 		// No path — value is a map of attributes
 		if m, ok := op.Value.(map[string]interface{}); ok {
 			if v, ok := m["active"].(bool); ok && !v {
-				_ = h.orgRepo.RemoveAllMembershipsForUser(ctx, user.ID)
+				// GUARD scim-deprovision-tenant-scope (issue #719): the pathless
+				// PATCH form is the fourth deactivation path over this table and
+				// was as unscoped as the other three.
+				if err := h.deprovisionUser(c, user.ID); err != nil {
+					slog.Error("scim: deactivate user failed", "id", user.ID, "error", err)
+					return
+				}
 				// Pathless PATCH carrying {"active": false} is the same
 				// deprovisioning event as the "active" path above and must
 				// sweep identically (issue #736).
-				h.deprovision(ctx, user.ID, "scim: user deactivated via pathless PATCH")
+				h.deprovision(c.Request.Context(), user.ID, "scim: user deactivated via pathless PATCH")
 			}
 			if v, ok := m["userName"].(string); ok && v != "" {
 				user.Email = v

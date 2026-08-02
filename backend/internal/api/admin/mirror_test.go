@@ -13,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 )
@@ -88,6 +89,13 @@ func newMirrorRouterWithJob(t *testing.T, syncJob MirrorSyncJobInterface) (sqlmo
 	}
 
 	r := gin.New()
+	// These tests cover mirror CRUD mechanics, not tenancy, so they run as a
+	// platform admin — the principal every #719 tenant-scope guard deliberately
+	// exempts. Cross-tenant behaviour is owned by tenant_scope_class_test.go.
+	r.Use(func(c *gin.Context) {
+		c.Set("scopes", []string{string(auth.ScopeAdmin)})
+		c.Set("user_id", "admin-user")
+	})
 	r.POST("/mirrors", h.CreateMirrorConfig)
 	r.GET("/mirrors", h.ListMirrorConfigs)
 	r.GET("/mirrors/:id", h.GetMirrorConfig)
@@ -683,6 +691,13 @@ func TestMirrorCreate_AllowlistedPrivateURLSucceeds(t *testing.T) {
 	h.SetEgressGuard(httpsafe.MustGuard("10.0.5.0/24"))
 
 	r := gin.New()
+	// These tests cover mirror CRUD mechanics, not tenancy, so they run as a
+	// platform admin — the principal every #719 tenant-scope guard deliberately
+	// exempts. Cross-tenant behaviour is owned by tenant_scope_class_test.go.
+	r.Use(func(c *gin.Context) {
+		c.Set("scopes", []string{string(auth.ScopeAdmin)})
+		c.Set("user_id", "admin-user")
+	})
 	r.POST("/mirrors", h.CreateMirrorConfig)
 
 	mock.ExpectQuery("SELECT.*FROM mirror_configurations WHERE name").
@@ -800,10 +815,15 @@ func TestMirrorCreate_WithUserIDContext(t *testing.T) {
 	h := NewMirrorHandler(mirrorRepo, orgRepo2, repositories.NewProviderRepository(db))
 
 	r := gin.New()
-	// Inject user_id as uuid.UUID into context before the handler
+	// Inject user_id as uuid.UUID into context before the handler. The admin
+	// scope goes with it: since #719 the create axis resolves a tenant scope
+	// before falling back to the default organization (GUARD
+	// mirror-create-target-org), and this test is about the createdBy
+	// extraction from a uuid.UUID context value, not about tenancy.
 	userUUID := uuid.MustParse(knownUUID)
 	r.POST("/mirrors", func(c *gin.Context) {
 		c.Set("user_id", userUUID)
+		c.Set("scopes", []string{string(auth.ScopeAdmin)})
 		h.CreateMirrorConfig(c)
 	})
 

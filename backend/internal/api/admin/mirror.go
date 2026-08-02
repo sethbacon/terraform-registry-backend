@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
@@ -116,22 +117,39 @@ func (h *MirrorHandler) CreateMirrorConfig(c *gin.Context) {
 		syncInterval = *req.SyncIntervalHours
 	}
 
-	// Parse organization ID if provided; fall back to the default organization
-	var orgID *uuid.UUID
-	if req.OrganizationID != nil && *req.OrganizationID != "" {
-		parsed, err := uuid.Parse(*req.OrganizationID)
-		if err != nil {
+	// GUARD mirror-create-target-org (issue #719): the create axis takes its
+	// organization straight from the request body, so no route guard can bind
+	// it — there is no existing row to resolve an owner from. Without this, any
+	// holder of the flat mirrors:manage scope union could plant a mirror
+	// configuration inside another organization, where it becomes a
+	// pull-through source for that tenant's providers.
+	//
+	// The OMITTED case runs through the same guard as the supplied one. It used
+	// to skip it entirely and fall through to GetDefaultOrganization with no
+	// membership check, so the whole guard was bypassable by deleting one field
+	// from the request body — cross-tenant write by omission.
+	requestedOrg := ""
+	if req.OrganizationID != nil {
+		requestedOrg = *req.OrganizationID
+	}
+	if requestedOrg != "" {
+		if _, err := uuid.Parse(requestedOrg); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid organization ID"})
 			return
 		}
-		orgID = &parsed
-	} else {
-		// Default to the default organization so mirrored providers are discoverable
-		defaultOrg, err := h.orgRepo.GetDefaultOrganization(c.Request.Context())
-		if err == nil && defaultOrg != nil {
-			parsed := uuid.MustParse(defaultOrg.ID)
-			orgID = &parsed
+	}
+	targetOrg, ok := resolveTargetOrganization(c, h.orgRepo, auth.ScopeMirrorsManage, requestedOrg)
+	if !ok {
+		return
+	}
+	var orgID *uuid.UUID
+	if targetOrg != "" {
+		parsed, err := uuid.Parse(targetOrg)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to resolve organization"})
+			return
 		}
+		orgID = &parsed
 	}
 
 	// Convert filter arrays to JSON strings
@@ -223,13 +241,37 @@ func (h *MirrorHandler) CreateMirrorConfig(c *gin.Context) {
 func (h *MirrorHandler) ListMirrorConfigs(c *gin.Context) {
 	enabledOnly := c.Query("enabled") == "true"
 
+	// GUARD mirror-list-tenant-scope (issue #719).
+	//
+	// The per-resource guard on /admin/mirrors/:id cannot help the list axis:
+	// there is no row named in the path to resolve an owner from. Left
+	// unscoped, this route enumerated every organization's mirror
+	// configurations — upstream registry URLs, filters and sync state — to any
+	// holder of the flat mirrors:read scope union, and handed out the very ids
+	// the per-resource routes are keyed on.
+	scope, ok := resolveTenantScope(c, h.orgRepo, auth.ScopeMirrorsRead)
+	if !ok {
+		return
+	}
+
 	configs, err := h.mirrorRepo.List(c.Request.Context(), enabledOnly)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list mirror configurations: " + err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"mirrors": configs})
+	visible := make([]models.MirrorConfiguration, 0, len(configs))
+	for _, cfg := range configs {
+		orgID := ""
+		if cfg.OrganizationID != nil {
+			orgID = cfg.OrganizationID.String()
+		}
+		if scope.Permits(orgID) {
+			visible = append(visible, cfg)
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"mirrors": visible})
 }
 
 // @Summary      Get mirror configuration
@@ -390,15 +432,44 @@ func (h *MirrorHandler) UpdateMirrorConfig(c *gin.Context) {
 	}
 
 	if req.OrganizationID != nil {
-		if *req.OrganizationID != "" {
+		// GUARD mirror-update-reparent-org (issue #719): the route's
+		// per-resource guard authorized the caller against this row's CURRENT
+		// owner. It says nothing about the owner being asked for. Without this
+		// check, a caller legitimately holding mirrors:manage in org A could
+		// re-parent A's mirror configuration into org B and then keep operating
+		// it under B's tenancy — a write across the tenant boundary that every
+		// by-id read guard would still pass.
+		//
+		// GUARD mirror-update-unparent-org (issue #719): an EMPTY STRING is the
+		// same attack with a different spelling. It used to null the column
+		// unconditionally, and jobs/mirror_sync.go resolves a NULL organization
+		// back to the DEFAULT organization when it materialises providers — so
+		// `{"organization_id": ""}` re-parented the row into the default org
+		// without ever naming it, straight through the guard above. Un-owning a
+		// row is a platform-operator action and is now treated as one.
+		if *req.OrganizationID == "" {
+			scope, ok := resolveTenantScope(c, h.orgRepo, auth.ScopeMirrorsManage)
+			if !ok {
+				return
+			}
+			if !scope.PlatformAdmin {
+				c.JSON(http.StatusForbidden, gin.H{
+					"error": "Clearing organization_id is restricted to platform administrators: " +
+						"an unowned mirror configuration is synced under the default organization",
+				})
+				return
+			}
+			config.OrganizationID = nil
+		} else {
 			parsed, err := uuid.Parse(*req.OrganizationID)
 			if err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid organization ID"})
 				return
 			}
+			if !requireTenantScopeForOrg(c, h.orgRepo, auth.ScopeMirrorsManage, parsed.String()) {
+				return
+			}
 			config.OrganizationID = &parsed
-		} else {
-			config.OrganizationID = nil
 		}
 	}
 

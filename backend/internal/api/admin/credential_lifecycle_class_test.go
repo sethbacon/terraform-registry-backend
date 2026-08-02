@@ -131,6 +131,15 @@ func newSCIMDeprovisionRouter(db *sql.DB) *gin.Engine {
 		),
 	))
 	r := gin.New()
+	// Platform admin: these tests cover the CREDENTIAL half of deprovisioning
+	// (issues #732/#736), not tenancy. Admin is the principal #719's SCIM
+	// tenant-scope guard deliberately exempts -- an IdP integration wired with
+	// an admin-scoped credential is the normal deployment -- so it is the one
+	// that still takes the single-statement RemoveAllMembershipsForUser sweep
+	// these expectations encode. Cross-tenant behaviour for the same handlers
+	// is owned by scim/tenant_scope_class_test.go, which drives them as a
+	// non-admin scim:provision holder.
+	r.Use(func(c *gin.Context) { c.Set("scopes", []string{string(auth.ScopeAdmin)}) })
 	r.PUT("/scim/v2/Users/:id", h.PutUser())
 	r.PATCH("/scim/v2/Users/:id", h.PatchUser())
 	r.DELETE("/scim/v2/Users/:id", h.DeleteUser())

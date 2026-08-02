@@ -70,17 +70,22 @@ type AutoApproveRules struct {
 // a uniform shape consumed by the frontend approvals page. ID is the version
 // row's own UUID (mirrored_provider_versions.id or terraform_versions.id).
 type VersionApproval struct {
-	ID                uuid.UUID `json:"id" db:"id"`
-	Type              string    `json:"type" db:"type"` // provider | terraform
-	Version           string    `json:"version" db:"version"`
-	ApprovalStatus    string    `json:"approval_status" db:"approval_status"`
-	ProviderNamespace *string   `json:"provider_namespace,omitempty" db:"provider_namespace"`
-	ProviderName      *string   `json:"provider_name,omitempty" db:"provider_name"`
-	MirrorConfigName  string    `json:"mirror_config_name" db:"mirror_config_name"`
-	MirrorConfigID    uuid.UUID `json:"mirror_config_id" db:"mirror_config_id"`
-	GPGVerified       *bool     `json:"gpg_verified,omitempty" db:"gpg_verified"`
-	ShasumVerified    *bool     `json:"shasum_verified,omitempty" db:"shasum_verified"`
-	SyncedAt          time.Time `json:"synced_at" db:"synced_at"`
+	ID             uuid.UUID `json:"id" db:"id"`
+	Type           string    `json:"type" db:"type"` // provider | terraform
+	Version        string    `json:"version" db:"version"`
+	ApprovalStatus string    `json:"approval_status" db:"approval_status"`
+	// OrganizationID is the organization owning the mirror configuration this
+	// version was synced by, or nil for the platform-level terraform-binary and
+	// scanner branches, which hang off configs with no organization column. It
+	// is what the list query's tenant predicate matches on (issue #719).
+	OrganizationID    *uuid.UUID `json:"organization_id,omitempty" db:"organization_id"`
+	ProviderNamespace *string    `json:"provider_namespace,omitempty" db:"provider_namespace"`
+	ProviderName      *string    `json:"provider_name,omitempty" db:"provider_name"`
+	MirrorConfigName  string     `json:"mirror_config_name" db:"mirror_config_name"`
+	MirrorConfigID    uuid.UUID  `json:"mirror_config_id" db:"mirror_config_id"`
+	GPGVerified       *bool      `json:"gpg_verified,omitempty" db:"gpg_verified"`
+	ShasumVerified    *bool      `json:"shasum_verified,omitempty" db:"shasum_verified"`
+	SyncedAt          time.Time  `json:"synced_at" db:"synced_at"`
 }
 
 // VersionApprovalListResponse is the envelope for the list endpoint.

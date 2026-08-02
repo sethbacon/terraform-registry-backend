@@ -6,9 +6,11 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/credlifecycle"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
@@ -65,6 +67,38 @@ func NewOrganizationHandlers(cfg *config.Config, db *sql.DB, claimRepo *reposito
 		h.creds = credlifecycle.NewSweeper(userRevocations, repositories.NewAPIKeyRepository(db))
 	}
 	return h
+}
+
+// organizationsInScope loads the organization rows the caller may see, in the
+// order their scope names them. Returns nil after writing a 500 response.
+//
+// Shared by the list and search axes so the two cannot drift apart — the whole
+// point of #719 is that sibling axes of one resource stopped agreeing.
+func (h *OrganizationHandlers) organizationsInScope(c *gin.Context, scope TenantScope) []*models.Organization {
+	out := make([]*models.Organization, 0, len(scope.OrgIDs))
+	for _, id := range scope.OrgIDs {
+		org, err := h.orgRepo.GetByID(c.Request.Context(), id)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list organizations"})
+			return nil
+		}
+		if org != nil {
+			out = append(out, org)
+		}
+	}
+	return out
+}
+
+// paginateOrganizations applies limit/offset to an already-scoped slice.
+func paginateOrganizations(orgs []*models.Organization, perPage, offset int) []*models.Organization {
+	if offset >= len(orgs) {
+		return []*models.Organization{}
+	}
+	end := offset + perPage
+	if end > len(orgs) {
+		end = len(orgs)
+	}
+	return orgs[offset:end]
 }
 
 // revokeOrgCredentials invalidates every credential family carrying a snapshot
@@ -134,6 +168,18 @@ func (h *OrganizationHandlers) ListNamespaceClaimsHandler() gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Namespace claims are not available"})
 			return
 		}
+		// GUARD namespace-claim-list-scope (issue #719). namespace_claims is
+		// org-owned and NOT NULL (migration 000045), so it sits squarely inside
+		// this class — and this route returned every claim to any holder of the
+		// flat organizations:read scope union. That is a map of which
+		// organization owns which module/provider namespace across the whole
+		// estate, which is precisely the input for choosing a namespace to
+		// attack via the create/re-parent axes above.
+		scope, ok := resolveTenantScope(c, h.orgRepo, auth.ScopeOrganizationsRead)
+		if !ok {
+			return
+		}
+
 		claims, err := h.claimRepo.ListClaims(c.Request.Context())
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list namespace claims"})
@@ -143,6 +189,9 @@ func (h *OrganizationHandlers) ListNamespaceClaimsHandler() gin.HandlerFunc {
 		nameCache := make(map[string]string)
 		out := make([]gin.H, 0, len(claims))
 		for _, cl := range claims {
+			if !scope.Permits(cl.OrganizationID) {
+				continue
+			}
 			orgName, cached := nameCache[cl.OrganizationID]
 			if !cached {
 				if org, err := h.orgRepo.GetByID(c.Request.Context(), cl.OrganizationID); err == nil && org != nil {
@@ -192,6 +241,16 @@ func (h *OrganizationHandlers) GetNamespaceOwnershipHandler() gin.HandlerFunc {
 			return
 		}
 
+		// GUARD namespace-ownership-byid-scope (issue #719): the by-id axis of
+		// the claim list above. Scoping only the list would leave the same
+		// ownership map readable one namespace at a time, and namespace names
+		// are public on the Terraform-protocol surface, so enumeration costs
+		// nothing.
+		scope, ok := resolveTenantScope(c, h.orgRepo, auth.ScopeOrganizationsRead)
+		if !ok {
+			return
+		}
+
 		claim, err := h.claimRepo.GetClaim(c.Request.Context(), namespace)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to resolve namespace ownership"})
@@ -216,13 +275,33 @@ func (h *OrganizationHandlers) GetNamespaceOwnershipHandler() gin.HandlerFunc {
 				orgID = orgIDs[0]
 				source = "artifact"
 			default:
+				// The ambiguous branch names every owning organization, so it
+				// is filtered to the caller's scope rather than answered whole.
+				visible := make([]string, 0, len(orgIDs))
+				for _, id := range orgIDs {
+					if scope.Permits(id) {
+						visible = append(visible, id)
+					}
+				}
+				if len(visible) == 0 {
+					c.JSON(http.StatusNotFound, gin.H{"error": "Namespace is unclaimed and has no artifacts"})
+					return
+				}
 				c.JSON(http.StatusOK, gin.H{
 					"namespace":              namespace,
 					"source":                 "ambiguous",
-					"owner_organization_ids": orgIDs,
+					"owner_organization_ids": visible,
 				})
 				return
 			}
+		}
+
+		// Out-of-scope namespaces read as absent, matching the audit by-id axis:
+		// a 403 here would confirm that the namespace exists and is owned by
+		// someone else, which is the same disclosure in one fewer step.
+		if !scope.Permits(orgID) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Namespace is unclaimed and has no artifacts"})
+			return
 		}
 
 		var orgName string
@@ -271,30 +350,59 @@ func (h *OrganizationHandlers) ListOrganizationsHandler() gin.HandlerFunc {
 
 		offset := (page - 1) * perPage
 
-		// Get organizations from repository
-		orgs, err := h.orgRepo.List(c.Request.Context(), perPage, offset)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to list organizations",
+		// GUARD organization-list-scope (issue #719). This is the batch's own
+		// sibling-asymmetry test failing: every /organizations/:id route carries
+		// RequireOrgScopeForPathOrg (GHSA-hc25-j576-cqm2), while the list beside
+		// them returned every organization on the platform with pagination as
+		// its only constraint — handing out the exact ids those guarded routes
+		// are keyed on, plus a tenant census of the deployment.
+		scope, ok := resolveTenantScope(c, h.orgRepo, auth.ScopeOrganizationsRead)
+		if !ok {
+			return
+		}
+
+		if scope.PlatformAdmin {
+			// Platform operators keep the paginated platform-wide view.
+			orgs, err := h.orgRepo.List(c.Request.Context(), perPage, offset)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"error": "Failed to list organizations",
+				})
+				return
+			}
+			total, err := h.orgRepo.Count(c.Request.Context())
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"error": "Failed to count organizations",
+				})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{
+				"organizations": orgs,
+				"pagination": gin.H{
+					"page":     page,
+					"per_page": perPage,
+					"total":    total,
+				},
 			})
 			return
 		}
 
-		// Get total count
-		total, err := h.orgRepo.Count(c.Request.Context())
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to count organizations",
-			})
+		// Everyone else sees exactly the organizations they hold
+		// organizations:read in. The set is small and already resolved, so it is
+		// paginated in memory rather than by re-querying: the repository's List
+		// has no organization predicate to push this down into, and inventing
+		// one here would be a second, divergent definition of the same scope.
+		visible := h.organizationsInScope(c, scope)
+		if visible == nil {
 			return
 		}
-
 		c.JSON(http.StatusOK, gin.H{
-			"organizations": orgs,
+			"organizations": paginateOrganizations(visible, perPage, offset),
 			"pagination": gin.H{
 				"page":     page,
 				"per_page": perPage,
-				"total":    total,
+				"total":    len(visible),
 			},
 		})
 	}
@@ -1087,17 +1195,51 @@ func (h *OrganizationHandlers) SearchOrganizationsHandler() gin.HandlerFunc {
 
 		offset := (page - 1) * perPage
 
-		// Search organizations
-		orgs, err := h.orgRepo.Search(c.Request.Context(), query, perPage, offset)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to search organizations",
+		// GUARD organization-search-scope (issue #719): the same asymmetry as
+		// the list axis, and strictly worse — search turns the census into a
+		// lookup, so an attacker who knows a target organization's name can
+		// confirm it exists and recover its id without enumerating anything.
+		scope, ok := resolveTenantScope(c, h.orgRepo, auth.ScopeOrganizationsRead)
+		if !ok {
+			return
+		}
+
+		if scope.PlatformAdmin {
+			orgs, err := h.orgRepo.Search(c.Request.Context(), query, perPage, offset)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"error": "Failed to search organizations",
+				})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{
+				"organizations": orgs,
+				"pagination": gin.H{
+					"page":     page,
+					"per_page": perPage,
+				},
 			})
 			return
 		}
 
+		// Non-admins search within their own organizations only. Matching is
+		// done here against the same fields the repository's Search covers so a
+		// caller cannot use the query string to reach outside the scope.
+		visible := h.organizationsInScope(c, scope)
+		if visible == nil {
+			return
+		}
+		needle := strings.ToLower(query)
+		matched := make([]*models.Organization, 0, len(visible))
+		for _, org := range visible {
+			if strings.Contains(strings.ToLower(org.Name), needle) ||
+				strings.Contains(strings.ToLower(org.DisplayName), needle) {
+				matched = append(matched, org)
+			}
+		}
+
 		c.JSON(http.StatusOK, gin.H{
-			"organizations": orgs,
+			"organizations": paginateOrganizations(matched, perPage, offset),
 			"pagination": gin.H{
 				"page":     page,
 				"per_page": perPage,

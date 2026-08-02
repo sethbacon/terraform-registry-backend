@@ -8,7 +8,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/audit"
-	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
 
 // @Summary      Export audit logs
@@ -30,9 +29,29 @@ import (
 // @Failure      403  {object}  map[string]interface{}  "Forbidden — audit:read scope required"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/admin/audit-logs/export [get]
+// ExportAuditLogs is a method on AuditLogHandlers rather than a free function
+// so that it shares the audit-log family's tenant scope resolver with
+// ListAuditLogsHandler and GetAuditLogHandler. It used to be a package-level
+// function taking only the audit repository, which is precisely why it had no
+// way to know who was asking: the #719 fix scoped the list handler and could
+// not reach this axis at all.
 // coverage:skip:requires-database
-func ExportAuditLogs(auditRepo *repositories.AuditRepository, appVersion string) gin.HandlerFunc {
+func (h *AuditLogHandlers) ExportAuditLogs(appVersion string) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// GUARD audit-export-tenant-scope (issue #719).
+		//
+		// The scope is a query constraint, not an output filter: StreamAuditLogs
+		// requires an AuditScope and puts the organization predicate into the
+		// SQL, so the database never returns another tenant's rows to this
+		// process at all. An earlier revision filtered rows as they were
+		// streamed, which produced the same bytes on the wire while still
+		// reading every organization's audit trail out of the database — the
+		// leak moved, it did not close.
+		auditScope, ok := h.auditScope(c)
+		if !ok {
+			return
+		}
+
 		now := time.Now().UTC()
 		startDate := now.AddDate(0, 0, -30)
 		endDate := now
@@ -61,7 +80,7 @@ func ExportAuditLogs(auditRepo *repositories.AuditRepository, appVersion string)
 			return
 		}
 
-		rows, err := auditRepo.StreamAuditLogs(c.Request.Context(), startDate, endDate)
+		rows, err := h.auditRepo.StreamAuditLogs(c.Request.Context(), startDate, endDate, auditScope)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to query audit logs for export"})
 			return
@@ -99,6 +118,15 @@ func ExportAuditLogs(auditRepo *repositories.AuditRepository, appVersion string)
 				return
 			}
 
+			// GUARD audit-export-row-filter (issue #719): defence in depth
+			// behind the SQL predicate above, not the tenant check itself. It
+			// costs one comparison per row and it is what catches a future
+			// refactor that reintroduces an unscoped stream — the failure mode
+			// this whole batch exists to stop repeating.
+			if !auditScope.PermitsOrganization(orgIDOrEmpty(entry.OrganizationID)) {
+				continue
+			}
+
 			if metadataJSON != nil {
 				_ = json.Unmarshal(metadataJSON, &entry.Metadata)
 			}
@@ -124,6 +152,15 @@ func ExportAuditLogs(auditRepo *repositories.AuditRepository, appVersion string)
 			c.Writer.Flush()
 		}
 	}
+}
+
+// orgIDOrEmpty flattens a nullable organization_id to the empty string
+// AuditScope uses for "no owning organization".
+func orgIDOrEmpty(orgID *string) string {
+	if orgID == nil {
+		return ""
+	}
+	return *orgID
 }
 
 // auditExportRow is a flat struct used for NDJSON serialization of a single audit log entry.
