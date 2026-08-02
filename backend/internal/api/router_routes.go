@@ -571,8 +571,14 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 				middleware.RequireScope(auth.ScopeModulesWrite),
 				nsAuthz.RequirePublishAccessFromJSON(auth.ScopeModulesWrite),
 				moduleAdminHandlers.CreateModuleRecord)
+			// The by-id READ is guarded on the same axis as its PUT sibling
+			// (issue #719): GetModuleByIDRecord emits the whole modules row,
+			// organization_id included, for any id in any organization, and
+			// the repository call carries no organization predicate. Same
+			// reasoning as the module-SCM GETs below.
 			authenticatedGroup.GET("/admin/modules/:id",
 				middleware.RequireScope(auth.ScopeModulesRead),
+				nsAuthz.RequireModuleAccessByID(auth.ScopeModulesRead),
 				moduleAdminHandlers.GetModuleByIDRecord)
 			authenticatedGroup.PUT("/admin/modules/:id",
 				middleware.RequireScope(auth.ScopeModulesWrite),
@@ -613,8 +619,12 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 				middleware.RequireScope(auth.ScopeProvidersWrite),
 				nsAuthz.RequirePublishAccessFromJSON(auth.ScopeProvidersWrite),
 				providerAdminHandlers.CreateProviderRecord)
+			// Guarded on the same axis as PUT /admin/providers/:id above
+			// (issue #719): GetProviderByID emits the whole providers row for
+			// any id in any organization with no organization predicate.
 			authenticatedGroup.GET("/admin/providers/:id",
 				middleware.RequireScope(auth.ScopeProvidersRead),
+				nsAuthz.RequireProviderAccessByID(auth.ScopeProvidersRead),
 				providerAdminHandlers.GetProviderByID)
 			authenticatedGroup.PUT("/admin/providers/:id",
 				middleware.RequireScope(auth.ScopeProvidersWrite),

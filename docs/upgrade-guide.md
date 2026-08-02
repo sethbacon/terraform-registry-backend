@@ -545,6 +545,16 @@ scope and are now scoped to the caller's organizations:
 | `GET /api/v1/admin/namespaces` | and `/:namespace`, which reports `404` for out-of-scope namespaces |
 | `GET /api/v1/organizations` | non-admins see only their own organizations; `total` changes accordingly |
 | `GET /api/v1/organizations/search` | searches within the caller's organizations only |
+| `GET /api/v1/admin/modules/:id` | `403` for a module owned by another organization; previously any holder of `modules:read` could fetch the whole row, `organization_id` included, by UUID |
+| `GET /api/v1/admin/providers/:id` | `403` for a provider owned by another organization; same shape as the module route above |
+
+The two by-id artifact reads are the READ siblings of `PUT /api/v1/admin/modules/:id`
+and `PUT /api/v1/admin/providers/:id`, which have carried namespace-organization
+authorization since #555. They now use the same authorizer, so ownership is
+resolved identically on both axes: the namespace claim wins, falling back to the
+artifact row's own organization. The public protocol reads
+(`GET /api/v1/modules/:namespace/:name/:system` and friends) are unchanged —
+they resolve against the default organization and were never cross-tenant.
 
 The dashboard's pending-approval badge will drop for non-admin users — it was
 previously counting other tenants' pending versions.
@@ -566,10 +576,46 @@ deprovisioning, which is the intended configuration for a SCIM connector.
 newer than `v0.20.3`. `AuditRepository.ListAuditLogs`, `.GetAuditLog` and
 `.StreamAuditLogs` take a mandatory `AuditScope`; its zero value selects nothing,
 so a caller that forgets tenancy gets no rows rather than every tenant's.
-`terraform-state-manager-backend` consumes the same accessors and must be bumped
-in the same round — it should use `AuditScopeOrganizationsAndUnowned`, which
-additionally admits rows with no owning organization, because its logins and
-state/source events are written org-less by design.
+
+#### Required merge order
+
+This is a **breaking change to a shared module consumed by two backends**, so the
+three repositories cannot be merged independently. The signature change is not
+additive: the accessors gained a required parameter, so any consumer still on
+`v0.20.3` fails to compile the moment it is bumped, and any consumer left
+un-bumped keeps the leak. Merge in this order:
+
+1. **`terraform-suite-identity`** — merge and **publish** the `AuditScope` work as
+   a new tagged release (a minor bump: the three accessor signatures are
+   source-breaking for every caller).
+2. **`terraform-registry-backend`** (this repository) — bump `backend/go.mod` off
+   `terraform-suite-identity v0.20.3` to the tag from step 1, then merge. **The
+   branch as staged deliberately still pins `v0.20.3` and therefore does not
+   build**: the pin is the forcing function that keeps step 1 from being skipped.
+   Do not paper over it with a `replace` directive — a `replace` makes the build
+   green locally while the published artifact still embeds `v0.20.3` and contains
+   no `AuditScope` symbol at all.
+3. **`terraform-state-manager-backend`** — bump to the same tag and update its
+   three call sites (`internal/api/admin.go`, `internal/api/admin_write.go`,
+   `internal/api/admin_audit_export.go`). Tracked as
+   `sethbacon/terraform-state-manager-backend#331`.
+
+Steps 2 and 3 may land in either order once step 1 is published, but **both must
+land in the same release round**: a consumer left on `v0.20.3` still returns every
+tenant's audit rows.
+
+TSM should pass **`AuditScopeOrganizationsAndUnowned(...)`**, not
+`AuditScopeOrganizations(...)`. That is not a preference — it is the exact
+semantics of the in-memory filter TSM already applies today
+(`internal/api/admin.go`, `auditLogsInAdminOrgs`), which passes through rows whose
+`organization_id` is absent and otherwise requires the caller to hold `admin` in
+the owning organization. TSM writes such rows deliberately
+(`internal/api/audit_ingest.go` nils the column for federated ingest). Choosing
+`AuditScopeOrganizations` would silently *hide* platform events that organization
+admins are the intended reviewers of; choosing `AuditScopeAllOrganizations` would
+restore the leak. The push-down is exact, not approximate: `identity.audit_logs.organization_id`
+is a nullable `UUID`, so it is either NULL or a real organization — the empty-string
+case the in-memory filter also tolerates is unrepresentable in the column.
 
 **Migrations:** none.
 
