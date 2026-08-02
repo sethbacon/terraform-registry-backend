@@ -9230,7 +9230,7 @@
                     },
                     {
                         "type": "string",
-                        "description": "State parameter (userID:providerID)",
+                        "description": "Single-use state nonce issued by /oauth/authorize (64 hex chars)",
                         "name": "state",
                         "in": "query",
                         "required": true
@@ -9241,7 +9241,7 @@
                         "description": "Redirect to frontend success page"
                     },
                     "400": {
-                        "description": "Invalid provider ID, code, or state",
+                        "description": "Invalid provider ID or code; or state that is unknown, expired, already used, or minted for a different provider",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true

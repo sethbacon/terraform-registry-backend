@@ -3,9 +3,9 @@ package admin
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
@@ -44,7 +45,8 @@ func newSCMOAuthRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	t.Cleanup(func() { db.Close() })
 
 	scmRepo := repositories.NewSCMRepository(sqlx.NewDb(db, "sqlmock"))
-	h := NewSCMOAuthHandlers(&config.Config{}, scmRepo, nil, nil)
+	h := NewSCMOAuthHandlers(&config.Config{}, scmRepo, nil, nil).
+		WithStateStore(newOAuthTestStateStore(t))
 
 	r := gin.New()
 	r.GET("/scm-providers/:id/oauth/authorize", h.InitiateOAuth)
@@ -368,7 +370,45 @@ func TestGetTokenStatus_DBError(t *testing.T) {
 // InitiateOAuth — provider DB paths
 // ---------------------------------------------------------------------------
 
+// mintSCMOAuthState saves a state the way InitiateOAuth does and returns the
+// plaintext nonce. createdAt lets a test age the state past the callback's
+// freshness bound.
+func mintSCMOAuthState(t *testing.T, store auth.StateStore, userID, providerID string, createdAt time.Time) string {
+	t.Helper()
+	state, err := generateState()
+	if err != nil {
+		t.Fatalf("generateState: %v", err)
+	}
+	if err := store.Save(t.Context(), state, &auth.SessionState{
+		State:         state,
+		CreatedAt:     createdAt,
+		ProviderType:  scmStateProviderType,
+		SCMUserID:     userID,
+		SCMProviderID: providerID,
+	}, scmStateTTL); err != nil {
+		t.Fatalf("state store Save: %v", err)
+	}
+	return state
+}
+
+// newOAuthTestStateStore returns an in-memory session state store for SCM OAuth
+// tests. The SCM connector flow shares the login flow's StateStore, so handlers
+// under test need one wired or they fail closed.
+func newOAuthTestStateStore(t *testing.T) auth.StateStore {
+	t.Helper()
+	s := auth.NewMemoryStateStore(time.Minute)
+	t.Cleanup(func() { _ = s.Close() })
+	return s
+}
+
 func newSCMOAuthRouterWithUser(t *testing.T, userUUID string) (sqlmock.Sqlmock, *gin.Engine) {
+	mock, r, _ := newSCMOAuthRouterWithState(t, userUUID)
+	return mock, r
+}
+
+// newSCMOAuthRouterWithState is newSCMOAuthRouterWithUser plus a handle on the
+// state store, for tests that need to mint or inspect an OAuth state.
+func newSCMOAuthRouterWithState(t *testing.T, userUUID string) (sqlmock.Sqlmock, *gin.Engine, auth.StateStore) {
 	t.Helper()
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -376,8 +416,9 @@ func newSCMOAuthRouterWithUser(t *testing.T, userUUID string) (sqlmock.Sqlmock, 
 	}
 	t.Cleanup(func() { db.Close() })
 
+	store := newOAuthTestStateStore(t)
 	scmRepo := repositories.NewSCMRepository(sqlx.NewDb(db, "sqlmock"))
-	h := NewSCMOAuthHandlers(&config.Config{}, scmRepo, nil, nil)
+	h := NewSCMOAuthHandlers(&config.Config{}, scmRepo, nil, nil).WithStateStore(store)
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
@@ -387,7 +428,7 @@ func newSCMOAuthRouterWithUser(t *testing.T, userUUID string) (sqlmock.Sqlmock, 
 	r.GET("/scm-providers/:id/oauth/authorize", h.InitiateOAuth)
 	r.GET("/scm-providers/:id/oauth/callback", h.HandleOAuthCallback)
 	r.POST("/scm-providers/:id/token", h.SavePATToken)
-	return mock, r
+	return mock, r, store
 }
 
 const oauthUserUUID = "00000000-0000-0000-0000-000000000002"
@@ -438,8 +479,10 @@ func TestInitiateOAuth_PATBasedProvider(t *testing.T) {
 // HandleOAuthCallback — additional paths
 // ---------------------------------------------------------------------------
 
+// TestHandleOAuthCallback_InvalidUserIDInState pins that a self-describing,
+// colon-separated pseudo-state — the shape the handler used to parse a principal
+// out of — is now simply an unknown state and is refused.
 func TestHandleOAuthCallback_InvalidUserIDInState(t *testing.T) {
-	// State has ":" but first part is not a UUID.
 	_, r := newSCMOAuthRouterWithUser(t, oauthUserUUID)
 
 	w := httptest.NewRecorder()
@@ -452,8 +495,11 @@ func TestHandleOAuthCallback_InvalidUserIDInState(t *testing.T) {
 }
 
 func TestHandleOAuthCallback_ProviderNotFound(t *testing.T) {
-	mock, r := newSCMOAuthRouterWithUser(t, oauthUserUUID)
-	state := oauthUserUUID + ":" + oauthProviderID
+	mock, r, store := newSCMOAuthRouterWithState(t, oauthUserUUID)
+
+	// A legitimately minted state, so the flow gets past the state guard and
+	// reaches the provider lookup this test is about.
+	state := mintSCMOAuthState(t, store, oauthUserUUID, oauthProviderID, time.Now())
 
 	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE id").
 		WillReturnRows(sqlmock.NewRows(scmProvCols))
@@ -614,7 +660,7 @@ func newSCMOAuthRouterWithCipher(t *testing.T, userUUID string, tc *crypto.Token
 			BaseURL: "http://localhost:8080",
 		},
 	}
-	h := NewSCMOAuthHandlers(cfg, scmRepo, nil, tc)
+	h := NewSCMOAuthHandlers(cfg, scmRepo, nil, tc).WithStateStore(newOAuthTestStateStore(t))
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
@@ -962,13 +1008,31 @@ func TestInitiateOAuth_OAuthProviderSuccess(t *testing.T) {
 	if !ok || authURL == "" {
 		t.Errorf("authorization_url missing or empty in response: %v", resp)
 	}
-	if _, ok := resp["state"].(string); !ok {
+	state, ok := resp["state"].(string)
+	if !ok || state == "" {
 		t.Errorf("state missing in response: %v", resp)
 	}
-	// Verify the state format is "userID:providerID"
-	expectedState := fmt.Sprintf("%s:%s", oauthUserUUID, oauthProviderID)
-	if resp["state"] != expectedState {
-		t.Errorf("state = %q, want %q", resp["state"], expectedState)
+	// The state must be an opaque random nonce, NOT a rendering of ids the
+	// caller already knows. This assertion used to require exactly the opposite
+	// — state == fmt.Sprintf("%s:%s", oauthUserUUID, oauthProviderID) — which is
+	// the vulnerability: the callback is unauthenticated and parsed its
+	// principal straight out of that string.
+	if strings.Contains(state, oauthUserUUID) || strings.Contains(state, oauthProviderID) {
+		t.Errorf("state %q leaks a principal-derived value; want an opaque nonce", state)
+	}
+	if strings.Contains(state, ":") {
+		t.Errorf("state %q is structured; want an opaque nonce", state)
+	}
+	if len(state) < 32 {
+		t.Errorf("state %q is only %d chars; want >= 32 chars of encoded entropy", state, len(state))
+	}
+	// The same nonce must be what the user is actually redirected with.
+	parsed, parseErr := url.Parse(authURL)
+	if parseErr != nil {
+		t.Fatalf("url.Parse(authorization_url): %v", parseErr)
+	}
+	if got := parsed.Query().Get("state"); got != state {
+		t.Errorf("authorization_url state = %q, want the minted %q", got, state)
 	}
 }
 

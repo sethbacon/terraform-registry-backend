@@ -493,7 +493,12 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 
 	// Initialize SCM handlers with the already-created repositories and token cipher
 	scmProviderHandlers := admin.NewSCMProviderHandlers(cfg, scmRepo, orgRepo, tokenCipher).WithMinter(sharedMinter).WithEgressGuard(egressGuard)
-	scmOAuthHandlers := admin.NewSCMOAuthHandlers(cfg, scmRepo, userRepo, tokenCipher).WithMinter(sharedMinter)
+	// The SCM connector flow shares the login flow's state store: its callback is
+	// unauthenticated, so its `state` must be an unguessable, server-side,
+	// single-use nonce exactly like the OIDC login state.
+	scmOAuthHandlers := admin.NewSCMOAuthHandlers(cfg, scmRepo, userRepo, tokenCipher).
+		WithMinter(sharedMinter).
+		WithStateStore(oidcStateStore)
 	scmLinkingHandler := modules.NewSCMLinkingHandler(scmRepo, moduleRepo, tokenCipher, cfg.Server.BaseURL, scmPublisher).WithMinter(sharedMinter)
 
 	// Initialize storage configuration handlers
