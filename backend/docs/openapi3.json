@@ -20241,6 +20241,10 @@
                     "mirror_config_name": {
                         "type": "string"
                     },
+                    "organization_id": {
+                        "description": "OrganizationID is the organization owning the mirror configuration this\nversion was synced by, or nil for the platform-level terraform-binary and\nscanner branches, which hang off configs with no organization column. It\nis what the list query's tenant predicate matches on (issue #719).",
+                        "type": "string"
+                    },
                     "provider_name": {
                         "type": "string"
                     },
