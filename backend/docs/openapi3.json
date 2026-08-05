@@ -7144,7 +7144,7 @@
                         "Bearer": []
                     }
                 ],
-                "description": "Create a new API key with specified scopes. The full API key is only returned once during creation.",
+                "description": "Create a new API key with specified scopes. The full API key is only returned once during creation. Requested scopes must be within the caller's role template for the organization AND within the scopes of the credential making the request, so an API key can never mint a key broader than itself.",
                 "tags": [
                     "API Keys"
                 ],
@@ -7304,7 +7304,7 @@
                         "Bearer": []
                     }
                 ],
-                "description": "Update an API key's name, scopes, or expiration. Users can only update their own keys unless they have admin scope.",
+                "description": "Update an API key's name, scopes, or expiration. Users can only update their own keys unless they have admin scope. New scopes are bounded the same way as on creation: by the caller's role template in the key's organization AND by the scopes of the credential making the request.",
                 "tags": [
                     "API Keys"
                 ],
@@ -7486,7 +7486,7 @@
                         "Bearer": []
                     }
                 ],
-                "description": "Rotate an API key by creating a new key and optionally scheduling the old key's expiration. Users can only rotate their own keys unless they have admin scope.",
+                "description": "Rotate an API key by creating a new key and optionally scheduling the old key's expiration. Users can only rotate their own keys unless they have admin scope. The new key's scopes are re-derived from the key owner's current role template rather than copied from the old key, and are additionally bounded by the scopes of the credential making the request, so a rotation cannot re-mint authority the owner no longer holds.",
                 "tags": [
                     "API Keys"
                 ],
@@ -7547,7 +7547,7 @@
                         }
                     },
                     "403": {
-                        "description": "Forbidden - access denied to this key",
+                        "description": "Forbidden - access denied to this key, or the key's scopes exceed the authority available to this request",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -7904,7 +7904,7 @@
                         "Bearer": []
                     }
                 ],
-                "description": "Revokes the current JWT and sets a fresh one as an httpOnly auth cookie with extended expiration. The token itself is never returned in the response body.",
+                "description": "Revokes the current JWT and sets a fresh one as an httpOnly auth cookie with extended expiration. The token itself is never returned in the response body. Requires an interactive session (Authorization: Bearer <jwt> or the session cookie); API keys cannot be exchanged for a session token and are rotated via /apikeys/{id}/rotate instead.",
                 "tags": [
                     "Authentication"
                 ],
@@ -7922,6 +7922,17 @@
                     },
                     "401": {
                         "description": "Unauthorized - invalid or missing token",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden - the request presented a machine credential (API key or mTLS); only an interactive session can be refreshed",
                         "content": {
                             "application/json": {
                                 "schema": {

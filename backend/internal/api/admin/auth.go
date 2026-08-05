@@ -23,6 +23,7 @@ import (
 	samlpkg "github.com/terraform-registry/terraform-registry/internal/auth/saml"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/credlifecycle"
+	"github.com/terraform-registry/terraform-registry/internal/credscope"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/middleware"
@@ -687,13 +688,14 @@ func deriveFrontendURL(cfg *config.Config) string {
 }
 
 // @Summary      Refresh JWT token
-// @Description  Revokes the current JWT and sets a fresh one as an httpOnly auth cookie with extended expiration. The token itself is never returned in the response body.
+// @Description  Revokes the current JWT and sets a fresh one as an httpOnly auth cookie with extended expiration. The token itself is never returned in the response body. Requires an interactive session (Authorization: Bearer <jwt> or the session cookie); API keys cannot be exchanged for a session token and are rotated via /apikeys/{id}/rotate instead.
 // @Tags         Authentication
 // @Security     Bearer
 // @Accept       json
 // @Produce      json
 // @Success      200  {object}  admin.RefreshResponse
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized - invalid or missing token"
+// @Failure      403  {object}  map[string]interface{}  "Forbidden - the request presented a machine credential (API key or mTLS); only an interactive session can be refreshed"
 // @Failure      500  {object}  map[string]interface{}  "Internal error during token generation"
 // @Router       /api/v1/auth/refresh [post]
 // RefreshHandler refreshes an existing JWT token
@@ -714,6 +716,22 @@ func (h *AuthHandlers) RefreshHandler() gin.HandlerFunc {
 		if !ok {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Invalid user ID format",
+			})
+			return
+		}
+
+		// GUARD credential-scope-binding (issue #733). Refresh mints a session
+		// token carrying the OWNER's cross-organization scope union, so
+		// honouring it for a machine credential is the whole of #733 in one
+		// call: an API key narrowed to modules:read would be exchanged for a
+		// JWT holding everything its owner holds, everywhere, with the key's
+		// organization binding dropped. There is no ceiling to intersect here
+		// because a session token is not scoped — the credential families are
+		// simply not interchangeable, so this endpoint is restricted to the one
+		// it refreshes. API keys are rotated via /apikeys/:id/rotate.
+		if !credscope.Interactive(c) {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "Token refresh requires an interactive session; API keys cannot be exchanged for a session token",
 			})
 			return
 		}

@@ -435,6 +435,16 @@ func (a *NamespaceAuthorizer) authorizeNamespaceMutation(c *gin.Context, namespa
 // status and message. The checks are ordered from cheapest to most expensive
 // and every branch fails closed.
 func (a *NamespaceAuthorizer) authorizeOrgAccess(c *gin.Context, ownerOrgID string, scope auth.Scope) (int, string) {
+	return authorizeOrgAccessWith(c, a.orgRepo, ownerOrgID, scope)
+}
+
+// authorizeOrgAccessWith is authorizeOrgAccess with the repository passed
+// explicitly, so the check is reachable from route guards that are plain
+// functions rather than methods on a NamespaceAuthorizer
+// (RequireOrgScopeForPathOrg). Extracted rather than reimplemented: this is
+// the single answer to "may this caller act in this organization, right now",
+// and a second copy of it is the divergence issue #665 tracks.
+func authorizeOrgAccessWith(c *gin.Context, orgRepo *repositories.OrganizationRepository, ownerOrgID string, scope auth.Scope) (int, string) {
 	scopesVal, exists := c.Get("scopes")
 	if !exists {
 		return http.StatusForbidden, "Insufficient permissions"
@@ -465,9 +475,9 @@ func (a *NamespaceAuthorizer) authorizeOrgAccess(c *gin.Context, ownerOrgID stri
 		}
 		if apiKey.OrganizationID != "" {
 			if apiKey.OrganizationID != ownerOrgID {
-				return http.StatusForbidden, "Namespace is owned by another organization"
+				return http.StatusForbidden, "Resource is owned by another organization"
 			}
-			return a.verifyKeyOwnerAuthority(c, apiKey, ownerOrgID, scope)
+			return verifyKeyOwnerAuthorityWith(c, orgRepo, apiKey, ownerOrgID, scope)
 		}
 		// Keys without an organization binding (legacy rows) fall through to
 		// the owning user's membership check below.
@@ -482,12 +492,12 @@ func (a *NamespaceAuthorizer) authorizeOrgAccess(c *gin.Context, ownerOrgID stri
 		return http.StatusForbidden, "Invalid user ID format"
 	}
 
-	member, err := a.orgRepo.GetMemberWithRole(c.Request.Context(), ownerOrgID, userID)
+	member, err := orgRepo.GetMemberWithRole(c.Request.Context(), ownerOrgID, userID)
 	if err != nil {
 		return http.StatusInternalServerError, "Failed to check organization membership"
 	}
 	if member == nil {
-		return http.StatusForbidden, "Namespace is owned by another organization"
+		return http.StatusForbidden, "Resource is owned by another organization"
 	}
 	if !auth.HasScope(member.RoleTemplateScopes, scope) {
 		return http.StatusForbidden, "Missing required scope in the owning organization"
@@ -514,6 +524,12 @@ func (a *NamespaceAuthorizer) authorizeOrgAccess(c *gin.Context, ownerOrgID stri
 // authority is reduced; this is the point-of-use guard that makes a key that
 // escaped a sweep fail closed anyway.
 func (a *NamespaceAuthorizer) verifyKeyOwnerAuthority(c *gin.Context, apiKey *models.APIKey, orgID string, scope auth.Scope) (int, string) {
+	return verifyKeyOwnerAuthorityWith(c, a.orgRepo, apiKey, orgID, scope)
+}
+
+// verifyKeyOwnerAuthorityWith is verifyKeyOwnerAuthority with the repository
+// passed explicitly; see authorizeOrgAccessWith for why the split exists.
+func verifyKeyOwnerAuthorityWith(c *gin.Context, orgRepo *repositories.OrganizationRepository, apiKey *models.APIKey, orgID string, scope auth.Scope) (int, string) {
 	// A key with no owning user is REFUSED, not waved through as an
 	// "organization service credential".
 	//
@@ -539,7 +555,7 @@ func (a *NamespaceAuthorizer) verifyKeyOwnerAuthority(c *gin.Context, apiKey *mo
 	if apiKey.UserID == nil || *apiKey.UserID == "" {
 		return http.StatusForbidden, "API key has no owning user; re-issue it through the API key endpoints"
 	}
-	member, err := a.orgRepo.GetMemberWithRole(c.Request.Context(), orgID, *apiKey.UserID)
+	member, err := orgRepo.GetMemberWithRole(c.Request.Context(), orgID, *apiKey.UserID)
 	if err != nil {
 		return http.StatusInternalServerError, "Failed to check organization membership"
 	}

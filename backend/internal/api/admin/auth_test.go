@@ -283,6 +283,7 @@ func TestRefreshHandler_UserNotFound(t *testing.T) {
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
 		c.Set("user_id", "user-1")
+		c.Set("auth_method", "jwt")
 		c.Next()
 	})
 	r.GET("/auth/refresh", h.RefreshHandler())
@@ -486,6 +487,7 @@ func TestRefreshHandler_Success(t *testing.T) {
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
 		c.Set("user_id", "user-1")
+		c.Set("auth_method", "jwt")
 		c.Next()
 	})
 	r.GET("/auth/refresh", h.RefreshHandler())

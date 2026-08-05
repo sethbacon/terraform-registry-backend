@@ -9,6 +9,7 @@ import (
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
+	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
 
@@ -159,5 +160,80 @@ func TestRequireOrgScopeForPathOrg_GlobalAdminBypassesPerOrgCheck(t *testing.T) 
 	w := doGetPath(pathOrgRouter(mid, []string{"admin"}, orgMWUserID), "/organizations/some-other-org")
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200 (global admin must bypass per-org check): body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Organization axis of the credential-binding class (issue #733)
+// ---------------------------------------------------------------------------
+//
+// The copy this middleware replaced re-derived authority from the caller's USER
+// record alone. An API key is bound to exactly one organization at creation,
+// and both siblings of this check -- NamespaceAuthorizer.authorizeOrgAccess and
+// tenantscope.Resolve -- treat that binding as authoritative for the key; this
+// one did not, so a key bound to org A could administer org B whenever its
+// owner happened to be a member there. Delegating to authorizeOrgAccessWith is
+// what makes the three answer identically.
+
+// orgBoundKeyContext injects the context AuthMiddleware produces for an
+// organization-bound API key.
+func orgBoundKeyContext(keyOrgID string, scopes []string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		owner := orgMWUserID
+		c.Set("scopes", scopes)
+		c.Set("user_id", orgMWUserID)
+		c.Set("auth_method", "api_key")
+		c.Set("organization_id", keyOrgID)
+		c.Set("api_key", &models.APIKey{
+			UserID: &owner, OrganizationID: keyOrgID, Scopes: scopes,
+		})
+	}
+}
+
+func TestRequireOrgScopeForPathOrg_KeyBoundToAnotherOrgRejected(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+	orgRepo := repositories.NewOrganizationRepository(db)
+	mid := RequireOrgScopeForPathOrg(auth.ScopeOrganizationsWrite, orgRepo)
+
+	// No membership lookup should be reached: the key's own binding already
+	// answers the question, so sqlmock would fail on an unexpected query.
+	_ = mock
+
+	r := gin.New()
+	r.GET("/organizations/:id",
+		orgBoundKeyContext("org-A", []string{"organizations:write"}),
+		mid,
+		func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+
+	w := doGetPath(r, "/organizations/org-B")
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (a key bound to org A must not act on org B): body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestRequireOrgScopeForPathOrg_KeyBoundToTargetOrgAllowed(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+	orgRepo := repositories.NewOrganizationRepository(db)
+	mid := RequireOrgScopeForPathOrg(auth.ScopeOrganizationsWrite, orgRepo)
+
+	// The key's owner is still a member of the bound org with the scope, which
+	// is re-verified at the point of use (issue #732).
+	mock.ExpectQuery("SELECT.*FROM organization_members.*JOIN.*role_templates").
+		WillReturnRows(sqlmock.NewRows(memberRoleColsMW).AddRow(
+			orgMWOrgID, orgMWUserID, "role-1", time.Now(),
+			"User Name", "user@test.com", "user_manager", "User Manager", []byte(`["organizations:write"]`),
+		))
+
+	r := gin.New()
+	r.GET("/organizations/:id",
+		orgBoundKeyContext(orgMWOrgID, []string{"organizations:write"}),
+		mid,
+		func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+
+	w := doGetPath(r, "/organizations/"+orgMWOrgID)
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 (a key acting on its own organization must still be allowed): body=%s", w.Code, w.Body.String())
 	}
 }

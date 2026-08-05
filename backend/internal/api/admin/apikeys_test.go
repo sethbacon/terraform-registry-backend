@@ -724,6 +724,10 @@ func TestRotateAPIKey_NotFound(t *testing.T) {
 func TestRotateAPIKey_ImmediateRevoke(t *testing.T) {
 	mock, r := newAPIKeyRouter(t, "user-1", nil)
 	mock.ExpectQuery("SELECT.*FROM api_keys WHERE id").WillReturnRows(sampleAKRow())
+	// Rotation re-derives the key owner's ceiling instead of trusting the old
+	// key's stored scopes (issue #733).
+	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
+		WillReturnRows(sampleMemberRoleRow())
 	mock.ExpectExec("INSERT INTO api_keys").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("DELETE FROM api_keys").WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -743,6 +747,10 @@ func TestRotateAPIKey_ImmediateRevoke(t *testing.T) {
 func TestRotateAPIKey_WithGracePeriod(t *testing.T) {
 	mock, r := newAPIKeyRouter(t, "user-1", nil)
 	mock.ExpectQuery("SELECT.*FROM api_keys WHERE id").WillReturnRows(sampleAKRow())
+	// Rotation re-derives the key owner's ceiling instead of trusting the old
+	// key's stored scopes (issue #733).
+	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
+		WillReturnRows(sampleMemberRoleRow())
 	mock.ExpectExec("INSERT INTO api_keys").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("UPDATE api_keys.*SET name").WillReturnResult(sqlmock.NewResult(1, 1))
 
