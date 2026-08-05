@@ -11,6 +11,7 @@ import (
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
+	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 )
@@ -129,7 +130,13 @@ func newProviderRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	r.DELETE("/providers/:namespace/:type/versions/:version", h.DeleteVersion)
 	r.POST("/providers/:namespace/:type/versions/:version/deprecate", h.DeprecateVersion)
 	r.DELETE("/providers/:namespace/:type/versions/:version/deprecate", h.UndeprecateVersion)
-	r.POST("/providers/record", h.CreateProviderRecord)
+	// The real route carries nsAuthz.RequirePublishAccessFromJSON, which
+	// resolves the namespace's owning organization and publishes it as
+	// owner_org_id; the handler binds the new row to that value (issue #778),
+	// so the test route has to reproduce it. The unowned variant is the same
+	// handler with no owner published, which is what exercises the fallback.
+	r.POST("/providers/record", setOwnerOrg("org-1"), h.CreateProviderRecord)
+	r.POST("/providers/record-unowned", createAxisCaller(string(auth.ScopeProvidersWrite)), h.CreateProviderRecord)
 	r.GET("/providers/id/:id", h.GetProviderByID)
 	r.PUT("/providers/id/:id", h.UpdateProviderRecord)
 
@@ -1041,11 +1048,14 @@ func TestCreateProviderRecord_InvalidJSON(t *testing.T) {
 	}
 }
 
+// With no owner published the handler falls back to the caller's own tenancy,
+// so a failed membership lookup is the org-resolution error path — it must not
+// degrade into "no organization named, use the default one".
 func TestCreateProviderRecord_OrgDBError(t *testing.T) {
 	mock, r := newProviderRouter(t)
-	mock.ExpectQuery("SELECT.*FROM organizations").WithArgs("default").WillReturnError(errDB)
+	mock.ExpectQuery("(?s)FROM organization_members").WillReturnError(errDB)
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("POST", "/providers/record",
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/providers/record-unowned",
 		jsonBody(map[string]string{"namespace": "hashicorp", "type": "aws"})))
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
@@ -1054,7 +1064,6 @@ func TestCreateProviderRecord_OrgDBError(t *testing.T) {
 
 func TestCreateProviderRecord_AlreadyExists(t *testing.T) {
 	mock, r := newProviderRouter(t)
-	expectOrgFound(mock)
 	mock.ExpectQuery("SELECT.*FROM providers").WillReturnRows(sampleProviderRow())
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/providers/record",
@@ -1066,7 +1075,6 @@ func TestCreateProviderRecord_AlreadyExists(t *testing.T) {
 
 func TestCreateProviderRecord_CreateError(t *testing.T) {
 	mock, r := newProviderRouter(t)
-	expectOrgFound(mock)
 	mock.ExpectQuery("SELECT.*FROM providers").WillReturnRows(emptyProviderRow())
 	mock.ExpectQuery("INSERT INTO providers").WillReturnError(errDB)
 	w := httptest.NewRecorder()
@@ -1079,7 +1087,6 @@ func TestCreateProviderRecord_CreateError(t *testing.T) {
 
 func TestCreateProviderRecord_Success(t *testing.T) {
 	mock, r := newProviderRouter(t)
-	expectOrgFound(mock)
 	mock.ExpectQuery("SELECT.*FROM providers").WillReturnRows(emptyProviderRow())
 	mock.ExpectQuery("INSERT INTO providers").WillReturnRows(
 		sqlmock.NewRows([]string{"id", "created_at", "updated_at"}).

@@ -9,6 +9,7 @@ import (
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
+	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 )
 
@@ -88,7 +89,13 @@ func newModuleRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	h := NewModuleAdminHandlers(db, &mockStorage{}, &config.Config{})
 
 	r := gin.New()
-	r.POST("/modules/create", h.CreateModuleRecord)
+	// The real route carries nsAuthz.RequirePublishAccessFromJSON, which
+	// resolves the namespace's owning organization and publishes it as
+	// owner_org_id; the handler binds the new row to that value (issue #778),
+	// so the test route has to reproduce it. The unowned variant is the same
+	// handler with no owner published, which is what exercises the fallback.
+	r.POST("/modules/create", setOwnerOrg("org-1"), h.CreateModuleRecord)
+	r.POST("/modules/create-unowned", createAxisCaller(string(auth.ScopeModulesWrite)), h.CreateModuleRecord)
 	r.GET("/modules/:namespace/:name/:system", h.GetModule)
 	r.GET("/modules/:namespace/:name/:system/:version", h.GetModuleVersion)
 	r.DELETE("/modules/:namespace/:name/:system", h.DeleteModule)
@@ -151,15 +158,16 @@ func TestCreateModuleRecord_InvalidSegmentFormat(t *testing.T) {
 	}
 }
 
+// With no owner published the handler falls back to the caller's own tenancy,
+// so a failed membership lookup is the org-resolution error path — it must not
+// degrade into "no organization named, use the default one".
 func TestCreateModuleRecord_OrgDBError(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	mock.ExpectQuery("SELECT.*FROM organizations").
-		WithArgs("default").
-		WillReturnError(errDB)
+	mock.ExpectQuery("(?s)FROM organization_members").WillReturnError(errDB)
 
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("POST", "/modules/create",
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/modules/create-unowned",
 		jsonBody(map[string]string{"namespace": "hashicorp", "name": "vpc", "system": "aws"})))
 
 	if w.Code != http.StatusInternalServerError {
@@ -170,7 +178,6 @@ func TestCreateModuleRecord_OrgDBError(t *testing.T) {
 func TestCreateModuleRecord_ExistingModule_ReturnsOK(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectOrgFound(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(sampleModuleRow())
 
@@ -186,7 +193,6 @@ func TestCreateModuleRecord_ExistingModule_ReturnsOK(t *testing.T) {
 func TestCreateModuleRecord_Success(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectOrgFound(mock)
 	// GetModule returns not found (no existing module)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(emptyModuleRow())
@@ -207,7 +213,6 @@ func TestCreateModuleRecord_Success(t *testing.T) {
 func TestCreateModuleRecord_CreateError(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectOrgFound(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(emptyModuleRow())
 	mock.ExpectQuery("INSERT INTO modules").

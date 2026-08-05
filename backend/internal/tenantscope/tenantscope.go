@@ -42,12 +42,39 @@
 package tenantscope
 
 import (
+	"strings"
+
 	"github.com/gin-gonic/gin"
 
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
+
+// OwnerOrgContextKey is where middleware publishes the organization it resolved
+// AND authorized the request against — the namespace's owner on the publish
+// guards, the addressed row's owner on the per-resource guards.
+const OwnerOrgContextKey = "owner_org_id"
+
+// OwnerOrg returns the organization a route guard has already resolved and
+// authorized this request against, or "" when no guard published one.
+//
+// It belongs next to Resolve because it answers the same question from the
+// other end. Resolve derives the organizations a CALLER may write to; OwnerOrg
+// reports the single organization a guard has already decided this REQUEST is
+// about. Where a guard has decided, that decision is the answer — re-deriving
+// it from the caller's memberships can only disagree with it, and issue #778 is
+// what disagreement costs: the guard authorized the namespace's owning
+// organization while the handler wrote the row into the default organization,
+// so the create axis authorized one tenant and wrote to another.
+//
+// Handlers must treat "" as "nobody has decided", not as "no tenant".
+func OwnerOrg(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	return strings.TrimSpace(c.GetString(OwnerOrgContextKey))
+}
 
 // Scope is the set of organizations a request may read or write.
 //

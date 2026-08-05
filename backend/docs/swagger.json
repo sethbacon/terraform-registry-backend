@@ -1325,6 +1325,13 @@
                             "additionalProperties": true
                         }
                     },
+                    "403": {
+                        "description": "Caller holds modules:write in no organization",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
                     "500": {
                         "description": "Internal server error",
                         "schema": {
@@ -3020,6 +3027,13 @@
                     },
                     "401": {
                         "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "organization_id does not match the organization the namespace guard authorized, or the caller holds providers:write in no organization",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true

@@ -17,6 +17,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 	"github.com/terraform-registry/terraform-registry/internal/telemetry"
+	"github.com/terraform-registry/terraform-registry/internal/tenantscope"
 	"github.com/terraform-registry/terraform-registry/internal/validation"
 	"github.com/terraform-registry/terraform-registry/pkg/checksum"
 )
@@ -236,23 +237,47 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 			return
 		}
 
-		// Get organization context
-		org, err := orgRepo.GetDefaultOrganization(c.Request.Context())
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to get organization context",
-			})
-			return
-		}
-		if org == nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Default organization not found",
-			})
-			return
+		// GUARD namespace-create-owner-org (issue #778): the provider row is
+		// stamped with the organization this upload was AUTHORIZED against.
+		//
+		// This route's nsAuthz.RequirePublishAccessFromForm guard resolves the
+		// namespace's owning organization — the existing owner, or the
+		// organization it just claimed an unowned namespace for — checks the
+		// caller against it, and publishes it as owner_org_id. Reaching for
+		// GetDefaultOrganization instead meant the organization the route
+		// authorized and the organization the row landed in were two
+		// independent values: an uploader holding providers:write in
+		// organization O published a provider owned by the DEFAULT
+		// organization, which they need no membership in, and the existence
+		// check below looked for the provider in that same wrong organization,
+		// so an upload into an existing provider created a second row instead
+		// of adding a version to the first.
+		//
+		// The default-organization fallback survives only where no guard
+		// published an owner. On this route that is the platform-admin path
+		// through authorizeNamespaceMutation's ambiguous-ownership branch: a
+		// request with an empty namespace is rejected above before reaching
+		// here, so every non-admin upload that gets this far carries an owner.
+		orgID := tenantscope.OwnerOrg(c)
+		if orgID == "" {
+			org, err := orgRepo.GetDefaultOrganization(c.Request.Context())
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"error": "Failed to get organization context",
+				})
+				return
+			}
+			if org == nil {
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"error": "Default organization not found",
+				})
+				return
+			}
+			orgID = org.ID
 		}
 
 		// Check if provider already exists, create if not
-		provider, err := providerRepo.GetProvider(c.Request.Context(), org.ID, namespace, providerType)
+		provider, err := providerRepo.GetProvider(c.Request.Context(), orgID, namespace, providerType)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to query provider",
@@ -263,7 +288,7 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 		if provider == nil {
 			// Create new provider
 			provider = &models.Provider{
-				OrganizationID: org.ID,
+				OrganizationID: orgID,
 				Namespace:      namespace,
 				Type:           providerType,
 			}

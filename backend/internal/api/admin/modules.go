@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/analyzer"
+	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
@@ -60,6 +61,7 @@ func (h *ModuleAdminHandlers) WithScanQueue(repo *repositories.ModuleScanReposit
 // @Success      201  {object}  models.Module  "Module created"
 // @Failure      400  {object}  map[string]interface{}  "Invalid request"
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
+// @Failure      403  {object}  map[string]interface{}  "Caller holds modules:write in no organization"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/admin/modules/create [post]
 // CreateModuleRecord creates a module record without a version file.
@@ -84,14 +86,29 @@ func (h *ModuleAdminHandlers) CreateModuleRecord(c *gin.Context) {
 		}
 	}
 
-	org, err := h.orgRepo.GetDefaultOrganization(c.Request.Context())
-	if err != nil || org == nil {
+	// GUARD namespace-create-owner-org (issue #778). Same defect as the provider
+	// create axis, with a narrower reach: this request body carries no
+	// organization_id, so a caller could not aim the row at an organization of
+	// their choosing — every create landed in the single default organization
+	// regardless of which organization the publish guard had authorized. That
+	// makes it a tenancy-BINDING gap rather than a targetable cross-tenant
+	// create: a caller holding modules:write in organization O, publishing into
+	// a namespace owned by O, still had the module row written into an
+	// organization they need no membership in, and the existence check ahead of
+	// it looked for collisions in that same wrong organization.
+	orgID, ok := resolveNamespaceCreateOrganization(c, h.orgRepo, auth.ScopeModulesWrite, "")
+	if !ok {
+		return
+	}
+	if orgID == "" {
+		// modules.organization_id is written through unconverted, so an empty
+		// value is a failed resolution rather than a single-tenant NULL owner.
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get organization context"})
 		return
 	}
 
 	// Return existing module if it already exists
-	existing, err := h.moduleRepo.GetModule(c.Request.Context(), org.ID, req.Namespace, req.Name, req.System)
+	existing, err := h.moduleRepo.GetModule(c.Request.Context(), orgID, req.Namespace, req.Name, req.System)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query module"})
 		return
@@ -102,7 +119,7 @@ func (h *ModuleAdminHandlers) CreateModuleRecord(c *gin.Context) {
 	}
 
 	module := &models.Module{
-		OrganizationID: org.ID,
+		OrganizationID: orgID,
 		Namespace:      req.Namespace,
 		Name:           req.Name,
 		System:         req.System,

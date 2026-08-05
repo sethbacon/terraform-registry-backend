@@ -2016,3 +2016,66 @@ func TestDownloadHandler_SuccessWithAuditContext(t *testing.T) {
 	// Give async goroutines a moment to fire (best-effort)
 	time.Sleep(50 * time.Millisecond)
 }
+
+// ---------------------------------------------------------------------------
+// UploadHandler — the provider row is bound to the AUTHORIZED organization
+// (issue #778)
+// ---------------------------------------------------------------------------
+
+// uploadOwnerOrg is the organization the route's publish guard resolved and
+// authorized the upload against. It is deliberately not the default
+// organization sampleOrgRow returns.
+const uploadOwnerOrg = "eeeeeeee-5555-4555-8555-eeeeeeeeeeee"
+
+// TestUploadHandler_BindsProviderToAuthorizedOrganization pins the invariant:
+// the provider row is stamped with the organization the route authorized, which
+// nsAuthz.RequirePublishAccessFromForm resolves from the namespace and
+// publishes as owner_org_id.
+//
+// Two things make the row fail if the handler reverts to
+// GetDefaultOrganization: the WithArgs on the existence check and on the INSERT
+// name the authorized organization, and NO organizations lookup is primed, so
+// reaching for the default organization is itself an unexpected statement.
+func TestUploadHandler_BindsProviderToAuthorizedOrganization(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	t.Cleanup(func() { db.Close() })
+	r := gin.New()
+	r.POST("/v1/providers",
+		func(c *gin.Context) { c.Set("owner_org_id", uploadOwnerOrg) },
+		UploadHandler(db, &mockStore{}, &config.Config{}))
+
+	// GetProvider must look for a collision in the AUTHORIZED organization: the
+	// providers unique key is (organization_id, namespace, type), so a lookup in
+	// the wrong organization reports "not found" for a provider that exists.
+	mock.ExpectQuery("SELECT.*FROM providers.*WHERE").
+		WithArgs(uploadOwnerOrg, "hashicorp", "aws").
+		WillReturnRows(sqlmock.NewRows(providerCols))
+	mock.ExpectQuery("INSERT INTO providers").
+		WithArgs(uploadOwnerOrg, "hashicorp", "aws",
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows(providerInsertCols).AddRow("prov-new", time.Now(), time.Now()))
+	mock.ExpectQuery("SELECT.*FROM provider_versions.*WHERE provider_id.*AND version").
+		WillReturnRows(sqlmock.NewRows(providerVersionGetCols))
+	mock.ExpectQuery("INSERT INTO provider_versions").
+		WillReturnRows(sqlmock.NewRows(providerVersionInsertCols).AddRow("ver-new", time.Now()))
+	mock.ExpectQuery("SELECT.*FROM provider_platforms.*WHERE provider_version_id").
+		WillReturnRows(sqlmock.NewRows(platformCols))
+	mock.ExpectQuery("INSERT INTO provider_platforms").
+		WillReturnRows(sqlmock.NewRows(platformInsertCols).AddRow("plat-new"))
+
+	req := buildUploadRequest(t, "/v1/providers", map[string]string{
+		"namespace": "hashicorp",
+		"type":      "aws",
+		"version":   "4.0.0",
+		"os":        "linux",
+		"arch":      "amd64",
+	}, makeValidZIP(t))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("provider was not written into the authorized organization: %v", err)
+	}
+}

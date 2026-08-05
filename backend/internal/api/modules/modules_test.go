@@ -1066,3 +1066,54 @@ func TestParseProviderFilePath_Empty(t *testing.T) {
 		t.Error("expected ok=false for empty path")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// UploadHandler — the module row is bound to the AUTHORIZED organization
+// (issue #778)
+// ---------------------------------------------------------------------------
+
+// uploadOwnerOrg is the organization the route's publish guard resolved and
+// authorized the upload against. It is deliberately not the default
+// organization sampleOrgRow2 returns.
+const uploadOwnerOrg = "eeeeeeee-5555-4555-8555-eeeeeeeeeeee"
+
+// TestUploadHandler_BindsModuleToAuthorizedOrganization pins the invariant: the
+// module row is stamped with the organization the route authorized, which
+// nsAuthz.RequirePublishAccessFromForm resolves from the namespace and
+// publishes as owner_org_id.
+//
+// Two things make the row fail if the handler reverts to
+// GetDefaultOrganization: the WithArgs on the INSERT names the authorized
+// organization, and NO organizations lookup is primed, so reaching for the
+// default organization is itself an unexpected statement.
+func TestUploadHandler_BindsModuleToAuthorizedOrganization(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	t.Cleanup(func() { db.Close() })
+	r := gin.New()
+	r.POST("/api/v1/modules",
+		func(c *gin.Context) { c.Set("owner_org_id", uploadOwnerOrg) },
+		UploadHandler(db, &mockStore{}, &config.Config{}, nil, nil, nil, nil))
+
+	mock.ExpectQuery("INSERT INTO modules").
+		WithArgs(uploadOwnerOrg, "hashicorp", "consul", "aws",
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows(moduleInsertCols2).AddRow("mod-new", time.Now(), time.Now()))
+	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id.*AND version").
+		WillReturnRows(sqlmock.NewRows(moduleVersionGetCols2))
+	mock.ExpectQuery("INSERT INTO module_versions").
+		WillReturnRows(sqlmock.NewRows(moduleVersionInsertCols2).AddRow("ver-new", time.Now()))
+
+	req := buildModuleUploadRequest(t, "/api/v1/modules", map[string]string{
+		"namespace": "hashicorp",
+		"name":      "consul",
+		"system":    "aws",
+		"version":   "1.0.0",
+	}, makeValidModuleTarGz(t))
+	w := doPOSTReq(r, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("module was not written into the authorized organization: %v", err)
+	}
+}
