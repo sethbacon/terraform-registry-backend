@@ -168,8 +168,14 @@ Key scopes and their write-implies-read relationship:
 | `providers:read` | Read provider metadata and download providers |
 | `providers:write` | Upload and manage providers (implies `providers:read`) |
 | `mirrors:read` | View mirror configurations and sync history |
-| `mirrors:manage` | Create/update/delete mirrors and trigger syncs (implies `mirrors:read`) |
+| `mirrors:manage` | Create/update/delete **provider** mirrors and trigger their syncs (implies `mirrors:read`) |
 | `admin:*` | Full administrative access (implies all scopes) |
+
+`mirrors:manage` is granted per organization and governs the org-owned provider
+mirrors (`mirror_configurations`) only. The Terraform/OpenTofu **binary** mirror
+(`terraform_mirror_configs`) has no owning organization — one configuration
+serves every tenant — so mutating it requires the platform-wide `admin` scope
+(issue #734). Its read endpoints remain on `mirrors:read`.
 
 ### Shared identity module
 

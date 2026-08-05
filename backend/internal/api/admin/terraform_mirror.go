@@ -2,7 +2,13 @@
 // The multi-config design mirrors the provider mirror feature: full CRUD for configs,
 // per-config sync triggering, and per-config version/platform/history inspection.
 //
-// All endpoints are secured with mirrors:read / mirrors:manage scopes.
+// SCOPES. Reads are secured with mirrors:read; every mutation requires the
+// platform-wide admin scope (issue #734). terraform_mirror_configs has no
+// organization_id column — one config is the binary supply chain for every
+// tenant — so mirrors:manage, which the seeded devops/org_owner role templates
+// grant through membership in a single organization, is not sufficient
+// authority to change it. See the route registration in
+// internal/api/router_routes.go for the full rationale.
 package admin
 
 import (
@@ -31,10 +37,12 @@ type TerraformMirrorHandler struct {
 	repo           *repositories.TerraformMirrorRepository
 	syncJob        TerraformMirrorSyncJobInterface
 	storageBackend storage.Storage
-	// egress is consulted when validating upstream_url on create/update so a
-	// non-admin "devops"-scoped caller cannot point the binary mirror at a
-	// private or cloud-metadata address; nil enforces the strict default
-	// deny-list.
+	// egress is consulted when validating upstream_url on create/update so the
+	// binary mirror cannot be pointed at a private or cloud-metadata address;
+	// nil enforces the strict default deny-list. Retained as defence in depth
+	// now that create/update require the platform admin scope (issue #734) —
+	// SSRF into the deployment's own network is not something an operator
+	// should be able to configure by accident either.
 	egress *httpsafe.Guard
 }
 
@@ -88,7 +96,7 @@ func (h *TerraformMirrorHandler) deleteVersionArtifacts(ctx context.Context, v *
 // ---- POST /api/v1/admin/terraform-mirrors ----------------------------------
 
 // @Summary      Create Terraform mirror configuration
-// @Description  Creates a new named Terraform binary mirror configuration. Requires mirrors:manage scope.
+// @Description  Creates a new named Terraform binary mirror configuration. Requires the platform-wide admin scope: this mirror is not owned by any organization, it is the binary supply chain for every tenant.
 // @Tags         Terraform Mirror
 // @Security     Bearer
 // @Accept       json
@@ -294,7 +302,7 @@ func (h *TerraformMirrorHandler) GetStatus(c *gin.Context) {
 // ---- PUT /api/v1/admin/terraform-mirrors/:id --------------------------------
 
 // @Summary      Update Terraform mirror configuration
-// @Description  Updates a Terraform binary mirror configuration. Requires mirrors:manage scope.
+// @Description  Updates a Terraform binary mirror configuration. Requires the platform-wide admin scope: this mirror is not owned by any organization, it is the binary supply chain for every tenant.
 // @Tags         Terraform Mirror
 // @Security     Bearer
 // @Accept       json
@@ -401,7 +409,7 @@ func (h *TerraformMirrorHandler) UpdateConfig(c *gin.Context) {
 // ---- DELETE /api/v1/admin/terraform-mirrors/:id -----------------------------
 
 // @Summary      Delete Terraform mirror configuration
-// @Description  Deletes a Terraform binary mirror config, all its associated versions/history, and the stored binaries for every version (each platform package plus per-version SHA256SUMS and detached signatures) from object storage. Requires mirrors:manage scope.
+// @Description  Deletes a Terraform binary mirror config, all its associated versions/history, and the stored binaries for every version (each platform package plus per-version SHA256SUMS and detached signatures) from object storage. Requires the platform-wide admin scope: this mirror is not owned by any organization, it is the binary supply chain for every tenant.
 // @Tags         Terraform Mirror
 // @Security     Bearer
 // @Produce      json
@@ -450,7 +458,7 @@ func (h *TerraformMirrorHandler) DeleteConfig(c *gin.Context) {
 // ---- POST /api/v1/admin/terraform-mirrors/:id/sync -------------------------
 
 // @Summary      Trigger Terraform mirror sync
-// @Description  Enqueues a manual sync for the specified mirror config. Requires mirrors:manage scope.
+// @Description  Enqueues a manual sync for the specified mirror config. Requires the platform-wide admin scope: this mirror is not owned by any organization, it is the binary supply chain for every tenant.
 // @Tags         Terraform Mirror
 // @Security     Bearer
 // @Produce      json
@@ -606,7 +614,7 @@ func (h *TerraformMirrorHandler) GetVersion(c *gin.Context) {
 // ---- DELETE /api/v1/admin/terraform-mirrors/:id/versions/:version ----------
 
 // @Summary      Delete a mirrored Terraform version
-// @Description  Removes a version, its platform records, and the stored binaries (each platform package plus the version's SHA256SUMS and detached signature) from object storage. Requires mirrors:manage scope.
+// @Description  Removes a version, its platform records, and the stored binaries (each platform package plus the version's SHA256SUMS and detached signature) from object storage. Requires the platform-wide admin scope: this mirror is not owned by any organization, it is the binary supply chain for every tenant.
 // @Tags         Terraform Mirror
 // @Security     Bearer
 // @Produce      json
@@ -649,7 +657,7 @@ func (h *TerraformMirrorHandler) DeleteVersion(c *gin.Context) {
 // ---- POST /api/v1/admin/terraform-mirrors/:id/versions/:version/deprecate --
 
 // @Summary      Deprecate a mirrored Terraform version
-// @Description  Mark a mirrored Terraform/OpenTofu version as deprecated. Deprecated versions are skipped by the sync job (no further binary downloads), but already-mirrored artifacts remain available so existing pulls keep working. Requires mirrors:manage scope.
+// @Description  Mark a mirrored Terraform/OpenTofu version as deprecated. Deprecated versions are skipped by the sync job (no further binary downloads), but already-mirrored artifacts remain available so existing pulls keep working. Requires the platform-wide admin scope: this mirror is not owned by any organization, it is the binary supply chain for every tenant.
 // @Tags         Terraform Mirror
 // @Security     Bearer
 // @Produce      json
@@ -689,7 +697,7 @@ func (h *TerraformMirrorHandler) DeprecateVersion(c *gin.Context) {
 // ---- DELETE /api/v1/admin/terraform-mirrors/:id/versions/:version/deprecate
 
 // @Summary      Undeprecate a mirrored Terraform version
-// @Description  Clear the deprecated flag on a mirrored Terraform/OpenTofu version, restoring normal sync behavior on subsequent runs. Requires mirrors:manage scope.
+// @Description  Clear the deprecated flag on a mirrored Terraform/OpenTofu version, restoring normal sync behavior on subsequent runs. Requires the platform-wide admin scope: this mirror is not owned by any organization, it is the binary supply chain for every tenant.
 // @Tags         Terraform Mirror
 // @Security     Bearer
 // @Produce      json

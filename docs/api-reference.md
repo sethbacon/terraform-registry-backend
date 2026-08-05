@@ -108,7 +108,7 @@ These endpoints implement the HashiCorp protocols that `terraform init` and `ter
 | API Keys | `/api/v1/apikeys` | `admin:apikeys` |
 | RBAC / Role Templates | `/api/v1/admin/roles` | `admin:roles` |
 | Mirror Configuration | `/api/v1/admin/mirrors` | `mirrors:manage` |
-| Terraform Binary Mirror Configs | `/api/v1/admin/terraform-mirrors` | `mirrors:read` / `mirrors:manage` |
+| Terraform Binary Mirror Configs | `/api/v1/admin/terraform-mirrors` | `mirrors:read` (view) / `admin` (create, update, delete, sync, deprecate) |
 | Version Approvals | `/api/v1/admin/version-approvals` | `mirrors:read` (view) / `admin` (approve, reject) |
 | SCM Providers | `/api/v1/admin/scm-providers` | `admin:scm` |
 | SCM OAuth Flows | `/api/v1/admin/scm-oauth` | `admin:scm` |

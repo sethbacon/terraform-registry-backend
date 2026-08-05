@@ -971,8 +971,40 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 				mirrorsGroup.POST("/:id/sync", middleware.RequireScope(auth.ScopeMirrorsManage), mirrorConfigOrg(auth.ScopeMirrorsManage), mirrorHandlers.TriggerSync)
 			}
 
-			// Terraform Binary Mirror admin endpoints (multi-config)
-			// Read operations require mirrors:read scope; management requires mirrors:manage
+			// Terraform Binary Mirror admin endpoints (multi-config).
+			//
+			// PLATFORM-GLOBAL, unlike the /admin/mirrors family above.
+			// terraform_mirror_configs has no organization_id column at all
+			// (migration 000004): a single row is the Terraform/OpenTofu binary
+			// supply chain for EVERY tenant, and the versions, platforms and
+			// sync-history tables hanging off it inherit that. There is no
+			// owning organization for a per-resource guard to re-derive, so the
+			// #719 mirrorConfigOrg(...) treatment does not apply here.
+			//
+			// The absence of a tenancy axis is not "no guard needed" — it means
+			// platform-wide authority is required. That is already the settled
+			// contract for org-less rows everywhere else in this codebase:
+			// tenantscope.Permits admits an unowned row to a platform admin
+			// only, and middleware.RequireOrgScopeForResource does the same for
+			// the ":id" axes. mirrors:manage does NOT carry that authority — the
+			// seeded devops and org_owner role templates grant it through
+			// membership in a SINGLE organization (migrations 000001/000049),
+			// which is the whole gap (issue #734).
+			//
+			// Every mutation is therefore gated on the platform-wide admin
+			// scope: repointing upstream_url, lowering the verification
+			// settings (gpg_verify, verify_github_attestation) or the
+			// requires_approval gate, triggering a sync, and deleting or
+			// deprecating configs/versions all change what binaries every
+			// tenant receives from /terraform/binaries.
+			//
+			// Reads deliberately stay on mirrors:read. These tables carry no
+			// tenant data and no credentials — names, upstream URLs, filters,
+			// verification flags, version catalogues, sync status and cached
+			// PUBLIC release-signing keys — and the mirror is a shared service
+			// whose catalogue and health tenant operators legitimately need to
+			// see. This is the same read/write split the /admin/policies and
+			// /admin/version-approvals groups above already use.
 			tfMirrorGroup := authenticatedGroup.Group("/admin/terraform-mirrors")
 			{
 				// Release-signing GPG key cache + expiry state (read-only).
@@ -980,19 +1012,19 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 				tfMirrorGroup.GET("/releases-gpg-keys", middleware.RequireScope(auth.ScopeMirrorsRead), releasesGPGKeysAdminHandler.GetReleasesGPGKeys)
 				// Config CRUD
 				tfMirrorGroup.GET("", middleware.RequireScope(auth.ScopeMirrorsRead), tfMirrorAdminHandler.ListConfigs)
-				tfMirrorGroup.POST("", middleware.RequireScope(auth.ScopeMirrorsManage), tfMirrorAdminHandler.CreateConfig)
+				tfMirrorGroup.POST("", middleware.RequireScope(auth.ScopeAdmin), tfMirrorAdminHandler.CreateConfig)
 				tfMirrorGroup.GET("/:id", middleware.RequireScope(auth.ScopeMirrorsRead), tfMirrorAdminHandler.GetConfig)
 				tfMirrorGroup.GET("/:id/status", middleware.RequireScope(auth.ScopeMirrorsRead), tfMirrorAdminHandler.GetStatus)
-				tfMirrorGroup.PUT("/:id", middleware.RequireScope(auth.ScopeMirrorsManage), tfMirrorAdminHandler.UpdateConfig)
-				tfMirrorGroup.DELETE("/:id", middleware.RequireScope(auth.ScopeMirrorsManage), tfMirrorAdminHandler.DeleteConfig)
+				tfMirrorGroup.PUT("/:id", middleware.RequireScope(auth.ScopeAdmin), tfMirrorAdminHandler.UpdateConfig)
+				tfMirrorGroup.DELETE("/:id", middleware.RequireScope(auth.ScopeAdmin), tfMirrorAdminHandler.DeleteConfig)
 				// Sync trigger
-				tfMirrorGroup.POST("/:id/sync", middleware.RequireScope(auth.ScopeMirrorsManage), tfMirrorAdminHandler.TriggerSync)
+				tfMirrorGroup.POST("/:id/sync", middleware.RequireScope(auth.ScopeAdmin), tfMirrorAdminHandler.TriggerSync)
 				// Versions
 				tfMirrorGroup.GET("/:id/versions", middleware.RequireScope(auth.ScopeMirrorsRead), tfMirrorAdminHandler.ListVersions)
 				tfMirrorGroup.GET("/:id/versions/:version", middleware.RequireScope(auth.ScopeMirrorsRead), tfMirrorAdminHandler.GetVersion)
-				tfMirrorGroup.DELETE("/:id/versions/:version", middleware.RequireScope(auth.ScopeMirrorsManage), tfMirrorAdminHandler.DeleteVersion)
-				tfMirrorGroup.POST("/:id/versions/:version/deprecate", middleware.RequireScope(auth.ScopeMirrorsManage), tfMirrorAdminHandler.DeprecateVersion)
-				tfMirrorGroup.DELETE("/:id/versions/:version/deprecate", middleware.RequireScope(auth.ScopeMirrorsManage), tfMirrorAdminHandler.UndeprecateVersion)
+				tfMirrorGroup.DELETE("/:id/versions/:version", middleware.RequireScope(auth.ScopeAdmin), tfMirrorAdminHandler.DeleteVersion)
+				tfMirrorGroup.POST("/:id/versions/:version/deprecate", middleware.RequireScope(auth.ScopeAdmin), tfMirrorAdminHandler.DeprecateVersion)
+				tfMirrorGroup.DELETE("/:id/versions/:version/deprecate", middleware.RequireScope(auth.ScopeAdmin), tfMirrorAdminHandler.UndeprecateVersion)
 				tfMirrorGroup.GET("/:id/versions/:version/platforms", middleware.RequireScope(auth.ScopeMirrorsRead), tfMirrorAdminHandler.ListPlatforms)
 				// Sync history
 				tfMirrorGroup.GET("/:id/history", middleware.RequireScope(auth.ScopeMirrorsRead), tfMirrorAdminHandler.GetSyncHistory)
