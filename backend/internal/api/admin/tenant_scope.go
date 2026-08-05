@@ -10,6 +10,7 @@ package admin
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -126,6 +127,67 @@ func resolveTargetOrganization(
 		})
 		return "", false
 	}
+}
+
+// resolveNamespaceCreateOrganization decides which organization a NAMESPACED
+// create writes into — a provider record, a module record — on the routes that
+// sit behind middleware.NamespaceAuthorizer's publish guards.
+//
+// Those guards already answer the question, and answer it better than the
+// handler can re-derive it: the guard resolves the namespace's owning
+// organization (the existing owner, or the organization it just claimed an
+// unowned namespace for), authorizes the caller against THAT organization, and
+// publishes it as owner_org_id. The handlers ignored it. They took the
+// organization from the request body or, when the body named none, from
+// GetDefaultOrganization — so the organization the route authorized and the
+// organization the row landed in were two independent values. A caller holding
+// the scope in organization O therefore created a row owned by the DEFAULT
+// organization, in which they need no membership at all, and the existence
+// check ahead of the insert queried that same wrong organization, so a genuine
+// collision in O went unseen and the write ran into the
+// UNIQUE (organization_id, namespace, ...) constraint instead of a clean 409.
+//
+// INVARIANT: an organization-owned row is created in the organization the
+// request was authorized against, and in no other.
+//
+// So the authorized owner wins, and resolveTargetOrganization is the FALLBACK
+// rather than the primary. On this axis it is the weaker answer, because it
+// resolves from the CALLER's memberships instead of from the namespace: a
+// caller holding the scope in two organizations would be refused as "ambiguous"
+// for a namespace whose owner is not ambiguous at all, and a platform admin
+// would be handed the default organization again — which is the defect itself,
+// merely reached by a different route. It is still the right fallback for the
+// one path where the guard legitimately publishes no owner (a platform admin
+// passing through the ambiguous-ownership branch), because it fails closed for
+// every other principal instead of reaching for the default organization.
+//
+// A body that names an organization other than the authorized owner is REFUSED
+// rather than silently overridden. The middleware already refuses that for
+// non-admin callers on the owned-namespace path; refusing it here as well means
+// the row can never be attributed to an organization the guard did not check,
+// whichever principal asked, and no caller is answered 201 for a write that
+// quietly discarded the field they sent.
+//
+// GUARD namespace-create-owner-org (issue #778).
+func resolveNamespaceCreateOrganization(
+	c *gin.Context,
+	orgRepo *repositories.OrganizationRepository,
+	required auth.Scope,
+	requestedOrgID string,
+) (string, bool) {
+	requestedOrgID = strings.TrimSpace(requestedOrgID)
+
+	if ownerOrgID := tenantscope.OwnerOrg(c); ownerOrgID != "" {
+		if requestedOrgID != "" && requestedOrgID != ownerOrgID {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "organization_id does not match the namespace's owning organization",
+			})
+			return "", false
+		}
+		return ownerOrgID, true
+	}
+
+	return resolveTargetOrganization(c, orgRepo, required, requestedOrgID)
 }
 
 // requireTenantScopeForOrg authorizes a write against an explicitly named

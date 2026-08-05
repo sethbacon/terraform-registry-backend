@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
@@ -453,6 +454,7 @@ type CreateProviderRecordRequest struct {
 // @Success      201  {object}  models.Provider
 // @Failure      400  {object}  map[string]interface{}  "Invalid request body"
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
+// @Failure      403  {object}  map[string]interface{}  "organization_id does not match the organization the namespace guard authorized, or the caller holds providers:write in no organization"
 // @Failure      409  {object}  map[string]interface{}  "Provider already exists"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/admin/providers [post]
@@ -465,19 +467,16 @@ func (h *ProviderAdminHandlers) CreateProviderRecord(c *gin.Context) {
 		return
 	}
 
-	// Get organization context (default org for single-tenant mode)
-	org, err := h.orgRepo.GetDefaultOrganization(c.Request.Context())
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get organization context"})
+	// GUARD namespace-create-owner-org (issue #778): the row is created in the
+	// organization this request was authorized against — the namespace's owner,
+	// as resolved and published by the route's publish guard — and never in the
+	// default organization on the strength of an omitted field. The existence
+	// check below therefore runs against the same organization the insert
+	// targets, so a collision in that organization is seen as a 409 instead of
+	// being missed and turned into a constraint violation.
+	orgID, ok := resolveNamespaceCreateOrganization(c, h.orgRepo, auth.ScopeProvidersWrite, req.OrganizationID)
+	if !ok {
 		return
-	}
-
-	// Use organization from request if provided, otherwise fall back to default
-	var orgID string
-	if req.OrganizationID != "" {
-		orgID = req.OrganizationID
-	} else if org != nil {
-		orgID = org.ID
 	}
 
 	existing, err := h.providerRepo.GetProvider(c.Request.Context(), orgID, req.Namespace, req.Type)

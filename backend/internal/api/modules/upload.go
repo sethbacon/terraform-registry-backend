@@ -21,6 +21,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/safego"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 	"github.com/terraform-registry/terraform-registry/internal/telemetry"
+	"github.com/terraform-registry/terraform-registry/internal/tenantscope"
 	"github.com/terraform-registry/terraform-registry/internal/validation"
 )
 
@@ -174,25 +175,48 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 			}
 		}
 
-		// Get organization context
-		org, err := orgRepo.GetDefaultOrganization(c.Request.Context())
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to get organization context",
-			})
-			return
-		}
-		if org == nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Default organization not found",
-			})
-			return
+		// GUARD namespace-create-owner-org (issue #778): the module row is
+		// stamped with the organization this upload was AUTHORIZED against.
+		//
+		// This route's nsAuthz.RequirePublishAccessFromForm guard resolves the
+		// namespace's owning organization — the existing owner, or the
+		// organization it just claimed an unowned namespace for — checks the
+		// caller against it, and publishes it as owner_org_id. Reaching for
+		// GetDefaultOrganization instead meant the organization the route
+		// authorized and the organization the row landed in were two
+		// independent values: an uploader holding modules:write in organization
+		// O published a module owned by the DEFAULT organization, which they
+		// need no membership in, and the UpsertModule conflict target
+		// (organization_id, namespace, name, system) resolved in that same wrong
+		// organization.
+		//
+		// The default-organization fallback survives only where no guard
+		// published an owner. On this route that is the platform-admin path
+		// through authorizeNamespaceMutation's ambiguous-ownership branch: a
+		// request with an empty namespace is rejected above before reaching
+		// here, so every non-admin upload that gets this far carries an owner.
+		orgID := tenantscope.OwnerOrg(c)
+		if orgID == "" {
+			org, err := orgRepo.GetDefaultOrganization(c.Request.Context())
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"error": "Failed to get organization context",
+				})
+				return
+			}
+			if org == nil {
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"error": "Default organization not found",
+				})
+				return
+			}
+			orgID = org.ID
 		}
 
 		// Atomically create-or-get the module to avoid race conditions when two
 		// concurrent uploads target the same namespace/name/system.
 		module := &models.Module{
-			OrganizationID: org.ID,
+			OrganizationID: orgID,
 			Namespace:      namespace,
 			Name:           name,
 			System:         system,
