@@ -499,7 +499,24 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 			// registerAuthenticatedGroupMiddleware's CSRFMiddleware — it has to
 			// be attached to this route explicitly, otherwise the POST form
 			// would be exactly as forgeable as the GET one it replaced.
-			authGroup.POST("/logout", middleware.CSRFMiddleware(cfg), authHandlers.LogoutPostHandler())
+			//
+			// It does not inherit an auth middleware either, and logout is a
+			// handler that has to act on the caller's own token: the invariant
+			// is that a completed logout leaves the presented JWT unusable, and
+			// endSession can only revoke a JTI the middleware chain resolved for
+			// it (issue #764). Optional — not required — auth, because a logout
+			// with no session, or one whose token already expired, must still
+			// clear cookies and answer 200 rather than 401.
+			//
+			// CSRF runs first, deliberately: it treats an unauthenticated
+			// request as cookie-authenticated and so demands the double-submit
+			// token unconditionally on this route. Establishing auth_method
+			// first would instead route Bearer logouts into CSRFMiddleware's
+			// header-JWT branch, loosening a check this route already passes.
+			authGroup.POST("/logout",
+				middleware.CSRFMiddleware(cfg),
+				middleware.OptionalAuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo, userTokenRevocationRepo),
+				authHandlers.LogoutPostHandler())
 			authGroup.GET("/providers", authHandlers.ProvidersHandler())
 
 			// SAML endpoints

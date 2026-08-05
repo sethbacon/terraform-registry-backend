@@ -579,10 +579,16 @@ func (h *AuthHandlers) LogoutPostHandler() gin.HandlerFunc {
 // endSession performs the teardown both logout routes share — revoke the JWT,
 // clear the auth and CSRF cookies — and returns where the caller should end up.
 // Kept as one function so the two verbs cannot drift apart.
+//
+// The revocation reads the claims the auth middleware resolved for this request,
+// so the route must be mounted under one that publishes them (issue #764): a
+// logout that only clears cookies leaves the JWT usable for the rest of its TTL
+// from anywhere it is still held. See the mount in router_routes.go, which uses
+// optional auth so the no-session and expired-token cases still succeed here.
 func (h *AuthHandlers) endSession(c *gin.Context) string {
 	{
 		// Revoke the current JWT if present
-		if claims, exists := c.Get("jwt_claims"); exists {
+		if claims, exists := c.Get("jwt_claims"); exists && h.tokenRepo != nil {
 			if jwtClaims, ok := claims.(*auth.Claims); ok && jwtClaims.JTI != "" {
 				if jwtClaims.ExpiresAt != nil {
 					_ = h.tokenRepo.RevokeToken(c.Request.Context(),

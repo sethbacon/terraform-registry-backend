@@ -358,6 +358,14 @@ func OptionalAuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepos
 					} else {
 						c.Set("auth_method", "jwt")
 					}
+					// Same context shape as AuthMiddleware: whenever this
+					// middleware establishes a JWT identity it also publishes
+					// the claims. Handlers that must act on the presented token
+					// itself — logout revoking its JTI (issue #764) — can then
+					// be mounted under either middleware and behave the same.
+					// Without this the claims key is set on required-auth routes
+					// only, so any such handler silently no-ops here.
+					c.Set("jwt_claims", claims)
 					// Use scopes embedded in JWT claims (avoids DB query per request)
 					scopes := claims.Scopes
 					if scopes == nil {
