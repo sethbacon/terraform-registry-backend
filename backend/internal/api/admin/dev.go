@@ -59,6 +59,15 @@ func (h *DevHandlers) ImpersonateUserHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		targetUserID := c.Param("user_id")
 
+		// GUARD credential-scope-binding (issue #733): this handler mints a
+		// session token from a USER record (the target's combined scopes), on
+		// a route AuthMiddleware lets an API key reach — the shape of #733.
+		// What binds it to the presenting credential is the entry gate below:
+		// c.Get("scopes") is the calling credential's own scope set, so a key
+		// that is not itself an admin key never reaches the mint. Holding the
+		// admin wildcard is already unrestricted authority, so there is no
+		// narrower ceiling left to intersect. Keep the gate first.
+
 		// Get current user's scopes to verify they're an admin
 		scopesVal, exists := c.Get("scopes")
 		if !exists {
@@ -127,6 +136,10 @@ func (h *DevHandlers) ImpersonateUserHandler() gin.HandlerFunc {
 // GET /api/v1/dev/users
 func (h *DevHandlers) ListUsersForImpersonationHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// GUARD credential-scope-binding (issue #733): same entry gate, same
+		// reasoning as ImpersonateUserHandler — the admin check reads the
+		// PRESENTING credential's scopes, not the caller's user record.
+
 		// Get current user's scopes to verify they're an admin
 		scopesVal, exists := c.Get("scopes")
 		if !exists {

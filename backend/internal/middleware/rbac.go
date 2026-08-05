@@ -148,46 +148,19 @@ func RequireAllScopes(scopes ...auth.Scope) gin.HandlerFunc {
 // than the org-scoped-token primitives (HasScopeInOrg / GenerateForOrg) the
 // identity library also ships -- adopting those requires migrating the JWT
 // itself to carry an OrgID claim, tracked separately.
+//
+// The decision itself is authorizeOrgAccessWith, shared with the namespace and
+// per-resource guards, rather than a fourth hand-rolled membership lookup. The
+// copy this replaced re-derived authority from the caller's USER record alone
+// and never looked at the presenting credential, so an API key bound to
+// organization A could administer organization B whenever its owner happened to
+// be a member there -- the organization axis of issue #733, and a divergence
+// from the two siblings (authorizeOrgAccess, tenantscope.Resolve) that already
+// treat a key's organization binding as authoritative for that key. It reads
+// the same table through the same query, so the per-org check is unchanged for
+// interactive sessions.
 func RequireOrgScopeForPathOrg(scope auth.Scope, orgRepo *repositories.OrganizationRepository) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		scopesVal, exists := c.Get("scopes")
-		if !exists {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"error": "Insufficient permissions",
-			})
-			return
-		}
-
-		callerScopes, ok := scopesVal.([]string)
-		if !ok {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"error": "Invalid scopes format",
-			})
-			return
-		}
-
-		// Global admin wildcard bypasses the per-org check -- see doc comment.
-		if auth.HasScope(callerScopes, auth.ScopeAdmin) {
-			c.Next()
-			return
-		}
-
-		userVal, userExists := c.Get("user_id")
-		if !userExists {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"error": "User not authenticated",
-			})
-			return
-		}
-
-		userID, ok := userVal.(string)
-		if !ok || userID == "" {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"error": "Invalid user ID format",
-			})
-			return
-		}
-
 		orgID := c.Param("id")
 		if orgID == "" {
 			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
@@ -196,19 +169,8 @@ func RequireOrgScopeForPathOrg(scope auth.Scope, orgRepo *repositories.Organizat
 			return
 		}
 
-		orgScopes, err := orgRepo.GetUserScopesForOrg(c.Request.Context(), userID, orgID)
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to verify organization membership",
-			})
-			return
-		}
-
-		if !auth.HasScope(orgScopes, scope) {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"error":   "Missing required scope for this organization",
-				"details": "Required scope: " + string(scope),
-			})
+		if status, msg := authorizeOrgAccessWith(c, orgRepo, orgID, scope); status != 0 {
+			c.AbortWithStatusJSON(status, gin.H{"error": msg})
 			return
 		}
 

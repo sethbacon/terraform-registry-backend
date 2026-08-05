@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/credscope"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
@@ -211,7 +212,7 @@ func (h *APIKeyHandlers) ListAPIKeysHandler() gin.HandlerFunc {
 }
 
 // @Summary      Create API key
-// @Description  Create a new API key with specified scopes. The full API key is only returned once during creation.
+// @Description  Create a new API key with specified scopes. The full API key is only returned once during creation. Requested scopes must be within the caller's role template for the organization AND within the scopes of the credential making the request, so an API key can never mint a key broader than itself.
 // @Tags         API Keys
 // @Security     Bearer
 // @Accept       json
@@ -303,28 +304,43 @@ func (h *APIKeyHandlers) CreateAPIKeyHandler() gin.HandlerFunc {
 			return
 		}
 
-		// Validate requested scopes are within user's allowed scopes for this org
-		// Admin scope grants all permissions
-		userHasAdmin := false
-		for _, scope := range memberWithRole.RoleTemplateScopes {
+		// Validate requested scopes are within the ceiling this REQUEST may
+		// grant. Admin scope grants all permissions.
+		//
+		// GUARD credential-scope-binding (issue #733). The ceiling is the
+		// caller's role template in this organization, intersected with the
+		// scopes of the credential that made the request. Deriving it from the
+		// role template alone answered "what may this USER grant" when the
+		// question is "what may this CREDENTIAL grant": /apikeys carries no
+		// RequireScope (self-service key management is deliberately open to any
+		// authenticated caller) and CSRFMiddleware exempts API-key callers, so a
+		// key deliberately narrowed to modules:read could POST
+		// {"scopes":["admin"]} and receive a platform-wide key whenever its
+		// owner held the admin role template. Narrowing a machine credential
+		// must contain it; credscope.Bound is a no-op for the interactive
+		// sessions the UI uses.
+		allowedScopes := credscope.Bound(c, memberWithRole.RoleTemplateScopes)
+
+		callerHasAdmin := false
+		for _, scope := range allowedScopes {
 			if scope == "admin" {
-				userHasAdmin = true
+				callerHasAdmin = true
 				break
 			}
 		}
 
-		if !userHasAdmin {
-			// Check each requested scope is in user's allowed scopes
+		if !callerHasAdmin {
+			// Check each requested scope is within the ceiling
 			allowedScopeSet := make(map[string]bool)
-			for _, s := range memberWithRole.RoleTemplateScopes {
+			for _, s := range allowedScopes {
 				allowedScopeSet[s] = true
 			}
 
 			for _, requestedScope := range req.Scopes {
 				if !allowedScopeSet[requestedScope] {
 					c.JSON(http.StatusForbidden, gin.H{
-						"error":          "Scope '" + requestedScope + "' exceeds your role permissions for this organization",
-						"allowed_scopes": memberWithRole.RoleTemplateScopes,
+						"error":          "Scope '" + requestedScope + "' exceeds the permissions available to this request",
+						"allowed_scopes": allowedScopes,
 						"role_template":  *memberWithRole.RoleTemplateName,
 					})
 					return
@@ -511,7 +527,7 @@ func (h *APIKeyHandlers) DeleteAPIKeyHandler() gin.HandlerFunc {
 }
 
 // @Summary      Update API key
-// @Description  Update an API key's name, scopes, or expiration. Users can only update their own keys unless they have admin scope.
+// @Description  Update an API key's name, scopes, or expiration. Users can only update their own keys unless they have admin scope. New scopes are bounded the same way as on creation: by the caller's role template in the key's organization AND by the scopes of the credential making the request.
 // @Tags         API Keys
 // @Security     Bearer
 // @Accept       json
@@ -621,26 +637,35 @@ func (h *APIKeyHandlers) UpdateAPIKeyHandler() gin.HandlerFunc {
 				return
 			}
 
-			// Validate requested scopes are within user's allowed scopes for this org
-			userHasAdmin := false
-			for _, scope := range memberWithRole.RoleTemplateScopes {
+			// Validate requested scopes are within the ceiling this REQUEST may
+			// grant.
+			//
+			// GUARD credential-scope-binding (issue #733): the same ceiling
+			// CreateAPIKeyHandler applies, for the same reason. Widening an
+			// existing key is minting authority by another name, so a narrowed
+			// credential must not be able to do it either — including on the
+			// key it is itself presenting.
+			allowedScopes := credscope.Bound(c, memberWithRole.RoleTemplateScopes)
+
+			callerHasAdmin := false
+			for _, scope := range allowedScopes {
 				if scope == "admin" {
-					userHasAdmin = true
+					callerHasAdmin = true
 					break
 				}
 			}
 
-			if !userHasAdmin {
+			if !callerHasAdmin {
 				allowedScopeSet := make(map[string]bool)
-				for _, s := range memberWithRole.RoleTemplateScopes {
+				for _, s := range allowedScopes {
 					allowedScopeSet[s] = true
 				}
 
 				for _, requestedScope := range req.Scopes {
 					if !allowedScopeSet[requestedScope] {
 						c.JSON(http.StatusForbidden, gin.H{
-							"error":          "Scope '" + requestedScope + "' exceeds your role permissions for this organization",
-							"allowed_scopes": memberWithRole.RoleTemplateScopes,
+							"error":          "Scope '" + requestedScope + "' exceeds the permissions available to this request",
+							"allowed_scopes": allowedScopes,
 							"role_template":  *memberWithRole.RoleTemplateName,
 						})
 						return
@@ -690,7 +715,7 @@ type RotateAPIKeyResponse struct {
 }
 
 // @Summary      Rotate API key
-// @Description  Rotate an API key by creating a new key and optionally scheduling the old key's expiration. Users can only rotate their own keys unless they have admin scope.
+// @Description  Rotate an API key by creating a new key and optionally scheduling the old key's expiration. Users can only rotate their own keys unless they have admin scope. The new key's scopes are re-derived from the key owner's current role template rather than copied from the old key, and are additionally bounded by the scopes of the credential making the request, so a rotation cannot re-mint authority the owner no longer holds.
 // @Tags         API Keys
 // @Security     Bearer
 // @Accept       json
@@ -700,7 +725,7 @@ type RotateAPIKeyResponse struct {
 // @Success      200  {object}  RotateAPIKeyResponse  "New API key and old key status"
 // @Failure      400  {object}  map[string]interface{}  "Invalid grace period (must be 0-72 hours)"
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized - user not authenticated"
-// @Failure      403  {object}  map[string]interface{}  "Forbidden - access denied to this key"
+// @Failure      403  {object}  map[string]interface{}  "Forbidden - access denied to this key, or the key's scopes exceed the authority available to this request"
 // @Failure      404  {object}  map[string]interface{}  "API key not found"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/apikeys/{id}/rotate [post]
@@ -753,6 +778,69 @@ func (h *APIKeyHandlers) RotateAPIKeyHandler() gin.HandlerFunc {
 					"error": "Access denied",
 				})
 				return
+			}
+		}
+
+		// GUARD credential-scope-binding (issue #733). Rotation MINTS a key, so
+		// the scopes it writes need the same ceiling as creation — re-derived,
+		// not inherited. Copying oldKey.Scopes and authorizing on ownership
+		// alone made rotation a scope-laundering primitive: it was the one
+		// minting path with no ceiling at all, so a narrowed credential could
+		// rotate a broader sibling key of its owner's and receive that key's
+		// full scopes, and a key whose owner had since been demoted could
+		// re-mint the authority the demotion removed.
+		//
+		// The user half of the ceiling is the KEY OWNER's current role
+		// template, not the caller's: rotation re-issues the owner's
+		// credential, and reading the caller's membership would 403 a platform
+		// admin rotating a key in an organization they do not belong to. The
+		// credential half is still the caller's, so a narrow key cannot launder
+		// scopes through a rotation it is not entitled to perform.
+		if oldKey.UserID == nil || *oldKey.UserID == "" {
+			// Matches middleware.verifyKeyOwnerAuthority: a userless key is a
+			// row whose owner was deleted (identity.api_keys.user_id is
+			// ON DELETE SET NULL), not an organization service credential, and
+			// there is no authority left to re-derive for it.
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "API key has no owning user; re-issue it through the API key endpoints",
+			})
+			return
+		}
+		owner, err := h.orgRepo.GetMemberWithRole(c.Request.Context(), oldKey.OrganizationID, *oldKey.UserID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to get user role information",
+			})
+			return
+		}
+		if owner == nil {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "API key owner is no longer a member of the key's organization",
+			})
+			return
+		}
+
+		rotateScopes := credscope.Bound(c, owner.RoleTemplateScopes)
+		ownerHasAdmin := false
+		for _, scope := range rotateScopes {
+			if scope == "admin" {
+				ownerHasAdmin = true
+				break
+			}
+		}
+		if !ownerHasAdmin {
+			allowedScopeSet := make(map[string]bool)
+			for _, s := range rotateScopes {
+				allowedScopeSet[s] = true
+			}
+			for _, existingScope := range oldKey.Scopes {
+				if !allowedScopeSet[existingScope] {
+					c.JSON(http.StatusForbidden, gin.H{
+						"error":          "Scope '" + existingScope + "' exceeds the permissions available to this request; update the key's scopes before rotating it",
+						"allowed_scopes": rotateScopes,
+					})
+					return
+				}
 			}
 		}
 
