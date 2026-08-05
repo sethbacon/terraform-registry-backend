@@ -22,7 +22,16 @@ import (
 )
 
 // deprovisionUser removes the target user's organization memberships, limited
-// to the organizations the caller may act in.
+// to the organizations the caller may act in, and then invalidates every
+// credential family the user holds, logging the sweep under reason.
+//
+// This helper owns BOTH halves of a SCIM deprovision on purpose. Memberships
+// are only the stored half of a user's authority: their JWT sessions and API
+// keys carry a snapshot of it (issue #736), so a path that removed the former
+// without sweeping the latter would leave working credentials behind. When the
+// two were separate calls, every caller had to remember the pairing; housing
+// the sweep here makes it structural — no caller can reduce authority without
+// it.
 //
 // A platform admin keeps the single-statement sweep: an IdP integration wired
 // with an admin-scoped credential is the normal deployment and must still be
@@ -30,21 +39,30 @@ import (
 // where they themselves hold scim:provision, resolved through the same
 // tenantscope.Resolve every other axis in this batch uses.
 //
-// Errors are logged and swallowed, matching this package's existing
-// best-effort deactivation behaviour; the caller decides its own status code.
+// If membership removal fails the error is returned and the credential sweep
+// does not run, preserving the caller-visible ordering from when the sweep was
+// a separate call; sweep failures are best-effort and logged by deprovision
+// itself. The caller decides its own status code.
 //
-// GUARD scim-deprovision-tenant-scope (issue #719).
-func (h *Handlers) deprovisionUser(c *gin.Context, userID string) error {
+// GUARD scim-deprovision-tenant-scope (issue #719): membership removal is
+// scoped to the caller's tenancy.
+// GUARD scim-deprovision-credential-sweep (issue #736): every path that
+// removes memberships also sweeps JWT sessions and API keys.
+func (h *Handlers) deprovisionUser(c *gin.Context, userID, reason string) error {
 	scope, err := tenantscope.Resolve(c, h.orgRepo, auth.ScopeSCIMProvision)
 	if err != nil {
 		return err
 	}
 
+	ctx := c.Request.Context()
 	if scope.PlatformAdmin {
-		return h.orgRepo.RemoveAllMembershipsForUser(c.Request.Context(), userID)
+		if err := h.orgRepo.RemoveAllMembershipsForUser(ctx, userID); err != nil {
+			return err
+		}
+		h.deprovision(ctx, userID, reason)
+		return nil
 	}
 
-	ctx := c.Request.Context()
 	memberships, err := h.orgRepo.GetUserMemberships(ctx, userID)
 	if err != nil {
 		return err
@@ -63,5 +81,6 @@ func (h *Handlers) deprovisionUser(c *gin.Context, userID string) error {
 			return err
 		}
 	}
+	h.deprovision(ctx, userID, reason)
 	return nil
 }
