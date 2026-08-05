@@ -433,7 +433,9 @@ configuration change**. The common thread: routes that read, list, create or
 delete rows of an organization-owned table now bind the row's owning
 organization to one the caller is a verified member of. Previously several did
 not, so a principal scoped to one organization could see or act on another's
-rows.
+rows. Item 9 is the same principle from the other side: a table with **no**
+organization column is a platform-wide resource, so changing it requires
+platform-wide authority rather than an organization-grantable scope.
 
 > **REQUIRES A SHARED-MODULE BUMP.** The audit-log half of this work lives in
 > `terraform-suite-identity` (`identity/store`), where the three audit read
@@ -571,6 +573,47 @@ credential, a leaver will now be deprovisioned only from the organizations that
 credential covers — a **partial** deprovision that previously appeared total.
 Give the IdP connector an `admin`-scoped credential to preserve estate-wide
 deprovisioning, which is the intended configuration for a SCIM connector.
+
+**9. Changing the Terraform binary mirror now requires the `admin` scope, not
+`mirrors:manage`.**
+
+`terraform_mirror_configs` has no `organization_id` column: one configuration is
+the Terraform/OpenTofu binary supply chain for **every** tenant, and the versions,
+platforms and sync-history rows hanging off it inherit that. `mirrors:manage`
+does not carry platform-wide authority — the seeded `devops` and `org_owner` role
+templates grant it through membership in a single organization — so the following
+routes moved to the platform-wide `admin` scope (issue #734), applying to
+org-less rows the same rule item 5 above already states:
+
+| Route | Previously | Now |
+| --- | --- | --- |
+| `POST /api/v1/admin/terraform-mirrors` | `mirrors:manage` | `admin` |
+| `PUT /api/v1/admin/terraform-mirrors/:id` | `mirrors:manage` | `admin` |
+| `DELETE /api/v1/admin/terraform-mirrors/:id` | `mirrors:manage` | `admin` |
+| `POST /api/v1/admin/terraform-mirrors/:id/sync` | `mirrors:manage` | `admin` |
+| `DELETE /api/v1/admin/terraform-mirrors/:id/versions/:version` | `mirrors:manage` | `admin` |
+| `POST /api/v1/admin/terraform-mirrors/:id/versions/:version/deprecate` | `mirrors:manage` | `admin` |
+| `DELETE /api/v1/admin/terraform-mirrors/:id/versions/:version/deprecate` | `mirrors:manage` | `admin` |
+
+This covers the verification settings specifically: `gpg_verify`,
+`verify_github_attestation` and `requires_approval` are all set through
+`PUT /:id`, and weakening any of them changes what every tenant's Terraform CLI
+accepts. Repointing `upstream_url` is in the same request body.
+
+The **read** routes are unchanged and stay on `mirrors:read`: the whole family's
+`GET`s (`/releases-gpg-keys`, list/get config, status, versions, platforms and
+history). These tables carry no tenant data and no credentials, and the binary
+mirror is a shared service whose catalogue and health tenant operators
+legitimately need to see.
+
+*Action:* an operator who managed the binary mirror with a `devops` or
+`org_owner` role loses the ability to create, edit, sync, delete or deprecate it
+and receives `403`; the admin UI's Terraform Mirrors page stays viewable but its
+actions fail for them. Move that work to an `admin`-scoped credential. Any CI
+job that calls `POST /:id/sync` on a `mirrors:manage` token needs its token
+re-issued with `admin`. Nothing about the mirror's runtime behaviour changes —
+already-synced binaries keep serving from `/terraform/binaries`, and the
+scheduled sync job is unaffected.
 
 **Shared module:** this release requires a `terraform-suite-identity` version
 newer than `v0.20.3`. `AuditRepository.ListAuditLogs`, `.GetAuditLog` and
