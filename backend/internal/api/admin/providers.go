@@ -10,6 +10,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/identityerr"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 )
 
@@ -48,8 +49,15 @@ func (h *ProviderAdminHandlers) GetProvider(c *gin.Context) {
 	providerType := c.Param("type")
 
 	// Get organization context (default org for single-tenant mode)
+	// A deployment with no default organization degrades to an EMPTY orgID
+	// here rather than failing the request — the `if org != nil` guard below is
+	// the original author's handling of the (nil, nil) miss, and identityerr
+	// .Missing preserves it now that the miss arrives as store.ErrNotFound.
+	// Letting the sentinel reach the 500 would turn every admin module/provider
+	// route into a hard failure on such a deployment, which is a behaviour
+	// change this change is not entitled to make.
 	org, err := h.orgRepo.GetDefaultOrganization(c.Request.Context())
-	if err != nil {
+	if err != nil && !identityerr.Missing(org, err) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get organization context"})
 		return
 	}
@@ -145,8 +153,15 @@ func (h *ProviderAdminHandlers) DeleteProvider(c *gin.Context) {
 	providerType := c.Param("type")
 
 	// Get organization context
+	// A deployment with no default organization degrades to an EMPTY orgID
+	// here rather than failing the request — the `if org != nil` guard below is
+	// the original author's handling of the (nil, nil) miss, and identityerr
+	// .Missing preserves it now that the miss arrives as store.ErrNotFound.
+	// Letting the sentinel reach the 500 would turn every admin module/provider
+	// route into a hard failure on such a deployment, which is a behaviour
+	// change this change is not entitled to make.
 	org, err := h.orgRepo.GetDefaultOrganization(c.Request.Context())
-	if err != nil {
+	if err != nil && !identityerr.Missing(org, err) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get organization context"})
 		return
 	}
@@ -220,8 +235,15 @@ func (h *ProviderAdminHandlers) DeleteVersion(c *gin.Context) {
 	version := c.Param("version")
 
 	// Get organization context
+	// A deployment with no default organization degrades to an EMPTY orgID
+	// here rather than failing the request — the `if org != nil` guard below is
+	// the original author's handling of the (nil, nil) miss, and identityerr
+	// .Missing preserves it now that the miss arrives as store.ErrNotFound.
+	// Letting the sentinel reach the 500 would turn every admin module/provider
+	// route into a hard failure on such a deployment, which is a behaviour
+	// change this change is not entitled to make.
 	org, err := h.orgRepo.GetDefaultOrganization(c.Request.Context())
-	if err != nil {
+	if err != nil && !identityerr.Missing(org, err) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get organization context"})
 		return
 	}
@@ -311,8 +333,15 @@ func (h *ProviderAdminHandlers) DeprecateVersion(c *gin.Context) {
 	}
 
 	// Get organization context
+	// A deployment with no default organization degrades to an EMPTY orgID
+	// here rather than failing the request — the `if org != nil` guard below is
+	// the original author's handling of the (nil, nil) miss, and identityerr
+	// .Missing preserves it now that the miss arrives as store.ErrNotFound.
+	// Letting the sentinel reach the 500 would turn every admin module/provider
+	// route into a hard failure on such a deployment, which is a behaviour
+	// change this change is not entitled to make.
 	org, err := h.orgRepo.GetDefaultOrganization(c.Request.Context())
-	if err != nil {
+	if err != nil && !identityerr.Missing(org, err) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get organization context"})
 		return
 	}
@@ -386,8 +415,15 @@ func (h *ProviderAdminHandlers) UndeprecateVersion(c *gin.Context) {
 	version := c.Param("version")
 
 	// Get organization context
+	// A deployment with no default organization degrades to an EMPTY orgID
+	// here rather than failing the request — the `if org != nil` guard below is
+	// the original author's handling of the (nil, nil) miss, and identityerr
+	// .Missing preserves it now that the miss arrives as store.ErrNotFound.
+	// Letting the sentinel reach the 500 would turn every admin module/provider
+	// route into a hard failure on such a deployment, which is a behaviour
+	// change this change is not entitled to make.
 	org, err := h.orgRepo.GetDefaultOrganization(c.Request.Context())
-	if err != nil {
+	if err != nil && !identityerr.Missing(org, err) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get organization context"})
 		return
 	}

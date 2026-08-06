@@ -16,6 +16,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/identityerr"
 	"github.com/terraform-registry/terraform-registry/internal/middleware"
 	"github.com/terraform-registry/terraform-registry/internal/safego"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
@@ -69,15 +70,15 @@ func DownloadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Con
 
 		// Get organization context
 		org, err := orgRepo.GetDefaultOrganization(c.Request.Context())
-		if err != nil {
+		if identityerr.Missing(org, err) {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"errors": []string{"Failed to get organization context"},
+				"errors": []string{"Default organization not found - please run migrations"},
 			})
 			return
 		}
-		if org == nil {
+		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"errors": []string{"Default organization not found - please run migrations"},
+				"errors": []string{"Failed to get organization context"},
 			})
 			return
 		}

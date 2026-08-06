@@ -26,6 +26,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/credscope"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
+	"github.com/terraform-registry/terraform-registry/internal/identityerr"
 	"github.com/terraform-registry/terraform-registry/internal/middleware"
 )
 
@@ -826,16 +827,15 @@ func (h *AuthHandlers) MeHandler() gin.HandlerFunc {
 
 		// Get user with per-organization role template information
 		userWithRoles, err := h.userRepo.GetUserWithOrgRoles(c.Request.Context(), userID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to get user information",
+		if identityerr.Missing(userWithRoles, err) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "User not found",
 			})
 			return
 		}
-
-		if userWithRoles == nil {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": "User not found",
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to get user information",
 			})
 			return
 		}
@@ -1079,7 +1079,14 @@ func (h *AuthHandlers) reconcileGroupMemberships(ctx context.Context, userID str
 			if !ok {
 				continue
 			}
-			if err := h.orgRepo.UpdateMemberRole(ctx, org.ID, userID, role); err != nil {
+			// isMember was read earlier in this reconciliation; the membership
+			// can be gone by now (a concurrent removal, or a retry of this same
+			// login). That is not a failure of the reconciliation — the row
+			// this branch wanted to change no longer exists — and aborting here
+			// would leave every LATER managed organization unreconciled and
+			// fail the user's login outright.
+			if err := h.orgRepo.UpdateMemberRole(ctx, org.ID, userID, role); err != nil &&
+				!identityerr.IsNotFound(err) {
 				return fmt.Errorf("update member role org=%s user=%s role=%s: %w", org.ID, userID, role, err)
 			}
 			// An IdP group change can map the user to a LOWER role than they
@@ -1114,7 +1121,13 @@ func (h *AuthHandlers) reconcileGroupMemberships(ctx context.Context, userID str
 			slog.Info(provider+" group mapping applied", "user_id", userID, "org", orgName, "role", role)
 		case !wanted && isMember:
 			// No current group maps to this managed org → deprovision.
-			if err := h.orgRepo.RemoveMember(ctx, org.ID, userID); err != nil {
+			// Already removed is the DESIRED state, so the deprovision branch
+			// treats it as done and continues to the credential sweep below.
+			// Aborting instead would skip that sweep — leaving the offboarded
+			// user's org-bound API keys alive, which is the exact failure
+			// (issue #732) the sweep was added to close.
+			if err := h.orgRepo.RemoveMember(ctx, org.ID, userID); err != nil &&
+				!identityerr.IsNotFound(err) {
 				return fmt.Errorf("revoke member org=%s user=%s: %w", org.ID, userID, err)
 			}
 			// Removing the membership does not touch the member's API keys,

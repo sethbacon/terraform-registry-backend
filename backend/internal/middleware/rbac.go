@@ -27,6 +27,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/identityerr"
 )
 
 // RequireScope checks if authenticated user has the required scope
@@ -215,18 +216,19 @@ func RequireOrgMembership(orgRepo *repositories.OrganizationRepository) gin.Hand
 			return
 		}
 
-		// Check membership
+		// Check membership. Not being a member is the denial this middleware
+		// exists to issue, so it is tested ahead of the generic failure branch;
+		// a non-member must get 403, never a retryable 500.
 		member, err := orgRepo.GetMember(c.Request.Context(), orgID, userID)
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to check organization membership",
+		if identityerr.Missing(member, err) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"error": "Not a member of organization",
 			})
 			return
 		}
-
-		if member == nil {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"error": "Not a member of organization",
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to check organization membership",
 			})
 			return
 		}
@@ -276,18 +278,18 @@ func RequireOrgScope(scope auth.Scope, orgRepo *repositories.OrganizationReposit
 			return
 		}
 
-		// Get membership with role template
+		// Get membership with role template. As above, the non-member denial is
+		// checked first so it cannot be masked by the 500 branch.
 		memberWithRole, err := orgRepo.GetMemberWithRole(c.Request.Context(), orgID, userID)
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to check organization membership",
+		if identityerr.Missing(memberWithRole, err) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"error": "Not a member of organization",
 			})
 			return
 		}
-
-		if memberWithRole == nil {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"error": "Not a member of organization",
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to check organization membership",
 			})
 			return
 		}

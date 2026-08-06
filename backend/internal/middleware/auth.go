@@ -23,6 +23,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/identityerr"
 	"github.com/terraform-registry/terraform-registry/internal/safego"
 )
 
@@ -111,18 +112,26 @@ func AuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, a
 				}
 			}
 
-			// JWT is valid, load user and set in context
+			// JWT is valid, load user and set in context.
+			//
+			// The not-found check comes FIRST. A JWT that outlives its user —
+			// the token is still cryptographically valid, the row is gone — is
+			// an authentication failure (401), not a server fault (500). Before
+			// v0.24.0 the miss arrived as (nil, nil) and the `user == nil`
+			// branch below caught it; now it arrives as store.ErrNotFound, so
+			// ordering the checks the other way round would turn every
+			// deleted-user request into a 500 and hand a caller a retryable
+			// status for a condition that will never resolve.
 			user, err := userRepo.GetUserByID(c.Request.Context(), claims.UserID)
-			if err != nil {
-				c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
-					"error": "Failed to load user",
+			if identityerr.Missing(user, err) {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+					"error": "User not found",
 				})
 				return
 			}
-
-			if user == nil {
-				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-					"error": "User not found",
+			if err != nil {
+				c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
+					"error": "Failed to load user",
 				})
 				return
 			}
@@ -290,12 +299,22 @@ func currentKeyScopes(ctx context.Context, orgRepo *repositories.OrganizationRep
 	if apiKey.UserID == nil || *apiKey.UserID == "" {
 		return nil, http.StatusUnauthorized, "API key has no owning user; re-issue it through the API key endpoints"
 	}
+	// "Not a member" must stay a DENIAL, and it must be tested before the
+	// generic failure branch. This is the whole point of the check: the miss is
+	// the revoked-authority case (issue #732), and letting it fall through to
+	// the 500 below would turn a closed door into a retryable server fault —
+	// failing loudly, but in the wrong direction, and hiding a real lookup
+	// failure behind the same status.
+	//
+	// Both spellings of the miss are handled so this reads the same against the
+	// released identity version, where it arrives as (nil, nil), and v0.24.0,
+	// where it arrives as store.ErrNotFound.
 	member, err := orgRepo.GetMemberWithRole(ctx, apiKey.OrganizationID, *apiKey.UserID)
+	if identityerr.Missing(member, err) {
+		return nil, http.StatusUnauthorized, "API key owner is no longer a member of the bound organization"
+	}
 	if err != nil {
 		return nil, http.StatusInternalServerError, "Failed to verify API key organization membership"
-	}
-	if member == nil {
-		return nil, http.StatusUnauthorized, "API key owner is no longer a member of the bound organization"
 	}
 	scopes := make([]string, 0, len(apiKey.Scopes))
 	for _, s := range apiKey.Scopes {

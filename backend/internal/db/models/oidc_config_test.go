@@ -139,7 +139,10 @@ func TestOIDCConfig_ToResponse_NullCreatedByUpdatedBy(t *testing.T) {
 
 func TestOIDCConfig_GetScopes_Default(t *testing.T) {
 	cfg := &OIDCConfig{}
-	scopes := cfg.GetScopes()
+	scopes, err := cfg.GetScopes()
+	if err != nil {
+		t.Fatalf("empty scopes column must not error, got %v", err)
+	}
 
 	if len(scopes) != 3 {
 		t.Fatalf("default scopes length = %d, want 3", len(scopes))
@@ -153,7 +156,10 @@ func TestOIDCConfig_GetScopes_Custom(t *testing.T) {
 	scopesJSON, _ := json.Marshal([]string{"openid", "groups", "offline_access"})
 	cfg := &OIDCConfig{Scopes: scopesJSON}
 
-	scopes := cfg.GetScopes()
+	scopes, err := cfg.GetScopes()
+	if err != nil {
+		t.Fatalf("well-formed scopes column must not error, got %v", err)
+	}
 	if len(scopes) != 3 {
 		t.Fatalf("scopes length = %d, want 3", len(scopes))
 	}
@@ -166,7 +172,10 @@ func TestOIDCConfig_GetScopes_EmptyArray(t *testing.T) {
 	scopesJSON, _ := json.Marshal([]string{})
 	cfg := &OIDCConfig{Scopes: scopesJSON}
 
-	scopes := cfg.GetScopes()
+	scopes, err := cfg.GetScopes()
+	if err != nil {
+		t.Fatalf("empty JSON array must not error, got %v", err)
+	}
 	// Empty array should return defaults
 	if len(scopes) != 3 {
 		t.Fatalf("empty scopes should return defaults, got %v", scopes)
@@ -175,10 +184,16 @@ func TestOIDCConfig_GetScopes_EmptyArray(t *testing.T) {
 
 func TestOIDCConfig_GetScopes_InvalidJSON(t *testing.T) {
 	cfg := &OIDCConfig{Scopes: []byte("{invalid")}
-	scopes := cfg.GetScopes()
-	// Invalid JSON should return defaults
+	scopes, err := cfg.GetScopes()
+	// As of identity v0.24.0 a corrupt scopes column is REPORTED rather than
+	// silently swallowed — but the defaults still come back alongside the
+	// error, so a caller that decides a broken column should not take SSO down
+	// can carry on. Both halves are asserted: the error, and the usable value.
+	if err == nil {
+		t.Fatal("invalid JSON scopes must return an error")
+	}
 	if len(scopes) != 3 {
-		t.Fatalf("invalid JSON scopes should return defaults, got %v", scopes)
+		t.Fatalf("invalid JSON scopes should still return defaults, got %v", scopes)
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/identityerr"
 	"github.com/terraform-registry/terraform-registry/internal/services"
 )
 
@@ -48,15 +49,15 @@ func IndexHandler(db *sql.DB, _ *config.Config, pullThrough *services.PullThroug
 
 		// Get organization context (default org for single-tenant mode)
 		org, err := orgRepo.GetDefaultOrganization(c.Request.Context())
-		if err != nil {
+		if identityerr.Missing(org, err) {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"errors": []string{"Failed to get organization context"},
+				"errors": []string{"Default organization not found - please run migrations"},
 			})
 			return
 		}
-		if org == nil {
+		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"errors": []string{"Default organization not found - please run migrations"},
+				"errors": []string{"Failed to get organization context"},
 			})
 			return
 		}

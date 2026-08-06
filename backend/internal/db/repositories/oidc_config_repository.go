@@ -357,8 +357,14 @@ func (r *OIDCConfigRepository) UpdateOIDCConfigExtraConfig(ctx context.Context, 
 	return r.oidc.UpdateOIDCConfigExtraConfig(ctx, id, extraConfig)
 }
 
-// DeactivateAllOIDCConfigs sets is_active=false for all configurations.
-func (r *OIDCConfigRepository) DeactivateAllOIDCConfigs(ctx context.Context) error {
+// DeactivateAllOIDCConfigs sets is_active=false for all configurations and
+// reports how many rows it changed.
+//
+// The count is passed through rather than swallowed: zero is a legitimate
+// outcome for a bulk sweep (nothing was active), so it is reported as a number
+// instead of an error, and a caller that wants to log "deactivated N configs"
+// can. See identity/store.affectedRows.
+func (r *OIDCConfigRepository) DeactivateAllOIDCConfigs(ctx context.Context) (int64, error) {
 	return r.oidc.DeactivateAllOIDCConfigs(ctx)
 }
 

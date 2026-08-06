@@ -15,6 +15,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/credlifecycle"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/identityerr"
 	"github.com/terraform-registry/terraform-registry/internal/validation"
 )
 
@@ -78,13 +79,21 @@ func (h *OrganizationHandlers) organizationsInScope(c *gin.Context, scope Tenant
 	out := make([]*models.Organization, 0, len(scope.OrgIDs))
 	for _, id := range scope.OrgIDs {
 		org, err := h.orgRepo.GetByID(c.Request.Context(), id)
+		// A scope entry naming an organization that no longer exists is skipped,
+		// not fatal. The caller's scope is derived from their membership rows,
+		// which can outlive the organization by a moment (or by a failed
+		// cascade); before v0.24.0 that arrived as (nil, nil) and this loop
+		// simply did not append it. Letting the miss reach the 500 below would
+		// mean one deleted organization makes the whole list endpoint fail for
+		// every member of it — a strictly worse answer than the short list.
+		if identityerr.Missing(org, err) {
+			continue
+		}
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list organizations"})
 			return nil
 		}
-		if org != nil {
-			out = append(out, org)
-		}
+		out = append(out, org)
 	}
 	return out
 }
@@ -135,12 +144,16 @@ func (h *OrganizationHandlers) revokeOrgCredentials(c *gin.Context, userID, orgI
 // key is still within the new authority.
 func (h *OrganizationHandlers) retainedOrgScopes(c *gin.Context, orgID, userID string) []string {
 	member, err := h.orgRepo.GetMemberWithRole(c.Request.Context(), orgID, userID)
+	// "No longer a member" is the EXPECTED outcome on the removal path, not a
+	// failure: it retains nothing, so every org-bound key is swept. Separating
+	// it from the error branch keeps that ordinary case from logging as a
+	// lookup failure and burying the real ones.
+	if identityerr.Missing(member, err) {
+		return nil
+	}
 	if err != nil {
 		slog.Error("failed to read post-change role scopes; sweeping all org-bound keys for this member",
 			"user_id", userID, "organization_id", orgID, "error", err)
-		return nil
-	}
-	if member == nil {
 		return nil
 	}
 	return member.RoleTemplateScopes
@@ -426,16 +439,15 @@ func (h *OrganizationHandlers) GetOrganizationHandler() gin.HandlerFunc {
 		orgID := c.Param("id")
 
 		org, err := h.orgRepo.GetByID(c.Request.Context(), orgID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to retrieve organization",
+		if identityerr.Missing(org, err) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "Organization not found",
 			})
 			return
 		}
-
-		if org == nil {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": "Organization not found",
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to retrieve organization",
 			})
 			return
 		}
@@ -475,16 +487,15 @@ func (h *OrganizationHandlers) ListMembersHandler() gin.HandlerFunc {
 
 		// Check if organization exists
 		org, err := h.orgRepo.GetByID(c.Request.Context(), orgID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to retrieve organization",
+		if identityerr.Missing(org, err) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "Organization not found",
 			})
 			return
 		}
-
-		if org == nil {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": "Organization not found",
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to retrieve organization",
 			})
 			return
 		}
@@ -535,16 +546,23 @@ func (h *OrganizationHandlers) CreateOrganizationHandler() gin.HandlerFunc {
 			return
 		}
 
-		// Check if organization already exists
+		// Check if organization already exists.
+		//
+		// This is an existence PROBE: not-found is the SUCCESS case ("the name
+		// is free, go ahead and create it"). Written as a plain `err != nil ->
+		// 500` it would reject every create of a name that is available, which
+		// is every legitimate call. The switch says which outcome is which
+		// instead of leaving it to branch order.
 		existingOrg, err := h.orgRepo.GetByName(c.Request.Context(), req.Name)
-		if err != nil {
+		switch {
+		case identityerr.Missing(existingOrg, err):
+			// Name is free — fall through and create.
+		case err != nil:
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to check existing organization",
 			})
 			return
-		}
-
-		if existingOrg != nil {
+		default:
 			c.JSON(http.StatusConflict, gin.H{
 				"error": "Organization with this name already exists",
 			})
@@ -626,16 +644,15 @@ func (h *OrganizationHandlers) UpdateOrganizationHandler() gin.HandlerFunc {
 
 		// Get existing organization
 		org, err := h.orgRepo.GetByID(c.Request.Context(), orgID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to retrieve organization",
+		if identityerr.Missing(org, err) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "Organization not found",
 			})
 			return
 		}
-
-		if org == nil {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": "Organization not found",
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to retrieve organization",
 			})
 			return
 		}
@@ -649,20 +666,35 @@ func (h *OrganizationHandlers) UpdateOrganizationHandler() gin.HandlerFunc {
 				})
 				return
 			}
+			// Availability probe: not-found means the new name is FREE, which is
+			// the only case that may proceed to the rename.
 			existing, err := h.orgRepo.GetByName(c.Request.Context(), newName)
-			if err != nil {
+			switch {
+			case identityerr.Missing(existing, err):
+				// Name is free — fall through and rename.
+			case err != nil:
 				c.JSON(http.StatusInternalServerError, gin.H{
 					"error": "Failed to check name availability",
 				})
 				return
-			}
-			if existing != nil {
+			default:
 				c.JSON(http.StatusConflict, gin.H{
 					"error": "Organization name already taken",
 				})
 				return
 			}
+			// ErrNotFound here means the organization was deleted between the
+			// GetByID above and this write. Answer 404 — the same status that
+			// pre-check gives for the same condition — rather than the 200 the
+			// old contract produced, which reported a rename that never
+			// happened and left the cascade below to run on a dead id.
 			if err := h.orgRepo.Rename(c.Request.Context(), orgID, newName); err != nil {
+				if identityerr.IsNotFound(err) {
+					c.JSON(http.StatusNotFound, gin.H{
+						"error": "Organization not found",
+					})
+					return
+				}
 				c.JSON(http.StatusInternalServerError, gin.H{
 					"error": "Failed to rename organization",
 				})
@@ -703,7 +735,16 @@ func (h *OrganizationHandlers) UpdateOrganizationHandler() gin.HandlerFunc {
 		}
 
 		// Update in database
+		// Raced against a concurrent delete: report the row's absence (404),
+		// matching the pre-check, instead of the false success the pre-v0.24.0
+		// contract returned.
 		if err := h.orgRepo.Update(c.Request.Context(), org); err != nil {
+			if identityerr.IsNotFound(err) {
+				c.JSON(http.StatusNotFound, gin.H{
+					"error": "Organization not found",
+				})
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to update organization",
 			})
@@ -736,16 +777,15 @@ func (h *OrganizationHandlers) DeleteOrganizationHandler() gin.HandlerFunc {
 
 		// Check if organization exists
 		org, err := h.orgRepo.GetByID(c.Request.Context(), orgID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to retrieve organization",
+		if identityerr.Missing(org, err) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "Organization not found",
 			})
 			return
 		}
-
-		if org == nil {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": "Organization not found",
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to retrieve organization",
 			})
 			return
 		}
@@ -831,7 +871,16 @@ func (h *OrganizationHandlers) DeleteOrganizationHandler() gin.HandlerFunc {
 		}
 
 		// Delete organization (cascading deletes will handle related records)
+		// Already gone (a concurrent delete won the race): 404, the same answer
+		// a second DELETE gets from the existence pre-check above, so the two
+		// paths to "this organization does not exist" agree.
 		if err := h.orgRepo.Delete(c.Request.Context(), orgID); err != nil {
+			if identityerr.IsNotFound(err) {
+				c.JSON(http.StatusNotFound, gin.H{
+					"error": "Organization not found",
+				})
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to delete organization",
 			})
@@ -898,6 +947,12 @@ func (h *OrganizationHandlers) AddMemberHandler() gin.HandlerFunc {
 
 		// Check if organization exists
 		org, err := h.orgRepo.GetByID(c.Request.Context(), orgID)
+		if identityerr.Missing(org, err) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "Organization not found",
+			})
+			return
+		}
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to retrieve organization",
@@ -905,23 +960,21 @@ func (h *OrganizationHandlers) AddMemberHandler() gin.HandlerFunc {
 			return
 		}
 
-		if org == nil {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": "Organization not found",
-			})
-			return
-		}
-
-		// Check if user is already a member
+		// Check if user is already a member.
+		//
+		// Another existence probe with an inverted happy path: NOT being a
+		// member is the precondition for adding one. Left as `err != nil ->
+		// 500` this would fail every legitimate add.
 		existingMember, err := h.orgRepo.GetMember(c.Request.Context(), orgID, req.UserID)
-		if err != nil {
+		switch {
+		case identityerr.Missing(existingMember, err):
+			// Not a member yet — fall through and add.
+		case err != nil:
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to check existing membership",
 			})
 			return
-		}
-
-		if existingMember != nil {
+		default:
 			c.JSON(http.StatusConflict, gin.H{
 				"error": "User is already a member of this organization",
 			})
@@ -1001,16 +1054,15 @@ func (h *OrganizationHandlers) UpdateMemberHandler() gin.HandlerFunc {
 
 		// Get existing member
 		member, err := h.orgRepo.GetMember(c.Request.Context(), orgID, userID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to retrieve member",
+		if identityerr.Missing(member, err) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "Member not found in organization",
 			})
 			return
 		}
-
-		if member == nil {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": "Member not found in organization",
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to retrieve member",
 			})
 			return
 		}
@@ -1021,7 +1073,16 @@ func (h *OrganizationHandlers) UpdateMemberHandler() gin.HandlerFunc {
 
 		// Update role template
 		member.RoleTemplateID = req.RoleTemplateID
+		// The membership vanished between the GetMember above and this write.
+		// 404 matches the pre-check; the old contract reported a role change
+		// that never landed, and the audit log recorded it as though it had.
 		if err := h.orgRepo.UpdateMember(c.Request.Context(), member); err != nil {
+			if identityerr.IsNotFound(err) {
+				c.JSON(http.StatusNotFound, gin.H{
+					"error": "Member not found in organization",
+				})
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to update member role",
 			})
@@ -1106,7 +1167,17 @@ func (h *OrganizationHandlers) RemoveMemberHandler() gin.HandlerFunc {
 		if h.creds != nil {
 			var err error
 			wasMember, err = h.orgRepo.GetMemberWithRole(c.Request.Context(), orgID, userID)
-			if err != nil {
+			// "Not a member" is a CONFIRMED answer, not an unconfirmed one: it
+			// is precisely the typo/stale-UI/probe case this lookup exists to
+			// detect, and it correctly skips the revocation sweep. Only a real
+			// lookup failure leaves membership unconfirmed and therefore sets
+			// revocationCheckFailed — folding the miss in with it would flag
+			// `revocation_incomplete` on every no-op removal and train callers
+			// to ignore the field that matters.
+			switch {
+			case identityerr.Missing(wasMember, err):
+				wasMember = nil
+			case err != nil:
 				slog.Error("failed to check organization membership before removal; token revocation will be skipped",
 					"user_id", userID, "organization_id", orgID, "error", err)
 				wasMember = nil
@@ -1114,7 +1185,14 @@ func (h *OrganizationHandlers) RemoveMemberHandler() gin.HandlerFunc {
 			}
 		}
 
-		if err := h.orgRepo.RemoveMember(c.Request.Context(), orgID, userID); err != nil {
+		// A removal that matches no row now reports store.ErrNotFound where it
+		// used to report success. This endpoint stays IDEMPOTENT: removing a
+		// user who is already not a member has achieved the caller's intent,
+		// and the handler's own doc comment above is built on that call being
+		// safe to make against a non-member. Turning the second DELETE into a
+		// 500 would break every retry and every concurrent deprovision.
+		if err := h.orgRepo.RemoveMember(c.Request.Context(), orgID, userID); err != nil &&
+			!identityerr.IsNotFound(err) {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to remove member from organization",
 			})

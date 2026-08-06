@@ -12,6 +12,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/credlifecycle"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/identityerr"
 )
 
 // UserHandlers handles user management endpoints
@@ -115,16 +116,15 @@ func (h *UserHandlers) GetUserHandler() gin.HandlerFunc {
 		userID := c.Param("id")
 
 		user, err := h.userRepo.GetUserByID(c.Request.Context(), userID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to retrieve user",
+		if identityerr.Missing(user, err) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "User not found",
 			})
 			return
 		}
-
-		if user == nil {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": "User not found",
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to retrieve user",
 			})
 			return
 		}
@@ -177,16 +177,21 @@ func (h *UserHandlers) CreateUserHandler() gin.HandlerFunc {
 			return
 		}
 
-		// Check if user already exists
+		// Check if user already exists.
+		//
+		// Existence probe: not-found is the SUCCESS case. A bare
+		// `err != nil -> 500` would make creating ANY new user impossible,
+		// because every new user's email is by definition not yet taken.
 		existingUser, err := h.userRepo.GetUserByEmail(c.Request.Context(), req.Email)
-		if err != nil {
+		switch {
+		case identityerr.Missing(existingUser, err):
+			// Email is free — fall through and create.
+		case err != nil:
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to check existing user",
 			})
 			return
-		}
-
-		if existingUser != nil {
+		default:
 			c.JSON(http.StatusConflict, gin.H{
 				"error": "User with this email already exists",
 			})
@@ -251,16 +256,15 @@ func (h *UserHandlers) UpdateUserHandler() gin.HandlerFunc {
 
 		// Get existing user
 		user, err := h.userRepo.GetUserByID(c.Request.Context(), userID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to retrieve user",
+		if identityerr.Missing(user, err) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "User not found",
 			})
 			return
 		}
-
-		if user == nil {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": "User not found",
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to retrieve user",
 			})
 			return
 		}
@@ -271,27 +275,42 @@ func (h *UserHandlers) UpdateUserHandler() gin.HandlerFunc {
 		}
 
 		if req.Email != nil {
-			// Check if email is already taken
+			// Availability probe: not-found means the address is FREE, which is
+			// the ordinary case for a user changing their email. Note the
+			// existing carve-out for re-submitting one's OWN address is
+			// preserved — it lives in the default branch below.
 			existingUser, err := h.userRepo.GetUserByEmail(c.Request.Context(), *req.Email)
-			if err != nil {
+			switch {
+			case identityerr.Missing(existingUser, err):
+				// Email is free — fall through and apply.
+			case err != nil:
 				c.JSON(http.StatusInternalServerError, gin.H{
 					"error": "Failed to check email availability",
 				})
 				return
-			}
-
-			if existingUser != nil && existingUser.ID != userID {
-				c.JSON(http.StatusConflict, gin.H{
-					"error": "Email already in use by another user",
-				})
-				return
+			default:
+				if existingUser.ID != userID {
+					c.JSON(http.StatusConflict, gin.H{
+						"error": "Email already in use by another user",
+					})
+					return
+				}
 			}
 
 			user.Email = *req.Email
 		}
 
 		// Update in database
+		// Raced against a concurrent delete: 404, matching the existence
+		// pre-check at the top of this handler, instead of the false 200 the
+		// pre-v0.24.0 contract returned for an update that changed nothing.
 		if err := h.userRepo.Update(c.Request.Context(), user); err != nil {
+			if identityerr.IsNotFound(err) {
+				c.JSON(http.StatusNotFound, gin.H{
+					"error": "User not found",
+				})
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to update user",
 			})
@@ -323,16 +342,15 @@ func (h *UserHandlers) DeleteUserHandler() gin.HandlerFunc {
 
 		// Check if user exists
 		user, err := h.userRepo.GetUserByID(c.Request.Context(), userID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to retrieve user",
+		if identityerr.Missing(user, err) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "User not found",
 			})
 			return
 		}
-
-		if user == nil {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": "User not found",
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to retrieve user",
 			})
 			return
 		}
@@ -372,8 +390,16 @@ func (h *UserHandlers) DeleteUserHandler() gin.HandlerFunc {
 			}
 		}
 
-		// Delete user (cascading deletes will handle related records)
+		// Delete user (cascading deletes will handle related records).
+		// Already gone: 404, the same answer the existence pre-check gives a
+		// second DELETE, so both routes to "no such user" agree.
 		if err := h.userRepo.Delete(c.Request.Context(), userID); err != nil {
+			if identityerr.IsNotFound(err) {
+				c.JSON(http.StatusNotFound, gin.H{
+					"error": "User not found",
+				})
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to delete user",
 			})
@@ -509,16 +535,15 @@ func (h *UserHandlers) GetUserMembershipsHandler() gin.HandlerFunc {
 
 		// Check if user exists
 		user, err := h.userRepo.GetUserByID(c.Request.Context(), userID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to retrieve user",
+		if identityerr.Missing(user, err) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "User not found",
 			})
 			return
 		}
-
-		if user == nil {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": "User not found",
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to retrieve user",
 			})
 			return
 		}

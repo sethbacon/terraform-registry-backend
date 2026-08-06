@@ -473,7 +473,14 @@ func (h *Handlers) ConfigureAdmin(c *gin.Context) {
 
 	// Add user to default organization with admin role template
 	if err := h.orgRepo.AddMemberWithParams(ctx, defaultOrg.ID, user.ID, "admin"); err != nil {
-		// Might already be a member — try to update their role
+		// Might already be a member — try to update their role.
+		//
+		// As of identity v0.24.0 this fallback is genuinely verified: if the
+		// user is NOT already a member, UpdateMemberRole matches zero rows and
+		// reports store.ErrNotFound, so the 500 below fires. Previously it
+		// returned nil for that case and setup reported "Admin user configured
+		// successfully" having granted no membership at all — the operator was
+		// told they had an admin they did not have.
 		if updateErr := h.orgRepo.UpdateMemberRole(ctx, defaultOrg.ID, user.ID, "admin"); updateErr != nil {
 			slog.Error("setup: failed to add admin to organization", "error", err, "update_error", updateErr)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to add admin user to organization"})

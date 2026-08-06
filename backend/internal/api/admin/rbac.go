@@ -18,6 +18,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/credlifecycle"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/identityerr"
 	"github.com/terraform-registry/terraform-registry/internal/notify"
 	"github.com/terraform-registry/terraform-registry/internal/safego"
 )
@@ -286,13 +287,12 @@ func (h *RBACHandlers) GetRoleTemplate(c *gin.Context) {
 	}
 
 	template, err := h.rbacRepo.GetRoleTemplate(c.Request.Context(), id)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get role template"})
+	if identityerr.Missing(template, err) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Role template not found"})
 		return
 	}
-
-	if template == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Role template not found"})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get role template"})
 		return
 	}
 
@@ -329,13 +329,19 @@ func (h *RBACHandlers) CreateRoleTemplate(c *gin.Context) {
 		return
 	}
 
-	// Check if name already exists
+	// Check if name already exists.
+	//
+	// Existence probe: not-found is the SUCCESS case here. Leaving this as a
+	// bare `err != nil -> 500` would make creating a role template with any
+	// free name impossible.
 	existing, err := h.rbacRepo.GetRoleTemplateByName(c.Request.Context(), req.Name)
-	if err != nil {
+	switch {
+	case identityerr.Missing(existing, err):
+		// Name is free — fall through and create.
+	case err != nil:
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check existing template"})
 		return
-	}
-	if existing != nil {
+	default:
 		c.JSON(http.StatusConflict, gin.H{"error": "Role template with this name already exists"})
 		return
 	}
@@ -385,12 +391,12 @@ func (h *RBACHandlers) UpdateRoleTemplate(c *gin.Context) {
 	}
 
 	existing, err := h.rbacRepo.GetRoleTemplate(c.Request.Context(), id)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get role template"})
+	if identityerr.Missing(existing, err) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Role template not found"})
 		return
 	}
-	if existing == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Role template not found"})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get role template"})
 		return
 	}
 	if existing.IsSystem {
@@ -473,12 +479,12 @@ func (h *RBACHandlers) DeleteRoleTemplate(c *gin.Context) {
 	}
 
 	existing, err := h.rbacRepo.GetRoleTemplate(c.Request.Context(), id)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get role template"})
+	if identityerr.Missing(existing, err) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Role template not found"})
 		return
 	}
-	if existing == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Role template not found"})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get role template"})
 		return
 	}
 	if existing.IsSystem {

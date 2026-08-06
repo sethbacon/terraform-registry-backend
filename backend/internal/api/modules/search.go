@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/identityerr"
 )
 
 // validModuleSortFields defines the allowed values for the sort query parameter.
@@ -77,15 +78,15 @@ func SearchHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 		var orgID string
 		if cfg.MultiTenancy.Enabled {
 			org, err := orgRepo.GetDefaultOrganization(c.Request.Context())
-			if err != nil {
+			if identityerr.Missing(org, err) {
 				c.JSON(http.StatusInternalServerError, gin.H{
-					"error": "Failed to get organization context",
+					"error": "Default organization not found",
 				})
 				return
 			}
-			if org == nil {
+			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{
-					"error": "Default organization not found",
+					"error": "Failed to get organization context",
 				})
 				return
 			}

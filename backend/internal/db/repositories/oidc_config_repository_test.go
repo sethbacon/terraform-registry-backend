@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"github.com/sethbacon/terraform-suite-identity/identity/store"
 	"testing"
 	"time"
 
@@ -720,8 +721,12 @@ func TestGetActiveOIDCConfig_NotFound(t *testing.T) {
 		WillReturnError(sql.ErrNoRows)
 
 	cfg, err := repo.GetActiveOIDCConfig(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	// identity v0.24.0 reports a miss with the store.ErrNotFound sentinel
+	// instead of (nil, nil). Assert the SENTINEL, not merely a non-nil error:
+	// a bare `err != nil` check would also pass for a real database failure,
+	// which callers must not map to 404.
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("err = %v, want store.ErrNotFound", err)
 	}
 	if cfg != nil {
 		t.Errorf("expected nil, got %v", cfg)
@@ -769,8 +774,12 @@ func TestGetOIDCConfig_NotFound(t *testing.T) {
 		WillReturnError(sql.ErrNoRows)
 
 	cfg, err := repo.GetOIDCConfig(context.Background(), uuid.New())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	// identity v0.24.0 reports a miss with the store.ErrNotFound sentinel
+	// instead of (nil, nil). Assert the SENTINEL, not merely a non-nil error:
+	// a bare `err != nil` check would also pass for a real database failure,
+	// which callers must not map to 404.
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("err = %v, want store.ErrNotFound", err)
 	}
 	if cfg != nil {
 		t.Errorf("expected nil, got %v", cfg)
@@ -850,9 +859,14 @@ func TestDeactivateAllOIDCConfigs_Success(t *testing.T) {
 	mock.ExpectExec("UPDATE oidc_config SET is_active = false").
 		WillReturnResult(sqlmock.NewResult(0, 2))
 
-	err := repo.DeactivateAllOIDCConfigs(context.Background())
+	n, err := repo.DeactivateAllOIDCConfigs(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	// The wrapper passes the affected-row count through rather than discarding
+	// it: zero is a legitimate sweep result, so it is reported as a number.
+	if n != 2 {
+		t.Fatalf("deactivated rows = %d, want 2", n)
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/identityerr"
 	"github.com/terraform-registry/terraform-registry/internal/notify"
 	"github.com/terraform-registry/terraform-registry/internal/policy"
 	"github.com/terraform-registry/terraform-registry/internal/safego"
@@ -198,15 +199,15 @@ func UploadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Confi
 		orgID := tenantscope.OwnerOrg(c)
 		if orgID == "" {
 			org, err := orgRepo.GetDefaultOrganization(c.Request.Context())
-			if err != nil {
+			if identityerr.Missing(org, err) {
 				c.JSON(http.StatusInternalServerError, gin.H{
-					"error": "Failed to get organization context",
+					"error": "Default organization not found",
 				})
 				return
 			}
-			if org == nil {
+			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{
-					"error": "Default organization not found",
+					"error": "Failed to get organization context",
 				})
 				return
 			}

@@ -4,6 +4,7 @@
 package admin
 
 import (
+	"github.com/terraform-registry/terraform-registry/internal/identityerr"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -35,12 +36,12 @@ func (h *OIDCConfigAdminHandlers) GetActiveOIDCConfig(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	cfg, err := h.oidcConfigRepo.GetActiveOIDCConfig(ctx)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve OIDC group configuration"})
+	if identityerr.Missing(cfg, err) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "No active OIDC group configuration"})
 		return
 	}
-	if cfg == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "No active OIDC group configuration"})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve OIDC group configuration"})
 		return
 	}
 
@@ -70,12 +71,12 @@ func (h *OIDCConfigAdminHandlers) UpdateGroupMapping(c *gin.Context) {
 	}
 
 	cfg, err := h.oidcConfigRepo.GetActiveOIDCConfig(ctx)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve OIDC configuration"})
+	if identityerr.Missing(cfg, err) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "No active OIDC group configuration"})
 		return
 	}
-	if cfg == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "No active OIDC group configuration"})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve OIDC configuration"})
 		return
 	}
 
@@ -84,7 +85,16 @@ func (h *OIDCConfigAdminHandlers) UpdateGroupMapping(c *gin.Context) {
 		return
 	}
 
+	// Raced against a config delete/deactivate between the read above and this
+	// write: 404, matching the read's own answer for a missing active config,
+	// rather than the 200 the old contract returned for a save that wrote
+	// nothing — which left the admin UI showing a group mapping the deployment
+	// was not actually using.
 	if err := h.oidcConfigRepo.UpdateOIDCConfigExtraConfig(ctx, cfg.ID, cfg.ExtraConfig); err != nil {
+		if identityerr.IsNotFound(err) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "No active OIDC group configuration"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save group mapping"})
 		return
 	}
