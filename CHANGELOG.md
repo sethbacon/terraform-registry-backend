@@ -7,6 +7,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.0](https://github.com/sethbacon/terraform-registry-backend/compare/v3.5.2...v4.0.0) (2026-08-05)
+
+
+### ⚠ BREAKING CHANGES
+
+* **api:** Managing the shared Terraform binary mirror now requires the platform `admin` scope ([#782](https://github.com/sethbacon/terraform-registry-backend/issues/782)). `terraform_mirror_configs` has no organization column -- it is a single instance-wide resource -- yet create, update, delete, sync and deprecate were reachable with `mirrors:manage`, which the seeded `devops` and `org_owner` templates grant through membership in ONE organization. Any CI token calling POST /api/v1/admin/terraform-mirrors/:id/sync with a `mirrors:manage` credential must be re-issued with `admin`. Read routes are unchanged.
+
+### Bug Fixes
+
+* **admin:** create org-owned rows in the organization the guard authorized ([#784](https://github.com/sethbacon/terraform-registry-backend/issues/784)) ([155f705](https://github.com/sethbacon/terraform-registry-backend/commit/155f705d4d1cd5d7222d3e2867ffea7b956ceeb4)), closes [#778](https://github.com/sethbacon/terraform-registry-backend/issues/778)
+* **api:** announce the breaking authority changes already on main ([#786](https://github.com/sethbacon/terraform-registry-backend/issues/786)) ([c355edf](https://github.com/sethbacon/terraform-registry-backend/commit/c355edf849ee292b54a663fc0f20ab7e8a15240a))
+* **api:** require the platform admin scope to change the Terraform binary mirror ([#782](https://github.com/sethbacon/terraform-registry-backend/issues/782)) ([a963da8](https://github.com/sethbacon/terraform-registry-backend/commit/a963da8ff05f658ba32c83cf53efab0f09a48e18)), closes [#734](https://github.com/sethbacon/terraform-registry-backend/issues/734)
+* **auth:** bind every authority ceiling to the presenting credential ([#733](https://github.com/sethbacon/terraform-registry-backend/issues/733)) ([#785](https://github.com/sethbacon/terraform-registry-backend/issues/785)) ([91d79b8](https://github.com/sethbacon/terraform-registry-backend/commit/91d79b8fb75287eeddfbeb9fc577b0d2ebda5aad))
+* **auth:** revoke the session JWT on logout ([#764](https://github.com/sethbacon/terraform-registry-backend/issues/764)) ([#781](https://github.com/sethbacon/terraform-registry-backend/issues/781)) ([e2e3310](https://github.com/sethbacon/terraform-registry-backend/commit/e2e3310fca31903fbb1aa850beafd06c155be427))
+* bind every organization-owned route to a verified tenant scope ([#768](https://github.com/sethbacon/terraform-registry-backend/issues/768)) ([a32cbc4](https://github.com/sethbacon/terraform-registry-backend/commit/a32cbc460224f66feee21704f6a12a2e34330969))
+* invalidate every credential family when a principal's authority is reduced ([#767](https://github.com/sethbacon/terraform-registry-backend/issues/767)) ([98c9139](https://github.com/sethbacon/terraform-registry-backend/commit/98c9139d0bfd1a06893918f4a44bc2cf0e04a787))
+* **scim:** make the credential sweep structural in deprovisionUser ([#780](https://github.com/sethbacon/terraform-registry-backend/issues/780)) ([fa6b6e8](https://github.com/sethbacon/terraform-registry-backend/commit/fa6b6e899ac99e26b8ed5a89d3e38dafc3380e5d))
+* use the shared single-use state store for the SCM OAuth flow ([#769](https://github.com/sethbacon/terraform-registry-backend/issues/769)) ([5dcfc12](https://github.com/sethbacon/terraform-registry-backend/commit/5dcfc12434177689ec2c3166b7f31d3919cc30c5))
+
 ## [3.5.2](https://github.com/sethbacon/terraform-registry-backend/compare/v3.5.1...v3.5.2) (2026-07-31)
 
 
