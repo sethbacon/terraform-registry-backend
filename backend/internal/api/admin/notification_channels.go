@@ -20,6 +20,7 @@ import (
 
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/identityerr"
 	"github.com/terraform-registry/terraform-registry/internal/notify"
 )
 
@@ -201,12 +202,12 @@ func (h *NotificationChannelHandlers) UpdateChannel(c *gin.Context) {
 	}
 	enabled := req.Enabled == nil || *req.Enabled
 	updated, err := h.repo.Update(c.Request.Context(), id, req.Name, req.Type, req.events(), enabled, encrypted)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update channel"})
+	if identityerr.Missing(updated, err) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "channel not found"})
 		return
 	}
-	if updated == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "channel not found"})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update channel"})
 		return
 	}
 	c.JSON(http.StatusOK, updated)
@@ -223,7 +224,12 @@ func (h *NotificationChannelHandlers) DeleteChannel(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid channel id"})
 		return
 	}
-	if err := h.repo.Delete(c.Request.Context(), id); err != nil {
+	// This DELETE has no existence pre-check and is documented as returning
+	// 204. It STAYS idempotent: deleting a channel that is already gone has
+	// achieved the caller's intent, and turning the second call into a 500
+	// would break retries and any config-management loop that re-applies the
+	// same desired state.
+	if err := h.repo.Delete(c.Request.Context(), id); err != nil && !identityerr.IsNotFound(err) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete channel"})
 		return
 	}

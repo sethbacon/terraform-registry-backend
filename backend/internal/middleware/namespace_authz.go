@@ -39,6 +39,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/identityerr"
 	"github.com/terraform-registry/terraform-registry/internal/validation"
 )
 
@@ -492,12 +493,17 @@ func authorizeOrgAccessWith(c *gin.Context, orgRepo *repositories.OrganizationRe
 		return http.StatusForbidden, "Invalid user ID format"
 	}
 
+	// Non-membership is the denial this function exists to make, so it is
+	// tested before the generic failure branch — see the note in
+	// verifyKeyOwnerAuthorityWith below. Both spellings of the miss are handled
+	// so the behaviour is identical against the released identity version
+	// ((nil, nil)) and v0.24.0 (store.ErrNotFound).
 	member, err := orgRepo.GetMemberWithRole(c.Request.Context(), ownerOrgID, userID)
+	if identityerr.Missing(member, err) {
+		return http.StatusForbidden, "Resource is owned by another organization"
+	}
 	if err != nil {
 		return http.StatusInternalServerError, "Failed to check organization membership"
-	}
-	if member == nil {
-		return http.StatusForbidden, "Resource is owned by another organization"
 	}
 	if !auth.HasScope(member.RoleTemplateScopes, scope) {
 		return http.StatusForbidden, "Missing required scope in the owning organization"
@@ -555,12 +561,17 @@ func verifyKeyOwnerAuthorityWith(c *gin.Context, orgRepo *repositories.Organizat
 	if apiKey.UserID == nil || *apiKey.UserID == "" {
 		return http.StatusForbidden, "API key has no owning user; re-issue it through the API key endpoints"
 	}
+	// The miss IS the finding: an owner who is no longer a member is exactly
+	// the revoked-authority case this function was written for, so it must
+	// produce the 403 and never the 500. Testing it first also keeps the two
+	// outcomes distinguishable to an operator reading the logs — a denial and
+	// a database fault stop looking alike.
 	member, err := orgRepo.GetMemberWithRole(c.Request.Context(), orgID, *apiKey.UserID)
+	if identityerr.Missing(member, err) {
+		return http.StatusForbidden, "API key owner is no longer a member of the owning organization"
+	}
 	if err != nil {
 		return http.StatusInternalServerError, "Failed to check organization membership"
-	}
-	if member == nil {
-		return http.StatusForbidden, "API key owner is no longer a member of the owning organization"
 	}
 	if !auth.HasScope(member.RoleTemplateScopes, scope) {
 		return http.StatusForbidden, "Missing required scope in the owning organization"

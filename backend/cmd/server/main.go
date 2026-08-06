@@ -460,9 +460,14 @@ func serve(cfg *config.Config) error {
 		ticker := time.NewTicker(24 * time.Hour)
 		defer ticker.Stop()
 		for range ticker.C {
-			if err := tokenRepo.CleanupExpiredRevocations(context.Background()); err != nil {
+			// A sweep that removes nothing is a normal night, not a failure:
+			// the count is logged, never turned into an error.
+			n, err := tokenRepo.CleanupExpiredRevocations(context.Background())
+			if err != nil {
 				slog.Error("failed to clean up expired token revocations", "error", err)
+				continue
 			}
+			slog.Debug("cleaned up expired token revocations", "rows", n)
 		}
 	}()
 

@@ -39,6 +39,7 @@ import (
 
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/identityerr"
 )
 
 // AuthorityRetained reports whether every scope in have is still granted by
@@ -192,6 +193,17 @@ func (s *Sweeper) UserDeprovisioned(ctx context.Context, userID, reason string) 
 	}
 	for _, k := range keys {
 		if err := s.apiKeys.RevokeAPIKey(ctx, k.ID); err != nil {
+			// A key that vanished between the list above and this revoke is
+			// already in the state the sweep exists to produce, so it must NOT
+			// flip Incomplete. Incomplete is what tells a caller "credentials
+			// may still be live" — DeleteUserHandler refuses to delete the user
+			// on it — and raising it for a key that no longer exists would
+			// block deprovisioning on a benign race.
+			if identityerr.IsNotFound(err) {
+				slog.Info("credlifecycle: API key already gone before revocation",
+					"api_key_id", k.ID, "user_id", userID, "reason", reason)
+				continue
+			}
 			slog.Error("credlifecycle: failed to revoke API key",
 				"api_key_id", k.ID, "user_id", userID, "reason", reason, "error", err)
 			out.Incomplete = true
@@ -243,6 +255,13 @@ func (s *Sweeper) revokeOrgKeys(ctx context.Context, userID, orgID string, retai
 			continue
 		}
 		if err := s.apiKeys.RevokeAPIKey(ctx, k.ID); err != nil {
+			// Same race, same reasoning as revokeKeys: already gone is the
+			// desired end state, not an incomplete sweep.
+			if identityerr.IsNotFound(err) {
+				slog.Info("credlifecycle: org-bound API key already gone before revocation",
+					"api_key_id", k.ID, "user_id", userID, "organization_id", orgID, "reason", reason)
+				continue
+			}
 			slog.Error("credlifecycle: failed to revoke org-bound API key",
 				"api_key_id", k.ID, "user_id", userID, "organization_id", orgID, "reason", reason, "error", err)
 			out.Incomplete = true

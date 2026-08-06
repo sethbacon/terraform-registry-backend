@@ -19,6 +19,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/credlifecycle"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/identityerr"
 )
 
 // SCIM Schema URIs
@@ -254,13 +255,13 @@ func (h *Handlers) GetUser() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.Param("id")
 		user, err := h.userRepo.GetUserByID(c.Request.Context(), userID)
+		if identityerr.Missing(user, err) {
+			scimError(c, http.StatusNotFound, fmt.Sprintf("User %q not found", userID))
+			return
+		}
 		if err != nil {
 			slog.Error("scim: get user failed", "id", userID, "error", err)
 			scimError(c, http.StatusInternalServerError, "Failed to get user")
-			return
-		}
-		if user == nil {
-			scimError(c, http.StatusNotFound, fmt.Sprintf("User %q not found", userID))
 			return
 		}
 		c.JSON(http.StatusOK, userToSCIM(user, h.baseURL(c)))
@@ -369,7 +370,14 @@ func (h *Handlers) PatchUser() gin.HandlerFunc {
 			}
 		}
 
+		// The user was deleted between the read above and this write. SCIM
+		// callers reconcile against 404, so report the resource's absence
+		// rather than a server fault they would retry forever.
 		if err := h.userRepo.UpdateUser(ctx, user); err != nil {
+			if identityerr.IsNotFound(err) {
+				scimError(c, http.StatusNotFound, fmt.Sprintf("User %q not found", userID))
+				return
+			}
 			slog.Error("scim: update user failed", "id", userID, "error", err)
 			scimError(c, http.StatusInternalServerError, "Failed to update user")
 			return
@@ -440,7 +448,12 @@ func (h *Handlers) PutUser() gin.HandlerFunc {
 			slog.Info("scim: user deactivated via PUT", "id", userID)
 		}
 
+		// Same race as the PATCH path above: absent resource is a 404.
 		if err := h.userRepo.UpdateUser(ctx, user); err != nil {
+			if identityerr.IsNotFound(err) {
+				scimError(c, http.StatusNotFound, fmt.Sprintf("User %q not found", userID))
+				return
+			}
 			slog.Error("scim: put user failed", "id", userID, "error", err)
 			scimError(c, http.StatusInternalServerError, "Failed to update user")
 			return

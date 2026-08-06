@@ -11,6 +11,7 @@ import (
 
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/identityerr"
 )
 
 // AuditLogHandlers handles audit log read endpoints
@@ -196,13 +197,19 @@ func (h *AuditLogHandlers) GetAuditLogHandler() gin.HandlerFunc {
 			return
 		}
 
+		// BOTH "no such entry" and "out of this caller's scope" arrive as
+		// store.ErrNotFound, and both must keep mapping to 404. Splitting them
+		// — 404 for absent, 403 for out-of-scope — would hand back exactly the
+		// existence oracle the scoped query above exists to deny: a 403 tells
+		// the caller the id is real and belongs to someone else. The handler's
+		// inability to tell the two apart is the property, not a limitation.
 		log, err := h.auditRepo.GetAuditLog(c.Request.Context(), logID, auditScope)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve audit log entry"})
+		if identityerr.Missing(log, err) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Audit log entry not found"})
 			return
 		}
-		if log == nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Audit log entry not found"})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve audit log entry"})
 			return
 		}
 

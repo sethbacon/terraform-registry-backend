@@ -2,6 +2,8 @@ package repositories
 
 import (
 	"context"
+	"errors"
+	"github.com/sethbacon/terraform-suite-identity/identity/store"
 	"testing"
 	"time"
 
@@ -171,8 +173,12 @@ func TestGetRoleTemplate_NotFound(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(roleTemplateCols))
 
 	tpl, err := repo.GetRoleTemplate(context.Background(), uuid.New())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	// identity v0.24.0 reports a miss with the store.ErrNotFound sentinel
+	// instead of (nil, nil). Assert the SENTINEL, not merely a non-nil error:
+	// a bare `err != nil` check would also pass for a real database failure,
+	// which callers must not map to 404.
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("err = %v, want store.ErrNotFound", err)
 	}
 	if tpl != nil {
 		t.Errorf("expected nil, got %v", tpl)
@@ -214,8 +220,12 @@ func TestGetRoleTemplateByName_NotFound(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(roleTemplateCols))
 
 	tpl, err := repo.GetRoleTemplateByName(context.Background(), "unknown")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	// identity v0.24.0 reports a miss with the store.ErrNotFound sentinel
+	// instead of (nil, nil). Assert the SENTINEL, not merely a non-nil error:
+	// a bare `err != nil` check would also pass for a real database failure,
+	// which callers must not map to 404.
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("err = %v, want store.ErrNotFound", err)
 	}
 	if tpl != nil {
 		t.Errorf("expected nil, got %v", tpl)

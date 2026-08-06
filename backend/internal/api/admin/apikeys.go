@@ -15,6 +15,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/credscope"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/identityerr"
 )
 
 // APIKeyHandlers handles API key management endpoints
@@ -264,16 +265,20 @@ func (h *APIKeyHandlers) CreateAPIKeyHandler() gin.HandlerFunc {
 		// Resolve organization ID - if 'default', get the actual default org ID
 		orgID := req.OrganizationID
 		if orgID == "default" || orgID == "" {
+			// A deployment with no default organization is a misconfiguration,
+			// not a client error, so BOTH branches stay 500 — only the message
+			// differs, and the miss now gets the message that actually names
+			// the problem instead of the generic lookup failure.
 			defaultOrg, err := h.orgRepo.GetDefaultOrganization(c.Request.Context())
-			if err != nil {
+			if identityerr.Missing(defaultOrg, err) {
 				c.JSON(http.StatusInternalServerError, gin.H{
-					"error": "Failed to get default organization",
+					"error": "Default organization not found",
 				})
 				return
 			}
-			if defaultOrg == nil {
+			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{
-					"error": "Default organization not found",
+					"error": "Failed to get default organization",
 				})
 				return
 			}
@@ -282,16 +287,15 @@ func (h *APIKeyHandlers) CreateAPIKeyHandler() gin.HandlerFunc {
 
 		// Get user's role template for this organization to validate scope permissions
 		memberWithRole, err := h.orgRepo.GetMemberWithRole(c.Request.Context(), orgID, userID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to get user role information",
+		if identityerr.Missing(memberWithRole, err) {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "You are not a member of this organization",
 			})
 			return
 		}
-
-		if memberWithRole == nil {
-			c.JSON(http.StatusForbidden, gin.H{
-				"error": "You are not a member of this organization",
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to get user role information",
 			})
 			return
 		}
@@ -425,16 +429,15 @@ func (h *APIKeyHandlers) GetAPIKeyHandler() gin.HandlerFunc {
 
 		// Get API key
 		apiKey, err := h.apiKeyRepo.GetByID(c.Request.Context(), keyID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to retrieve API key",
+		if identityerr.Missing(apiKey, err) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "API key not found",
 			})
 			return
 		}
-
-		if apiKey == nil {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": "API key not found",
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to retrieve API key",
 			})
 			return
 		}
@@ -482,16 +485,15 @@ func (h *APIKeyHandlers) DeleteAPIKeyHandler() gin.HandlerFunc {
 
 		// Get API key first to check authorization
 		apiKey, err := h.apiKeyRepo.GetByID(c.Request.Context(), keyID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to retrieve API key",
+		if identityerr.Missing(apiKey, err) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "API key not found",
 			})
 			return
 		}
-
-		if apiKey == nil {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": "API key not found",
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to retrieve API key",
 			})
 			return
 		}
@@ -512,8 +514,17 @@ func (h *APIKeyHandlers) DeleteAPIKeyHandler() gin.HandlerFunc {
 			}
 		}
 
-		// Delete API key
+		// Delete API key. A miss means the key went away between the GetByID
+		// above and this write; report 404, the same answer the pre-check gives
+		// a second DELETE, rather than the "deleted successfully" the old
+		// contract returned for a deletion that did nothing.
 		if err := h.apiKeyRepo.Delete(c.Request.Context(), keyID); err != nil {
+			if identityerr.IsNotFound(err) {
+				c.JSON(http.StatusNotFound, gin.H{
+					"error": "API key not found",
+				})
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to delete API key",
 			})
@@ -562,16 +573,15 @@ func (h *APIKeyHandlers) UpdateAPIKeyHandler() gin.HandlerFunc {
 
 		// Get API key
 		apiKey, err := h.apiKeyRepo.GetByID(c.Request.Context(), keyID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to retrieve API key",
+		if identityerr.Missing(apiKey, err) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "API key not found",
 			})
 			return
 		}
-
-		if apiKey == nil {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": "API key not found",
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to retrieve API key",
 			})
 			return
 		}
@@ -606,12 +616,6 @@ func (h *APIKeyHandlers) UpdateAPIKeyHandler() gin.HandlerFunc {
 
 			// Get user's role template for this org to validate scope permissions
 			memberWithRole, err := h.orgRepo.GetMemberWithRole(c.Request.Context(), apiKey.OrganizationID, userID)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"error": "Failed to get user role information",
-				})
-				return
-			}
 
 			// Fail closed exactly like CreateAPIKeyHandler: changing a key's scopes
 			// requires a current role in the key's organization. The previous code
@@ -624,9 +628,22 @@ func (h *APIKeyHandlers) UpdateAPIKeyHandler() gin.HandlerFunc {
 			// re-authenticate with the key and self-escalate to a platform-wide
 			// admin wildcard (issue #650, CWE-269). A null role template grants zero
 			// scopes and must be treated as such.
-			if memberWithRole == nil {
+			//
+			// The non-membership denial is tested BEFORE the lookup-failure
+			// branch. Ordered the other way, identity v0.24.0's store.ErrNotFound
+			// would be consumed by `err != nil` and a removed member's
+			// scope-widening attempt would return 500 instead of 403 — still
+			// refused, but for the wrong reason and with a retryable status on
+			// a privilege-escalation path.
+			if identityerr.Missing(memberWithRole, err) {
 				c.JSON(http.StatusForbidden, gin.H{
 					"error": "You are not a member of this organization",
+				})
+				return
+			}
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"error": "Failed to get user role information",
 				})
 				return
 			}
@@ -687,8 +704,15 @@ func (h *APIKeyHandlers) UpdateAPIKeyHandler() gin.HandlerFunc {
 			apiKey.ExpiresAt = &parsed
 		}
 
-		// Update in database
+		// Update in database. Raced against a delete: 404, matching the
+		// existence pre-check above.
 		if err := h.apiKeyRepo.Update(c.Request.Context(), apiKey); err != nil {
+			if identityerr.IsNotFound(err) {
+				c.JSON(http.StatusNotFound, gin.H{
+					"error": "API key not found",
+				})
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to update API key",
 			})
@@ -751,16 +775,15 @@ func (h *APIKeyHandlers) RotateAPIKeyHandler() gin.HandlerFunc {
 
 		// Get the existing API key
 		oldKey, err := h.apiKeyRepo.GetByID(c.Request.Context(), keyID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to retrieve API key",
+		if identityerr.Missing(oldKey, err) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "API key not found",
 			})
 			return
 		}
-
-		if oldKey == nil {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": "API key not found",
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to retrieve API key",
 			})
 			return
 		}
@@ -807,15 +830,15 @@ func (h *APIKeyHandlers) RotateAPIKeyHandler() gin.HandlerFunc {
 			return
 		}
 		owner, err := h.orgRepo.GetMemberWithRole(c.Request.Context(), oldKey.OrganizationID, *oldKey.UserID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to get user role information",
+		if identityerr.Missing(owner, err) {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "API key owner is no longer a member of the key's organization",
 			})
 			return
 		}
-		if owner == nil {
-			c.JSON(http.StatusForbidden, gin.H{
-				"error": "API key owner is no longer a member of the key's organization",
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to get user role information",
 			})
 			return
 		}
@@ -880,7 +903,12 @@ func (h *APIKeyHandlers) RotateAPIKeyHandler() gin.HandlerFunc {
 
 		if req.GracePeriodHours == 0 {
 			// Immediate revocation - delete the old key
-			if err := h.apiKeyRepo.Delete(c.Request.Context(), oldKey.ID); err != nil {
+			// An already-absent old key IS revoked — that is the desired end
+			// state, so it reports "revoked" rather than "revocation_failed".
+			// Calling it a failure would send an operator hunting for a key
+			// that no longer exists.
+			if err := h.apiKeyRepo.Delete(c.Request.Context(), oldKey.ID); err != nil &&
+				!identityerr.IsNotFound(err) {
 				// Log error but don't fail - new key is already created
 				// The user might need to manually delete the old key
 				oldKeyStatus = "revocation_failed"
@@ -891,6 +919,10 @@ func (h *APIKeyHandlers) RotateAPIKeyHandler() gin.HandlerFunc {
 			// Schedule expiration of old key
 			gracePeriodEnd := time.Now().Add(time.Duration(req.GracePeriodHours) * time.Hour)
 			oldKey.ExpiresAt = &gracePeriodEnd
+			// Unlike the immediate-revocation branch above, a missing old key
+			// cannot be reported as a successful grace-period extension: there
+			// is no row left to expire, so the caller is told the update did
+			// not land.
 			if err := h.apiKeyRepo.Update(c.Request.Context(), oldKey); err != nil {
 				oldKeyStatus = "grace_period_update_failed"
 			} else {

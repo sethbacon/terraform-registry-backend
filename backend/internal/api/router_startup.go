@@ -155,6 +155,9 @@ func reloadNotificationsConfigFromDB(cfg *config.Config, repo *repositories.OIDC
 // without OIDC pre-configured in config.yaml. Any failure is logged and left
 // non-fatal (the app still serves without OIDC).
 func applyPersistedOIDCProvider(authHandlers *admin.AuthHandlers, repo *repositories.OIDCConfigRepository, tokenCipher *crypto.TokenCipher) {
+	// The collapsed `err != nil || cfg == nil` absorbs store.ErrNotFound: a
+	// deployment with no active OIDC config is the ordinary un-configured case,
+	// which this function is documented to treat as "serve without OIDC".
 	activeOIDCCfg, oidcErr := repo.GetActiveOIDCConfig(context.Background())
 	if oidcErr != nil || activeOIDCCfg == nil {
 		return
@@ -164,13 +167,23 @@ func applyPersistedOIDCProvider(authHandlers *admin.AuthHandlers, repo *reposito
 		slog.Error("Failed to decrypt OIDC client secret from database", "error", decErr)
 		return
 	}
+	// GetScopes returns the standard defaults ALONGSIDE its error, so a
+	// corrupted scopes column keeps the behaviour it had before v0.24.0 (fall
+	// back to openid/email/profile) rather than taking SSO down at startup.
+	// What changes is that the fallback is now said out loud — before, a
+	// hand-edited column silently narrowed the scopes every login requested.
+	scopes, scopesErr := activeOIDCCfg.GetScopes()
+	if scopesErr != nil {
+		slog.Error("Failed to parse OIDC scopes from database config; falling back to default scopes",
+			"error", scopesErr, "issuer", activeOIDCCfg.IssuerURL, "scopes", scopes)
+	}
 	liveCfg := &config.OIDCConfig{
 		Enabled:      true,
 		IssuerURL:    activeOIDCCfg.IssuerURL,
 		ClientID:     activeOIDCCfg.ClientID,
 		ClientSecret: clientSecret,
 		RedirectURL:  activeOIDCCfg.RedirectURL,
-		Scopes:       activeOIDCCfg.GetScopes(),
+		Scopes:       scopes,
 	}
 	provider, provErr := oidc.NewOIDCProvider(liveCfg)
 	if provErr != nil {

@@ -11,6 +11,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/identityerr"
 )
 
 // DevHandlers handles development-only endpoints
@@ -95,16 +96,15 @@ func (h *DevHandlers) ImpersonateUserHandler() gin.HandlerFunc {
 
 		// Get the target user
 		targetUser, err := h.userRepo.GetUserByID(c.Request.Context(), targetUserID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to retrieve user",
+		if identityerr.Missing(targetUser, err) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "User not found",
 			})
 			return
 		}
-
-		if targetUser == nil {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": "User not found",
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to retrieve user",
 			})
 			return
 		}
@@ -213,16 +213,15 @@ func (h *DevHandlers) ListUsersForImpersonationHandler() gin.HandlerFunc {
 func (h *DevHandlers) DevLoginHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		user, err := h.userRepo.GetUserByEmail(c.Request.Context(), "admin@dev.local")
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to look up dev admin user",
+		if identityerr.Missing(user, err) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "Dev admin user (admin@dev.local) not found. Run the seed script: psql -f backend/scripts/create-dev-admin-user.sql",
 			})
 			return
 		}
-
-		if user == nil {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": "Dev admin user (admin@dev.local) not found. Run the seed script: psql -f backend/scripts/create-dev-admin-user.sql",
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to look up dev admin user",
 			})
 			return
 		}
