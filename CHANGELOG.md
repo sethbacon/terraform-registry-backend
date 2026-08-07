@@ -7,6 +7,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.1.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.0.0...v4.1.0) (2026-08-07)
+
+
+### ⚠ BREAKING CHANGES
+
+* **identity:** read-then-mutate races on users, organizations, memberships, API keys and OIDC configs now return 404 where they previously returned a success status for a write that changed nothing.
+
+### chore
+
+* **identity:** map store.ErrNotFound at every call site before v0.24.0 ([#789](https://github.com/sethbacon/terraform-registry-backend/issues/789)) ([d6f792d](https://github.com/sethbacon/terraform-registry-backend/commit/d6f792d2729b9b160d194e6b942e1c95b03f62c0))
+
 ## [4.0.0](https://github.com/sethbacon/terraform-registry-backend/compare/v3.5.2...v4.0.0) (2026-08-05)
 
 
