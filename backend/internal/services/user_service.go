@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/terraform-registry/terraform-registry/internal/credlifecycle"
+	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
 
 // UserService provides GDPR data-subject operations.
@@ -255,7 +256,12 @@ func (s *UserService) EraseUser(ctx context.Context, userID string, erasedBy str
 	// after the commit keeps the erasure atomic and reports the sweep result
 	// separately.
 	if s.creds != nil {
-		if out := s.creds.UserDeprovisioned(ctx, userID, "gdpr erasure"); out.Incomplete {
+		// Platform-wide: an erasure that left the subject's credentials working
+		// in some organization would not be an erasure. The transaction above
+		// has already deleted every membership row unconditionally, so there is
+		// no narrower scope this could honestly carry.
+		if out := s.creds.UserDeprovisioned(ctx, userID,
+			repositories.OrgScopeAllOrganizations(), "gdpr erasure"); out.Incomplete {
 			slog.Error("credential sweep incomplete after GDPR erasure; the user's sessions may still be live",
 				"user_id", userID, "erased_by", erasedBy)
 			return fmt.Errorf("user data erased but credential revocation was incomplete for %s", userID)

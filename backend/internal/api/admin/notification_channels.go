@@ -8,6 +8,7 @@
 package admin
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -68,7 +69,12 @@ type notificationChannelRequest struct {
 // non-nil, additionally rejects a non-email (URL) target that violates the
 // egress policy (private/metadata/loopback ranges) — defense in depth against
 // SSRF via an admin-configured destination URL.
-func (req *notificationChannelRequest) validate(guard *identityhttpsafe.Guard) error {
+//
+// ctx carries the request's cancellation into ValidateURL, whose destination
+// check performs a DNS lookup: a client that disconnects mid-validation now
+// cancels that lookup instead of holding the goroutine for the resolver's full
+// timeout.
+func (req *notificationChannelRequest) validate(ctx context.Context, guard *identityhttpsafe.Guard) error {
 	if !validNotificationChannelTypes[req.Type] {
 		return fmt.Errorf(`type must be one of "webhook", "slack", "teams", "email"`)
 	}
@@ -89,7 +95,7 @@ func (req *notificationChannelRequest) validate(guard *identityhttpsafe.Guard) e
 				return fmt.Errorf("target must be a valid http(s) URL")
 			}
 			if guard != nil {
-				if err := guard.ValidateURL(req.Target); err != nil {
+				if err := guard.ValidateURL(ctx, req.Target); err != nil {
 					return err
 				}
 			}
@@ -139,7 +145,7 @@ func (h *NotificationChannelHandlers) CreateChannel(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "name and type are required"})
 		return
 	}
-	if err := req.validate(h.egress); err != nil {
+	if err := req.validate(c.Request.Context(), h.egress); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -187,7 +193,7 @@ func (h *NotificationChannelHandlers) UpdateChannel(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "name and type are required"})
 		return
 	}
-	if err := req.validate(h.egress); err != nil {
+	if err := req.validate(c.Request.Context(), h.egress); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}

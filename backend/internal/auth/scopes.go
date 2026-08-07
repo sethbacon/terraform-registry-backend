@@ -67,6 +67,23 @@ var readWritePairs = identityauth.ReadWritePairs{
 	string(ScopeSCMRead):           string(ScopeSCMManage),
 }
 
+// ReadWritePairs returns a copy of the registry's read-implies-write table, for
+// the shared identity helpers that take it as an explicit parameter rather than
+// through one of the wrappers below — store.OrganizationRepository.OrgScopeForUser
+// is the one that matters, since it decides which organizations a caller's role
+// templates grant a scope in and would otherwise resolve `modules:read` as
+// unheld by an operator carrying only `modules:write`.
+//
+// A copy, not the map itself: the table is the registry's scope semantics and a
+// caller must not be able to edit them from outside this package.
+func ReadWritePairs() identityauth.ReadWritePairs {
+	out := make(identityauth.ReadWritePairs, len(readWritePairs))
+	for k, v := range readWritePairs {
+		out[k] = v
+	}
+	return out
+}
+
 // AllScopes returns all valid scopes
 func AllScopes() []Scope {
 	return []Scope{

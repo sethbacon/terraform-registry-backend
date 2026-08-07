@@ -484,6 +484,12 @@ failed to discover services at https://registry.terraform.io
   egress proxy, that must be handled at the network layer (e.g. a transparent proxy, or routing
   the server's default route through the proxy), not via environment variables.
 - If the target is intentionally an internal/private address, add it to `security.egress.allowlist`
+  (`TFR_SECURITY_EGRESS_ALLOWLIST`, comma-separated). **The same list now governs
+  authentication**: OIDC discovery, the JWKS signing keys, the token exchange and the
+  suite sibling-discovery poll all go through the same guard, so a self-hosted IdP or a
+  cluster-internal sibling must be named there too. A denied IdP shows up as a startup
+  failure naming the endpoint, not as a failed login. See
+  [OIDC_CONFIGURATION.md](OIDC_CONFIGURATION.md#self-hosted-idp-the-egress-allow-list-is-required).
 - Verify the upstream URL is correct (default: `https://registry.terraform.io`)
 
 ### GPG Verification Failed

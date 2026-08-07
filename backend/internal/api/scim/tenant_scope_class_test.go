@@ -1,6 +1,8 @@
 package scim
 
 import (
+	"database/sql/driver"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -58,6 +60,10 @@ type scimDeprovisionPath struct {
 	route string
 	// request issues the deactivation.
 	request func() *http.Request
+	// updatesUserRow is true for the paths that persist the user row after
+	// deprovisioning (PUT and PATCH). DELETE does not, so priming the UPDATE
+	// unconditionally would leave an unmet expectation on that path alone.
+	updatesUserRow bool
 }
 
 func scimDeprovisionPaths() []scimDeprovisionPath {
@@ -79,6 +85,7 @@ func scimDeprovisionPaths() []scimDeprovisionPath {
 				req.Header.Set("Content-Type", "application/json")
 				return req
 			},
+			updatesUserRow: true,
 		},
 		{
 			symbol: "scim.Handlers.applyReplaceOp (path=active)",
@@ -90,6 +97,7 @@ func scimDeprovisionPaths() []scimDeprovisionPath {
 				req.Header.Set("Content-Type", "application/json")
 				return req
 			},
+			updatesUserRow: true,
 		},
 		{
 			symbol: "scim.Handlers.applyReplaceOp (pathless)",
@@ -101,6 +109,7 @@ func scimDeprovisionPaths() []scimDeprovisionPath {
 				req.Header.Set("Content-Type", "application/json")
 				return req
 			},
+			updatesUserRow: true,
 		},
 	}
 }
@@ -136,13 +145,42 @@ func scimRouter(t *testing.T) (*gin.Engine, sqlmock.Sqlmock) {
 	return r, mock
 }
 
+// boundScope matches the array argument an OrgScope binds into a statement,
+// asserting which organization ids it names and which it does not.
+//
+// This is the assertion the class needs now that the tenant constraint is a
+// PREDICATE rather than a loop. Before identity v0.25.0 the only way to check
+// it was to count DELETE statements and inspect their per-row arguments; the
+// removal is one statement now, so what has to be pinned is the CONTENT of the
+// scope it carries.
+type boundScope struct {
+	want    []string
+	notWant []string
+}
+
+func (b boundScope) Match(v driver.Value) bool {
+	s := fmt.Sprint(v)
+	for _, w := range b.want {
+		if !strings.Contains(s, w) {
+			return false
+		}
+	}
+	for _, n := range b.notWant {
+		if strings.Contains(s, n) {
+			return false
+		}
+	}
+	return true
+}
+
 // TestSCIMDeprovisionClass_OnlyRemovesInScopeMemberships is the class assertion.
 //
 // The target belongs to BOTH organizations; the caller holds scim:provision in
-// Alpha only. Exactly one DELETE — Alpha's — may be issued. sqlmock fails on any
-// unexpected statement, so a sweep that also removes Beta's row (or that falls
-// back to the single unscoped RemoveAllMembershipsForUser) surfaces here rather
-// than passing silently.
+// Alpha only. ONE removal is issued and it carries a tenant predicate naming
+// Alpha and only Alpha, so Beta's row is unreachable by the database rather than
+// by a filter this handler applies to rows it already read. A mutant that passes
+// the platform-wide scope renders the predicate as the literal TRUE, binds no
+// array at all, and fails the expectation below.
 func TestSCIMDeprovisionClass_OnlyRemovesInScopeMemberships(t *testing.T) {
 	for _, path := range scimDeprovisionPaths() {
 		t.Run(path.symbol, func(t *testing.T) {
@@ -154,28 +192,23 @@ func TestSCIMDeprovisionClass_OnlyRemovesInScopeMemberships(t *testing.T) {
 					scimTargetID, "victim@example.com", "Victim", nil, time.Now(), time.Now()))
 
 			// The CALLER's memberships: scim:provision in Alpha only.
-			mock.ExpectQuery("(?s)FROM organization_members").
+			mock.ExpectQuery("(?s)SELECT.*FROM organization_members").
 				WillReturnRows(sqlmock.NewRows(scimMembershipCols).AddRow(
 					scimOrgAlpha, "Alpha", "role-1", time.Now(),
 					"provisioner", "Provisioner", []byte(`["scim:provision"]`)))
 
-			// The TARGET's memberships: both organizations.
-			mock.ExpectQuery("(?s)FROM organization_members").
-				WillReturnRows(sqlmock.NewRows(scimMembershipCols).
-					AddRow(scimOrgAlpha, "Alpha", "role-1", time.Now(),
-						"viewer", "Viewer", []byte(`["modules:read"]`)).
-					AddRow(scimOrgBeta, "Beta", "role-2", time.Now(),
-						"viewer", "Viewer", []byte(`["modules:read"]`)))
-
-			// EXACTLY ONE removal, for Alpha. Any second DELETE — or the
-			// unscoped sweep — is an unexpected statement.
-			mock.ExpectExec("(?s)DELETE FROM organization_members").
-				WithArgs(scimOrgAlpha, scimTargetID).
-				WillReturnResult(sqlmock.NewResult(0, 1))
+			// GUARD scim-deprovision-tenant-scope. One statement, scoped to
+			// Alpha, RETURNING the organizations it actually removed — the value
+			// that then scopes the credential sweep.
+			mock.ExpectQuery(`(?s)DELETE FROM organization_members WHERE user_id = \$1 AND organization_id = ANY\(\$2\)`).
+				WithArgs(scimTargetID, boundScope{want: []string{scimOrgAlpha}, notWant: []string{scimOrgBeta}}).
+				WillReturnRows(sqlmock.NewRows([]string{"organization_id"}).AddRow(scimOrgAlpha))
 
 			// PUT/PATCH persist the user row afterwards; DELETE does not.
-			mock.ExpectExec("(?s)UPDATE users").
-				WillReturnResult(sqlmock.NewResult(0, 1))
+			if path.updatesUserRow {
+				mock.ExpectExec("(?s)UPDATE users").
+					WillReturnResult(sqlmock.NewResult(0, 1))
+			}
 
 			w := httptest.NewRecorder()
 			r.ServeHTTP(w, path.request())
@@ -184,17 +217,10 @@ func TestSCIMDeprovisionClass_OnlyRemovesInScopeMemberships(t *testing.T) {
 				t.Fatalf("%s (%s): status = %d, body=%s",
 					path.symbol, path.route, w.Code, w.Body.String())
 			}
-
-			// The assertion that matters: Beta's membership was never touched.
-			// GUARD scim-deprovision-tenant-scope.
 			if err := mock.ExpectationsWereMet(); err != nil {
-				if strings.Contains(err.Error(), "DELETE FROM organization_members") &&
-					strings.Contains(err.Error(), scimOrgBeta) {
-					t.Fatalf("%s (%s): removed a membership in an organization the "+
-						"caller has no scim:provision in — guard "+
-						"scim-deprovision-tenant-scope missing?: %v",
-						path.symbol, path.route, err)
-				}
+				t.Fatalf("%s (%s): the scoped membership removal was not issued as expected — "+
+					"guard scim-deprovision-tenant-scope missing?: %v",
+					path.symbol, path.route, err)
 			}
 		})
 	}
@@ -211,15 +237,12 @@ func TestSCIMDeprovisionClass_NoScopeRemovesNothing(t *testing.T) {
 			mock.ExpectQuery("(?s)FROM users WHERE id").
 				WillReturnRows(sqlmock.NewRows(scimUserCols).AddRow(
 					scimTargetID, "victim@example.com", "Victim", nil, time.Now(), time.Now()))
-			// Caller holds scim:provision NOWHERE.
-			mock.ExpectQuery("(?s)FROM organization_members").
+			// Caller holds scim:provision NOWHERE, so the resolved scope
+			// matches nothing and RemoveAllMembershipsForUser short-circuits
+			// without a round trip. No DELETE is primed, so any removal at all
+			// is an unexpected statement.
+			mock.ExpectQuery("(?s)SELECT.*FROM organization_members").
 				WillReturnRows(sqlmock.NewRows(scimMembershipCols))
-			// Target's memberships may still be read; no DELETE is primed, so
-			// any removal at all is an unexpected statement.
-			mock.ExpectQuery("(?s)FROM organization_members").
-				WillReturnRows(sqlmock.NewRows(scimMembershipCols).
-					AddRow(scimOrgBeta, "Beta", "role-2", time.Now(),
-						"viewer", "Viewer", []byte(`["modules:read"]`)))
 			mock.ExpectExec("(?s)UPDATE users").
 				WillReturnResult(sqlmock.NewResult(0, 1))
 

@@ -564,6 +564,50 @@ if each individual user stays within their personal limit.
 | `TFR_SECURITY_RATE_LIMITING_ORG_REQUESTS_PER_MINUTE` | int  | `0`     | Per-organization aggregate limit. 0 disables. |
 | `TFR_SECURITY_RATE_LIMITING_ORG_BURST`               | int  | `0`     | Organization-level burst allowance.           |
 
+### Egress Allow-List (SSRF Guard)
+
+Every outbound HTTP request whose target is operator- or admin-configurable is
+resolve-and-pinned against a deny-list of non-public addresses: loopback, RFC 1918,
+link-local (including the `169.254.169.254` cloud metadata endpoint), CGNAT and
+IPv6 ULA. `security.egress.allowlist` **widens** that deny-list; empty — the
+default — denies every internal target.
+
+It covers mirror upstreams, SCM provider base URLs, the policy bundle, the OSV
+endpoint, SAML IdP metadata and audit webhooks — **and, since
+terraform-suite-identity v0.25.0, authentication**: OIDC discovery, the JWKS
+signing keys that decide which ID tokens are valid, the authorization-code token
+exchange that carries the `client_secret`, and the suite sibling-discovery poll.
+
+**You need an entry if any of these is true:**
+
+| Situation | Symptom if you skip it |
+| --- | --- |
+| Self-hosted / internal IdP (Keycloak, ADFS, Okta on-prem, anything on RFC 1918) | OIDC provider construction fails at startup, naming the denied endpoint |
+| Suite sibling (Terraform State Manager) on a cluster-internal address | The sibling reads as `unreachable`; the cross-app panels stay empty |
+| Mirror upstream or SCM instance on an internal address | Sync/connector calls fail at dial time |
+| Local compose stack with any of the above as a container | Login and suite discovery both stop working |
+| Everything public (Entra, Okta cloud, GitHub.com, registry.terraform.io) | Nothing — already permitted |
+
+```yaml
+security:
+  egress:
+    allowlist:
+      - keycloak.corp.internal    # IdP hostname
+      - registry.corp.internal    # internal mirror upstream or sibling
+      - 10.20.0.0/16              # or a CIDR, where the hostname is not stable
+```
+
+| Variable                          | Type          | Default | Description                                                          |
+| --------------------------------- | ------------- | ------- | -------------------------------------------------------------------- |
+| `TFR_SECURITY_EGRESS_ALLOWLIST`   | comma-sep list | *(empty)* | Hostnames, IPs or CIDRs exempted from the non-public-address deny-list. |
+
+Prefer the **hostname** over the CIDR: it is narrower, and it survives the host
+getting a different address.
+
+`HTTPS_PROXY`/`HTTP_PROXY` are deliberately **not** honoured by any of these
+clients — a forward proxy would let the real destination bypass the resolve-and-pin
+check. Route through a proxy at the network layer if you need one.
+
 ### TLS
 
 TLS termination at the Go layer is supported but most deployments terminate TLS at the

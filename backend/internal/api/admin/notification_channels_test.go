@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"net/http"
@@ -84,7 +85,7 @@ func TestNotificationChannelRequest_Validate(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := tc.req.validate(tc.guard)
+			err := tc.req.validate(context.Background(), tc.guard)
 			if (err != nil) != tc.wantErr {
 				t.Errorf("validate() err = %v, wantErr %v", err, tc.wantErr)
 			}

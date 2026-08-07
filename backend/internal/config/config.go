@@ -608,10 +608,27 @@ type SecurityConfig struct {
 // webhooks). By default outbound requests may not target loopback, private
 // (RFC 1918 / ULA), link-local (including the cloud metadata endpoint
 // 169.254.169.254), or otherwise non-public addresses.
+//
+// SINCE terraform-suite-identity v0.25.0 THIS LIST ALSO GOVERNS AUTHENTICATION.
+// The shared identity module routes its own outbound traffic through the same
+// policy: the OIDC discovery document, the JWKS signing keys that decide which
+// ID tokens are valid, the authorization-code token exchange that carries the
+// client_secret, and the suite sibling-discovery poll. A deployment whose
+// identity provider or sibling app lives on an internal address — every
+// self-hosted Keycloak/ADFS/Okta-on-prem, every cluster-internal sibling, and
+// every local compose stack — must name it here or OIDC provider construction
+// fails at startup and the sibling reads as unreachable. A public IdP (Entra,
+// Okta cloud, Google, Auth0) needs nothing.
+//
+// The list WIDENS the deny-list; it never narrows it. Empty means deny every
+// internal target, which is the fail-closed default.
 type EgressConfig struct {
 	// Allowlist exempts specific hostnames, IPs, or CIDR ranges from the
 	// private-address deny-list, for deployments that legitimately mirror from
-	// internal registries (e.g. ["registry.corp.internal", "10.20.0.0/16"]).
+	// internal registries or authenticate against an internal IdP
+	// (e.g. ["keycloak", "registry.corp.internal", "10.20.0.0/16"]).
+	// Prefer the HOSTNAME over the CIDR: it is narrower, and it survives the
+	// host getting a different address.
 	// Default empty = deny all private/internal targets.
 	// Env: TFR_SECURITY_EGRESS_ALLOWLIST (comma-separated).
 	Allowlist []string `mapstructure:"allowlist"`

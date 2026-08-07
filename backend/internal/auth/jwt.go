@@ -239,10 +239,18 @@ func GetJWTSecret() string {
 // which the flat token could be escalated all the way to the admin wildcard.
 func GenerateJWT(userID, email string, scopes []string, expiresIn time.Duration) (string, error) {
 	_ = GetJWTSecret() // ensure the secret is validated and the TokenManager exists
-	// SA1019: TokenManager.Generate is deprecated in favor of GenerateForOrg;
-	// the registry issues suite-wide (org-less) JWTs by design — see the
-	// issue #652 disposition on this function.
-	return tokenManager.Generate(userID, email, scopes, expiresIn) //nolint:staticcheck // SA1019: deliberate org-less suite-wide token; issue #652 disposition documented on GenerateJWT
+	// Generate, not GenerateForOrg: the registry issues suite-wide (org-less)
+	// JWTs by design — see the issue #652 disposition on this function.
+	//
+	// It carried a `Deprecated:` marker until terraform-suite-identity v0.25.0,
+	// which removed it: minting an org-less token has no replacement, and the
+	// misuse the marker warned about — handing the cross-organization scope
+	// UNION to GenerateForOrg, which mints an org-BOUND token carrying another
+	// organization's scopes — was made not to type-check instead. `scopes` here
+	// is that union, and it reaches the GlobalScopes parameter; passing it to
+	// GenerateForOrg would now require writing auth.OrgScopes(scopes)
+	// explicitly, which is greppable in a way a comment was not.
+	return tokenManager.Generate(userID, email, scopes, expiresIn)
 }
 
 // ValidateJWT parses and validates a JWT via the shared identity TokenManager.

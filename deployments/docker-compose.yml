@@ -68,6 +68,21 @@ services:
       TFR_SECURITY_TLS_ENABLED: "false"
       TFR_SECURITY_RATE_LIMITING_ENABLED: "true"
 
+      # Outbound egress allow-list (SSRF guard). Empty by default: loopback,
+      # RFC 1918, link-local (including the 169.254.169.254 metadata endpoint),
+      # CGNAT and IPv6 ULA are all denied.
+      #
+      # UNCOMMENT THIS IF YOU TURN ON OIDC ABOVE, or add a suite sibling. Since
+      # terraform-suite-identity v0.25.0 the OIDC discovery document, the JWKS
+      # signing keys, the token exchange and the sibling-discovery poll all go
+      # through this guard, and a container reachable by service name resolves
+      # to a bridge-network RFC 1918 address — so an IdP or sibling running in
+      # this stack is denied until it is named here, and the backend refuses to
+      # construct the OIDC provider at startup rather than failing the first
+      # login. Allow-list the HOSTNAME rather than the bridge CIDR: it is
+      # narrower and it survives the container getting a different address.
+      # TFR_SECURITY_EGRESS_ALLOWLIST: "keycloak,tsm-backend"
+
       # Logging
       TFR_LOGGING_LEVEL: info
       TFR_LOGGING_FORMAT: json

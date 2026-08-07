@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	identityhttpsafe "github.com/sethbacon/terraform-suite-identity/identity/httpsafe"
 	"github.com/sethbacon/terraform-suite-identity/identity/suite"
 
 	"github.com/terraform-registry/terraform-registry/internal/config"
@@ -40,8 +41,13 @@ func buildSuiteManifest(cfg *config.Config) suite.Manifest {
 		App:           "terraform-registry",
 		Version:       AppVersion,
 		BuildDate:     AppBuildDate,
-		PublicURL:     pub,
-		Identity:      suite.IdentityInfo{Issuer: suiteIssuer, SharedStore: cfg.Suite.IdentitySharedStore, Schema: "identity"},
+		// This app's OWN public URL, asserted about itself. It is untrusted from
+		// the READER's point of view, which is what the type records — the
+		// sibling receiving this manifest must resolve it through its own egress
+		// guard before fetching it, exactly as the registry does below with the
+		// sibling's.
+		PublicURL: suite.UntrustedURL(pub),
+		Identity:  suite.IdentityInfo{Issuer: suiteIssuer, SharedStore: cfg.Suite.IdentitySharedStore, Schema: "identity"},
 		Capabilities: []suite.Capability{
 			{ID: "modules.v1"}, {ID: "providers.v1"}, {ID: "mirror.v1"}, {ID: "oci.v1"},
 		},
@@ -85,10 +91,22 @@ func startSuiteDiscovery(cfg *config.Config) *suite.DiscoveryClient {
 	if cfg.Suite.SiblingURL == "" {
 		return nil
 	}
+	// The discovery client carries the deployment's egress policy from v0.25.0
+	// on: it is what validates and dials both the manifest poll and, via
+	// SiblingPublicURL/GuardedClient, anything a consumer builds on the
+	// sibling-asserted publicUrl. A separate instance built from the same
+	// security.egress.allowlist as router.go's egressGuard/identityGuard,
+	// following the convention already established there — the Guard is
+	// immutable and policy-equivalent, so instance identity carries no meaning.
+	guard, err := identityhttpsafe.NewGuard(cfg.Security.Egress.Allowlist)
+	if err != nil {
+		slog.Error("suite: invalid security.egress.allowlist; sibling discovery disabled", "error", err)
+		return nil
+	}
 	// NewDiscoveryClient now fails closed on a plaintext "http://" sibling URL
 	// (v0.17.0) rather than constructing a client for it; treat that the same
 	// as "no sibling configured" — non-fatal, the registry stays standalone.
-	dc, err := suite.NewDiscoveryClient(cfg.Suite.SiblingURL, buildSuiteManifest(cfg), cfg.Suite.PollInterval)
+	dc, err := suite.NewDiscoveryClient(cfg.Suite.SiblingURL, buildSuiteManifest(cfg), cfg.Suite.PollInterval, guard)
 	if err != nil {
 		slog.Error("suite: failed to start sibling discovery client", "sibling_url", cfg.Suite.SiblingURL, "error", err)
 		return nil
@@ -135,26 +153,24 @@ func moduleConsumersHandler(getClient func() *suite.DiscoveryClient, cfg *config
 			c.JSON(http.StatusOK, empty)
 			return
 		}
-		state, m := dc.Snapshot()
-		if state != suite.StateActive || m == nil || m.PublicURL == "" {
+		// SiblingPublicURL is the whole sequence in one call: sibling must be
+		// Active, must advertise a publicUrl, and that URL — self-advertised by
+		// the sibling, not operator-pinned — must pass the deployment's egress
+		// policy before anything is built from it. It replaces the snapshot
+		// check, the emptiness check and the standalone ValidateURL pre-flight
+		// that used to sit here as three separate steps any of which could be
+		// dropped. Every failure is still an empty 200, so the panel hides and
+		// the registry stays standalone.
+		siblingBase, err := dc.SiblingPublicURL(c.Request.Context())
+		if err != nil {
 			c.JSON(http.StatusOK, empty)
 			return
 		}
 
 		// siblingURL is the trusted origin advertised via discovery — the single
 		// host the outbound request below is permitted to reach.
-		siblingURL, err := url.Parse(m.PublicURL)
+		siblingURL, err := url.Parse(siblingBase)
 		if err != nil || siblingURL.Host == "" {
-			c.JSON(http.StatusOK, empty)
-			return
-		}
-		// m.PublicURL is the sibling's self-advertised manifest field, not the
-		// operator-pinned SiblingURL, so its scheme and target range are
-		// re-checked against the egress policy up front (the httpsafe client
-		// below re-validates at dial time regardless, but this fails fast with
-		// a clear reason instead of an opaque "sibling unreachable" empty
-		// result on the happy-path shape).
-		if err := egressGuard.ValidateURL(m.PublicURL); err != nil {
 			c.JSON(http.StatusOK, empty)
 			return
 		}

@@ -77,6 +77,52 @@ This endpoint MUST match exactly what you configure in your OIDC provider - incl
 - Exact path: `/api/v1/auth/callback`
 - No trailing slashes
 
+### Self-hosted IdP: the egress allow-list is required
+
+**Read this before pointing the registry at an internal identity provider.** It is
+the one OIDC setting whose omission produces no configuration error and no failed
+login — the process refuses to start.
+
+Every outbound request the authentication layer makes goes through the registry's
+SSRF egress guard: the discovery document, the JWKS signing keys that decide which
+ID tokens are valid, and the authorization-code token exchange that carries the
+`client_secret`. That guard's default policy **denies loopback, RFC 1918,
+link-local (including the `169.254.169.254` cloud metadata address), CGNAT and
+IPv6 ULA.**
+
+| Your IdP | Action |
+| --- | --- |
+| Entra ID, Okta cloud, Google, Auth0, any public issuer | Nothing — already permitted |
+| Self-hosted Keycloak / ADFS / Okta on-prem, or anything on a private address | Add its hostname to `security.egress.allowlist` |
+| A container in a local compose stack, reachable by service name | Add the service name (it resolves to a bridge-network RFC 1918 address) |
+
+```yaml
+security:
+  egress:
+    allowlist:
+      - keycloak.corp.internal   # the IdP hostname — preferred
+      # - 10.42.0.0/16           # or the CIDR, if the hostname is not stable
+```
+
+```bash
+export TFR_SECURITY_EGRESS_ALLOWLIST=keycloak.corp.internal
+```
+
+Allow-list the **hostname** rather than the CIDR: it is narrower, and it survives
+the host getting a different address.
+
+If you skip it, startup fails with an error naming the denied endpoint, for
+example:
+
+```err
+egress to "keycloak.corp.internal" (10.42.1.9) blocked: private address — add the host to security.egress.allowlist if this internal target is intentional
+```
+
+`AllowInsecureIssuer` / `DEV_MODE` does **not** cover this. The scheme rule (must
+the issuer be HTTPS?) and the destination rule (where may this process connect?)
+are deliberately separate: opting out of HTTPS does not also opt out of knowing
+where your traffic goes.
+
 ### Environment Variables
 
 Configure OIDC using environment variables with the `TFR_AUTH_OIDC_` prefix:

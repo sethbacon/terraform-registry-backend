@@ -110,45 +110,43 @@ func TestNewOIDCProvider_HTTPIssuerRejected(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// GetAuthURL — deprecated (superseded by BeginAuth, see nonce_pkce_test.go)
-// but kept for backward compatibility, so its URL-building behavior stays
-// covered.
+// BeginAuth — the only authorization-URL builder since identity v0.25.0.
+//
+// GetAuthURL was deleted there: it built a bare OAuth2 URL with no nonce and no
+// PKCE challenge, so a login started through it could not be bound at the
+// callback. The URL-shape assertions it carried are made here instead, against
+// the call that does carry both bindings.
 // ---------------------------------------------------------------------------
 
-func TestGetAuthURL_ContainsState(t *testing.T) {
+func TestBeginAuth_URLContainsStateClientIDAndResponseType(t *testing.T) {
 	p := newMockOIDCProvider()
-	url := p.GetAuthURL("my-state-123") //nolint:staticcheck // SA1019: intentionally exercising the deprecated-but-retained method
-	if !strings.Contains(url, "state=my-state-123") {
-		t.Errorf("GetAuthURL = %q, want to contain state=my-state-123", url)
+	challenge, err := p.BeginAuth("my-state-123")
+	if err != nil {
+		t.Fatalf("BeginAuth returned error: %v", err)
 	}
-}
-
-func TestGetAuthURL_ContainsClientID(t *testing.T) {
-	p := newMockOIDCProvider()
-	url := p.GetAuthURL("s") //nolint:staticcheck // SA1019: intentionally exercising the deprecated-but-retained method
-	if !strings.Contains(url, "client_id=test-client") {
-		t.Errorf("GetAuthURL = %q, want to contain client_id=test-client", url)
-	}
-}
-
-func TestGetAuthURL_ContainsResponseTypeCode(t *testing.T) {
-	p := newMockOIDCProvider()
-	url := p.GetAuthURL("s") //nolint:staticcheck // SA1019: intentionally exercising the deprecated-but-retained method
-	if !strings.Contains(url, "response_type=code") {
-		t.Errorf("GetAuthURL = %q, want to contain response_type=code", url)
+	for _, want := range []string{"state=my-state-123", "client_id=test-client", "response_type=code"} {
+		if !strings.Contains(challenge.URL, want) {
+			t.Errorf("BeginAuth URL = %q, want to contain %q", challenge.URL, want)
+		}
 	}
 }
 
 // ---------------------------------------------------------------------------
-// ExchangeCode
+// ExchangeAndVerify
 // ---------------------------------------------------------------------------
 
-func TestExchangeCode_NetworkError(t *testing.T) {
+func TestExchangeAndVerify_NoVerifier_Refused(t *testing.T) {
+	// newMockOIDCProvider skips discovery, so the provider has no verifier. The
+	// exchange must be refused OUTRIGHT rather than performed and its ID token
+	// handed back unverified — the token endpoint here (port 1) would refuse the
+	// connection anyway, so the assertion that matters is that the error arrives
+	// without one.
 	p := newMockOIDCProvider()
-	// Token URL is port 1 — always refused immediately.
-	_, err := p.ExchangeCode(context.Background(), "some-code")
+	_, _, err := p.ExchangeAndVerify(context.Background(), "some-code", CallbackSession{
+		Nonce: "n", CodeVerifier: "v",
+	})
 	if err == nil {
-		t.Error("ExchangeCode expected error for unreachable token endpoint, got nil")
+		t.Error("ExchangeAndVerify expected error on a provider built without discovery, got nil")
 	}
 }
 

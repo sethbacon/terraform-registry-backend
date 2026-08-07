@@ -36,8 +36,11 @@ func sampleAPIKeyRow() *sqlmock.Rows {
 
 func TestAPIKeyRepository_GetAPIKeysByPrefix_Found(t *testing.T) {
 	repo, mock := newAPIKeyRepo(t)
+	// Two arguments since identity v0.25.0: the lookup is bounded (LIMIT $2) so
+	// one non-discriminating prefix cannot fan a single unauthenticated request
+	// across every live key as bcrypt candidates.
 	mock.ExpectQuery("SELECT.*FROM api_keys.*WHERE key_prefix").
-		WithArgs("abcd1234").
+		WithArgs("abcd1234", sqlmock.AnyArg()).
 		WillReturnRows(sampleAPIKeyRow())
 
 	keys, err := repo.GetAPIKeysByPrefix(context.Background(), "abcd1234")

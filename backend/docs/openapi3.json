@@ -18180,6 +18180,7 @@
                                 "type": "integer"
                             },
                             "use_tls": {
+                                "description": "A POINTER so an omitted \"use_tls\" is distinguishable from an explicit\nfalse. As a plain bool, a full-replace PUT that did not mention the\nfield decoded to false and silently switched the relay to plaintext.\nSame reasoning as Events *NotificationEventsJSON above and as the\ntest-email input below, which already used a pointer for this field.",
                                 "type": "boolean"
                             },
                             "username": {

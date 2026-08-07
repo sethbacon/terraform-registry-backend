@@ -18,6 +18,23 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/identityerr"
 )
 
+// TENANCY OF THE BY-ID API-KEY ROUTES.
+//
+// GET/PUT/DELETE/rotate on /apikeys/:id read the row with
+// OrgScopeAllOrganizations() and then authorize it in memory: the caller must
+// OWN the key, or hold the platform-wide admin wildcard. That check is not an
+// organization scope and cannot be expressed as one — a plain user with no
+// api_keys:manage anywhere must still reach their own key, in whichever
+// organization it is bound to — so narrowing the read would 404 every ordinary
+// owner. The in-memory check is strictly stronger than any OrgScope these
+// callers could resolve, and it is what decides the 403.
+//
+// The WRITES that follow are scoped to the organization of the row just read
+// (OrgScopeOrganizations(key.OrganizationID)), so the statement that mutates a
+// credential carries the tenant predicate the read deliberately did not: a key
+// that moved organizations between the read and the write is refused rather
+// than rewritten from a stale snapshot.
+
 // APIKeyHandlers handles API key management endpoints
 type APIKeyHandlers struct {
 	cfg        *config.Config
@@ -141,17 +158,19 @@ func (h *APIKeyHandlers) ListAPIKeysHandler() gin.HandlerFunc {
 			}
 			if canManageOrg {
 				// Caller manages keys in this org: see all keys in the org.
-				keys, err = h.apiKeyRepo.ListByOrganization(c.Request.Context(), orgID)
+				keys, err = h.apiKeyRepo.ListAPIKeysByOrganization(c.Request.Context(), orgID,
+					repositories.OrgScopeOrganizations(orgID))
 			} else {
 				// Otherwise only the caller's own keys in the org.
-				keys, err = h.apiKeyRepo.ListByUserAndOrganization(c.Request.Context(), userID, orgID)
+				keys, err = h.apiKeyRepo.ListByUserAndOrganization(c.Request.Context(), userID, orgID,
+					repositories.OrgScopeOrganizations(orgID))
 			}
 		case isPlatformAdmin:
 			// Only platform admins may enumerate keys across all organizations.
-			keys, err = h.apiKeyRepo.ListAll(c.Request.Context())
+			keys, err = h.apiKeyRepo.ListAPIKeys(c.Request.Context(), repositories.OrgScopeAllOrganizations())
 		default:
 			// Regular users only see their own keys across all organizations.
-			keys, err = h.apiKeyRepo.ListByUser(c.Request.Context(), userID)
+			keys, err = h.apiKeyRepo.ListAPIKeysByUser(c.Request.Context(), userID, repositories.OrgScopeAllOrganizations())
 		}
 
 		if err != nil {
@@ -286,7 +305,7 @@ func (h *APIKeyHandlers) CreateAPIKeyHandler() gin.HandlerFunc {
 		}
 
 		// Get user's role template for this organization to validate scope permissions
-		memberWithRole, err := h.orgRepo.GetMemberWithRole(c.Request.Context(), orgID, userID)
+		memberWithRole, err := h.orgRepo.GetMemberWithRole(c.Request.Context(), orgID, userID, repositories.OrgScopeAllOrganizations())
 		if identityerr.Missing(memberWithRole, err) {
 			c.JSON(http.StatusForbidden, gin.H{
 				"error": "You are not a member of this organization",
@@ -388,7 +407,7 @@ func (h *APIKeyHandlers) CreateAPIKeyHandler() gin.HandlerFunc {
 			CreatedAt:      time.Now(),
 		}
 
-		if err := h.apiKeyRepo.Create(c.Request.Context(), apiKey); err != nil {
+		if err := h.apiKeyRepo.CreateAPIKey(c.Request.Context(), apiKey, repositories.OrgScopeOrganizations(orgID)); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to create API key",
 			})
@@ -428,7 +447,7 @@ func (h *APIKeyHandlers) GetAPIKeyHandler() gin.HandlerFunc {
 		keyID := c.Param("id")
 
 		// Get API key
-		apiKey, err := h.apiKeyRepo.GetByID(c.Request.Context(), keyID)
+		apiKey, err := h.apiKeyRepo.GetAPIKeyByID(c.Request.Context(), keyID, repositories.OrgScopeAllOrganizations())
 		if identityerr.Missing(apiKey, err) {
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": "API key not found",
@@ -484,7 +503,7 @@ func (h *APIKeyHandlers) DeleteAPIKeyHandler() gin.HandlerFunc {
 		keyID := c.Param("id")
 
 		// Get API key first to check authorization
-		apiKey, err := h.apiKeyRepo.GetByID(c.Request.Context(), keyID)
+		apiKey, err := h.apiKeyRepo.GetAPIKeyByID(c.Request.Context(), keyID, repositories.OrgScopeAllOrganizations())
 		if identityerr.Missing(apiKey, err) {
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": "API key not found",
@@ -518,7 +537,7 @@ func (h *APIKeyHandlers) DeleteAPIKeyHandler() gin.HandlerFunc {
 		// above and this write; report 404, the same answer the pre-check gives
 		// a second DELETE, rather than the "deleted successfully" the old
 		// contract returned for a deletion that did nothing.
-		if err := h.apiKeyRepo.Delete(c.Request.Context(), keyID); err != nil {
+		if err := h.apiKeyRepo.RevokeAPIKey(c.Request.Context(), keyID, repositories.OrgScopeOrganizations(apiKey.OrganizationID)); err != nil {
 			if identityerr.IsNotFound(err) {
 				c.JSON(http.StatusNotFound, gin.H{
 					"error": "API key not found",
@@ -572,7 +591,7 @@ func (h *APIKeyHandlers) UpdateAPIKeyHandler() gin.HandlerFunc {
 		}
 
 		// Get API key
-		apiKey, err := h.apiKeyRepo.GetByID(c.Request.Context(), keyID)
+		apiKey, err := h.apiKeyRepo.GetAPIKeyByID(c.Request.Context(), keyID, repositories.OrgScopeAllOrganizations())
 		if identityerr.Missing(apiKey, err) {
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": "API key not found",
@@ -615,7 +634,7 @@ func (h *APIKeyHandlers) UpdateAPIKeyHandler() gin.HandlerFunc {
 			}
 
 			// Get user's role template for this org to validate scope permissions
-			memberWithRole, err := h.orgRepo.GetMemberWithRole(c.Request.Context(), apiKey.OrganizationID, userID)
+			memberWithRole, err := h.orgRepo.GetMemberWithRole(c.Request.Context(), apiKey.OrganizationID, userID, repositories.OrgScopeAllOrganizations())
 
 			// Fail closed exactly like CreateAPIKeyHandler: changing a key's scopes
 			// requires a current role in the key's organization. The previous code
@@ -706,7 +725,7 @@ func (h *APIKeyHandlers) UpdateAPIKeyHandler() gin.HandlerFunc {
 
 		// Update in database. Raced against a delete: 404, matching the
 		// existence pre-check above.
-		if err := h.apiKeyRepo.Update(c.Request.Context(), apiKey); err != nil {
+		if err := h.apiKeyRepo.Update(c.Request.Context(), apiKey, repositories.OrgScopeOrganizations(apiKey.OrganizationID)); err != nil {
 			if identityerr.IsNotFound(err) {
 				c.JSON(http.StatusNotFound, gin.H{
 					"error": "API key not found",
@@ -774,7 +793,7 @@ func (h *APIKeyHandlers) RotateAPIKeyHandler() gin.HandlerFunc {
 		}
 
 		// Get the existing API key
-		oldKey, err := h.apiKeyRepo.GetByID(c.Request.Context(), keyID)
+		oldKey, err := h.apiKeyRepo.GetAPIKeyByID(c.Request.Context(), keyID, repositories.OrgScopeAllOrganizations())
 		if identityerr.Missing(oldKey, err) {
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": "API key not found",
@@ -829,7 +848,7 @@ func (h *APIKeyHandlers) RotateAPIKeyHandler() gin.HandlerFunc {
 			})
 			return
 		}
-		owner, err := h.orgRepo.GetMemberWithRole(c.Request.Context(), oldKey.OrganizationID, *oldKey.UserID)
+		owner, err := h.orgRepo.GetMemberWithRole(c.Request.Context(), oldKey.OrganizationID, *oldKey.UserID, repositories.OrgScopeAllOrganizations())
 		if identityerr.Missing(owner, err) {
 			c.JSON(http.StatusForbidden, gin.H{
 				"error": "API key owner is no longer a member of the key's organization",
@@ -890,7 +909,7 @@ func (h *APIKeyHandlers) RotateAPIKeyHandler() gin.HandlerFunc {
 			CreatedAt:      time.Now(),
 		}
 
-		if err := h.apiKeyRepo.Create(c.Request.Context(), newKey); err != nil {
+		if err := h.apiKeyRepo.CreateAPIKey(c.Request.Context(), newKey, repositories.OrgScopeOrganizations(newKey.OrganizationID)); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to create new API key",
 			})
@@ -907,7 +926,7 @@ func (h *APIKeyHandlers) RotateAPIKeyHandler() gin.HandlerFunc {
 			// state, so it reports "revoked" rather than "revocation_failed".
 			// Calling it a failure would send an operator hunting for a key
 			// that no longer exists.
-			if err := h.apiKeyRepo.Delete(c.Request.Context(), oldKey.ID); err != nil &&
+			if err := h.apiKeyRepo.RevokeAPIKey(c.Request.Context(), oldKey.ID, repositories.OrgScopeOrganizations(oldKey.OrganizationID)); err != nil &&
 				!identityerr.IsNotFound(err) {
 				// Log error but don't fail - new key is already created
 				// The user might need to manually delete the old key
@@ -923,7 +942,7 @@ func (h *APIKeyHandlers) RotateAPIKeyHandler() gin.HandlerFunc {
 			// cannot be reported as a successful grace-period extension: there
 			// is no row left to expire, so the caller is told the update did
 			// not land.
-			if err := h.apiKeyRepo.Update(c.Request.Context(), oldKey); err != nil {
+			if err := h.apiKeyRepo.Update(c.Request.Context(), oldKey, repositories.OrgScopeOrganizations(oldKey.OrganizationID)); err != nil {
 				oldKeyStatus = "grace_period_update_failed"
 			} else {
 				oldKeyStatus = "expires_at"

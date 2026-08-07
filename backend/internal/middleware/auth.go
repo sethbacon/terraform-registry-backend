@@ -122,7 +122,7 @@ func AuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, a
 			// ordering the checks the other way round would turn every
 			// deleted-user request into a 500 and hand a caller a retryable
 			// status for a condition that will never resolve.
-			user, err := userRepo.GetUserByID(c.Request.Context(), claims.UserID)
+			user, err := userRepo.GetUserByID(c.Request.Context(), claims.UserID, repositories.OrgScopeAllOrganizations())
 			if identityerr.Missing(user, err) {
 				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 					"error": "User not found",
@@ -255,7 +255,7 @@ func AuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, a
 
 			// Load user if exists
 			if apiKey.UserID != nil {
-				user, _ := userRepo.GetUserByID(c.Request.Context(), *apiKey.UserID)
+				user, _ := userRepo.GetUserByID(c.Request.Context(), *apiKey.UserID, repositories.OrgScopeAllOrganizations())
 				if user != nil {
 					c.Set("user", user)
 					c.Set("user_id", user.ID)
@@ -309,7 +309,7 @@ func currentKeyScopes(ctx context.Context, orgRepo *repositories.OrganizationRep
 	// Both spellings of the miss are handled so this reads the same against the
 	// released identity version, where it arrives as (nil, nil), and v0.24.0,
 	// where it arrives as store.ErrNotFound.
-	member, err := orgRepo.GetMemberWithRole(ctx, apiKey.OrganizationID, *apiKey.UserID)
+	member, err := orgRepo.GetMemberWithRole(ctx, apiKey.OrganizationID, *apiKey.UserID, repositories.OrgScopeAllOrganizations())
 	if identityerr.Missing(member, err) {
 		return nil, http.StatusUnauthorized, "API key owner is no longer a member of the bound organization"
 	}
@@ -368,7 +368,7 @@ func OptionalAuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepos
 			}
 			if !revoked {
 				// JWT is valid, load user and set in context
-				user, err := userRepo.GetUserByID(c.Request.Context(), claims.UserID)
+				user, err := userRepo.GetUserByID(c.Request.Context(), claims.UserID, repositories.OrgScopeAllOrganizations())
 				if err == nil && user != nil {
 					c.Set("user", user)
 					c.Set("user_id", user.ID)
@@ -446,7 +446,7 @@ func OptionalAuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepos
 
 				// Load user if exists
 				if apiKey.UserID != nil {
-					user, _ := userRepo.GetUserByID(c.Request.Context(), *apiKey.UserID)
+					user, _ := userRepo.GetUserByID(c.Request.Context(), *apiKey.UserID, repositories.OrgScopeAllOrganizations())
 					if user != nil {
 						c.Set("user", user)
 						c.Set("user_id", user.ID)

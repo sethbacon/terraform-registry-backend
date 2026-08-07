@@ -224,8 +224,8 @@ func (h *AuthHandlers) LoginHandler() gin.HandlerFunc {
 				})
 				return
 			}
-			sessionState.Nonce = challenge.Nonce
-			sessionState.CodeVerifier = challenge.CodeVerifier
+			sessionState.Nonce = challenge.Session.Nonce
+			sessionState.CodeVerifier = challenge.Session.CodeVerifier
 			if err := h.stateStore.Save(c.Request.Context(), state, sessionState, 10*time.Minute); err != nil {
 				slog.Error("failed to save OIDC state", "error", err)
 				c.JSON(http.StatusInternalServerError, gin.H{
@@ -251,8 +251,8 @@ func (h *AuthHandlers) LoginHandler() gin.HandlerFunc {
 				})
 				return
 			}
-			sessionState.Nonce = challenge.Nonce
-			sessionState.CodeVerifier = challenge.CodeVerifier
+			sessionState.Nonce = challenge.Session.Nonce
+			sessionState.CodeVerifier = challenge.Session.CodeVerifier
 			if err := h.stateStore.Save(c.Request.Context(), state, sessionState, 10*time.Minute); err != nil {
 				slog.Error("failed to save OIDC state", "error", err)
 				c.JSON(http.StatusInternalServerError, gin.H{
@@ -401,29 +401,20 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 				return
 			}
 
-			// Exchange code for token. The PKCE verifier persisted at BeginAuth
-			// time binds this exchange to the authorization request this specific
-			// login made, so a stolen authorization code cannot be redeemed by
-			// anyone who did not also observe the verifier.
-			token, err := oidcProv.ExchangeCode(ctx, code, oidc.WithPKCEVerifier(sessionState.CodeVerifier))
+			// Complete the login in one call. ExchangeAndVerify applies BOTH of
+			// this login's bindings itself: the PKCE verifier persisted at
+			// BeginAuth time binds the exchange to the authorization request this
+			// specific login made (so a stolen authorization code cannot be
+			// redeemed by anyone who did not also observe the verifier), and the
+			// nonce binds verification to this login (so a replayed or injected ID
+			// token issued for a different attempt is rejected). Both are required
+			// parameters, so neither can be omitted here.
+			_, idToken, err := oidcProv.ExchangeAndVerify(ctx, code, oidc.CallbackSession{
+				Nonce:        sessionState.Nonce,
+				CodeVerifier: sessionState.CodeVerifier,
+			})
 			if err != nil {
-				callbackError("token_exchange_failed", "Failed to exchange authorization code for token.")
-				return
-			}
-
-			// Extract ID token
-			rawIDToken, ok := token.Extra("id_token").(string)
-			if !ok {
-				callbackError("no_id_token", "The identity provider did not return an ID token.")
-				return
-			}
-
-			// Verify ID token. The nonce persisted at BeginAuth time binds
-			// verification to this specific login, so a replayed or injected ID
-			// token issued for a different login attempt is rejected.
-			idToken, err := oidcProv.VerifyIDToken(ctx, rawIDToken, oidc.WithExpectedNonce(sessionState.Nonce))
-			if err != nil {
-				callbackError("id_token_invalid", "The ID token could not be verified.")
+				callbackError("token_exchange_failed", "Failed to complete the authorization code exchange.")
 				return
 			}
 
@@ -448,29 +439,14 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 				return
 			}
 
-			// Exchange code for token. The PKCE verifier persisted at BeginAuth
-			// time binds this exchange to the authorization request this specific
-			// login made, so a stolen authorization code cannot be redeemed by
-			// anyone who did not also observe the verifier.
-			token, err := h.azureADProvider.ExchangeCode(ctx, code, oidc.WithPKCEVerifier(sessionState.CodeVerifier))
+			// See the "oidc" case above: ExchangeAndVerify applies this login's
+			// PKCE verifier and nonce itself, and refuses to run without either.
+			_, idToken, err := h.azureADProvider.ExchangeAndVerify(ctx, code, oidc.CallbackSession{
+				Nonce:        sessionState.Nonce,
+				CodeVerifier: sessionState.CodeVerifier,
+			})
 			if err != nil {
-				callbackError("token_exchange_failed", "Failed to exchange authorization code for token.")
-				return
-			}
-
-			// Extract ID token
-			rawIDToken, ok := token.Extra("id_token").(string)
-			if !ok {
-				callbackError("no_id_token", "The identity provider did not return an ID token.")
-				return
-			}
-
-			// Verify ID token. The nonce persisted at BeginAuth time binds
-			// verification to this specific login, so a replayed or injected ID
-			// token issued for a different login attempt is rejected.
-			idToken, err := h.azureADProvider.VerifyIDToken(ctx, rawIDToken, oidc.WithExpectedNonce(sessionState.Nonce))
-			if err != nil {
-				callbackError("id_token_invalid", "The ID token could not be verified.")
+				callbackError("token_exchange_failed", "Failed to complete the authorization code exchange.")
 				return
 			}
 
@@ -505,7 +481,7 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 			callbackError("email_bound", err.Error())
 			return
 		}
-		user, err := h.userRepo.GetOrCreateUserByOIDC(ctx, sub, email, name, oidcEmailVerified)
+		user, err := h.userRepo.GetOrCreateUserFromOIDC(ctx, sub, email, name, oidcEmailVerified)
 		if err != nil {
 			callbackError("user_creation_failed", "Failed to look up or create your account.")
 			return
@@ -738,7 +714,7 @@ func (h *AuthHandlers) RefreshHandler() gin.HandlerFunc {
 		}
 
 		// Get user details
-		user, err := h.userRepo.GetUserByID(c.Request.Context(), userID)
+		user, err := h.userRepo.GetUserByID(c.Request.Context(), userID, repositories.OrgScopeAllOrganizations())
 		if err != nil || user == nil {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"error": "User not found",
@@ -826,7 +802,7 @@ func (h *AuthHandlers) MeHandler() gin.HandlerFunc {
 		}
 
 		// Get user with per-organization role template information
-		userWithRoles, err := h.userRepo.GetUserWithOrgRoles(c.Request.Context(), userID)
+		userWithRoles, err := h.userRepo.GetUserWithOrgRoles(c.Request.Context(), userID, repositories.OrgScopeAllOrganizations())
 		if identityerr.Missing(userWithRoles, err) {
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": "User not found",
@@ -1039,14 +1015,14 @@ func (h *AuthHandlers) reconcileGroupMemberships(ctx context.Context, userID str
 	managedOrgIDs := make(map[string]struct{}, len(managedOrgs))
 
 	for _, orgName := range managedOrgs {
-		org, err := h.orgRepo.GetByName(ctx, orgName)
+		org, err := h.orgRepo.GetByName(ctx, orgName, repositories.OrgScopeAllOrganizations())
 		if err != nil || org == nil {
 			slog.Warn(provider+" group mapping: organization not found", "org", orgName)
 			continue
 		}
 		managedOrgIDs[org.ID] = struct{}{}
 
-		isMember, _, err := h.orgRepo.CheckMembership(ctx, org.ID, userID)
+		isMember, _, err := h.orgRepo.CheckMembership(ctx, org.ID, userID, repositories.OrgScopeAllOrganizations())
 		if err != nil {
 			return fmt.Errorf("check membership org=%s user=%s: %w", org.ID, userID, err)
 		}
@@ -1085,7 +1061,7 @@ func (h *AuthHandlers) reconcileGroupMemberships(ctx context.Context, userID str
 			// this branch wanted to change no longer exists — and aborting here
 			// would leave every LATER managed organization unreconciled and
 			// fail the user's login outright.
-			if err := h.orgRepo.UpdateMemberRole(ctx, org.ID, userID, role); err != nil &&
+			if err := h.orgRepo.UpdateMemberRole(ctx, org.ID, userID, role, repositories.OrgScopeAllOrganizations()); err != nil &&
 				!identityerr.IsNotFound(err) {
 				return fmt.Errorf("update member role org=%s user=%s role=%s: %w", org.ID, userID, role, err)
 			}
@@ -1115,7 +1091,7 @@ func (h *AuthHandlers) reconcileGroupMemberships(ctx context.Context, userID str
 			if _, ok := resolveProvisionableRole(); !ok {
 				continue
 			}
-			if err := h.orgRepo.AddMemberWithParams(ctx, org.ID, userID, role); err != nil {
+			if err := h.orgRepo.AddMemberWithParams(ctx, org.ID, userID, role, repositories.OrgScopeAllOrganizations()); err != nil {
 				return fmt.Errorf("add member org=%s user=%s role=%s: %w", org.ID, userID, role, err)
 			}
 			slog.Info(provider+" group mapping applied", "user_id", userID, "org", orgName, "role", role)
@@ -1126,7 +1102,7 @@ func (h *AuthHandlers) reconcileGroupMemberships(ctx context.Context, userID str
 			// Aborting instead would skip that sweep — leaving the offboarded
 			// user's org-bound API keys alive, which is the exact failure
 			// (issue #732) the sweep was added to close.
-			if err := h.orgRepo.RemoveMember(ctx, org.ID, userID); err != nil &&
+			if err := h.orgRepo.RemoveMember(ctx, org.ID, userID, repositories.OrgScopeAllOrganizations()); err != nil &&
 				!identityerr.IsNotFound(err) {
 				return fmt.Errorf("revoke member org=%s user=%s: %w", org.ID, userID, err)
 			}
@@ -1165,12 +1141,12 @@ func (h *AuthHandlers) reconcileGroupMemberships(ctx context.Context, userID str
 			return nil
 		}
 
-		isMember, _, err := h.orgRepo.CheckMembership(ctx, org.ID, userID)
+		isMember, _, err := h.orgRepo.CheckMembership(ctx, org.ID, userID, repositories.OrgScopeAllOrganizations())
 		if err != nil {
 			return fmt.Errorf("check membership default org user=%s: %w", userID, err)
 		}
 		if !isMember {
-			if err := h.orgRepo.AddMemberWithParams(ctx, org.ID, userID, defaultRole); err != nil {
+			if err := h.orgRepo.AddMemberWithParams(ctx, org.ID, userID, defaultRole, repositories.OrgScopeAllOrganizations()); err != nil {
 				return fmt.Errorf("add default member user=%s role=%s: %w", userID, defaultRole, err)
 			}
 			slog.Info(provider+" default role applied", "user_id", userID, "role", defaultRole)
@@ -1355,7 +1331,7 @@ func (h *AuthHandlers) SAMLACSHandler() gin.HandlerFunc {
 		// end user self-asserts — the same trust level GetOrCreateUserByOIDC's
 		// emailVerified gate is designed to require before trusting a new
 		// email->identity binding.
-		user, err := h.userRepo.GetOrCreateUserByOIDC(ctx, sub, userInfo.Email, userInfo.Name, true)
+		user, err := h.userRepo.GetOrCreateUserFromOIDC(ctx, sub, userInfo.Email, userInfo.Name, true)
 		if err != nil {
 			callbackError("user_creation_failed", "Failed to look up or create your account.")
 			return
@@ -1500,7 +1476,7 @@ func (h *AuthHandlers) LDAPLoginHandler() gin.HandlerFunc {
 		// self-asserted claim), the same administratively-controlled trust level
 		// GetOrCreateUserByOIDC's emailVerified gate is designed to require before
 		// trusting a new email->identity binding.
-		user, err := h.userRepo.GetOrCreateUserByOIDC(ctx, sub, userInfo.Email, userInfo.Name, true)
+		user, err := h.userRepo.GetOrCreateUserFromOIDC(ctx, sub, userInfo.Email, userInfo.Name, true)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to look up or create your account"})
 			return

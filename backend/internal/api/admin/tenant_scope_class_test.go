@@ -182,7 +182,7 @@ func tenantScopeSites() []tenantScopeSite {
 				if member {
 					q.WillReturnRows(sqlmock.NewRows(auditLogGetCols).AddRow(
 						classResource, classUserID, classOrgBeta, "mirror.create",
-						"mirror", classResource, nil, nil, time.Now()))
+						"mirror", classResource, nil, nil, time.Now(), nil))
 				} else {
 					q.WillReturnRows(sqlmock.NewRows(auditLogGetCols))
 				}
@@ -217,7 +217,7 @@ func tenantScopeSites() []tenantScopeSite {
 				if member {
 					q.WillReturnRows(sqlmock.NewRows(auditExportCols).AddRow(
 						"beta-entry", classUserID, classOrgBeta, "mirror.create",
-						"mirror", classResource, nil, nil, time.Now(), nil, nil))
+						"mirror", classResource, nil, nil, time.Now(), nil, nil, nil))
 				} else {
 					q.WillReturnRows(sqlmock.NewRows(auditExportCols))
 				}
@@ -743,10 +743,23 @@ func tenantScopeSites() []tenantScopeSite {
 			mount: func(t *testing.T, member bool) (*gin.Engine, sqlmock.Sqlmock) {
 				mock, sqlxDB, r := classSQLMock(t)
 				mock.ExpectQuery("(?s)FROM organization_members").WillReturnRows(classMembershipRows(member))
-				// Only the caller's own organizations are ever fetched.
-				mock.ExpectQuery("(?s)FROM organizations WHERE id").WillReturnRows(
+				// The tenant constraint is a QUERY PREDICATE since identity
+				// v0.25.0, on BOTH statements this handler issues: the page and
+				// its total. Previously the handler fetched each in-scope id one
+				// at a time and paginated in memory — a second implementation of
+				// the same scope that ordered and counted differently from the
+				// platform-admin branch beside it. Strip the predicate from
+				// either statement and the emitted SQL no longer matches these
+				// expectations, so this row goes red.
+				orgID, name, display := classOrgAlpha, "alpha", "Alpha"
+				if member {
+					orgID, name, display = classOrgBeta, "beta", "Beta"
+				}
+				mock.ExpectQuery(`(?s)FROM organizations WHERE 1=1 AND id = ANY`).WillReturnRows(
 					sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}).
-						AddRow(classOrgAlpha, "alpha", "Alpha", nil, nil, time.Now(), time.Now()))
+						AddRow(orgID, name, display, nil, nil, time.Now(), time.Now()))
+				mock.ExpectQuery(`(?s)SELECT COUNT\(\*\) FROM organizations WHERE 1=1 AND id = ANY`).
+					WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 				h := NewOrganizationHandlers(&config.Config{}, sqlxDB.DB,
 					repositories.NewNamespaceClaimRepository(sqlxDB.DB), nil)
 				r.GET("/organizations", h.ListOrganizationsHandler())
@@ -769,16 +782,19 @@ func tenantScopeSites() []tenantScopeSite {
 				mock, sqlxDB, r := classSQLMock(t)
 				mock.ExpectQuery("(?s)FROM organization_members").WillReturnRows(classMembershipRows(member))
 				name, display := "alpha", "Alpha"
-				if member {
-					name, display = "beta", "Beta"
-				}
 				orgID := classOrgAlpha
 				if member {
-					orgID = classOrgBeta
+					name, display, orgID = "beta", "Beta", classOrgBeta
 				}
-				mock.ExpectQuery("(?s)FROM organizations WHERE id").WillReturnRows(
-					sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}).
-						AddRow(orgID, name, display, nil, nil, time.Now(), time.Now()))
+				// The scope is its own conjunct AFTER the parenthesised
+				// name/display_name alternation, so no search term can OR its way
+				// outside the tenancy. The in-memory matcher that used to enforce
+				// that by hand is gone; this expectation is what keeps the SQL
+				// honest in its place.
+				mock.ExpectQuery(`(?s)FROM organizations WHERE \(name ILIKE .* OR display_name ILIKE .*\) AND id = ANY`).
+					WillReturnRows(
+						sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}).
+							AddRow(orgID, name, display, nil, nil, time.Now(), time.Now()))
 				h := NewOrganizationHandlers(&config.Config{}, sqlxDB.DB,
 					repositories.NewNamespaceClaimRepository(sqlxDB.DB), nil)
 				r.GET("/organizations/search", h.SearchOrganizationsHandler())

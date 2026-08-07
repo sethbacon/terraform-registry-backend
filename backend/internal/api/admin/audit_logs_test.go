@@ -18,13 +18,14 @@ import (
 // auditLogListCols mirrors the SELECT in ListAuditLogs (9 base + 2 JOIN fields).
 var auditLogListCols = []string{
 	"id", "user_id", "organization_id", "action", "resource_type", "resource_id",
-	"metadata", "ip_address", "created_at", "user_email", "user_name",
+	"metadata", "ip_address", "created_at", "actor_email", "user_email", "user_name",
 }
 
-// auditLogGetCols mirrors the SELECT in GetAuditLog (9 base columns only).
+// auditLogGetCols mirrors the SELECT in GetAuditLog (base columns + the stored
+// actor_email added by identity migration 000007).
 var auditLogGetCols = []string{
 	"id", "user_id", "organization_id", "action", "resource_type", "resource_id",
-	"metadata", "ip_address", "created_at",
+	"metadata", "ip_address", "created_at", "actor_email",
 }
 
 // ---------------------------------------------------------------------------
@@ -38,7 +39,7 @@ func sampleAuditLogListRows() *sqlmock.Rows {
 	return sqlmock.NewRows(auditLogListCols).
 		AddRow(
 			knownUUID, knownUserUUID, nil, "POST /api/v1/modules", "module", nil,
-			nil, ip, time.Now(), email, name,
+			nil, ip, time.Now(), email, email, name,
 		)
 }
 
@@ -51,7 +52,7 @@ func sampleAuditLogGetRow() *sqlmock.Rows {
 	return sqlmock.NewRows(auditLogGetCols).
 		AddRow(
 			knownUUID, knownUserUUID, nil, "POST /api/v1/modules", "module", nil,
-			nil, ip, time.Now(),
+			nil, ip, time.Now(), "alice@example.com",
 		)
 }
 

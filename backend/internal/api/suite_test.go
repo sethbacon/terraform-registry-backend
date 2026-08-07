@@ -104,7 +104,7 @@ func TestUIConfigHandler_ActiveSibling(t *testing.T) {
 	self := suite.Manifest{SchemaVersion: suite.SchemaVersionV1, App: "terraform-registry"}
 	// srv is a plaintext httptest.Server, so use the library's explicit
 	// HTTPS opt-out constructor rather than the production one.
-	dc := suite.NewInsecureDiscoveryClient(srv.URL, self, time.Minute)
+	dc := suite.NewInsecureDiscoveryClient(srv.URL, self, time.Minute, identityLoopbackGuard(t))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	go dc.Start(ctx)
@@ -152,7 +152,7 @@ func TestUIConfigHandler_ActiveSibling(t *testing.T) {
 
 func TestUIConfigHandler_UnreachableSibling(t *testing.T) {
 	self := suite.Manifest{SchemaVersion: suite.SchemaVersionV1, App: "terraform-registry"}
-	dc := suite.NewInsecureDiscoveryClient("http://127.0.0.1:1", self, 0)
+	dc := suite.NewInsecureDiscoveryClient("http://127.0.0.1:1", self, 0, identityLoopbackGuard(t))
 	dc.Start(ctxThatCancelsImmediately())
 
 	r := gin.New()
@@ -211,7 +211,7 @@ func TestUIConfigHandler_ForwardsIdentityBlock(t *testing.T) {
 	self := suite.Manifest{SchemaVersion: suite.SchemaVersionV1, App: "terraform-registry"}
 	// srv is a plaintext httptest.Server, so use the library's explicit
 	// HTTPS opt-out constructor rather than the production one.
-	dc := suite.NewInsecureDiscoveryClient(srv.URL, self, time.Minute)
+	dc := suite.NewInsecureDiscoveryClient(srv.URL, self, time.Minute, identityLoopbackGuard(t))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	go dc.Start(ctx)

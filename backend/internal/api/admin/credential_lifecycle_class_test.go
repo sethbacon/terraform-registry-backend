@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"database/sql/driver"
+	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -87,7 +89,7 @@ func expectOrgKeySweep(mock sqlmock.Sqlmock, userID, orgID, keyID string) {
 func expectOrgKeySweepScoped(mock sqlmock.Sqlmock, userID, orgID, keyID string, scopes []byte) {
 	expectOrgKeyList(mock, userID, orgID, keyID, scopes)
 	mock.ExpectExec("DELETE FROM api_keys WHERE id").
-		WithArgs(keyID).
+		WithArgs(keyID, sqlmock.AnyArg()). // + the OrgScope predicate's bound ids
 		WillReturnResult(sqlmock.NewResult(1, 1))
 }
 
@@ -96,23 +98,24 @@ func expectOrgKeySweepScoped(mock sqlmock.Sqlmock, userID, orgID, keyID string, 
 // scope it carries is still granted after the change.
 func expectOrgKeyList(mock sqlmock.Sqlmock, userID, orgID, keyID string, scopes []byte) {
 	mock.ExpectQuery("(?s)FROM api_keys ak.*ak.organization_id").
-		WithArgs(userID, orgID).
+		WithArgs(userID, orgID, sqlmock.AnyArg()). // + the OrgScope predicate's bound ids
+
 		WillReturnRows(sqlmock.NewRows(akListCols).
 			AddRow(keyID, userID, orgID, "CI Key", nil, "hashedkey", "tfr_abc123",
 				scopes, nil, nil, nil, time.Now(), nil))
 }
 
-// expectAllKeysSweep registers the statements that revoke every API key userID
-// holds anywhere -- the whole-principal offboarding sweep.
+// expectAllKeysSweep registers the statement that revokes every API key userID
+// holds in the swept organizations -- the whole-principal offboarding sweep.
+//
+// ONE scoped DELETE since identity v0.25.0, not a list followed by a revoke per
+// key: the tenant predicate is in the statement, so the set of keys the sweep
+// touches is decided by the database rather than by a filter the caller could
+// forget to apply.
 func expectAllKeysSweep(mock sqlmock.Sqlmock, userID, keyID string) {
-	mock.ExpectQuery("(?s)FROM api_keys ak.*WHERE ak.user_id").
-		WithArgs(userID).
-		WillReturnRows(sqlmock.NewRows(akListCols).
-			AddRow(keyID, userID, "org-1", "CI Key", nil, "hashedkey", "tfr_abc123",
-				testKeyScopes, nil, nil, nil, time.Now(), nil))
-	mock.ExpectExec("DELETE FROM api_keys WHERE id").
-		WithArgs(keyID).
-		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec("DELETE FROM api_keys WHERE user_id").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	_ = keyID // the sweep is set-based; no key is named at the call site any more
 }
 
 // scimUserRows is the row shape of identity UserRepository.GetUserByID.
@@ -150,13 +153,51 @@ func newSCIMDeprovisionRouter(db *sql.DB) *gin.Engine {
 // deprovisioning path: strip memberships, move the JWT watermark, revoke all
 // API keys.
 func expectSCIMDeprovisionSweep(mock sqlmock.Sqlmock, userID string) {
-	mock.ExpectExec("DELETE FROM organization_members").
+	// The strip is a QUERY now, not an Exec: it RETURNS the organizations whose
+	// membership it actually removed, and that value — an OrgScope — is what
+	// scopes the key sweep below. The two halves cannot disagree about tenancy
+	// because the second's argument IS the first's result (identity #160/#736).
+	mock.ExpectQuery("DELETE FROM organization_members").
 		WithArgs(userID).
-		WillReturnResult(sqlmock.NewResult(0, 1))
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}).AddRow(scimRemovedOrg))
 	mock.ExpectExec("INSERT INTO user_token_revocations").
 		WithArgs(userID).
 		WillReturnResult(sqlmock.NewResult(1, 1))
-	expectAllKeysSweep(mock, userID, "key-scim")
+	// GUARD scim-deprovision-sweep-inherits-strip-scope (identity #160). The
+	// sweep must carry the organizations the strip ACTUALLY removed, not the
+	// platform-wide scope: an organization where no membership was removed had
+	// no authority reduced there and must keep its keys. A mutant passing
+	// OrgScopeAllOrganizations() renders the predicate as the literal TRUE,
+	// binds no array, and fails both halves of this expectation.
+	mock.ExpectExec(`DELETE FROM api_keys WHERE user_id = \$1 AND organization_id = ANY\(\$2\)`).
+		WithArgs(userID, boundOrgScope{want: []string{scimRemovedOrg}}).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+}
+
+// scimRemovedOrg is the single organization the SCIM strip reports as actually
+// removed, and therefore the only one the paired credential sweep may reach.
+const scimRemovedOrg = "org-scim-removed"
+
+// boundOrgScope matches the array argument an OrgScope binds into a statement,
+// asserting which organization ids it names and which it does not.
+type boundOrgScope struct {
+	want    []string
+	notWant []string
+}
+
+func (b boundOrgScope) Match(v driver.Value) bool {
+	s := fmt.Sprint(v)
+	for _, w := range b.want {
+		if !strings.Contains(s, w) {
+			return false
+		}
+	}
+	for _, n := range b.notWant {
+		if strings.Contains(s, n) {
+			return false
+		}
+	}
+	return true
 }
 
 // A PUT that does not mention "active" must not deprovision anything.
@@ -711,9 +752,10 @@ func TestCredentialLifecycleClass_AuthorityReductionInvalidatesAllCredentialFami
 				mock.ExpectExec("INSERT INTO user_token_revocations").
 					WithArgs("user-1").
 					WillReturnResult(sqlmock.NewResult(1, 1))
-				mock.ExpectQuery("(?s)FROM api_keys ak.*WHERE ak.user_id").
+				// One scoped DELETE, not a list-then-revoke loop.
+				mock.ExpectExec("DELETE FROM api_keys WHERE user_id").
 					WithArgs("user-1").
-					WillReturnRows(sqlmock.NewRows(akListCols))
+					WillReturnResult(sqlmock.NewResult(0, 0))
 
 				w := httptest.NewRecorder()
 				r.ServeHTTP(w, httptest.NewRequest("POST", "/users/user-1/erase", nil))

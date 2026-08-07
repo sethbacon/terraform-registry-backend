@@ -56,7 +56,7 @@ func TestVersionApprovalList_Success(t *testing.T) {
 	mock.ExpectQuery(`SELECT \* FROM`).WillReturnRows(rows)
 
 	items, total, err := repo.List(context.Background(),
-		VersionApprovalFilter{Status: "pending_approval", AllOrganizations: true})
+		VersionApprovalFilter{Status: "pending_approval", Scope: OrgScopeAllOrganizations()})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -79,12 +79,68 @@ func TestVersionApprovalList_TypeFilters(t *testing.T) {
 			mock.ExpectQuery(`SELECT \* FROM`).
 				WillReturnRows(sqlmock.NewRows(versionApprovalCols))
 
-			_, _, err := repo.List(context.Background(), VersionApprovalFilter{Type: typ, ConfigID: uuid.New().String()})
+			_, _, err := repo.List(context.Background(), VersionApprovalFilter{Type: typ, ConfigID: uuid.New().String(), Scope: OrgScopeAllOrganizations()})
 			if err != nil {
 				t.Fatalf("unexpected error for type %q: %v", typ, err)
 			}
 		})
 	}
+}
+
+// GUARD version-approval-list-scope (issue #719). The tenant predicate comes
+// from the identity store's own OrgScope.SQL now, so what has to be pinned is
+// that it reaches the statement in BOTH directions: the literal TRUE for the
+// explicit platform-wide read (never an absent clause, which is what the
+// hand-rolled builder emitted) and the bound ANY(...) for everyone else.
+func TestVersionApprovalList_ScopePredicateReachesTheStatement(t *testing.T) {
+	t.Run("platform-wide renders TRUE", func(t *testing.T) {
+		repo, mock := newVersionApprovalRepo(t)
+		mock.ExpectQuery(`(?s)AND TRUE`).
+			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+		mock.ExpectQuery(`(?s)AND TRUE`).
+			WillReturnRows(sqlmock.NewRows(versionApprovalCols))
+
+		if _, _, err := repo.List(context.Background(),
+			VersionApprovalFilter{Scope: OrgScopeAllOrganizations()}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("unmet expectations: %v", err)
+		}
+	})
+
+	t.Run("organization scope binds the allowlist", func(t *testing.T) {
+		repo, mock := newVersionApprovalRepo(t)
+		mock.ExpectQuery(`(?s)AND va.organization_id = ANY\(\$3\)`).
+			WithArgs(nil, nil, sqlmock.AnyArg()).
+			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+		mock.ExpectQuery(`(?s)AND va.organization_id = ANY\(\$3\)`).
+			WithArgs(nil, nil, sqlmock.AnyArg()).
+			WillReturnRows(sqlmock.NewRows(versionApprovalCols))
+
+		if _, _, err := repo.List(context.Background(),
+			VersionApprovalFilter{Scope: OrgScopeOrganizations("org-1")}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("unmet expectations: %v", err)
+		}
+	})
+
+	t.Run("zero scope short-circuits without a round trip", func(t *testing.T) {
+		repo, mock := newVersionApprovalRepo(t)
+		// No expectations registered: any statement at all is unexpected.
+		items, total, err := repo.List(context.Background(), VersionApprovalFilter{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(items) != 0 || total != 0 {
+			t.Errorf("items=%d total=%d, want 0/0 for the fail-closed zero scope", len(items), total)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("unmet expectations: %v", err)
+		}
+	})
 }
 
 func TestInnerQuery_Scanner(t *testing.T) {
@@ -111,7 +167,7 @@ func TestVersionApprovalList_Empty(t *testing.T) {
 	mock.ExpectQuery(`SELECT \* FROM`).
 		WillReturnRows(sqlmock.NewRows(versionApprovalCols))
 
-	items, total, err := repo.List(context.Background(), VersionApprovalFilter{AllOrganizations: true})
+	items, total, err := repo.List(context.Background(), VersionApprovalFilter{Scope: OrgScopeAllOrganizations()})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -124,7 +180,7 @@ func TestVersionApprovalList_CountError(t *testing.T) {
 	repo, mock := newVersionApprovalRepo(t)
 	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM`).WillReturnError(fmt.Errorf("db error"))
 
-	if _, _, err := repo.List(context.Background(), VersionApprovalFilter{AllOrganizations: true}); err == nil {
+	if _, _, err := repo.List(context.Background(), VersionApprovalFilter{Scope: OrgScopeAllOrganizations()}); err == nil {
 		t.Fatal("expected error")
 	}
 }
@@ -139,7 +195,7 @@ func TestVersionApprovalPendingCount(t *testing.T) {
 		WithArgs(models.VersionApprovalStatusPending).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(7))
 
-	got, err := repo.PendingCount(context.Background(), VersionApprovalFilter{AllOrganizations: true})
+	got, err := repo.PendingCount(context.Background(), VersionApprovalFilter{Scope: OrgScopeAllOrganizations()})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

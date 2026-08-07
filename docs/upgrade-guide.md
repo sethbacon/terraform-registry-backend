@@ -97,6 +97,95 @@ If issues are found after upgrade:
 > pair means there was nothing version-specific to do beyond the standard procedure
 > above — not that the note is missing.
 
+### Unreleased — `terraform-suite-identity` v0.25.0
+
+**Action required before the deploy, on one setting only.** Every other change in
+this bump is internal (renamed accessors, a mandatory tenant parameter, a mailer
+field) and is covered by the build.
+
+#### The egress allow-list now governs authentication
+
+The shared identity module routes **all** of its outbound traffic through the
+deployment's SSRF egress guard as of v0.25.0: the OIDC discovery document, the
+JWKS signing keys that decide which ID tokens are valid, the authorization-code
+token exchange that carries the `client_secret`, and the suite sibling-discovery
+poll. That guard's default policy denies loopback, RFC 1918, link-local
+(including `169.254.169.254`), CGNAT and IPv6 ULA.
+
+`security.egress.allowlist` (`TFR_SECURITY_EGRESS_ALLOWLIST`) already existed and
+already **widens** the deny-list. What changed is what it covers.
+
+*Action:* if your identity provider or your suite sibling lives on an internal
+address, add its **hostname** to the list **before** deploying. A denied IdP is
+not a failed login — the process refuses to construct the OIDC provider at
+startup, naming the endpoint. A public IdP (Entra, Okta cloud, Google, Auth0)
+needs nothing. See
+[OIDC_CONFIGURATION.md](OIDC_CONFIGURATION.md#self-hosted-idp-the-egress-allow-list-is-required)
+and the [Egress Allow-List](configuration.md#egress-allow-list-ssrf-guard)
+reference.
+
+```yaml
+security:
+  egress:
+    allowlist:
+      - keycloak.corp.internal
+```
+
+`AllowInsecureIssuer` / `DEV_MODE` does **not** cover it: the scheme rule and the
+destination rule are separate on purpose.
+
+#### Identity schema migration `000007` runs at startup
+
+`identity.RunMigrations` runs on the startup path, so this DDL lands on a live
+database during the deploy. It drops the foreign keys on `audit_logs.user_id` and
+`audit_logs.organization_id` (those columns are a historical record of who acted,
+not live references — every `ON DELETE` action is wrong for one), changes
+`api_keys.user_id` to `ON DELETE CASCADE` so a credential cannot outlive its
+principal, and adds and backfills `audit_logs.actor_email` so attribution
+survives the `users` row. **No read semantics change.**
+
+*Action (inventory, not DDL):* the migration cannot repair history. Run both
+queries around the deploy and deal with anything unexpected:
+
+```sql
+-- Audit rows with no owning organization. Anything not written unowned by design
+-- is a formerly-owned row a past organization delete re-homed into the platform
+-- bucket.
+SELECT date_trunc('day', created_at) AS day, action, count(*)
+  FROM identity.audit_logs
+ WHERE organization_id IS NULL
+ GROUP BY 1, 2 ORDER BY 1 DESC;
+
+-- API keys with no owning user. Anything not a deliberate organization service
+-- credential is a deleted user's personal key that is still authenticating.
+SELECT id, organization_id, name, key_prefix, created_at, last_used_at
+  FROM identity.api_keys
+ WHERE user_id IS NULL ORDER BY created_at;
+```
+
+`000007`'s down migration is best-effort and lossy (it must null the retained
+rows to re-create the foreign keys, and it drops `actor_email`). Prefer rolling
+forward.
+
+#### Behaviour changes with no compile error
+
+- **`Bearer` is matched case-insensitively** on the API-key header, per RFC 7235
+  §2.1 / RFC 6750 §2.1. This only ever accepts more — `bearer <key>` used to be
+  rejected. The credential itself is still case-sensitive. No action.
+- **In-flight OIDC logins at the moment of deploy fail and must be retried.** The
+  callback now requires both the nonce and the PKCE verifier for the login, and
+  refuses before any network call if either is missing. A state entry written by
+  the previous version carries both, so only logins mid-flight across the restart
+  are affected.
+- **An ID token with no `nonce` claim is now rejected.** Every authorization
+  request this registry builds carries a nonce, so a response without one means
+  the provider dropped the binding.
+- **The audit export NDJSON gains an `actor_email` field**, between `created_at`
+  and the existing `user_email`. `actor_email` is the address as it stood when the
+  entry was written and survives the actor's deletion; `user_email` is the
+  actor's current address and goes null once the user is gone. Downstream
+  consumers that pin a field set need updating.
+
 ### 0.6.x → 0.7.0
 
 **Breaking Changes:**

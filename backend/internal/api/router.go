@@ -39,6 +39,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/audit"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/auth/mtls"
+	"github.com/terraform-registry/terraform-registry/internal/auth/oidc"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/credlifecycle"
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
@@ -147,6 +148,14 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	}
 	if err := scm.ConfigureEgress(cfg.Security.Egress.Allowlist); err != nil {
 		log.Fatalf("failed to configure SCM connector egress policy: %v", err)
+	}
+	// Same allow-list, applied to the OIDC discovery/JWKS/token-exchange traffic
+	// the shared identity module now routes through its own guard (v0.25.0).
+	// Without this an internal IdP — every self-hosted Keycloak/ADFS, and every
+	// local compose stack — is denied at provider construction. It runs here,
+	// beside the SCM call, so both are configured before any route is built.
+	if err := oidc.ConfigureEgress(cfg.Security.Egress.Allowlist); err != nil {
+		log.Fatalf("failed to configure OIDC egress policy: %v", err)
 	}
 
 	// Construct the real audit external-shipping subsystem from cfg.Audit so
@@ -274,7 +283,11 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 				From:     cfg.Notifications.SMTP.From,
 				Username: cfg.Notifications.SMTP.Username,
 				Password: cfg.Notifications.SMTP.Password,
-				UseTLS:   cfg.Notifications.SMTP.UseTLS,
+				// The repo's own use_tls boolean is unchanged (YAML, the
+				// persisted settings blob and the admin API body all still carry
+				// it); TLSModeForUseTLS is the single tested place that maps it
+				// onto mailer.Config's tri-state, whose zero value now encrypts.
+				TLSMode: identitymailer.TLSModeForUseTLS(cfg.Notifications.SMTP.UseTLS),
 			},
 			WarningDays:        cfg.Notifications.APIKeyExpiryWarningDays,
 			CheckIntervalHours: cfg.Notifications.APIKeyExpiryCheckIntervalHours,
@@ -538,7 +551,9 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 			From:     cfg.Notifications.SMTP.From,
 			Username: cfg.Notifications.SMTP.Username,
 			Password: cfg.Notifications.SMTP.Password,
-			UseTLS:   cfg.Notifications.SMTP.UseTLS,
+			// See notificationsExpiryConfig above: one mapping helper, not a
+			// hand-written conditional per call site.
+			TLSMode: identitymailer.TLSModeForUseTLS(cfg.Notifications.SMTP.UseTLS),
 		}
 	}
 	notificationChannelRepo := repositories.NewNotificationChannelRepository(db)

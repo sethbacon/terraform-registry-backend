@@ -78,19 +78,24 @@ func NewHandlers(cfg *config.Config, db *sql.DB, opts ...Option) *Handlers {
 
 // deprovision invalidates every credential family belonging to a user this
 // SCIM feed has just deactivated or deleted: their JWT sessions and every API
-// key they hold in every organization. Best-effort and non-fatal — the
-// membership strip has already committed, and SCIM clients retry aggressively
-// on 5xx, so a sweep failure is logged rather than turned into an error the
-// IdP would replay.
+// key they hold in the organizations `removed` names. Best-effort and non-fatal
+// — the membership strip has already committed, and SCIM clients retry
+// aggressively on 5xx, so a sweep failure is logged rather than turned into an
+// error the IdP would replay.
+//
+// removed must be the scope RemoveAllMembershipsForUser reported, not the
+// caller's own scope: it is the set of organizations whose membership was
+// actually withdrawn, so the sweep reaches exactly the keys whose backing
+// authority just went away and no others.
 //
 // Reached only through deprovisionUser (tenant_scope.go), which pairs it
 // structurally with the membership removal so no deactivation path can take
 // one half without the other (issues #719/#736).
-func (h *Handlers) deprovision(ctx context.Context, userID, reason string) {
+func (h *Handlers) deprovision(ctx context.Context, userID string, removed repositories.OrgScope, reason string) {
 	if h.creds == nil {
 		return
 	}
-	out := h.creds.UserDeprovisioned(ctx, userID, reason)
+	out := h.creds.UserDeprovisioned(ctx, userID, removed, reason)
 	slog.Info("scim: credentials revoked for deprovisioned user",
 		"id", userID, "reason", reason,
 		"tokens_revoked", out.TokensRevoked, "api_keys_revoked", out.KeysRevoked,
@@ -209,13 +214,13 @@ func (h *Handlers) ListUsers() gin.HandlerFunc {
 		if filter != "" {
 			value := extractFilterValue(filter)
 			if value != "" {
-				users, err = h.userRepo.Search(ctx, value, count, offset)
+				users, err = h.userRepo.Search(ctx, value, count, offset, repositories.OrgScopeAllOrganizations())
 				total = len(users)
 			} else {
-				users, total, err = h.userRepo.ListUsers(ctx, count, offset)
+				users, total, err = h.userRepo.ListUsers(ctx, count, offset, repositories.OrgScopeAllOrganizations())
 			}
 		} else {
-			users, total, err = h.userRepo.ListUsers(ctx, count, offset)
+			users, total, err = h.userRepo.ListUsers(ctx, count, offset, repositories.OrgScopeAllOrganizations())
 		}
 
 		if err != nil {
@@ -254,7 +259,7 @@ func (h *Handlers) ListUsers() gin.HandlerFunc {
 func (h *Handlers) GetUser() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.Param("id")
-		user, err := h.userRepo.GetUserByID(c.Request.Context(), userID)
+		user, err := h.userRepo.GetUserByID(c.Request.Context(), userID, repositories.OrgScopeAllOrganizations())
 		if identityerr.Missing(user, err) {
 			scimError(c, http.StatusNotFound, fmt.Sprintf("User %q not found", userID))
 			return
@@ -319,7 +324,7 @@ func (h *Handlers) CreateUser() gin.HandlerFunc {
 		// this flow's pre-v0.17.0 behavior (no verification gate existed
 		// before this parameter was added).
 		ctx := c.Request.Context()
-		user, err := h.userRepo.GetOrCreateUserByOIDC(ctx, oidcSub, email, displayName, true)
+		user, err := h.userRepo.GetOrCreateUserFromOIDC(ctx, oidcSub, email, displayName, true)
 		if err != nil {
 			slog.Error("scim: create user failed", "email", email, "error", err)
 			scimError(c, http.StatusConflict, "User already exists or creation failed")
@@ -355,7 +360,7 @@ func (h *Handlers) PatchUser() gin.HandlerFunc {
 			return
 		}
 
-		user, err := h.userRepo.GetUserByID(ctx, userID)
+		user, err := h.userRepo.GetUserByID(ctx, userID, repositories.OrgScopeAllOrganizations())
 		if err != nil || user == nil {
 			scimError(c, http.StatusNotFound, fmt.Sprintf("User %q not found", userID))
 			return
@@ -373,7 +378,7 @@ func (h *Handlers) PatchUser() gin.HandlerFunc {
 		// The user was deleted between the read above and this write. SCIM
 		// callers reconcile against 404, so report the resource's absence
 		// rather than a server fault they would retry forever.
-		if err := h.userRepo.UpdateUser(ctx, user); err != nil {
+		if err := h.userRepo.UpdateUser(ctx, user, repositories.OrgScopeAllOrganizations()); err != nil {
 			if identityerr.IsNotFound(err) {
 				scimError(c, http.StatusNotFound, fmt.Sprintf("User %q not found", userID))
 				return
@@ -412,7 +417,7 @@ func (h *Handlers) PutUser() gin.HandlerFunc {
 			return
 		}
 
-		user, err := h.userRepo.GetUserByID(ctx, userID)
+		user, err := h.userRepo.GetUserByID(ctx, userID, repositories.OrgScopeAllOrganizations())
 		if err != nil || user == nil {
 			scimError(c, http.StatusNotFound, fmt.Sprintf("User %q not found", userID))
 			return
@@ -449,7 +454,7 @@ func (h *Handlers) PutUser() gin.HandlerFunc {
 		}
 
 		// Same race as the PATCH path above: absent resource is a 404.
-		if err := h.userRepo.UpdateUser(ctx, user); err != nil {
+		if err := h.userRepo.UpdateUser(ctx, user, repositories.OrgScopeAllOrganizations()); err != nil {
 			if identityerr.IsNotFound(err) {
 				scimError(c, http.StatusNotFound, fmt.Sprintf("User %q not found", userID))
 				return
@@ -479,7 +484,7 @@ func (h *Handlers) DeleteUser() gin.HandlerFunc {
 		userID := c.Param("id")
 		ctx := c.Request.Context()
 
-		user, err := h.userRepo.GetUserByID(ctx, userID)
+		user, err := h.userRepo.GetUserByID(ctx, userID, repositories.OrgScopeAllOrganizations())
 		if err != nil || user == nil {
 			scimError(c, http.StatusNotFound, fmt.Sprintf("User %q not found", userID))
 			return
@@ -515,7 +520,7 @@ func (h *Handlers) DeleteUser() gin.HandlerFunc {
 // ListGroups handles GET /scim/v2/Groups
 func (h *Handlers) ListGroups() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		orgs, err := h.orgRepo.List(c.Request.Context(), 200, 0)
+		orgs, err := h.orgRepo.List(c.Request.Context(), 200, 0, repositories.OrgScopeAllOrganizations())
 		if err != nil {
 			scimError(c, http.StatusInternalServerError, "Failed to list groups")
 			return
@@ -550,7 +555,7 @@ func (h *Handlers) ListGroups() gin.HandlerFunc {
 func (h *Handlers) GetGroup() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		groupID := c.Param("id")
-		org, err := h.orgRepo.GetByID(c.Request.Context(), groupID)
+		org, err := h.orgRepo.GetByID(c.Request.Context(), groupID, repositories.OrgScopeAllOrganizations())
 		if err != nil || org == nil {
 			scimError(c, http.StatusNotFound, fmt.Sprintf("Group %q not found", groupID))
 			return

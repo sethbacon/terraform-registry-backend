@@ -471,8 +471,13 @@ func (h *Handlers) ConfigureAdmin(c *gin.Context) {
 		user = existingUser
 	}
 
-	// Add user to default organization with admin role template
-	if err := h.orgRepo.AddMemberWithParams(ctx, defaultOrg.ID, user.ID, "admin"); err != nil {
+	// Add user to default organization with admin role template.
+	//
+	// Bootstrap: there is no principal yet whose tenancy could be resolved —
+	// this IS the request that creates the first one — so the scope is the
+	// explicit platform-wide one rather than an absent argument.
+	if err := h.orgRepo.AddMemberWithParams(ctx, defaultOrg.ID, user.ID, "admin",
+		repositories.OrgScopeAllOrganizations()); err != nil {
 		// Might already be a member — try to update their role.
 		//
 		// As of identity v0.24.0 this fallback is genuinely verified: if the
@@ -481,7 +486,8 @@ func (h *Handlers) ConfigureAdmin(c *gin.Context) {
 		// returned nil for that case and setup reported "Admin user configured
 		// successfully" having granted no membership at all — the operator was
 		// told they had an admin they did not have.
-		if updateErr := h.orgRepo.UpdateMemberRole(ctx, defaultOrg.ID, user.ID, "admin"); updateErr != nil {
+		if updateErr := h.orgRepo.UpdateMemberRole(ctx, defaultOrg.ID, user.ID, "admin",
+			repositories.OrgScopeAllOrganizations()); updateErr != nil {
 			slog.Error("setup: failed to add admin to organization", "error", err, "update_error", updateErr)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to add admin user to organization"})
 			return

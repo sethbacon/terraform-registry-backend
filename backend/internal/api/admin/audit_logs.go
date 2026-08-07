@@ -229,30 +229,30 @@ func (h *AuditLogHandlers) GetAuditLogHandler() gin.HandlerFunc {
 	}
 }
 
-// auditScope translates this request's tenant scope into the store.AuditScope
-// that every audit read accessor requires, writing the 500 and reporting
-// ok=false on a membership lookup failure.
+// auditScope translates this request's tenant scope into the store.OrgScope
+// that every audit read accessor requires (AuditScope until v0.25.0, when the
+// type was applied to every organization-owned table rather than just this
+// one), writing the 500 and reporting ok=false on a membership lookup failure.
 //
 // One helper for all three axes on purpose: three private copies of "who is
 // asking" is how the list axis and the by-id axis came to disagree in the first
-// place. It is also the single place where the registry's answer to "what about
-// rows with no organization" is stated — AuditScopeOrganizations, not
-// AuditScopeOrganizationsAndUnowned, because on this deployment an audit entry
-// with a NULL organization_id is an unattributed row rather than a platform
-// event, and the same rule governs every other org-owned table here
-// (internal/tenantscope, Scope.Permits). terraform-state-manager, whose NULLs
+// place. The translation itself now lives on tenantscope.Scope, so this file no
+// longer restates which OrgScope constructor a platform admin maps to — that
+// was the second copy, and it is the copy that drifts. The registry's answer to
+// "what about rows with no organization" is stated once, there:
+// OrgScopeOrganizations and not OrgScopeOrganizationsAndUnowned, because on this
+// deployment an audit entry with a NULL organization_id is an unattributed row
+// rather than a platform event, and the same rule governs every other org-owned
+// table here (tenantscope.Scope.Permits). terraform-state-manager, whose NULLs
 // genuinely are platform events, is the consumer the ...AndUnowned variant
 // exists for.
-func (h *AuditLogHandlers) auditScope(c *gin.Context) (repositories.AuditScope, bool) {
+//
+// A caller with no qualifying organization gets the fail-closed scope, which
+// every accessor short-circuits to an empty result — not an unfiltered query.
+func (h *AuditLogHandlers) auditScope(c *gin.Context) (repositories.OrgScope, bool) {
 	scope, ok := resolveTenantScope(c, h.orgRepo, auth.ScopeAuditRead)
 	if !ok {
-		return repositories.AuditScope{}, false
+		return repositories.OrgScope{}, false
 	}
-	if scope.PlatformAdmin {
-		return repositories.AuditScopeAllOrganizations(), true
-	}
-	// A caller with no qualifying organization gets the fail-closed scope,
-	// which every accessor short-circuits to an empty result — not an
-	// unfiltered query.
-	return repositories.AuditScopeOrganizations(scope.OrgIDs...), true
+	return scope.OrgScope(), true
 }

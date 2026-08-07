@@ -942,12 +942,12 @@ func TestRemoveMember_APIKeyRevocationFails_FlagsIncomplete(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	// ... and the API-key half fails on the delete.
 	mock.ExpectQuery("(?s)FROM api_keys ak.*ak.organization_id").
-		WithArgs("user-1", "org-1").
+		WithArgs("user-1", "org-1", sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows(akListCols).
 			AddRow("key-stuck", "user-1", "org-1", "CI Key", nil, "hashedkey", "tfr_abc123",
 				testKeyScopes, nil, nil, nil, time.Now(), nil))
 	mock.ExpectExec("DELETE FROM api_keys WHERE id").
-		WithArgs("key-stuck").
+		WithArgs("key-stuck", sqlmock.AnyArg()).
 		WillReturnError(errDB)
 
 	w := httptest.NewRecorder()

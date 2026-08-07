@@ -219,7 +219,8 @@ func RequireOrgMembership(orgRepo *repositories.OrganizationRepository) gin.Hand
 		// Check membership. Not being a member is the denial this middleware
 		// exists to issue, so it is tested ahead of the generic failure branch;
 		// a non-member must get 403, never a retryable 500.
-		member, err := orgRepo.GetMember(c.Request.Context(), orgID, userID)
+		member, err := orgRepo.GetMember(c.Request.Context(), orgID, userID,
+			repositories.OrgScopeAllOrganizations())
 		if identityerr.Missing(member, err) {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
 				"error": "Not a member of organization",
@@ -280,7 +281,8 @@ func RequireOrgScope(scope auth.Scope, orgRepo *repositories.OrganizationReposit
 
 		// Get membership with role template. As above, the non-member denial is
 		// checked first so it cannot be masked by the 500 branch.
-		memberWithRole, err := orgRepo.GetMemberWithRole(c.Request.Context(), orgID, userID)
+		memberWithRole, err := orgRepo.GetMemberWithRole(c.Request.Context(), orgID, userID,
+			repositories.OrgScopeAllOrganizations())
 		if identityerr.Missing(memberWithRole, err) {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
 				"error": "Not a member of organization",

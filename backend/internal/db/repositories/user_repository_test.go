@@ -34,10 +34,10 @@ func sampleUserRow() *sqlmock.Rows {
 
 func TestUserRepository_Search_Found(t *testing.T) {
 	repo, mock := newUserRepo(t)
-	mock.ExpectQuery("SELECT.*FROM users.*WHERE email ILIKE").
+	mock.ExpectQuery("SELECT.*FROM users.*WHERE .email ILIKE").
 		WillReturnRows(sampleUserRow())
 
-	users, err := repo.Search(context.Background(), "alice", 20, 0)
+	users, err := repo.Search(context.Background(), "alice", 20, 0, OrgScopeAllOrganizations())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -48,10 +48,10 @@ func TestUserRepository_Search_Found(t *testing.T) {
 
 func TestUserRepository_Search_Empty(t *testing.T) {
 	repo, mock := newUserRepo(t)
-	mock.ExpectQuery("SELECT.*FROM users.*WHERE email ILIKE").
+	mock.ExpectQuery("SELECT.*FROM users.*WHERE .email ILIKE").
 		WillReturnRows(sqlmock.NewRows(userRepoCols))
 
-	users, err := repo.Search(context.Background(), "nobody", 20, 0)
+	users, err := repo.Search(context.Background(), "nobody", 20, 0, OrgScopeAllOrganizations())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -62,10 +62,10 @@ func TestUserRepository_Search_Empty(t *testing.T) {
 
 func TestUserRepository_Search_DBError(t *testing.T) {
 	repo, mock := newUserRepo(t)
-	mock.ExpectQuery("SELECT.*FROM users.*WHERE email ILIKE").
+	mock.ExpectQuery("SELECT.*FROM users.*WHERE .email ILIKE").
 		WillReturnError(errDB)
 
-	_, err := repo.Search(context.Background(), "alice", 20, 0)
+	_, err := repo.Search(context.Background(), "alice", 20, 0, OrgScopeAllOrganizations())
 	if err == nil {
 		t.Error("expected error, got nil")
 	}
@@ -77,7 +77,7 @@ func TestUserRepository_GetUserByID_Found(t *testing.T) {
 		WithArgs("user-1").
 		WillReturnRows(sampleUserRow())
 
-	user, err := repo.GetUserByID(context.Background(), "user-1")
+	user, err := repo.GetUserByID(context.Background(), "user-1", OrgScopeAllOrganizations())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestUserRepository_GetUserByID_NotFound(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM users.*WHERE id").
 		WillReturnRows(sqlmock.NewRows(userRepoCols))
 
-	user, err := repo.GetUserByID(context.Background(), "missing")
+	user, err := repo.GetUserByID(context.Background(), "missing", OrgScopeAllOrganizations())
 	// identity v0.24.0 reports a miss with the store.ErrNotFound sentinel
 	// instead of (nil, nil). Assert the SENTINEL, not merely a non-nil error:
 	// a bare `err != nil` check would also pass for a real database failure,

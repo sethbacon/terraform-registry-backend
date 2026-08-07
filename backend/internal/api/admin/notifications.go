@@ -85,7 +85,12 @@ type notificationsConfigInput struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
 		From     string `json:"from"`
-		UseTLS   bool   `json:"use_tls"`
+		// A POINTER so an omitted "use_tls" is distinguishable from an explicit
+		// false. As a plain bool, a full-replace PUT that did not mention the
+		// field decoded to false and silently switched the relay to plaintext.
+		// Same reasoning as Events *NotificationEventsJSON above and as the
+		// test-email input below, which already used a pointer for this field.
+		UseTLS *bool `json:"use_tls"`
 	} `json:"smtp"`
 	Recipients                     []string               `json:"recipients"`
 	Events                         NotificationEventsJSON `json:"events"`
@@ -247,7 +252,9 @@ func (h *NotificationsHandler) PutConfig(c *gin.Context) {
 	h.cfg.SMTP.Port = input.SMTP.Port
 	h.cfg.SMTP.Username = input.SMTP.Username
 	h.cfg.SMTP.From = input.SMTP.From
-	h.cfg.SMTP.UseTLS = input.SMTP.UseTLS
+	if input.SMTP.UseTLS != nil {
+		h.cfg.SMTP.UseTLS = *input.SMTP.UseTLS
+	}
 	h.cfg.Recipients = input.Recipients
 	h.cfg.Events = config.NotificationEventsConfig(input.Events)
 	h.cfg.APIKeyExpiryWarningDays = input.APIKeyExpiryWarningDays
@@ -300,7 +307,9 @@ func buildNotificationsConfigDB(input notificationsConfigInput, tokenCipher *cry
 	dbc.SMTP.Port = input.SMTP.Port
 	dbc.SMTP.Username = input.SMTP.Username
 	dbc.SMTP.From = input.SMTP.From
-	dbc.SMTP.UseTLS = input.SMTP.UseTLS
+	if input.SMTP.UseTLS != nil {
+		dbc.SMTP.UseTLS = *input.SMTP.UseTLS
+	}
 
 	if input.SMTP.Password != "" {
 		encrypted, err := tokenCipher.Seal(input.SMTP.Password)

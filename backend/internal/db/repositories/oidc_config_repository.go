@@ -38,7 +38,7 @@ func NewOIDCConfigRepository(db *sqlx.DB) *OIDCConfigRepository {
 func NewOIDCConfigRepositoryWithIdentity(db, identityDB *sqlx.DB) *OIDCConfigRepository {
 	return &OIDCConfigRepository{
 		db:   db,
-		oidc: identitystore.NewOIDCConfigRepository(identityDB),
+		oidc: identitystore.NewOIDCConfigRepository(identityDB.DB),
 	}
 }
 

@@ -498,7 +498,8 @@ func authorizeOrgAccessWith(c *gin.Context, orgRepo *repositories.OrganizationRe
 	// verifyKeyOwnerAuthorityWith below. Both spellings of the miss are handled
 	// so the behaviour is identical against the released identity version
 	// ((nil, nil)) and v0.24.0 (store.ErrNotFound).
-	member, err := orgRepo.GetMemberWithRole(c.Request.Context(), ownerOrgID, userID)
+	member, err := orgRepo.GetMemberWithRole(c.Request.Context(), ownerOrgID, userID,
+		repositories.OrgScopeAllOrganizations())
 	if identityerr.Missing(member, err) {
 		return http.StatusForbidden, "Resource is owned by another organization"
 	}
@@ -566,7 +567,8 @@ func verifyKeyOwnerAuthorityWith(c *gin.Context, orgRepo *repositories.Organizat
 	// produce the 403 and never the 500. Testing it first also keeps the two
 	// outcomes distinguishable to an operator reading the logs — a denial and
 	// a database fault stop looking alike.
-	member, err := orgRepo.GetMemberWithRole(c.Request.Context(), orgID, *apiKey.UserID)
+	member, err := orgRepo.GetMemberWithRole(c.Request.Context(), orgID, *apiKey.UserID,
+		repositories.OrgScopeAllOrganizations())
 	if identityerr.Missing(member, err) {
 		return http.StatusForbidden, "API key owner is no longer a member of the owning organization"
 	}

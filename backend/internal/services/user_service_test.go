@@ -214,12 +214,14 @@ func TestEraseUser_RevokesSessionsAndKeysAfterCommit(t *testing.T) {
 	mock.ExpectExec("INSERT INTO user_token_revocations").
 		WithArgs("user-1").
 		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectQuery("(?s)FROM api_keys ak.*WHERE ak.user_id").
+	// The post-commit key sweep is ONE scoped DELETE since identity v0.25.0,
+	// not a list followed by a revoke per key. Platform-wide here: an erasure
+	// that left the subject's credentials working in some organization would
+	// not be an erasure, and the transaction above already removed every
+	// membership row unconditionally.
+	mock.ExpectExec(`DELETE FROM api_keys WHERE user_id = \$1 AND TRUE`).
 		WithArgs("user-1").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"id", "user_id", "organization_id", "name", "description",
-			"key_hash", "key_prefix", "scopes", "expires_at", "last_used_at",
-			"expiry_notification_sent_at", "created_at", "user_name"}))
+		WillReturnResult(sqlmock.NewResult(0, 0))
 
 	svc := NewUserService(db).WithCredentialSweeper(credlifecycle.NewSweeper(
 		repositories.NewUserTokenRevocationRepository(db),
@@ -252,12 +254,14 @@ func TestEraseUser_SweepFails_ReturnsError(t *testing.T) {
 	mock.ExpectExec("INSERT INTO user_token_revocations").
 		WithArgs("user-1").
 		WillReturnError(errors.New("watermark write failed"))
-	mock.ExpectQuery("(?s)FROM api_keys ak.*WHERE ak.user_id").
+	// The post-commit key sweep is ONE scoped DELETE since identity v0.25.0,
+	// not a list followed by a revoke per key. Platform-wide here: an erasure
+	// that left the subject's credentials working in some organization would
+	// not be an erasure, and the transaction above already removed every
+	// membership row unconditionally.
+	mock.ExpectExec(`DELETE FROM api_keys WHERE user_id = \$1 AND TRUE`).
 		WithArgs("user-1").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"id", "user_id", "organization_id", "name", "description",
-			"key_hash", "key_prefix", "scopes", "expires_at", "last_used_at",
-			"expiry_notification_sent_at", "created_at", "user_name"}))
+		WillReturnResult(sqlmock.NewResult(0, 0))
 
 	svc := NewUserService(db).WithCredentialSweeper(credlifecycle.NewSweeper(
 		repositories.NewUserTokenRevocationRepository(db),

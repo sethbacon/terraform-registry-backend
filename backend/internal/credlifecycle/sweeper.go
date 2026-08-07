@@ -171,12 +171,27 @@ func (s *Sweeper) OrgKeysOnly(ctx context.Context, userID, orgID string, retaine
 	return s.revokeOrgKeys(ctx, userID, orgID, retained, reason)
 }
 
-// UserDeprovisioned invalidates every credential the user holds anywhere: JWT
-// sessions plus every API key in every organization.
+// UserDeprovisioned invalidates every credential the user holds inside scope:
+// JWT sessions plus every API key bound to an organization the scope admits.
 //
 // Use for whole-principal offboarding — SCIM DELETE /Users/{id}, SCIM
-// active=false via PUT or PATCH — where the user retains no authority at all.
-func (s *Sweeper) UserDeprovisioned(ctx context.Context, userID, reason string) Outcome {
+// active=false via PUT or PATCH, administrative deletion, GDPR erasure — where
+// the user retains no authority in the organizations named by scope.
+//
+// scope is REQUIRED and its zero value sweeps nothing, so a caller that has not
+// decided whose tenancy this is destroys no credentials. Pass the organizations
+// whose membership was ACTUALLY just removed (OrganizationRepository
+// .RemoveAllMembershipsForUser returns exactly that, as an OrgScope) so the
+// sweep matches the authority reduction that triggered it: an organization
+// where nothing was removed had no authority reduced and must keep its keys
+// (identity #160), while every organization where authority WAS reduced is in
+// the scope by construction, so nothing is stranded (#732/#736). Pass
+// repositories.OrgScopeAllOrganizations() where the principal itself is being
+// destroyed and no key may survive it.
+//
+// The JWT watermark is per-user and cannot be scoped: a session token carries
+// the cross-organization scope union, so any reduction anywhere invalidates it.
+func (s *Sweeper) UserDeprovisioned(ctx context.Context, userID string, scope repositories.OrgScope, reason string) Outcome {
 	if s == nil {
 		return Outcome{}
 	}
@@ -184,34 +199,21 @@ func (s *Sweeper) UserDeprovisioned(ctx context.Context, userID, reason string) 
 	if s.apiKeys == nil {
 		return out
 	}
-	keys, err := s.apiKeys.ListAPIKeysByUser(ctx, userID)
+	// One scoped DELETE rather than a list-then-revoke-each loop. The loop had
+	// to special-case a key that vanished between the two statements — a benign
+	// race that must not read as an incomplete sweep — and that whole branch is
+	// gone with the second round trip: a set-based delete reports how many rows
+	// it removed, and removing zero is an ordinary answer, not a miss.
+	n, err := s.apiKeys.RevokeAPIKeysForUser(ctx, userID, scope)
 	if err != nil {
-		slog.Error("credlifecycle: failed to list user API keys for revocation",
+		slog.Error("credlifecycle: failed to revoke user API keys",
 			"user_id", userID, "reason", reason, "error", err)
 		out.Incomplete = true
 		return out
 	}
-	for _, k := range keys {
-		if err := s.apiKeys.RevokeAPIKey(ctx, k.ID); err != nil {
-			// A key that vanished between the list above and this revoke is
-			// already in the state the sweep exists to produce, so it must NOT
-			// flip Incomplete. Incomplete is what tells a caller "credentials
-			// may still be live" — DeleteUserHandler refuses to delete the user
-			// on it — and raising it for a key that no longer exists would
-			// block deprovisioning on a benign race.
-			if identityerr.IsNotFound(err) {
-				slog.Info("credlifecycle: API key already gone before revocation",
-					"api_key_id", k.ID, "user_id", userID, "reason", reason)
-				continue
-			}
-			slog.Error("credlifecycle: failed to revoke API key",
-				"api_key_id", k.ID, "user_id", userID, "reason", reason, "error", err)
-			out.Incomplete = true
-			continue
-		}
-		out.KeysRevoked++
-		slog.Info("credlifecycle: API key revoked", "api_key_id", k.ID, "user_id", userID, "reason", reason)
-	}
+	out.KeysRevoked = int(n)
+	slog.Info("credlifecycle: API keys revoked", "user_id", userID,
+		"api_keys_revoked", n, "scope", scope.String(), "reason", reason)
 	return out
 }
 
@@ -242,7 +244,12 @@ func (s *Sweeper) revokeOrgKeys(ctx context.Context, userID, orgID string, retai
 	if s.apiKeys == nil || orgID == "" {
 		return Outcome{}
 	}
-	keys, err := s.apiKeys.ListByUserAndOrganization(ctx, userID, orgID)
+	// The organization is named by the caller and was authorized by the route
+	// guard that reached this sweep, so it is also the tenancy: this accessor is
+	// asked about that one organization and no other, and a key belonging to any
+	// other tenant cannot come back to be considered for deletion.
+	orgScope := repositories.OrgScopeOrganizations(orgID)
+	keys, err := s.apiKeys.ListByUserAndOrganization(ctx, userID, orgID, orgScope)
 	if err != nil {
 		slog.Error("credlifecycle: failed to list org-bound API keys for revocation",
 			"user_id", userID, "organization_id", orgID, "reason", reason, "error", err)
@@ -254,9 +261,12 @@ func (s *Sweeper) revokeOrgKeys(ctx context.Context, userID, orgID string, retai
 			out.KeysRetained++
 			continue
 		}
-		if err := s.apiKeys.RevokeAPIKey(ctx, k.ID); err != nil {
-			// Same race, same reasoning as revokeKeys: already gone is the
-			// desired end state, not an incomplete sweep.
+		if err := s.apiKeys.RevokeAPIKey(ctx, k.ID, orgScope); err != nil {
+			// Same race, same reasoning as UserDeprovisioned's former loop:
+			// already gone is the desired end state, not an incomplete sweep.
+			// This one keeps the per-key shape because AuthorityRetained decides
+			// per key whether the credential over-asks at all, which no single
+			// DELETE can express.
 			if identityerr.IsNotFound(err) {
 				slog.Info("credlifecycle: org-bound API key already gone before revocation",
 					"api_key_id", k.ID, "user_id", userID, "organization_id", orgID, "reason", reason)

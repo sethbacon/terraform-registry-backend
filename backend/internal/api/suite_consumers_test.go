@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	identityhttpsafe "github.com/sethbacon/terraform-suite-identity/identity/httpsafe"
 	"github.com/sethbacon/terraform-suite-identity/identity/suite"
 
 	"github.com/terraform-registry/terraform-registry/internal/config"
@@ -39,6 +40,21 @@ func getConsumers(r *gin.Engine) (int, map[string]any) {
 	return w.Code, out
 }
 
+// identityLoopbackGuard is the egress policy the SHARED module's clients run
+// under here — the identity/httpsafe twin of loopbackGuard above. httptest serves on
+// 127.0.0.1, which identity/httpsafe's default policy DENIES since v0.25.0, so
+// a discovery client built with a nil guard would never reach the sibling —
+// exactly the deployment failure the allow-list exists to fix, and exactly what
+// TFR_SECURITY_EGRESS_ALLOWLIST names in the dev stack.
+func identityLoopbackGuard(t *testing.T) *identityhttpsafe.Guard {
+	t.Helper()
+	g, err := identityhttpsafe.NewGuard([]string{"127.0.0.1", "::1"})
+	if err != nil {
+		t.Fatalf("NewGuard: %v", err)
+	}
+	return g
+}
+
 // activeClient builds a DiscoveryClient polling url and waits for it to go active.
 // url is an httptest.Server address (plaintext HTTP), so this uses
 // NewInsecureDiscoveryClient — the library's explicit opt-out of the
@@ -47,7 +63,7 @@ func getConsumers(r *gin.Engine) (int, map[string]any) {
 func activeClient(t *testing.T, url string) *suite.DiscoveryClient {
 	t.Helper()
 	self := suite.Manifest{SchemaVersion: suite.SchemaVersionV1, App: "terraform-registry"}
-	dc := suite.NewInsecureDiscoveryClient(url, self, time.Minute)
+	dc := suite.NewInsecureDiscoveryClient(url, self, time.Minute, identityLoopbackGuard(t))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel)
 	go dc.Start(ctx)
@@ -81,7 +97,7 @@ func TestModuleConsumers_NoTokenReturnsEmpty(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(manifest)
 	}))
 	defer srv.Close()
-	manifest.PublicURL = srv.URL
+	manifest.PublicURL = suite.UntrustedURL(srv.URL)
 	dc := activeClient(t, srv.URL)
 
 	cfg := &config.Config{}
@@ -109,7 +125,7 @@ func TestModuleConsumers_ProxiesActiveSibling(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(manifest) // discovery poll
 	}))
 	defer srv.Close()
-	manifest.PublicURL = srv.URL
+	manifest.PublicURL = suite.UntrustedURL(srv.URL)
 	dc := activeClient(t, srv.URL)
 
 	cfg := &config.Config{}
@@ -152,7 +168,7 @@ func TestModuleConsumers_EmitsHostAliasSet(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(manifest)
 	}))
 	defer srv.Close()
-	manifest.PublicURL = srv.URL
+	manifest.PublicURL = suite.UntrustedURL(srv.URL)
 	dc := activeClient(t, srv.URL)
 
 	cfg := &config.Config{}
@@ -185,7 +201,7 @@ func TestModuleConsumers_SiblingErrorReturnsEmpty(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(manifest)
 	}))
 	defer srv.Close()
-	manifest.PublicURL = srv.URL
+	manifest.PublicURL = suite.UntrustedURL(srv.URL)
 	dc := activeClient(t, srv.URL)
 
 	cfg := &config.Config{}
@@ -222,7 +238,7 @@ func TestModuleConsumers_OversizedResponseIsCappedAndFails(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(manifest) // discovery poll
 	}))
 	defer srv.Close()
-	manifest.PublicURL = srv.URL
+	manifest.PublicURL = suite.UntrustedURL(srv.URL)
 	dc := activeClient(t, srv.URL)
 
 	cfg := &config.Config{}
@@ -246,6 +262,13 @@ func TestModuleConsumers_OversizedResponseIsCappedAndFails(t *testing.T) {
 // every httptest.Server in this file binds to stands in for the internal/
 // metadata host a compromised sibling or a MITM'd discovery response could
 // try to steer this credential-bearing request at.
+//
+// Since identity v0.25.0 the sibling-asserted URL is a distinct type
+// (suite.UntrustedURL) with exactly two ways out — Resolve, which checks, and
+// Display, which is for rendering — so the handler cannot build a request from
+// it without passing the policy. What this test pins is unchanged and is the
+// part that matters: whatever the discovery client was willing to poll, a
+// target outside THIS deployment's allow-list is never reached.
 func TestModuleConsumers_BlocksNonAllowlistedSiblingURL(t *testing.T) {
 	var consumersHit bool
 	manifest := suite.Manifest{SchemaVersion: suite.SchemaVersionV1, App: "terraform-state-manager"}
@@ -261,7 +284,7 @@ func TestModuleConsumers_BlocksNonAllowlistedSiblingURL(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(manifest) // discovery poll
 	}))
 	defer srv.Close()
-	manifest.PublicURL = srv.URL
+	manifest.PublicURL = suite.UntrustedURL(srv.URL)
 	dc := activeClient(t, srv.URL)
 
 	cfg := &config.Config{}
