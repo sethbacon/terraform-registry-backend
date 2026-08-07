@@ -196,19 +196,40 @@ func Resolve(c *gin.Context, orgRepo *repositories.OrganizationRepository, requi
 		return scope, nil
 	}
 
-	memberships, err := orgRepo.GetUserMemberships(c.Request.Context(), userID)
+	// GUARD tenant-scope-role-template (issue #719): membership alone is not
+	// authority. OrgScopeForUser keeps only the organizations whose ROLE
+	// TEMPLATE grants `required` — the same decision authorizeOrgAccess makes
+	// for the ":id" axes of these same resources — so the list/create axes are
+	// no longer strictly weaker than their own siblings.
+	//
+	// The membership walk this replaces lived here because the shared module's
+	// predicate builder was unexported, so every consumer wrote its own copy and
+	// the copies drifted. It is the module's own resolution now
+	// (store.OrganizationRepository.OrgScopeForUser), over the module's own
+	// tables, deduplicating and sorting the ids it returns; there is deliberately
+	// no second implementation left in this repository to disagree with it.
+	orgScope, err := orgRepo.OrgScopeForUser(c.Request.Context(), userID, string(required), auth.ReadWritePairs())
 	if err != nil {
 		return Scope{}, err
 	}
-	for _, m := range memberships {
-		// GUARD tenant-scope-role-template (issue #719): membership alone is
-		// not authority. RoleTemplateScopes is what authorizeOrgAccess checks
-		// for the ":id" axes of these same resources, and GetUserMemberships
-		// already returns it, so resolving on bare membership here made the
-		// list/create axes strictly weaker than their own siblings.
-		if auth.HasScope(m.RoleTemplateScopes, required) {
-			scope.OrgIDs = append(scope.OrgIDs, m.OrganizationID)
-		}
-	}
+	scope.OrgIDs = orgScope.OrganizationIDs()
 	return scope, nil
+}
+
+// OrgScope renders the resolved scope as the shared identity store's mandatory
+// tenant parameter, ready to hand to any scoped accessor there — and, through
+// OrgScope.SQL, to a predicate over one of this repository's own
+// organization-owned tables.
+//
+// It is the one place the two representations meet. A platform admin becomes
+// the explicit OrgScopeAllOrganizations(); everyone else becomes the allowlist,
+// which for a principal with no qualifying membership is the empty scope that
+// selects nothing. Unowned rows are admitted only to a platform admin, exactly
+// as Permits answers for rows already loaded — see Permits for why NULL means
+// "no tenant asserted" rather than "public" on these tables.
+func (s Scope) OrgScope() repositories.OrgScope {
+	if s.PlatformAdmin {
+		return repositories.OrgScopeAllOrganizations()
+	}
+	return repositories.OrgScopeOrganizations(s.OrgIDs...)
 }

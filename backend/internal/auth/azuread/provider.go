@@ -71,41 +71,22 @@ func NewAzureADProvider(cfg *config.AzureADConfig) (*AzureADProvider, error) {
 	}, nil
 }
 
-// GetAuthURL returns the Azure AD authorization URL
-//
-// Deprecated: GetAuthURL builds a bare OAuth2 authorization URL with no OIDC
-// nonce and no PKCE challenge, so a caller using it (together with a
-// no-options VerifyIDToken call) is not defended against token injection/replay
-// or authorization-code interception. Use BeginAuth instead, which returns an
-// AuthChallenge carrying a generated nonce and PKCE verifier alongside the URL.
-func (p *AzureADProvider) GetAuthURL(state string) string {
-	return p.oidcProvider.GetAuthURL(state) //nolint:staticcheck // SA1019: migrating to BeginAuth (nonce+PKCE) is tracked in the other v0.17.0-adoption PR
-}
-
 // BeginAuth builds an Azure AD authorization URL that includes a random nonce
-// and a PKCE (S256) code challenge, returning it alongside the generated nonce
-// and code verifier. The caller MUST persist Nonce and CodeVerifier
-// server-side (keyed to the state token) and pass them back at the callback
-// via oidcpkg.WithExpectedNonce (to VerifyIDToken) and oidcpkg.WithPKCEVerifier
-// (to ExchangeCode). See oidc.Provider.BeginAuth for details.
+// and a PKCE (S256) code challenge, returning it alongside the CallbackSession
+// carrying both. The caller MUST persist that session server-side (keyed to the
+// state token) and hand it back to ExchangeAndVerify at the callback. See
+// oidc.Provider.BeginAuth for details.
 func (p *AzureADProvider) BeginAuth(state string) (oidcpkg.AuthChallenge, error) {
 	return p.oidcProvider.BeginAuth(state)
 }
 
-// ExchangeCode exchanges the authorization code for tokens. Pass
-// oidcpkg.WithPKCEVerifier(verifier) with the CodeVerifier from BeginAuth's
-// AuthChallenge to bind the exchange to this login (proof of possession).
-func (p *AzureADProvider) ExchangeCode(ctx context.Context, code string, opts ...oidcpkg.ExchangeOption) (*oauth2.Token, error) {
-	return p.oidcProvider.ExchangeCode(ctx, code, opts...)
-}
-
-// VerifyIDToken verifies the Azure AD ID token. Pass
-// oidcpkg.WithExpectedNonce(nonce) with the Nonce from BeginAuth's
-// AuthChallenge to bind verification to this login, defending against
-// ID-token injection/replay.
-// coverage:skip:integration-only — delegates to oidc.VerifyIDToken which requires a live signing key to exercise.
-func (p *AzureADProvider) VerifyIDToken(ctx context.Context, rawIDToken string, opts ...oidcpkg.VerifyOption) (*oidc.IDToken, error) {
-	return p.oidcProvider.VerifyIDToken(ctx, rawIDToken, opts...)
+// ExchangeAndVerify completes an Azure AD login: it exchanges the authorization
+// code and verifies the resulting ID token, applying this login's PKCE verifier
+// and nonce itself. session must be the CallbackSession BeginAuth produced for
+// this login; an empty Nonce or CodeVerifier is refused before any network call.
+// coverage:skip:integration-only — delegates to oidc.ExchangeAndVerify which requires a live IdP to exercise.
+func (p *AzureADProvider) ExchangeAndVerify(ctx context.Context, code string, session oidcpkg.CallbackSession) (*oauth2.Token, *oidc.IDToken, error) {
+	return p.oidcProvider.ExchangeAndVerify(ctx, code, session)
 }
 
 // ExtractUserInfo extracts user information from the Azure AD token

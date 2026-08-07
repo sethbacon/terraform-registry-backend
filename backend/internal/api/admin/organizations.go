@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -70,46 +69,6 @@ func NewOrganizationHandlers(cfg *config.Config, db *sql.DB, claimRepo *reposito
 	return h
 }
 
-// organizationsInScope loads the organization rows the caller may see, in the
-// order their scope names them. Returns nil after writing a 500 response.
-//
-// Shared by the list and search axes so the two cannot drift apart — the whole
-// point of #719 is that sibling axes of one resource stopped agreeing.
-func (h *OrganizationHandlers) organizationsInScope(c *gin.Context, scope TenantScope) []*models.Organization {
-	out := make([]*models.Organization, 0, len(scope.OrgIDs))
-	for _, id := range scope.OrgIDs {
-		org, err := h.orgRepo.GetByID(c.Request.Context(), id)
-		// A scope entry naming an organization that no longer exists is skipped,
-		// not fatal. The caller's scope is derived from their membership rows,
-		// which can outlive the organization by a moment (or by a failed
-		// cascade); before v0.24.0 that arrived as (nil, nil) and this loop
-		// simply did not append it. Letting the miss reach the 500 below would
-		// mean one deleted organization makes the whole list endpoint fail for
-		// every member of it — a strictly worse answer than the short list.
-		if identityerr.Missing(org, err) {
-			continue
-		}
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list organizations"})
-			return nil
-		}
-		out = append(out, org)
-	}
-	return out
-}
-
-// paginateOrganizations applies limit/offset to an already-scoped slice.
-func paginateOrganizations(orgs []*models.Organization, perPage, offset int) []*models.Organization {
-	if offset >= len(orgs) {
-		return []*models.Organization{}
-	}
-	end := offset + perPage
-	if end > len(orgs) {
-		end = len(orgs)
-	}
-	return orgs[offset:end]
-}
-
 // revokeOrgCredentials invalidates every credential family carrying a snapshot
 // of the authority userID derived from orgID: the JWT revoke-all watermark and
 // the user's org-bound API keys.
@@ -143,7 +102,7 @@ func (h *OrganizationHandlers) revokeOrgCredentials(c *gin.Context, userID, orgI
 // has just reduced or reassigned this member's role, and we cannot prove any
 // key is still within the new authority.
 func (h *OrganizationHandlers) retainedOrgScopes(c *gin.Context, orgID, userID string) []string {
-	member, err := h.orgRepo.GetMemberWithRole(c.Request.Context(), orgID, userID)
+	member, err := h.orgRepo.GetMemberWithRole(c.Request.Context(), orgID, userID, repositories.OrgScopeOrganizations(orgID))
 	// "No longer a member" is the EXPECTED outcome on the removal path, not a
 	// failure: it retains nothing, so every org-bound key is swept. Separating
 	// it from the error branch keeps that ordinary case from logging as a
@@ -207,7 +166,7 @@ func (h *OrganizationHandlers) ListNamespaceClaimsHandler() gin.HandlerFunc {
 			}
 			orgName, cached := nameCache[cl.OrganizationID]
 			if !cached {
-				if org, err := h.orgRepo.GetByID(c.Request.Context(), cl.OrganizationID); err == nil && org != nil {
+				if org, err := h.orgRepo.GetByID(c.Request.Context(), cl.OrganizationID, scope.OrgScope()); err == nil && org != nil {
 					orgName = org.Name
 				}
 				nameCache[cl.OrganizationID] = orgName
@@ -318,7 +277,7 @@ func (h *OrganizationHandlers) GetNamespaceOwnershipHandler() gin.HandlerFunc {
 		}
 
 		var orgName string
-		if org, err := h.orgRepo.GetByID(c.Request.Context(), orgID); err == nil && org != nil {
+		if org, err := h.orgRepo.GetByID(c.Request.Context(), orgID, scope.OrgScope()); err == nil && org != nil {
 			orgName = org.Name
 		}
 		resp := gin.H{
@@ -374,48 +333,37 @@ func (h *OrganizationHandlers) ListOrganizationsHandler() gin.HandlerFunc {
 			return
 		}
 
-		if scope.PlatformAdmin {
-			// Platform operators keep the paginated platform-wide view.
-			orgs, err := h.orgRepo.List(c.Request.Context(), perPage, offset)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"error": "Failed to list organizations",
-				})
-				return
-			}
-			total, err := h.orgRepo.Count(c.Request.Context())
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"error": "Failed to count organizations",
-				})
-				return
-			}
-			c.JSON(http.StatusOK, gin.H{
-				"organizations": orgs,
-				"pagination": gin.H{
-					"page":     page,
-					"per_page": perPage,
-					"total":    total,
-				},
+		// ONE query for both caller kinds. A platform operator keeps the
+		// platform-wide view and everyone else sees exactly the organizations
+		// they hold organizations:read in — the difference is the OrgScope, not
+		// a second branch. Until v0.25.0 the repository's List had no
+		// organization predicate to push this down into, so the non-admin half
+		// fetched each id by hand and paginated the result in memory; that
+		// second implementation ordered its page by membership rather than by
+		// created_at, and counted differently, so the two axes of one endpoint
+		// disagreed about what a page was. The predicate is in the query now and
+		// the hand-rolled half is gone.
+		orgScope := scope.OrgScope()
+		orgs, err := h.orgRepo.List(c.Request.Context(), perPage, offset, orgScope)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to list organizations",
 			})
 			return
 		}
-
-		// Everyone else sees exactly the organizations they hold
-		// organizations:read in. The set is small and already resolved, so it is
-		// paginated in memory rather than by re-querying: the repository's List
-		// has no organization predicate to push this down into, and inventing
-		// one here would be a second, divergent definition of the same scope.
-		visible := h.organizationsInScope(c, scope)
-		if visible == nil {
+		total, err := h.orgRepo.Count(c.Request.Context(), orgScope)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to count organizations",
+			})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{
-			"organizations": paginateOrganizations(visible, perPage, offset),
+			"organizations": orgs,
 			"pagination": gin.H{
 				"page":     page,
 				"per_page": perPage,
-				"total":    len(visible),
+				"total":    total,
 			},
 		})
 	}
@@ -438,7 +386,7 @@ func (h *OrganizationHandlers) GetOrganizationHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		orgID := c.Param("id")
 
-		org, err := h.orgRepo.GetByID(c.Request.Context(), orgID)
+		org, err := h.orgRepo.GetByID(c.Request.Context(), orgID, repositories.OrgScopeOrganizations(orgID))
 		if identityerr.Missing(org, err) {
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": "Organization not found",
@@ -453,7 +401,7 @@ func (h *OrganizationHandlers) GetOrganizationHandler() gin.HandlerFunc {
 		}
 
 		// Get organization members with user details
-		members, err := h.orgRepo.ListMembersWithUsers(c.Request.Context(), orgID)
+		members, err := h.orgRepo.ListMembersWithUsers(c.Request.Context(), orgID, repositories.OrgScopeOrganizations(orgID))
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to retrieve organization members",
@@ -486,7 +434,7 @@ func (h *OrganizationHandlers) ListMembersHandler() gin.HandlerFunc {
 		orgID := c.Param("id")
 
 		// Check if organization exists
-		org, err := h.orgRepo.GetByID(c.Request.Context(), orgID)
+		org, err := h.orgRepo.GetByID(c.Request.Context(), orgID, repositories.OrgScopeOrganizations(orgID))
 		if identityerr.Missing(org, err) {
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": "Organization not found",
@@ -501,7 +449,7 @@ func (h *OrganizationHandlers) ListMembersHandler() gin.HandlerFunc {
 		}
 
 		// Get members with user details
-		members, err := h.orgRepo.ListMembersWithUsers(c.Request.Context(), orgID)
+		members, err := h.orgRepo.ListMembersWithUsers(c.Request.Context(), orgID, repositories.OrgScopeOrganizations(orgID))
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to retrieve organization members",
@@ -553,7 +501,7 @@ func (h *OrganizationHandlers) CreateOrganizationHandler() gin.HandlerFunc {
 		// 500` it would reject every create of a name that is available, which
 		// is every legitimate call. The switch says which outcome is which
 		// instead of leaving it to branch order.
-		existingOrg, err := h.orgRepo.GetByName(c.Request.Context(), req.Name)
+		existingOrg, err := h.orgRepo.GetByName(c.Request.Context(), req.Name, repositories.OrgScopeAllOrganizations())
 		switch {
 		case identityerr.Missing(existingOrg, err):
 			// Name is free — fall through and create.
@@ -590,7 +538,7 @@ func (h *OrganizationHandlers) CreateOrganizationHandler() gin.HandlerFunc {
 		// would hide a real failure from the caller.
 		if rawUID, exists := c.Get("user_id"); exists {
 			if uid, ok := rawUID.(string); ok && uid != "" {
-				if err := h.orgRepo.AddMemberWithParams(c.Request.Context(), org.ID, uid, "org_owner"); err != nil {
+				if err := h.orgRepo.AddMemberWithParams(c.Request.Context(), org.ID, uid, "org_owner", repositories.OrgScopeOrganizations(org.ID)); err != nil {
 					c.JSON(http.StatusInternalServerError, gin.H{
 						"error": "Organization created but failed to add creator as a member",
 					})
@@ -643,7 +591,7 @@ func (h *OrganizationHandlers) UpdateOrganizationHandler() gin.HandlerFunc {
 		}
 
 		// Get existing organization
-		org, err := h.orgRepo.GetByID(c.Request.Context(), orgID)
+		org, err := h.orgRepo.GetByID(c.Request.Context(), orgID, repositories.OrgScopeOrganizations(orgID))
 		if identityerr.Missing(org, err) {
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": "Organization not found",
@@ -668,7 +616,7 @@ func (h *OrganizationHandlers) UpdateOrganizationHandler() gin.HandlerFunc {
 			}
 			// Availability probe: not-found means the new name is FREE, which is
 			// the only case that may proceed to the rename.
-			existing, err := h.orgRepo.GetByName(c.Request.Context(), newName)
+			existing, err := h.orgRepo.GetByName(c.Request.Context(), newName, repositories.OrgScopeAllOrganizations())
 			switch {
 			case identityerr.Missing(existing, err):
 				// Name is free — fall through and rename.
@@ -688,7 +636,7 @@ func (h *OrganizationHandlers) UpdateOrganizationHandler() gin.HandlerFunc {
 			// pre-check gives for the same condition — rather than the 200 the
 			// old contract produced, which reported a rename that never
 			// happened and left the cascade below to run on a dead id.
-			if err := h.orgRepo.Rename(c.Request.Context(), orgID, newName); err != nil {
+			if err := h.orgRepo.Rename(c.Request.Context(), orgID, newName, repositories.OrgScopeOrganizations(orgID)); err != nil {
 				if identityerr.IsNotFound(err) {
 					c.JSON(http.StatusNotFound, gin.H{
 						"error": "Organization not found",
@@ -738,7 +686,7 @@ func (h *OrganizationHandlers) UpdateOrganizationHandler() gin.HandlerFunc {
 		// Raced against a concurrent delete: report the row's absence (404),
 		// matching the pre-check, instead of the false success the pre-v0.24.0
 		// contract returned.
-		if err := h.orgRepo.Update(c.Request.Context(), org); err != nil {
+		if err := h.orgRepo.Update(c.Request.Context(), org, repositories.OrgScopeOrganizations(orgID)); err != nil {
 			if identityerr.IsNotFound(err) {
 				c.JSON(http.StatusNotFound, gin.H{
 					"error": "Organization not found",
@@ -776,7 +724,7 @@ func (h *OrganizationHandlers) DeleteOrganizationHandler() gin.HandlerFunc {
 		orgID := c.Param("id")
 
 		// Check if organization exists
-		org, err := h.orgRepo.GetByID(c.Request.Context(), orgID)
+		org, err := h.orgRepo.GetByID(c.Request.Context(), orgID, repositories.OrgScopeOrganizations(orgID))
 		if identityerr.Missing(org, err) {
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": "Organization not found",
@@ -861,7 +809,7 @@ func (h *OrganizationHandlers) DeleteOrganizationHandler() gin.HandlerFunc {
 		sweepIncomplete := false
 		if h.creds != nil {
 			var listErr error
-			members, listErr = h.orgRepo.ListMembers(c.Request.Context(), orgID)
+			members, listErr = h.orgRepo.ListMembers(c.Request.Context(), orgID, repositories.OrgScopeOrganizations(orgID))
 			if listErr != nil {
 				slog.Error("failed to list organization members before deletion; their sessions will not be revoked",
 					"organization_id", orgID, "error", listErr)
@@ -874,7 +822,7 @@ func (h *OrganizationHandlers) DeleteOrganizationHandler() gin.HandlerFunc {
 		// Already gone (a concurrent delete won the race): 404, the same answer
 		// a second DELETE gets from the existence pre-check above, so the two
 		// paths to "this organization does not exist" agree.
-		if err := h.orgRepo.Delete(c.Request.Context(), orgID); err != nil {
+		if err := h.orgRepo.Delete(c.Request.Context(), orgID, repositories.OrgScopeOrganizations(orgID)); err != nil {
 			if identityerr.IsNotFound(err) {
 				c.JSON(http.StatusNotFound, gin.H{
 					"error": "Organization not found",
@@ -946,7 +894,7 @@ func (h *OrganizationHandlers) AddMemberHandler() gin.HandlerFunc {
 		}
 
 		// Check if organization exists
-		org, err := h.orgRepo.GetByID(c.Request.Context(), orgID)
+		org, err := h.orgRepo.GetByID(c.Request.Context(), orgID, repositories.OrgScopeOrganizations(orgID))
 		if identityerr.Missing(org, err) {
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": "Organization not found",
@@ -965,7 +913,7 @@ func (h *OrganizationHandlers) AddMemberHandler() gin.HandlerFunc {
 		// Another existence probe with an inverted happy path: NOT being a
 		// member is the precondition for adding one. Left as `err != nil ->
 		// 500` this would fail every legitimate add.
-		existingMember, err := h.orgRepo.GetMember(c.Request.Context(), orgID, req.UserID)
+		existingMember, err := h.orgRepo.GetMember(c.Request.Context(), orgID, req.UserID, repositories.OrgScopeOrganizations(orgID))
 		switch {
 		case identityerr.Missing(existingMember, err):
 			// Not a member yet — fall through and add.
@@ -981,7 +929,13 @@ func (h *OrganizationHandlers) AddMemberHandler() gin.HandlerFunc {
 			return
 		}
 
-		// Add member with role template
+		// Add member with role template.
+		//
+		// The struct is still built for the response body below, but the write
+		// takes the three columns it actually sets: AddMemberWithRoleTemplate
+		// stamps created_at from the server clock rather than from the caller,
+		// so a struct that forgot to set it can no longer insert a privilege
+		// grant dated 0001-01-01.
 		member := &models.OrganizationMember{
 			OrganizationID: orgID,
 			UserID:         req.UserID,
@@ -989,7 +943,8 @@ func (h *OrganizationHandlers) AddMemberHandler() gin.HandlerFunc {
 			CreatedAt:      time.Now(),
 		}
 
-		if err := h.orgRepo.AddMember(c.Request.Context(), member); err != nil {
+		if err := h.orgRepo.AddMemberWithRoleTemplate(c.Request.Context(), orgID, req.UserID, req.RoleTemplateID,
+			repositories.OrgScopeOrganizations(orgID)); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to add member to organization",
 			})
@@ -997,7 +952,7 @@ func (h *OrganizationHandlers) AddMemberHandler() gin.HandlerFunc {
 		}
 
 		// Get member with role template info for response
-		memberWithRole, err := h.orgRepo.GetMemberWithRole(c.Request.Context(), orgID, req.UserID)
+		memberWithRole, err := h.orgRepo.GetMemberWithRole(c.Request.Context(), orgID, req.UserID, repositories.OrgScopeOrganizations(orgID))
 		if err != nil {
 			// Return basic member info if we can't get role details
 			c.JSON(http.StatusCreated, gin.H{
@@ -1053,7 +1008,7 @@ func (h *OrganizationHandlers) UpdateMemberHandler() gin.HandlerFunc {
 		}
 
 		// Get existing member
-		member, err := h.orgRepo.GetMember(c.Request.Context(), orgID, userID)
+		member, err := h.orgRepo.GetMember(c.Request.Context(), orgID, userID, repositories.OrgScopeOrganizations(orgID))
 		if identityerr.Missing(member, err) {
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": "Member not found in organization",
@@ -1076,7 +1031,8 @@ func (h *OrganizationHandlers) UpdateMemberHandler() gin.HandlerFunc {
 		// The membership vanished between the GetMember above and this write.
 		// 404 matches the pre-check; the old contract reported a role change
 		// that never landed, and the audit log recorded it as though it had.
-		if err := h.orgRepo.UpdateMember(c.Request.Context(), member); err != nil {
+		if err := h.orgRepo.UpdateMemberRoleTemplate(c.Request.Context(), orgID, userID, member.RoleTemplateID,
+			repositories.OrgScopeOrganizations(orgID)); err != nil {
 			if identityerr.IsNotFound(err) {
 				c.JSON(http.StatusNotFound, gin.H{
 					"error": "Member not found in organization",
@@ -1111,7 +1067,7 @@ func (h *OrganizationHandlers) UpdateMemberHandler() gin.HandlerFunc {
 		}
 
 		// Get member with role template info for response
-		memberWithRole, err := h.orgRepo.GetMemberWithRole(c.Request.Context(), orgID, userID)
+		memberWithRole, err := h.orgRepo.GetMemberWithRole(c.Request.Context(), orgID, userID, repositories.OrgScopeOrganizations(orgID))
 		response := gin.H{"member": memberWithRole}
 		if err != nil {
 			// Return basic member info if we can't get role details
@@ -1166,7 +1122,7 @@ func (h *OrganizationHandlers) RemoveMemberHandler() gin.HandlerFunc {
 		revocationCheckFailed := false
 		if h.creds != nil {
 			var err error
-			wasMember, err = h.orgRepo.GetMemberWithRole(c.Request.Context(), orgID, userID)
+			wasMember, err = h.orgRepo.GetMemberWithRole(c.Request.Context(), orgID, userID, repositories.OrgScopeOrganizations(orgID))
 			// "Not a member" is a CONFIRMED answer, not an unconfirmed one: it
 			// is precisely the typo/stale-UI/probe case this lookup exists to
 			// detect, and it correctly skips the revocation sweep. Only a real
@@ -1191,7 +1147,7 @@ func (h *OrganizationHandlers) RemoveMemberHandler() gin.HandlerFunc {
 		// and the handler's own doc comment above is built on that call being
 		// safe to make against a non-member. Turning the second DELETE into a
 		// 500 would break every retry and every concurrent deprovision.
-		if err := h.orgRepo.RemoveMember(c.Request.Context(), orgID, userID); err != nil &&
+		if err := h.orgRepo.RemoveMember(c.Request.Context(), orgID, userID, repositories.OrgScopeOrganizations(orgID)); err != nil &&
 			!identityerr.IsNotFound(err) {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to remove member from organization",
@@ -1282,42 +1238,21 @@ func (h *OrganizationHandlers) SearchOrganizationsHandler() gin.HandlerFunc {
 			return
 		}
 
-		if scope.PlatformAdmin {
-			orgs, err := h.orgRepo.Search(c.Request.Context(), query, perPage, offset)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"error": "Failed to search organizations",
-				})
-				return
-			}
-			c.JSON(http.StatusOK, gin.H{
-				"organizations": orgs,
-				"pagination": gin.H{
-					"page":     page,
-					"per_page": perPage,
-				},
+		// One query, as on the list axis. Search applies the scope predicate as
+		// its own conjunct AFTER the parenthesised name/display_name
+		// alternation, so no search term can OR its way outside the tenancy —
+		// which is what the second, in-memory matcher that used to live here was
+		// guarding against by hand, against the same two fields, with its own
+		// case-folding rules.
+		orgs, err := h.orgRepo.Search(c.Request.Context(), query, perPage, offset, scope.OrgScope())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to search organizations",
 			})
 			return
 		}
-
-		// Non-admins search within their own organizations only. Matching is
-		// done here against the same fields the repository's Search covers so a
-		// caller cannot use the query string to reach outside the scope.
-		visible := h.organizationsInScope(c, scope)
-		if visible == nil {
-			return
-		}
-		needle := strings.ToLower(query)
-		matched := make([]*models.Organization, 0, len(visible))
-		for _, org := range visible {
-			if strings.Contains(strings.ToLower(org.Name), needle) ||
-				strings.Contains(strings.ToLower(org.DisplayName), needle) {
-				matched = append(matched, org)
-			}
-		}
-
 		c.JSON(http.StatusOK, gin.H{
-			"organizations": paginateOrganizations(matched, perPage, offset),
+			"organizations": orgs,
 			"pagination": gin.H{
 				"page":     page,
 				"per_page": perPage,

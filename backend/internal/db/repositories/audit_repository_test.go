@@ -22,20 +22,27 @@ func newAuditRepo(t *testing.T) (*AuditRepository, sqlmock.Sqlmock) {
 	return NewAuditRepository(db), mock
 }
 
+// The insert is a QUERY, not an Exec, as of identity v0.25.0: it RETURNS the
+// actor_email it resolved, so a caller that left the field nil gets back the
+// address the trail was stamped with. That value survives the users row the
+// COALESCE read it from (migration 000007) — which is the point of the column.
 func TestAuditRepository_CreateAuditLog_Success(t *testing.T) {
 	repo, mock := newAuditRepo(t)
-	mock.ExpectExec("INSERT INTO audit_logs").
-		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery("INSERT INTO audit_logs").
+		WillReturnRows(sqlmock.NewRows([]string{"actor_email"}).AddRow("alice@example.com"))
 
 	log := &models.AuditLog{Action: "module.upload"}
 	if err := repo.CreateAuditLog(context.Background(), log); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if log.ActorEmail == nil || *log.ActorEmail != "alice@example.com" {
+		t.Errorf("ActorEmail = %v, want the address the insert resolved", log.ActorEmail)
+	}
 }
 
 func TestAuditRepository_CreateAuditLog_DBError(t *testing.T) {
 	repo, mock := newAuditRepo(t)
-	mock.ExpectExec("INSERT INTO audit_logs").
+	mock.ExpectQuery("INSERT INTO audit_logs").
 		WillReturnError(errDB)
 
 	log := &models.AuditLog{Action: "module.upload"}

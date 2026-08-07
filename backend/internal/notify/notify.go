@@ -73,7 +73,7 @@ func (m *Mailer) Send(to []string, subject, body string) error {
 		From:     m.cfg.From,
 		Username: m.cfg.Username,
 		Password: m.cfg.Password,
-		UseTLS:   m.cfg.UseTLS,
+		TLSMode:  identitymailer.TLSModeForUseTLS(m.cfg.UseTLS),
 	}
 	msg := identitynotify.BuildMessage(mc.From, to, subject, body)
 	return identitymailer.Send(context.Background(), mc, to, msg)

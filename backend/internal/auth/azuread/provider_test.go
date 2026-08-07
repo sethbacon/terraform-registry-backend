@@ -72,33 +72,6 @@ func TestGetTenantID_Empty(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// GetAuthURL (delegates to oidcProvider)
-// ---------------------------------------------------------------------------
-
-func TestGetAuthURL(t *testing.T) {
-	mockOIDC := oidcpkg.NewOIDCProviderForTest(&oauth2.Config{
-		ClientID: "azure-client",
-		Endpoint: oauth2.Endpoint{
-			AuthURL: "https://login.microsoftonline.com/tenant/oauth2/v2.0/authorize",
-		},
-		RedirectURL: "https://registry.example.com/callback",
-		Scopes:      []string{"openid", "email"},
-	})
-	p := &AzureADProvider{
-		oidcProvider: mockOIDC,
-		tenantID:     "tenant-abc",
-	}
-
-	url := p.GetAuthURL("test-state")
-	if !strings.Contains(url, "state=test-state") {
-		t.Errorf("URL missing state param, got: %s", url)
-	}
-	if !strings.Contains(url, "client_id=azure-client") {
-		t.Errorf("URL missing client_id, got: %s", url)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // BeginAuth (delegates to oidcProvider)
 // ---------------------------------------------------------------------------
 
@@ -129,19 +102,19 @@ func TestBeginAuth(t *testing.T) {
 	if !strings.Contains(challenge.URL, "code_challenge=") {
 		t.Errorf("URL missing PKCE code_challenge param, got: %s", challenge.URL)
 	}
-	if challenge.Nonce == "" {
-		t.Error("Nonce is empty, want a generated value")
+	if challenge.Session.Nonce == "" {
+		t.Error("Session.Nonce is empty, want a generated value")
 	}
-	if challenge.CodeVerifier == "" {
-		t.Error("CodeVerifier is empty, want a generated value")
+	if challenge.Session.CodeVerifier == "" {
+		t.Error("Session.CodeVerifier is empty, want a generated value")
 	}
 }
 
 // ---------------------------------------------------------------------------
-// ExchangeCode (delegates to oidcProvider — verifies error path)
+// ExchangeAndVerify (delegates to oidcProvider — verifies error path)
 // ---------------------------------------------------------------------------
 
-func TestExchangeCode_NetworkError(t *testing.T) {
+func TestExchangeAndVerify_NetworkError(t *testing.T) {
 	mockOIDC := oidcpkg.NewOIDCProviderForTest(&oauth2.Config{
 		ClientID:     "client",
 		ClientSecret: "secret",
@@ -154,8 +127,10 @@ func TestExchangeCode_NetworkError(t *testing.T) {
 		tenantID:     "tenant",
 	}
 
-	_, err := p.ExchangeCode(context.Background(), "some-code")
+	_, _, err := p.ExchangeAndVerify(context.Background(), "some-code", oidcpkg.CallbackSession{
+		Nonce: "n", CodeVerifier: "v",
+	})
 	if err == nil {
-		t.Error("ExchangeCode expected error for unreachable token endpoint, got nil")
+		t.Error("ExchangeAndVerify expected error for unreachable token endpoint, got nil")
 	}
 }

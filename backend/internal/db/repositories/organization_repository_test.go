@@ -206,7 +206,7 @@ func TestGetByName_Found(t *testing.T) {
 		WithArgs("default").
 		WillReturnRows(sampleOrgRow())
 
-	org, err := repo.GetByName(context.Background(), "default")
+	org, err := repo.GetByName(context.Background(), "default", OrgScopeAllOrganizations())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -223,7 +223,7 @@ func TestGetByName_NotFound(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
 		WillReturnRows(emptyOrgRow())
 
-	org, err := repo.GetByName(context.Background(), "missing")
+	org, err := repo.GetByName(context.Background(), "missing", OrgScopeAllOrganizations())
 	// identity v0.24.0 reports a miss with the store.ErrNotFound sentinel
 	// instead of (nil, nil). Assert the SENTINEL, not merely a non-nil error:
 	// a bare `err != nil` check would also pass for a real database failure,
@@ -261,7 +261,7 @@ func TestGetByID_Found(t *testing.T) {
 		WithArgs("org-1").
 		WillReturnRows(sampleOrgRow())
 
-	org, err := repo.GetByID(context.Background(), "org-1")
+	org, err := repo.GetByID(context.Background(), "org-1", OrgScopeAllOrganizations())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -275,7 +275,7 @@ func TestGetByID_NotFound(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE id").
 		WillReturnRows(emptyOrgRow())
 
-	org, err := repo.GetByID(context.Background(), "missing")
+	org, err := repo.GetByID(context.Background(), "missing", OrgScopeAllOrganizations())
 	// identity v0.24.0 reports a miss with the store.ErrNotFound sentinel
 	// instead of (nil, nil). Assert the SENTINEL, not merely a non-nil error:
 	// a bare `err != nil` check would also pass for a real database failure,
@@ -327,7 +327,7 @@ func TestUpdateOrganization_Success(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	org := &models.Organization{ID: "org-1", Name: "default", DisplayName: "Updated"}
-	if err := repo.Update(context.Background(), org); err != nil {
+	if err := repo.Update(context.Background(), org, OrgScopeAllOrganizations()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -338,7 +338,7 @@ func TestDeleteOrganization_Success(t *testing.T) {
 		WithArgs("org-1").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	if err := repo.Delete(context.Background(), "org-1"); err != nil {
+	if err := repo.Delete(context.Background(), "org-1", OrgScopeAllOrganizations()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -352,7 +352,7 @@ func TestListOrgs_Success(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organizations.*ORDER BY.*LIMIT").
 		WillReturnRows(sampleOrgRow())
 
-	orgs, err := repo.List(context.Background(), 20, 0)
+	orgs, err := repo.List(context.Background(), 20, 0, OrgScopeAllOrganizations())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -366,7 +366,7 @@ func TestCountOrgs_Success(t *testing.T) {
 	mock.ExpectQuery("SELECT COUNT.*FROM organizations").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(3))
 
-	count, err := repo.Count(context.Background())
+	count, err := repo.Count(context.Background(), OrgScopeAllOrganizations())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -380,7 +380,7 @@ func TestSearchOrgs_Success(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE.*ILIKE").
 		WillReturnRows(sampleOrgRow())
 
-	orgs, err := repo.Search(context.Background(), "default", 20, 0)
+	orgs, err := repo.Search(context.Background(), "default", 20, 0, OrgScopeAllOrganizations())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -398,7 +398,7 @@ func TestGetMember_Found(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organization_members WHERE organization_id").
 		WillReturnRows(sampleOrgMemberRow())
 
-	m, err := repo.GetMember(context.Background(), "org-1", "user-1")
+	m, err := repo.GetMember(context.Background(), "org-1", "user-1", OrgScopeAllOrganizations())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -412,7 +412,7 @@ func TestGetMember_NotFound(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organization_members WHERE organization_id").
 		WillReturnRows(emptyOrgMemberRow())
 
-	m, err := repo.GetMember(context.Background(), "org-1", "user-2")
+	m, err := repo.GetMember(context.Background(), "org-1", "user-2", OrgScopeAllOrganizations())
 	// identity v0.24.0 reports a miss with the store.ErrNotFound sentinel
 	// instead of (nil, nil). Assert the SENTINEL, not merely a non-nil error:
 	// a bare `err != nil` check would also pass for a real database failure,
@@ -425,27 +425,12 @@ func TestGetMember_NotFound(t *testing.T) {
 	}
 }
 
-func TestAddMember_Success(t *testing.T) {
-	repo, mock := newOrgRepo(t)
-	mock.ExpectExec("INSERT INTO organization_members").
-		WillReturnResult(sqlmock.NewResult(1, 1))
-
-	member := &models.OrganizationMember{
-		OrganizationID: "org-1",
-		UserID:         "user-2",
-		CreatedAt:      time.Now(),
-	}
-	if err := repo.AddMember(context.Background(), member); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
 func TestRemoveMember_Success(t *testing.T) {
 	repo, mock := newOrgRepo(t)
 	mock.ExpectExec("DELETE FROM organization_members").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	if err := repo.RemoveMember(context.Background(), "org-1", "user-1"); err != nil {
+	if err := repo.RemoveMember(context.Background(), "org-1", "user-1", OrgScopeAllOrganizations()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -459,7 +444,7 @@ func TestListMembersWithUsers_Empty(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organization_members.*JOIN users").
 		WillReturnRows(sqlmock.NewRows(orgMembersWithUserCols))
 
-	members, err := repo.ListMembersWithUsers(context.Background(), "org-1")
+	members, err := repo.ListMembersWithUsers(context.Background(), "org-1", OrgScopeAllOrganizations())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -477,7 +462,7 @@ func TestListMembersWithUsers_WithMember(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organization_members.*JOIN users").
 		WillReturnRows(rows)
 
-	members, err := repo.ListMembersWithUsers(context.Background(), "org-1")
+	members, err := repo.ListMembersWithUsers(context.Background(), "org-1", OrgScopeAllOrganizations())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -490,7 +475,7 @@ func TestListMembersWithUsers_WithMember(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// GetUserOrganizations / ListUserOrganizations
+// GetUserOrganizations
 // ---------------------------------------------------------------------------
 
 func TestGetUserOrganizations_Success(t *testing.T) {
@@ -498,7 +483,7 @@ func TestGetUserOrganizations_Success(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organizations.*JOIN organization_members").
 		WillReturnRows(sampleOrgRow())
 
-	orgs, err := repo.GetUserOrganizations(context.Background(), "user-1")
+	orgs, err := repo.GetUserOrganizations(context.Background(), "user-1", OrgScopeAllOrganizations())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -508,19 +493,16 @@ func TestGetUserOrganizations_Success(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// UpdateMember
+// UpdateMemberRoleTemplate
 // ---------------------------------------------------------------------------
 
-func TestUpdateMember_Success(t *testing.T) {
+func TestUpdateMemberRoleTemplate_Success(t *testing.T) {
 	repo, mock := newOrgRepo(t)
 	mock.ExpectExec("UPDATE organization_members").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	member := &models.OrganizationMember{
-		OrganizationID: "org-1",
-		UserID:         "user-1",
-	}
-	if err := repo.UpdateMember(context.Background(), member); err != nil {
+	if err := repo.UpdateMemberRoleTemplate(context.Background(), "org-1", "user-1", nil,
+		OrgScopeAllOrganizations()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -534,7 +516,7 @@ func TestAddMemberWithRoleTemplate_Success(t *testing.T) {
 	mock.ExpectExec("INSERT INTO organization_members").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	err := repo.AddMemberWithRoleTemplate(context.Background(), "org-1", "user-1", nil)
+	err := repo.AddMemberWithRoleTemplate(context.Background(), "org-1", "user-1", nil, OrgScopeAllOrganizations())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -545,7 +527,7 @@ func TestAddMemberWithRoleTemplate_DBError(t *testing.T) {
 	mock.ExpectExec("INSERT INTO organization_members").
 		WillReturnError(errDB)
 
-	err := repo.AddMemberWithRoleTemplate(context.Background(), "org-1", "user-1", nil)
+	err := repo.AddMemberWithRoleTemplate(context.Background(), "org-1", "user-1", nil, OrgScopeAllOrganizations())
 	if err == nil {
 		t.Error("expected error")
 	}
@@ -573,7 +555,7 @@ func TestGetMemberWithRole_NotFound(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organization_members").
 		WillReturnRows(sqlmock.NewRows(orgMemberWithRoleRepoCols))
 
-	m, err := repo.GetMemberWithRole(context.Background(), "org-1", "user-1")
+	m, err := repo.GetMemberWithRole(context.Background(), "org-1", "user-1", OrgScopeAllOrganizations())
 	// identity v0.24.0 reports a miss with the store.ErrNotFound sentinel
 	// instead of (nil, nil). Assert the SENTINEL, not merely a non-nil error:
 	// a bare `err != nil` check would also pass for a real database failure,
@@ -591,7 +573,7 @@ func TestGetMemberWithRole_Found(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organization_members").
 		WillReturnRows(sampleMemberWithRoleRepoRow())
 
-	m, err := repo.GetMemberWithRole(context.Background(), "org-1", "user-1")
+	m, err := repo.GetMemberWithRole(context.Background(), "org-1", "user-1", OrgScopeAllOrganizations())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -615,7 +597,7 @@ func TestListMembers_Success(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(orgMemberRepoCols).
 			AddRow("org-1", "user-1", nil, time.Now()))
 
-	members, err := repo.ListMembers(context.Background(), "org-1")
+	members, err := repo.ListMembers(context.Background(), "org-1", OrgScopeAllOrganizations())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -629,7 +611,7 @@ func TestListMembers_DBError(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organization_members WHERE organization_id").
 		WillReturnError(errDB)
 
-	_, err := repo.ListMembers(context.Background(), "org-1")
+	_, err := repo.ListMembers(context.Background(), "org-1", OrgScopeAllOrganizations())
 	if err == nil {
 		t.Error("expected error")
 	}
@@ -649,7 +631,7 @@ func TestAddMemberWithParams_Success(t *testing.T) {
 	mock.ExpectExec("INSERT INTO organization_members").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	if err := repo.AddMemberWithParams(context.Background(), "org-1", "user-1", "viewer"); err != nil {
+	if err := repo.AddMemberWithParams(context.Background(), "org-1", "user-1", "viewer", OrgScopeAllOrganizations()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -664,7 +646,7 @@ func TestAddMemberWithParams_TemplateNotFound(t *testing.T) {
 		WithArgs("nonexistent").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 
-	if err := repo.AddMemberWithParams(context.Background(), "org-1", "user-1", "nonexistent"); err == nil {
+	if err := repo.AddMemberWithParams(context.Background(), "org-1", "user-1", "nonexistent", OrgScopeAllOrganizations()); err == nil {
 		t.Fatal("expected an error for an unknown role template, got nil")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -677,7 +659,7 @@ func TestAddMemberWithParams_DBError(t *testing.T) {
 	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
 		WillReturnError(errDB)
 
-	if err := repo.AddMemberWithParams(context.Background(), "org-1", "user-1", "viewer"); err == nil {
+	if err := repo.AddMemberWithParams(context.Background(), "org-1", "user-1", "viewer", OrgScopeAllOrganizations()); err == nil {
 		t.Error("expected error")
 	}
 }
@@ -694,7 +676,7 @@ func TestUpdateMemberRole_Success(t *testing.T) {
 	mock.ExpectExec("UPDATE organization_members SET role_template_id").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	if err := repo.UpdateMemberRole(context.Background(), "org-1", "user-1", "admin"); err != nil {
+	if err := repo.UpdateMemberRole(context.Background(), "org-1", "user-1", "admin", OrgScopeAllOrganizations()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -704,7 +686,7 @@ func TestUpdateMemberRole_DBError(t *testing.T) {
 	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
 		WillReturnError(errDB)
 
-	if err := repo.UpdateMemberRole(context.Background(), "org-1", "user-1", "admin"); err == nil {
+	if err := repo.UpdateMemberRole(context.Background(), "org-1", "user-1", "admin", OrgScopeAllOrganizations()); err == nil {
 		t.Error("expected error")
 	}
 }
@@ -717,7 +699,7 @@ func TestUpdateMemberRole_TemplateNotFound(t *testing.T) {
 		WithArgs("nonexistent").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 
-	if err := repo.UpdateMemberRole(context.Background(), "org-1", "user-1", "nonexistent"); err == nil {
+	if err := repo.UpdateMemberRole(context.Background(), "org-1", "user-1", "nonexistent", OrgScopeAllOrganizations()); err == nil {
 		t.Fatal("expected an error for an unknown role template, got nil")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -734,7 +716,7 @@ func TestCheckMembership_NotMember(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organization_members WHERE organization_id").
 		WillReturnRows(sqlmock.NewRows(orgMemberRepoCols))
 
-	isMember, roleID, err := repo.CheckMembership(context.Background(), "org-1", "user-99")
+	isMember, roleID, err := repo.CheckMembership(context.Background(), "org-1", "user-99", OrgScopeAllOrganizations())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -751,7 +733,7 @@ func TestCheckMembership_IsMember(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organization_members WHERE organization_id").
 		WillReturnRows(sqlmock.NewRows(orgMemberRepoCols).AddRow("org-1", "user-1", nil, time.Now()))
 
-	isMember, _, err := repo.CheckMembership(context.Background(), "org-1", "user-1")
+	isMember, _, err := repo.CheckMembership(context.Background(), "org-1", "user-1", OrgScopeAllOrganizations())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -761,31 +743,17 @@ func TestCheckMembership_IsMember(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ListUserOrganizations (alias for GetUserOrganizations)
+// GetUserOrganizations, error axis. The ListUserOrganizations alias this
+// section used to exercise separately was deleted in identity v0.25.0; the
+// happy path is covered once, above.
 // ---------------------------------------------------------------------------
 
-var userOrgCols = []string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}
-
-func TestListUserOrganizations_Success(t *testing.T) {
-	repo, mock := newOrgRepo(t)
-	mock.ExpectQuery("SELECT.*FROM organizations.*organization_members").
-		WillReturnRows(sqlmock.NewRows(userOrgCols).AddRow("org-1", "default", "Default Org", nil, nil, time.Now(), time.Now()))
-
-	orgs, err := repo.ListUserOrganizations(context.Background(), "user-1")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(orgs) != 1 {
-		t.Errorf("len = %d, want 1", len(orgs))
-	}
-}
-
-func TestListUserOrganizations_DBError(t *testing.T) {
+func TestGetUserOrganizations_DBError(t *testing.T) {
 	repo, mock := newOrgRepo(t)
 	mock.ExpectQuery("SELECT.*FROM organizations.*organization_members").
 		WillReturnError(errDB)
 
-	_, err := repo.ListUserOrganizations(context.Background(), "user-1")
+	_, err := repo.GetUserOrganizations(context.Background(), "user-1", OrgScopeAllOrganizations())
 	if err == nil {
 		t.Error("expected error")
 	}

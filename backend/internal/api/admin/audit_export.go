@@ -111,6 +111,14 @@ func (h *AuditLogHandlers) ExportAuditLogs(appVersion string) gin.HandlerFunc {
 				&metadataJSON,
 				&entry.IPAddress,
 				&entry.CreatedAt,
+				// actor_email is projected between created_at and the joined
+				// user_email/user_name as of identity v0.25.0. It is the STORED
+				// attribution — written when the entry was, never updated — so
+				// it survives the actor's users row; the two joined columns
+				// below report the actor's CURRENT identity and go nil when that
+				// row is deleted. Both are exported: a reader can tell a live
+				// actor from a retained one.
+				&entry.ActorEmail,
 				&entry.UserEmail,
 				&entry.UserName,
 			); err != nil {
@@ -165,8 +173,11 @@ func orgIDOrEmpty(orgID *string) string {
 
 // auditExportRow is a flat struct used for NDJSON serialization of a single audit log entry.
 type auditExportRow struct {
-	ID             string                 `json:"id"`
-	UserID         *string                `json:"user_id,omitempty"`
+	ID     string  `json:"id"`
+	UserID *string `json:"user_id,omitempty"`
+	// ActorEmail is the actor's address as stored on the row itself, retained
+	// past the deletion of the users row it was copied from.
+	ActorEmail     *string                `json:"actor_email,omitempty"`
 	UserEmail      *string                `json:"user_email,omitempty"`
 	UserName       *string                `json:"user_name,omitempty"`
 	OrganizationID *string                `json:"organization_id,omitempty"`

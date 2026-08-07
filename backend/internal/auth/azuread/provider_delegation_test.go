@@ -65,19 +65,42 @@ func TestExtractUserInfo_DelegatesError(t *testing.T) {
 	}
 }
 
-// TestVerifyIDToken_DelegatesError ensures the AzureAD VerifyIDToken wrapper
-// forwards to the underlying verifier. With no verifier configured on the test
-// provider the call is expected to fail; we only need to exercise the one-line
-// delegation for coverage.
-func TestVerifyIDToken_DelegatesError(t *testing.T) {
+// TestExchangeAndVerify_DelegatesError ensures the AzureAD ExchangeAndVerify
+// wrapper forwards to the underlying provider. A provider built without
+// discovery has no verifier, and ExchangeAndVerify refuses outright rather than
+// performing an exchange whose ID token it could never check — so this asserts
+// the delegation AND the fail-closed direction, where the pre-v0.25.0
+// VerifyIDToken wrapper could only be exercised by recovering a nil-verifier
+// panic.
+func TestExchangeAndVerify_DelegatesError(t *testing.T) {
 	p := &AzureADProvider{
 		oidcProvider: oidcpkg.NewOIDCProviderForTest(&oauth2.Config{ClientID: "c"}),
 	}
-	defer func() {
-		// A panic is acceptable — the verifier is nil — because the purpose of
-		// this test is purely to exercise the delegation line. Recover so the
-		// test passes; the important thing is the line was executed.
-		_ = recover()
-	}()
-	_, _ = p.VerifyIDToken(context.Background(), "invalid.token.value")
+	_, _, err := p.ExchangeAndVerify(context.Background(), "some-code", oidcpkg.CallbackSession{
+		Nonce: "n", CodeVerifier: "v",
+	})
+	if err == nil {
+		t.Fatal("ExchangeAndVerify succeeded on a provider with no verifier, want refusal")
+	}
+}
+
+// TestExchangeAndVerify_RefusesMissingBinding is the contract that replaced the
+// removed WithPKCEVerifier/WithExpectedNonce options: both bindings are required
+// parameters, and an empty one is refused BEFORE any network call rather than
+// producing an unbound exchange the IdP may or may not reject.
+func TestExchangeAndVerify_RefusesMissingBinding(t *testing.T) {
+	p := &AzureADProvider{
+		oidcProvider: oidcpkg.NewOIDCProviderForTest(&oauth2.Config{ClientID: "c"}),
+	}
+	for name, sess := range map[string]oidcpkg.CallbackSession{
+		"no code verifier": {Nonce: "n"},
+		"no nonce":         {CodeVerifier: "v"},
+		"neither":          {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := p.ExchangeAndVerify(context.Background(), "some-code", sess); err == nil {
+				t.Fatal("ExchangeAndVerify succeeded with an incomplete CallbackSession, want refusal")
+			}
+		})
+	}
 }

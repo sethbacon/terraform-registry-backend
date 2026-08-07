@@ -38,7 +38,7 @@ func NewRBACRepositoryWithIdentity(db, identityDB *sqlx.DB) *RBACRepository {
 	return &RBACRepository{
 		db:            db,
 		identityDB:    identityDB,
-		roleTemplates: identitystore.NewRoleTemplateRepository(identityDB),
+		roleTemplates: identitystore.NewRoleTemplateRepository(identityDB.DB),
 	}
 }
 

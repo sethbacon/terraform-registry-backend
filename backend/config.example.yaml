@@ -184,6 +184,31 @@ security:
     cert_file: /etc/certs/tls.crt
     key_file: /etc/certs/tls.key
 
+  # Outbound egress policy (SSRF guard).
+  #
+  # Every outbound request whose target is operator- or admin-configurable is
+  # resolve-and-pinned against a deny-list of non-public addresses: loopback,
+  # RFC 1918, link-local (including the 169.254.169.254 cloud metadata
+  # endpoint), CGNAT and IPv6 ULA. This list WIDENS that deny-list; empty means
+  # deny every internal target.
+  #
+  # Since terraform-suite-identity v0.25.0 it also governs AUTHENTICATION:
+  # OIDC discovery, the JWKS signing keys, the authorization-code token
+  # exchange, and the suite sibling-discovery poll all go through the same
+  # guard. A self-hosted IdP or a cluster-internal sibling MUST be listed here
+  # or the OIDC provider fails to construct at startup, naming the denied
+  # endpoint. A public IdP (Entra, Okta cloud, Google, Auth0) needs nothing.
+  #
+  # Prefer the HOSTNAME over the CIDR: narrower, and it survives the host
+  # getting a different address.
+  #
+  # Env: TFR_SECURITY_EGRESS_ALLOWLIST (comma-separated).
+  egress:
+    allowlist: []
+    #  - keycloak                  # the dev-stack IdP, reachable by service name
+    #  - registry.corp.internal    # an internal mirror upstream, IdP or sibling
+    #  - 10.20.0.0/16              # or the pod/service CIDR
+
   # Mutual TLS (mTLS) client certificate authentication for machine-to-machine callers.
   # When enabled, clients presenting a valid certificate signed by the configured CA
   # are authenticated and assigned scopes based on the certificate subject mapping.

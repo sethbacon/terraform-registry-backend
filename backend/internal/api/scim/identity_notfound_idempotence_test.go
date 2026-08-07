@@ -1,21 +1,22 @@
 // identity_notfound_idempotence_test.go pins the idempotence of SCIM
-// deprovisioning against terraform-suite-identity v0.24.0.
+// deprovisioning.
 //
-// RemoveMember used to return nil when it matched zero rows. As of v0.24.0 it
-// returns an error wrapping store.ErrNotFound, and deprovisionUser loops over
-// the target's in-scope memberships calling it once per organization. Written
-// naively — `if err != nil { return err }` — the loop now ABORTS on the first
-// membership that is already gone.
+// The original defect was a read-then-remove LOOP: deprovisionUser walked the
+// target's in-scope memberships calling RemoveMember once per organization, and
+// terraform-suite-identity v0.24.0 made that call report store.ErrNotFound when
+// it matched zero rows. Written naively — `if err != nil { return err }` — the
+// loop ABORTED on the first membership that was already gone, skipping every
+// later organization AND the credential sweep, so a retried or concurrently
+// raced deprovision left a user the IdP believes is gone holding working
+// publish credentials.
 //
-// That is not a cosmetic failure. deprovisionUser owns both halves of an
-// offboard: it removes memberships AND sweeps the user's JWT sessions and API
-// keys (issue #736). An abort skips every later organization and the credential
-// sweep entirely, so a retried or concurrently-raced deprovision leaves a user
-// the IdP believes is gone holding working publish credentials — the exact
-// failure the paired sweep was introduced to close.
-//
-// The signal is a zero rows-affected result, which is what an already-removed
-// membership produces.
+// identity v0.25.0 removes the loop: RemoveAllMembershipsForUser takes the
+// caller's OrgScope and does the whole strip in one statement, RETURNING the
+// organizations it actually removed. The invariant is unchanged and is what
+// these tests still pin — a replay must succeed and must still reach the
+// credential sweep — but it is now structural rather than remembered: a bulk
+// DELETE that matches zero rows is an ordinary result, so there is no
+// per-membership error left for a caller to mishandle.
 package scim
 
 import (
@@ -26,13 +27,15 @@ import (
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 )
 
-// TestSCIMDeprovision_AlreadyRemovedMembershipDoesNotAbortLoop gives the target
-// TWO in-scope memberships and makes the FIRST one report "already removed".
+// TestSCIMDeprovision_PartiallyRemovedMembershipsStillSucceed gives the target
+// TWO in-scope memberships and has the strip report only ONE of them as
+// actually removed — the shape a concurrent deprovision produces.
 //
-// The loop must continue to the second organization and the request must
-// succeed. sqlmock fails on an unexpected statement, so an abort shows up as
-// the second DELETE never being issued.
-func TestSCIMDeprovision_AlreadyRemovedMembershipDoesNotAbortLoop(t *testing.T) {
+// The request must succeed, and the scope handed to the credential sweep must
+// be the organizations that were REALLY removed, not the ones the caller asked
+// about. That is the #160 half of the contract: an organization where nothing
+// was removed had no authority reduced there, so its keys stand.
+func TestSCIMDeprovision_PartiallyRemovedMembershipsStillSucceed(t *testing.T) {
 	r, mock := scimRouter(t)
 
 	// The target user.
@@ -40,34 +43,20 @@ func TestSCIMDeprovision_AlreadyRemovedMembershipDoesNotAbortLoop(t *testing.T) 
 		WillReturnRows(sqlmock.NewRows(scimUserCols).AddRow(
 			scimTargetID, "victim@example.com", "Victim", nil, time.Now(), time.Now()))
 
-	// The CALLER holds scim:provision in BOTH organizations, so both of the
-	// target's memberships are in scope and the loop runs twice.
-	mock.ExpectQuery("(?s)FROM organization_members").
+	// The CALLER holds scim:provision in BOTH organizations, so both are in
+	// scope and both are named in the strip's predicate.
+	mock.ExpectQuery("(?s)SELECT.*FROM organization_members").
 		WillReturnRows(sqlmock.NewRows(scimMembershipCols).
 			AddRow(scimOrgAlpha, "Alpha", "role-1", time.Now(),
 				"provisioner", "Provisioner", []byte(`["scim:provision"]`)).
 			AddRow(scimOrgBeta, "Beta", "role-2", time.Now(),
 				"provisioner", "Provisioner", []byte(`["scim:provision"]`)))
 
-	// The TARGET belongs to both.
-	mock.ExpectQuery("(?s)FROM organization_members").
-		WillReturnRows(sqlmock.NewRows(scimMembershipCols).
-			AddRow(scimOrgAlpha, "Alpha", "role-1", time.Now(),
-				"viewer", "Viewer", []byte(`["modules:read"]`)).
-			AddRow(scimOrgBeta, "Beta", "role-2", time.Now(),
-				"viewer", "Viewer", []byte(`["modules:read"]`)))
-
-	// Alpha's membership is ALREADY gone: zero rows affected, which v0.24.0
-	// reports as store.ErrNotFound.
-	mock.ExpectExec("(?s)DELETE FROM organization_members").
-		WithArgs(scimOrgAlpha, scimTargetID).
-		WillReturnResult(sqlmock.NewResult(0, 0))
-
-	// Beta's membership is still present and MUST still be removed. If the
-	// loop aborted on Alpha, this expectation goes unmet.
-	mock.ExpectExec("(?s)DELETE FROM organization_members").
-		WithArgs(scimOrgBeta, scimTargetID).
-		WillReturnResult(sqlmock.NewResult(0, 1))
+	// Alpha's membership was already gone; only Beta's row is removed, so only
+	// Beta comes back.
+	mock.ExpectQuery("(?s)DELETE FROM organization_members").
+		WithArgs(scimTargetID, boundScope{want: []string{scimOrgAlpha, scimOrgBeta}}).
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}).AddRow(scimOrgBeta))
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/scim/v2/Users/"+scimTargetID, nil))
@@ -77,15 +66,14 @@ func TestSCIMDeprovision_AlreadyRemovedMembershipDoesNotAbortLoop(t *testing.T) 
 			w.Code, w.Body.String())
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("the loop did not reach every in-scope organization: %v", err)
+		t.Fatalf("the strip did not run over every in-scope organization: %v", err)
 	}
 }
 
 // TestSCIMDeprovision_AllMembershipsAlreadyRemovedSucceeds is the fully
 // idempotent replay: the whole deprovision is repeated after it already ran.
-// Every removal matches zero rows and the request must still succeed, because
-// the credential sweep that follows the loop is the half that still has work to
-// do.
+// The strip removes nothing and the request must still succeed — removing zero
+// rows is a legitimate no-op, not a not-found.
 func TestSCIMDeprovision_AllMembershipsAlreadyRemovedSucceeds(t *testing.T) {
 	r, mock := scimRouter(t)
 
@@ -93,19 +81,14 @@ func TestSCIMDeprovision_AllMembershipsAlreadyRemovedSucceeds(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(scimUserCols).AddRow(
 			scimTargetID, "victim@example.com", "Victim", nil, time.Now(), time.Now()))
 
-	mock.ExpectQuery("(?s)FROM organization_members").
+	mock.ExpectQuery("(?s)SELECT.*FROM organization_members").
 		WillReturnRows(sqlmock.NewRows(scimMembershipCols).AddRow(
 			scimOrgAlpha, "Alpha", "role-1", time.Now(),
 			"provisioner", "Provisioner", []byte(`["scim:provision"]`)))
 
-	mock.ExpectQuery("(?s)FROM organization_members").
-		WillReturnRows(sqlmock.NewRows(scimMembershipCols).AddRow(
-			scimOrgAlpha, "Alpha", "role-1", time.Now(),
-			"viewer", "Viewer", []byte(`["modules:read"]`)))
-
-	mock.ExpectExec("(?s)DELETE FROM organization_members").
-		WithArgs(scimOrgAlpha, scimTargetID).
-		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("(?s)DELETE FROM organization_members").
+		WithArgs(scimTargetID, boundScope{want: []string{scimOrgAlpha}}).
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}))
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/scim/v2/Users/"+scimTargetID, nil))

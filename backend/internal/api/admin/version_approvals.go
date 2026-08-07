@@ -60,10 +60,7 @@ func (h *VersionApprovalHandler) tenantFilter(c *gin.Context) (repositories.Vers
 	if !ok {
 		return repositories.VersionApprovalFilter{}, false
 	}
-	return repositories.VersionApprovalFilter{
-		AllOrganizations: scope.PlatformAdmin,
-		OrganizationIDs:  scope.OrgIDs,
-	}, true
+	return repositories.VersionApprovalFilter{Scope: scope.OrgScope()}, true
 }
 
 // currentUserID extracts the authenticated user's UUID from the gin context,

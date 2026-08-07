@@ -141,9 +141,14 @@ func TestExportAuditLogs_ValidDates_DBError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // auditExportCols mirrors the Scan call order in ExportAuditLogs.
+// auditExportCols mirrors StreamAuditLogs' projection exactly. actor_email is
+// COLUMN 10 as of identity v0.25.0, between created_at and the joined
+// user_email/user_name — a destination missing from the Scan below fails the
+// whole export with "expected 12 destination arguments in Scan, not 11", so the
+// column's POSITION is what these fixtures pin.
 var auditExportCols = []string{
 	"id", "user_id", "organization_id", "action", "resource_type", "resource_id",
-	"metadata", "ip_address", "created_at", "user_email", "user_name",
+	"metadata", "ip_address", "created_at", "actor_email", "user_email", "user_name",
 }
 
 func TestExportAuditLogs_Success(t *testing.T) {
@@ -153,7 +158,7 @@ func TestExportAuditLogs_Success(t *testing.T) {
 	name := "Alice"
 	rows := sqlmock.NewRows(auditExportCols).
 		AddRow("entry-1", nil, nil, "module.create", "module", "mod-1",
-			nil, "10.0.0.1", time.Now(), &email, &name)
+			nil, "10.0.0.1", time.Now(), &email, &email, &name)
 
 	mock.ExpectQuery("SELECT al\\.id").
 		WillReturnRows(rows)
@@ -183,6 +188,12 @@ func TestExportAuditLogs_Success(t *testing.T) {
 	if entry["id"] != "entry-1" {
 		t.Errorf("entry[id] = %v, want entry-1", entry["id"])
 	}
+	// The stored attribution is exported alongside the joined, current one. It
+	// is what survives the actor's users row (identity migration 000007), so an
+	// export taken after an account is deleted still says who acted.
+	if entry["actor_email"] != email {
+		t.Errorf("entry[actor_email] = %v, want %v", entry["actor_email"], email)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -195,7 +206,7 @@ func TestExportAuditLogs_WithMetadata(t *testing.T) {
 	metaJSON := []byte(`{"key":"value"}`)
 	rows := sqlmock.NewRows(auditExportCols).
 		AddRow("entry-2", nil, nil, "module.delete", nil, nil,
-			metaJSON, nil, time.Now(), nil, nil)
+			metaJSON, nil, time.Now(), nil, nil, nil)
 
 	mock.ExpectQuery("SELECT al\\.id").
 		WillReturnRows(rows)
@@ -299,10 +310,14 @@ func TestExportAuditLogs_OCSFFormat(t *testing.T) {
 	resType := "module"
 	resID := "mod-7"
 	ip := "192.168.1.1"
+	// Deliberately different from the joined user_email: actor_email is the
+	// address AS IT STOOD when the entry was written and is never updated, so a
+	// reader can tell a retained actor from a live one.
+	retainedEmail := "bob.old@example.com"
 
 	rows := sqlmock.NewRows(auditExportCols).
 		AddRow("entry-ocsf", &userID, &orgID, "create_module", &resType, &resID,
-			nil, &ip, time.Now(), &email, &name)
+			nil, &ip, time.Now(), &retainedEmail, &email, &name)
 
 	mock.ExpectQuery("SELECT al\\.id").
 		WillReturnRows(rows)

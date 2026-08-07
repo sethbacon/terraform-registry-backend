@@ -144,7 +144,14 @@ func TestExtractAPIKeyFromHeader(t *testing.T) {
 		{"Basic auth scheme", "Basic dXNlcjpwYXNz", "", true},
 		{"Bearer with no key", "Bearer ", "", true},
 		{"Bearer with only spaces", "Bearer    ", "", true},
-		{"lowercase bearer rejected", "bearer tfr_abc123", "", true},
+		// RFC 7235 §2.1 / RFC 6750 §2.1: the auth SCHEME is case-insensitive.
+		// identity v0.25.0 stopped rejecting conformant clients that send it in
+		// lower or mixed case; the credential itself is still case-sensitive,
+		// which the "wrong case credential" row below pins.
+		{"lowercase bearer accepted", "bearer tfr_abc123", "tfr_abc123", false},
+		{"mixed-case bearer accepted", "BeArEr tfr_abc123", "tfr_abc123", false},
+		{"HTAB separator accepted", "Bearer\ttfr_abc123", "tfr_abc123", false},
+		{"credential case is preserved, not folded", "Bearer TFR_ABC123", "TFR_ABC123", false},
 	}
 
 	for _, tt := range tests {

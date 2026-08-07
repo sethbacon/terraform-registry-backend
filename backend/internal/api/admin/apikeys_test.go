@@ -129,8 +129,11 @@ func TestListAPIKeys_OwnKeys(t *testing.T) {
 
 func TestListAPIKeys_AdminListAll(t *testing.T) {
 	mock, r := newAPIKeyRouter(t, "user-1", []string{"admin"})
-	// ListAll has no WHERE, so look for the JOIN directly before ORDER BY
-	mock.ExpectQuery("u.id ORDER BY ak.created_at").
+	// ListAPIKeys (was ListAll) carries the mandatory tenant predicate, which
+	// for a platform admin renders as the literal TRUE — never an absent
+	// clause. That is the whole point of OrgScope.SQL never returning empty:
+	// "reach everything" is visible in the statement the database receives.
+	mock.ExpectQuery(`WHERE 1=1 AND TRUE ORDER BY ak.created_at`).
 		WillReturnRows(sampleAKListRow())
 
 	w := httptest.NewRecorder()

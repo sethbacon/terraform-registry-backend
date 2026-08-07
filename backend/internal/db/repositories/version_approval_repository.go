@@ -16,7 +16,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
-	"github.com/lib/pq"
 
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 )
@@ -31,13 +30,22 @@ func NewVersionApprovalRepository(db *sqlx.DB) *VersionApprovalRepository {
 	return &VersionApprovalRepository{db: db}
 }
 
-// VersionApprovalFilter narrows the list query. Empty fields mean "no filter".
+// VersionApprovalFilter narrows the list query. Empty fields mean "no filter"
+// — with the deliberate exception of Scope.
 //
-// OrganizationIDs and AllOrganizations are NOT "no filter when empty": they are
-// the mandatory tenant constraint, and the zero value selects nothing. Same
-// reasoning as the shared identity store's AuditScope — an omitted tenant
-// predicate must not mean "every tenant", or every new caller re-opens
-// terraform-registry#719 on this table (issue #719).
+// Scope is NOT "no filter when empty": it is the mandatory tenant constraint,
+// and its zero value selects nothing. An omitted tenant predicate must not mean
+// "every tenant", or every new caller re-opens terraform-registry#719 on this
+// table (issue #719).
+//
+// It is the shared identity store's own OrgScope, not a local re-implementation.
+// This filter used to carry an `OrganizationIDs []string` + `AllOrganizations
+// bool` pair and build the predicate itself, because until identity v0.25.0 the
+// module's predicate builder was unexported and the shape could only be copied
+// by hand. The copy had already drifted in the way the exported version exists
+// to prevent: the platform-wide case appended NO clause at all rather than the
+// literal TRUE, so one scope value produced a statement whose tenancy was
+// invisible in the SQL and in any log that captured it.
 type VersionApprovalFilter struct {
 	Status   string // pending_approval | approved | rejected
 	Type     string // provider | terraform
@@ -45,20 +53,12 @@ type VersionApprovalFilter struct {
 	Limit    int
 	Offset   int
 
-	// OrganizationIDs is the allowlist of organizations whose gated versions
-	// may be returned, resolved from the caller's memberships.
-	OrganizationIDs []string
-	// AllOrganizations is the explicit platform-wide read. It is the ONLY way
-	// to get an unfiltered statement, and it also admits the org-less rows
+	// Scope is the organizations whose gated versions may be returned. Build it
+	// with tenantscope.Scope.OrgScope(); OrgScopeAllOrganizations() is the
+	// explicit platform-wide read, which also admits the org-less rows
 	// (terraform binary mirrors and scanner binaries have no owning
 	// organization at all).
-	AllOrganizations bool
-}
-
-// matchesNothing reports whether the filter's tenant constraint can never
-// select a row.
-func (f VersionApprovalFilter) matchesNothing() bool {
-	return !f.AllOrganizations && len(f.OrganizationIDs) == 0
+	Scope OrgScope
 }
 
 // semverOrder is the reusable "highest semver first" ordering applied to a
@@ -133,7 +133,7 @@ func (r *VersionApprovalRepository) List(ctx context.Context, f VersionApprovalF
 	// GUARD version-approval-list-scope (issue #719): fail closed without a
 	// round trip. A caller with no organizations has an empty approvals queue,
 	// not the whole estate's.
-	if f.matchesNothing() {
+	if f.Scope.MatchesNothing() {
 		return []models.VersionApproval{}, 0, nil
 	}
 
@@ -154,10 +154,15 @@ func (r *VersionApprovalRepository) List(ctx context.Context, f VersionApprovalF
 	where := `WHERE ($1::text IS NULL OR va.approval_status = $1)
 	            AND ($2::uuid IS NULL OR va.mirror_config_id = $2)`
 	args := []interface{}{statusArg, configArg}
-	if !f.AllOrganizations {
-		where += ` AND va.organization_id = ANY($3)`
-		args = append(args, pq.Array(f.OrganizationIDs))
-	}
+	// OrgScope.SQL is the identity store's own predicate builder, applied here
+	// to one of THIS repository's tables. Its clause is never empty — TRUE for
+	// platform-wide, FALSE for a scope that matches nothing — so appending it
+	// can never degrade into an unfiltered statement, and the args slice is
+	// appended unconditionally because length 0 is what a predicate binding no
+	// placeholder looks like.
+	scopeClause, scopeArgs := f.Scope.SQL("va.organization_id", len(args)+1)
+	where += " AND " + scopeClause
+	args = append(args, scopeArgs...)
 
 	inner := innerQuery(f.Type)
 
@@ -219,11 +224,11 @@ func (r *VersionApprovalRepository) OrganizationForVersion(ctx context.Context, 
 // count told a member of one organization exactly how many approvals were
 // pending across every other tenant, and moved whenever theirs did.
 func (r *VersionApprovalRepository) PendingCount(ctx context.Context, f VersionApprovalFilter) (int, error) {
-	if f.matchesNothing() {
+	if f.Scope.MatchesNothing() {
 		return 0, nil
 	}
 
-	if f.AllOrganizations {
+	if f.Scope.IsAllOrganizations() {
 		const q = `
 			SELECT
 			  (SELECT COUNT(*) FROM mirrored_provider_versions WHERE approval_status = $1) +
@@ -245,10 +250,17 @@ func (r *VersionApprovalRepository) PendingCount(ctx context.Context, f VersionA
 		FROM mirrored_provider_versions mpv
 		JOIN mirrored_providers mp ON mp.id = mpv.mirrored_provider_id
 		JOIN mirror_configurations mc ON mc.id = mp.mirror_config_id
-		WHERE mpv.approval_status = $1 AND mc.organization_id = ANY($2)`
+		WHERE mpv.approval_status = $1`
+	args := []interface{}{models.VersionApprovalStatusPending}
+	clause, scopeArgs := f.Scope.SQL("mc.organization_id", len(args)+1)
+	// #nosec G202 -- clause comes from OrgScope.SQL: one of "TRUE", "FALSE", or
+	// a fixed template over an internal column constant and a $N placeholder.
+	// Scope values travel as query arguments and are never interpolated.
+	query := scopedQuery + " AND " + clause
+	args = append(args, scopeArgs...)
+
 	var count int
-	if err := r.db.QueryRowContext(ctx, scopedQuery,
-		models.VersionApprovalStatusPending, pq.Array(f.OrganizationIDs)).Scan(&count); err != nil {
+	if err := r.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
 		return 0, fmt.Errorf("failed to count pending approvals: %w", err)
 	}
 	return count, nil

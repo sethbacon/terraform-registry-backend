@@ -95,7 +95,7 @@ func (h *DevHandlers) ImpersonateUserHandler() gin.HandlerFunc {
 		}
 
 		// Get the target user
-		targetUser, err := h.userRepo.GetUserByID(c.Request.Context(), targetUserID)
+		targetUser, err := h.userRepo.GetUserByID(c.Request.Context(), targetUserID, repositories.OrgScopeAllOrganizations())
 		if identityerr.Missing(targetUser, err) {
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": "User not found",
@@ -166,7 +166,7 @@ func (h *DevHandlers) ListUsersForImpersonationHandler() gin.HandlerFunc {
 		}
 
 		// Get all users with their roles
-		users, _, err := h.userRepo.ListUsers(c.Request.Context(), 100, 0)
+		users, _, err := h.userRepo.ListUsers(c.Request.Context(), 100, 0, repositories.OrgScopeAllOrganizations())
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to list users",
@@ -177,7 +177,7 @@ func (h *DevHandlers) ListUsersForImpersonationHandler() gin.HandlerFunc {
 		// Build simplified response with role info
 		result := make([]gin.H, 0, len(users))
 		for _, u := range users {
-			userWithRoles, err := h.userRepo.GetUserWithOrgRoles(c.Request.Context(), u.ID)
+			userWithRoles, err := h.userRepo.GetUserWithOrgRoles(c.Request.Context(), u.ID, repositories.OrgScopeAllOrganizations())
 			if err != nil {
 				continue
 			}

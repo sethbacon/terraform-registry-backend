@@ -79,7 +79,7 @@ func (h *UserHandlers) ListUsersHandler() gin.HandlerFunc {
 		offset := (page - 1) * perPage
 
 		// Get users with memberships (2 queries total, not N+1)
-		users, total, err := h.userRepo.ListUsersWithMemberships(c.Request.Context(), perPage, offset)
+		users, total, err := h.userRepo.ListUsersWithMemberships(c.Request.Context(), perPage, offset, repositories.OrgScopeAllOrganizations())
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to list users",
@@ -115,7 +115,7 @@ func (h *UserHandlers) GetUserHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.Param("id")
 
-		user, err := h.userRepo.GetUserByID(c.Request.Context(), userID)
+		user, err := h.userRepo.GetUserByID(c.Request.Context(), userID, repositories.OrgScopeAllOrganizations())
 		if identityerr.Missing(user, err) {
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": "User not found",
@@ -130,7 +130,7 @@ func (h *UserHandlers) GetUserHandler() gin.HandlerFunc {
 		}
 
 		// Get user's organizations
-		orgs, err := h.orgRepo.ListUserOrganizations(c.Request.Context(), userID)
+		orgs, err := h.orgRepo.GetUserOrganizations(c.Request.Context(), userID, repositories.OrgScopeAllOrganizations())
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to retrieve user organizations",
@@ -205,7 +205,7 @@ func (h *UserHandlers) CreateUserHandler() gin.HandlerFunc {
 			OIDCSub: req.OIDCSub,
 		}
 
-		if err := h.userRepo.Create(c.Request.Context(), user); err != nil {
+		if err := h.userRepo.CreateUser(c.Request.Context(), user); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to create user",
 			})
@@ -255,7 +255,7 @@ func (h *UserHandlers) UpdateUserHandler() gin.HandlerFunc {
 		}
 
 		// Get existing user
-		user, err := h.userRepo.GetUserByID(c.Request.Context(), userID)
+		user, err := h.userRepo.GetUserByID(c.Request.Context(), userID, repositories.OrgScopeAllOrganizations())
 		if identityerr.Missing(user, err) {
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": "User not found",
@@ -304,7 +304,7 @@ func (h *UserHandlers) UpdateUserHandler() gin.HandlerFunc {
 		// Raced against a concurrent delete: 404, matching the existence
 		// pre-check at the top of this handler, instead of the false 200 the
 		// pre-v0.24.0 contract returned for an update that changed nothing.
-		if err := h.userRepo.Update(c.Request.Context(), user); err != nil {
+		if err := h.userRepo.UpdateUser(c.Request.Context(), user, repositories.OrgScopeAllOrganizations()); err != nil {
 			if identityerr.IsNotFound(err) {
 				c.JSON(http.StatusNotFound, gin.H{
 					"error": "User not found",
@@ -341,7 +341,7 @@ func (h *UserHandlers) DeleteUserHandler() gin.HandlerFunc {
 		userID := c.Param("id")
 
 		// Check if user exists
-		user, err := h.userRepo.GetUserByID(c.Request.Context(), userID)
+		user, err := h.userRepo.GetUserByID(c.Request.Context(), userID, repositories.OrgScopeAllOrganizations())
 		if identityerr.Missing(user, err) {
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": "User not found",
@@ -379,7 +379,12 @@ func (h *UserHandlers) DeleteUserHandler() gin.HandlerFunc {
 		// keeps their account but loses their credentials -- the fail-closed
 		// direction, and recoverable by re-issuing keys.
 		if h.creds != nil {
-			out := h.creds.UserDeprovisioned(c.Request.Context(), userID, "user deleted by administrator")
+			// Platform-wide, deliberately: the principal itself is about to be
+			// destroyed, so a key left standing in ANY organization outlives its
+			// owner. That is the stranded-credential shape (#736), and after the
+			// row is gone there is no user_id left to find it by.
+			out := h.creds.UserDeprovisioned(c.Request.Context(), userID,
+				repositories.OrgScopeAllOrganizations(), "user deleted by administrator")
 			if out.Incomplete {
 				slog.Error("credential sweep incomplete before user deletion; deleting anyway would detach surviving keys",
 					"user_id", userID)
@@ -393,7 +398,7 @@ func (h *UserHandlers) DeleteUserHandler() gin.HandlerFunc {
 		// Delete user (cascading deletes will handle related records).
 		// Already gone: 404, the same answer the existence pre-check gives a
 		// second DELETE, so both routes to "no such user" agree.
-		if err := h.userRepo.Delete(c.Request.Context(), userID); err != nil {
+		if err := h.userRepo.DeleteUser(c.Request.Context(), userID, repositories.OrgScopeAllOrganizations()); err != nil {
 			if identityerr.IsNotFound(err) {
 				c.JSON(http.StatusNotFound, gin.H{
 					"error": "User not found",
@@ -451,7 +456,7 @@ func (h *UserHandlers) SearchUsersHandler() gin.HandlerFunc {
 		offset := (page - 1) * perPage
 
 		// Search users with memberships
-		users, err := h.userRepo.SearchWithMemberships(c.Request.Context(), query, perPage, offset)
+		users, err := h.userRepo.SearchWithMemberships(c.Request.Context(), query, perPage, offset, repositories.OrgScopeAllOrganizations())
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to search users",
@@ -534,7 +539,7 @@ func (h *UserHandlers) GetUserMembershipsHandler() gin.HandlerFunc {
 		userID := c.Param("id")
 
 		// Check if user exists
-		user, err := h.userRepo.GetUserByID(c.Request.Context(), userID)
+		user, err := h.userRepo.GetUserByID(c.Request.Context(), userID, repositories.OrgScopeAllOrganizations())
 		if identityerr.Missing(user, err) {
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": "User not found",
