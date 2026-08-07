@@ -1,11 +1,13 @@
 {
   "draft": true,
   "force-tag-creation": true,
+  "versioning": "always-bump-minor",
   "packages": {
     ".": {
       "release-type": "go",
       "package-name": "terraform-registry",
       "include-component-in-tag": false,
+      "versioning": "always-bump-minor",
       "extra-files": [
         {
           "type": "yaml",
