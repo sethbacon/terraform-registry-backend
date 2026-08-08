@@ -7,8 +7,19 @@
 //     AuthMiddleware attached to the context. For JWT sessions those scopes
 //     were embedded in the token at login (avoiding a DB query per request);
 //     for API keys they are the key's stored scopes.
-//   - RequireOrgMembership / RequireOrgScope re-resolve the membership and its
-//     role-template scopes from the database on every request.
+//   - RequireOrgScopeForPathOrg re-resolves the caller's authority for the
+//     organization named in the request path from the database on every
+//     request, delegating to authorizeOrgAccessWith so an API key's own
+//     organization binding is authoritative for that key.
+//
+// This comment previously also named RequireOrgMembership and RequireOrgScope.
+// Both were deleted (issue #748): no route ever wired them, and they read an
+// "organization_id" context key that AuthMiddleware sets ONLY for API-key
+// principals -- so wiring either one would have 403'd every browser session.
+// They were weaker, broken look-alikes of the guard above, sitting in the same
+// file under the same naming convention, which is an invitation to reach for
+// the wrong one. Their 11 unit tests went with them: a green test suite over
+// code no request reaches proves nothing about the request path.
 //
 // Because JWT-embedded scopes are only refreshed when a token is issued,
 // privilege changes are enforced by token revocation instead: changing a
@@ -27,7 +38,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
-	"github.com/terraform-registry/terraform-registry/internal/identityerr"
 )
 
 // RequireScope checks if authenticated user has the required scope
@@ -180,135 +190,3 @@ func RequireOrgScopeForPathOrg(scope auth.Scope, orgRepo *repositories.Organizat
 }
 
 // RequireOrgMembership checks if user is a member of the specified organization
-func RequireOrgMembership(orgRepo *repositories.OrganizationRepository) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		// Get user from context
-		userVal, userExists := c.Get("user_id")
-		if !userExists {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"error": "User not authenticated",
-			})
-			return
-		}
-
-		userID, ok := userVal.(string)
-		if !ok {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"error": "Invalid user ID format",
-			})
-			return
-		}
-
-		// Get organization from context
-		orgVal, orgExists := c.Get("organization_id")
-		if !orgExists {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"error": "Organization context not found",
-			})
-			return
-		}
-
-		orgID, ok := orgVal.(string)
-		if !ok {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"error": "Invalid organization ID format",
-			})
-			return
-		}
-
-		// Check membership. Not being a member is the denial this middleware
-		// exists to issue, so it is tested ahead of the generic failure branch;
-		// a non-member must get 403, never a retryable 500.
-		member, err := orgRepo.GetMember(c.Request.Context(), orgID, userID,
-			repositories.OrgScopeAllOrganizations())
-		if identityerr.Missing(member, err) {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"error": "Not a member of organization",
-			})
-			return
-		}
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to check organization membership",
-			})
-			return
-		}
-
-		// Store role template ID in context for later use
-		c.Set("org_role_template_id", member.RoleTemplateID)
-
-		c.Next()
-	}
-}
-
-// RequireOrgScope checks if user has the required scope for the organization
-// This combines org membership check with scope check based on role template
-func RequireOrgScope(scope auth.Scope, orgRepo *repositories.OrganizationRepository) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		// Get user from context
-		userVal, userExists := c.Get("user_id")
-		if !userExists {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"error": "User not authenticated",
-			})
-			return
-		}
-
-		userID, ok := userVal.(string)
-		if !ok {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"error": "Invalid user ID format",
-			})
-			return
-		}
-
-		// Get organization from context
-		orgVal, orgExists := c.Get("organization_id")
-		if !orgExists {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"error": "Organization context not found",
-			})
-			return
-		}
-
-		orgID, ok := orgVal.(string)
-		if !ok {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"error": "Invalid organization ID format",
-			})
-			return
-		}
-
-		// Get membership with role template. As above, the non-member denial is
-		// checked first so it cannot be masked by the 500 branch.
-		memberWithRole, err := orgRepo.GetMemberWithRole(c.Request.Context(), orgID, userID,
-			repositories.OrgScopeAllOrganizations())
-		if identityerr.Missing(memberWithRole, err) {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"error": "Not a member of organization",
-			})
-			return
-		}
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to check organization membership",
-			})
-			return
-		}
-
-		// Check if user has required scope via role template
-		if !auth.HasScope(memberWithRole.RoleTemplateScopes, scope) {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"error":   "Missing required scope for organization",
-				"details": "Required scope: " + string(scope),
-			})
-			return
-		}
-
-		// Store role template info in context for later use
-		c.Set("org_role_template_id", memberWithRole.RoleTemplateID)
-		c.Set("org_role_template_scopes", memberWithRole.RoleTemplateScopes)
-
-		c.Next()
-	}
-}
