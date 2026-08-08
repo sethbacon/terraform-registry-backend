@@ -85,8 +85,9 @@ If issues are found after upgrade:
 ## Version-Specific Upgrade Notes
 
 > **Coverage.** Detailed notes exist for the upgrade paths listed below: the
-> `0.6`–`0.10` series, the two major boundaries (`1.x → 2.0`, `2.x → 3.0`), and the
-> most recent release. The intervening minor releases are **not** individually
+> `0.6`–`0.10` series, the major boundaries (`1.x → 2.0`, `2.x → 3.0`,
+> `3.x → 4.0`), and the most recent release. The intervening minor releases are
+> **not** individually
 > documented here — they introduced no breaking changes, which is why they were
 > released as minors. For anything not listed, `CHANGELOG.md` is authoritative:
 > every release is recorded there, and any breaking change appears under a
@@ -97,7 +98,7 @@ If issues are found after upgrade:
 > pair means there was nothing version-specific to do beyond the standard procedure
 > above — not that the note is missing.
 
-### Unreleased — `terraform-suite-identity` v0.25.0
+### 4.0.x → 4.1.0 — `terraform-suite-identity` v0.25.0
 
 **Action required before the deploy, on one setting only.** Every other change in
 this bump is internal (renamed accessors, a mandatory tenant parameter, a mailer
@@ -512,10 +513,10 @@ No other change in this section requires one.
 previous behavior. Note that API keys deleted by a sweep are **not** restored by a
 rollback, and neither are the keys quarantined by migration `000050`.
 
-### 3.6.x → 3.7.0
+### 3.5.x → 4.0.0
 
-The exact version is whatever release first contains the tenant-scoping batch for
-issue #719 — confirm against `CHANGELOG.md`.
+This section was staged before the batch had a version and said "whatever release
+first contains the tenant-scoping batch for issue #719". It shipped as **4.0.0**.
 
 Every entry below is a **behavior change that activates on upgrade with no
 configuration change**. The common thread: routes that read, list, create or
@@ -524,7 +525,11 @@ organization to one the caller is a verified member of. Previously several did
 not, so a principal scoped to one organization could see or act on another's
 rows. Item 9 is the same principle from the other side: a table with **no**
 organization column is a platform-wide resource, so changing it requires
-platform-wide authority rather than an organization-grantable scope.
+platform-wide authority rather than an organization-grantable scope. Items 10 and
+11 close the two remaining ways the binding could be bypassed at the source —
+creating a row in an organization other than the one the request was authorized
+against, and presenting a credential whose ceiling was read from its owner
+instead of from itself.
 
 > **REQUIRES A SHARED-MODULE BUMP.** The audit-log half of this work lives in
 > `terraform-suite-identity` (`identity/store`), where the three audit read
@@ -703,6 +708,96 @@ job that calls `POST /:id/sync` on a `mirrors:manage` token needs its token
 re-issued with `admin`. Nothing about the mirror's runtime behaviour changes —
 already-synced binaries keep serving from `/terraform/binaries`, and the
 scheduled sync job is unaffected.
+
+**10. Creating a namespaced row binds it to the organization the namespace guard
+authorized — a body naming another one is now `403`, admins included.**
+
+Four create paths decided the new row's owning organization independently of the
+route guard that had just authorized the request: they took it from the request
+body or fell back to `GetDefaultOrganization`, neither of which was the value the
+guard verified. The organization a request was *authorized against* and the
+organization the row *landed in* were two independent values (issue #778).
+
+| Route | Owning organization was | Now |
+| --- | --- | --- |
+| `POST /api/v1/admin/providers` | body / default org | the namespace's authorized owner |
+| `POST /api/v1/admin/modules/create` | body / default org | the namespace's authorized owner |
+| `POST /api/v1/modules` (upload) | body / default org | the namespace's authorized owner |
+| `POST /api/v1/providers` (upload) | body / default org | the namespace's authorized owner |
+
+This is distinct from item 3, which covers `/admin/mirrors` and `/scm-providers`
+and resolves the organization from the caller's memberships. Here it comes from
+the **namespace**, and it applies to platform administrators too: naming an
+organization other than the namespace's owner is refused rather than silently
+overridden.
+
+Two side effects are corrections, not regressions. The existence check ahead of
+each insert ran against the same wrong organization, and `providers`/`modules`
+are unique per organization — so a genuine collision in the authorized
+organization was invisible: provider record create returned `500` from the unique
+constraint where it should have returned `409`, and provider upload created a
+**second** row instead of adding a version to the first.
+
+*Action:* automation that publishes to a namespace it does not own, or that sends
+an `organization_id` in the body that differs from the namespace's owner, now
+receives `403`. Drop the field and let the namespace decide. Check for duplicate
+provider rows created by the pre-fix upload path before upgrading:
+
+```sql
+SELECT namespace, name, count(*), array_agg(organization_id)
+  FROM providers GROUP BY namespace, name HAVING count(*) > 1;
+```
+
+**11. Every authority ceiling is bounded by the presenting credential — API keys
+can no longer widen themselves, cross organizations, or refresh.**
+
+An API key's creation ceiling was computed from the **owning user's** role, never
+from the credential presenting the request. `/apikeys` carries no `RequireScope`
+(self-service key management is deliberately open to any authenticated caller)
+and CSRF is exempt for API-key callers, so a key deliberately narrowed to
+`modules:read` could `POST {"scopes":["admin"]}` and receive a platform-wide key
+whenever its owner held the admin role. Narrowing a machine credential provided
+no containment at all (issue #733).
+
+The ceiling is now intersected with the scopes the presenting credential itself
+carries, everywhere a user record decides authority on a path an API key can
+reach:
+
+| Path | Behaviour change for an API-key caller |
+| --- | --- |
+| `POST /api/v1/apikeys` | cannot create a key holding a scope the caller does not hold |
+| `PUT /api/v1/apikeys/:id` | cannot widen a key beyond the caller's own scopes |
+| `POST /api/v1/apikeys/:id/rotate` | `403` if the stored scopes exceed the new ceiling |
+| role-template assignment | cannot assign a template beyond the caller's own scopes |
+| `POST /api/v1/auth/refresh` | refused for API-key callers entirely |
+| any org-scoped admin route | a key bound to organization A can no longer administer B |
+
+**Interactive sessions are unaffected** — a JWT session *is* the user's full
+authority by construction, so the intersection is a no-op for the UI. Keys that
+already match their owner's authority are likewise unaffected.
+
+*Action:* two cases need attention before upgrading.
+
+- **Rotation is the sharp edge.** Rotation previously copied the old key's scopes
+  and authorized on ownership alone, making it a scope-laundering primitive. A
+  key whose stored scopes exceed what its owner's current role grants now returns
+  `403` on rotate. Reduce the key's scopes first, then rotate — or re-issue it.
+- **Any CI job calling `/auth/refresh` with an API key breaks.** That exchange
+  minted a session token from the owner's cross-org scope union and dropped the
+  key's organization binding, so a key was exchangeable for an unbounded JWT.
+  There is no ceiling to intersect on a session token, so the endpoint is now
+  restricted to the credential family it refreshes. API keys are long-lived and
+  do not need refreshing; rotate them at `/apikeys/:id/rotate` instead.
+
+Find keys that will fail rotation:
+
+```sql
+SELECT k.id, k.name, k.organization_id, k.key_prefix, k.scopes
+  FROM identity.api_keys k WHERE k.revoked_at IS NULL;
+```
+
+then compare each row's `scopes` against what its owner's current role template
+grants. Anything broader is a key that was widened under the old rule.
 
 **Shared module:** this release requires a `terraform-suite-identity` version
 newer than `v0.20.3`. `AuditRepository.ListAuditLogs`, `.GetAuditLog` and
