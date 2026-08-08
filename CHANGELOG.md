@@ -7,6 +7,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.3.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.2.0...v4.3.0) (2026-08-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* **api:** the /api/v1/users routes now address only users who share an organization with the caller, plus users who belong to no organization at all. A platform admin (the admin scope) is unaffected and still sees the whole directory. For everyone else: GET /users and GET /users/search return fewer rows; GET /users/:id, GET /users/:id/memberships, PUT /users/:id and DELETE /users/:id answer 404 -- not 403 -- for a user outside that set, because naming the user would disclose the membership being withheld; and GET /users/:id/memberships omits organizations the caller cannot reach even for a user they can see. Automation that enumerated the directory with a per-organization users:read credential must move to an admin-scoped one.
+
+### Bug Fixes
+
+* **api:** scope the /users family to the caller's tenancy ([#798](https://github.com/sethbacon/terraform-registry-backend/issues/798)) ([65fcdab](https://github.com/sethbacon/terraform-registry-backend/commit/65fcdab3ff5a1d98686eafbafdd8a0878365a5c9))
+* **auth:** actually start the documented JWT secret file watch ([#800](https://github.com/sethbacon/terraform-registry-backend/issues/800)) ([fb9657f](https://github.com/sethbacon/terraform-registry-backend/commit/fb9657f8f60b2f1b668d3c87a98ff3af13c3f474))
+* **middleware:** delete two org guards no route reached, and guard the class ([#802](https://github.com/sethbacon/terraform-registry-backend/issues/802)) ([35a0d63](https://github.com/sethbacon/terraform-registry-backend/commit/35a0d632e9522ec1df6d986fe69d2c176f294e0c))
+
+
+### Documentation
+
+* **threat-model:** I-8 was closed in code months before the doc said so ([#803](https://github.com/sethbacon/terraform-registry-backend/issues/803)) ([58c6ff9](https://github.com/sethbacon/terraform-registry-backend/commit/58c6ff94439d0241c833acb1520201bd4d806f42))
+
 ## [4.2.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.1.0...v4.2.0) (2026-08-08)
 
 
