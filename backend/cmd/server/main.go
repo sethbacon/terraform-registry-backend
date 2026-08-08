@@ -230,7 +230,14 @@ func scanWorker(cfg *config.Config) error {
 // signing key keeps validating. docs/secrets-rotation.md described the overlap
 // as "configurable" without naming anything; this is the name that makes that
 // sentence true.
-const jwtSecretOverlapEnv = "TFR_JWT_SECRET_OVERLAP"
+//
+// G101 flags this on the identifier ("Secret"), not the value: the value is a
+// duration setting that never holds secret material, and the variable that does
+// carry the secret is read via os.Getenv at its use site. Suppressed the way
+// this repo already suppresses the same false positive on suite.go's
+// X-Suite-Service-Token header name -- as a TRAILING comment, which is where
+// gosec looks.
+const jwtSecretOverlapEnv = "TFR_JWT_SECRET_OVERLAP" // #nosec G101 -- environment variable name, not a credential
 
 // jwtSecretOverlap parses the documented 5-minute default out of raw.
 //
