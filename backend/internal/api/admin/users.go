@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/credlifecycle"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
@@ -28,6 +29,37 @@ type UserHandlers struct {
 
 // UserHandlersOption configures optional UserHandlers dependencies.
 type UserHandlersOption func(*UserHandlers)
+
+// userAxisScope resolves the tenancy this caller may act in on the /users
+// family, in the spelling the user-axis accessors want.
+//
+// The whole family used to pass OrgScopeAllOrganizations(). Every route in it is
+// gated on the FLAT users:read / users:write scope, and those are granted by the
+// per-organization user_manager and org_owner role templates, then unioned
+// org-lessly into the JWT (#652) -- so a role holder in organization A read and
+// wrote users whose only memberships were in organizations they belong to
+// nowhere. On GET /users/:id the disclosed field was the user's organization
+// list itself: the owning tenant was both the thing being protected and the
+// thing being handed out (identity #161).
+//
+// .WithUnowned() is deliberate and is the one widening here. A user is tenant-
+// scoped through organization_members, so a user with NO memberships matches no
+// organization scope and would 404 for every non-platform-admin -- including the
+// caller who just created them, since POST /users leaves a user membership-less
+// until they are added to an organization. There is no tenant boundary to cross
+// on such a user, which is the same call terraform-state-manager's
+// requireSharedOrgAdminWithTargetUser makes, and identity documents
+// .WithUnowned() as the spelling for exactly this case.
+//
+// GUARD users-family-tenant-scope (identity #161): the /users routes address
+// only users sharing an organization with the caller, plus the unowned.
+func userAxisScope(c *gin.Context, orgRepo *repositories.OrganizationRepository, required auth.Scope) (repositories.OrgScope, bool) {
+	scope, ok := resolveTenantScope(c, orgRepo, required)
+	if !ok {
+		return repositories.OrgScope{}, false
+	}
+	return scope.OrgScope().WithUnowned(), true
+}
 
 // WithUserCredentialSweeper wires the credential sweeper used when a principal
 // is deleted.
@@ -78,8 +110,13 @@ func (h *UserHandlers) ListUsersHandler() gin.HandlerFunc {
 
 		offset := (page - 1) * perPage
 
+		scope, ok := userAxisScope(c, h.orgRepo, auth.ScopeUsersRead)
+		if !ok {
+			return
+		}
+
 		// Get users with memberships (2 queries total, not N+1)
-		users, total, err := h.userRepo.ListUsersWithMemberships(c.Request.Context(), perPage, offset, repositories.OrgScopeAllOrganizations())
+		users, total, err := h.userRepo.ListUsersWithMemberships(c.Request.Context(), perPage, offset, scope)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to list users",
@@ -115,7 +152,16 @@ func (h *UserHandlers) GetUserHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.Param("id")
 
-		user, err := h.userRepo.GetUserByID(c.Request.Context(), userID, repositories.OrgScopeAllOrganizations())
+		scope, ok := userAxisScope(c, h.orgRepo, auth.ScopeUsersRead)
+		if !ok {
+			return
+		}
+
+		// Out of scope is 404, not 403: on this route the organization list IS
+		// the disclosed field, so answering "exists, but not yours" would leak
+		// the membership the scope exists to withhold. Indistinguishable from a
+		// user id that was never issued.
+		user, err := h.userRepo.GetUserByID(c.Request.Context(), userID, scope)
 		if identityerr.Missing(user, err) {
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": "User not found",
@@ -129,8 +175,9 @@ func (h *UserHandlers) GetUserHandler() gin.HandlerFunc {
 			return
 		}
 
-		// Get user's organizations
-		orgs, err := h.orgRepo.GetUserOrganizations(c.Request.Context(), userID, repositories.OrgScopeAllOrganizations())
+		// Get user's organizations -- the same scope, so a shared user's
+		// memberships elsewhere stay withheld even though the user is visible.
+		orgs, err := h.orgRepo.GetUserOrganizations(c.Request.Context(), userID, scope)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to retrieve user organizations",
@@ -254,8 +301,13 @@ func (h *UserHandlers) UpdateUserHandler() gin.HandlerFunc {
 			return
 		}
 
+		scope, ok := userAxisScope(c, h.orgRepo, auth.ScopeUsersWrite)
+		if !ok {
+			return
+		}
+
 		// Get existing user
-		user, err := h.userRepo.GetUserByID(c.Request.Context(), userID, repositories.OrgScopeAllOrganizations())
+		user, err := h.userRepo.GetUserByID(c.Request.Context(), userID, scope)
 		if identityerr.Missing(user, err) {
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": "User not found",
@@ -304,7 +356,10 @@ func (h *UserHandlers) UpdateUserHandler() gin.HandlerFunc {
 		// Raced against a concurrent delete: 404, matching the existence
 		// pre-check at the top of this handler, instead of the false 200 the
 		// pre-v0.24.0 contract returned for an update that changed nothing.
-		if err := h.userRepo.UpdateUser(c.Request.Context(), user, repositories.OrgScopeAllOrganizations()); err != nil {
+		// Same scope as the pre-check, so the row written is the row authorized:
+		// a membership removed between the two turns this into the 404 above
+		// rather than a write the caller is no longer entitled to make.
+		if err := h.userRepo.UpdateUser(c.Request.Context(), user, scope); err != nil {
 			if identityerr.IsNotFound(err) {
 				c.JSON(http.StatusNotFound, gin.H{
 					"error": "User not found",
@@ -340,8 +395,13 @@ func (h *UserHandlers) DeleteUserHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.Param("id")
 
+		scope, ok := userAxisScope(c, h.orgRepo, auth.ScopeUsersWrite)
+		if !ok {
+			return
+		}
+
 		// Check if user exists
-		user, err := h.userRepo.GetUserByID(c.Request.Context(), userID, repositories.OrgScopeAllOrganizations())
+		user, err := h.userRepo.GetUserByID(c.Request.Context(), userID, scope)
 		if identityerr.Missing(user, err) {
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": "User not found",
@@ -398,7 +458,12 @@ func (h *UserHandlers) DeleteUserHandler() gin.HandlerFunc {
 		// Delete user (cascading deletes will handle related records).
 		// Already gone: 404, the same answer the existence pre-check gives a
 		// second DELETE, so both routes to "no such user" agree.
-		if err := h.userRepo.DeleteUser(c.Request.Context(), userID, repositories.OrgScopeAllOrganizations()); err != nil {
+		// Scoped like the pre-check above. The credential sweep just before it is
+		// deliberately NOT -- see its own comment: the principal is being
+		// destroyed, so a key surviving in any organization outlives its owner.
+		// Authorization is tenant-scoped; the cleanup that follows from it is
+		// whole-principal, and the two are different questions.
+		if err := h.userRepo.DeleteUser(c.Request.Context(), userID, scope); err != nil {
 			if identityerr.IsNotFound(err) {
 				c.JSON(http.StatusNotFound, gin.H{
 					"error": "User not found",
@@ -456,7 +521,12 @@ func (h *UserHandlers) SearchUsersHandler() gin.HandlerFunc {
 		offset := (page - 1) * perPage
 
 		// Search users with memberships
-		users, err := h.userRepo.SearchWithMemberships(c.Request.Context(), query, perPage, offset, repositories.OrgScopeAllOrganizations())
+		scope, ok := userAxisScope(c, h.orgRepo, auth.ScopeUsersRead)
+		if !ok {
+			return
+		}
+
+		users, err := h.userRepo.SearchWithMemberships(c.Request.Context(), query, perPage, offset, scope)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to search users",
@@ -538,8 +608,13 @@ func (h *UserHandlers) GetUserMembershipsHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.Param("id")
 
+		scope, ok := userAxisScope(c, h.orgRepo, auth.ScopeUsersRead)
+		if !ok {
+			return
+		}
+
 		// Check if user exists
-		user, err := h.userRepo.GetUserByID(c.Request.Context(), userID, repositories.OrgScopeAllOrganizations())
+		user, err := h.userRepo.GetUserByID(c.Request.Context(), userID, scope)
 		if identityerr.Missing(user, err) {
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": "User not found",
@@ -560,6 +635,23 @@ func (h *UserHandlers) GetUserMembershipsHandler() gin.HandlerFunc {
 				"error": "Failed to retrieve user memberships",
 			})
 			return
+		}
+
+		// Filtered in Go, and that is a gap rather than a preference:
+		// OrganizationRepository.GetUserMemberships is the one user-axis
+		// accessor in the shared module with NO scope parameter, so there is
+		// nothing to hand it. This is the reinvent-the-constraint-per-consumer
+		// shape identity #161 exists to remove -- filed upstream as its sibling.
+		// Until the accessor takes a scope, the rows are read and then dropped,
+		// which withholds them from the response but still fetches them.
+		if !scope.IsAllOrganizations() {
+			permitted := make([]*models.UserMembership, 0, len(memberships))
+			for _, m := range memberships {
+				if scope.PermitsOrganization(m.OrganizationID) {
+					permitted = append(permitted, m)
+				}
+			}
+			memberships = permitted
 		}
 
 		c.JSON(http.StatusOK, gin.H{
