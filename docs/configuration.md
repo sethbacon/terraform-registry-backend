@@ -60,7 +60,8 @@ For example, `database.host` in YAML becomes `TFR_DATABASE_HOST` as an env var.
 | `TFR_REDIS_TLS`                                      | bool     | `false`                 | No         | Enable TLS for Redis connection                                              |
 | `TFR_REDIS_POOL_SIZE`                                | int      | `10`                    | No         | Redis connection pool size                                                   |
 | `TFR_REDIS_DIAL_TIMEOUT`                             | duration | `5s`                    | No         | Redis connection timeout                                                     |
-| `TFR_JWT_SECRET_FILE`                                | string   | —                       | No         | Path to file containing JWT secret (enables hot-reload)                      |
+| `TFR_JWT_SECRET_FILE`                                | string   | —                       | No         | Path to file containing JWT secret (enables hot-reload). Startup fails if set and unreadable. |
+| `TFR_JWT_SECRET_OVERLAP`                             | duration | `5m`                    | No         | How long a rotated-out JWT signing key keeps validating. Only used with `TFR_JWT_SECRET_FILE`. |
 | `ENCRYPTION_KEY_PREVIOUS`                            | string   | —                       | No         | Previous encryption key for zero-downtime rotation                           |
 | `TFR_ALLOW_LOW_ENTROPY_ENCRYPTION_KEY`                | bool     | `false`                 | No         | Temporary bridge to bypass the fail-closed low-entropy `ENCRYPTION_KEY` startup check while rotating an existing deployment |
 | `TFR_ALLOW_FEATURE_SETUP_REARM`                      | bool     | `false`                 | No         | Allow minting a setup token scoped to a pending optional feature (e.g. scanning) after initial setup has completed          |

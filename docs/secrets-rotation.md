@@ -19,7 +19,9 @@ This document describes step-by-step procedures for rotating the three main secr
 
 ### Option A: File-Based Hot-Reload (Recommended, Zero-Downtime)
 
-The backend supports watching a secret file for changes using `fsnotify`. When the file is updated, the signing key is atomically swapped. Tokens signed with the previous key remain valid for a configurable overlap period (default: 5 minutes).
+The backend supports watching a secret file for changes using `fsnotify`. When the file is updated, the signing key is atomically swapped. Tokens signed with the previous key remain valid for an overlap period set by `TFR_JWT_SECRET_OVERLAP` (a Go duration such as `10m`; default: 5 minutes). An unset, unparseable or non-positive value uses the default — the overlap only widens the window in which an *old* key still validates, so it is not worth failing a deploy over.
+
+The watch starts only when `TFR_JWT_SECRET_FILE` is set. If it is set and the file cannot be read or watched, the server **refuses to start** rather than falling back to `TFR_JWT_SECRET` — otherwise a rotation you believed was live would silently never happen.
 
 **Prerequisites:**
 
