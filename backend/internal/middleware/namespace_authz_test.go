@@ -15,6 +15,17 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
 
+// memberRoleColsMW is the GetMemberWithRole row shape (9 columns).
+//
+// It lived in rbac_org_test.go, which was deleted with the unwired
+// RequireOrgMembership/RequireOrgScope middlewares (issue #748). This is the
+// only surviving consumer, so the helper moves here rather than into a shared
+// file that would again have exactly one caller.
+var memberRoleColsMW = []string{
+	"organization_id", "user_id", "role_template_id", "created_at",
+	"user_name", "user_email", "role_template_name", "role_template_display_name", "role_template_scopes",
+}
+
 const (
 	nsOrgA   = "org-aaa"
 	nsOrgB   = "org-bbb"

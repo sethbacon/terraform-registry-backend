@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -11,6 +12,19 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+)
+
+// Fixtures for the RequireOrgScopeForPathOrg tests below.
+//
+// These lived in rbac_org_test.go, which was deleted along with the unwired
+// RequireOrgMembership/RequireOrgScope middlewares (issue #748). This file is
+// their only surviving consumer, so they move here rather than into a shared
+// helpers file that would again serve exactly one caller.
+var orgMWErrDB = errors.New("db error")
+
+const (
+	orgMWUserID = "user-111"
+	orgMWOrgID  = "org-222"
 )
 
 // pathOrgRouter builds a gin router mounting mid on a route with an :id path
