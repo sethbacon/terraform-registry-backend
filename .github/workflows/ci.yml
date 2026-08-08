@@ -246,18 +246,42 @@ jobs:
         # A non-main target branch is an open PR's own head branch, which
         # still requires review + status checks before it can reach main, so
         # a direct push here is safe — it just keeps that PR's docs in sync.
+        #
+        # This commit deliberately carries NO `[skip ci]` marker. It used to.
+        # `[skip ci]` suppresses the workflow run for the SHA it lands on, and
+        # branch protection evaluates required contexts against the PR's HEAD —
+        # so the push moved the head to a commit that would never report any
+        # check, and the PR sat BLOCKED with nothing failing and nothing to
+        # re-run. Silent, and indistinguishable from "still waiting for CI".
+        #
+        # Without the marker the push re-runs CI once. That run regenerates the
+        # same docs, the diff step finds no change, and no second commit is
+        # made — so it terminates after exactly one extra run, and only on PRs
+        # whose docs actually drifted. The convergence check below turns the
+        # one shape that would NOT terminate — a generator whose output is not
+        # byte-stable — into a loud failure instead of a commit loop.
         if: steps.diff.outputs.changed == 'true' && steps.target.outputs.branch != 'main'
         run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add backend/docs/swagger.json backend/docs/openapi3.json
-          git commit -m "chore: regenerate swagger.json and openapi3.json [skip ci]"
+          set -euo pipefail
           TARGET_BRANCH="${{ steps.target.outputs.branch }}"
           # Fetch and rebase before pushing so concurrent commits to the same branch
           # (e.g. two PR squash-merges landing seconds apart) don't cause a rejected push.
           git fetch origin "${TARGET_BRANCH}"
+
+          if [ "$(git log -1 --format=%s "origin/${TARGET_BRANCH}")" = "${DOCS_COMMIT_SUBJECT}" ]; then
+            echo "::error::Swagger regeneration is not converging: the previous commit on ${TARGET_BRANCH} was already a regeneration and the docs still differ. That means \`swag init\` output is not byte-stable, so committing again would loop. Fix the generator (or pin its version) rather than re-running."
+            git --no-pager diff --stat backend/docs/swagger.json backend/docs/openapi3.json
+            exit 1
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add backend/docs/swagger.json backend/docs/openapi3.json
+          git commit -m "${DOCS_COMMIT_SUBJECT}"
           git rebase "origin/${TARGET_BRANCH}"
           git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
+        env:
+          DOCS_COMMIT_SUBJECT: "chore: regenerate swagger.json and openapi3.json"
 
       - name: Open pull request for doc regeneration onto main
         # Anything that would otherwise write straight onto the protected
