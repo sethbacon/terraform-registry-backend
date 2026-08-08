@@ -7,6 +7,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.2.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.1.0...v4.2.0) (2026-08-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* **docs:** two operator-visible changes shipped in v4.0.0 with no changelog entry and are documented now in docs/upgrade-guide.md items 10 and 11. (1) POST /api/v1/admin/providers, POST /api/v1/admin/modules/create and both upload handlers create the row in the organization the namespace guard authorized rather than taking it from the request body or the default organization; a request naming another organization is refused with 403, including for platform administrators, and provider record create now returns 409 on a genuine collision where it previously returned 500. (2) An API key can no longer create, update or rotate a key into a scope it does not itself hold, assign a role template beyond its own scopes, administer an organization other than the one it is bound to, or be exchanged for a session at POST /api/v1/auth/refresh; rotation returns 403 if the stored scopes exceed the new ceiling, so reduce a key's scopes before rotating it. Interactive sessions are unaffected, as are keys already matching their owner's authority.
+
+### Bug Fixes
+
+* **docs:** announce the two breaking changes v4.0.0 shipped in silence ([#793](https://github.com/sethbacon/terraform-registry-backend/issues/793)) ([78b9c10](https://github.com/sethbacon/terraform-registry-backend/commit/78b9c10afdc5e9e51ebce88e65a1ab2f9f079ee7))
+
 ## [4.1.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.0.0...v4.1.0) (2026-08-07)
 
 
