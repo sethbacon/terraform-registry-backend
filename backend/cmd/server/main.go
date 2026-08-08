@@ -226,6 +226,34 @@ func scanWorker(cfg *config.Config) error {
 	}
 }
 
+// jwtSecretOverlapEnv names the variable that tunes how long a rotated-out JWT
+// signing key keeps validating. docs/secrets-rotation.md described the overlap
+// as "configurable" without naming anything; this is the name that makes that
+// sentence true.
+const jwtSecretOverlapEnv = "TFR_JWT_SECRET_OVERLAP"
+
+// jwtSecretOverlap parses the documented 5-minute default out of raw.
+//
+// It never returns an error. An unparseable value falls back to the default
+// rather than refusing to boot: the overlap only widens the window in which an
+// OLD key still validates, so getting it wrong cannot open access that the
+// current key does not already grant, and a typo here should not take a
+// deployment down. A non-positive value is also the default, matching
+// StartJWTSecretFileWatch's own contract rather than restating it differently.
+func jwtSecretOverlap(raw string) time.Duration {
+	const defaultOverlap = 5 * time.Minute
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return defaultOverlap
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		log.Printf("WARNING: %s=%q is not a positive duration; using the %s default", jwtSecretOverlapEnv, raw, defaultOverlap) // #nosec G706 -- value comes from process env, not request input
+		return defaultOverlap
+	}
+	return d
+}
+
 func serve(cfg *config.Config) error {
 	// Initialise structured logger as early as possible so all subsequent log output
 	// uses the configured format (json / text) and level.
@@ -271,6 +299,33 @@ func serve(cfg *config.Config) error {
 		return fmt.Errorf("security configuration error: %w", err)
 	}
 	log.Println("JWT secret validated successfully")
+
+	// GUARD jwt-secret-file-watch (issue #737): the file watch is STARTED, not
+	// merely available.
+	//
+	// docs/secrets-rotation.md presents TFR_JWT_SECRET_FILE as "Option A:
+	// File-Based Hot-Reload (Recommended, Zero-Downtime)" and walks an operator
+	// through rotating the Kubernetes Secret and watching for
+	// "JWT secret reloaded from file" in the logs. StartJWTSecretFileWatch
+	// implements all of that -- including those exact log lines -- and had no
+	// non-test caller. Setting the variable did nothing. An operator following
+	// that runbook rotated the Secret, saw no error, and kept serving with the
+	// original key; the same doc tells them a restart is only needed "if not
+	// using file-watch", so they would deliberately skip the one action that
+	// would have applied the new secret.
+	if secretFile := strings.TrimSpace(os.Getenv("TFR_JWT_SECRET_FILE")); secretFile != "" {
+		// Fail closed. If the operator asked for file-based secrets and the file
+		// cannot be read or watched, booting anyway would serve with the env
+		// secret while they believe rotation is live -- which is the defect
+		// above, reached a second way.
+		stopWatch, watchErr := auth.StartJWTSecretFileWatch(secretFile, jwtSecretOverlap(os.Getenv(jwtSecretOverlapEnv)))
+		if watchErr != nil {
+			return fmt.Errorf("TFR_JWT_SECRET_FILE is set but its watch could not start: %w", watchErr)
+		}
+		defer stopWatch()
+		log.Printf("JWT secret file watch started: %s (overlap %s)", // #nosec G706 -- path and duration come from server config/env, not request input
+			secretFile, jwtSecretOverlap(os.Getenv(jwtSecretOverlapEnv)))
+	}
 
 	// Extend JWT issuer validation to trusted sibling apps in a coupled suite
 	// deployment (issue #559 finding [0]). Safe to call unconditionally:
