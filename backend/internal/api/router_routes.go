@@ -308,8 +308,14 @@ func registerPublicRoutes(router *gin.Engine, d *publicRouteDeps) {
 
 // apiV1RouteDeps holds every dependency registerAPIV1Routes needs.
 type apiV1RouteDeps struct {
-	cfg                     *config.Config
-	db                      *sql.DB
+	cfg *config.Config
+	db  *sql.DB
+	// identityDB resolves users/organizations/organization_members against the
+	// configured identity schema when TFR_IDENTITY_SCHEMA_ENABLED is set; it
+	// equals db otherwise. Every consumer of identity data must use it (issue
+	// #739) -- a handler holding db reads and writes a DIFFERENT set of tables
+	// than AuthMiddleware and the org-scope middleware do.
+	identityDB              *sql.DB
 	storageBackend          storage.Storage
 	sqlxDB                  *sqlx.DB
 	oidcConfigRepo          *repositories.OIDCConfigRepository
@@ -1196,7 +1202,11 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 			devGroup := apiV1.Group("/dev")
 			devGroup.Use(admin.DevModeMiddleware())
 			{
-				devHandlers := admin.NewDevHandlers(cfg, db)
+				// identityDB, not db (#739): NewDevHandlers builds its own user
+				// and organization repositories over whatever connection it is
+				// handed, so under TFR_IDENTITY_SCHEMA_ENABLED a dev-created
+				// user would not exist for login.
+				devHandlers := admin.NewDevHandlers(cfg, d.identityDB)
 				// Unauthenticated dev endpoints (dev-mode-gated only)
 				devGroup.GET("/status", devHandlers.DevStatusHandler())
 				devGroup.POST("/login", devHandlers.DevLoginHandler())
@@ -1248,7 +1258,9 @@ func registerSCIMRoutes(router *gin.Engine, d *apiV1RouteDeps) {
 	// authenticatedGroup).
 	scimGroup.Use(middleware.RequireScope(auth.ScopeSCIMProvision))
 	{
-		scimHandlers := scim.NewHandlers(d.cfg, d.db, scim.WithCredentialSweeper(d.credSweeper))
+		// identityDB, not db: NewHandlers builds its own UserRepository and
+		// OrganizationRepository over whatever connection it is handed (#739).
+		scimHandlers := scim.NewHandlers(d.cfg, d.identityDB, scim.WithCredentialSweeper(d.credSweeper))
 		scimGroup.GET("/Users", scimHandlers.ListUsers())
 		scimGroup.GET("/Users/:id", scimHandlers.GetUser())
 		scimGroup.POST("/Users", scimHandlers.CreateUser())
