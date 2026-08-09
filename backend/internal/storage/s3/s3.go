@@ -232,6 +232,12 @@ func New(cfg *appconfig.S3StorageConfig) (*S3Storage, error) {
 
 // Upload stores a file in S3
 func (s *S3Storage) Upload(ctx context.Context, path string, reader io.Reader, size int64) (*storage.UploadResult, error) {
+	// Issue #752: uniform key validation. The local backend has always had
+	// safeJoin; the cloud backends passed the caller's string through as the
+	// object key verbatim.
+	if err := storage.ValidateKey(path); err != nil {
+		return nil, err
+	}
 	// Read all content to calculate checksum
 	// For very large files, consider using multipart upload with streaming hash
 	data, err := io.ReadAll(reader)
@@ -268,6 +274,12 @@ func (s *S3Storage) Upload(ctx context.Context, path string, reader io.Reader, s
 
 // Download retrieves a file from S3
 func (s *S3Storage) Download(ctx context.Context, path string) (io.ReadCloser, error) {
+	// Issue #752: uniform key validation. The local backend has always had
+	// safeJoin; the cloud backends passed the caller's string through as the
+	// object key verbatim.
+	if err := storage.ValidateKey(path); err != nil {
+		return nil, err
+	}
 	result, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(path),
@@ -281,6 +293,12 @@ func (s *S3Storage) Download(ctx context.Context, path string) (io.ReadCloser, e
 
 // Delete removes a file from S3
 func (s *S3Storage) Delete(ctx context.Context, path string) error {
+	// Issue #752: uniform key validation. The local backend has always had
+	// safeJoin; the cloud backends passed the caller's string through as the
+	// object key verbatim.
+	if err := storage.ValidateKey(path); err != nil {
+		return err
+	}
 	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(path),
@@ -294,6 +312,12 @@ func (s *S3Storage) Delete(ctx context.Context, path string) error {
 
 // GetURL returns a presigned URL for downloading the file
 func (s *S3Storage) GetURL(ctx context.Context, path string, ttl time.Duration) (string, error) {
+	// Issue #752: uniform key validation. The local backend has always had
+	// safeJoin; the cloud backends passed the caller's string through as the
+	// object key verbatim.
+	if err := storage.ValidateKey(path); err != nil {
+		return "", err
+	}
 	// Check if file exists first
 	exists, err := s.Exists(ctx, path)
 	if err != nil {
@@ -319,6 +343,12 @@ func (s *S3Storage) GetURL(ctx context.Context, path string, ttl time.Duration) 
 
 // Exists checks if a file exists at the specified path
 func (s *S3Storage) Exists(ctx context.Context, path string) (bool, error) {
+	// Issue #752: uniform key validation. The local backend has always had
+	// safeJoin; the cloud backends passed the caller's string through as the
+	// object key verbatim.
+	if err := storage.ValidateKey(path); err != nil {
+		return false, err
+	}
 	_, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(path),
@@ -334,6 +364,12 @@ func (s *S3Storage) Exists(ctx context.Context, path string) (bool, error) {
 
 // GetMetadata retrieves file metadata without downloading the entire file
 func (s *S3Storage) GetMetadata(ctx context.Context, path string) (*storage.FileMetadata, error) {
+	// Issue #752: uniform key validation. The local backend has always had
+	// safeJoin; the cloud backends passed the caller's string through as the
+	// object key verbatim.
+	if err := storage.ValidateKey(path); err != nil {
+		return nil, err
+	}
 	result, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(path),

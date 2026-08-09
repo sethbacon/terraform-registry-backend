@@ -227,6 +227,12 @@ func (s *GCSStorage) Close() error {
 
 // Upload stores a file in GCS
 func (s *GCSStorage) Upload(ctx context.Context, path string, reader io.Reader, size int64) (*appstorage.UploadResult, error) {
+	// Issue #752: uniform key validation. The local backend has always had
+	// safeJoin; the cloud backends passed the caller's string through as the
+	// object key verbatim.
+	if err := appstorage.ValidateKey(path); err != nil {
+		return nil, err
+	}
 	// Read all content to calculate checksum
 	data, err := io.ReadAll(reader)
 	if err != nil {
@@ -261,6 +267,12 @@ func (s *GCSStorage) Upload(ctx context.Context, path string, reader io.Reader, 
 
 // Download retrieves a file from GCS
 func (s *GCSStorage) Download(ctx context.Context, path string) (io.ReadCloser, error) {
+	// Issue #752: uniform key validation. The local backend has always had
+	// safeJoin; the cloud backends passed the caller's string through as the
+	// object key verbatim.
+	if err := appstorage.ValidateKey(path); err != nil {
+		return nil, err
+	}
 	reader, err := s.client.NewReader(ctx, s.bucket, path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read from GCS: %w", err)
@@ -271,6 +283,12 @@ func (s *GCSStorage) Download(ctx context.Context, path string) (io.ReadCloser, 
 
 // Delete removes a file from GCS
 func (s *GCSStorage) Delete(ctx context.Context, path string) error {
+	// Issue #752: uniform key validation. The local backend has always had
+	// safeJoin; the cloud backends passed the caller's string through as the
+	// object key verbatim.
+	if err := appstorage.ValidateKey(path); err != nil {
+		return err
+	}
 	if err := s.client.DeleteObject(ctx, s.bucket, path); err != nil {
 		// Check if object doesn't exist - that's okay
 		if err == storage.ErrObjectNotExist {
@@ -284,6 +302,12 @@ func (s *GCSStorage) Delete(ctx context.Context, path string) error {
 
 // GetURL returns a signed URL for downloading the file
 func (s *GCSStorage) GetURL(ctx context.Context, path string, ttl time.Duration) (string, error) {
+	// Issue #752: uniform key validation. The local backend has always had
+	// safeJoin; the cloud backends passed the caller's string through as the
+	// object key verbatim.
+	if err := appstorage.ValidateKey(path); err != nil {
+		return "", err
+	}
 	// Check if file exists first
 	exists, err := s.Exists(ctx, path)
 	if err != nil {
@@ -310,6 +334,12 @@ func (s *GCSStorage) GetURL(ctx context.Context, path string, ttl time.Duration)
 
 // Exists checks if a file exists at the specified path
 func (s *GCSStorage) Exists(ctx context.Context, path string) (bool, error) {
+	// Issue #752: uniform key validation. The local backend has always had
+	// safeJoin; the cloud backends passed the caller's string through as the
+	// object key verbatim.
+	if err := appstorage.ValidateKey(path); err != nil {
+		return false, err
+	}
 	_, err := s.client.ObjectAttrs(ctx, s.bucket, path)
 	if err != nil {
 		if err == storage.ErrObjectNotExist {
@@ -323,6 +353,12 @@ func (s *GCSStorage) Exists(ctx context.Context, path string) (bool, error) {
 
 // GetMetadata retrieves file metadata without downloading the entire file
 func (s *GCSStorage) GetMetadata(ctx context.Context, path string) (*appstorage.FileMetadata, error) {
+	// Issue #752: uniform key validation. The local backend has always had
+	// safeJoin; the cloud backends passed the caller's string through as the
+	// object key verbatim.
+	if err := appstorage.ValidateKey(path); err != nil {
+		return nil, err
+	}
 	attrs, err := s.client.ObjectAttrs(ctx, s.bucket, path)
 	if err != nil {
 		if err == storage.ErrObjectNotExist {
