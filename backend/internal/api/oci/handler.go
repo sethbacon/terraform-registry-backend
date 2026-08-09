@@ -24,8 +24,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
@@ -134,6 +136,16 @@ func (h *Handler) GetManifest(c *gin.Context) {
 // @Failure      404  {object}  map[string]interface{}
 // @Router       /v2/{namespace}/{name}/{system}/blobs/{digest} [head]
 func (h *Handler) HeadBlob(c *gin.Context) {
+	// Same constant config blob as GetBlob: a HEAD that 404s on an object GET
+	// serves is its own inconsistency, and OCI clients HEAD before pulling.
+	if c.Param("digest") == ociConfigDigest() {
+		c.Header("Docker-Content-Digest", ociConfigDigest())
+		c.Header("Content-Length", fmt.Sprintf("%d", len(ociConfigBlob)))
+		c.Header("Content-Type", mediaTypeConfig)
+		c.Status(http.StatusOK)
+		return
+	}
+
 	mv, statusCode, err := h.lookupVersionByDigest(c)
 	if err != nil {
 		c.JSON(statusCode, ociErrors(ociErrorCode(statusCode, "BLOB_UNKNOWN"), err.Error()))
@@ -159,6 +171,16 @@ func (h *Handler) HeadBlob(c *gin.Context) {
 // @Failure      404  {object}  map[string]interface{}
 // @Router       /v2/{namespace}/{name}/{system}/blobs/{digest} [get]
 func (h *Handler) GetBlob(c *gin.Context) {
+	// The config blob every manifest advertises (issue #755). It is a constant,
+	// not a stored object, so it never appears in module_versions.checksum and
+	// the archive lookup below can never find it -- a client pulling the config
+	// descriptor this server just handed it got BLOB_UNKNOWN.
+	if c.Param("digest") == ociConfigDigest() {
+		c.Header("Docker-Content-Digest", ociConfigDigest())
+		c.Data(http.StatusOK, mediaTypeConfig, ociConfigBlob)
+		return
+	}
+
 	mv, statusCode, err := h.lookupVersionByDigest(c)
 	if err != nil {
 		c.JSON(statusCode, ociErrors(ociErrorCode(statusCode, "BLOB_UNKNOWN"), err.Error()))
@@ -233,24 +255,61 @@ func (h *Handler) buildManifestJSON(c *gin.Context) ([]byte, int, error) {
 		return nil, http.StatusNotFound, fmt.Errorf("module %s/%s/%s not found", namespace, name, system)
 	}
 
-	mv, err := h.moduleRepo.GetVersion(c.Request.Context(), module.ID, ref)
-	if err != nil {
-		return nil, http.StatusInternalServerError, fmt.Errorf("internal error")
+	var mv *models.ModuleVersion
+	if strings.HasPrefix(ref, "sha256:") {
+		// By content digest, as the OCI spec requires (issue #755).
+		versions, lErr := h.moduleRepo.ListVersions(c.Request.Context(), module.ID)
+		if lErr != nil {
+			return nil, http.StatusInternalServerError, fmt.Errorf("internal error")
+		}
+		mv = manifestByDigest(versions, ref)
+	} else {
+		var gErr error
+		mv, gErr = h.moduleRepo.GetVersion(c.Request.Context(), module.ID, ref)
+		if gErr != nil {
+			return nil, http.StatusInternalServerError, fmt.Errorf("internal error")
+		}
 	}
 	if mv == nil {
-		return nil, http.StatusNotFound, fmt.Errorf("version %s not found", ref)
+		return nil, http.StatusNotFound, fmt.Errorf("manifest %s not found", ref)
 	}
 
-	configData := []byte("{}")
-	configDigest := fmt.Sprintf("sha256:%x", sha256.Sum256(configData))
+	data, err := marshalManifest(mv)
+	if err != nil {
+		return nil, http.StatusInternalServerError, fmt.Errorf("failed to marshal manifest")
+	}
+	return data, http.StatusOK, nil
+}
 
+// ociConfigBlob is the manifest's config object.
+//
+// It is a constant: the manifest carries no image configuration, so every
+// manifest this registry serves advertises the digest of "{}". GetBlob serves
+// it (issue #755) -- before that, the config descriptor named a blob that could
+// never be fetched, because blob resolution matches the module ARCHIVE
+// checksum and no archive hashes to sha256("{}"). An OCI client that pulls the
+// config, as verification flows do, got BLOB_UNKNOWN for a descriptor this
+// server had just handed it.
+var ociConfigBlob = []byte("{}")
+
+// ociConfigDigest is sha256("{}") = 44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a.
+func ociConfigDigest() string {
+	return fmt.Sprintf("sha256:%x", sha256.Sum256(ociConfigBlob))
+}
+
+// marshalManifest renders the manifest for a version.
+//
+// Pure in mv: the bytes depend only on the layer checksum and size, which is
+// what makes resolving a manifest BY DIGEST possible without storing the digest
+// or adding a column -- see manifestByDigest.
+func marshalManifest(mv *models.ModuleVersion) ([]byte, error) {
 	manifest := ociManifest{
 		SchemaVersion: 2,
 		MediaType:     mediaTypeManifest,
 		Config: ociDescriptor{
 			MediaType: mediaTypeConfig,
-			Digest:    configDigest,
-			Size:      int64(len(configData)),
+			Digest:    ociConfigDigest(),
+			Size:      int64(len(ociConfigBlob)),
 		},
 		Layers: []ociDescriptor{{
 			MediaType: mediaTypeLayer,
@@ -258,12 +317,39 @@ func (h *Handler) buildManifestJSON(c *gin.Context) ([]byte, int, error) {
 			Size:      mv.SizeBytes,
 		}},
 	}
+	return json.Marshal(manifest)
+}
 
-	data, err := json.Marshal(manifest)
-	if err != nil {
-		return nil, http.StatusInternalServerError, fmt.Errorf("failed to marshal manifest")
+// manifestByDigest finds the version whose manifest hashes to digest.
+//
+// The OCI Distribution Spec requires a manifest to be fetchable by its own
+// content digest, not only by tag, and standard tooling relies on it for
+// pinned/verified pulls. Every reference used to go to GetVersion, whose query
+// is `WHERE version = $2` against the semver column, so a "sha256:..."
+// reference could never match a row and always returned MANIFEST_UNKNOWN --
+// including the exact digest this server returned in Docker-Content-Digest a
+// moment earlier (issue #755).
+//
+// It resolves by RECOMPUTING rather than by lookup, deliberately. The issue's
+// own recommendation was to route the reference through GetVersionByChecksum,
+// the path GetBlob uses; that column holds the tar.gz ARCHIVE checksum, which
+// is a different value from the manifest digest. Taking that advice would make
+// a digest space no client is ever given resolve, while the digest clients
+// actually hold kept 404ing -- the reported bug, still there, now harder to see.
+//
+// Since marshalManifest is pure in the version row, the digest is derivable
+// from data already in hand, so this needs no new column and no migration.
+func manifestByDigest(versions []*models.ModuleVersion, digest string) *models.ModuleVersion {
+	for _, mv := range versions {
+		data, err := marshalManifest(mv)
+		if err != nil {
+			continue
+		}
+		if fmt.Sprintf("sha256:%x", sha256.Sum256(data)) == digest {
+			return mv
+		}
 	}
-	return data, http.StatusOK, nil
+	return nil
 }
 
 // lookupVersionByDigest resolves a module version from path params + digest.
