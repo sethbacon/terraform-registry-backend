@@ -1205,19 +1205,47 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 
 		registerSCIMRoutes(router, d)
 
-		// Development-only endpoints (guarded by DevModeMiddleware)
-		devGroup := apiV1.Group("/dev")
-		devGroup.Use(admin.DevModeMiddleware())
-		{
-			devHandlers := admin.NewDevHandlers(cfg, db)
-			// Unauthenticated dev endpoints (dev-mode-gated only)
-			devGroup.GET("/status", devHandlers.DevStatusHandler())
-			devGroup.POST("/login", devHandlers.DevLoginHandler())
+		// Development-only endpoints.
+		//
+		// REGISTERED ONLY IN DEV MODE (issue #740). These used to be mounted
+		// unconditionally with DevModeMiddleware rejecting per request, which
+		// meant POST /api/v1/dev/login -- no credential, returns a 24-hour admin
+		// session -- existed on every production router and was one env var away
+		// from answering. The same variable independently disables the
+		// TFR_JWT_SECRET production fail-fast, so a single stray DEV_MODE both
+		// opened the door and weakened the signing key.
+		//
+		// A route that is not registered cannot be reached by a misconfiguration,
+		// a middleware ordering mistake, or a future refactor that drops the
+		// guard. The per-request middleware stays as well: two independent
+		// checks, and the cheaper one is now "the handler does not exist".
+		if admin.IsDevMode() {
+			log.Printf("!!! DEV MODE: mounting unauthenticated development endpoints !!!")
+			log.Printf("!!!   POST /api/v1/dev/login  -- no credential, returns an admin session")
+			log.Printf("!!!   POST /api/v1/dev/impersonate/:user_id")
+			log.Printf("!!! Unset DEV_MODE to remove these routes entirely.")
 
-			// Impersonation endpoints (require auth + admin scope)
-			devGroup.Use(middleware.AuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo, userTokenRevocationRepo))
-			devGroup.GET("/users", devHandlers.ListUsersForImpersonationHandler())
-			devGroup.POST("/impersonate/:user_id", devHandlers.ImpersonateUserHandler())
+			devGroup := apiV1.Group("/dev")
+			devGroup.Use(admin.DevModeMiddleware())
+			{
+				devHandlers := admin.NewDevHandlers(cfg, db)
+				// Unauthenticated dev endpoints (dev-mode-gated only)
+				devGroup.GET("/status", devHandlers.DevStatusHandler())
+				devGroup.POST("/login", devHandlers.DevLoginHandler())
+
+				// Impersonation endpoints (require auth + admin scope).
+				//
+				// CSRFMiddleware is applied here and not above because this half is
+				// COOKIE-AUTHENTICATED and state-changing: without it, a malicious
+				// page could silently swap a logged-in dev admin's session to
+				// another user with a cross-site POST. The group sits outside
+				// authenticatedGroup, so it does not inherit that protection --
+				// which is exactly why it was missing.
+				devGroup.Use(middleware.AuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo, userTokenRevocationRepo))
+				devGroup.Use(middleware.CSRFMiddleware(cfg))
+				devGroup.GET("/users", devHandlers.ListUsersForImpersonationHandler())
+				devGroup.POST("/impersonate/:user_id", devHandlers.ImpersonateUserHandler())
+			}
 		}
 	}
 
