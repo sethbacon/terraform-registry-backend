@@ -6,6 +6,7 @@ package policy
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
@@ -44,6 +45,18 @@ func NewPolicyEngineWithGuard(cfg Config, egress *httpsafe.Guard) (*PolicyEngine
 	}
 	if !cfg.Enabled || cfg.BundleURL == "" {
 		return e, nil
+	}
+	// Without a pinned digest the bundle host is fully trusted: whatever it
+	// serves becomes active upload policy on every refresh, and the archive's
+	// resource limits are the only thing standing between a compromised host
+	// and this process (issue #750). Pinning is optional by design -- some
+	// operators rotate policy continuously -- so this warns rather than
+	// refusing, but it says plainly what the deployment is relying on.
+	if cfg.BundleSHA256 == "" {
+		slog.Warn("policy bundle is NOT pinned: policy.bundle_sha256 is empty, so any "+
+			"content served by the bundle host becomes active upload policy",
+			"bundle_url", cfg.BundleURL,
+			"remedy", "set policy.bundle_sha256 to the expected archive digest")
 	}
 	if err := e.loadBundle(context.Background(), cfg.BundleURL); err != nil {
 		return nil, fmt.Errorf("policy engine: loading bundle: %w", err)
