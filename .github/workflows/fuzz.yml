@@ -7,16 +7,22 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  # contents:read only at the workflow level. `issues: write` used to live here,
-  # which handed it to the fuzz job too -- a job that runs untrusted-ish fuzz
-  # corpora and has no reason to be able to write issues. Only the job that
-  # actually files the failure issue declares it, and it already did.
+  # This is a CEILING, not a default: a job may narrow it, never widen it, and a
+  # job asking for more fails the whole workflow at startup. issues: write has to
+  # stay here because fuzz-failure-issue needs it.
+  #
+  # What changed is that the `fuzz` job now narrows to contents: read explicitly,
+  # so it no longer receives issues: write just by inheriting. It runs fuzz
+  # corpora and has no business filing issues.
   contents: read
+  issues: write
 
 jobs:
   fuzz:
     name: Fuzz — ${{ matrix.target }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     timeout-minutes: 20
 
     strategy:

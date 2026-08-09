@@ -18,11 +18,18 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  # Least privilege at the workflow level; every job that needs more says so.
-  # This repository's default_workflow_permissions is `write`, so without this
-  # block any job lacking its own `permissions:` silently ran with a read/write
-  # token.
-  contents: read
+  # The workflow-level block is a CEILING, not a default: a job may narrow it
+  # but never widen it, and a job asking for more than this fails the whole
+  # workflow at STARTUP with zero jobs run. Setting contents: read here while
+  # the ci job requested contents: write did exactly that.
+  #
+  # So this is the union of what the jobs below request, stated explicitly, and
+  # each job still narrows to its own needs. That is strictly better than
+  # omitting the block, which falls back to the repository default.
+  contents: write
+  issues: write
+  pull-requests: write
+  security-events: write
 
 jobs:
   ci:
