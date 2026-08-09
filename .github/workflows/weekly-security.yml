@@ -17,11 +17,33 @@ concurrency:
   group: weekly-security-${{ github.event_name }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
+permissions:
+  # Least privilege at the workflow level; every job that needs more says so.
+  # This repository's default_workflow_permissions is `write`, so without this
+  # block any job lacking its own `permissions:` silently ran with a read/write
+  # token.
+  contents: read
+
 jobs:
   ci:
     name: CI
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    secrets: inherit
+    # Not `secrets: inherit`, which hands the called workflow EVERY secret this
+    # repository holds regardless of what it uses. ci.yml references exactly one
+    # (GIST_TOKEN, for the coverage badge); GITHUB_TOKEN is ambient and is not
+    # passed through this block.
+    secrets:
+      GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+    # Explicit, because this job CALLS ci.yml and a called workflow's jobs are
+    # capped by what the caller grants. This is the union ci.yml's own jobs
+    # declare (swagger-docs-sync contents+pull-requests, gosec issues, codeql
+    # security-events); without it, the workflow-level contents: read below
+    # would silently starve them.
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      security-events: write
     uses: ./.github/workflows/ci.yml
 
   # ── OSV Vulnerability Scan ────────────────────────────
@@ -37,6 +59,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Run OSV-Scanner
         id: osv
@@ -106,6 +130,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Go toolchain
         uses: ./.github/actions/setup-backend
@@ -164,12 +190,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Go toolchain
         uses: ./.github/actions/setup-backend
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@dc73d59c2d7bd4f8194098a91219eeee6d8a1719 # v4
+        uses: github/codeql-action/init@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
         with:
           languages: go
 
@@ -178,7 +206,7 @@ jobs:
         run: go build ./...
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@dc73d59c2d7bd4f8194098a91219eeee6d8a1719 # v4
+        uses: github/codeql-action/analyze@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
         with:
           category: /language:go
 

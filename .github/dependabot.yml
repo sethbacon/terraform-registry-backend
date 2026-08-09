@@ -29,6 +29,8 @@ updates:
         update-types: [ "version-update:semver-major" ]
       - dependency-name: "github.com/golang-migrate/migrate/v4"
         update-types: [ "version-update:semver-major" ]
+    cooldown:
+      default-days: 7
 
   # backend/tools/credlifecycle is a SEPARATE Go module (its own go.mod), so the
   # /backend entry above does not see it: Dependabot resolves one manifest per
@@ -53,6 +55,8 @@ updates:
       go-dependencies:
         patterns:
           - "*"
+    cooldown:
+      default-days: 7
 
   # ---------------------------------------------------------------------------
   # Docker (backend/)
@@ -71,6 +75,8 @@ updates:
       - docker
     commit-message:
       prefix: "chore(deps)"
+    cooldown:
+      default-days: 7
 
   # ---------------------------------------------------------------------------
   # npm (repo root) — pinned doc-generation tooling only (swagger2openapi),
@@ -90,6 +96,8 @@ updates:
       - npm
     commit-message:
       prefix: "chore(deps)"
+    cooldown:
+      default-days: 7
 
   # ---------------------------------------------------------------------------
   # GitHub Actions
@@ -112,3 +120,5 @@ updates:
       github-actions-dependencies:
         patterns:
           - "*"
+    cooldown:
+      default-days: 7

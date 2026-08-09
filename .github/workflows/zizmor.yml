@@ -1,0 +1,50 @@
+---
+name: Workflow Security
+
+# zizmor lints the workflows themselves -- credential persistence, template
+# injection, over-broad permissions, unpinned actions. terraform-suite-ui has
+# run it for a while and reports ZERO findings; every other repo in the suite
+# was between 8 and 43 when it was first pointed at them. That gap is the whole
+# argument for this file.
+#
+# It also caught something real on its first run here: eight actions/checkout
+# calls in signature-replay.yml were persisting a cross-repo PAT into
+# .git/config inside a job that uploads an artifact.
+#
+# The backlog is now ZERO. `.github/zizmor.yml` records the accepted findings
+# with reasons; everything else was fixed rather than suppressed. Promoting this
+# to a required status check is the remaining step, and it is safe to do because
+# the check is green -- a required check that is red on day one is one everybody
+# learns to scroll past.
+"on":
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zizmor-${{ github.event_name }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  zizmor:
+    name: Zizmor (workflow security lint)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
+        with:
+          # SARIF upload to code scanning needs security-events: write, which
+          # this job deliberately does not hold. Findings surface as annotations
+          # on the diff instead, which is where the person who can fix them is.
+          advanced-security: false
+          annotations: true
