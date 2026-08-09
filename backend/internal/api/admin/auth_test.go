@@ -1038,6 +1038,11 @@ func TestApplyGroupMappings_DefaultRoleFallback(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
 		WillReturnRows(sqlmock.NewRows(authMemberCols))
 
+	// guardProvisionableRole → scopes lookup. The default_role path is guarded
+	// like the two group-mapping branches (issue #766); viewer is not
+	// admin-bearing, so the write proceeds.
+	expectRoleScopesLookup(mock, "viewer", []string{"modules:read"})
+
 	// AddMemberWithParams → lookup role template
 	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
 		WithArgs("viewer").
@@ -1871,9 +1876,15 @@ func TestReconcile_DefaultRole_FirstLoginAdds(t *testing.T) {
 
 	expectOrgByName(mock, "default", "org-default")
 	expectNotMember(mock)
-	// default_role is a static, admin-configured fallback (not an IdP-driven
-	// group mapping), so guardProvisionableRole does not run here — no scopes
-	// lookup is expected, unlike expectAddMember's use elsewhere in this file.
+	// guardProvisionableRole → scopes lookup. This branch used to skip the
+	// guard entirely, and the comment here recorded that as expected ("so
+	// guardProvisionableRole does not run here — no scopes lookup is
+	// expected") — which is what the defect looked like from the test side.
+	// default_role being admin-configured rather than IdP-driven does not make
+	// it safe: it grants to EVERY user on first login (issue #766). viewer is
+	// not admin-bearing, so the write proceeds.
+	expectRoleScopesLookup(mock, "viewer", []string{"modules:read"})
+
 	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
 		WithArgs("viewer").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-viewer"))
@@ -1883,6 +1894,47 @@ func TestReconcile_DefaultRole_FirstLoginAdds(t *testing.T) {
 	err := h.applyGroupMappings(context.Background(), "user-1", []string{"whatever"})
 	if err != nil {
 		t.Fatalf("applyGroupMappings: unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestReconcile_DefaultRole_AdminBearingTemplateIsRejected is the point of the
+// #766 fix: default_role must not be able to hand out the platform-wide
+// wildcard.
+//
+// This is the widest of the three IdP membership-write paths. A group mapping
+// grants to members of a mapped group; default_role grants to EVERY user on
+// first login. With auth.<provider>.default_role naming an admin-bearing
+// template, anyone who could authenticate received `admin` — and because the
+// session scope union is org-less (#652), holding it in the default
+// organization means holding it everywhere.
+//
+// The assertion is that NO membership write follows: no role-template id
+// lookup, no INSERT. sqlmock fails on an unexpected query, so an
+// AddMemberWithParams that slipped through would be caught rather than ignored.
+func TestReconcile_DefaultRole_AdminBearingTemplateIsRejected(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.OIDC.DefaultRole = "admin"
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
+
+	expectOrgByName(mock, "default", "org-default")
+	expectNotMember(mock)
+	// The seeded admin template carries the wildcard scope.
+	expectRoleScopesLookup(mock, "admin", []string{"admin"})
+	// Deliberately nothing further: the guard must stop here.
+
+	// Login is not failed — the user simply does not get the membership. A
+	// rejected default_role should not lock everyone out of authenticating.
+	if err := h.applyGroupMappings(context.Background(), "user-1", []string{"whatever"}); err != nil {
+		t.Fatalf("applyGroupMappings should not fail login on a rejected default_role: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)

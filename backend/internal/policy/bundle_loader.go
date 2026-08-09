@@ -29,6 +29,29 @@ type regoFile struct {
 // contents are parsed and loaded as active upload policy.
 const maxBundleBytes = 50 << 20 // 50 MB
 
+// Decompression budget for the bundle archive (issue #750).
+//
+// maxBundleBytes bounds the COMPRESSED archive only. gzip amplifies, so 50 MB
+// of archive can encode far more than 50 MB of entries, and every .rego entry
+// is retained in memory for the lifetime of the parse. Without these, a hostile
+// or compromised bundle host could turn one 50 MB download into an
+// out-of-memory kill.
+//
+// Non-.rego entries are charged too. Skipping an entry is not free: the tar
+// reader must decompress its body to reach the next header, so an archive made
+// entirely of skipped entries costs the same CPU and I/O while previously being
+// accounted at zero.
+const (
+	// maxBundleEntries caps how many archive members are examined. Real OPA
+	// bundles hold tens of policies; thousands means something else is going on.
+	maxBundleEntries = 4096
+	// maxBundleDecompressedBytes caps the cumulative declared size of every
+	// entry, .rego or not.
+	maxBundleDecompressedBytes = 64 << 20 // 64 MB
+	// maxRegoFileBytes caps a single policy file.
+	maxRegoFileBytes = 1 << 20 // 1 MB
+)
+
 // fetchBundle downloads the bundle archive from bundleURL and returns all
 // .rego files it contains. bundleURL must use HTTPS unless its host is
 // covered by egress's allow-list (loopback/internal test mirrors). The
@@ -92,6 +115,11 @@ func parseBundleTarGz(r io.Reader) ([]regoFile, error) {
 	tr := tar.NewReader(gr)
 	var files []regoFile
 
+	var (
+		entries      int
+		decompressed int64
+	)
+
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -100,15 +128,47 @@ func parseBundleTarGz(r io.Reader) ([]regoFile, error) {
 		if err != nil {
 			return nil, fmt.Errorf("bundle tar: %w", err)
 		}
+
+		// Charged before any filtering, so entries this loop skips still cost
+		// against the budget -- reaching the next header decompresses them
+		// whether or not their contents are wanted.
+		entries++
+		if entries > maxBundleEntries {
+			return nil, fmt.Errorf("bundle contains more than %d entries", maxBundleEntries)
+		}
+		if hdr.Size > 0 {
+			decompressed += hdr.Size
+			if decompressed > maxBundleDecompressedBytes {
+				return nil, fmt.Errorf("bundle decompresses to more than %d bytes",
+					maxBundleDecompressedBytes)
+			}
+		}
+
 		if hdr.Typeflag == tar.TypeDir {
 			continue
 		}
 		if !strings.HasSuffix(hdr.Name, ".rego") {
 			continue
 		}
-		data, err := io.ReadAll(io.LimitReader(tr, 1<<20)) // 1 MB per file
+
+		// Reject an oversized policy rather than truncating it. The previous
+		// io.LimitReader(tr, 1<<20) silently cut a larger file off mid-source:
+		// the bundle then loaded as a POLICY THAT WAS NEVER WRITTEN -- a
+		// truncation landing after an allow rule but before the deny that
+		// qualifies it inverts the outcome, with nothing in the logs to say so.
+		if hdr.Size > maxRegoFileBytes {
+			return nil, fmt.Errorf("policy file %s is %d bytes, over the %d-byte limit",
+				hdr.Name, hdr.Size, maxRegoFileBytes)
+		}
+		data, err := io.ReadAll(io.LimitReader(tr, maxRegoFileBytes+1))
 		if err != nil {
 			return nil, fmt.Errorf("reading %s: %w", hdr.Name, err)
+		}
+		// hdr.Size is the archive's own claim; this is the byte count actually
+		// produced, so a header understating its body is caught too.
+		if int64(len(data)) > maxRegoFileBytes {
+			return nil, fmt.Errorf("policy file %s exceeds the %d-byte limit",
+				hdr.Name, maxRegoFileBytes)
 		}
 		files = append(files, regoFile{name: hdr.Name, source: string(data)})
 	}

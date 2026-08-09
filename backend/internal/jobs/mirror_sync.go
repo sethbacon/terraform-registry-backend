@@ -376,6 +376,27 @@ func (j *MirrorSyncJob) performSync(ctx context.Context, config models.MirrorCon
 		}
 	}
 
+	// Validate before use, not only at the admin API (issue #752).
+	//
+	// These values are interpolated into the storage key and into the upstream
+	// registry request path. The API now rejects bad ones on write, but rows
+	// stored before that check exist, and this job also runs on a schedule
+	// against whatever is in the database -- so the consumer validates too.
+	for _, group := range []struct {
+		field  string
+		values []string
+	}{
+		{"namespace_filter", namespaces},
+		{"provider_filter", providerNames},
+	} {
+		for _, v := range group.values {
+			if err := validation.ValidateRegistrySegment(v); err != nil {
+				return details, fmt.Errorf("mirror %s has an invalid %s entry: %w",
+					config.Name, group.field, err)
+			}
+		}
+	}
+
 	// Handle different filter combinations
 	if len(namespaces) == 0 && len(providerNames) == 0 {
 		// No filters at all - can't enumerate full registry
@@ -1054,9 +1075,14 @@ func (j *MirrorSyncJob) syncPlatformBinary(
 	log.Printf("Checksum verified for %s: %s", packageInfo.Filename, checksumHex)
 
 	// packageInfo.Filename comes straight from the upstream registry's package
-	// descriptor, unlike the other segments of this path (which are validated
-	// registry identifiers / platform values); reject path separators and '..'
-	// before it reaches the storage key (issue #677).
+	// descriptor; reject path separators and '..' before it reaches the storage
+	// key (issue #677).
+	//
+	// The claim this comment used to make about the OTHER segments -- that they
+	// are validated registry identifiers -- was not true of namespace and
+	// providerName, which came from admin-supplied filter JSON with no
+	// validation at all. They are validated at the top of syncMirror now
+	// (issue #752), which is what makes the claim accurate.
 	if err := validation.ValidateStorageFilename(packageInfo.Filename); err != nil {
 		return fmt.Errorf("unsafe filename from upstream package descriptor: %w", err)
 	}

@@ -41,8 +41,21 @@ func New(cfg *config.LocalStorageConfig, serverBaseURL string) (*LocalStorage, e
 		return nil, fmt.Errorf("failed to create storage directory: %w", err)
 	}
 
+	if !cfg.ServeDirectly {
+		slog.Warn("storage.local.serve_directly=false is ignored: download URLs are " +
+			"always served through the API. It previously produced a file:// URL, " +
+			"which disclosed the absolute storage root to anonymous callers in the " +
+			"X-Terraform-Get header and was not fetchable by a remote Terraform " +
+			"client anyway.")
+	}
+
 	return &LocalStorage{
-		basePath:      cfg.BasePath,
+		// Cleaned once, here, so every later comparison against it is against a
+		// canonical path. Storing cfg.BasePath verbatim let a configured
+		// trailing slash (or "./storage", or a doubled separator) make
+		// filepath.Dir output never string-equal the root -- see Delete's
+		// parent walk, which climbed straight past it.
+		basePath:      filepath.Clean(cfg.BasePath),
 		serveDirectly: cfg.ServeDirectly,
 		baseURL:       serverBaseURL,
 	}, nil
@@ -66,6 +79,12 @@ func (s *LocalStorage) safeJoin(path string) (string, error) {
 
 // Upload stores a file in the local filesystem
 func (s *LocalStorage) Upload(ctx context.Context, path string, reader io.Reader, size int64) (*storage.UploadResult, error) {
+	// Issue #752: uniform key validation. The local backend has always had
+	// safeJoin; the cloud backends passed the caller's string through as the
+	// object key verbatim.
+	if err := storage.ValidateKey(path); err != nil {
+		return nil, err
+	}
 	fullPath, err := s.safeJoin(path)
 	if err != nil {
 		return nil, err
@@ -111,6 +130,12 @@ func (s *LocalStorage) Upload(ctx context.Context, path string, reader io.Reader
 
 // Download retrieves a file from the local filesystem
 func (s *LocalStorage) Download(ctx context.Context, path string) (io.ReadCloser, error) {
+	// Issue #752: uniform key validation. The local backend has always had
+	// safeJoin; the cloud backends passed the caller's string through as the
+	// object key verbatim.
+	if err := storage.ValidateKey(path); err != nil {
+		return nil, err
+	}
 	fullPath, err := s.safeJoin(path)
 	if err != nil {
 		return nil, err
@@ -129,6 +154,12 @@ func (s *LocalStorage) Download(ctx context.Context, path string) (io.ReadCloser
 
 // Delete removes a file from the local filesystem
 func (s *LocalStorage) Delete(ctx context.Context, path string) error {
+	// Issue #752: uniform key validation. The local backend has always had
+	// safeJoin; the cloud backends passed the caller's string through as the
+	// object key verbatim.
+	if err := storage.ValidateKey(path); err != nil {
+		return err
+	}
 	fullPath, err := s.safeJoin(path)
 	if err != nil {
 		return err
@@ -144,22 +175,58 @@ func (s *LocalStorage) Delete(ctx context.Context, path string) error {
 	// Also remove the checksum sidecar if it exists
 	_ = os.Remove(fullPath + ".sha256")
 
-	// Try to remove empty parent directories (best effort)
-	dir := filepath.Dir(fullPath)
-	for dir != s.basePath {
-		if err := os.Remove(dir); err != nil {
+	// Try to remove empty parent directories (best effort), never at or above
+	// the storage root.
+	//
+	// This walk used to terminate on `dir != s.basePath` alone. filepath.Dir
+	// returns a clean path with no trailing separator, so that comparison
+	// silently never matched when base_path was configured with a trailing
+	// slash or as a relative path -- and the loop then deleted the storage root
+	// itself and kept climbing, removing every empty ancestor until os.Remove
+	// happened to fail on a non-empty one. safeJoin could not catch it: nothing
+	// about the caller's key is involved, only the shape of the configured root.
+	//
+	// basePath is now cleaned at construction, which fixes the cause. The
+	// containment check below is the second, independent stop: a path that is
+	// not strictly inside the root is never a candidate for removal, whatever
+	// basePath happens to look like.
+	root := s.basePath
+	prefix := root + string(os.PathSeparator)
+	for dir := filepath.Dir(fullPath); strings.HasPrefix(dir, prefix); dir = filepath.Dir(dir) {
+		if err := os.Remove(dir); err != nil { // #nosec G304 -- dir is verified strictly inside basePath by the loop condition
 			break // Directory not empty or other error, stop trying
 		}
-		dir = filepath.Dir(dir)
 	}
 
 	return nil
 }
 
-// GetURL returns a URL for downloading the file
-// For local storage with ServeDirectly enabled, this returns a relative URL
-// Otherwise, it returns the local file path
+// GetURL returns the API URL for downloading the file.
+//
+// It NEVER returns a file:// URL (issue #751). It used to, when
+// serve_directly was false, and that value went straight into the
+// X-Terraform-Get header of GET /v1/modules/.../download -- a documented
+// UNAUTHENTICATED protocol endpoint. So any anonymous caller learned the
+// deployment's absolute storage root, and by extension its filesystem layout
+// and container mount paths: reconnaissance for chaining against a
+// path-handling bug.
+//
+// It was also functionally wrong. A remote Terraform client cannot fetch
+// file://, so that configuration was broken as well as leaky.
+//
+// serve_directly no longer changes what is returned. It could not usefully:
+// /v1/files/*filepath is registered unconditionally (see registerPublicRoutes),
+// so the API path works either way, and it is strictly more capable than
+// file:// -- a same-host client can fetch it over loopback just as well.
+// LocalStorage.New warns when the flag is set to false rather than ignoring it
+// silently.
 func (s *LocalStorage) GetURL(ctx context.Context, path string, ttl time.Duration) (string, error) {
+	// Issue #752: uniform key validation. The local backend has always had
+	// safeJoin; the cloud backends passed the caller's string through as the
+	// object key verbatim.
+	if err := storage.ValidateKey(path); err != nil {
+		return "", err
+	}
 	// Check if file exists
 	exists, err := s.Exists(ctx, path)
 	if err != nil {
@@ -169,22 +236,17 @@ func (s *LocalStorage) GetURL(ctx context.Context, path string, ttl time.Duratio
 		return "", fmt.Errorf("file not found: %s", path)
 	}
 
-	if s.serveDirectly {
-		// Return URL for direct serving through the API
-		// The actual file serving will be handled by a separate endpoint
-		return fmt.Sprintf("%s/v1/files/%s", s.baseURL, path), nil
-	}
-
-	// Return file:// URL for local access
-	fullPath, err := s.safeJoin(path)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("file://%s", fullPath), nil
+	return fmt.Sprintf("%s/v1/files/%s", s.baseURL, path), nil
 }
 
 // Exists checks if a file exists at the specified path
 func (s *LocalStorage) Exists(ctx context.Context, path string) (bool, error) {
+	// Issue #752: uniform key validation. The local backend has always had
+	// safeJoin; the cloud backends passed the caller's string through as the
+	// object key verbatim.
+	if err := storage.ValidateKey(path); err != nil {
+		return false, err
+	}
 	fullPath, err := s.safeJoin(path)
 	if err != nil {
 		return false, err
@@ -203,6 +265,12 @@ func (s *LocalStorage) Exists(ctx context.Context, path string) (bool, error) {
 
 // GetMetadata retrieves file metadata without downloading the file
 func (s *LocalStorage) GetMetadata(ctx context.Context, path string) (*storage.FileMetadata, error) {
+	// Issue #752: uniform key validation. The local backend has always had
+	// safeJoin; the cloud backends passed the caller's string through as the
+	// object key verbatim.
+	if err := storage.ValidateKey(path); err != nil {
+		return nil, err
+	}
 	fullPath, err := s.safeJoin(path)
 	if err != nil {
 		return nil, err
