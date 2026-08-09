@@ -67,11 +67,21 @@ func New(cfg *config.LocalStorageConfig, serverBaseURL string) (*LocalStorage, e
 // this ensures the storage layer cannot be exploited even if a future code path
 // skips that check.
 func (s *LocalStorage) safeJoin(path string) (string, error) {
-	full := filepath.Join(s.basePath, filepath.FromSlash(path))
-	// filepath.Clean normalises the joined path (resolves any remaining ".." segments).
-	// We require the result to remain inside basePath by verifying the prefix.
+	// Cleaned once, up front, so the value CHECKED below and the value RETURNED
+	// are the same variable.
+	//
+	// This was previously `full := filepath.Join(...)` with the containment test
+	// applied to `filepath.Clean(full)` while plain `full` was returned.
+	// Functionally identical -- filepath.Join already cleans -- but the test then
+	// referred to a different expression than the one that escapes the function,
+	// which is why CodeQL's go/path-injection could not recognise safeJoin as a
+	// sanitiser and kept flagging Delete's os.Remove calls as HIGH.
+	//
+	// Checking exactly what you return is the clearer contract regardless of the
+	// scanner.
+	full := filepath.Clean(filepath.Join(s.basePath, filepath.FromSlash(path)))
 	base := filepath.Clean(s.basePath) + string(os.PathSeparator)
-	if !strings.HasPrefix(filepath.Clean(full)+string(os.PathSeparator), base) {
+	if !strings.HasPrefix(full+string(os.PathSeparator), base) {
 		return "", fmt.Errorf("path escapes storage root: %s", path)
 	}
 	return full, nil
