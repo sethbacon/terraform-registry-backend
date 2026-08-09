@@ -52,6 +52,10 @@ This document catalogs all database migrations, their reversibility, and rollbac
 | 000043 | `setup_notifications`                  | ✅ Yes         | Drops notification-config columns; persisted SMTP config lost |
 | 000044 | `scanner_binary_versions`              | ✅ Yes         | Drops the scanner-binary-versions table and approval-event column |
 | 000045 | `namespace_org_claims`                 | ✅ Yes         | Drops the namespace-ownership table; bindings are re-derived from artifacts on re-apply |
+| 000046 | `user_token_revocations`               | ✅ Yes         | Drops the per-user token revocation table; outstanding revocations are lost, so any token revoked before the rollback becomes valid again until it expires |
+| 000047 | `terraform_mirror_github_attestation`  | ✅ Yes         | Drops `verify_github_attestation` and `attestation_verified`; mirrors revert to unverified and the record of which artifacts were attested is lost |
+| 000048 | `notification_channels`                | ✅ Yes         | Drops the notification-channel table (CASCADE); configured destinations must be re-added |
+| 000049 | `add_org_owner_provisioner_roles`      | ✅ Yes         | Deletes the `org_owner` and `org_provisioner` system role templates; memberships referencing them are left with a NULL `role_template_id` by the FK's ON DELETE SET NULL, so those members lose their scopes |
 | 000050 | `quarantine_orphaned_api_keys`         | ⚠️ No-op down  | Data-only: expires `api_keys` rows with `user_id IS NULL` (detached by a user deletion under `ON DELETE SET NULL`). The down cannot distinguish them from deliberately expired keys, so re-arming would undo the retirement; restore individual rows by hand. See `docs/upgrade-guide.md` |
 
 ## How to Run Migrations

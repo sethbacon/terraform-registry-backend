@@ -557,37 +557,61 @@ curl -s https://your-issuer-url/.well-known/openid-configuration | jq .
 
 ### Test OIDC Login via API
 
+The OIDC login flow is **browser-based and cookie-only**. On a successful callback the server sets
+an **HttpOnly** `tfr_auth_token` cookie; it never returns the JWT in a response body, so there is no
+value to copy into an `Authorization: Bearer` header. (This page previously showed a
+`TOKEN="eyJ..."` step — that token could not be obtained by any supported flow.)
+
+Because the cookie is HttpOnly, JavaScript cannot read it either; browser clients rely on the cookie
+being sent automatically and add the `X-CSRF-Token` header from the readable `tfr_csrf` cookie on
+mutating requests.
+
+To exercise the flow from a terminal, keep a cookie jar:
+
 ```bash
-# Redirect to OIDC provider
-curl -X GET "https://registry.example.com/api/v1/auth/login?provider=oidc"
-# This redirects to your identity provider
+# 1. Start the login. In a browser this redirects to your IdP; with curl,
+#    follow the Location header manually and complete the login there.
+curl -i "https://registry.example.com/api/v1/auth/login?provider=oidc"
 
-# After successful login and callback, you'll receive a JWT token
-TOKEN="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-
-# Test authenticated endpoint
-curl https://registry.example.com/api/v1/auth/me \
-  -H "Authorization: Bearer $TOKEN"
+# 2. After the callback completes in the browser, export that session cookie
+#    into a jar (or use --cookie-jar with a full scripted login against your IdP).
+#    Then call authenticated endpoints with the cookie, not a bearer token:
+curl -b cookies.txt https://registry.example.com/api/v1/auth/me
 
 # Should return your user information
 ```
 
+For **programmatic** access — CI, the Terraform CLI, scripts — do not try to reuse a session
+cookie. Create an API key (next section) and send it as `Authorization: Bearer <api_key>`. That is
+the supported non-browser path, and it is exempt from CSRF precisely because it is never sent
+automatically by a browser.
+
 ### Create and Test API Key
 
+Creating a key is a **mutating, cookie-authenticated** request, so it needs the session cookie AND
+the CSRF header — not a bearer token. (The `Authorization: Bearer $TOKEN` shown here previously
+could never have worked: `$TOKEN` came from the removed walkthrough above.)
+
 ```bash
-# After authenticating, create an API key
+# Create an API key using the browser session cookie plus the double-submit
+# CSRF token. tfr_csrf is readable by design; tfr_auth_token is HttpOnly.
+CSRF=$(awk '$6=="tfr_csrf"{print $7}' cookies.txt)
+
 curl -X POST https://registry.example.com/api/v1/apikeys \
-  -H "Authorization: Bearer $TOKEN" \
+  -b cookies.txt \
+  -H "X-CSRF-Token: $CSRF" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Test Key",
     "scopes": ["modules:read", "providers:read"]
   }'
 
-# Save the returned key from response
+# Save the returned key from the response. It is shown ONCE.
 API_KEY="tfr_abc123..."
 
-# Test with the API key
+# From here on, use the API key. This is the supported programmatic path:
+# a bearer API key is never auto-sent by a browser, so it is CSRF-exempt and
+# needs no cookie jar.
 curl https://registry.example.com/api/v1/modules/search \
   -H "Authorization: Bearer $API_KEY"
 ```
