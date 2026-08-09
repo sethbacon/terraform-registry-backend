@@ -740,11 +740,19 @@ convention here would risk silently enabling dev mode from a copied env file.
 Dev mode enables:
 
 - A bypass login endpoint (`POST /api/v1/dev/login`) that creates a session without OIDC
+- An impersonation endpoint (`POST /api/v1/dev/impersonate/:user_id`)
 - Relaxed JWT secret validation (allows short secrets)
 - Additional debug logging
 
 **Never set `DEV_MODE=true` in production.** The dev login endpoint allows anyone
 to authenticate as any user without credentials.
+
+The `/api/v1/dev/*` routes are **registered only when dev mode is on at startup**.
+Without `DEV_MODE`, they return `404` because they do not exist — not `403` from a
+guard — so no misconfiguration or future refactor can expose them behind a check
+that was dropped. When they are mounted, the server logs a startup banner naming
+each route; if you see that banner on a production server, `DEV_MODE` is set and
+the JWT secret validation is also relaxed. Unset it and restart.
 
 As a backstop against this being set by mistake in a production-like deployment, the
 server refuses to start when `DEV_MODE` is enabled together with a production-level
