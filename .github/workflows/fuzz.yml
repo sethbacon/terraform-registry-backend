@@ -38,6 +38,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Go toolchain
         uses: ./.github/actions/setup-backend
@@ -63,10 +65,12 @@ jobs:
         run: |
           go test ${{ matrix.package }} \
             -run='^$' \
-            -fuzz=${{ steps.target.outputs.name }} \
+            -fuzz=${STEPS_TARGET_OUTPUTS_NAME} \
             -fuzztime=10m \
             -timeout=15m \
             -v
+        env:
+          STEPS_TARGET_OUTPUTS_NAME: ${{ steps.target.outputs.name }}
 
       - name: Upload crash artifacts
         if: failure()

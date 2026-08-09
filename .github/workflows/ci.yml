@@ -26,6 +26,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Go toolchain
         uses: ./.github/actions/setup-backend
@@ -79,8 +81,8 @@ jobs:
           # On tag refs (release builds) skip swagger regeneration — it was
           # already checked when the release PR CI ran. Tags are immutable so
           # we cannot land doc updates against them anyway.
-          if [ "${{ github.ref_type }}" = "tag" ]; then
-            echo "Running on tag ${{ github.ref_name }} — skipping swagger regeneration"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "Running on tag ${GITHUB_REF_NAME} — skipping swagger regeneration"
             exit 0
           fi
 
@@ -217,7 +219,8 @@ jobs:
       pull-requests: write # only used for the bot-PR path below (#657)
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # zizmor: ignore[artipacked] -- pushes regenerated swagger docs to the PR head branch
+        with:
 
       - name: Download generated docs
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -263,7 +266,7 @@ jobs:
         if: steps.diff.outputs.changed == 'true' && steps.target.outputs.branch != 'main'
         run: |
           set -euo pipefail
-          TARGET_BRANCH="${{ steps.target.outputs.branch }}"
+          TARGET_BRANCH="${STEPS_TARGET_OUTPUTS_BRANCH}"
           # Fetch and rebase before pushing so concurrent commits to the same branch
           # (e.g. two PR squash-merges landing seconds apart) don't cause a rejected push.
           git fetch origin "${TARGET_BRANCH}"
@@ -282,6 +285,7 @@ jobs:
           git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
         env:
           DOCS_COMMIT_SUBJECT: "chore: regenerate swagger.json and openapi3.json"
+          STEPS_TARGET_OUTPUTS_BRANCH: ${{ steps.target.outputs.branch }}
 
       - name: Open pull request for doc regeneration onto main
         # Anything that would otherwise write straight onto the protected
@@ -315,6 +319,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Go toolchain
         uses: ./.github/actions/setup-backend
@@ -391,6 +397,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Build backend Docker image
         run: docker build -t terraform-registry-backend:ci backend/
@@ -436,6 +444,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Validate Docker Compose configs
         working-directory: deployments
@@ -506,6 +516,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Go toolchain
         uses: ./.github/actions/setup-backend
