@@ -7,6 +7,7 @@ import (
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -128,6 +129,69 @@ func (p *Provider) AllowIDPInitiated() bool {
 func (p *Provider) GetMetadata() *saml.EntityDescriptor {
 	return p.sp.Metadata()
 }
+
+// IDPEntityID returns the entity ID of the IdP this provider is configured for.
+//
+// Used to resolve WHICH configured IdP an unsolicited (IdP-initiated) response
+// came from, by matching the response's Issuer. Before this, the ACS handler
+// picked an arbitrary provider out of a Go map when no RelayState resolved one
+// (issue #747).
+func (p *Provider) IDPEntityID() string {
+	if p.sp.IDPMetadata == nil {
+		return ""
+	}
+	return p.sp.IDPMetadata.EntityID
+}
+
+// IssuerFromResponse extracts the Issuer entity ID from a SAML response WITHOUT
+// validating it.
+//
+// This is deliberately untrusted input: it is used only to SELECT which
+// configured provider should then validate the response, and selecting the
+// wrong one can only cause validation to fail. It never grants anything on its
+// own -- the chosen provider still verifies the signature against its own
+// configured certificate.
+//
+// The request's parsed form is cached by net/http, so calling this before
+// ValidateResponse does not consume the body.
+//
+// encoding/xml does not resolve external entities, so parsing an unvalidated
+// assertion here is not an XXE vector; the decoder is additionally bounded so a
+// large or deeply-nested document cannot be used to exhaust memory before
+// signature verification has had a chance to reject it.
+func IssuerFromResponse(r *http.Request) (string, error) {
+	raw := r.FormValue("SAMLResponse")
+	if raw == "" {
+		return "", fmt.Errorf("saml: no SAMLResponse in request")
+	}
+	decoded, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		return "", fmt.Errorf("saml: SAMLResponse is not valid base64: %w", err)
+	}
+	if len(decoded) > maxSAMLResponseBytes {
+		return "", fmt.Errorf("saml: SAMLResponse exceeds %d bytes", maxSAMLResponseBytes)
+	}
+
+	// Only the top-level Response/Issuer is read. The Assertion carries its own
+	// Issuer, which may differ; the Response-level one is what identifies the
+	// sender, and the provider's own validation re-checks the assertion.
+	var envelope struct {
+		Issuer string `xml:"Issuer"`
+	}
+	if err := xml.Unmarshal(decoded, &envelope); err != nil {
+		return "", fmt.Errorf("saml: could not parse SAMLResponse: %w", err)
+	}
+	issuer := strings.TrimSpace(envelope.Issuer)
+	if issuer == "" {
+		return "", fmt.Errorf("saml: SAMLResponse has no Issuer")
+	}
+	return issuer, nil
+}
+
+// maxSAMLResponseBytes bounds the decoded response parsed by IssuerFromResponse.
+// Real assertions are a few KB; this is generous while still refusing to hand an
+// unbounded attacker-controlled document to the XML decoder.
+const maxSAMLResponseBytes = 1 << 20 // 1 MiB
 
 // MakeAuthenticationRequest creates a SAML AuthnRequest URL for SP-initiated login.
 // It returns the redirect URL and the generated AuthnRequest ID. The caller must

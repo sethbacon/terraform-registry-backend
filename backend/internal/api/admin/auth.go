@@ -41,7 +41,12 @@ type AuthHandlers struct {
 	oidcProvider    atomic.Pointer[oidc.OIDCProvider]
 	azureADProvider *azuread.AzureADProvider
 	samlProviders   map[string]*samlpkg.Provider // keyed by IdP name
-	ldapProvider    *ldappkg.Provider
+	// samlIdPOrder is the configured IdP order. The map above is for lookup by
+	// name; anything that means "the first IdP" or "list the IdPs" must use
+	// this, because Go randomises map iteration and this selection feeds the
+	// user's identity namespace (issue #747).
+	samlIdPOrder []string
+	ldapProvider *ldappkg.Provider
 	// stateStore persists auth CSRF state tokens. When Redis is configured the
 	// store is shared across instances; otherwise an in-memory store is used.
 	stateStore auth.StateStore
@@ -117,8 +122,9 @@ func NewAuthHandlers(cfg *config.Config, db *sql.DB, oidcConfigRepo *repositorie
 			if err != nil {
 				return nil, fmt.Errorf("saml idp %q: %w", idpCfg.Name, err)
 			}
-			h.samlProviders[idpCfg.Name] = sp
-			slog.Info("SAML IdP configured", "name", idpCfg.Name)
+			h.addSAMLProvider(idpCfg.Name, sp)
+			slog.Info("SAML IdP configured", "name", idpCfg.Name,
+				"entity_id", sp.IDPEntityID())
 		}
 	}
 
@@ -280,10 +286,11 @@ func (h *AuthHandlers) LoginHandler() gin.HandlerFunc {
 			if provider == "saml" || strings.HasPrefix(provider, "saml:") {
 				idpName := ""
 				if provider == "saml" {
-					// Use first configured IdP
-					for name := range h.samlProviders {
-						idpName = name
-						break
+					// The FIRST CONFIGURED IdP, not an arbitrary map entry.
+					// Iterating the map here meant "saml" resolved to a
+					// different IdP from one request to the next (issue #747).
+					if len(h.samlIdPOrder) > 0 {
+						idpName = h.samlIdPOrder[0]
 					}
 				} else {
 					idpName = strings.TrimPrefix(provider, "saml:")
@@ -1210,12 +1217,10 @@ func (h *AuthHandlers) SAMLMetadataHandler() gin.HandlerFunc {
 		var provider *samlpkg.Provider
 		if idpName != "" {
 			provider = h.samlProviders[idpName]
-		} else {
-			// Return metadata from first configured provider
-			for _, p := range h.samlProviders {
-				provider = p
-				break
-			}
+		} else if len(h.samlIdPOrder) > 0 {
+			// First CONFIGURED provider. Serving a random IdP's metadata makes
+			// the published SP metadata vary between scrapes (issue #747).
+			provider = h.samlProviders[h.samlIdPOrder[0]]
 		}
 		if provider == nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "No SAML provider configured"})
@@ -1290,13 +1295,46 @@ func (h *AuthHandlers) SAMLACSHandler() gin.HandlerFunc {
 			}
 		}
 
-		// Fallback: try all providers (IdP-initiated flow has no RelayState)
+		// No RelayState resolved a provider: a genuine IdP-initiated login, an
+		// expired or replayed state entry, or an IdP removed from config after
+		// a login started.
+		//
+		// This used to pick whichever provider Go's randomised map iteration
+		// yielded first. Two consequences (issue #747): the response was
+		// validated against only that one provider's signing certificate, so
+		// the same assertion could succeed on one request and fail on the next;
+		// and idpName feeds sub = "saml:<idpName>:<NameID>", so a user who did
+		// succeed could be keyed under a DIFFERENT ACCOUNT across logins.
+		//
+		// Resolve by matching the response's Issuer against each configured
+		// IdP's entity ID instead. The Issuer is unvalidated at this point and
+		// is used only to SELECT the provider -- picking wrong can only cause
+		// validation to fail, and the chosen provider still verifies the
+		// signature against its own certificate. No match is a rejection, not a
+		// fallback: guessing is what produced the nondeterminism.
 		if provider == nil {
-			for name, p := range h.samlProviders {
-				provider = p
-				idpName = name
-				break
+			issuer, issErr := samlpkg.IssuerFromResponse(c.Request)
+			if issErr != nil {
+				slog.Warn("saml: could not determine the issuer of an unsolicited response",
+					"error", issErr)
+				callbackError("invalid_response", "SAML response could not be attributed to a configured IdP.")
+				return
 			}
+			for _, name := range h.samlIdPOrder {
+				if p := h.samlProviders[name]; p != nil && p.IDPEntityID() == issuer {
+					provider = p
+					idpName = name
+					break
+				}
+			}
+			if provider == nil {
+				slog.Warn("saml: unsolicited response from an unconfigured issuer",
+					"issuer", issuer)
+				callbackError("unknown_idp", "SAML response is from an IdP that is not configured.")
+				return
+			}
+			slog.Info("saml: resolved unsolicited response by issuer",
+				"idp", idpName, "issuer", issuer)
 		}
 
 		if provider == nil {
@@ -1440,7 +1478,9 @@ func (h *AuthHandlers) ProvidersHandler() gin.HandlerFunc {
 			})
 		}
 
-		for name := range h.samlProviders {
+		// Configured order, so the login page does not reshuffle its IdP
+		// buttons on every request (issue #747).
+		for _, name := range h.samlIdPOrder {
 			providers = append(providers, gin.H{
 				"type": "saml",
 				"name": name,
@@ -1658,4 +1698,23 @@ func (h *AuthHandlers) MTLSConfigHandler() gin.HandlerFunc {
 			"mappings":       mappings,
 		})
 	}
+}
+
+// addSAMLProvider registers an IdP in both the name-keyed map and the ordered
+// index, which must never diverge.
+//
+// They are separate because they answer different questions -- lookup by name,
+// and "which IdP is first / list them in a stable order" -- but keeping them in
+// sync by hand is a trap: a caller that appends to the map alone silently makes
+// the IdP invisible to every ordered path (the login page list, the "saml"
+// default, issuer resolution for unsolicited responses). This is the only place
+// either field is written.
+func (h *AuthHandlers) addSAMLProvider(name string, p *samlpkg.Provider) {
+	if h.samlProviders == nil {
+		h.samlProviders = make(map[string]*samlpkg.Provider)
+	}
+	if _, exists := h.samlProviders[name]; !exists {
+		h.samlIdPOrder = append(h.samlIdPOrder, name)
+	}
+	h.samlProviders[name] = p
 }
