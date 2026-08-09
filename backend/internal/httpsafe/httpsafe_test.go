@@ -2,6 +2,7 @@ package httpsafe
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -511,5 +512,95 @@ func TestCheckRedirect_TooManyRedirects(t *testing.T) {
 	}
 	if err := g.CheckRedirect(req, via); err == nil {
 		t.Error("expected redirect-limit error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ValidateHostPort (issue #749)
+// ---------------------------------------------------------------------------
+
+// ValidateHostPort exists for transports this package does not supply: an LDAP
+// TCP dial, a cloud SDK's own HTTP client. Those never reach DialContext, so
+// without this they bypassed the egress policy entirely.
+
+func TestValidateHostPort_DeniedRanges(t *testing.T) {
+	g := MustGuard()
+	for _, addr := range []string{
+		"127.0.0.1:389",
+		"10.0.0.5:389",
+		"192.168.1.10:636",
+		"172.16.0.1:389",
+		"169.254.169.254:80", // cloud metadata
+		"[::1]:389",
+		"100.64.0.1:389", // CGNAT
+	} {
+		t.Run(addr, func(t *testing.T) {
+			if err := g.ValidateHostPort(context.Background(), addr); err == nil {
+				t.Errorf("ValidateHostPort(%q) = nil, want a denial", addr)
+			}
+		})
+	}
+}
+
+func TestValidateHostPort_PublicAllowed(t *testing.T) {
+	g := MustGuard()
+	if err := g.ValidateHostPort(context.Background(), "93.184.216.34:636"); err != nil {
+		t.Errorf("public address rejected: %v", err)
+	}
+}
+
+func TestValidateHostPort_ResolvedPrivateRejected(t *testing.T) {
+	// The interesting case: a public-looking NAME that resolves inward.
+	g := MustGuard()
+	g.lookupIP = fakeResolver("192.168.7.7")
+	if err := g.ValidateHostPort(context.Background(), "ldap.example.com:389"); err == nil {
+		t.Error("name resolving to a private address was accepted")
+	}
+}
+
+func TestValidateHostPort_MixedResolutionRejected(t *testing.T) {
+	g := MustGuard()
+	g.lookupIP = fakeResolver("93.184.216.34", "10.0.0.5")
+	if err := g.ValidateHostPort(context.Background(), "ldap.example.com:389"); err == nil {
+		t.Error("mixed public/private resolution was accepted; any private address must deny")
+	}
+}
+
+func TestValidateHostPort_ResolveFailureFailsClosed(t *testing.T) {
+	// Deliberately the opposite of ValidateURL, which fails OPEN here because
+	// dial-time enforcement still applies to whatever the name resolves to.
+	// Nothing checks again after this, so an unresolvable name must deny.
+	g := MustGuard()
+	g.lookupIP = func(context.Context, string) ([]net.IP, error) {
+		return nil, errors.New("nxdomain")
+	}
+	if err := g.ValidateHostPort(context.Background(), "ldap.example.com:389"); err == nil {
+		t.Error("resolve failure was accepted — ValidateHostPort must fail closed")
+	}
+}
+
+func TestValidateHostPort_EmptyResolutionFailsClosed(t *testing.T) {
+	g := MustGuard()
+	g.lookupIP = func(context.Context, string) ([]net.IP, error) {
+		return nil, nil
+	}
+	if err := g.ValidateHostPort(context.Background(), "ldap.example.com:389"); err == nil {
+		t.Error("empty resolution was accepted — zero addresses is not a pass")
+	}
+}
+
+func TestValidateHostPort_AllowlistedHostPermitted(t *testing.T) {
+	// An operator who allowlists an internal LDAP host must still be able to
+	// use it; the guard widens by configuration, not by accident.
+	g := MustGuard("ldap.internal")
+	if err := g.ValidateHostPort(context.Background(), "ldap.internal:389"); err != nil {
+		t.Errorf("allowlisted host rejected: %v", err)
+	}
+}
+
+func TestValidateHostPort_BareHostWithoutPort(t *testing.T) {
+	g := MustGuard()
+	if err := g.ValidateHostPort(context.Background(), "127.0.0.1"); err == nil {
+		t.Error("bare private host without a port was accepted")
 	}
 }
