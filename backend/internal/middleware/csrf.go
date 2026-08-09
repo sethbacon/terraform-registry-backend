@@ -169,6 +169,9 @@ func requestOrigin(c *gin.Context) string {
 //	jwt (Bearer) absent          exempt (programmatic client: CLI, CI, curl)
 //	jwt (Bearer) present         origin allowlist — 403 unless scheme+host matches
 //	                             server public/base URL or a configured CORS origin
+//	mtls         absent          exempt (machine-to-machine client)
+//	mtls         present         origin allowlist — a browser holding a client
+//	                             certificate presents it automatically, like a cookie
 //	jwt_cookie   any             double-submit token validation
 //
 // Bearer browser clients may not hold the tfr_csrf cookie (they never went
@@ -195,13 +198,26 @@ func CSRFMiddleware(cfg *config.Config) gin.HandlerFunc {
 			}
 		}
 
-		// Bearer header JWT (auth_method == "jwt"). Historically exempted as
+		// Bearer header JWT (auth_method == "jwt") and mTLS client certificates
+		// (auth_method == "mtls"). Historically the JWT case was exempted as
 		// "programmatic", but a browser can carry a Bearer token too. Detect
 		// browser context via Origin (Referer fallback): no Origin/Referer means
 		// a non-browser client and stays exempt; a browser origin must match the
 		// deployment's own origins or the request is rejected.
+		//
+		// mTLS is handled here, not exempted outright (issue #746). It reached
+		// the cookie branch below, which assumes cookie authentication, so every
+		// mutating request from an mTLS client got 403 "CSRF cookie missing" --
+		// the documented machine-to-machine path could not perform a single
+		// mutation. Failing closed, but unusable.
+		//
+		// The blanket exemption that would obviously fix it is wrong for the
+		// same reason it was wrong for Bearer: a browser that holds a client
+		// certificate presents it automatically on a cross-site request, exactly
+		// like a cookie. So mTLS gets the identical treatment -- exempt with no
+		// browser context, origin-checked with one.
 		if authMethod, exists := c.Get("auth_method"); exists {
-			if am, ok := authMethod.(string); ok && am == "jwt" {
+			if am, ok := authMethod.(string); ok && (am == "jwt" || am == "mtls") {
 				origin := requestOrigin(c)
 				if origin == "" {
 					// No browser context — programmatic client, exempt.
