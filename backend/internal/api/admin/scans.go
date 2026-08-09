@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
 
@@ -61,7 +62,11 @@ func GetModuleScanHandler(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		scan, err := scanRepo.GetLatestScan(c.Request.Context(), mv.ID)
+		// The module was already resolved within an organization above, so the
+		// scan is bound to that same organization -- a scan cannot be returned
+		// for a module version the caller did not just look up.
+		scan, err := scanRepo.GetLatestScan(c.Request.Context(), mv.ID,
+			repositories.OrgScopeOrganizations(module.OrganizationID))
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query scan result"})
 			return
@@ -87,7 +92,7 @@ func GetModuleScanHandler(db *sql.DB) gin.HandlerFunc {
 // @Failure      404  {object}  map[string]interface{}  "Scan not found"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/admin/scanning/scans/{id} [get]
-func GetScanByIDHandler(db *sql.DB) gin.HandlerFunc {
+func GetScanByIDHandler(db *sql.DB, orgRepo *repositories.OrganizationRepository) gin.HandlerFunc {
 	scanRepo := repositories.NewModuleScanRepository(db)
 
 	return func(c *gin.Context) {
@@ -97,7 +102,20 @@ func GetScanByIDHandler(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		scan, err := scanRepo.GetScanByID(c.Request.Context(), id)
+		// GUARD scan-byid-tenant-scope (issue #783): the by-id axis of the
+		// #718/#719 class. The row is organization-owned transitively, through
+		// module_versions -> modules, so nothing about the scan row itself says
+		// whose it is -- which is why fetching by primary key looked harmless.
+		//
+		// Out of scope answers 404, not 403: the response body is another
+		// tenant's vulnerability findings, so confirming the id exists is itself
+		// the disclosure. Indistinguishable from an id that was never issued.
+		scope, ok := resolveTenantScope(c, orgRepo, auth.ScopeScanningRead)
+		if !ok {
+			return
+		}
+
+		scan, err := scanRepo.GetScanByID(c.Request.Context(), id, scope.OrgScope())
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query scan result"})
 			return

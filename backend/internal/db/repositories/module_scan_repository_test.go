@@ -283,11 +283,11 @@ func TestMarkError_DBError(t *testing.T) {
 
 func TestGetScanByID_Found(t *testing.T) {
 	repo, mock := newScanRepo(t)
-	mock.ExpectQuery("SELECT.*FROM module_version_scans.*WHERE id").
+	mock.ExpectQuery("(?s)FROM module_version_scans.*JOIN module_versions.*JOIN modules.*WHERE s.id").
 		WithArgs("scan-1").
 		WillReturnRows(sampleScanRow())
 
-	scan, err := repo.GetScanByID(context.Background(), "scan-1")
+	scan, err := repo.GetScanByID(context.Background(), "scan-1", OrgScopeAllOrganizations())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -301,11 +301,11 @@ func TestGetScanByID_Found(t *testing.T) {
 
 func TestGetScanByID_NotFound(t *testing.T) {
 	repo, mock := newScanRepo(t)
-	mock.ExpectQuery("SELECT.*FROM module_version_scans.*WHERE id").
+	mock.ExpectQuery("(?s)FROM module_version_scans.*JOIN module_versions.*JOIN modules.*WHERE s.id").
 		WithArgs("scan-99").
 		WillReturnRows(sqlmock.NewRows(scanCols))
 
-	scan, err := repo.GetScanByID(context.Background(), "scan-99")
+	scan, err := repo.GetScanByID(context.Background(), "scan-99", OrgScopeAllOrganizations())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -316,11 +316,11 @@ func TestGetScanByID_NotFound(t *testing.T) {
 
 func TestGetScanByID_DBError(t *testing.T) {
 	repo, mock := newScanRepo(t)
-	mock.ExpectQuery("SELECT.*FROM module_version_scans.*WHERE id").
+	mock.ExpectQuery("(?s)FROM module_version_scans.*JOIN module_versions.*JOIN modules.*WHERE s.id").
 		WithArgs("scan-1").
 		WillReturnError(errors.New("db error"))
 
-	_, err := repo.GetScanByID(context.Background(), "scan-1")
+	_, err := repo.GetScanByID(context.Background(), "scan-1", OrgScopeAllOrganizations())
 	if err == nil {
 		t.Error("expected error, got nil")
 	}
@@ -332,11 +332,11 @@ func TestGetScanByID_DBError(t *testing.T) {
 
 func TestGetLatestScan_Found(t *testing.T) {
 	repo, mock := newScanRepo(t)
-	mock.ExpectQuery("SELECT.*FROM module_version_scans.*WHERE module_version_id").
+	mock.ExpectQuery("(?s)FROM module_version_scans.*JOIN module_versions.*JOIN modules.*WHERE s.module_version_id").
 		WithArgs("ver-1").
 		WillReturnRows(sampleScanRow())
 
-	scan, err := repo.GetLatestScan(context.Background(), "ver-1")
+	scan, err := repo.GetLatestScan(context.Background(), "ver-1", OrgScopeAllOrganizations())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -350,11 +350,11 @@ func TestGetLatestScan_Found(t *testing.T) {
 
 func TestGetLatestScan_NotFound(t *testing.T) {
 	repo, mock := newScanRepo(t)
-	mock.ExpectQuery("SELECT.*FROM module_version_scans.*WHERE module_version_id").
+	mock.ExpectQuery("(?s)FROM module_version_scans.*JOIN module_versions.*JOIN modules.*WHERE s.module_version_id").
 		WithArgs("ver-99").
 		WillReturnRows(sqlmock.NewRows(scanCols))
 
-	scan, err := repo.GetLatestScan(context.Background(), "ver-99")
+	scan, err := repo.GetLatestScan(context.Background(), "ver-99", OrgScopeAllOrganizations())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -365,11 +365,11 @@ func TestGetLatestScan_NotFound(t *testing.T) {
 
 func TestGetLatestScan_DBError(t *testing.T) {
 	repo, mock := newScanRepo(t)
-	mock.ExpectQuery("SELECT.*FROM module_version_scans.*WHERE module_version_id").
+	mock.ExpectQuery("(?s)FROM module_version_scans.*JOIN module_versions.*JOIN modules.*WHERE s.module_version_id").
 		WithArgs("ver-1").
 		WillReturnError(errors.New("db error"))
 
-	_, err := repo.GetLatestScan(context.Background(), "ver-1")
+	_, err := repo.GetLatestScan(context.Background(), "ver-1", OrgScopeAllOrganizations())
 	if err == nil {
 		t.Error("expected error, got nil")
 	}

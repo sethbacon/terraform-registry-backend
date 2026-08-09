@@ -57,6 +57,15 @@ func NewSCMWebhookHandler(scmRepo *repositories.SCMRepository, publisher *servic
 // @Failure      404  {object}  map[string]interface{}  "Repository link or SCM provider not found"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error (connector build, log write, etc.)"
 // @Router       /webhooks/scm/{module_source_repo_id}/{secret} [post]
+// maxWebhookPayloadBytes caps the unauthenticated webhook body.
+//
+// 5 MiB is comfortably above every real SCM push payload -- GitHub documents a
+// 25 MB delivery ceiling but real push/PR events are kilobytes, and this handler
+// only reads a handful of fields -- while being small enough that concurrent
+// abuse cannot exhaust the process. Sized from what the sender actually sends
+// rather than from what the protocol permits.
+const maxWebhookPayloadBytes = 5 << 20
+
 // HandleWebhook processes incoming webhooks from SCM providers
 // POST /webhooks/scm/:module_source_repo_id/:secret
 func (h *SCMWebhookHandler) HandleWebhook(c *gin.Context) {
@@ -69,10 +78,34 @@ func (h *SCMWebhookHandler) HandleWebhook(c *gin.Context) {
 		return
 	}
 
-	// Read the webhook payload
+	// Read the webhook payload, CAPPED.
+	//
+	// This is the only unauthenticated route in the service that reads a request
+	// body, and it read it unbounded (#744). The read happens before the
+	// URL-embedded secret and before the HMAC signature are checked -- it has to,
+	// since the signature is computed over the body -- so the only precondition
+	// for reaching it was a syntactically valid UUID in the path. The UUID does
+	// not even have to name a real link: a non-existent one still reaches this
+	// read before the 404 below.
+	//
+	// With ReadTimeout at 30s and no global body-size middleware anywhere, a
+	// handful of concurrent slow POSTs could hold arbitrary heap with zero
+	// credentials. Every other body-decode path in this codebase -- SCM API
+	// responses, OSV, mirror upstreams, provider uploads -- is already capped;
+	// this was the exception, and also the only one reachable anonymously.
+	//
+	// MaxBytesReader rather than io.LimitReader: LimitReader TRUNCATES silently,
+	// which here would mean computing the HMAC over a partial body and rejecting
+	// a legitimate large payload as a signature mismatch -- a confusing failure
+	// pointing at the wrong cause. MaxBytesReader makes the read itself fail, so
+	// an oversized payload is reported as oversized.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxWebhookPayloadBytes)
 	payloadBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read payload"})
+		// Deliberately does not distinguish "too large" from "read failed" in the
+		// response: this endpoint is unauthenticated, and the caller has not yet
+		// proved it knows the secret, so it learns nothing about limits here.
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "failed to read payload"})
 		return
 	}
 
