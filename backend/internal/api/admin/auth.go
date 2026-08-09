@@ -187,11 +187,25 @@ func (h *AuthHandlers) LoginHandler() gin.HandlerFunc {
 			return
 		}
 
+		// Bind this login to THIS browser (#738). Issued before any provider
+		// branch below so every path that saves sessionState carries it --
+		// a per-branch call is one a new provider forgets to add.
+		bindingSecret, bindingHash, bindErr := newLoginBinding()
+		if bindErr != nil {
+			slog.Error("failed to generate login binding", "error", bindErr)
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to generate state",
+			})
+			return
+		}
+		issueLoginBinding(c, bindingSecret)
+
 		// Store state in session store with 10-minute TTL
 		sessionState := &auth.SessionState{
-			State:        state,
-			CreatedAt:    time.Now(),
-			ProviderType: provider,
+			State:              state,
+			CreatedAt:          time.Now(),
+			ProviderType:       provider,
+			BrowserBindingHash: bindingHash,
 		}
 		if err := h.stateStore.Save(c.Request.Context(), state, sessionState, 10*time.Minute); err != nil {
 			slog.Error("failed to save OIDC state", "error", err)
@@ -360,6 +374,22 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 			callbackError("invalid_state", "Invalid state parameter. Please try logging in again.")
 			return
 		}
+
+		// GUARD login-csrf-browser-binding (issue #738): the state entry exists,
+		// but does THIS browser own it? Checked before the TTL and before the
+		// code exchange, so a forged callback costs nothing and reaches no IdP.
+		//
+		// The error is deliberately the same shape as an invalid state: a caller
+		// probing the callback learns whether a state string is live, not why it
+		// was refused.
+		if !loginBindingMatches(c, sessionState.BrowserBindingHash) {
+			clearLoginBinding(c)
+			slog.Warn("login callback rejected: browser binding missing or mismatched",
+				"provider", sessionState.ProviderType)
+			callbackError("invalid_state", "Invalid state parameter. Please try logging in again.")
+			return
+		}
+		clearLoginBinding(c)
 
 		// Check state expiration (5 minutes)
 		if time.Since(sessionState.CreatedAt) > 5*time.Minute {
