@@ -79,6 +79,12 @@ func New(cfg *config.AzureStorageConfig) (*AzureStorage, error) {
 
 // Upload stores a file in Azure Blob Storage
 func (s *AzureStorage) Upload(ctx context.Context, path string, reader io.Reader, size int64) (*storage.UploadResult, error) {
+	// Issue #752: uniform key validation. The local backend has always had
+	// safeJoin; the cloud backends passed the caller's string through as the
+	// object key verbatim.
+	if err := storage.ValidateKey(path); err != nil {
+		return nil, err
+	}
 	// Read all content to calculate checksum and upload
 	// For large files, consider using block uploads with streaming hash
 	data, err := io.ReadAll(reader)
@@ -109,6 +115,12 @@ func (s *AzureStorage) Upload(ctx context.Context, path string, reader io.Reader
 
 // Download retrieves a file from Azure Blob Storage
 func (s *AzureStorage) Download(ctx context.Context, path string) (io.ReadCloser, error) {
+	// Issue #752: uniform key validation. The local backend has always had
+	// safeJoin; the cloud backends passed the caller's string through as the
+	// object key verbatim.
+	if err := storage.ValidateKey(path); err != nil {
+		return nil, err
+	}
 	// Get blob client for this path
 	blobClient := s.client.ServiceClient().NewContainerClient(s.containerName).NewBlobClient(path)
 
@@ -123,6 +135,12 @@ func (s *AzureStorage) Download(ctx context.Context, path string) (io.ReadCloser
 
 // Delete removes a file from Azure Blob Storage
 func (s *AzureStorage) Delete(ctx context.Context, path string) error {
+	// Issue #752: uniform key validation. The local backend has always had
+	// safeJoin; the cloud backends passed the caller's string through as the
+	// object key verbatim.
+	if err := storage.ValidateKey(path); err != nil {
+		return err
+	}
 	// Get blob client for this path
 	blobClient := s.client.ServiceClient().NewContainerClient(s.containerName).NewBlobClient(path)
 
@@ -139,6 +157,12 @@ func (s *AzureStorage) Delete(ctx context.Context, path string) error {
 
 // GetURL returns a signed URL for downloading the file
 func (s *AzureStorage) GetURL(ctx context.Context, path string, ttl time.Duration) (string, error) {
+	// Issue #752: uniform key validation. The local backend has always had
+	// safeJoin; the cloud backends passed the caller's string through as the
+	// object key verbatim.
+	if err := storage.ValidateKey(path); err != nil {
+		return "", err
+	}
 	// Check if file exists first
 	exists, err := s.Exists(ctx, path)
 	if err != nil {
@@ -186,6 +210,12 @@ func (s *AzureStorage) GetURL(ctx context.Context, path string, ttl time.Duratio
 
 // Exists checks if a file exists at the specified path
 func (s *AzureStorage) Exists(ctx context.Context, path string) (bool, error) {
+	// Issue #752: uniform key validation. The local backend has always had
+	// safeJoin; the cloud backends passed the caller's string through as the
+	// object key verbatim.
+	if err := storage.ValidateKey(path); err != nil {
+		return false, err
+	}
 	// Get blob client for this path
 	blobClient := s.client.ServiceClient().NewContainerClient(s.containerName).NewBlobClient(path)
 
@@ -202,6 +232,12 @@ func (s *AzureStorage) Exists(ctx context.Context, path string) (bool, error) {
 
 // GetMetadata retrieves file metadata without downloading the entire file
 func (s *AzureStorage) GetMetadata(ctx context.Context, path string) (*storage.FileMetadata, error) {
+	// Issue #752: uniform key validation. The local backend has always had
+	// safeJoin; the cloud backends passed the caller's string through as the
+	// object key verbatim.
+	if err := storage.ValidateKey(path); err != nil {
+		return nil, err
+	}
 	// Get blob client for this path
 	blobClient := s.client.ServiceClient().NewContainerClient(s.containerName).NewBlobClient(path)
 

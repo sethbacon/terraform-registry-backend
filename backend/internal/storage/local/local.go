@@ -79,6 +79,12 @@ func (s *LocalStorage) safeJoin(path string) (string, error) {
 
 // Upload stores a file in the local filesystem
 func (s *LocalStorage) Upload(ctx context.Context, path string, reader io.Reader, size int64) (*storage.UploadResult, error) {
+	// Issue #752: uniform key validation. The local backend has always had
+	// safeJoin; the cloud backends passed the caller's string through as the
+	// object key verbatim.
+	if err := storage.ValidateKey(path); err != nil {
+		return nil, err
+	}
 	fullPath, err := s.safeJoin(path)
 	if err != nil {
 		return nil, err
@@ -124,6 +130,12 @@ func (s *LocalStorage) Upload(ctx context.Context, path string, reader io.Reader
 
 // Download retrieves a file from the local filesystem
 func (s *LocalStorage) Download(ctx context.Context, path string) (io.ReadCloser, error) {
+	// Issue #752: uniform key validation. The local backend has always had
+	// safeJoin; the cloud backends passed the caller's string through as the
+	// object key verbatim.
+	if err := storage.ValidateKey(path); err != nil {
+		return nil, err
+	}
 	fullPath, err := s.safeJoin(path)
 	if err != nil {
 		return nil, err
@@ -142,6 +154,12 @@ func (s *LocalStorage) Download(ctx context.Context, path string) (io.ReadCloser
 
 // Delete removes a file from the local filesystem
 func (s *LocalStorage) Delete(ctx context.Context, path string) error {
+	// Issue #752: uniform key validation. The local backend has always had
+	// safeJoin; the cloud backends passed the caller's string through as the
+	// object key verbatim.
+	if err := storage.ValidateKey(path); err != nil {
+		return err
+	}
 	fullPath, err := s.safeJoin(path)
 	if err != nil {
 		return err
@@ -203,6 +221,12 @@ func (s *LocalStorage) Delete(ctx context.Context, path string) error {
 // LocalStorage.New warns when the flag is set to false rather than ignoring it
 // silently.
 func (s *LocalStorage) GetURL(ctx context.Context, path string, ttl time.Duration) (string, error) {
+	// Issue #752: uniform key validation. The local backend has always had
+	// safeJoin; the cloud backends passed the caller's string through as the
+	// object key verbatim.
+	if err := storage.ValidateKey(path); err != nil {
+		return "", err
+	}
 	// Check if file exists
 	exists, err := s.Exists(ctx, path)
 	if err != nil {
@@ -217,6 +241,12 @@ func (s *LocalStorage) GetURL(ctx context.Context, path string, ttl time.Duratio
 
 // Exists checks if a file exists at the specified path
 func (s *LocalStorage) Exists(ctx context.Context, path string) (bool, error) {
+	// Issue #752: uniform key validation. The local backend has always had
+	// safeJoin; the cloud backends passed the caller's string through as the
+	// object key verbatim.
+	if err := storage.ValidateKey(path); err != nil {
+		return false, err
+	}
 	fullPath, err := s.safeJoin(path)
 	if err != nil {
 		return false, err
@@ -235,6 +265,12 @@ func (s *LocalStorage) Exists(ctx context.Context, path string) (bool, error) {
 
 // GetMetadata retrieves file metadata without downloading the file
 func (s *LocalStorage) GetMetadata(ctx context.Context, path string) (*storage.FileMetadata, error) {
+	// Issue #752: uniform key validation. The local backend has always had
+	// safeJoin; the cloud backends passed the caller's string through as the
+	// object key verbatim.
+	if err := storage.ValidateKey(path); err != nil {
+		return nil, err
+	}
 	fullPath, err := s.safeJoin(path)
 	if err != nil {
 		return nil, err

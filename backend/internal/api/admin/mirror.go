@@ -4,6 +4,8 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"github.com/terraform-registry/terraform-registry/internal/validation"
 	"log"
 	"net/http"
 	"strconv"
@@ -73,6 +75,39 @@ func (h *MirrorHandler) SetEgressGuard(g *httpsafe.Guard) *MirrorHandler {
 // @Router       /api/v1/admin/mirrors [post]
 // CreateMirrorConfig creates a new mirror configuration
 // POST /api/v1/admin/mirrors
+// validateMirrorFilters rejects namespace/provider filter entries that are not
+// valid registry identifiers.
+//
+// These are not merely a selection filter: mirror_sync interpolates them
+// directly into the storage key
+//
+//	fmt.Sprintf("providers/%s/%s/%s/%s/%s/%s", namespace, providerName, ...)
+//
+// and into the upstream registry request path. Every other segment of that key
+// is a validated registry identifier or a platform value -- a comment there
+// even asserts as much -- but these two arrived from admin-supplied JSON with
+// no validation at all, so "../.." in a provider filter reached the object key
+// (issue #752).
+//
+// Applied on create AND update: validating only one leaves the other as the way
+// in.
+func validateMirrorFilters(namespaces, providers []string) error {
+	for _, group := range []struct {
+		field  string
+		values []string
+	}{
+		{"namespace_filter", namespaces},
+		{"provider_filter", providers},
+	} {
+		for _, v := range group.values {
+			if err := validation.ValidateRegistrySegment(v); err != nil {
+				return fmt.Errorf("%s: %w", group.field, err)
+			}
+		}
+	}
+	return nil
+}
+
 func (h *MirrorHandler) CreateMirrorConfig(c *gin.Context) {
 	var req models.CreateMirrorConfigRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -150,6 +185,11 @@ func (h *MirrorHandler) CreateMirrorConfig(c *gin.Context) {
 			return
 		}
 		orgID = &parsed
+	}
+
+	if err := validateMirrorFilters(req.NamespaceFilter, req.ProviderFilter); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
 
 	// Convert filter arrays to JSON strings
@@ -337,6 +377,11 @@ func (h *MirrorHandler) UpdateMirrorConfig(c *gin.Context) {
 
 	var req models.UpdateMirrorConfigRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := validateMirrorFilters(req.NamespaceFilter, req.ProviderFilter); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
