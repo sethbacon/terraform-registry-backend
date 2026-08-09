@@ -62,7 +62,11 @@ func GetModuleScanHandler(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		scan, err := scanRepo.GetLatestScan(c.Request.Context(), mv.ID)
+		// The module was already resolved within an organization above, so the
+		// scan is bound to that same organization -- a scan cannot be returned
+		// for a module version the caller did not just look up.
+		scan, err := scanRepo.GetLatestScan(c.Request.Context(), mv.ID,
+			repositories.OrgScopeOrganizations(module.OrganizationID))
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query scan result"})
 			return

@@ -94,8 +94,10 @@ func TestGetModuleScan_Success(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").
 		WithArgs("mod-1", "1.0.0").
 		WillReturnRows(sampleVersionRowScan())
-	mock.ExpectQuery("SELECT.*FROM module_version_scans.*WHERE module_version_id").
-		WithArgs("ver-1").
+	mock.ExpectQuery("(?s)FROM module_version_scans.*JOIN modules.*WHERE s.module_version_id").
+		// Two args now: the version id, plus the organization list the scope
+		// binds. AnyArg for the second because it travels as a pq.Array.
+		WithArgs("ver-1", sqlmock.AnyArg()).
 		WillReturnRows(sampleScanResultRow())
 
 	w := doScanGET(r, "/modules/hashicorp/vpc/aws/versions/1.0.0/scan")
@@ -181,7 +183,7 @@ func TestGetModuleScan_ScanDBError(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(sampleModuleRowScan())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").
 		WillReturnRows(sampleVersionRowScan())
-	mock.ExpectQuery("SELECT.*FROM module_version_scans.*WHERE module_version_id").
+	mock.ExpectQuery("(?s)FROM module_version_scans.*JOIN modules.*WHERE s.module_version_id").
 		WillReturnError(errors.New("db error"))
 
 	w := doScanGET(r, "/modules/hashicorp/vpc/aws/versions/1.0.0/scan")
@@ -196,7 +198,7 @@ func TestGetModuleScan_ScanNotFound(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(sampleModuleRowScan())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").
 		WillReturnRows(sampleVersionRowScan())
-	mock.ExpectQuery("SELECT.*FROM module_version_scans.*WHERE module_version_id").
+	mock.ExpectQuery("(?s)FROM module_version_scans.*JOIN modules.*WHERE s.module_version_id").
 		WillReturnRows(sqlmock.NewRows(scanAdminCols))
 
 	w := doScanGET(r, "/modules/hashicorp/vpc/aws/versions/1.0.0/scan")

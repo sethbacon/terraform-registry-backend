@@ -229,19 +229,37 @@ func (r *ModuleScanRepository) MarkError(ctx context.Context, scanID, errMsg str
 }
 
 // GetLatestScan returns the most recent scan for a module version, or nil if none exists.
-func (r *ModuleScanRepository) GetLatestScan(ctx context.Context, moduleVersionID string) (*models.ModuleScan, error) {
-	const q = `
-		SELECT id, module_version_id, scanner, scanner_version, expected_version,
-		       status, scanned_at, critical_count, high_count, medium_count, low_count,
-		       raw_results, error_message, execution_log, created_at, updated_at
-		FROM module_version_scans
-		WHERE module_version_id = $1
-		ORDER BY created_at DESC
-		LIMIT 1
+// GetLatestScan fetches the newest scan for a module version, bound to a tenancy.
+//
+// Scoped for the same reason as GetScanByID: module_version_scans is
+// organization-owned only transitively, so an accessor without a tenant
+// parameter is one every caller has to remember to guard. The signature-replay
+// gate flagged this the moment its sibling was scoped -- which is the point of
+// scoping the accessor rather than the handler.
+//
+// Its one caller resolves the module first and passes that module's own
+// organization, so the scope here is a structural assertion rather than an
+// authorization decision: the scan returned belongs to the module that was
+// looked up, and cannot be one that merely shares a version id.
+func (r *ModuleScanRepository) GetLatestScan(ctx context.Context, moduleVersionID string, scope OrgScope) (*models.ModuleScan, error) {
+	// GUARD scan-latest-tenant-scope (issue #783, sibling axis).
+	q := `
+		SELECT s.id, s.module_version_id, s.scanner, s.scanner_version, s.expected_version,
+		       s.status, s.scanned_at, s.critical_count, s.high_count, s.medium_count, s.low_count,
+		       s.raw_results, s.error_message, s.execution_log, s.created_at, s.updated_at
+		FROM module_version_scans s
+		JOIN module_versions mv ON mv.id = s.module_version_id
+		JOIN modules m ON m.id = mv.module_id
+		WHERE s.module_version_id = $1
 	`
+	args := []interface{}{moduleVersionID}
+	clause, scopeArgs := scope.SQL("m.organization_id", len(args)+1)
+	// #nosec G202 -- clause comes from OrgScope.SQL; see GetScanByID.
+	q += " AND " + clause + " ORDER BY s.created_at DESC LIMIT 1"
+	args = append(args, scopeArgs...)
 	s := &models.ModuleScan{}
 	var rawResults []byte
-	err := r.db.QueryRowContext(ctx, q, moduleVersionID).Scan(
+	err := r.db.QueryRowContext(ctx, q, args...).Scan(
 		&s.ID, &s.ModuleVersionID, &s.Scanner, &s.ScannerVersion, &s.ExpectedVersion,
 		&s.Status, &s.ScannedAt, &s.CriticalCount, &s.HighCount, &s.MediumCount, &s.LowCount,
 		&rawResults, &s.ErrorMessage, &s.ExecutionLog, &s.CreatedAt, &s.UpdatedAt,
