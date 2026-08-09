@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/terraform-registry/terraform-registry/internal/config"
@@ -144,5 +145,68 @@ func TestDelete_StopsAtANonEmptyParent(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(base, "2.0.0.tar.gz")); err != nil {
 		t.Errorf("sibling artifact was removed: %v", err)
+	}
+}
+
+// TestSafeJoin_ReturnsACleanedPath — safeJoin must return the same value it
+// checked (CodeQL alerts 57/60, go/path-injection).
+//
+// It used to check filepath.Clean(full) and return plain full. Identical in
+// practice, since filepath.Join already cleans, but the containment test then
+// named a different expression than the one leaving the function — so the
+// sanitiser was invisible to dataflow analysis, and Delete's os.Remove calls
+// stayed flagged HIGH.
+//
+// Note honestly what this test can and cannot do: filepath.Join already cleans,
+// so the OLD code also returned a canonical path. This change has no
+// behavioural effect and no test can distinguish it -- reverting it leaves this
+// test passing. It pins the property so a future edit cannot quietly break it;
+// whether CodeQL now recognises the sanitiser is confirmed by the next scan,
+// not here.
+func TestSafeJoin_ReturnsACleanedPath(t *testing.T) {
+	root := t.TempDir()
+	s, err := New(&config.LocalStorageConfig{BasePath: root}, "http://localhost")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	for _, key := range []string{
+		"modules/acme/vpc/aws/1.0.0.tar.gz",
+		"modules/acme/vpc/aws/./1.0.0.tar.gz",
+		"modules//acme/vpc/aws/1.0.0.tar.gz",
+		"modules/acme/extra/../vpc/aws/1.0.0.tar.gz",
+	} {
+		t.Run(key, func(t *testing.T) {
+			got, err := s.safeJoin(key)
+			if err != nil {
+				t.Fatalf("safeJoin(%q): %v", key, err)
+			}
+			if cleaned := filepath.Clean(got); got != cleaned {
+				t.Errorf("safeJoin(%q) = %q, which is not canonical (%q). The value "+
+					"returned must be the value checked.", key, got, cleaned)
+			}
+			if !strings.HasPrefix(got, filepath.Clean(root)+string(os.PathSeparator)) {
+				t.Errorf("safeJoin(%q) = %q, outside the storage root %q", key, got, root)
+			}
+		})
+	}
+}
+
+// TestSafeJoin_StillRejectsEscapes — the change must not weaken containment.
+func TestSafeJoin_StillRejectsEscapes(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "storage")
+	s, err := New(&config.LocalStorageConfig{BasePath: root}, "http://localhost")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	for _, key := range []string{
+		"../escape.txt",
+		"../../etc/passwd",
+		"modules/../../../etc/shadow",
+	} {
+		if _, err := s.safeJoin(key); err == nil {
+			t.Errorf("safeJoin(%q) was accepted; it escapes the storage root", key)
+		}
 	}
 }
