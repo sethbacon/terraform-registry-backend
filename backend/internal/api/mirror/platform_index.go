@@ -320,7 +320,12 @@ func PlatformIndexHandler(db *sql.DB, cfg *config.Config, auditRepo *repositorie
 					if platform.OS == clientOS && platform.Arch == clientArch {
 						platformID := platform.ID
 						safego.Go(func() {
-							if err := providerRepo.IncrementDownloadCount(context.Background(), platformID); err != nil {
+							// Bounded: this runs after the response is served, so a wedged
+							// database must shed the counter rather than accumulate goroutines
+							// (issue #758).
+							ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+							defer cancel()
+							if err := providerRepo.IncrementDownloadCount(ctx, platformID); err != nil {
 								slog.Error("failed to increment download count for mirror provider", "error", err)
 							}
 						})

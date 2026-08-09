@@ -175,6 +175,11 @@ func ServeFileHandler(storageBackend storage.Storage, cfg *config.Config, db *sq
 	}
 }
 
+// downloadTrackTimeout bounds the fire-and-forget download-count updates. The
+// response has already been sent, so the only thing at stake is a counter --
+// shedding it beats accumulating goroutines against a wedged database.
+const downloadTrackTimeout = 5 * time.Second
+
 // parseProviderFilePath extracts components from a provider file path of the form:
 // providers/{namespace}/{type}/{version}/{os}/{arch}/{filename}
 func parseProviderFilePath(path string) (namespace, providerType, version, os, arch string, ok bool) {
@@ -187,7 +192,17 @@ func parseProviderFilePath(path string) (namespace, providerType, version, os, a
 
 // trackProviderDownload looks up the provider platform and increments its download count.
 func trackProviderDownload(providerRepo *repositories.ProviderRepository, orgRepo *repositories.OrganizationRepository, namespace, providerType, version, osName, arch string) {
-	ctx := context.Background()
+	// One budget for the whole operation, matching the audit goroutine 30 lines
+	// above (issue #758). This runs fire-and-forget after the response is
+	// served and makes FOUR sequential queries; with a bare context.Background()
+	// a wedged database left every one of these goroutines resident for the life
+	// of the process, one per download.
+	//
+	// Postgres statement_timeout does not cover this: it bounds a running query,
+	// not the wait for a free pooled connection or a blackholed server -- which
+	// is precisely when these pile up.
+	ctx, cancel := context.WithTimeout(context.Background(), downloadTrackTimeout)
+	defer cancel()
 	org, err := orgRepo.GetDefaultOrganization(ctx)
 	if err != nil || org == nil {
 		return
@@ -206,7 +221,13 @@ func trackProviderDownload(providerRepo *repositories.ProviderRepository, orgRep
 	}
 	for _, p := range platforms {
 		if p.OS == osName && p.Arch == arch {
-			_ = providerRepo.IncrementDownloadCount(ctx, p.ID)
+			if err := providerRepo.IncrementDownloadCount(ctx, p.ID); err != nil {
+				// Logged rather than discarded, matching the four sibling call
+				// sites. A silently-dropped counter is indistinguishable from
+				// a download that never happened.
+				slog.Error("failed to increment provider download count",
+					"platform_id", p.ID, "error", err)
+			}
 			return
 		}
 	}
