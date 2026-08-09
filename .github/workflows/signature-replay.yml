@@ -1,0 +1,165 @@
+# Signature replay -- the PER-REPO, merge-blocking half of the remediation gate.
+#
+# It re-runs every recorded defect-class signature against the whole suite and
+# fails this PR if a class that was recorded fixed matches again (a regression)
+# or if a new instance appears that no issue covers. The central scheduled run
+# in the private security-orchestration repo does the same thing daily, but a
+# schedule can only tell you a class reopened the morning after; only this form
+# can stop the merge that reopened it.
+#
+# SUITE_READ_TOKEN is a fine-grained PAT with contents:read on the six suite
+# repos plus the private security-orchestration repo (checked out here for the
+# ledger and the signatures), and issues:read for --verify-linked-issues, which
+# is what stops a CLOSED linked issue from absorbing residual.
+#
+# Exit codes are not symmetrical: 1 means a signature ran and found something,
+# 2 means a signature could not run at all. Two is never a pass -- a signature
+# that cannot execute establishes nothing about the repo it was pointed at,
+# which is why every checkout below is load-bearing rather than convenience.
+#
+# Known limitation: a pull_request from a FORK receives no secrets, so every
+# checkout fails and the job exits 2 (red). That is the correct direction to
+# fail, but it means this gate is not usable as-is on a repo taking outside
+# contributions.
+#
+# Adding this file is NOT enforcement. The check must also be in the branch's
+# required_status_checks, asserted against the live API rather than read off
+# this YAML -- registry-backend #563 is a closed-then-regressed finding whose
+# entire content is that security scans ran but did not block merge.
+name: signature-replay
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # Check 2, and the "new instance written since the fix" case, depend on time
+  # passing rather than on anyone opening a PR.
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signature-replay-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    steps:
+      # Every repo in SIGNATURE_SCOPE must be present. A signature that cannot
+      # run against a repo establishes nothing about it, and the job exits 2
+      # rather than pretending otherwise — so these checkouts are load-bearing,
+      # not convenience.
+      #
+      # persist-credentials: false on EVERY checkout. Without it, actions/checkout
+      # leaves SUITE_READ_TOKEN in each .git/config -- eight copies of a PAT that
+      # reads seven repositories including a private one -- inside a job that also
+      # uploads an artifact. That is zizmor's `artipacked` audit, and it is not
+      # theoretical here: widen the upload path by one glob and the token ships
+      # with the report. The replay only READS these trees; nothing after the
+      # checkouts needs git credentials.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          {
+            repository: sethbacon/terraform-registry-backend,
+            path: suite/terraform-registry-backend,
+            token: "${{ secrets.SUITE_READ_TOKEN }}",
+            persist-credentials: false,
+          }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          {
+            repository: sethbacon/terraform-state-manager-backend,
+            path: suite/terraform-state-manager-backend,
+            token: "${{ secrets.SUITE_READ_TOKEN }}",
+            persist-credentials: false,
+          }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          {
+            repository: sethbacon/terraform-registry-frontend,
+            path: suite/terraform-registry-frontend,
+            token: "${{ secrets.SUITE_READ_TOKEN }}",
+            persist-credentials: false,
+          }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          {
+            repository: sethbacon/terraform-state-manager-frontend,
+            path: suite/terraform-state-manager-frontend,
+            token: "${{ secrets.SUITE_READ_TOKEN }}",
+            persist-credentials: false,
+          }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          {
+            repository: sethbacon/terraform-suite-identity,
+            path: suite/terraform-suite-identity,
+            token: "${{ secrets.SUITE_READ_TOKEN }}",
+            persist-credentials: false,
+          }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          {
+            repository: sethbacon/terraform-suite-ui,
+            path: suite/terraform-suite-ui,
+            token: "${{ secrets.SUITE_READ_TOKEN }}",
+            persist-credentials: false,
+          }
+
+      # Overwrite this repo's sibling copy with the commit under test, so the
+      # replay reads the PR's code and not origin/main's. Guarded because
+      # `github.event.repository` is absent on schedule events — the path would
+      # collapse to `suite/` and dump this repo into the suite root. A scheduled
+      # run wants origin/main anyway, which the explicit checkout above already
+      # fetched.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name != 'schedule'
+        with:
+          clean: false
+          persist-credentials: false
+          path: suite/${{ github.event.repository.name }}
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: sethbacon/security-orchestration
+          token: "${{ secrets.SUITE_READ_TOKEN }}"
+          persist-credentials: false
+          path: security-orchestration
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # The credential-lifecycle signature is a type-aware Go analyzer; the
+      # replay invokes it with `go run` from its own module directory.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: security-orchestration/remediation/signatures/credlifecycle/go.mod
+          cache-dependency-path: security-orchestration/remediation/signatures/credlifecycle/go.sum
+
+      # --verify-linked-issues: a CLOSED linked issue stops absorbing residual,
+      # so the token must also have issues:read on every repo the ledger links
+      # to (see "Wiring it up" in the README for the full token shape).
+      - name: Replay recorded signatures
+        env:
+          GH_TOKEN: ${{ secrets.SUITE_READ_TOKEN }}
+        run: |
+          python security-orchestration/remediation/replay/replay.py \
+            --ledger security-orchestration/remediation/signatures/ledger.json \
+            --repos-root suite \
+            --verify-linked-issues \
+            --json replay-report.json
+
+      # Exit 1 or 2 already failed the step above; this keeps the machine-readable
+      # report for the run someone will actually want to read.
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: signature-replay-report
+          path: replay-report.json
+          if-no-files-found: warn
