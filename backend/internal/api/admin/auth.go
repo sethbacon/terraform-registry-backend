@@ -375,11 +375,26 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 			return
 		}
 
-		// GUARD login-csrf-browser-binding (issue #738): the state entry exists,
-		// but does THIS browser own it? Checked before the TTL and before the
-		// code exchange, so a forged callback costs nothing and reaches no IdP.
+		// Check state expiration (5 minutes)
+		if time.Since(sessionState.CreatedAt) > 5*time.Minute {
+			// State was already consumed by Load (single-use in both the Redis and
+			// in-memory stores) but check TTL anyway
+			callbackError("state_expired", "Login session expired. Please try logging in again.")
+			return
+		}
+
+		// GUARD login-csrf-browser-binding (issue #738): the state entry exists
+		// and is fresh, but does THIS browser own it?
 		//
-		// The error is deliberately the same shape as an invalid state: a caller
+		// Ordered AFTER the expiry check deliberately. Both run before the code
+		// exchange, so neither reaches the IdP and the security ordering is a
+		// wash -- but unauth_principal_class_test.go asserts that an expired
+		// state is refused BY THE EXPIRY GUARD, naming its message. Checking the
+		// binding first made that guard unreachable for a caller with no cookie,
+		// and the test caught it. Reordering keeps that assertion true rather
+		// than editing the artifact that proves the guard is reachable.
+		//
+		// The error deliberately reuses the invalid-state message: a caller
 		// probing the callback learns whether a state string is live, not why it
 		// was refused.
 		if !loginBindingMatches(c, sessionState.BrowserBindingHash) {
@@ -390,14 +405,6 @@ func (h *AuthHandlers) CallbackHandler() gin.HandlerFunc {
 			return
 		}
 		clearLoginBinding(c)
-
-		// Check state expiration (5 minutes)
-		if time.Since(sessionState.CreatedAt) > 5*time.Minute {
-			// State was already consumed by Load (single-use in both the Redis and
-			// in-memory stores) but check TTL anyway
-			callbackError("state_expired", "Login session expired. Please try logging in again.")
-			return
-		}
 
 		// State was already atomically consumed by Load (both the Redis and
 		// in-memory stores delete on read); this Delete is a no-op belt-and-braces
