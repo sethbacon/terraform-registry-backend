@@ -1183,6 +1183,23 @@ func (h *AuthHandlers) reconcileGroupMemberships(ctx context.Context, userID str
 			return fmt.Errorf("check membership default org user=%s: %w", userID, err)
 		}
 		if !isMember {
+			// Same guard the two group-mapping branches apply (issue #766).
+			// This branch was missing it, and it is the wider of the three: a
+			// group mapping grants to members of a mapped group, whereas
+			// default_role grants to EVERY user on first login. With
+			// default_role set to an admin-bearing template, anyone who could
+			// authenticate was handed the platform-wide wildcard -- and because
+			// the session scope union is org-less (#652), holding it in the
+			// default organization means holding it everywhere.
+			//
+			// The scopes are not needed here: adding a membership is an
+			// authority increase, so no existing credential of this user in
+			// this org can be a snapshot of an authority they did not have.
+			if _, guardErr := h.guardProvisionableRole(ctx, defaultRole); guardErr != nil {
+				slog.Warn(provider+" default_role rejected: it is not automatically provisionable by an IdP-driven mapping; a human admin must grant it explicitly",
+					"user_id", userID, "role", defaultRole, "error", guardErr)
+				return nil
+			}
 			if err := h.orgRepo.AddMemberWithParams(ctx, org.ID, userID, defaultRole, repositories.OrgScopeAllOrganizations()); err != nil {
 				return fmt.Errorf("add default member user=%s role=%s: %w", userID, defaultRole, err)
 			}
