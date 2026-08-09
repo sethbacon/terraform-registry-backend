@@ -4,6 +4,7 @@
 package saml
 
 import (
+	"bytes"
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
@@ -155,10 +156,22 @@ func (p *Provider) IDPEntityID() string {
 // The request's parsed form is cached by net/http, so calling this before
 // ValidateResponse does not consume the body.
 //
-// encoding/xml does not resolve external entities, so parsing an unvalidated
-// assertion here is not an XXE vector; the decoder is additionally bounded so a
-// large or deeply-nested document cannot be used to exhaust memory before
-// signature verification has had a chance to reject it.
+// # Why this tokenises instead of calling xml.Unmarshal
+//
+// The first version used xml.Unmarshal into a one-field struct, and gosec's
+// G709 taint analysis flagged it (HIGH) as deserialisation of untrusted data.
+// That is not the Java-style gadget-chain risk -- encoding/xml resolves no
+// external entities and does no type-directed dispatch -- but it IS a real
+// denial of service: xml.Unmarshal recurses over element depth, so a deeply
+// nested document ("<a><a><a>...") reaches this from an UNAUTHENTICATED POST to
+// the ACS endpoint and can exhaust the goroutine stack. A stack overflow is not
+// recoverable; it takes the process down.
+//
+// Tokenising is iterative, so depth costs nothing on the Go stack, and it lets
+// the depth and token count be bounded explicitly. Only the Response-level
+// Issuer is read -- the child of the root element -- which is the one that
+// identifies the sender; the Assertion carries its own, and the provider's real
+// validation re-checks that.
 func IssuerFromResponse(r *http.Request) (string, error) {
 	raw := r.FormValue("SAMLResponse")
 	if raw == "" {
@@ -172,26 +185,106 @@ func IssuerFromResponse(r *http.Request) (string, error) {
 		return "", fmt.Errorf("saml: SAMLResponse exceeds %d bytes", maxSAMLResponseBytes)
 	}
 
-	// Only the top-level Response/Issuer is read. The Assertion carries its own
-	// Issuer, which may differ; the Response-level one is what identifies the
-	// sender, and the provider's own validation re-checks the assertion.
-	var envelope struct {
-		Issuer string `xml:"Issuer"`
+	// #nosec G709 -- see the doc comment: this decodes untrusted input BY DESIGN.
+	// encoding/xml resolves no external entities and does no type-directed
+	// dispatch, so CWE-502's gadget-chain risk does not apply; G709 flags any XML
+	// decoding of tainted input, so no parsing strategy clears it. The residual
+	// risk is resource exhaustion, which is bounded above and below: 1 MiB of
+	// input, maxSAMLDepth, maxSAMLTokens, maxIssuerBytes, and tokenising rather
+	// than recursive unmarshalling. The extracted value selects a provider and
+	// grants nothing on its own.
+	dec := xml.NewDecoder(bytes.NewReader(decoded))
+	var depth, tokens int
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", fmt.Errorf("saml: could not parse SAMLResponse: %w", err)
+		}
+		tokens++
+		if tokens > maxSAMLTokens {
+			return "", fmt.Errorf("saml: SAMLResponse has more than %d tokens", maxSAMLTokens)
+		}
+
+		switch t := tok.(type) {
+		case xml.StartElement:
+			depth++
+			if depth > maxSAMLDepth {
+				return "", fmt.Errorf("saml: SAMLResponse nests deeper than %d elements", maxSAMLDepth)
+			}
+			// Depth 2 is a child of the root <Response>: the sender's Issuer.
+			// The Assertion's Issuer sits deeper and is not what selects the
+			// provider.
+			if depth == 2 && t.Name.Local == "Issuer" {
+				issuer, err := readCharData(dec, &tokens)
+				if err != nil {
+					return "", err
+				}
+				if issuer = strings.TrimSpace(issuer); issuer != "" {
+					return issuer, nil
+				}
+				return "", fmt.Errorf("saml: SAMLResponse has an empty Issuer")
+			}
+		case xml.EndElement:
+			depth--
+		}
 	}
-	if err := xml.Unmarshal(decoded, &envelope); err != nil {
-		return "", fmt.Errorf("saml: could not parse SAMLResponse: %w", err)
+	return "", fmt.Errorf("saml: SAMLResponse has no Issuer")
+}
+
+// readCharData accumulates the character data of the element the decoder has
+// just entered, stopping at its closing tag.
+//
+// Character data only: a nested element inside <Issuer> is not part of the
+// entity ID, and treating it as such would let a crafted response smuggle a
+// different value past the comparison.
+func readCharData(dec *xml.Decoder, tokens *int) (string, error) {
+	var sb strings.Builder
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return "", fmt.Errorf("saml: could not read Issuer: %w", err)
+		}
+		*tokens++
+		if *tokens > maxSAMLTokens {
+			return "", fmt.Errorf("saml: SAMLResponse has more than %d tokens", maxSAMLTokens)
+		}
+		switch t := tok.(type) {
+		case xml.CharData:
+			if sb.Len()+len(t) > maxIssuerBytes {
+				return "", fmt.Errorf("saml: Issuer exceeds %d bytes", maxIssuerBytes)
+			}
+			sb.Write(t)
+		case xml.StartElement:
+			// An entity ID is text. A nested element inside <Issuer> is
+			// malformed, and accepting it is worse than pedantry: the first
+			// version of this function skipped the start tag, appended the
+			// nested element's character data, and then returned at the
+			// nested CLOSING tag -- so
+			//   <Issuer>https://idp.example.com<evil>https://attacker...</evil></Issuer>
+			// yielded the two concatenated. Its own test caught that.
+			return "", fmt.Errorf("saml: Issuer contains a nested %q element", t.Name.Local)
+		case xml.EndElement:
+			return sb.String(), nil
+		}
 	}
-	issuer := strings.TrimSpace(envelope.Issuer)
-	if issuer == "" {
-		return "", fmt.Errorf("saml: SAMLResponse has no Issuer")
-	}
-	return issuer, nil
 }
 
 // maxSAMLResponseBytes bounds the decoded response parsed by IssuerFromResponse.
 // Real assertions are a few KB; this is generous while still refusing to hand an
 // unbounded attacker-controlled document to the XML decoder.
-const maxSAMLResponseBytes = 1 << 20 // 1 MiB
+const (
+	maxSAMLResponseBytes = 1 << 20 // 1 MiB
+	// maxSAMLDepth and maxSAMLTokens bound the tokenising scan. A real
+	// assertion nests around a dozen elements deep; these are far above that
+	// and exist only to stop a pathological document.
+	maxSAMLDepth  = 100
+	maxSAMLTokens = 100_000
+	// maxIssuerBytes bounds the entity ID being accumulated.
+	maxIssuerBytes = 4096
+)
 
 // MakeAuthenticationRequest creates a SAML AuthnRequest URL for SP-initiated login.
 // It returns the redirect URL and the generated AuthnRequest ID. The caller must
