@@ -422,3 +422,95 @@ func TestGenerateCSRFToken_Uniqueness(t *testing.T) {
 		tokens[tok] = true
 	}
 }
+
+// Issue #746 — mTLS clients were rejected by CSRF on every mutating request.
+//
+// mtls.AuthMiddleware sets auth_method = "mtls" and AuthMiddleware lets such
+// requests through with no bearer token and no cookie. CSRFMiddleware's matrix
+// covered only api_key, jwt and jwt_cookie, so an mTLS request fell to the
+// final branch — which assumes cookie authentication, found no tfr_csrf cookie,
+// and returned 403 for every POST/PUT/PATCH/DELETE. The documented
+// machine-to-machine path could not perform a single mutation.
+//
+// The direction of failure was safe, which is why it went unnoticed: it also
+// means no test crossed the mTLS chain and the CSRF middleware together.
+
+func csrfRequestAs(t *testing.T, cfg *config.Config, authMethod, method, origin string) int {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(func(c *gin.Context) { c.Set("auth_method", authMethod) })
+	r.Use(CSRFMiddleware(cfg))
+	r.Handle(method, "/x", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	req := httptest.NewRequest(method, "/x", nil)
+	if origin != "" {
+		req.Header.Set("Origin", origin)
+	}
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w.Code
+}
+
+// TestCSRF_MTLSMachineClientCanMutate is the regression: no Origin (a machine
+// client), so the request must go through.
+func TestCSRF_MTLSMachineClientCanMutate(t *testing.T) {
+	for _, method := range []string{"POST", "PUT", "PATCH", "DELETE"} {
+		t.Run(method, func(t *testing.T) {
+			if code := csrfRequestAs(t, csrfTestConfig(), "mtls", method, ""); code != http.StatusOK {
+				t.Errorf("%s as an mTLS machine client = %d, want 200 — the documented "+
+					"m2m path must be able to mutate", method, code)
+			}
+		})
+	}
+}
+
+// TestCSRF_MTLSFromAForeignOriginIsRejected is why mTLS is NOT blanket-exempt.
+//
+// A browser holding a client certificate presents it automatically on a
+// cross-site request, exactly like a cookie. Exempting mTLS outright — the
+// obvious one-line fix — would open the cross-site hole for anyone who
+// provisions client certs to browsers.
+func TestCSRF_MTLSFromAForeignOriginIsRejected(t *testing.T) {
+	if code := csrfRequestAs(t, csrfTestConfig(), "mtls", "POST", "https://evil.example.com"); code != http.StatusForbidden {
+		t.Errorf("mTLS POST from a foreign origin = %d, want 403 — a browser-held "+
+			"client certificate is auto-presented cross-site", code)
+	}
+}
+
+// TestCSRF_MTLSFromTheDeploymentsOwnOriginIsAllowed — a same-origin browser
+// request with a client cert is legitimate.
+func TestCSRF_MTLSFromOwnOriginIsAllowed(t *testing.T) {
+	if code := csrfRequestAs(t, csrfTestConfig(), "mtls", "POST", "https://registry.example.com"); code != http.StatusOK {
+		t.Errorf("mTLS POST from the deployment's own origin = %d, want 200", code)
+	}
+}
+
+// TestCSRF_MTLSMatchesTheJWTTreatment pins that the two are handled
+// identically. If they ever diverge, one of them is wrong — they are the same
+// shape of credential for CSRF purposes: not a cookie, but browser-auto-sendable.
+func TestCSRF_MTLSMatchesTheJWTTreatment(t *testing.T) {
+	cfg := csrfTestConfig()
+	for _, tc := range []struct{ name, origin string }{
+		{"no origin", ""},
+		{"own origin", "https://registry.example.com"},
+		{"foreign origin", "https://evil.example.com"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			jwtCode := csrfRequestAs(t, cfg, "jwt", "POST", tc.origin)
+			mtlsCode := csrfRequestAs(t, cfg, "mtls", "POST", tc.origin)
+			if jwtCode != mtlsCode {
+				t.Errorf("jwt = %d but mtls = %d for %s; the two must be treated alike",
+					jwtCode, mtlsCode, tc.name)
+			}
+		})
+	}
+}
+
+// TestCSRF_CookieAuthStillRequiresTheToken — the change must not weaken the
+// branch it moved mTLS out of.
+func TestCSRF_CookieAuthStillRequiresTheToken(t *testing.T) {
+	if code := csrfRequestAs(t, csrfTestConfig(), "jwt_cookie", "POST", ""); code != http.StatusForbidden {
+		t.Errorf("cookie-authenticated POST with no CSRF token = %d, want 403", code)
+	}
+}
