@@ -336,6 +336,26 @@ func TestOrgKeysOnly_DoesNotTouchTheWatermark(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	out := s.OrgKeysOnly(context.Background(), "user-1", "org-1", nil, "idp deprovision")
+
+	// Incomplete is the assertion that makes this guard work, and its absence
+	// made the guard INERT: flipping OrgKeysOnly to OrgAuthorityReduced -- the
+	// exact change that permanently locks users out -- used to PASS.
+	//
+	// Why the obvious assertions do not catch it. sqlmock has no watermark
+	// expectation registered, so a watermark write is REJECTED at the driver
+	// rather than executed. The sweeper records that failure and carries on, so
+	// TokensRevoked stays false (the write did not succeed) and
+	// ExpectationsWereMet stays happy (it reports UNMET expectations, not
+	// unexpected calls). The only trace left is Incomplete.
+	//
+	// Verified by mutation: with this check present, OrgKeysOnly ->
+	// OrgAuthorityReduced fails; without it, it passes.
+	if out.Incomplete {
+		t.Error("Incomplete = true: OrgKeysOnly issued SQL this test did not expect. " +
+			"The likely cause is a watermark write — moving the watermark here revokes " +
+			"the session token this same request is about to mint, and the user can " +
+			"never log in.")
+	}
 	if out.TokensRevoked {
 		t.Error("TokensRevoked = true; OrgKeysOnly must leave the JWT watermark alone")
 	}
