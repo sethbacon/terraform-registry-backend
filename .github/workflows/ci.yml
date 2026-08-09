@@ -6,7 +6,13 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch: {}
-  workflow_call: {} # allows release.yml and weekly-security.yml to call this
+  workflow_call:
+    secrets:
+      GIST_TOKEN:
+        # The only secret ci.yml references (GITHUB_TOKEN is ambient, not passed).
+        # Optional: the coverage-badge steps are env-guarded, so a repo without
+        # it simply skips them rather than failing.
+        required: false
 
 concurrency:
   group: ci-${{ github.event_name }}-${{ github.head_ref || github.ref }}

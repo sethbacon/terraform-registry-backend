@@ -7,8 +7,11 @@ on:
   workflow_dispatch: {}
 
 permissions:
+  # contents:read only at the workflow level. `issues: write` used to live here,
+  # which handed it to the fuzz job too -- a job that runs untrusted-ish fuzz
+  # corpora and has no reason to be able to write issues. Only the job that
+  # actually files the failure issue declares it, and it already did.
   contents: read
-  issues: write
 
 jobs:
   fuzz:

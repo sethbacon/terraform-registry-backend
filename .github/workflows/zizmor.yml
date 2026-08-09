@@ -11,10 +11,11 @@ name: Workflow Security
 # calls in signature-replay.yml were persisting a cross-repo PAT into
 # .git/config inside a job that uploads an artifact.
 #
-# NOT a required check yet. `.github/zizmor.yml` records the accepted findings
-# with reasons; what remains beyond those is a real, enumerated backlog, and
-# this is promoted to required once that reaches zero. A required check that is
-# red on day one is one everybody learns to scroll past.
+# The backlog is now ZERO. `.github/zizmor.yml` records the accepted findings
+# with reasons; everything else was fixed rather than suppressed. Promoting this
+# to a required status check is the remaining step, and it is safe to do because
+# the check is green -- a required check that is red on day one is one everybody
+# learns to scroll past.
 "on":
   pull_request:
     branches: [main]
