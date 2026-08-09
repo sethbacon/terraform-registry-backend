@@ -469,7 +469,16 @@ export TFR_JWT_SECRET=$(openssl rand -hex 32)
 
 The JWT secret signs authentication tokens. In production:
 
-- Minimum 32 characters. The server refuses to start without a sufficient secret when `DEV_MODE` is not set.
+- **Minimum 32 characters, enforced.** The server refuses to start below it when `DEV_MODE` is
+  not set. This was previously documented as a requirement but only produced a startup warning,
+  so an 8-character signing key booted production.
+- The same check applies to `TFR_JWT_SECRET_FILE`, both when it is first read at startup and on
+  every rotation. A startup failure is fatal; a rejected **rotation** keeps the previous secret
+  and logs an error rather than stopping a running server.
+- A low-entropy secret is rejected regardless of length (a repeated character, or a short phrase
+  padded out). Set `TFR_ALLOW_LOW_ENTROPY_JWT_SECRET=true` to restart once and rotate an existing
+  deployment — it is a bridge, not a setting to leave on. It does **not** permit an empty secret,
+  which would validate every forged token.
 - Store in a secrets manager (Azure Key Vault, AWS Secrets Manager, HashiCorp Vault), not in environment files checked into source control.
 
 #### File-Based Hot-Reload (Zero-Downtime Rotation)

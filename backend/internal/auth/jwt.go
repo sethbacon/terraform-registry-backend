@@ -102,37 +102,13 @@ func ValidateJWTSecret() error {
 				return
 			}
 		} else {
-			// Validate secret length (minimum 32 characters recommended)
-			if len(secret) < 32 {
-				log.Printf("WARNING: TFR_JWT_SECRET is shorter than recommended 32 characters. Consider using a longer secret.")
-			}
-			// Low-entropy check: crypto.IsLikelyLowEntropySecret is documented as
-			// intended for both ENCRYPTION_KEY and TFR_JWT_SECRET and is already wired
-			// in for ENCRYPTION_KEY (see router.go), but was never called here -- a
-			// 32+ character secret that is still low-entropy (a repeated character or
-			// a short phrase padded to length) passed the length check above with zero
-			// warning even though this secret signs/validates every session and API
-			// bearer token suite-wide (issue #654).
-			// FAIL CLOSED, matching ENCRYPTION_KEY (issue #742).
-			//
-			// Both secrets run through the same crypto.IsLikelyLowEntropySecret
-			// heuristic, but only ENCRYPTION_KEY refused to boot. The asymmetry was
-			// backwards: a weak ENCRYPTION_KEY exposes stored SCM/OAuth tokens and
-			// needs prior database access to exploit, while a weak TFR_JWT_SECRET
-			// is an HS256 signing key -- guess it and you mint a token carrying any
-			// scope you like, including the platform-wide admin wildcard, with no
-			// access to anything beforehand. The larger blast radius had the weaker
-			// control.
-			//
-			// A warning is not a control when the process boots anyway: the operator
-			// who most needs to see it is the one least likely to be reading startup
-			// logs. Same opt-out shape as ENCRYPTION_KEY so an existing deployment
-			// can restart once to rotate rather than being unable to start.
-			if shouldRejectLowEntropyJWTSecret([]byte(secret), allowLowEntropyJWTSecret()) {
-				jwtSecretErr = errors.New("SECURITY ERROR: TFR_JWT_SECRET has low estimated entropy and does not look CSPRNG-generated. " +
-					"It signs and validates every session and API bearer token, so a guessable value lets an attacker forge tokens with arbitrary scopes. " +
-					"Generate one with: openssl rand -hex 32. " +
-					"To restart once and rotate an existing deployment, set TFR_ALLOW_LOW_ENTROPY_JWT_SECRET=true temporarily.")
+			// One gate for every path that installs a signing key (issue #759).
+			// This used to be a length WARNING followed by an inline entropy
+			// check; the length half never stopped anything, so an 8-character
+			// secret booted production with the documented 32-character minimum
+			// printed as advice.
+			if err := validateJWTSecretStrength([]byte(secret)); err != nil {
+				jwtSecretErr = fmt.Errorf("TFR_JWT_SECRET: %w", err)
 				return
 			}
 			resolved = secret
@@ -305,6 +281,14 @@ func StartJWTSecretFileWatch(secretFilePath string, overlapDuration time.Duratio
 		return nil, fmt.Errorf("failed to read JWT secret file %q: %w", secretFilePath, err)
 	}
 	secret := trimSecretBytes(data)
+	// The same gate the env path uses. Without this, a whitespace-only secret
+	// file installed an EMPTY HMAC key at startup, and any weak file secret
+	// bypassed the entropy check entirely (issue #759). Returned as an error so
+	// cmd/server/main.go turns it into a boot failure rather than serving with
+	// a key that validates forged tokens.
+	if err := validateJWTSecretStrength(secret); err != nil {
+		return nil, fmt.Errorf("JWT secret file %q: %w", secretFilePath, err)
+	}
 	tm.RotateSecret(secret)
 	tm.ClearPreviousSecret()
 	storeSecret(string(secret))
@@ -335,8 +319,14 @@ func StartJWTSecretFileWatch(secretFilePath string, overlapDuration time.Duratio
 						continue
 					}
 					newSecret := trimSecretBytes(newData)
-					if len(newSecret) == 0 {
-						slog.Warn("JWT secret file is empty after update, keeping previous secret", "path", secretFilePath)
+					// Same gate again, but non-fatal: the server is already
+					// serving, so a bad rotation keeps the PREVIOUS secret
+					// rather than taking the process down. This branch
+					// previously checked emptiness only, so a rotation to a
+					// short or guessable secret was installed silently.
+					if err := validateJWTSecretStrength(newSecret); err != nil {
+						slog.Error("rejected JWT secret file update, keeping previous secret",
+							"path", secretFilePath, "error", err)
 						continue
 					}
 
@@ -387,6 +377,60 @@ func trimSecretBytes(data []byte) []byte {
 // the same reason router.go extracted shouldRejectLowEntropyEncryptionKey.
 func shouldRejectLowEntropyJWTSecret(secret []byte, overrideAllowed bool) bool {
 	return crypto.IsLikelyLowEntropySecret(secret) && !overrideAllowed
+}
+
+// minJWTSecretBytes is the minimum the documentation has always stated as a
+// hard requirement. Until now the code only warned about it (issue #759).
+const minJWTSecretBytes = 32
+
+// validateJWTSecretStrength is the single gate every path that installs an
+// HS256 signing key must pass.
+//
+// It exists because there were three such paths and only one of them checked
+// anything (issue #759):
+//
+//   - TFR_JWT_SECRET at startup: warned on length, failed closed on entropy.
+//   - TFR_JWT_SECRET_FILE at startup: NO check at all, not even for emptiness,
+//     so a whitespace-only file installed an EMPTY HMAC key.
+//   - TFR_JWT_SECRET_FILE on rotation: emptiness only.
+//
+// The file path is the one docs/secrets-rotation.md recommends, so the
+// recommended route bypassed the fail-closed entropy check entirely.
+//
+// Emptiness is never overridable. An empty HMAC key means every forged token
+// verifies, which no deployment can have a legitimate reason to run with.
+func validateJWTSecretStrength(secret []byte) error {
+	if len(secret) == 0 {
+		return errors.New("SECURITY ERROR: JWT secret is empty. " +
+			"An empty HMAC key validates every forged token. " +
+			"Generate one with: openssl rand -hex 32.")
+	}
+
+	override := allowLowEntropyJWTSecret()
+
+	// The documented minimum, enforced rather than merely logged. A warning is
+	// not a control when the process boots anyway, and the entropy heuristic
+	// does not stand in for length: "admin123" and "hunter2!" are 8 characters
+	// with 8 distinct bytes, so they clear the entropy check comfortably.
+	if len(secret) < minJWTSecretBytes && !override {
+		return fmt.Errorf("SECURITY ERROR: JWT secret is %d characters, below the documented "+
+			"minimum of %d. It signs and validates every session and API bearer token, so a "+
+			"short value is brute-forceable offline from any token an attacker holds. "+
+			"Generate one with: openssl rand -hex 32. "+
+			"To restart once and rotate an existing deployment, set "+
+			"TFR_ALLOW_LOW_ENTROPY_JWT_SECRET=true temporarily.",
+			len(secret), minJWTSecretBytes)
+	}
+
+	if shouldRejectLowEntropyJWTSecret(secret, override) {
+		return errors.New("SECURITY ERROR: JWT secret has low estimated entropy and does not look " +
+			"CSPRNG-generated. It signs and validates every session and API bearer token, so a " +
+			"guessable value lets an attacker forge tokens with arbitrary scopes. " +
+			"Generate one with: openssl rand -hex 32. " +
+			"To restart once and rotate an existing deployment, set " +
+			"TFR_ALLOW_LOW_ENTROPY_JWT_SECRET=true temporarily.")
+	}
+	return nil
 }
 
 // allowLowEntropyJWTSecret reports whether an operator has explicitly opted out

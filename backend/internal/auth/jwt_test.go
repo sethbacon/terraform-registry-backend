@@ -350,20 +350,19 @@ func TestStartJWTSecretFileWatch(t *testing.T) {
 func TestValidateJWTSecret_ShortSecret(t *testing.T) {
 	resetJWTSecret()
 	t.Setenv("TFR_JWT_SECRET", "short")
-	// Now REFUSED, where this used to boot with a warning (#742).
+	// Refused since #742, which made the entropy heuristic fail closed.
 	//
-	// The length check is still only a warning, but "short" also fails the
-	// entropy heuristic, and that is now fail-closed. The practical effect is
-	// that a 5-character signing key can no longer start the server, which was
-	// the previous behaviour and is hard to defend: the length warning was
-	// advisory in production, so a secret this weak booted and signed every
-	// session token.
+	// The rejection REASON changed with #759: the length check is no longer a
+	// warning, so a 5-character secret is now caught by the documented
+	// 32-character minimum before the entropy heuristic is reached. Both would
+	// reject it; the length message is the more actionable one, and asserting
+	// on it pins which gate fires.
 	err := ValidateJWTSecret()
 	if err == nil {
 		t.Fatal("ValidateJWTSecret() accepted a 5-character secret; it must fail closed (#742)")
 	}
-	if !strings.Contains(err.Error(), "low estimated entropy") {
-		t.Errorf("error should name the entropy check, got: %v", err)
+	if !strings.Contains(err.Error(), "below the documented minimum") {
+		t.Errorf("error should name the length minimum, got: %v", err)
 	}
 }
 
