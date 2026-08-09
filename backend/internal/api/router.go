@@ -687,6 +687,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	registerAPIV1Routes(router, &apiV1RouteDeps{
 		cfg:                         cfg,
 		db:                          db,
+		identityDB:                  identityDB,
 		storageBackend:              storageBackend,
 		sqlxDB:                      sqlxDB,
 		oidcConfigRepo:              oidcConfigRepo,
