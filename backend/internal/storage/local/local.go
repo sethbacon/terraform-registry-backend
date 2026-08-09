@@ -50,7 +50,12 @@ func New(cfg *config.LocalStorageConfig, serverBaseURL string) (*LocalStorage, e
 	}
 
 	return &LocalStorage{
-		basePath:      cfg.BasePath,
+		// Cleaned once, here, so every later comparison against it is against a
+		// canonical path. Storing cfg.BasePath verbatim let a configured
+		// trailing slash (or "./storage", or a doubled separator) make
+		// filepath.Dir output never string-equal the root -- see Delete's
+		// parent walk, which climbed straight past it.
+		basePath:      filepath.Clean(cfg.BasePath),
 		serveDirectly: cfg.ServeDirectly,
 		baseURL:       serverBaseURL,
 	}, nil
@@ -152,13 +157,27 @@ func (s *LocalStorage) Delete(ctx context.Context, path string) error {
 	// Also remove the checksum sidecar if it exists
 	_ = os.Remove(fullPath + ".sha256")
 
-	// Try to remove empty parent directories (best effort)
-	dir := filepath.Dir(fullPath)
-	for dir != s.basePath {
-		if err := os.Remove(dir); err != nil {
+	// Try to remove empty parent directories (best effort), never at or above
+	// the storage root.
+	//
+	// This walk used to terminate on `dir != s.basePath` alone. filepath.Dir
+	// returns a clean path with no trailing separator, so that comparison
+	// silently never matched when base_path was configured with a trailing
+	// slash or as a relative path -- and the loop then deleted the storage root
+	// itself and kept climbing, removing every empty ancestor until os.Remove
+	// happened to fail on a non-empty one. safeJoin could not catch it: nothing
+	// about the caller's key is involved, only the shape of the configured root.
+	//
+	// basePath is now cleaned at construction, which fixes the cause. The
+	// containment check below is the second, independent stop: a path that is
+	// not strictly inside the root is never a candidate for removal, whatever
+	// basePath happens to look like.
+	root := s.basePath
+	prefix := root + string(os.PathSeparator)
+	for dir := filepath.Dir(fullPath); strings.HasPrefix(dir, prefix); dir = filepath.Dir(dir) {
+		if err := os.Remove(dir); err != nil { // #nosec G304 -- dir is verified strictly inside basePath by the loop condition
 			break // Directory not empty or other error, stop trying
 		}
-		dir = filepath.Dir(dir)
 	}
 
 	return nil

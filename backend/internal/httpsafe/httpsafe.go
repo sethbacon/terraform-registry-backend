@@ -230,6 +230,51 @@ func (g *Guard) resolve(ctx context.Context, host string) ([]net.IP, error) {
 // connected IP, so a DNS answer cannot change between check and dial. A name
 // that resolves to any denied address is rejected outright (mixed public +
 // private answers are a rebinding pattern, not a legitimate configuration).
+// ValidateHostPort applies the deny-list to a "host:port" target without
+// dialing it.
+//
+// For protocols this package does not supply the transport for -- an LDAP
+// connection, an SDK that builds its own client -- there is no DialContext to
+// hook, so the check has to happen before the caller dials. It performs the
+// same resolution and per-IP checks DialContext does, and fails CLOSED on a
+// resolution error: ValidateURL deliberately fails open there because dial-time
+// enforcement still applies to whatever the name resolves to, but here nothing
+// downstream will check again.
+//
+// This is weaker than DialContext by construction: between this returning nil
+// and the caller connecting, a name can resolve differently (DNS rebinding).
+// Prefer DialContext wherever the transport can be supplied. Use this when the
+// alternative is no check at all.
+func (g *Guard) ValidateHostPort(ctx context.Context, addr string) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		// Bare host with no port is still worth checking.
+		host = addr
+	}
+	if host == "" {
+		return fmt.Errorf("egress check %q: no host", addr)
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return g.checkIP(host, ip)
+	}
+	if g.HostExempt(host) {
+		return nil
+	}
+	ips, err := g.resolve(ctx, host)
+	if err != nil {
+		return fmt.Errorf("egress check %q: resolve: %w", host, err)
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("egress check %q: no addresses resolved", host)
+	}
+	for _, ip := range ips {
+		if err := g.checkIP(host, ip); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (g *Guard) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {

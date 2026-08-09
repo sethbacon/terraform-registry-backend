@@ -10,9 +10,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -326,6 +328,44 @@ func (h *Handlers) SaveOIDCConfig(c *gin.Context) {
 // @Failure      401  {object}  map[string]interface{}  "Invalid setup token"
 // @Failure      403  {object}  map[string]interface{}  "Setup already completed"
 // @Router       /api/v1/setup/storage/test [post]
+// probeEgressAllowed reports whether the setup wizard may dial target, which is
+// either a URL (S3/GCS endpoint) or a "host:port" (LDAP).
+//
+// internal/httpsafe guards the HTTP clients this application constructs itself.
+// These two probes go out through clients it does NOT construct -- the cloud
+// SDK's own transport for a caller-supplied endpoint, and a raw LDAP TCP dial
+// -- so neither passed through the egress policy that every other outbound
+// request obeys, and both reached loopback, RFC1918 and link-local targets
+// (issue #749).
+//
+// Fails CLOSED when no guard is configured. The alternative is that a
+// deployment which never called WithEgressGuard silently keeps the old
+// behaviour, which is the failure mode worth preventing: the guard was already
+// stored on Handlers and simply never consulted.
+func (h *Handlers) probeEgressAllowed(ctx context.Context, target string) error {
+	if h.egressGuard == nil {
+		return fmt.Errorf("egress guard not configured")
+	}
+	if strings.Contains(target, "://") {
+		return h.egressGuard.ValidateURL(target)
+	}
+	return h.egressGuard.ValidateHostPort(ctx, target)
+}
+
+// probeFailure renders a connectivity failure WITHOUT the transport error.
+//
+// The handlers used to echo err.Error() verbatim, which distinguishes
+// "connection refused" from "timeout" from a protocol error -- an internal
+// port-scan oracle for anyone holding the first-run setup token. The detail is
+// logged server-side, where the operator running setup can still read it.
+func probeFailure(c *gin.Context, what string, err error) {
+	slog.Warn("setup: connectivity probe failed", "probe", what, "error", err)
+	c.JSON(http.StatusOK, gin.H{
+		"success": false,
+		"message": what + " connectivity test failed. See the server logs for details.",
+	})
+}
+
 func (h *Handlers) TestStorageConfig(c *gin.Context) {
 	var input models.StorageConfigInput
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -336,26 +376,41 @@ func (h *Handlers) TestStorageConfig(c *gin.Context) {
 	// Build a temporary config from input
 	testCfg := buildTestStorageConfig(&input)
 
-	// Instantiate the backend
-	backend, err := storage.NewStorage(testCfg)
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "Failed to initialize storage backend: " + err.Error(),
-		})
-		return
-	}
-
 	// Probe with a 10-second timeout
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
 
-	_, probeErr := backend.Exists(ctx, ".connectivity-test")
-	if probeErr != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "Storage connectivity test failed: " + probeErr.Error(),
-		})
+	// A caller-supplied endpoint is dialed by the cloud SDK's own transport,
+	// which httpsafe does not wrap -- so it is checked here, before the backend
+	// is instantiated (issue #749). An empty endpoint means the SDK's default
+	// public endpoint, which needs no check.
+	// AzureCDNURL is here too even though the issue named only S3/GCS: it is
+	// the same shape -- a caller-supplied URL the SDK dials on its own
+	// transport.
+	for _, endpoint := range []string{input.S3Endpoint, input.GCSEndpoint, input.AzureCDNURL} {
+		if endpoint == "" {
+			continue
+		}
+		if err := h.probeEgressAllowed(ctx, endpoint); err != nil {
+			slog.Warn("setup: storage endpoint rejected by egress policy",
+				"endpoint", endpoint, "error", err)
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "Storage endpoint is not permitted by the server's egress policy.",
+			})
+			return
+		}
+	}
+
+	// Instantiate the backend
+	backend, err := storage.NewStorage(testCfg)
+	if err != nil {
+		probeFailure(c, "Storage", err)
+		return
+	}
+
+	if _, probeErr := backend.Exists(ctx, ".connectivity-test"); probeErr != nil {
+		probeFailure(c, "Storage", probeErr)
 		return
 	}
 
@@ -857,12 +912,25 @@ func (h *Handlers) TestLDAPConfig(c *gin.Context) {
 	// Build a temporary LDAPConfig to test connectivity
 	testCfg := ldapInputToConfig(&input)
 
-	provider, err := ldappkg.NewProvider(testCfg)
-	if err != nil {
+	// The LDAP provider dials host:port directly over TCP, with no HTTP client
+	// for httpsafe to wrap, so the deny-list is applied here (issue #749).
+	// validateLDAPInput only checks non-emptiness and the port range.
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+	target := net.JoinHostPort(testCfg.Host, strconv.Itoa(testCfg.Port))
+	if err := h.probeEgressAllowed(ctx, target); err != nil {
+		slog.Warn("setup: LDAP target rejected by egress policy",
+			"target", target, "error", err)
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
-			"message": fmt.Sprintf("LDAP configuration error: %v", err),
+			"message": "LDAP host is not permitted by the server's egress policy.",
 		})
+		return
+	}
+
+	provider, err := ldappkg.NewProvider(testCfg)
+	if err != nil {
+		probeFailure(c, "LDAP", err)
 		return
 	}
 	defer provider.Close()
