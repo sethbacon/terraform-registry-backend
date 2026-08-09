@@ -350,34 +350,57 @@ func TestStartJWTSecretFileWatch(t *testing.T) {
 func TestValidateJWTSecret_ShortSecret(t *testing.T) {
 	resetJWTSecret()
 	t.Setenv("TFR_JWT_SECRET", "short")
-	// Should succeed but log a warning (we can't check the log, but ensure no error)
-	if err := ValidateJWTSecret(); err != nil {
-		t.Errorf("ValidateJWTSecret() unexpected error with short secret: %v", err)
+	// Now REFUSED, where this used to boot with a warning (#742).
+	//
+	// The length check is still only a warning, but "short" also fails the
+	// entropy heuristic, and that is now fail-closed. The practical effect is
+	// that a 5-character signing key can no longer start the server, which was
+	// the previous behaviour and is hard to defend: the length warning was
+	// advisory in production, so a secret this weak booted and signed every
+	// session token.
+	err := ValidateJWTSecret()
+	if err == nil {
+		t.Fatal("ValidateJWTSecret() accepted a 5-character secret; it must fail closed (#742)")
 	}
-	if got := GetJWTSecret(); got != "short" {
-		t.Errorf("GetJWTSecret() = %q, want %q", got, "short")
+	if !strings.Contains(err.Error(), "low estimated entropy") {
+		t.Errorf("error should name the entropy check, got: %v", err)
 	}
 }
 
-// TestValidateJWTSecret_LowEntropyLongSecret is the core assertion for issue
-// #654: a TFR_JWT_SECRET that is 32+ characters (so it passes the length
-// check) but low-entropy (a short pattern repeated to length, as opposed to
-// CSPRNG output) must still trigger a warning, the same way ENCRYPTION_KEY
-// already does via crypto.IsLikelyLowEntropySecret (see router.go).
+// TestValidateJWTSecret_LowEntropyLongSecret was written for #654, which asked
+// for a WARNING here. #742 supersedes that: the same heuristic already refused
+// to boot for ENCRYPTION_KEY, and this secret has the larger blast radius of the
+// two -- guessing an HS256 signing key mints tokens with arbitrary scopes from
+// outside, where a weak ENCRYPTION_KEY needs prior database access.
+//
+// So the assertion is inverted deliberately, not relaxed: a 32+ character
+// low-entropy secret must now REFUSE TO START rather than log and continue.
 func TestValidateJWTSecret_LowEntropyLongSecret(t *testing.T) {
 	resetJWTSecret()
 	lowEntropySecret := strings.Repeat("ab", 20) // 40 chars, 2-symbol alphabet
 	t.Setenv("TFR_JWT_SECRET", lowEntropySecret)
 
-	var buf bytes.Buffer
-	log.SetOutput(&buf)
-	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	err := ValidateJWTSecret()
+	if err == nil {
+		t.Fatal("ValidateJWTSecret() accepted a low-entropy 40-char secret; it must fail closed (#742)")
+	}
+	if !strings.Contains(err.Error(), "low estimated entropy") {
+		t.Errorf("error should name the entropy check, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "TFR_ALLOW_LOW_ENTROPY_JWT_SECRET") {
+		t.Errorf("error should tell the operator how to rotate, got: %v", err)
+	}
+}
+
+// The override is the migration bridge, and it has to actually work -- an
+// existing deployment on a weak secret must be able to start once to rotate.
+func TestValidateJWTSecret_LowEntropyAcceptedWithOverride(t *testing.T) {
+	resetJWTSecret()
+	t.Setenv("TFR_JWT_SECRET", strings.Repeat("ab", 20))
+	t.Setenv("TFR_ALLOW_LOW_ENTROPY_JWT_SECRET", "true")
 
 	if err := ValidateJWTSecret(); err != nil {
-		t.Fatalf("ValidateJWTSecret() unexpected error: %v", err)
-	}
-	if !strings.Contains(buf.String(), "low estimated entropy") {
-		t.Errorf("ValidateJWTSecret() with low-entropy 40-char secret did not warn; log output: %q", buf.String())
+		t.Fatalf("override should permit a weak secret for one restart, got: %v", err)
 	}
 }
 
