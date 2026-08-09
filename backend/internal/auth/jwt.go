@@ -113,8 +113,27 @@ func ValidateJWTSecret() error {
 			// a short phrase padded to length) passed the length check above with zero
 			// warning even though this secret signs/validates every session and API
 			// bearer token suite-wide (issue #654).
-			if crypto.IsLikelyLowEntropySecret([]byte(secret)) {
-				log.Printf("WARNING: TFR_JWT_SECRET has low estimated entropy and may not have been generated with a CSPRNG. Generate one with: openssl rand -hex 32")
+			// FAIL CLOSED, matching ENCRYPTION_KEY (issue #742).
+			//
+			// Both secrets run through the same crypto.IsLikelyLowEntropySecret
+			// heuristic, but only ENCRYPTION_KEY refused to boot. The asymmetry was
+			// backwards: a weak ENCRYPTION_KEY exposes stored SCM/OAuth tokens and
+			// needs prior database access to exploit, while a weak TFR_JWT_SECRET
+			// is an HS256 signing key -- guess it and you mint a token carrying any
+			// scope you like, including the platform-wide admin wildcard, with no
+			// access to anything beforehand. The larger blast radius had the weaker
+			// control.
+			//
+			// A warning is not a control when the process boots anyway: the operator
+			// who most needs to see it is the one least likely to be reading startup
+			// logs. Same opt-out shape as ENCRYPTION_KEY so an existing deployment
+			// can restart once to rotate rather than being unable to start.
+			if shouldRejectLowEntropyJWTSecret([]byte(secret), allowLowEntropyJWTSecret()) {
+				jwtSecretErr = errors.New("SECURITY ERROR: TFR_JWT_SECRET has low estimated entropy and does not look CSPRNG-generated. " +
+					"It signs and validates every session and API bearer token, so a guessable value lets an attacker forge tokens with arbitrary scopes. " +
+					"Generate one with: openssl rand -hex 32. " +
+					"To restart once and rotate an existing deployment, set TFR_ALLOW_LOW_ENTROPY_JWT_SECRET=true temporarily.")
+				return
 			}
 			resolved = secret
 		}
@@ -360,4 +379,22 @@ func trimSecretBytes(data []byte) []byte {
 	result := make([]byte, end)
 	copy(result, data[:end])
 	return result
+}
+
+// shouldRejectLowEntropyJWTSecret reports whether startup should refuse the
+// given TFR_JWT_SECRET. Extracted so the fail-closed decision (issue #742) is
+// unit-testable without going through the sync.Once in ValidateJWTSecret --
+// the same reason router.go extracted shouldRejectLowEntropyEncryptionKey.
+func shouldRejectLowEntropyJWTSecret(secret []byte, overrideAllowed bool) bool {
+	return crypto.IsLikelyLowEntropySecret(secret) && !overrideAllowed
+}
+
+// allowLowEntropyJWTSecret reports whether an operator has explicitly opted out
+// of the fail-closed check. Off by default; TFR_ALLOW_LOW_ENTROPY_JWT_SECRET=true
+// is a temporary bridge for rotating an existing deployment, not a setting to
+// leave on. Deliberately the same shape and spelling as
+// TFR_ALLOW_LOW_ENTROPY_ENCRYPTION_KEY, so an operator who has met one already
+// knows this one.
+func allowLowEntropyJWTSecret() bool {
+	return os.Getenv("TFR_ALLOW_LOW_ENTROPY_JWT_SECRET") == "true"
 }

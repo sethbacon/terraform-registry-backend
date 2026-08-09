@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -344,5 +345,37 @@ func TestShutdownServices_NilStopBackground_DoesNotPanic(t *testing.T) {
 	srv := &stubShutdowner{}
 	if err := shutdownServices(context.Background(), srv, nil, nil); err != nil {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestServe_NeverDerivesTheMaskFromThePassword is the other half of #651's
+// guard, added for #753.
+//
+// TestServe_NeverLogsGetDSN above catches the loud failure -- a whole DSN with
+// the password interpolated. It says nothing about a mask BUILT FROM the
+// password, which is how `cfg.Database.Password[:1] + "****"` survived the very
+// commit that fixed #651 and then wrote the credential's first character to
+// stdout on every boot, under a label reading "masked".
+//
+// A partial leak under a reassuring label is worse than an obvious one: nobody
+// re-reads a line that says it is masked.
+func TestServe_NeverDerivesTheMaskFromThePassword(t *testing.T) {
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+
+	// Any slice, index or concatenation whose operand is the password.
+	derived := regexp.MustCompile(`Password\s*\[|\bPassword\b[^\n]*\+|\+[^\n]*\bPassword\b`)
+	for i, line := range strings.Split(string(src), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "//") {
+			continue // the explanation of the defect names it deliberately
+		}
+		if derived.MatchString(line) {
+			t.Errorf("main.go:%d derives a value from the database password: %s\n"+
+				"A mask must be a constant. Deriving it leaks part of the credential "+
+				"under a label that says it does not (#753).", i+1, trimmed)
+		}
 	}
 }

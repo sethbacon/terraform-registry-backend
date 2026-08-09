@@ -344,9 +344,21 @@ func serve(cfg *config.Config) error {
 	}
 
 	// Debug: Print database configuration (mask password)
+	// A CONSTANT, never derived from the password (issue #753). This previously
+	// read `cfg.Database.Password[:1] + "****"`, which wrote the real first
+	// character of the live database credential to stdout on every boot -- under
+	// a label saying "masked", on the production path, gated by nothing.
+	//
+	// One character is not nothing: it removes ~1/94 of the search space for
+	// free and confirms the credential's shape to anyone reading log
+	// aggregation, which is a wider audience than anyone with database access.
+	//
+	// The adjacent TestServe_NeverLogsGetDSN guarded the full-DSN leak (#651)
+	// and said nothing about this, which is why it survived the fix that
+	// introduced it. That test now covers both.
 	maskedPassword := "****"
-	if cfg.Database.Password != "" {
-		maskedPassword = cfg.Database.Password[:1] + "****"
+	if cfg.Database.Password == "" {
+		maskedPassword = "(unset)"
 	}
 	log.Printf("Database config: host=%s, port=%d, user=%s, password=%s, dbname=%s, sslmode=%s", // #nosec G706 -- logged value is application-internal (config string, integer, or application-constructed path); not raw user-controlled request input
 		cfg.Database.Host, cfg.Database.Port, cfg.Database.User, maskedPassword,
