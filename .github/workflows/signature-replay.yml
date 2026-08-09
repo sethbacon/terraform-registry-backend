@@ -53,12 +53,21 @@ jobs:
       # run against a repo establishes nothing about it, and the job exits 2
       # rather than pretending otherwise — so these checkouts are load-bearing,
       # not convenience.
+      #
+      # persist-credentials: false on EVERY checkout. Without it, actions/checkout
+      # leaves SUITE_READ_TOKEN in each .git/config -- eight copies of a PAT that
+      # reads seven repositories including a private one -- inside a job that also
+      # uploads an artifact. That is zizmor's `artipacked` audit, and it is not
+      # theoretical here: widen the upload path by one glob and the token ships
+      # with the report. The replay only READS these trees; nothing after the
+      # checkouts needs git credentials.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           {
             repository: sethbacon/terraform-registry-backend,
             path: suite/terraform-registry-backend,
             token: "${{ secrets.SUITE_READ_TOKEN }}",
+            persist-credentials: false,
           }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -66,6 +75,7 @@ jobs:
             repository: sethbacon/terraform-state-manager-backend,
             path: suite/terraform-state-manager-backend,
             token: "${{ secrets.SUITE_READ_TOKEN }}",
+            persist-credentials: false,
           }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -73,6 +83,7 @@ jobs:
             repository: sethbacon/terraform-registry-frontend,
             path: suite/terraform-registry-frontend,
             token: "${{ secrets.SUITE_READ_TOKEN }}",
+            persist-credentials: false,
           }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -80,6 +91,7 @@ jobs:
             repository: sethbacon/terraform-state-manager-frontend,
             path: suite/terraform-state-manager-frontend,
             token: "${{ secrets.SUITE_READ_TOKEN }}",
+            persist-credentials: false,
           }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -87,6 +99,7 @@ jobs:
             repository: sethbacon/terraform-suite-identity,
             path: suite/terraform-suite-identity,
             token: "${{ secrets.SUITE_READ_TOKEN }}",
+            persist-credentials: false,
           }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -94,6 +107,7 @@ jobs:
             repository: sethbacon/terraform-suite-ui,
             path: suite/terraform-suite-ui,
             token: "${{ secrets.SUITE_READ_TOKEN }}",
+            persist-credentials: false,
           }
 
       # Overwrite this repo's sibling copy with the commit under test, so the
@@ -106,12 +120,14 @@ jobs:
         if: github.event_name != 'schedule'
         with:
           clean: false
+          persist-credentials: false
           path: suite/${{ github.event.repository.name }}
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: sethbacon/security-orchestration
           token: "${{ secrets.SUITE_READ_TOKEN }}"
+          persist-credentials: false
           path: security-orchestration
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
