@@ -3,6 +3,7 @@ package local
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -248,23 +249,48 @@ func TestGetURL_ServeDirectly(t *testing.T) {
 	}
 }
 
-func TestGetURL_LocalFile(t *testing.T) {
-	s := newTestStorage(t, false, "")
-	ctx := context.Background()
+// TestGetURL_NeverLeaksTheFilesystemPath — issue #751.
+//
+// This test previously asserted the OPPOSITE: that serve_directly=false
+// produced a file:// URL. That value went straight into the X-Terraform-Get
+// header of GET /v1/modules/.../download, a documented UNAUTHENTICATED
+// endpoint, so every anonymous caller learned the deployment's absolute
+// storage root. It was also unfetchable by a remote Terraform client, so the
+// configuration was broken as well as leaky.
+//
+// Asserted for BOTH settings of the flag, because the leak only appeared in one
+// of them and a test covering the default alone would never have seen it.
+func TestGetURL_NeverLeaksTheFilesystemPath(t *testing.T) {
+	for _, serveDirectly := range []bool{true, false} {
+		t.Run(fmt.Sprintf("serve_directly=%v", serveDirectly), func(t *testing.T) {
+			s := newTestStorage(t, serveDirectly, "https://registry.example.com")
+			ctx := context.Background()
 
-	if _, err := s.Upload(ctx, "myfile.txt", strings.NewReader("x"), 1); err != nil {
-		t.Fatal("Upload:", err)
-	}
+			if _, err := s.Upload(ctx, "modules/acme/vpc/aws/1.0.0.tar.gz",
+				strings.NewReader("x"), 1); err != nil {
+				t.Fatal("Upload:", err)
+			}
 
-	url, err := s.GetURL(ctx, "myfile.txt", time.Hour)
-	if err != nil {
-		t.Fatalf("GetURL() error: %v", err)
-	}
-	if !strings.HasPrefix(url, "file://") {
-		t.Errorf("GetURL() = %q, want to start with file://", url)
-	}
-	if !strings.Contains(url, "myfile.txt") {
-		t.Errorf("GetURL() = %q, want to contain myfile.txt", url)
+			url, err := s.GetURL(ctx, "modules/acme/vpc/aws/1.0.0.tar.gz", time.Hour)
+			if err != nil {
+				t.Fatalf("GetURL() error: %v", err)
+			}
+
+			if strings.HasPrefix(url, "file://") {
+				t.Errorf("GetURL() = %q — a file:// URL is handed to anonymous callers "+
+					"in X-Terraform-Get and is not fetchable by a remote client", url)
+			}
+			// The storage root must not appear in a value sent to clients.
+			if strings.Contains(url, s.basePath) {
+				t.Errorf("GetURL() = %q leaks the storage root %q", url, s.basePath)
+			}
+			if !strings.HasPrefix(url, "https://registry.example.com/v1/files/") {
+				t.Errorf("GetURL() = %q, want the API file-serving URL", url)
+			}
+			if !strings.Contains(url, "modules/acme/vpc/aws/1.0.0.tar.gz") {
+				t.Errorf("GetURL() = %q, want it to reference the object key", url)
+			}
+		})
 	}
 }
 
