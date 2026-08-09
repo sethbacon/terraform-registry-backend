@@ -41,6 +41,14 @@ func New(cfg *config.LocalStorageConfig, serverBaseURL string) (*LocalStorage, e
 		return nil, fmt.Errorf("failed to create storage directory: %w", err)
 	}
 
+	if !cfg.ServeDirectly {
+		slog.Warn("storage.local.serve_directly=false is ignored: download URLs are " +
+			"always served through the API. It previously produced a file:// URL, " +
+			"which disclosed the absolute storage root to anonymous callers in the " +
+			"X-Terraform-Get header and was not fetchable by a remote Terraform " +
+			"client anyway.")
+	}
+
 	return &LocalStorage{
 		// Cleaned once, here, so every later comparison against it is against a
 		// canonical path. Storing cfg.BasePath verbatim let a configured
@@ -175,9 +183,25 @@ func (s *LocalStorage) Delete(ctx context.Context, path string) error {
 	return nil
 }
 
-// GetURL returns a URL for downloading the file
-// For local storage with ServeDirectly enabled, this returns a relative URL
-// Otherwise, it returns the local file path
+// GetURL returns the API URL for downloading the file.
+//
+// It NEVER returns a file:// URL (issue #751). It used to, when
+// serve_directly was false, and that value went straight into the
+// X-Terraform-Get header of GET /v1/modules/.../download -- a documented
+// UNAUTHENTICATED protocol endpoint. So any anonymous caller learned the
+// deployment's absolute storage root, and by extension its filesystem layout
+// and container mount paths: reconnaissance for chaining against a
+// path-handling bug.
+//
+// It was also functionally wrong. A remote Terraform client cannot fetch
+// file://, so that configuration was broken as well as leaky.
+//
+// serve_directly no longer changes what is returned. It could not usefully:
+// /v1/files/*filepath is registered unconditionally (see registerPublicRoutes),
+// so the API path works either way, and it is strictly more capable than
+// file:// -- a same-host client can fetch it over loopback just as well.
+// LocalStorage.New warns when the flag is set to false rather than ignoring it
+// silently.
 func (s *LocalStorage) GetURL(ctx context.Context, path string, ttl time.Duration) (string, error) {
 	// Check if file exists
 	exists, err := s.Exists(ctx, path)
@@ -188,18 +212,7 @@ func (s *LocalStorage) GetURL(ctx context.Context, path string, ttl time.Duratio
 		return "", fmt.Errorf("file not found: %s", path)
 	}
 
-	if s.serveDirectly {
-		// Return URL for direct serving through the API
-		// The actual file serving will be handled by a separate endpoint
-		return fmt.Sprintf("%s/v1/files/%s", s.baseURL, path), nil
-	}
-
-	// Return file:// URL for local access
-	fullPath, err := s.safeJoin(path)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("file://%s", fullPath), nil
+	return fmt.Sprintf("%s/v1/files/%s", s.baseURL, path), nil
 }
 
 // Exists checks if a file exists at the specified path

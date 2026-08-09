@@ -240,8 +240,16 @@ by the Go backend or stored at a path accessible to the process.
 storage:
   local:
     base_path: /var/lib/terraform-registry   # absolute path recommended in production
-    serve_directly: true                     # serve files from Go instead of redirecting
+    serve_directly: true                     # deprecated, ignored (see below)
 ```
+
+**`serve_directly` is ignored.** Download URLs for local storage are always served
+through the API (`/v1/files/...`). It previously selected a `file://` URL, which was
+emitted verbatim in the `X-Terraform-Get` header of the unauthenticated module-download
+endpoint — disclosing the deployment's absolute storage root to any anonymous caller —
+and was not fetchable by a remote Terraform client in any case. The API path works for
+local and same-host clients alike. Setting it to `false` logs a warning at startup.
+
 
 **`TFR_STORAGE_LOCAL_BASE_PATH`** — Directory where modules and provider binaries are stored.
 The backend process must have read/write access. Use an absolute path in production.
