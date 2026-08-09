@@ -109,6 +109,22 @@ jobs:
             token: "${{ secrets.SUITE_READ_TOKEN }}",
             persist-credentials: false,
           }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          {
+            repository: sethbacon/azure-pipelines-terraform,
+            path: suite/azure-pipelines-terraform,
+            token: "${{ secrets.SUITE_READ_TOKEN }}",
+            persist-credentials: false,
+          }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          {
+            repository: sethbacon/azure-pipelines-packer,
+            path: suite/azure-pipelines-packer,
+            token: "${{ secrets.SUITE_READ_TOKEN }}",
+            persist-credentials: false,
+          }
 
       # Overwrite this repo's sibling copy with the commit under test, so the
       # replay reads the PR's code and not origin/main's. Guarded because
