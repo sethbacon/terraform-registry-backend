@@ -33,6 +33,20 @@ type SessionState struct {
 	// SAML login. It is echoed back by the IdP as InResponseTo and validated
 	// at the ACS to bind the assertion to a request this SP actually made.
 	SAMLRequestID string `json:"saml_request_id,omitempty"`
+	// BrowserBindingHash is the SHA-256 of a secret held only by the browser
+	// that STARTED this login, issued as an HttpOnly cookie at /auth/login and
+	// re-checked at the callback (issue #738).
+	//
+	// Without it, `state` proves only that some login was started on this
+	// server, not that THIS browser started it -- so an attacker could begin a
+	// login, authenticate at the IdP as themselves, and induce a victim's
+	// browser to load the callback, handing the victim a session for the
+	// attacker's account. SameSite=Lax does not stop that: the callback is a
+	// plain top-level GET.
+	//
+	// A hash rather than the secret, so read access to the state store (Redis,
+	// a backup, a memory dump) does not yield a forgeable cookie.
+	BrowserBindingHash string `json:"browser_binding_hash,omitempty"`
 	// SCMUserID is the already-authenticated user who started an SCM connector
 	// authorization flow (GET /api/v1/scm-providers/:id/oauth/authorize). That
 	// flow's callback carries no auth middleware, so this stored value — not
