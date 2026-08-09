@@ -18,6 +18,14 @@ covers that axis.
 
 Usage:
     python3 scripts/osv_triage.py osv-results.json
+    python3 scripts/osv_triage.py osv-results.json --issue-body report.md
+
+--issue-body writes the same rendered report to a file so the weekly workflow
+can use it as a GitHub issue body. Before this existed, the weekly run filed an
+issue whose entire content was "Please review the workflow logs" for ANY
+finding, fixable or not -- so an advisory with no published fix (issue #776 was
+one) reopened a fresh, contentless issue every week that had to be triaged by
+hand against logs that expire.
 
 Exit codes: 0 = nothing fixable (may still have warned), 1 = fixable findings.
 """
@@ -103,21 +111,52 @@ def render(fixable: list[dict], unfixable: list[dict]) -> str:
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        print("usage: osv_triage.py <osv-results.json>", file=sys.stderr)
+    args = sys.argv[1:]
+    issue_body_path = None
+    if "--issue-body" in args:
+        i = args.index("--issue-body")
+        if i + 1 >= len(args):
+            print("--issue-body requires a path", file=sys.stderr)
+            return 2
+        issue_body_path = args[i + 1]
+        del args[i : i + 2]
+    if len(args) != 1:
+        print(
+            "usage: osv_triage.py <osv-results.json> [--issue-body <path>]",
+            file=sys.stderr,
+        )
         return 2
-    path = sys.argv[1]
+    path = args[0]
+
+    def _bail(message: str) -> int:
+        """Fail closed, and leave a body behind if one was asked for.
+
+        The caller creates an issue whenever this exits non-zero and reads the
+        body file unconditionally, so not writing one here would turn a scanner
+        failure into a confusing "file not found" crash in a later workflow
+        step instead of a report that says what actually went wrong.
+        """
+        print(f"::error::{message}", file=sys.stderr)
+        if issue_body_path:
+            with open(issue_body_path, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "## OSV-Scanner triage\n\n"
+                    f"❌ Could not triage the scan results: {message}\n\n"
+                    "The scanner did not produce usable output, so this run "
+                    "proves nothing about the dependency tree. Treat it as a "
+                    "failed scan, not a clean one.\n"
+                )
+        return 1
+
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
     except FileNotFoundError:
         # No results file means the scanner failed before writing output —
         # fail closed rather than silently passing the gate.
-        print(f"::error::OSV results file not found: {path}", file=sys.stderr)
-        return 1
+        return _bail(f"OSV results file not found: {path}")
     except json.JSONDecodeError as exc:
-        print(f"::error::OSV results file is not valid JSON: {exc}", file=sys.stderr)
-        return 1
+        return _bail(f"OSV results file is not valid JSON: {exc}")
 
     fixable, unfixable = triage(data)
 
@@ -128,6 +167,9 @@ def main() -> int:
 
     summary = render(fixable, unfixable)
     print(summary)
+    if issue_body_path:
+        with open(issue_body_path, "w", encoding="utf-8") as fh:
+            fh.write(summary + "\n")
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_path:
         with open(summary_path, "a", encoding="utf-8") as fh:
