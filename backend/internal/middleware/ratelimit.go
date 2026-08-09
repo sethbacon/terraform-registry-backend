@@ -55,6 +55,28 @@ func UploadRateLimitConfig() RateLimitConfig {
 	}
 }
 
+// ProtocolRateLimitConfig returns limits for the unauthenticated Terraform-protocol,
+// OCI, network-mirror and binary-mirror route table (issue #743).
+//
+// Deliberately far above DefaultRateLimitConfig rather than sharing it. One
+// `terraform init` fans out across service discovery, version listing, download
+// and file fetch for every module and provider in the configuration -- dozens of
+// requests for a single command -- and a CI fleet behind one NAT egress address
+// shares a single rate-limit principal, since these routes are anonymous and
+// keyed by IP. Sizing this like an interactive API caller would reject ordinary
+// CLI traffic, and sharing the general bucket would let a `terraform init` storm
+// lock the same IP out of the UI and API.
+//
+// The point is a ceiling on anonymous request volume against handlers that do DB
+// lookups, storage round trips and full blob streams -- not a tight quota.
+func ProtocolRateLimitConfig() RateLimitConfig {
+	return RateLimitConfig{
+		RequestsPerMinute: 1200, // room for a large `terraform init` from a shared egress IP
+		BurstSize:         300,
+		CleanupInterval:   5 * time.Minute,
+	}
+}
+
 // RateLimiterBackend is the interface that rate limiter backends must satisfy.
 // Implementations include the in-memory token bucket (MemoryRateLimiter) and
 // the Redis-backed GCRA limiter (RedisRateLimiter).
