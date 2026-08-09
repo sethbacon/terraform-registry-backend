@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -1321,11 +1322,13 @@ func TestProvidersHandler_WithSAMLAndLDAP(t *testing.T) {
 	cfg := &config.Config{}
 	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 
-	// Inject SAML and LDAP providers directly (bypassing real construction)
-	h.samlProviders = map[string]*samlpkg.Provider{
-		"okta":  {},
-		"azure": {},
-	}
+	// Inject SAML and LDAP providers directly (bypassing real construction).
+	// addSAMLProvider rather than assigning the map: it keeps samlIdPOrder in
+	// step, and the ordered index is what ProvidersHandler iterates (issue
+	// #747). Assigning the map alone leaves the IdPs invisible to every ordered
+	// path -- which is exactly the divergence the helper exists to prevent.
+	h.addSAMLProvider("okta", &samlpkg.Provider{})
+	h.addSAMLProvider("azure", &samlpkg.Provider{})
 	h.ldapProvider = &ldappkg.Provider{}
 
 	r := gin.New()
@@ -1482,11 +1485,33 @@ func newSAMLACSHandler(t *testing.T, allowIDPInitiated bool) *AuthHandlers {
 	cfg := &config.Config{}
 	cfg.Server.PublicURL = "https://registry.example.com"
 	cfg.Auth.SAML = *samlCfg
-	return &AuthHandlers{
-		cfg:           cfg,
-		samlProviders: map[string]*samlpkg.Provider{"test-idp": prov},
-		stateStore:    auth.NewMemoryStateStore(time.Hour),
+	h := &AuthHandlers{
+		cfg:        cfg,
+		stateStore: auth.NewMemoryStateStore(time.Hour),
 	}
+	// addSAMLProvider keeps the map and the ordered index in step (issue #747).
+	h.addSAMLProvider("test-idp", prov)
+	return h
+}
+
+// samlTestIssuer is the entityID declared by samlTestIdPMetadata. An
+// unsolicited response must carry this as its Issuer to be attributable to the
+// configured IdP (issue #747).
+const samlTestIssuer = "https://idp.example.com"
+
+// unsolicitedSAMLResponse builds a base64 SAMLResponse with the given Issuer and
+// nothing else of substance.
+//
+// It is deliberately NOT a valid assertion: these tests exercise the
+// IdP-initiated guard and the issuer-attribution step, both of which run before
+// signature verification. A response that cannot be attributed to a configured
+// IdP is now rejected up front, so the previous fixture -- base64("foo") -- no
+// longer reaches the guard at all.
+func unsolicitedSAMLResponse(issuer string) string {
+	xml := `<?xml version="1.0"?><samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ` +
+		`xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">` +
+		`<saml:Issuer>` + issuer + `</saml:Issuer></samlp:Response>`
+	return base64.StdEncoding.EncodeToString([]byte(xml))
 }
 
 // postToACS posts a (bogus) SAMLResponse with no RelayState — the shape of an
@@ -1494,7 +1519,8 @@ func newSAMLACSHandler(t *testing.T, allowIDPInitiated bool) *AuthHandlers {
 func postToACS(h *AuthHandlers) *httptest.ResponseRecorder {
 	r := gin.New()
 	r.POST("/api/v1/auth/saml/acs", h.SAMLACSHandler())
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/saml/acs", strings.NewReader("SAMLResponse=Zm9v"))
+	body := "SAMLResponse=" + url.QueryEscape(unsolicitedSAMLResponse(samlTestIssuer))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/saml/acs", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)

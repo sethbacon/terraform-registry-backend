@@ -1,6 +1,10 @@
 package saml
 
 import (
+	"encoding/base64"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -338,3 +342,165 @@ const minimalIdPMetadata = `<?xml version="1.0"?>
                          Location="https://idp.example.com/sso"/>
   </IDPSSODescriptor>
 </EntityDescriptor>`
+
+// Issue #747 follow-up — IssuerFromResponse parses UNAUTHENTICATED input.
+//
+// The first version used xml.Unmarshal into a one-field struct. gosec's G709
+// flagged it, and while the Java-style gadget-chain risk does not apply to
+// encoding/xml, the finding pointed at something real: xml.Unmarshal RECURSES
+// over element depth, so a deeply nested document reaching the ACS endpoint
+// from an anonymous POST could exhaust the goroutine stack — which panics
+// unrecoverably and takes the process down.
+//
+// The tokenising implementation is iterative and bounded. These tests pin the
+// bounds; without them a "fix" that only silenced the scanner would pass.
+
+func samlResponseForm(body string) *http.Request {
+	encoded := base64.StdEncoding.EncodeToString([]byte(body))
+	r := httptest.NewRequest(http.MethodPost, "/acs",
+		strings.NewReader("SAMLResponse="+url.QueryEscape(encoded)))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	return r
+}
+
+func TestIssuerFromResponse_ReadsTheResponseLevelIssuer(t *testing.T) {
+	// The nested Issuer deliberately comes FIRST in document order. In a normal
+	// response the Response-level Issuer precedes the Assertion, so "first
+	// Issuer anywhere" and "Issuer at depth 2" agree and the test cannot tell
+	// them apart — the first version of this test was exactly that, and passed
+	// with the depth check deleted.
+	//
+	// Ordered this way, taking any-depth returns the attacker's value and
+	// taking depth 2 returns the sender's. Which provider validates the
+	// response depends on this.
+	body := `<?xml version="1.0"?><samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ` +
+		`xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">` +
+		`<saml:Assertion><saml:Issuer>https://attacker.example.com</saml:Issuer></saml:Assertion>` +
+		`<saml:Issuer>https://idp.example.com</saml:Issuer>` +
+		`</samlp:Response>`
+
+	got, err := IssuerFromResponse(samlResponseForm(body))
+	if err != nil {
+		t.Fatalf("IssuerFromResponse: %v", err)
+	}
+	if got != "https://idp.example.com" {
+		t.Errorf("issuer = %q, want the Response-level issuer — the Assertion's own "+
+			"Issuer must not select the validating provider", got)
+	}
+}
+
+func TestIssuerFromResponse_RejectsDeepNestingWithoutExhaustingTheStack(t *testing.T) {
+	// Deep enough to exceed maxSAMLDepth, SHALLOW enough not to trip
+	// maxSAMLTokens — otherwise this test passes with the depth bound removed
+	// and is really testing the token bound. It did exactly that at first:
+	// 50,000 nested elements is 100,000 tokens, so the token limit fired and
+	// deleting the depth check changed nothing.
+	depth := maxSAMLDepth + 50
+	if 2*depth >= maxSAMLTokens {
+		t.Fatalf("test depth %d would trip maxSAMLTokens (%d) first", depth, maxSAMLTokens)
+	}
+
+	var sb strings.Builder
+	sb.WriteString(`<?xml version="1.0"?>`)
+	for i := 0; i < depth; i++ {
+		sb.WriteString("<a>")
+	}
+	for i := 0; i < depth; i++ {
+		sb.WriteString("</a>")
+	}
+
+	_, err := IssuerFromResponse(samlResponseForm(sb.String()))
+	if err == nil {
+		t.Fatal("a document deeper than maxSAMLDepth was accepted")
+	}
+	// The specific bound, not merely "an error": "no Issuer" is also an error
+	// and would pass a laxer assertion with the guard removed.
+	if !strings.Contains(err.Error(), "nests deeper") {
+		t.Errorf("error = %q, want the depth bound to be what rejected it", err)
+	}
+}
+
+func TestIssuerFromResponse_RejectsTokenFlood(t *testing.T) {
+	// Shallow but enormous element count, with the flood BEFORE a perfectly
+	// good Response-level Issuer. Without the token bound this document parses
+	// fine and returns that issuer, so the test can only pass because the bound
+	// fired — the first version put the issuer nowhere and asserted merely
+	// "an error", which "no Issuer" satisfied with the guard removed.
+	var sb strings.Builder
+	sb.WriteString(`<?xml version="1.0"?><Response>`)
+	for i := 0; i < maxSAMLTokens; i++ {
+		sb.WriteString("<a/>")
+	}
+	sb.WriteString(`<Issuer>https://idp.example.com</Issuer></Response>`)
+
+	got, err := IssuerFromResponse(samlResponseForm(sb.String()))
+	if err == nil {
+		t.Fatalf("a document over maxSAMLTokens was accepted, returning %q", got)
+	}
+	if !strings.Contains(err.Error(), "tokens") {
+		t.Errorf("error = %q, want the token bound to be what rejected it", err)
+	}
+}
+
+func TestIssuerFromResponse_RejectsOversizedInput(t *testing.T) {
+	// VALID XML with a good Issuer, padded past the cap. The first version used
+	// a megabyte of "a", which is not XML at all — so it failed to parse with
+	// or without the cap, and deleting the cap did not change the result.
+	var sb strings.Builder
+	sb.WriteString(`<?xml version="1.0"?><Response><Issuer>https://idp.example.com</Issuer><pad>`)
+	sb.WriteString(strings.Repeat("A", maxSAMLResponseBytes))
+	sb.WriteString(`</pad></Response>`)
+	if sb.Len() <= maxSAMLResponseBytes {
+		t.Fatalf("test payload is %d bytes, not over the %d cap", sb.Len(), maxSAMLResponseBytes)
+	}
+
+	got, err := IssuerFromResponse(samlResponseForm(sb.String()))
+	if err == nil {
+		t.Fatalf("an over-cap response was accepted, returning %q", got)
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("error = %q, want the size cap to be what rejected it", err)
+	}
+}
+
+func TestIssuerFromResponse_RejectsMalformedInput(t *testing.T) {
+	for name, req := range map[string]*http.Request{
+		"not base64": httptest.NewRequest(http.MethodPost, "/acs",
+			strings.NewReader("SAMLResponse=!!!not-base64!!!")),
+		"not xml":       samlResponseForm("hello"),
+		"no issuer":     samlResponseForm(`<Response><Other>x</Other></Response>`),
+		"empty issuer":  samlResponseForm(`<Response><Issuer>   </Issuer></Response>`),
+		"no form field": httptest.NewRequest(http.MethodPost, "/acs", strings.NewReader("")),
+	} {
+		t.Run(name, func(t *testing.T) {
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			if _, err := IssuerFromResponse(req); err == nil {
+				t.Errorf("%s was accepted", name)
+			}
+		})
+	}
+}
+
+// TestIssuerFromResponse_RejectsNestedElementsInsideIssuer — an entity ID is
+// text, so a nested element is malformed and refused.
+//
+// This is not pedantry. The first implementation skipped the nested start tag,
+// appended the nested element's character data, and returned at the NESTED
+// closing tag, so
+//
+//	<Issuer>https://idp.example.com<evil>https://attacker.example.com</evil></Issuer>
+//
+// produced "https://idp.example.comhttps://attacker.example.com" — the two
+// concatenated. That is a value smuggled into the comparison that selects which
+// IdP validates the response. This test caught it.
+func TestIssuerFromResponse_RejectsNestedElementsInsideIssuer(t *testing.T) {
+	body := `<Response><Issuer>https://idp.example.com<evil>https://attacker.example.com</evil></Issuer></Response>`
+
+	got, err := IssuerFromResponse(samlResponseForm(body))
+	if err == nil {
+		t.Fatalf("a nested element inside <Issuer> was accepted, yielding %q", got)
+	}
+	if !strings.Contains(err.Error(), "nested") {
+		t.Errorf("error = %q, want it to name the nested element", err)
+	}
+}
