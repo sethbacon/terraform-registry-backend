@@ -64,13 +64,26 @@ func ExtractTarGz(reader io.Reader, destDir string) error {
 			return fmt.Errorf("archive exceeds maximum entry count of %d", maxExtractEntries)
 		}
 
-		// Prevent path traversal: resolve against destDir and verify containment
-		// using filepath.Rel. A relative path that starts with ".." (or equals it)
-		// escapes destDir; we also reject absolute results defensively.
+		// Prevent path traversal, two independent ways.
+		//
+		// 1. filepath.Rel: a relative path that is ".." or starts with "../"
+		//    escapes destDir; an absolute result is rejected defensively.
+		// 2. An explicit prefix check on the cleaned join.
+		//
+		// The second is not redundant belt-and-braces for its own sake. CodeQL's
+		// go/zipslip query does not recognise the filepath.Rel form as a
+		// sanitiser and flagged both file-system operations below as
+		// unsanitised archive entries; the prefix form is the shape it does
+		// recognise. Keeping both means the check reads correctly to a human AND
+		// is visible to the scanner, rather than being suppressed with a
+		// dismissal that the next reader has to take on trust.
 		cleanDest := filepath.Clean(destDir)
-		target := filepath.Join(cleanDest, header.Name) // #nosec G305 -- containment verified below
+		target := filepath.Clean(filepath.Join(cleanDest, header.Name)) // #nosec G305 -- containment verified immediately below
 		rel, err := filepath.Rel(cleanDest, target)
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+			return fmt.Errorf("invalid file path in archive: %s", header.Name)
+		}
+		if !strings.HasPrefix(target, cleanDest+string(os.PathSeparator)) {
 			return fmt.Errorf("invalid file path in archive: %s", header.Name)
 		}
 

@@ -500,3 +500,66 @@ func TestFindModuleRoot_NonExistentDir(t *testing.T) {
 		t.Errorf("FindModuleRoot for non-existent path = %q, want original path", got)
 	}
 }
+
+// TestExtractTarGz_EntryResolvingToDestRoot covers the case the explicit prefix
+// check adds over filepath.Rel alone (CodeQL alerts 35/56).
+//
+// An entry named "." or "" resolves to destDir ITSELF: filepath.Rel then
+// returns ".", which is neither ".." nor "../"-prefixed nor absolute, so the
+// Rel check alone accepts it. The entry then reaches os.OpenFile(destDir, ...)
+// -- opening a directory as a regular file. Nothing escapes, but the archive is
+// still driving a file-system operation on a path the containment check was
+// supposed to have vetted, and it fails with an opaque OS error instead of
+// being rejected as the malformed entry it is.
+//
+// requiring the target to be strictly INSIDE destDir (with the separator) makes
+// that an explicit rejection.
+func TestExtractTarGz_EntryResolvingToDestRoot(t *testing.T) {
+	// "./" is deliberately absent: archive/tar refuses to encode a trailing
+	// slash on a regular-file header, so a case using it builds an EMPTY archive
+	// and "extraction returned nil" means "there was nothing to extract" rather
+	// than "the entry was accepted". That is a vacuous test, and it is why the
+	// header write is checked below instead of discarded.
+	for _, name := range []string{".", "", "foo/.."} {
+		t.Run("name="+name, func(t *testing.T) {
+			var buf bytes.Buffer
+			gw := gzip.NewWriter(&buf)
+			tw := tar.NewWriter(gw)
+
+			content := "x"
+			if err := tw.WriteHeader(&tar.Header{
+				Name:     name,
+				Mode:     0644,
+				Size:     int64(len(content)),
+				Typeflag: tar.TypeReg,
+			}); err != nil {
+				t.Fatalf("could not encode a header named %q, so this case would test "+
+					"an empty archive rather than the entry: %v", name, err)
+			}
+			if _, err := tw.Write([]byte(content)); err != nil {
+				t.Fatalf("write entry body: %v", err)
+			}
+			_ = tw.Close()
+			_ = gw.Close()
+
+			dest := t.TempDir()
+			err := ExtractTarGz(bytes.NewReader(buf.Bytes()), dest)
+			if err == nil {
+				t.Fatal("entry resolving to the destination root was accepted")
+			}
+			if !strings.Contains(err.Error(), "invalid file path in archive") {
+				t.Errorf("error = %q, want the containment check's own rejection rather "+
+					"than an opaque OS error from operating on the directory", err.Error())
+			}
+
+			// And the destination must still be a usable, empty directory.
+			entries, readErr := os.ReadDir(dest)
+			if readErr != nil {
+				t.Fatalf("destination is no longer readable: %v", readErr)
+			}
+			if len(entries) != 0 {
+				t.Errorf("destination is not empty after a rejected archive: %v", entries)
+			}
+		})
+	}
+}
