@@ -548,6 +548,36 @@ Rate Algorithm) in Redis, which correctly enforces limits across all backend pod
 Redis, each pod maintains an independent in-memory token bucket -- clients can bypass limits
 by rotating across pods.
 
+#### Rate-Limit Tiers
+
+`requests_per_minute` / `burst` configure the **general** tier only. Three other tiers use
+fixed presets and are not configurable:
+
+| Tier         | Applies to                                                              | Limit           |
+| ------------ | ----------------------------------------------------------------------- | --------------- |
+| general      | authenticated API + public search/detail endpoints                      | configurable    |
+| auth         | login / OIDC callback / token endpoints                                 | 20/min, burst 15 |
+| upload       | module and provider version uploads                                     | 30/min, burst 5  |
+| **protocol** | Terraform-protocol, OCI, network-mirror and binary-mirror routes        | 1200/min, burst 300 |
+
+The protocol tier is deliberately far above the general tier. A single `terraform init`
+fans out across service discovery, version listing, download and file fetch for every
+module and provider in the configuration, and because these routes are anonymous they are
+keyed by client IP -- so an entire CI fleet behind one NAT egress address shares a single
+bucket. Sizing it like an interactive API caller would reject ordinary CLI traffic, and
+sharing the general bucket would let a `terraform init` storm lock the same address out of
+the UI and API. It is a ceiling on anonymous request volume, not a tight quota.
+
+`/health` and `/ready` are **not** rate limited: kubelet probes for every pod on a node
+share that node's source address, and a 429 on `/ready` would pull a healthy pod out of
+service.
+
+**`server.trusted_proxies` matters here.** Anonymous requests are keyed on the client IP,
+which is derived from `X-Forwarded-For` only for proxies you list. The default is empty
+(trust nothing), so the header is ignored and the connecting address is used. If you set
+this to a broad range such as `0.0.0.0/0`, any client can rotate `X-Forwarded-For` and
+evade every IP-keyed limit. List your actual load balancer's CIDR, nothing wider.
+
 #### Per-Organization Rate Limiting
 
 When `org_requests_per_minute` is set to a value greater than 0 and multi-tenancy is enabled,
@@ -740,11 +770,19 @@ convention here would risk silently enabling dev mode from a copied env file.
 Dev mode enables:
 
 - A bypass login endpoint (`POST /api/v1/dev/login`) that creates a session without OIDC
+- An impersonation endpoint (`POST /api/v1/dev/impersonate/:user_id`)
 - Relaxed JWT secret validation (allows short secrets)
 - Additional debug logging
 
 **Never set `DEV_MODE=true` in production.** The dev login endpoint allows anyone
 to authenticate as any user without credentials.
+
+The `/api/v1/dev/*` routes are **registered only when dev mode is on at startup**.
+Without `DEV_MODE`, they return `404` because they do not exist — not `403` from a
+guard — so no misconfiguration or future refactor can expose them behind a check
+that was dropped. When they are mounted, the server logs a startup banner naming
+each route; if you see that banner on a production server, `DEV_MODE` is set and
+the JWT secret validation is also relaxed. Unset it and restart.
 
 As a backstop against this being set by mistake in a production-like deployment, the
 server refuses to start when `DEV_MODE` is enabled together with a production-level
