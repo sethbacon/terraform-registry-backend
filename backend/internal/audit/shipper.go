@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -330,11 +331,13 @@ func (ws *WebhookShipper) flushBatch() {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), ws.timeout)
-	defer cancel()
-
-	if err := ws.sendRequest(ctx, data); err != nil {
-		slog.Error("failed to flush audit batch", "error", err)
+	// sendWithRetry owns the deadlines: it applies ws.timeout per attempt.
+	if err := ws.sendWithRetry(context.Background(), data); err != nil {
+		// Still dropped after retries. Say how many, because "failed to flush
+		// audit batch" gave an operator no way to size the visibility gap --
+		// and the database rows remain the durable record either way.
+		slog.Error("dropping audit batch after failed delivery",
+			"entries", len(ws.batch), "error", err)
 	}
 
 	ws.batch = ws.batch[:0]
@@ -358,7 +361,82 @@ func (ws *WebhookShipper) Ship(ctx context.Context, entry *LogEntry) error {
 		return fmt.Errorf("failed to marshal audit entry: %w", err)
 	}
 
-	return ws.sendRequest(ctx, data)
+	return ws.sendWithRetry(ctx, data)
+}
+
+// Retry policy for audit webhook delivery (issue #756).
+//
+// Deliberately modest. The durable record is the database row AuditMiddleware
+// writes alongside shipping, so this is external-SIEM VISIBILITY, not the audit
+// trail itself -- a long or aggressive retry would trade a bounded visibility
+// gap for unbounded memory in the batch path. Three attempts covers the case
+// this exists for: a SIEM restart or a transient 5xx, where the previous single
+// attempt discarded the batch outright.
+const (
+	auditWebhookMaxAttempts = 3
+	auditWebhookBaseBackoff = 250 * time.Millisecond
+)
+
+// webhookStatusError carries the HTTP status so retryability is a decision
+// about the response rather than a string match on an error message.
+type webhookStatusError struct{ status int }
+
+func (e *webhookStatusError) Error() string {
+	return fmt.Sprintf("webhook returned status %d", e.status)
+}
+
+// retryableWebhookErr reports whether another attempt could plausibly succeed.
+//
+// A 4xx is the shipper's own fault -- a malformed payload, a bad URL, a
+// rejected credential -- and will fail identically every time, so retrying it
+// only delays the batch and duplicates load on the SIEM. 429 is the exception:
+// it explicitly means "later". Everything that is not an HTTP response at all
+// (dial failure, TLS error, timeout) is transient by assumption.
+func retryableWebhookErr(err error) bool {
+	var statusErr *webhookStatusError
+	if errors.As(err, &statusErr) {
+		return statusErr.status >= 500 || statusErr.status == http.StatusTooManyRequests
+	}
+	return true
+}
+
+// sendWithRetry makes up to auditWebhookMaxAttempts attempts with exponential
+// backoff, each bounded by the configured per-request timeout.
+//
+// The per-ATTEMPT deadline matters: bounding all attempts with one ws.timeout
+// budget means a first attempt that consumes it leaves nothing for the retry,
+// which is precisely the slow-SIEM case this is for.
+func (ws *WebhookShipper) sendWithRetry(ctx context.Context, data []byte) error {
+	var lastErr error
+	for attempt := 1; attempt <= auditWebhookMaxAttempts; attempt++ {
+		attemptCtx, cancel := context.WithTimeout(ctx, ws.timeout)
+		err := ws.sendRequest(attemptCtx, data)
+		cancel()
+		if err == nil {
+			if attempt > 1 {
+				slog.Info("audit webhook delivered after retry", "attempts", attempt)
+			}
+			return nil
+		}
+		lastErr = err
+
+		if !retryableWebhookErr(err) {
+			return err
+		}
+		if attempt == auditWebhookMaxAttempts {
+			break
+		}
+
+		backoff := auditWebhookBaseBackoff * time.Duration(1<<(attempt-1))
+		select {
+		case <-ctx.Done():
+			// Shutdown or caller cancellation: stop immediately rather than
+			// sleeping through it.
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+	}
+	return fmt.Errorf("audit webhook failed after %d attempts: %w", auditWebhookMaxAttempts, lastErr)
 }
 
 // sendRequest sends the HTTP request
@@ -380,7 +458,7 @@ func (ws *WebhookShipper) sendRequest(ctx context.Context, data []byte) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("webhook returned status %d", resp.StatusCode)
+		return &webhookStatusError{status: resp.StatusCode}
 	}
 
 	return nil
