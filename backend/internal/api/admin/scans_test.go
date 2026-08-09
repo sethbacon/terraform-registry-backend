@@ -10,6 +10,9 @@ import (
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
+
+	"github.com/terraform-registry/terraform-registry/internal/auth"
+	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
 
 var scanAdminCols = []string{
@@ -214,13 +217,20 @@ func newScanByIDRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	}
 	t.Cleanup(func() { db.Close() })
 	r := gin.New()
-	r.GET("/admin/scanning/scans/:id", GetScanByIDHandler(db))
+	// Platform admin: tenantscope.Resolve short-circuits to the whole platform,
+	// so these pre-existing cases keep asserting handler behaviour rather than
+	// tenancy. The tenancy cases are in scans_tenant_scope_test.go.
+	r.Use(func(c *gin.Context) {
+		c.Set("scopes", []string{string(auth.ScopeAdmin)})
+		c.Set("user_id", "admin-user")
+	})
+	r.GET("/admin/scanning/scans/:id", GetScanByIDHandler(db, repositories.NewOrganizationRepository(db)))
 	return mock, r
 }
 
 func TestGetScanByID_Success(t *testing.T) {
 	mock, r := newScanByIDRouter(t)
-	mock.ExpectQuery("SELECT.*FROM module_version_scans.*WHERE id").
+	mock.ExpectQuery("(?s)FROM module_version_scans.*JOIN module_versions.*JOIN modules.*WHERE s.id").
 		WithArgs("a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11").
 		WillReturnRows(sampleScanResultRow())
 
@@ -241,7 +251,7 @@ func TestGetScanByID_InvalidUUID(t *testing.T) {
 
 func TestGetScanByID_NotFound(t *testing.T) {
 	mock, r := newScanByIDRouter(t)
-	mock.ExpectQuery("SELECT.*FROM module_version_scans.*WHERE id").
+	mock.ExpectQuery("(?s)FROM module_version_scans.*JOIN module_versions.*JOIN modules.*WHERE s.id").
 		WithArgs("a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11").
 		WillReturnRows(sqlmock.NewRows(scanAdminCols))
 
@@ -253,7 +263,7 @@ func TestGetScanByID_NotFound(t *testing.T) {
 
 func TestGetScanByID_DBError(t *testing.T) {
 	mock, r := newScanByIDRouter(t)
-	mock.ExpectQuery("SELECT.*FROM module_version_scans.*WHERE id").
+	mock.ExpectQuery("(?s)FROM module_version_scans.*JOIN module_versions.*JOIN modules.*WHERE s.id").
 		WithArgs("a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11").
 		WillReturnError(errors.New("db error"))
 
