@@ -272,7 +272,11 @@ Perform a DR drill quarterly to validate recovery procedures. Use a non-producti
 
 - [ ] Confirm backup retention has recent backups available
 - [ ] Prepare a separate namespace or cluster for the drill
-- [ ] Document the current database schema version (`SELECT version FROM schema_migrations`). This is the highest applied migration number (currently `40`, not `1`); see the [migrations README](../backend/internal/db/migrations/README.md) for the authoritative current value.
+- [ ] Document the current database schema version (`SELECT version FROM schema_migrations`). This is
+      the highest applied migration number, **not** `1`. Read it from the running database rather than
+      from this page: a literal here goes stale the moment a migration lands, and this one sat at `40`
+      while the tree held `50`. The [migrations README](../backend/internal/db/migrations/README.md)
+      lists every migration and its rollback behaviour.
 - [ ] Record the current module/provider count for post-recovery validation
 
 ### Drill Execution

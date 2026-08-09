@@ -120,9 +120,21 @@ during SOC 2 Type II audits.
 | -------- | --------------------- | ---------------------------------------------------- | ---------------------------------------------------- |
 | P1.1     | Privacy notice        | Privacy policy documentation                         | `PRIVACY.md` (frontend)                              |
 | P3.1     | Collection limitation | Minimal PII collection (email, username from IdP)    | Auth handlers, user model                            |
-| P4.1     | Use limitation        | PII used only for auth/audit; not shared externally  | Audit shipper config (self-hosted destinations only) |
+| P4.1     | Use limitation        | PII used only for auth/audit; audit destinations are operator-configured and MAY be external — see note below | `security.audit.shippers`, `internal/audit/shipper.go` |
 | P6.1     | Data subject access   | User data export endpoint                            | `/admin/users/:id/export`                            |
 | P8.1     | Data quality          | IdP-sourced attributes; SCIM sync keeps data current | SCIM provisioning                                    |
+
+> **P4.1 — read this before citing it.** The previous wording claimed PII was "not shared
+> externally", evidenced by "audit shipper config (self-hosted destinations only)". The code
+> enforces no such restriction, and the guard it does apply points the other way: audit webhooks
+> are dialled through `internal/httpsafe`, which **denies** loopback/RFC1918/link-local targets and
+> **permits public ones**. So the shipper is, if anything, biased toward external destinations.
+>
+> What is actually true: audit records containing user email and identity attributes are sent only
+> to destinations an operator explicitly configures in `security.audit.shippers`, and nowhere by
+> default. That is an operator-controlled disclosure boundary, not a technical guarantee of
+> non-disclosure. An assessor relying on this row should test the deployed shipper configuration
+> rather than the code.
 
 ---
 
