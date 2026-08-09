@@ -13109,73 +13109,6 @@
                     }
                 }
             }
-        },
-        "/webhooks/scm/{module_source_repo_id}/{secret}": {
-            "post": {
-                "description": "Receives and processes incoming webhook events from SCM providers (GitHub, GitLab, Azure DevOps, Bitbucket).\nTwo-layer security is applied: the URL-embedded secret (last path segment of the registered callback URL)\nis verified first with a constant-time comparison, and then the provider's HMAC payload signature is\nvalidated against the stored webhook secret. Both checks must pass before the payload is processed.\nAccepted events are logged. Tag-push events trigger asynchronous auto-publish when AutoPublish is enabled.",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Webhooks"
-                ],
-                "summary": "Receive SCM webhook",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Module source repository link ID (UUID) — uniquely identifies the SCM-to-module mapping",
-                        "name": "module_source_repo_id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "URL-embedded webhook secret generated at link time; used as a first-line constant-time guard before HMAC validation",
-                        "name": "secret",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/webhooks.WebhookReceivedResponse"
-                        }
-                    },
-                    "400": {
-                        "description": "Invalid repository ID or malformed/unreadable payload",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": true
-                        }
-                    },
-                    "401": {
-                        "description": "URL secret mismatch or HMAC payload signature invalid",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": true
-                        }
-                    },
-                    "404": {
-                        "description": "Repository link or SCM provider not found",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": true
-                        }
-                    },
-                    "500": {
-                        "description": "Internal server error (connector build, log write, etc.)",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": true
-                        }
-                    }
-                }
-            }
         }
     },
     "definitions": {
@@ -18132,17 +18065,6 @@
                     "type": "string"
                 },
                 "tool": {
-                    "type": "string"
-                }
-            }
-        },
-        "webhooks.WebhookReceivedResponse": {
-            "type": "object",
-            "properties": {
-                "log_id": {
-                    "type": "string"
-                },
-                "message": {
                     "type": "string"
                 }
             }
