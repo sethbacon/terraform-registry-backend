@@ -391,6 +391,91 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		router.Use(mtls.AuthMiddleware(mtlsProvider))
 	}
 
+	// Rate limiters are constructed HERE, ahead of route registration, because
+	// registerPublicRoutes now consumes protocolRateLimiter (issue #743). Gin
+	// binds a group's middleware at registration time, so a limiter built after
+	// this call would never reach the protocol routes.
+	// Initialize rate limiters (conditionally, based on config)
+	var authRateLimiter, generalRateLimiter, uploadRateLimiter middleware.RateLimiterBackend
+	// protocolRateLimiter covers the anonymous Terraform-protocol/OCI/mirror
+	// surface registered by registerPublicRoutes (issue #743).
+	var protocolRateLimiter middleware.RateLimiterBackend
+	var orgRateLimiter middleware.RateLimiterBackend
+	if cfg.Security.RateLimiting.Enabled {
+		// Build effective configs: use config values when set, otherwise fall back to presets
+		generalCfg := middleware.DefaultRateLimitConfig()
+		if cfg.Security.RateLimiting.RequestsPerMinute > 0 {
+			generalCfg.RequestsPerMinute = cfg.Security.RateLimiting.RequestsPerMinute
+		}
+		if cfg.Security.RateLimiting.Burst > 0 {
+			generalCfg.BurstSize = cfg.Security.RateLimiting.Burst
+		}
+		authCfg := middleware.AuthRateLimitConfig()
+		uploadCfg := middleware.UploadRateLimitConfig()
+		protocolCfg := middleware.ProtocolRateLimitConfig()
+
+		if cfg.Redis.Host != "" {
+			// Redis-backed rate limiters for HA deployments
+			var redisErr error
+			generalRateLimiter, redisErr = middleware.NewRedisRateLimiter(&cfg.Redis, generalCfg)
+			if redisErr != nil {
+				slog.Warn("failed to create Redis rate limiter for general, falling back to in-memory", "error", redisErr)
+				generalRateLimiter = middleware.NewRateLimiter(generalCfg)
+			}
+			authRateLimiter, redisErr = middleware.NewRedisRateLimiter(&cfg.Redis, authCfg)
+			if redisErr != nil {
+				slog.Warn("failed to create Redis rate limiter for auth, falling back to in-memory", "error", redisErr)
+				authRateLimiter = middleware.NewRateLimiter(authCfg)
+			}
+			uploadRateLimiter, redisErr = middleware.NewRedisRateLimiter(&cfg.Redis, uploadCfg)
+			if redisErr != nil {
+				slog.Warn("failed to create Redis rate limiter for upload, falling back to in-memory", "error", redisErr)
+				uploadRateLimiter = middleware.NewRateLimiter(uploadCfg)
+			}
+			protocolRateLimiter, redisErr = middleware.NewRedisRateLimiter(&cfg.Redis, protocolCfg)
+			if redisErr != nil {
+				slog.Warn("failed to create Redis rate limiter for protocol routes, falling back to in-memory", "error", redisErr)
+				protocolRateLimiter = middleware.NewRateLimiter(protocolCfg)
+			}
+			// Per-organization rate limiter (only when configured)
+			if cfg.Security.RateLimiting.OrgRequestsPerMinute > 0 {
+				orgCfg := middleware.RateLimitConfig{
+					RequestsPerMinute: cfg.Security.RateLimiting.OrgRequestsPerMinute,
+					BurstSize:         cfg.Security.RateLimiting.OrgBurst,
+					CleanupInterval:   5 * time.Minute,
+				}
+				if orgCfg.BurstSize == 0 {
+					orgCfg.BurstSize = orgCfg.RequestsPerMinute / 4
+				}
+				orgRateLimiter, redisErr = middleware.NewRedisRateLimiter(&cfg.Redis, orgCfg)
+				if redisErr != nil {
+					slog.Warn("failed to create Redis org rate limiter, falling back to in-memory", "error", redisErr)
+					orgRateLimiter = middleware.NewRateLimiter(orgCfg)
+				}
+			}
+			log.Println("Rate limiting enabled with Redis backend")
+		} else {
+			// In-memory rate limiters (single-instance only)
+			slog.Warn("redis.host not configured: rate limiting will use in-memory backend (not suitable for multi-pod HA)")
+			generalRateLimiter = middleware.NewRateLimiter(generalCfg)
+			authRateLimiter = middleware.NewRateLimiter(authCfg)
+			uploadRateLimiter = middleware.NewRateLimiter(uploadCfg)
+			protocolRateLimiter = middleware.NewRateLimiter(protocolCfg)
+			// Per-organization rate limiter
+			if cfg.Security.RateLimiting.OrgRequestsPerMinute > 0 {
+				orgCfg := middleware.RateLimitConfig{
+					RequestsPerMinute: cfg.Security.RateLimiting.OrgRequestsPerMinute,
+					BurstSize:         cfg.Security.RateLimiting.OrgBurst,
+					CleanupInterval:   5 * time.Minute,
+				}
+				if orgCfg.BurstSize == 0 {
+					orgCfg.BurstSize = orgCfg.RequestsPerMinute / 4
+				}
+				orgRateLimiter = middleware.NewRateLimiter(orgCfg)
+			}
+		}
+	}
+
 	// Public + Terraform-protocol routes (issue #565 finding [39]). See registerPublicRoutes.
 	registerPublicRoutes(router, &publicRouteDeps{
 		cfg:                     cfg,
@@ -405,6 +490,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		auditRepo:               auditRepo,
 		pullThroughSvc:          pullThroughSvc,
 		tfBinariesHandler:       tfBinariesHandler,
+		protocolRateLimiter:     protocolRateLimiter,
 	})
 
 	// Initialize admin handlers
@@ -589,77 +675,6 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// Initialize SCM webhook handler
 	scmWebhookHandler := webhooks.NewSCMWebhookHandler(scmRepo, scmPublisher, tokenCipher)
 	approvalWebhookHandler := webhooks.NewApprovalHandler(rbacRepo)
-
-	// Initialize rate limiters (conditionally, based on config)
-	var authRateLimiter, generalRateLimiter, uploadRateLimiter middleware.RateLimiterBackend
-	var orgRateLimiter middleware.RateLimiterBackend
-	if cfg.Security.RateLimiting.Enabled {
-		// Build effective configs: use config values when set, otherwise fall back to presets
-		generalCfg := middleware.DefaultRateLimitConfig()
-		if cfg.Security.RateLimiting.RequestsPerMinute > 0 {
-			generalCfg.RequestsPerMinute = cfg.Security.RateLimiting.RequestsPerMinute
-		}
-		if cfg.Security.RateLimiting.Burst > 0 {
-			generalCfg.BurstSize = cfg.Security.RateLimiting.Burst
-		}
-		authCfg := middleware.AuthRateLimitConfig()
-		uploadCfg := middleware.UploadRateLimitConfig()
-
-		if cfg.Redis.Host != "" {
-			// Redis-backed rate limiters for HA deployments
-			var redisErr error
-			generalRateLimiter, redisErr = middleware.NewRedisRateLimiter(&cfg.Redis, generalCfg)
-			if redisErr != nil {
-				slog.Warn("failed to create Redis rate limiter for general, falling back to in-memory", "error", redisErr)
-				generalRateLimiter = middleware.NewRateLimiter(generalCfg)
-			}
-			authRateLimiter, redisErr = middleware.NewRedisRateLimiter(&cfg.Redis, authCfg)
-			if redisErr != nil {
-				slog.Warn("failed to create Redis rate limiter for auth, falling back to in-memory", "error", redisErr)
-				authRateLimiter = middleware.NewRateLimiter(authCfg)
-			}
-			uploadRateLimiter, redisErr = middleware.NewRedisRateLimiter(&cfg.Redis, uploadCfg)
-			if redisErr != nil {
-				slog.Warn("failed to create Redis rate limiter for upload, falling back to in-memory", "error", redisErr)
-				uploadRateLimiter = middleware.NewRateLimiter(uploadCfg)
-			}
-			// Per-organization rate limiter (only when configured)
-			if cfg.Security.RateLimiting.OrgRequestsPerMinute > 0 {
-				orgCfg := middleware.RateLimitConfig{
-					RequestsPerMinute: cfg.Security.RateLimiting.OrgRequestsPerMinute,
-					BurstSize:         cfg.Security.RateLimiting.OrgBurst,
-					CleanupInterval:   5 * time.Minute,
-				}
-				if orgCfg.BurstSize == 0 {
-					orgCfg.BurstSize = orgCfg.RequestsPerMinute / 4
-				}
-				orgRateLimiter, redisErr = middleware.NewRedisRateLimiter(&cfg.Redis, orgCfg)
-				if redisErr != nil {
-					slog.Warn("failed to create Redis org rate limiter, falling back to in-memory", "error", redisErr)
-					orgRateLimiter = middleware.NewRateLimiter(orgCfg)
-				}
-			}
-			log.Println("Rate limiting enabled with Redis backend")
-		} else {
-			// In-memory rate limiters (single-instance only)
-			slog.Warn("redis.host not configured: rate limiting will use in-memory backend (not suitable for multi-pod HA)")
-			generalRateLimiter = middleware.NewRateLimiter(generalCfg)
-			authRateLimiter = middleware.NewRateLimiter(authCfg)
-			uploadRateLimiter = middleware.NewRateLimiter(uploadCfg)
-			// Per-organization rate limiter
-			if cfg.Security.RateLimiting.OrgRequestsPerMinute > 0 {
-				orgCfg := middleware.RateLimitConfig{
-					RequestsPerMinute: cfg.Security.RateLimiting.OrgRequestsPerMinute,
-					BurstSize:         cfg.Security.RateLimiting.OrgBurst,
-					CleanupInterval:   5 * time.Minute,
-				}
-				if orgCfg.BurstSize == 0 {
-					orgCfg.BurstSize = orgCfg.RequestsPerMinute / 4
-				}
-				orgRateLimiter = middleware.NewRateLimiter(orgCfg)
-			}
-		}
-	}
 
 	// Build per-principal override rate limiters (if configured)
 	var principalOverrides *middleware.PrincipalOverrideLimiters

@@ -65,6 +65,10 @@ type publicRouteDeps struct {
 	auditRepo               *repositories.AuditRepository
 	pullThroughSvc          *services.PullThroughService
 	tfBinariesHandler       *terraform_binaries.Handler
+	// protocolRateLimiter bounds anonymous request volume against the
+	// Terraform-protocol/OCI/mirror handlers (issue #743). Nil when rate
+	// limiting is disabled, which RateLimitMiddleware passes through.
+	protocolRateLimiter middleware.RateLimiterBackend
 }
 
 // registerPublicRoutes wires the unauthenticated Terraform-protocol/OCI/Swagger
@@ -84,6 +88,23 @@ func registerPublicRoutes(router *gin.Engine, d *publicRouteDeps) {
 	pullThroughSvc := d.pullThroughSvc
 	tfBinariesHandler := d.tfBinariesHandler
 
+	// protocolLimit bounds anonymous request volume across this whole route
+	// table (issue #743). Every family here was previously unlimited: module
+	// and provider version listing/download, the network mirror (whose
+	// pull-through path issues upstream fetches and DB writes on a cache
+	// miss), OCI GetBlob (streams whole archives through io.Copy), and the
+	// binary mirror when BinaryMirror.Auth is the default "none". These are
+	// the highest-volume, fully unauthenticated, internet-reachable handlers
+	// in the service, and each one does DB lookups and storage round trips.
+	//
+	// Applied to everything below EXCEPT /health and /ready. Those two are
+	// deliberately unlimited: they are liveness/readiness probes, kubelet
+	// probes for every pod on a node share that node's source address, and a
+	// 429 on /ready pulls a healthy pod out of service -- a rate limiter
+	// causing the outage it exists to prevent. RateLimitMiddleware passes
+	// through when the backend is nil (rate limiting disabled).
+	protocolLimit := middleware.RateLimitMiddleware(d.protocolRateLimiter)
+
 	// Health check endpoint
 	router.GET("/health", healthCheckHandler(db))
 
@@ -91,10 +112,11 @@ func registerPublicRoutes(router *gin.Engine, d *publicRouteDeps) {
 	router.GET("/ready", readinessHandler(db, storageBackend))
 
 	// Service discovery endpoint (Terraform protocol)
-	router.GET("/.well-known/terraform.json", serviceDiscoveryHandler(cfg))
+	router.GET("/.well-known/terraform.json", protocolLimit, serviceDiscoveryHandler(cfg))
 
 	// OCI Distribution Spec v1.1 — module archive pull endpoint
 	v2Group := router.Group("/v2")
+	v2Group.Use(protocolLimit)
 	{
 		v2Group.GET("/", ociHandler.Ping)
 		v2Group.HEAD("/:namespace/:name/:system/manifests/:reference", ociHandler.HeadManifest)
@@ -105,11 +127,17 @@ func registerPublicRoutes(router *gin.Engine, d *publicRouteDeps) {
 	}
 
 	// API version
-	router.GET("/version", versionHandler(cfg))
+	router.GET("/version", protocolLimit, versionHandler(cfg))
 
 	// Swagger UI - served from embedded static assets (air-gap safe)
 	swaggerUIFS, _ := fs.Sub(docs.SwaggerUIAssets, "swagger-ui")
-	router.StaticFS("/api-docs/static", http.FS(swaggerUIFS))
+	// StaticFS registers GET and HEAD under /api-docs/static/*filepath. It takes
+	// no per-route middleware, so the limiter is applied via a group -- found by
+	// the route-table enumeration in public_routes_ratelimit_test.go, which sees
+	// routes that reading the registration code does not.
+	swaggerStatic := router.Group("/api-docs/static")
+	swaggerStatic.Use(protocolLimit)
+	swaggerStatic.StaticFS("", http.FS(swaggerUIFS))
 
 	serveSwaggerUI := func(c *gin.Context) {
 		// Generate a per-request nonce for CSP
@@ -187,17 +215,17 @@ func registerPublicRoutes(router *gin.Engine, d *publicRouteDeps) {
 	}
 
 	// Register both exact and trailing-slash routes for Swagger UI
-	router.GET("/api-docs/index.html", serveSwaggerUI)
-	router.GET("/api-docs/", serveSwaggerUI)
+	router.GET("/api-docs/index.html", protocolLimit, serveSwaggerUI)
+	router.GET("/api-docs/", protocolLimit, serveSwaggerUI)
 	// Redirect /api-docs -> /api-docs/
-	router.GET("/api-docs", func(c *gin.Context) {
+	router.GET("/api-docs", protocolLimit, func(c *gin.Context) {
 		c.Redirect(http.StatusMovedPermanently, "/api-docs/")
 	})
 
 	// Raw Swagger JSON endpoint - serve embedded spec with runtime metadata.
 	// CORS is governed by the globally-applied CORSMiddleware like every
 	// other route; do not set Access-Control-Allow-Origin here (issue #684).
-	router.GET("/swagger.json", func(c *gin.Context) {
+	router.GET("/swagger.json", protocolLimit, func(c *gin.Context) {
 		c.Header("Content-Type", "application/json")
 
 		data := docs.SwaggerJSON
@@ -257,7 +285,7 @@ func registerPublicRoutes(router *gin.Engine, d *publicRouteDeps) {
 	// oapi-codegen) only care about the route and schema surface, not
 	// terms-of-service / license fields. CORS is governed by the
 	// globally-applied CORSMiddleware like every other route (issue #684).
-	router.GET("/openapi3.json", func(c *gin.Context) {
+	router.GET("/openapi3.json", protocolLimit, func(c *gin.Context) {
 		c.Header("Content-Type", "application/json")
 		c.Data(http.StatusOK, "application/json", docs.OpenAPI3JSON)
 	})
@@ -265,6 +293,7 @@ func registerPublicRoutes(router *gin.Engine, d *publicRouteDeps) {
 	// Module Registry endpoints (v1) - Terraform Protocol
 	// These are public endpoints that support optional authentication
 	v1Modules := router.Group("/v1/modules")
+	v1Modules.Use(protocolLimit)
 	v1Modules.Use(middleware.OptionalAuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo, userTokenRevocationRepo))
 	{
 		v1Modules.GET("/:namespace/:name/:system/versions", modules.ListVersionsHandler(db, cfg))
@@ -272,11 +301,12 @@ func registerPublicRoutes(router *gin.Engine, d *publicRouteDeps) {
 	}
 
 	// File serving endpoint for local storage with ServeDirectly enabled
-	router.GET("/v1/files/*filepath", modules.ServeFileHandler(storageBackend, cfg, db, auditRepo))
+	router.GET("/v1/files/*filepath", protocolLimit, modules.ServeFileHandler(storageBackend, cfg, db, auditRepo))
 
 	// Provider Registry endpoints (v1)
 	// These are for the standard Provider Registry Protocol
 	v1Providers := router.Group("/v1/providers")
+	v1Providers.Use(protocolLimit)
 	v1Providers.Use(middleware.OptionalAuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo, userTokenRevocationRepo))
 	{
 		v1Providers.GET("/:namespace/:type/versions", providers.ListVersionsHandler(db, cfg))
@@ -287,6 +317,7 @@ func registerPublicRoutes(router *gin.Engine, d *publicRouteDeps) {
 	// These endpoints include the hostname of the origin registry as per the Network Mirror Protocol
 	// They use a different path structure: /terraform/providers/:hostname/:namespace/:type/...
 	v1Mirror := router.Group("/terraform/providers")
+	v1Mirror.Use(protocolLimit)
 	{
 		v1Mirror.GET("/:hostname/:namespace/:type/index.json", mirror.IndexHandler(db, cfg, pullThroughSvc))
 		v1Mirror.GET("/:hostname/:namespace/:type/:versionfile", mirror.PlatformIndexHandler(db, cfg, auditRepo, pullThroughSvc))
@@ -296,6 +327,7 @@ func registerPublicRoutes(router *gin.Engine, d *publicRouteDeps) {
 	// Allows clients to discover and download official Terraform/OpenTofu binaries synced by
 	// any named mirror config.  The :name segment identifies the mirror configuration.
 	tfBinaries := router.Group("/terraform/binaries")
+	tfBinaries.Use(protocolLimit)
 	tfBinaries.Use(middleware.BinaryMirrorAuthMiddleware(cfg.BinaryMirror))
 	{
 		tfBinaries.GET("", tfBinariesHandler.ListConfigs)
