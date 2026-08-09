@@ -313,6 +313,41 @@ jobs:
             backend/docs/openapi3.json
           delete-branch: true
 
+  security-tooling-tests:
+    name: Security tooling unit tests
+    runs-on: ubuntu-latest
+    # backend/scripts/ holds the two programs that decide whether a security
+    # finding blocks a merge: gosec_compare.py (new-vs-baseline) and
+    # osv_triage.py (fixable-vs-unfixable). Both shipped with unit tests that
+    # NO workflow ran, so a regression in either would have surfaced as a
+    # security gate quietly reporting the wrong answer.
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run the security-tooling unit tests
+        working-directory: backend
+        run: |
+          set -euo pipefail
+          # Discovery rather than a hard-coded list: a new *_test.py added to
+          # scripts/ is picked up without editing this workflow, which is how
+          # the existing two came to be unrun.
+          found=$(find scripts -name '*_test.py' | sort)
+          if [ -z "$found" ]; then
+            echo "::error::no *_test.py found under backend/scripts — this job is not testing anything"
+            exit 1
+          fi
+          echo "$found"
+          for t in $found; do
+            echo "::group::$t"
+            python3 "$t"
+            echo "::endgroup::"
+          done
+
   gosec:
     name: Security Scan (gosec)
     runs-on: ubuntu-latest
