@@ -332,7 +332,12 @@ func (h *Handler) DownloadBinary(c *gin.Context) {
 	// Increment Prometheus download counter and persist to DB (non-blocking).
 	telemetry.TerraformBinaryDownloadsTotal.WithLabelValues(versionStr, osStr, archStr).Inc()
 	safego.Go(func() {
-		if err := h.repo.IncrementDownloadCount(context.Background(), platform.ID); err != nil {
+		// Bounded: this runs after the response is served, so a wedged
+		// database must shed the counter rather than accumulate goroutines
+		// (issue #758).
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := h.repo.IncrementDownloadCount(ctx, platform.ID); err != nil {
 			log.Printf("[terraform-binaries] download count increment failed for platform %s: %v", platform.ID, err)
 		}
 	})

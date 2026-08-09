@@ -192,7 +192,12 @@ func DownloadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Con
 		platformID := platform.ID
 		safego.Go(func() {
 			// Use background context to avoid cancellation when request completes
-			if err := providerRepo.IncrementDownloadCount(context.Background(), platformID); err != nil {
+			// Bounded: this runs after the response is served, so a wedged
+			// database must shed the counter rather than accumulate goroutines
+			// (issue #758).
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := providerRepo.IncrementDownloadCount(ctx, platformID); err != nil {
 				slog.Warn("failed to increment provider download count", "platform_id", platformID, "error", err)
 			}
 		})

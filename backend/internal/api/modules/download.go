@@ -117,7 +117,12 @@ func DownloadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Con
 		versionID := moduleVersion.ID
 		safego.Go(func() {
 			// Use background context to avoid cancellation when request completes
-			if err := moduleRepo.IncrementDownloadCount(context.Background(), versionID); err != nil {
+			// Bounded: this runs after the response is served, so a wedged
+			// database must shed the counter rather than accumulate goroutines
+			// (issue #758).
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := moduleRepo.IncrementDownloadCount(ctx, versionID); err != nil {
 				slog.Warn("failed to increment module download count", "version_id", versionID, "error", err)
 			}
 		})
