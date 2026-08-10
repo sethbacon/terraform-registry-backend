@@ -37,3 +37,30 @@ import "github.com/google/uuid"
 func ProviderTokenContext(scmProviderID uuid.UUID) []byte {
 	return []byte("scm_provider_tokens:" + scmProviderID.String() + ":access_token")
 }
+
+// UserTokenContext binds a user's OAuth access token to its row in
+// scm_user_tokens.
+//
+// The row is keyed by BOTH the user and the provider, so both are in the
+// context: binding to one axis alone would let a token be replayed across the
+// other. Every SCMUserTokenRecord carries both fields, so read sites derive this
+// from the record they are already holding rather than from surrounding scope —
+// which is what keeps eleven call sites uniform and hard to get wrong.
+//
+// Distinct from ProviderTokenContext even though both columns are named
+// AccessTokenEncrypted. Those are different tables with different keys, and the
+// compiler cannot tell them apart.
+func UserTokenContext(userID, scmProviderID uuid.UUID) []byte {
+	return []byte("scm_user_tokens:" + userID.String() + ":" + scmProviderID.String() + ":access_token")
+}
+
+// UserRefreshTokenContext binds a user's OAuth refresh token to its row.
+//
+// Deliberately distinct from UserTokenContext for the SAME row. Without that, an
+// access token could be written into the refresh column of its own row, or the
+// reverse, and still authenticate — a move WITHIN one row that a row-level
+// context alone does not catch, and one that hands a long-lived credential to a
+// path expecting a short-lived one.
+func UserRefreshTokenContext(userID, scmProviderID uuid.UUID) []byte {
+	return []byte("scm_user_tokens:" + userID.String() + ":" + scmProviderID.String() + ":refresh_token")
+}

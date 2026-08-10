@@ -338,7 +338,7 @@ func (h *SCMOAuthHandlers) HandleOAuthCallback(c *gin.Context) {
 	}
 
 	// Encrypt access token
-	encryptedAccessToken, err := h.tokenCipher.Seal(oauthToken.AccessToken)
+	encryptedAccessToken, err := h.tokenCipher.SealWithContext(oauthToken.AccessToken, scm.UserTokenContext(userID, providerID))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt access token"})
 		return
@@ -347,7 +347,7 @@ func (h *SCMOAuthHandlers) HandleOAuthCallback(c *gin.Context) {
 	// Encrypt refresh token if present
 	var encryptedRefreshToken *string
 	if oauthToken.RefreshToken != "" {
-		encrypted, err := h.tokenCipher.Seal(oauthToken.RefreshToken)
+		encrypted, err := h.tokenCipher.SealWithContext(oauthToken.RefreshToken, scm.UserRefreshTokenContext(userID, providerID))
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt refresh token"})
 			return
@@ -490,7 +490,8 @@ func (h *SCMOAuthHandlers) RefreshToken(c *gin.Context) {
 	// Decrypt refresh token
 	var refreshToken string
 	if tokenRecord.RefreshTokenEncrypted != nil {
-		refreshToken, err = h.tokenCipher.Open(*tokenRecord.RefreshTokenEncrypted)
+		refreshToken, _, err = h.tokenCipher.OpenWithContextOrLegacy(
+			*tokenRecord.RefreshTokenEncrypted, scm.UserRefreshTokenContext(tokenRecord.UserID, tokenRecord.SCMProviderID))
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to decrypt refresh token"})
 			return
@@ -533,7 +534,7 @@ func (h *SCMOAuthHandlers) RefreshToken(c *gin.Context) {
 	}
 
 	// Encrypt new tokens
-	encryptedAccessToken, err := h.tokenCipher.Seal(newToken.AccessToken)
+	encryptedAccessToken, err := h.tokenCipher.SealWithContext(newToken.AccessToken, scm.UserTokenContext(userID, providerID))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt new access token"})
 		return
@@ -541,7 +542,7 @@ func (h *SCMOAuthHandlers) RefreshToken(c *gin.Context) {
 
 	var encryptedRefreshToken *string
 	if newToken.RefreshToken != "" {
-		encrypted, err := h.tokenCipher.Seal(newToken.RefreshToken)
+		encrypted, err := h.tokenCipher.SealWithContext(newToken.RefreshToken, scm.UserRefreshTokenContext(userID, providerID))
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt new refresh token"})
 			return
@@ -620,7 +621,7 @@ func (h *SCMOAuthHandlers) SavePATToken(c *gin.Context) {
 	}
 
 	// Encrypt the PAT
-	encryptedToken, err := h.tokenCipher.Seal(req.AccessToken)
+	encryptedToken, err := h.tokenCipher.SealWithContext(req.AccessToken, scm.UserTokenContext(userID, providerID))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt token"})
 		return
@@ -775,7 +776,8 @@ func (h *SCMOAuthHandlers) ListRepositories(c *gin.Context) {
 	}
 
 	// Decrypt the access token
-	accessToken, err := h.tokenCipher.Open(tokenRecord.AccessTokenEncrypted)
+	accessToken, _, err := h.tokenCipher.OpenWithContextOrLegacy(
+		tokenRecord.AccessTokenEncrypted, scm.UserTokenContext(tokenRecord.UserID, tokenRecord.SCMProviderID))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to decrypt access token"})
 		return
@@ -821,7 +823,8 @@ func (h *SCMOAuthHandlers) ListRepositories(c *gin.Context) {
 
 	// Parse refresh token if present
 	if tokenRecord.RefreshTokenEncrypted != nil {
-		refreshToken, err := h.tokenCipher.Open(*tokenRecord.RefreshTokenEncrypted)
+		refreshToken, _, err := h.tokenCipher.OpenWithContextOrLegacy(
+			*tokenRecord.RefreshTokenEncrypted, scm.UserRefreshTokenContext(tokenRecord.UserID, tokenRecord.SCMProviderID))
 		if err == nil {
 			token.RefreshToken = refreshToken
 		}
@@ -853,12 +856,12 @@ func (h *SCMOAuthHandlers) ListRepositories(c *gin.Context) {
 		if renewErr != nil {
 			return false
 		}
-		if encAccess, encErr := h.tokenCipher.Seal(newToken.AccessToken); encErr == nil {
+		if encAccess, encErr := h.tokenCipher.SealWithContext(newToken.AccessToken, scm.UserTokenContext(tokenRecord.UserID, tokenRecord.SCMProviderID)); encErr == nil {
 			tokenRecord.AccessTokenEncrypted = encAccess
 			tokenRecord.ExpiresAt = newToken.ExpiresAt
 			tokenRecord.UpdatedAt = time.Now()
 			if newToken.RefreshToken != "" {
-				if encRefresh, rErr := h.tokenCipher.Seal(newToken.RefreshToken); rErr == nil {
+				if encRefresh, rErr := h.tokenCipher.SealWithContext(newToken.RefreshToken, scm.UserRefreshTokenContext(tokenRecord.UserID, tokenRecord.SCMProviderID)); rErr == nil {
 					tokenRecord.RefreshTokenEncrypted = &encRefresh
 				}
 			}
@@ -1096,7 +1099,8 @@ func (h *SCMOAuthHandlers) refreshAndPersistToken(ctx context.Context, connector
 	if tokenRecord.RefreshTokenEncrypted == nil {
 		return nil, fmt.Errorf("no refresh token available")
 	}
-	refreshToken, err := h.tokenCipher.Open(*tokenRecord.RefreshTokenEncrypted)
+	refreshToken, _, err := h.tokenCipher.OpenWithContextOrLegacy(
+		*tokenRecord.RefreshTokenEncrypted, scm.UserRefreshTokenContext(tokenRecord.UserID, tokenRecord.SCMProviderID))
 	if err != nil {
 		return nil, fmt.Errorf("failed to decrypt refresh token: %w", err)
 	}
@@ -1105,7 +1109,7 @@ func (h *SCMOAuthHandlers) refreshAndPersistToken(ctx context.Context, connector
 		return nil, fmt.Errorf("token refresh failed: %w", err)
 	}
 	// Encrypt and persist the new credentials.
-	encAccess, err := h.tokenCipher.Seal(newToken.AccessToken)
+	encAccess, err := h.tokenCipher.SealWithContext(newToken.AccessToken, scm.UserTokenContext(tokenRecord.UserID, tokenRecord.SCMProviderID))
 	if err != nil {
 		return nil, fmt.Errorf("failed to encrypt new access token: %w", err)
 	}
@@ -1113,7 +1117,7 @@ func (h *SCMOAuthHandlers) refreshAndPersistToken(ctx context.Context, connector
 	tokenRecord.ExpiresAt = newToken.ExpiresAt
 	tokenRecord.UpdatedAt = time.Now()
 	if newToken.RefreshToken != "" {
-		if encRefresh, rErr := h.tokenCipher.Seal(newToken.RefreshToken); rErr == nil {
+		if encRefresh, rErr := h.tokenCipher.SealWithContext(newToken.RefreshToken, scm.UserRefreshTokenContext(tokenRecord.UserID, tokenRecord.SCMProviderID)); rErr == nil {
 			tokenRecord.RefreshTokenEncrypted = &encRefresh
 		}
 	}
@@ -1143,7 +1147,8 @@ func (h *SCMOAuthHandlers) buildConnectorWithToken(ctx context.Context, provider
 	}
 
 	// Decrypt the access token
-	accessToken, err := h.tokenCipher.Open(tokenRecord.AccessTokenEncrypted)
+	accessToken, _, err := h.tokenCipher.OpenWithContextOrLegacy(
+		tokenRecord.AccessTokenEncrypted, scm.UserTokenContext(tokenRecord.UserID, tokenRecord.SCMProviderID))
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to decrypt access token")
 	}
@@ -1186,7 +1191,8 @@ func (h *SCMOAuthHandlers) buildConnectorWithToken(ctx context.Context, provider
 
 	// Parse refresh token if present
 	if tokenRecord.RefreshTokenEncrypted != nil {
-		refreshToken, err := h.tokenCipher.Open(*tokenRecord.RefreshTokenEncrypted)
+		refreshToken, _, err := h.tokenCipher.OpenWithContextOrLegacy(
+			*tokenRecord.RefreshTokenEncrypted, scm.UserRefreshTokenContext(tokenRecord.UserID, tokenRecord.SCMProviderID))
 		if err == nil {
 			token.RefreshToken = refreshToken
 		}

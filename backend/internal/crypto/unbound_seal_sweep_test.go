@@ -39,16 +39,16 @@ import (
 // unboundSealSites maps a repo-relative file to how many TokenCipher.Seal calls
 // it still contains, with the column and why it has not been converted yet.
 //
+// Converted so far: scm_provider_tokens.access_token (the app-token cache), and
+// the user OAuth access + refresh tokens across scm_oauth.go, scm_linking.go and
+// scm_publisher.go. What remains is the operator-entered material, which needs a
+// backfill per column before its reads can stop accepting the unbound form.
+//
 // Ordered by recoverability, which is the order the conversion follows: a column
 // whose failure mode is "re-mint" is safe to convert first; one whose failure
 // mode is "an operator re-enters the secret by hand" is converted last, with a
 // verified backfill.
 var unboundSealSites = map[string]int{
-	// User OAuth access + refresh tokens. Recoverable: the user reconnects.
-	// Two distinct contexts needed (access vs refresh) so a long-lived refresh
-	// token cannot be written into the access column of its own row.
-	"internal/api/admin/scm_oauth.go": 9,
-
 	// Storage-backend credentials: Azure account key, S3 access key id and
 	// secret, GCS credentials JSON. IRREPLACEABLE — an operator re-enters them.
 	"internal/api/admin/storage.go": 8,
@@ -59,10 +59,6 @@ var unboundSealSites = map[string]int{
 
 	// SCM client secret and app private key. IRREPLACEABLE.
 	"internal/api/admin/scm_providers.go": 4,
-
-	// User token re-seal on the module-linking path; converts with scm_oauth.go
-	// since it writes the same two columns.
-	"internal/api/modules/scm_linking.go": 2,
 
 	// This service's own notification channel target. The sibling column in
 	// tsm-backend is already bound (tsm #359) via identity/notify.TargetContext;

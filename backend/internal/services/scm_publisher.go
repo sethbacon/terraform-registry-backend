@@ -106,7 +106,8 @@ func (p *SCMPublisher) resolveSourceToken(ctx context.Context, createdBy *string
 	if tokenErr != nil || tokenRecord == nil {
 		return nil
 	}
-	accessToken, decryptErr := p.tokenCipher.Open(tokenRecord.AccessTokenEncrypted)
+	accessToken, _, decryptErr := p.tokenCipher.OpenWithContextOrLegacy(
+		tokenRecord.AccessTokenEncrypted, scm.UserTokenContext(tokenRecord.UserID, tokenRecord.SCMProviderID))
 	if decryptErr != nil {
 		return nil
 	}
