@@ -120,9 +120,24 @@ func TestMintProviderToken_EntraApp(t *testing.T) {
 	if len(store.upserts) != 1 {
 		t.Fatalf("upserts = %d, want 1", len(store.upserts))
 	}
-	dec, _ := cipher.Open(store.upserts[0].AccessTokenEncrypted)
-	if dec != "ado-token" {
-		t.Errorf("cached token decrypts to %q, want ado-token", dec)
+	// The cached token is bound to its provider row (suite-identity #153), so it
+	// opens under that row's context and NOT with a plain Open. This assertion
+	// previously used Open and is inverted rather than relaxed: a value that
+	// still opened unbound would mean the binding never happened.
+	dec, err := cipher.OpenWithContext(
+		store.upserts[0].AccessTokenEncrypted, scm.ProviderTokenContext(p.ID))
+	if err != nil || dec != "ado-token" {
+		t.Errorf("cached token under its own context = (%q, %v), want ado-token", dec, err)
+	}
+	if _, err := cipher.Open(store.upserts[0].AccessTokenEncrypted); err == nil {
+		t.Error("cached token still opens WITHOUT a context; it was not bound to its provider row")
+	}
+	// And it must not open as another provider's cached token -- the move this
+	// binding exists to prevent.
+	if _, err := cipher.OpenWithContext(
+		store.upserts[0].AccessTokenEncrypted, scm.ProviderTokenContext(uuid.New()),
+	); err == nil {
+		t.Error("cached token opened under another provider's context; the binding is vacuous")
 	}
 }
 
@@ -403,5 +418,70 @@ func TestSignAppJWT_Structure(t *testing.T) {
 	}
 	if parts := strings.Split(jwt, "."); len(parts) != 3 {
 		t.Errorf("jwt has %d segments, want 3", len(parts))
+	}
+}
+
+// suite-identity #153 transition. A cache entry written before the binding
+// shipped must still serve, or the deploy that ships this forces every provider
+// to re-mint at once.
+func TestMintProviderToken_ServesALegacyUnboundCacheEntry(t *testing.T) {
+	cipher := testCipher(t)
+	providerID := uuid.New()
+
+	legacy, err := cipher.Seal("cached-legacy-token")
+	if err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	future := time.Now().Add(time.Hour)
+	store := &fakeStore{get: &scm.SCMProviderTokenRecord{
+		SCMProviderID:        providerID,
+		AccessTokenEncrypted: legacy,
+		TokenType:            "Bearer",
+		ExpiresAt:            &future,
+	}}
+
+	m := NewMinterWithGuard(cipher, store, loopbackGuard)
+	tok, err := m.MintProviderToken(context.Background(), &scm.SCMProvider{
+		ID: providerID, AuthMode: scm.AuthModeEntraApp,
+	})
+	if err != nil {
+		t.Fatalf("MintProviderToken: %v", err)
+	}
+	if tok.AccessToken != "cached-legacy-token" {
+		t.Errorf("token = %q; an unbound cache entry must still serve during the transition", tok.AccessToken)
+	}
+	// Served from cache, so nothing was minted and nothing was written.
+	if len(store.upserts) != 0 {
+		t.Errorf("upserts = %d, want 0 — the cached entry should have been served as-is", len(store.upserts))
+	}
+}
+
+// The other side: a cache entry bound to a DIFFERENT provider must not be
+// served. It falls through to a fresh mint rather than handing one provider's
+// token to another.
+func TestMintProviderToken_IgnoresACacheEntryBoundToAnotherProvider(t *testing.T) {
+	cipher := testCipher(t)
+	providerID := uuid.New()
+
+	foreign, err := cipher.SealWithContext("someone-elses-token", scm.ProviderTokenContext(uuid.New()))
+	if err != nil {
+		t.Fatalf("SealWithContext: %v", err)
+	}
+	future := time.Now().Add(time.Hour)
+	store := &fakeStore{get: &scm.SCMProviderTokenRecord{
+		SCMProviderID:        providerID,
+		AccessTokenEncrypted: foreign,
+		TokenType:            "Bearer",
+		ExpiresAt:            &future,
+	}}
+
+	m := NewMinterWithGuard(cipher, store, loopbackGuard)
+	tok, err := m.MintProviderToken(context.Background(), &scm.SCMProvider{
+		ID: providerID, AuthMode: scm.AuthModeEntraApp,
+	})
+	// The mint itself fails here (no IdP configured in this fixture); what
+	// matters is that the foreign token was NOT returned.
+	if err == nil && tok != nil && tok.AccessToken == "someone-elses-token" {
+		t.Fatal("served a cached token bound to a different provider row")
 	}
 }

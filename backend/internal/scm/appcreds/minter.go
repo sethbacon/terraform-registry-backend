@@ -96,7 +96,12 @@ func (m *Minter) MintProviderToken(ctx context.Context, p *scm.SCMProvider) (*sc
 	if m.store != nil {
 		if rec, err := m.store.GetProviderToken(ctx, p.ID); err == nil && rec != nil {
 			if rec.ExpiresAt == nil || rec.ExpiresAt.Sub(m.now()) > m.refreshMargin {
-				if tok, derr := m.cipher.Open(rec.AccessTokenEncrypted); derr == nil && tok != "" {
+				// Accepts the row-bound form and the legacy unbound one, so a
+				// cache written before this change still serves rather than
+				// forcing every provider to re-mint on the deploy that ships it.
+				tok, _, derr := m.cipher.OpenWithContextOrLegacy(
+					rec.AccessTokenEncrypted, scm.ProviderTokenContext(p.ID))
+				if derr == nil && tok != "" {
 					return &scm.OAuthToken{AccessToken: tok, TokenType: rec.TokenType, ExpiresAt: rec.ExpiresAt}, nil
 				}
 			}
@@ -128,7 +133,9 @@ func (m *Minter) MintProviderToken(ctx context.Context, p *scm.SCMProvider) (*sc
 
 	// Best-effort cache write — a persistence failure must not fail the request.
 	if m.store != nil {
-		if enc, sealErr := m.cipher.Seal(token); sealErr == nil {
+		// Bound to the provider row: a cached token cannot be copied into another
+		// provider's cache row and served as that provider's.
+		if enc, sealErr := m.cipher.SealWithContext(token, scm.ProviderTokenContext(p.ID)); sealErr == nil {
 			exp := expiresAt
 			_ = m.store.UpsertProviderToken(ctx, &scm.SCMProviderTokenRecord{
 				SCMProviderID:        p.ID,
