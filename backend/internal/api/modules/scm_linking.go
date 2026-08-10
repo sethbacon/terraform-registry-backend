@@ -53,7 +53,8 @@ func (h *SCMLinkingHandler) WithMinter(minter appcreds.SharedMinter) *SCMLinking
 // for the user, the returned token is nil (with a nil error) so best-effort
 // callers can treat the operation as a no-op.
 func (h *SCMLinkingHandler) connectorAndToken(ctx context.Context, provider *scm.SCMProviderRecord, userID uuid.UUID) (scm.Connector, *scm.OAuthToken, error) {
-	clientSecret, err := h.tokenCipher.Open(provider.ClientSecretEncrypted)
+	clientSecret, _, err := h.tokenCipher.OpenWithContextOrLegacy(
+		provider.ClientSecretEncrypted, scm.ProviderClientSecretContext(provider.ID.String()))
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to decrypt client secret")
 	}
@@ -572,7 +573,8 @@ func (h *SCMLinkingHandler) TriggerManualSync(c *gin.Context) {
 	}
 
 	// Decrypt client secret
-	clientSecret, err := h.tokenCipher.Open(provider.ClientSecretEncrypted)
+	clientSecret, _, err := h.tokenCipher.OpenWithContextOrLegacy(
+		provider.ClientSecretEncrypted, scm.ProviderClientSecretContext(provider.ID.String()))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to decrypt client secret"})
 		return

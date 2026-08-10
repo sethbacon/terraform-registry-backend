@@ -41,9 +41,10 @@ import (
 //
 // Converted so far: scm_provider_tokens.access_token (the app-token cache), the
 // user OAuth access + refresh tokens across scm_oauth.go, scm_linking.go and
-// scm_publisher.go, and the four storage_config credential columns. What remains
-// is the rest of the operator-entered material, which needs a backfill per
-// column before its reads can stop accepting the unbound form.
+// scm_publisher.go, the four storage_config credential columns, and the
+// scm_providers client secret + GitHub App private key. What remains is the rest
+// of the operator-entered material, which needs a backfill per column before its
+// reads can stop accepting the unbound form.
 //
 // Ordered by recoverability, which is the order the conversion follows: a column
 // whose failure mode is "re-mint" is safe to convert first; one whose failure
@@ -61,9 +62,6 @@ var unboundSealSites = map[string]int{
 	// cannot be declared bound, and its backfill would be undone by the next
 	// first-run save.
 	"internal/api/setup/handlers.go": 2,
-
-	// SCM client secret and app private key. IRREPLACEABLE.
-	"internal/api/admin/scm_providers.go": 4,
 
 	// This service's own notification channel target is BOUND. The one Seal left
 	// is deliberate and transient: ChannelRepository.Create uses

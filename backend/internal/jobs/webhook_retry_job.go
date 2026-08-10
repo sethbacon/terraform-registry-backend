@@ -131,7 +131,8 @@ func (j *WebhookRetryJob) retryOne(ctx context.Context, event *scm.SCMWebhookLog
 	}
 
 	// Decrypt the provider's client secret.
-	clientSecret, err := j.tokenCipher.Open(provider.ClientSecretEncrypted)
+	clientSecret, _, err := j.tokenCipher.OpenWithContextOrLegacy(
+		provider.ClientSecretEncrypted, scm.ProviderClientSecretContext(provider.ID.String()))
 	if err != nil {
 		j.failRetry(ctx, event, fmt.Sprintf("failed to decrypt client secret: %v", err))
 		return

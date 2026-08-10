@@ -128,7 +128,8 @@ func (h *SCMOAuthHandlers) InitiateOAuth(c *gin.Context) {
 	}
 
 	// Decrypt client secret
-	clientSecret, err := h.tokenCipher.Open(provider.ClientSecretEncrypted)
+	clientSecret, _, err := h.tokenCipher.OpenWithContextOrLegacy(
+		provider.ClientSecretEncrypted, scm.ProviderClientSecretContext(provider.ID.String()))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to decrypt client secret"})
 		return
@@ -300,7 +301,8 @@ func (h *SCMOAuthHandlers) HandleOAuthCallback(c *gin.Context) {
 	}
 
 	// Decrypt client secret for token exchange
-	clientSecret, err := h.tokenCipher.Open(provider.ClientSecretEncrypted)
+	clientSecret, _, err := h.tokenCipher.OpenWithContextOrLegacy(
+		provider.ClientSecretEncrypted, scm.ProviderClientSecretContext(provider.ID.String()))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to decrypt client secret"})
 		return
@@ -499,7 +501,8 @@ func (h *SCMOAuthHandlers) RefreshToken(c *gin.Context) {
 	}
 
 	// Decrypt client secret
-	clientSecret, err := h.tokenCipher.Open(provider.ClientSecretEncrypted)
+	clientSecret, _, err := h.tokenCipher.OpenWithContextOrLegacy(
+		provider.ClientSecretEncrypted, scm.ProviderClientSecretContext(provider.ID.String()))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to decrypt client secret"})
 		return
@@ -784,7 +787,8 @@ func (h *SCMOAuthHandlers) ListRepositories(c *gin.Context) {
 	}
 
 	// Decrypt client secret
-	clientSecret, err := h.tokenCipher.Open(provider.ClientSecretEncrypted)
+	clientSecret, _, err := h.tokenCipher.OpenWithContextOrLegacy(
+		provider.ClientSecretEncrypted, scm.ProviderClientSecretContext(provider.ID.String()))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to decrypt client secret"})
 		return
@@ -1154,7 +1158,8 @@ func (h *SCMOAuthHandlers) buildConnectorWithToken(ctx context.Context, provider
 	}
 
 	// Decrypt client secret
-	clientSecret, err := h.tokenCipher.Open(provider.ClientSecretEncrypted)
+	clientSecret, _, err := h.tokenCipher.OpenWithContextOrLegacy(
+		provider.ClientSecretEncrypted, scm.ProviderClientSecretContext(provider.ID.String()))
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to decrypt client secret")
 	}
@@ -1228,7 +1233,8 @@ func (h *SCMOAuthHandlers) buildConnectorWithSharedToken(ctx context.Context, pr
 		return nil, nil, nil, fmt.Errorf("failed to mint shared token: %w", err)
 	}
 
-	clientSecret, err := h.tokenCipher.Open(provider.ClientSecretEncrypted)
+	clientSecret, _, err := h.tokenCipher.OpenWithContextOrLegacy(
+		provider.ClientSecretEncrypted, scm.ProviderClientSecretContext(provider.ID.String()))
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to decrypt client secret")
 	}

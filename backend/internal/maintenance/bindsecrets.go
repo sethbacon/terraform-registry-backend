@@ -13,6 +13,7 @@ import (
 
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
+	"github.com/terraform-registry/terraform-registry/internal/scm"
 )
 
 // Converting a column to the row-bound ciphertext form (suite-identity #153)
@@ -72,8 +73,8 @@ var ErrUnboundRemain = errors.New("maintenance: secrets remain unbound")
 
 // columns is the registry of convertible columns.
 //
-// The remaining ones (setup's OIDC client secret and LDAP bind password, the SCM
-// client secret and app private key, the SMTP password) are added here as each is
+// The remaining ones (setup's OIDC client secret and LDAP bind password, and the
+// SMTP password) are added here as each is
 // converted in the application — the sweep for a column must not exist before
 // the code that writes the bound form, or an operator can convert rows the
 // running service then cannot read. "The code" means EVERY writer: the four
@@ -105,6 +106,37 @@ var columns = []column{
 	storageConfigColumn("s3_access_key_id_encrypted", models.StorageConfigS3AccessKeyIDContext),
 	storageConfigColumn("s3_secret_access_key_encrypted", models.StorageConfigS3SecretAccessKeyContext),
 	storageConfigColumn("gcs_credentials_json_encrypted", models.StorageConfigGCSCredentialsJSONContext),
+	{
+		name:    "scm_providers.client_secret_encrypted",
+		context: scm.ProviderClientSecretContext,
+		list: func(ctx context.Context, db *sql.DB) ([]sealedRow, error) {
+			return listRows(ctx, db,
+				`SELECT id, client_secret_encrypted FROM scm_providers WHERE client_secret_encrypted <> ''`)
+		},
+		update: func(ctx context.Context, db *sql.DB, id, bound string) error {
+			_, err := db.ExecContext(ctx,
+				`UPDATE scm_providers SET client_secret_encrypted = $2, updated_at = now() WHERE id = $1`,
+				id, bound)
+			return err
+		},
+	},
+	{
+		// Nullable, unlike the client secret: only a github_app provider has
+		// one. IS NOT NULL keeps a NULL out of the sealedRow.sealed scan.
+		name:    "scm_providers.encrypted_app_private_key",
+		context: scm.ProviderAppPrivateKeyContext,
+		list: func(ctx context.Context, db *sql.DB) ([]sealedRow, error) {
+			return listRows(ctx, db,
+				`SELECT id, encrypted_app_private_key FROM scm_providers
+				 WHERE encrypted_app_private_key IS NOT NULL AND encrypted_app_private_key <> ''`)
+		},
+		update: func(ctx context.Context, db *sql.DB, id, bound string) error {
+			_, err := db.ExecContext(ctx,
+				`UPDATE scm_providers SET encrypted_app_private_key = $2, updated_at = now() WHERE id = $1`,
+				id, bound)
+			return err
+		},
+	},
 }
 
 // storageConfigColumn describes one of the four storage_config credential

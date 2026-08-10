@@ -54,6 +54,36 @@ func UserTokenContext(userID, scmProviderID uuid.UUID) []byte {
 	return []byte("scm_user_tokens:" + userID.String() + ":" + scmProviderID.String() + ":access_token")
 }
 
+// ProviderClientSecretContext binds a provider's OAuth client secret to its row
+// in scm_providers.
+//
+// Note the table: ProviderTokenContext above is keyed by the SAME provider id
+// but names scm_provider_tokens, so the two cannot be confused even though both
+// contexts contain the same uuid. The table prefix is doing real work here, not
+// decoration.
+//
+// This one takes the id as TEXT, unlike the three above. It is a column the
+// bind-secrets sweep converts, and the sweep reads row ids as text out of the
+// database; giving it a uuid.UUID form would mean either a second function or a
+// parse with nowhere to report failure, and two derivations of one context
+// string is exactly the drift that ends with a credential that no longer
+// decrypts. Callers pass provider.ID.String().
+func ProviderClientSecretContext(scmProviderID string) []byte {
+	return []byte("scm_providers:" + scmProviderID + ":client_secret_encrypted")
+}
+
+// ProviderAppPrivateKeyContext binds a GitHub App private key to its provider
+// row in scm_providers.
+//
+// Distinct from ProviderClientSecretContext for the SAME row, for the same
+// reason the access and refresh tokens are distinct: both columns live side by
+// side, and a row-level context alone would let the App private key — which
+// authenticates as the installation itself — be written into the client-secret
+// column of its own row and still decrypt there.
+func ProviderAppPrivateKeyContext(scmProviderID string) []byte {
+	return []byte("scm_providers:" + scmProviderID + ":encrypted_app_private_key")
+}
+
 // UserRefreshTokenContext binds a user's OAuth refresh token to its row.
 //
 // Deliberately distinct from UserTokenContext for the SAME row. Without that, an

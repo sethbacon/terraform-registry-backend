@@ -125,7 +125,8 @@ func (v *TagVerifier) runVerification(ctx context.Context) {
 		if provider.TenantID != nil {
 			tenantID = *provider.TenantID
 		}
-		clientSecret, csErr := v.tokenCipher.Open(provider.ClientSecretEncrypted)
+		clientSecret, _, csErr := v.tokenCipher.OpenWithContextOrLegacy(
+			provider.ClientSecretEncrypted, scm.ProviderClientSecretContext(provider.ID.String()))
 		if csErr != nil {
 			continue
 		}
