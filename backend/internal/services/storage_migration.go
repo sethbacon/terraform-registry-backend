@@ -250,7 +250,8 @@ func (s *StorageMigrationService) buildStorageFromConfig(sc *models.StorageConfi
 			CDNURL:        sc.AzureCDNURL.String,
 		}
 		if sc.AzureAccountKeyEncrypted.Valid && sc.AzureAccountKeyEncrypted.String != "" {
-			key, err := s.tokenCipher.Open(sc.AzureAccountKeyEncrypted.String)
+			key, _, err := s.tokenCipher.OpenWithContextOrLegacy(sc.AzureAccountKeyEncrypted.String,
+				models.StorageConfigAzureAccountKeyContext(sc.ID.String()))
 			if err != nil {
 				return nil, fmt.Errorf("failed to decrypt azure account key: %w", err)
 			}
@@ -270,14 +271,16 @@ func (s *StorageMigrationService) buildStorageFromConfig(sc *models.StorageConfi
 			WebIdentityTokenFile: sc.S3WebIdentityTokenFile.String,
 		}
 		if sc.S3AccessKeyIDEncrypted.Valid && sc.S3AccessKeyIDEncrypted.String != "" {
-			v, err := s.tokenCipher.Open(sc.S3AccessKeyIDEncrypted.String)
+			v, _, err := s.tokenCipher.OpenWithContextOrLegacy(sc.S3AccessKeyIDEncrypted.String,
+				models.StorageConfigS3AccessKeyIDContext(sc.ID.String()))
 			if err != nil {
 				return nil, fmt.Errorf("failed to decrypt s3 access key id: %w", err)
 			}
 			scfg.AccessKeyID = v
 		}
 		if sc.S3SecretAccessKeyEncrypted.Valid && sc.S3SecretAccessKeyEncrypted.String != "" {
-			v, err := s.tokenCipher.Open(sc.S3SecretAccessKeyEncrypted.String)
+			v, _, err := s.tokenCipher.OpenWithContextOrLegacy(sc.S3SecretAccessKeyEncrypted.String,
+				models.StorageConfigS3SecretAccessKeyContext(sc.ID.String()))
 			if err != nil {
 				return nil, fmt.Errorf("failed to decrypt s3 secret access key: %w", err)
 			}
@@ -294,7 +297,8 @@ func (s *StorageMigrationService) buildStorageFromConfig(sc *models.StorageConfi
 			Endpoint:        sc.GCSEndpoint.String,
 		}
 		if sc.GCSCredentialsJSONEncrypted.Valid && sc.GCSCredentialsJSONEncrypted.String != "" {
-			v, err := s.tokenCipher.Open(sc.GCSCredentialsJSONEncrypted.String)
+			v, _, err := s.tokenCipher.OpenWithContextOrLegacy(sc.GCSCredentialsJSONEncrypted.String,
+				models.StorageConfigGCSCredentialsJSONContext(sc.ID.String()))
 			if err != nil {
 				return nil, fmt.Errorf("failed to decrypt gcs credentials json: %w", err)
 			}

@@ -614,7 +614,8 @@ func (h *StorageHandlers) buildStorageConfig(input *models.StorageConfigInput, u
 		config.AzureContainerName = sql.NullString{String: input.AzureContainerName, Valid: input.AzureContainerName != ""}
 		config.AzureCDNURL = sql.NullString{String: input.AzureCDNURL, Valid: input.AzureCDNURL != ""}
 		if input.AzureAccountKey != "" {
-			encrypted, err := h.tokenCipher.Seal(input.AzureAccountKey)
+			encrypted, err := h.tokenCipher.SealWithContext(input.AzureAccountKey,
+				models.StorageConfigAzureAccountKeyContext(config.ID.String()))
 			if err != nil {
 				return nil, err
 			}
@@ -631,14 +632,16 @@ func (h *StorageHandlers) buildStorageConfig(input *models.StorageConfigInput, u
 		config.S3ExternalID = sql.NullString{String: input.S3ExternalID, Valid: input.S3ExternalID != ""}
 		config.S3WebIdentityTokenFile = sql.NullString{String: input.S3WebIdentityTokenFile, Valid: input.S3WebIdentityTokenFile != ""}
 		if input.S3AccessKeyID != "" {
-			encrypted, err := h.tokenCipher.Seal(input.S3AccessKeyID)
+			encrypted, err := h.tokenCipher.SealWithContext(input.S3AccessKeyID,
+				models.StorageConfigS3AccessKeyIDContext(config.ID.String()))
 			if err != nil {
 				return nil, err
 			}
 			config.S3AccessKeyIDEncrypted = sql.NullString{String: encrypted, Valid: true}
 		}
 		if input.S3SecretAccessKey != "" {
-			encrypted, err := h.tokenCipher.Seal(input.S3SecretAccessKey)
+			encrypted, err := h.tokenCipher.SealWithContext(input.S3SecretAccessKey,
+				models.StorageConfigS3SecretAccessKeyContext(config.ID.String()))
 			if err != nil {
 				return nil, err
 			}
@@ -652,7 +655,8 @@ func (h *StorageHandlers) buildStorageConfig(input *models.StorageConfigInput, u
 		config.GCSCredentialsFile = sql.NullString{String: input.GCSCredentialsFile, Valid: input.GCSCredentialsFile != ""}
 		config.GCSEndpoint = sql.NullString{String: input.GCSEndpoint, Valid: input.GCSEndpoint != ""}
 		if input.GCSCredentialsJSON != "" {
-			encrypted, err := h.tokenCipher.Seal(input.GCSCredentialsJSON)
+			encrypted, err := h.tokenCipher.SealWithContext(input.GCSCredentialsJSON,
+				models.StorageConfigGCSCredentialsJSONContext(config.ID.String()))
 			if err != nil {
 				return nil, err
 			}
@@ -680,7 +684,8 @@ func (h *StorageHandlers) updateStorageConfigFromInput(config *models.StorageCon
 		config.AzureContainerName = sql.NullString{String: input.AzureContainerName, Valid: input.AzureContainerName != ""}
 		config.AzureCDNURL = sql.NullString{String: input.AzureCDNURL, Valid: input.AzureCDNURL != ""}
 		if input.AzureAccountKey != "" {
-			encrypted, err := h.tokenCipher.Seal(input.AzureAccountKey)
+			encrypted, err := h.tokenCipher.SealWithContext(input.AzureAccountKey,
+				models.StorageConfigAzureAccountKeyContext(config.ID.String()))
 			if err != nil {
 				return err
 			}
@@ -697,14 +702,16 @@ func (h *StorageHandlers) updateStorageConfigFromInput(config *models.StorageCon
 		config.S3ExternalID = sql.NullString{String: input.S3ExternalID, Valid: input.S3ExternalID != ""}
 		config.S3WebIdentityTokenFile = sql.NullString{String: input.S3WebIdentityTokenFile, Valid: input.S3WebIdentityTokenFile != ""}
 		if input.S3AccessKeyID != "" {
-			encrypted, err := h.tokenCipher.Seal(input.S3AccessKeyID)
+			encrypted, err := h.tokenCipher.SealWithContext(input.S3AccessKeyID,
+				models.StorageConfigS3AccessKeyIDContext(config.ID.String()))
 			if err != nil {
 				return err
 			}
 			config.S3AccessKeyIDEncrypted = sql.NullString{String: encrypted, Valid: true}
 		}
 		if input.S3SecretAccessKey != "" {
-			encrypted, err := h.tokenCipher.Seal(input.S3SecretAccessKey)
+			encrypted, err := h.tokenCipher.SealWithContext(input.S3SecretAccessKey,
+				models.StorageConfigS3SecretAccessKeyContext(config.ID.String()))
 			if err != nil {
 				return err
 			}
@@ -718,7 +725,8 @@ func (h *StorageHandlers) updateStorageConfigFromInput(config *models.StorageCon
 		config.GCSCredentialsFile = sql.NullString{String: input.GCSCredentialsFile, Valid: input.GCSCredentialsFile != ""}
 		config.GCSEndpoint = sql.NullString{String: input.GCSEndpoint, Valid: input.GCSEndpoint != ""}
 		if input.GCSCredentialsJSON != "" {
-			encrypted, err := h.tokenCipher.Seal(input.GCSCredentialsJSON)
+			encrypted, err := h.tokenCipher.SealWithContext(input.GCSCredentialsJSON,
+				models.StorageConfigGCSCredentialsJSONContext(config.ID.String()))
 			if err != nil {
 				return err
 			}

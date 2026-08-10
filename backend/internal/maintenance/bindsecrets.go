@@ -12,12 +12,13 @@ import (
 	identitynotify "github.com/sethbacon/terraform-suite-identity/identity/notify"
 
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
+	"github.com/terraform-registry/terraform-registry/internal/db/models"
 )
 
 // Converting a column to the row-bound ciphertext form (suite-identity #153)
 // cannot be a SQL migration: AES-GCM re-encryption needs the key, which only
 // exists in the running application. Each converted column therefore needs a
-// sweep, and this service has five more to go.
+// sweep, and this service has several more to go.
 //
 // Rather than five bespoke commands, a column describes itself with three
 // things — how to list its rows, how to derive a row's context, how to write a
@@ -71,11 +72,20 @@ var ErrUnboundRemain = errors.New("maintenance: secrets remain unbound")
 
 // columns is the registry of convertible columns.
 //
-// One entry today. The remaining four (storage credentials, setup secrets, SCM
-// client secret and app private key, SMTP password) are added here as each is
+// The remaining ones (setup's OIDC client secret and LDAP bind password, the SCM
+// client secret and app private key, the SMTP password) are added here as each is
 // converted in the application — the sweep for a column must not exist before
 // the code that writes the bound form, or an operator can convert rows the
-// running service then cannot read.
+// running service then cannot read. "The code" means EVERY writer: the four
+// storage_config entries below were only registrable once both the admin CRUD
+// handlers and the first-run setup path sealed with a context, since otherwise
+// the next first-run save would re-introduce an unbound row behind the sweep.
+//
+// Each entry derives its context by calling the same exported function the
+// application seals with, never by rebuilding the string here. That is the whole
+// reason those functions are exported: a second copy of the format in this file
+// would drift from the first, and the symptom is an operator credential that no
+// longer decrypts.
 var columns = []column{
 	{
 		name:    "notification_channels.encrypted_target",
@@ -91,6 +101,44 @@ var columns = []column{
 			return err
 		},
 	},
+	storageConfigColumn("azure_account_key_encrypted", models.StorageConfigAzureAccountKeyContext),
+	storageConfigColumn("s3_access_key_id_encrypted", models.StorageConfigS3AccessKeyIDContext),
+	storageConfigColumn("s3_secret_access_key_encrypted", models.StorageConfigS3SecretAccessKeyContext),
+	storageConfigColumn("gcs_credentials_json_encrypted", models.StorageConfigGCSCredentialsJSONContext),
+}
+
+// storageConfigColumn describes one of the four storage_config credential
+// columns.
+//
+// A constructor rather than four literals because these four differ only in
+// which column they name, and a copy-paste of a twelve-line literal is how a
+// query ends up selecting one column and writing back another — a bug that
+// would move a credential between columns, which is the exact class this whole
+// change exists to prevent. The column name is interpolated into the SQL, which
+// is safe here and only here: the four call sites are literals in this file, not
+// input.
+//
+// Both clauses of the WHERE matter. The empty-string test excludes a column
+// left blank, which is "unset" rather than "unbound" and is not a conversion
+// candidate; IS NOT NULL is what keeps a NULL out of the sealedRow.sealed string
+// scan, since these columns are nullable — only the backend actually in use has
+// its credentials populated.
+func storageConfigColumn(dbColumn string, contextFor func(string) []byte) column {
+	return column{
+		name:    "storage_config." + dbColumn,
+		context: contextFor,
+		list: func(ctx context.Context, db *sql.DB) ([]sealedRow, error) {
+			return listRows(ctx, db, fmt.Sprintf(
+				`SELECT id, %s FROM storage_config WHERE %s IS NOT NULL AND %s <> ''`,
+				dbColumn, dbColumn, dbColumn))
+		},
+		update: func(ctx context.Context, db *sql.DB, id, bound string) error {
+			_, err := db.ExecContext(ctx, fmt.Sprintf(
+				`UPDATE storage_config SET %s = $2, updated_at = now() WHERE id = $1`, dbColumn),
+				id, bound)
+			return err
+		},
+	}
 }
 
 // listRows runs a two-column (id, ciphertext) query and drains it.
