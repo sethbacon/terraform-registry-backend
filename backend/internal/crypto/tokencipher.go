@@ -1,193 +1,82 @@
-// Package crypto provides AES-256-GCM authenticated encryption for sensitive
-// values that must be stored at rest in the database, specifically SCM OAuth
-// tokens. SCM tokens are far more sensitive than registry API keys: they grant
-// write access to source code repositories, so a leaked token could allow an
-// attacker to push malicious code to every repository the SCM account can reach.
-// Registry API keys, by contrast, are already bcrypt-hashed and provide access
-// only to the registry itself. AES-256-GCM is chosen because it provides both
-// confidentiality and authenticated integrity, ensuring stored tokens cannot be
-// silently tampered with even if the database is partially compromised.
+// tokencipher.go re-exports the shared TokenCipher from
+// github.com/sethbacon/terraform-suite-identity/identity/crypto.
+//
+// It used to be a 295-line COPY of that implementation, and the copy had
+// drifted: suite-identity #153 raised the PBKDF2 floor to OWASP's 600,000 and
+// made it reject rather than silently rewrite, and it added the GCM
+// additional-authenticated-data pair that binds a ciphertext to the row it
+// belongs to. Neither reached this file. A security fix had been applied to one
+// copy of a cryptographic primitive and not the other, and nothing anywhere
+// produced a signal — the ADO extension repo gates its duplicated modules with
+// scripts/check-shared-modules.js, but no equivalent exists between the Go
+// repos (#835).
+//
+// Aliasing rather than re-syncing is deliberate: a parity gate only tells you
+// after a copy has already drifted, whereas there is now no second copy to
+// drift. It also means the AAD methods arrive here automatically, since they are
+// methods on the aliased type.
+//
+// This is a drop-in for data already at rest. The two implementations were
+// verified wire-compatible in both directions before the swap — same
+// construction (AES-256-GCM), same framing (nonce prepended), same encoding
+// (base64.URLEncoding), same nil AAD, same empty-string handling — so every SCM
+// token, client secret, app private key and storage credential already stored
+// keeps opening. No re-encryption, no migration.
+//
+// entropy.go stays local: it is this service's own heuristic, not shared.
 package crypto
 
 import (
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
-	"errors"
-	"io"
-
-	"golang.org/x/crypto/pbkdf2"
+	identitycrypto "github.com/sethbacon/terraform-suite-identity/identity/crypto"
 )
 
+// TokenCipher encrypts and decrypts sensitive values held at rest.
+//
+// Alias, not a wrapper, so the methods added upstream — SealWithContext,
+// OpenWithContext, OpenWithContextOrLegacy and ReSealWithContext — are available
+// here without this file having to track them.
+type TokenCipher = identitycrypto.TokenCipher
+
+// Constructors. Vars rather than wrapper funcs so the signatures cannot drift
+// from upstream's.
 var (
-	// ErrKeyLengthInvalid is returned when a master key is not exactly 32 bytes (required for AES-256).
-	ErrKeyLengthInvalid = errors.New("crypto: key must be exactly 32 bytes for AES-256")
-	// ErrCiphertextCorrupted is returned when the ciphertext fails base64 decoding or is too short to contain a valid nonce.
-	ErrCiphertextCorrupted = errors.New("crypto: ciphertext is corrupted or tampered")
-	// ErrDecryptionFailed is returned when AES-GCM authentication or decryption fails, indicating tampering or a wrong key.
-	ErrDecryptionFailed = errors.New("crypto: decryption operation failed")
-	// ErrSaltTooShort is returned when the provided salt is fewer than 16 bytes, which would weaken PBKDF2 key derivation.
-	ErrSaltTooShort = errors.New("crypto: salt must be at least 16 bytes")
+	// NewTokenCipher creates a cipher with a 32-byte master key.
+	NewTokenCipher = identitycrypto.NewTokenCipher
+	// NewTokenCipherWithPrevious creates a cipher that supports dual-key
+	// decryption for zero-downtime key rotation.
+	NewTokenCipherWithPrevious = identitycrypto.NewTokenCipherWithPrevious
+	// DeriveTokenCipher derives a key from a passphrase.
+	//
+	// Behaviour change from the copy this replaces: an explicit iteration count
+	// below MinPBKDF2Iterations is now REJECTED with ErrIterationsTooLow instead
+	// of being silently rewritten, and the floor is OWASP's 600,000 rather than
+	// 10,000. Nothing in this repo calls it, so the change is latent here — but
+	// a future caller now fails loudly instead of deriving a weak key while
+	// believing otherwise.
+	DeriveTokenCipher = identitycrypto.DeriveTokenCipher
+	// GenerateKey creates a cryptographically secure random 32-byte key.
+	GenerateKey = identitycrypto.GenerateKey
+	// GenerateSalt creates a cryptographically secure random salt.
+	GenerateSalt = identitycrypto.GenerateSalt
 )
 
-// TokenCipher encrypts and decrypts sensitive token data.
-// It supports dual-key decryption for zero-downtime key rotation:
-// encryption always uses the current (primary) key, while decryption
-// tries the primary key first, then falls back to the previous key.
-type TokenCipher struct {
-	masterKey   []byte
-	previousKey []byte // optional, used for decryption fallback during key rotation
-}
+// Sentinel errors, re-exported so existing errors.Is checks in this service keep
+// matching. They must be the SAME values upstream returns, not new ones with the
+// same text — a fresh errors.New here would compare unequal and silently break
+// every errors.Is call site.
+var (
+	ErrKeyLengthInvalid    = identitycrypto.ErrKeyLengthInvalid
+	ErrCiphertextCorrupted = identitycrypto.ErrCiphertextCorrupted
+	ErrDecryptionFailed    = identitycrypto.ErrDecryptionFailed
+	ErrSaltTooShort        = identitycrypto.ErrSaltTooShort
+	// ErrIterationsTooLow has no local predecessor: the copy silently rewrote a
+	// low iteration count instead of rejecting it.
+	ErrIterationsTooLow = identitycrypto.ErrIterationsTooLow
+)
 
-// NewTokenCipher creates a cipher with a 32-byte master key
-func NewTokenCipher(masterKey []byte) (*TokenCipher, error) {
-	if len(masterKey) != 32 {
-		return nil, ErrKeyLengthInvalid
-	}
-	keyCopy := make([]byte, 32)
-	copy(keyCopy, masterKey)
-	return &TokenCipher{masterKey: keyCopy}, nil
-}
-
-// NewTokenCipherWithPrevious creates a cipher that supports dual-key decryption.
-// The current key is used for all encryption. Decryption first tries the current
-// key; if that fails with an authentication error, it retries with previousKey.
-// This enables zero-downtime rotation: set the new key as current, the old key
-// as previous, restart pods, then re-encrypt all tokens in a background job.
-func NewTokenCipherWithPrevious(currentKey, previousKey []byte) (*TokenCipher, error) {
-	if len(currentKey) != 32 {
-		return nil, ErrKeyLengthInvalid
-	}
-	if len(previousKey) != 0 && len(previousKey) != 32 {
-		return nil, ErrKeyLengthInvalid
-	}
-	curCopy := make([]byte, 32)
-	copy(curCopy, currentKey)
-	tc := &TokenCipher{masterKey: curCopy}
-	if len(previousKey) == 32 {
-		prevCopy := make([]byte, 32)
-		copy(prevCopy, previousKey)
-		tc.previousKey = prevCopy
-	}
-	return tc, nil
-}
-
-// DeriveTokenCipher creates a cipher by deriving a key from a passphrase
-func DeriveTokenCipher(passphrase string, salt []byte, iterations int) (*TokenCipher, error) {
-	if len(salt) < 16 {
-		return nil, ErrSaltTooShort
-	}
-	if iterations < 10000 {
-		iterations = 100000 // Secure default
-	}
-	derivedKey := pbkdf2.Key([]byte(passphrase), salt, iterations, 32, sha256.New)
-	return NewTokenCipher(derivedKey)
-}
-
-// Seal encrypts plaintext and returns a base64-encoded ciphertext
-func (tc *TokenCipher) Seal(plaintext string) (string, error) {
-	if plaintext == "" {
-		return "", nil
-	}
-
-	blockCipher, err := aes.NewCipher(tc.masterKey)
-	if err != nil {
-		return "", err
-	}
-
-	aead, err := cipher.NewGCM(blockCipher)
-	if err != nil {
-		return "", err
-	}
-
-	nonce := make([]byte, aead.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return "", err
-	}
-
-	sealed := aead.Seal(nonce, nonce, []byte(plaintext), nil)
-	return base64.URLEncoding.EncodeToString(sealed), nil
-}
-
-// Open decrypts a base64-encoded ciphertext and returns the plaintext.
-// When a previous key is configured, Open tries the current key first;
-// if GCM authentication fails it retries with the previous key before
-// returning an error.
-func (tc *TokenCipher) Open(encodedCiphertext string) (string, error) {
-	if encodedCiphertext == "" {
-		return "", nil
-	}
-
-	ciphertext, err := base64.URLEncoding.DecodeString(encodedCiphertext)
-	if err != nil {
-		return "", ErrCiphertextCorrupted
-	}
-
-	// Try current key first
-	plaintext, err := tc.decryptWithKey(tc.masterKey, ciphertext)
-	if err == nil {
-		return plaintext, nil
-	}
-
-	// If we have a previous key and the error was an authentication failure,
-	// try the previous key (the ciphertext may have been encrypted before rotation).
-	if tc.previousKey != nil && errors.Is(err, ErrDecryptionFailed) {
-		plaintext, prevErr := tc.decryptWithKey(tc.previousKey, ciphertext)
-		if prevErr == nil {
-			return plaintext, nil
-		}
-	}
-
-	return "", err
-}
-
-// decryptWithKey performs AES-256-GCM decryption with the given key.
-func (tc *TokenCipher) decryptWithKey(key, ciphertext []byte) (string, error) {
-	blockCipher, err := aes.NewCipher(key)
-	if err != nil {
-		return "", err
-	}
-
-	aead, err := cipher.NewGCM(blockCipher)
-	if err != nil {
-		return "", err
-	}
-
-	nonceLen := aead.NonceSize()
-	if len(ciphertext) < nonceLen {
-		return "", ErrCiphertextCorrupted
-	}
-
-	nonce := ciphertext[:nonceLen]
-	actualCiphertext := ciphertext[nonceLen:]
-
-	plaintext, err := aead.Open(nil, nonce, actualCiphertext, nil)
-	if err != nil {
-		return "", ErrDecryptionFailed
-	}
-
-	return string(plaintext), nil
-}
-
-// GenerateKey creates a cryptographically secure random 32-byte key
-func GenerateKey() ([]byte, error) {
-	key := make([]byte, 32)
-	if _, err := io.ReadFull(rand.Reader, key); err != nil {
-		return nil, err
-	}
-	return key, nil
-}
-
-// GenerateSalt creates a cryptographically secure random salt
-func GenerateSalt(length int) ([]byte, error) {
-	if length < 16 {
-		length = 16
-	}
-	salt := make([]byte, length)
-	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
-		return nil, err
-	}
-	return salt, nil
-}
+// MinPBKDF2Iterations and DefaultPBKDF2Iterations are re-exported so callers can
+// reason about the work factor without importing the upstream package directly.
+const (
+	MinPBKDF2Iterations     = identitycrypto.MinPBKDF2Iterations
+	DefaultPBKDF2Iterations = identitycrypto.DefaultPBKDF2Iterations
+)
