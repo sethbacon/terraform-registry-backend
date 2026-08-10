@@ -51,17 +51,19 @@ import (
 // mode is "an operator re-enters the secret by hand" is converted last, with a
 // verified backfill.
 var unboundSealSites = map[string]int{
-	// First-run setup secrets: the OIDC client secret and the LDAP bind
-	// password. IRREPLACEABLE, and reached before most of the service exists,
-	// so the conversion needs care about ordering.
+	// The LDAP bind password. IRREPLACEABLE, and deferred with the SMTP
+	// password because it is the same shape: a field inside a JSON config blob
+	// on the system_settings singleton, not a column of a row, so it has no row
+	// axis to bind to and needs the blob-aware handling that column has been
+	// waiting for.
 	//
-	// Was 6. The other four were this file's half of the storage_config
+	// Was 6, then 2. Four were this file's half of the storage_config
 	// credential columns — buildEncryptedStorageConfig writes the SAME four
 	// columns as internal/api/admin/storage.go, so they had to convert
 	// together: a column with one converted writer and one unconverted one
 	// cannot be declared bound, and its backfill would be undone by the next
-	// first-run save.
-	"internal/api/setup/handlers.go": 2,
+	// first-run save. The fifth was the OIDC client secret.
+	"internal/api/setup/handlers.go": 1,
 
 	// This service's own notification channel target is BOUND. The one Seal left
 	// is deliberate and transient: ChannelRepository.Create uses

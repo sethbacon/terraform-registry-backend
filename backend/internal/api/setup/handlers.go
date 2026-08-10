@@ -228,8 +228,15 @@ func (h *Handlers) SaveOIDCConfig(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
-	// Encrypt the client secret
-	encryptedSecret, err := h.tokenCipher.Seal(input.ClientSecret)
+	// The row id is minted here rather than at the struct literal below, because
+	// the client secret is sealed against it (suite-identity #153) and the seal
+	// happens first. CreateOIDCConfig takes the id from the caller, so the row
+	// can be bound from its only write and never exists in the unbound form.
+	oidcConfigID := uuid.New()
+
+	// Encrypt the client secret, bound to the row it will live in
+	encryptedSecret, err := h.tokenCipher.SealWithContext(input.ClientSecret,
+		models.OIDCConfigClientSecretContext(oidcConfigID.String()))
 	if err != nil {
 		slog.Error("setup: failed to encrypt OIDC client secret", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt client secret"})
@@ -267,7 +274,7 @@ func (h *Handlers) SaveOIDCConfig(c *gin.Context) {
 	// non-atomic calls that this transaction is designed to close.
 	now := time.Now()
 	oidcCfg := &models.OIDCConfig{
-		ID:                     uuid.New(),
+		ID:                     oidcConfigID,
 		Name:                   name,
 		ProviderType:           input.ProviderType,
 		IssuerURL:              input.IssuerURL,

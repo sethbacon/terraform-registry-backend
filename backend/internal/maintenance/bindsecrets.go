@@ -73,9 +73,10 @@ var ErrUnboundRemain = errors.New("maintenance: secrets remain unbound")
 
 // columns is the registry of convertible columns.
 //
-// The remaining ones (setup's OIDC client secret and LDAP bind password, and the
-// SMTP password) are added here as each is
-// converted in the application — the sweep for a column must not exist before
+// The remaining ones (the LDAP bind password and the SMTP password, both fields
+// inside a JSON config blob rather than columns of their own) are added here as
+// each is converted in the application — the sweep for a column must not exist
+// before
 // the code that writes the bound form, or an operator can convert rows the
 // running service then cannot read. "The code" means EVERY writer: the four
 // storage_config entries below were only registrable once both the admin CRUD
@@ -106,6 +107,23 @@ var columns = []column{
 	storageConfigColumn("s3_access_key_id_encrypted", models.StorageConfigS3AccessKeyIDContext),
 	storageConfigColumn("s3_secret_access_key_encrypted", models.StorageConfigS3SecretAccessKeyContext),
 	storageConfigColumn("gcs_credentials_json_encrypted", models.StorageConfigGCSCredentialsJSONContext),
+	{
+		// Every saved configuration, not just the active one. A retired row's
+		// secret is exactly what an attacker would promote onto the active row,
+		// so leaving inactive rows unconverted would leave the move available.
+		name:    "oidc_config.client_secret_encrypted",
+		context: models.OIDCConfigClientSecretContext,
+		list: func(ctx context.Context, db *sql.DB) ([]sealedRow, error) {
+			return listRows(ctx, db,
+				`SELECT id, client_secret_encrypted FROM oidc_config WHERE client_secret_encrypted <> ''`)
+		},
+		update: func(ctx context.Context, db *sql.DB, id, bound string) error {
+			_, err := db.ExecContext(ctx,
+				`UPDATE oidc_config SET client_secret_encrypted = $2, updated_at = now() WHERE id = $1`,
+				id, bound)
+			return err
+		},
+	},
 	{
 		name:    "scm_providers.client_secret_encrypted",
 		context: scm.ProviderClientSecretContext,
