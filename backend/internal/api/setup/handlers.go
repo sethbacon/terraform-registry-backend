@@ -1191,7 +1191,8 @@ func (h *Handlers) buildEncryptedStorageConfig(input *models.StorageConfigInput)
 		cfg.AzureContainerName = toNullString(input.AzureContainerName)
 		cfg.AzureCDNURL = toNullString(input.AzureCDNURL)
 		if input.AzureAccountKey != "" {
-			encrypted, err := h.tokenCipher.Seal(input.AzureAccountKey)
+			encrypted, err := h.tokenCipher.SealWithContext(input.AzureAccountKey,
+				models.StorageConfigAzureAccountKeyContext(cfg.ID.String()))
 			if err != nil {
 				return nil, err
 			}
@@ -1207,14 +1208,16 @@ func (h *Handlers) buildEncryptedStorageConfig(input *models.StorageConfigInput)
 		cfg.S3ExternalID = toNullString(input.S3ExternalID)
 		cfg.S3WebIdentityTokenFile = toNullString(input.S3WebIdentityTokenFile)
 		if input.S3AccessKeyID != "" {
-			encrypted, err := h.tokenCipher.Seal(input.S3AccessKeyID)
+			encrypted, err := h.tokenCipher.SealWithContext(input.S3AccessKeyID,
+				models.StorageConfigS3AccessKeyIDContext(cfg.ID.String()))
 			if err != nil {
 				return nil, err
 			}
 			cfg.S3AccessKeyIDEncrypted = toNullString(encrypted)
 		}
 		if input.S3SecretAccessKey != "" {
-			encrypted, err := h.tokenCipher.Seal(input.S3SecretAccessKey)
+			encrypted, err := h.tokenCipher.SealWithContext(input.S3SecretAccessKey,
+				models.StorageConfigS3SecretAccessKeyContext(cfg.ID.String()))
 			if err != nil {
 				return nil, err
 			}
@@ -1227,7 +1230,8 @@ func (h *Handlers) buildEncryptedStorageConfig(input *models.StorageConfigInput)
 		cfg.GCSCredentialsFile = toNullString(input.GCSCredentialsFile)
 		cfg.GCSEndpoint = toNullString(input.GCSEndpoint)
 		if input.GCSCredentialsJSON != "" {
-			encrypted, err := h.tokenCipher.Seal(input.GCSCredentialsJSON)
+			encrypted, err := h.tokenCipher.SealWithContext(input.GCSCredentialsJSON,
+				models.StorageConfigGCSCredentialsJSONContext(cfg.ID.String()))
 			if err != nil {
 				return nil, err
 			}

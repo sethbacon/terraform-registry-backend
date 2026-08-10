@@ -40,6 +40,9 @@ type testEnv struct {
 	storageMock sqlmock.Sqlmock
 	userMock    sqlmock.Sqlmock
 	orgMock     sqlmock.Sqlmock
+	// cipher is the one the handlers hold, exposed so a test can open what
+	// they sealed rather than re-deriving the key from a literal in this file.
+	cipher *crypto.TokenCipher
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -99,6 +102,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		storageMock: storageMock,
 		userMock:    userMock,
 		orgMock:     orgMock,
+		cipher:      cipher,
 	}
 }
 

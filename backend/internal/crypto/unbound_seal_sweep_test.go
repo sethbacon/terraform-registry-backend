@@ -39,23 +39,28 @@ import (
 // unboundSealSites maps a repo-relative file to how many TokenCipher.Seal calls
 // it still contains, with the column and why it has not been converted yet.
 //
-// Converted so far: scm_provider_tokens.access_token (the app-token cache), and
-// the user OAuth access + refresh tokens across scm_oauth.go, scm_linking.go and
-// scm_publisher.go. What remains is the operator-entered material, which needs a
-// backfill per column before its reads can stop accepting the unbound form.
+// Converted so far: scm_provider_tokens.access_token (the app-token cache), the
+// user OAuth access + refresh tokens across scm_oauth.go, scm_linking.go and
+// scm_publisher.go, and the four storage_config credential columns. What remains
+// is the rest of the operator-entered material, which needs a backfill per
+// column before its reads can stop accepting the unbound form.
 //
 // Ordered by recoverability, which is the order the conversion follows: a column
 // whose failure mode is "re-mint" is safe to convert first; one whose failure
 // mode is "an operator re-enters the secret by hand" is converted last, with a
 // verified backfill.
 var unboundSealSites = map[string]int{
-	// Storage-backend credentials: Azure account key, S3 access key id and
-	// secret, GCS credentials JSON. IRREPLACEABLE — an operator re-enters them.
-	"internal/api/admin/storage.go": 8,
-
-	// First-run setup secrets. IRREPLACEABLE, and reached before most of the
-	// service exists, so the conversion needs care about ordering.
-	"internal/api/setup/handlers.go": 6,
+	// First-run setup secrets: the OIDC client secret and the LDAP bind
+	// password. IRREPLACEABLE, and reached before most of the service exists,
+	// so the conversion needs care about ordering.
+	//
+	// Was 6. The other four were this file's half of the storage_config
+	// credential columns — buildEncryptedStorageConfig writes the SAME four
+	// columns as internal/api/admin/storage.go, so they had to convert
+	// together: a column with one converted writer and one unconverted one
+	// cannot be declared bound, and its backfill would be undone by the next
+	// first-run save.
+	"internal/api/setup/handlers.go": 2,
 
 	// SCM client secret and app private key. IRREPLACEABLE.
 	"internal/api/admin/scm_providers.go": 4,
