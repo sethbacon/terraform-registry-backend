@@ -129,6 +129,15 @@ func (h *SCMProviderHandlers) CreateProvider(c *gin.Context) {
 		authMode = scm.AuthModeOAuthUser
 	}
 
+	// The row id is minted HERE rather than at the struct literal below, because
+	// both secrets on this path are sealed against it (suite-identity #153) and
+	// the seals happen earlier than the insert. The alternative — insert
+	// unbound, then re-seal against the returned id — is what
+	// notification_channels has to do, and only because its repository takes no
+	// caller-supplied id. This one does, so the row can be bound from the first
+	// write and never exists in the unbound form.
+	providerID := uuid.New()
+
 	// app_private_key, when supplied for github_app, is encrypted separately.
 	var encryptedAppPrivateKey *string
 
@@ -194,7 +203,8 @@ func (h *SCMProviderHandlers) CreateProvider(c *gin.Context) {
 			req.ClientID = "github-app"
 		}
 		req.ClientSecret = "not-applicable"
-		enc, encErr := h.tokenCipher.Seal(req.AppPrivateKey)
+		enc, encErr := h.tokenCipher.SealWithContext(req.AppPrivateKey,
+			scm.ProviderAppPrivateKeyContext(providerID.String()))
 		if encErr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt app private key"})
 			return
@@ -217,7 +227,8 @@ func (h *SCMProviderHandlers) CreateProvider(c *gin.Context) {
 	}
 
 	// Encrypt client secret
-	clientSecretEncrypted, err := h.tokenCipher.Seal(req.ClientSecret)
+	clientSecretEncrypted, err := h.tokenCipher.SealWithContext(req.ClientSecret,
+		scm.ProviderClientSecretContext(providerID.String()))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt secret"})
 		return
@@ -267,7 +278,7 @@ func (h *SCMProviderHandlers) CreateProvider(c *gin.Context) {
 	}
 
 	provider := &scm.SCMProviderRecord{
-		ID:                     uuid.New(),
+		ID:                     providerID,
 		OrganizationID:         orgID,
 		ProviderType:           req.ProviderType,
 		Name:                   req.Name,
@@ -476,7 +487,8 @@ func (h *SCMProviderHandlers) UpdateProvider(c *gin.Context) {
 		provider.ClientID = *req.ClientID
 	}
 	if req.ClientSecret != nil {
-		encryptedSecret, err := h.tokenCipher.Seal(*req.ClientSecret)
+		encryptedSecret, err := h.tokenCipher.SealWithContext(*req.ClientSecret,
+			scm.ProviderClientSecretContext(provider.ID.String()))
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt secret"})
 			return
@@ -520,7 +532,8 @@ func (h *SCMProviderHandlers) UpdateProvider(c *gin.Context) {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "app_private_key is not a valid RSA private key (PKCS#1 or PKCS#8 PEM)"})
 				return
 			}
-			enc, encErr := h.tokenCipher.Seal(*req.AppPrivateKey)
+			enc, encErr := h.tokenCipher.SealWithContext(*req.AppPrivateKey,
+				scm.ProviderAppPrivateKeyContext(provider.ID.String()))
 			if encErr != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt app private key"})
 				return

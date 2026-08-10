@@ -151,7 +151,8 @@ func (h *SCMWebhookHandler) HandleWebhook(c *gin.Context) {
 	if provider.BaseURL != nil {
 		baseURL = *provider.BaseURL
 	}
-	clientSecret, err := h.tokenCipher.Open(provider.ClientSecretEncrypted)
+	clientSecret, _, err := h.tokenCipher.OpenWithContextOrLegacy(
+		provider.ClientSecretEncrypted, scm.ProviderClientSecretContext(provider.ID.String()))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to decrypt client secret"})
 		return

@@ -11,6 +11,7 @@ import (
 
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
+	"github.com/terraform-registry/terraform-registry/internal/scm"
 )
 
 // suite-identity #153 backfill. The properties an operator relies on when
@@ -344,6 +345,86 @@ func TestBindSecrets_ConvertsEveryStorageCredentialColumn(t *testing.T) {
 					continue
 				}
 				if _, err := tc.OpenWithContext(stored, other.context(configID)); err == nil {
+					t.Errorf("converted value opened as %s of the same row; the columns are not distinguished",
+						other.dbCol)
+				}
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// scm_providers secret columns (suite-identity #153)
+// ---------------------------------------------------------------------------
+
+// The two scm_providers columns are hand-written entries rather than products of
+// a shared constructor, so each needs its own proof that the sweep converts to
+// the context the application reads with — and that the UPDATE names the column
+// the SELECT read. These two share a row, so getting that wrong would move an
+// App private key into the client-secret column.
+func TestBindSecrets_ConvertsTheSCMProviderSecrets(t *testing.T) {
+	const providerID = "44444444-4444-4444-4444-444444444444"
+
+	cases := []struct {
+		column  string
+		dbCol   string
+		context func(string) []byte
+	}{
+		{"scm_providers.client_secret_encrypted", "client_secret_encrypted",
+			scm.ProviderClientSecretContext},
+		{"scm_providers.encrypted_app_private_key", "encrypted_app_private_key",
+			scm.ProviderAppPrivateKeyContext},
+	}
+
+	for _, c := range cases {
+		t.Run(c.dbCol, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			tc := newCipher(t)
+
+			secret := "secret-for-" + c.dbCol
+			legacy, err := tc.Seal(secret)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var stored string
+			drive(t, mock, c.column, func() {
+				mock.ExpectQuery("SELECT id, " + c.dbCol + " FROM scm_providers").
+					WillReturnRows(sqlmock.NewRows([]string{"id", c.dbCol}).AddRow(providerID, legacy))
+				// Anchored on this column name: sqlmock rejects the exec if the
+				// UPDATE names the sibling instead.
+				mock.ExpectExec(`UPDATE scm_providers SET `+c.dbCol+` = \$2`).
+					WithArgs(sqlmock.AnyArg(), capturedArg{got: &stored}).
+					WillReturnResult(sqlmock.NewResult(0, 1))
+			})
+
+			res, err := BindSecrets(context.Background(), db, tc, false)
+			if err != nil {
+				t.Fatalf("BindSecrets: %v", err)
+			}
+			if got := res[c.column]; got.Converted != 1 || got.Failed != 0 {
+				t.Fatalf("result = %s; want one conversion", got)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Errorf("the UPDATE did not target %s: %v", c.dbCol, err)
+			}
+
+			got, err := tc.OpenWithContext(stored, c.context(providerID))
+			if err != nil || got != secret {
+				t.Fatalf("converted value does not open under the application's context: (%q, %v)", got, err)
+			}
+			if _, err := tc.Open(stored); err == nil {
+				t.Error("converted value still opens WITHOUT a context; it was not bound")
+			}
+			for _, other := range cases {
+				if other.dbCol == c.dbCol {
+					continue
+				}
+				if _, err := tc.OpenWithContext(stored, other.context(providerID)); err == nil {
 					t.Errorf("converted value opened as %s of the same row; the columns are not distinguished",
 						other.dbCol)
 				}

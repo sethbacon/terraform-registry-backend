@@ -158,7 +158,8 @@ func (m *Minter) entraCreds(p *scm.SCMProvider) (EntraCreds, error) {
 	if p.ClientID == "" {
 		return EntraCreds{}, errors.New("appcreds: entra_app provider missing client_id")
 	}
-	secret, err := m.cipher.Open(p.ClientSecretEncrypted)
+	secret, _, err := m.cipher.OpenWithContextOrLegacy(
+		p.ClientSecretEncrypted, scm.ProviderClientSecretContext(p.ID.String()))
 	if err != nil {
 		return EntraCreds{}, fmt.Errorf("appcreds: decrypt client secret: %w", err)
 	}
@@ -179,7 +180,8 @@ func (m *Minter) githubAppCreds(p *scm.SCMProvider) (GitHubAppCreds, error) {
 	if p.EncryptedAppPrivateKey == nil || *p.EncryptedAppPrivateKey == "" {
 		return GitHubAppCreds{}, errors.New("appcreds: github_app provider missing private key")
 	}
-	pemStr, err := m.cipher.Open(*p.EncryptedAppPrivateKey)
+	pemStr, _, err := m.cipher.OpenWithContextOrLegacy(
+		*p.EncryptedAppPrivateKey, scm.ProviderAppPrivateKeyContext(p.ID.String()))
 	if err != nil {
 		return GitHubAppCreds{}, fmt.Errorf("appcreds: decrypt app private key: %w", err)
 	}
