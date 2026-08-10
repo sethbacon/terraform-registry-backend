@@ -68,6 +68,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/jobs"
+	"github.com/terraform-registry/terraform-registry/internal/maintenance"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 	"github.com/terraform-registry/terraform-registry/internal/telemetry"
 	"golang.org/x/crypto/bcrypt"
@@ -119,8 +120,12 @@ func run() error {
 		return runUpgrade(configPath)
 	case "scan-worker":
 		return scanWorker(cfg)
+	case "bind-secrets":
+		// bind-secrets [verify] — convert stored secrets to the row-bound
+		// ciphertext form, or report what remains without writing.
+		return runBindSecrets(cfg, len(os.Args) > 2 && os.Args[2] == "verify")
 	default:
-		return fmt.Errorf("unknown command: %s\nAvailable commands: serve, migrate, version, upgrade, scan-worker", command)
+		return fmt.Errorf("unknown command: %s\nAvailable commands: serve, migrate, version, upgrade, scan-worker, bind-secrets", command)
 	}
 }
 
@@ -961,4 +966,39 @@ func runMigrations(cfg *config.Config, direction string) error {
 
 	log.Printf("Migration completed successfully. Current version: %d (dirty: %v)", version, dirty) // #nosec G706 -- logged value is application-internal (config string, integer, or application-constructed path); not raw user-controlled request input
 	return nil
+}
+
+// runBindSecrets converts stored secrets to the row-bound ciphertext form
+// (suite-identity #153), or with "verify" reports what remains unbound without
+// writing anything.
+//
+// Operator-invoked rather than a startup hook: a boot-time sweep runs on every
+// replica at once and would need a cross-replica claim to be safe.
+//
+// The verify form is the exit criterion. While any row of a column is unbound,
+// that column's reads must keep accepting the unbound form — which is the
+// property being retired — so without a completion signal the transition reader
+// becomes permanent. It exits non-zero while work remains, so a runbook step or
+// CI check can gate the removal rather than someone reading output.
+func runBindSecrets(cfg *config.Config, verify bool) error {
+	database, err := db.Connect(cfg.Database.GetDSN(), cfg.Database.MaxConnections, cfg.Database.MinIdleConnections)
+	if err != nil {
+		return fmt.Errorf("failed to connect to database: %w", err)
+	}
+	defer func() { _ = database.Close() }()
+
+	cipher, err := api.BuildTokenCipherFromEnv()
+	if err != nil {
+		return fmt.Errorf("bind-secrets needs the encryption key the server uses: %w", err)
+	}
+
+	results, err := maintenance.BindSecrets(context.Background(), database, cipher, verify)
+	mode := "convert"
+	if verify {
+		mode = "verify"
+	}
+	for name, res := range results {
+		slog.Info("bind-secrets column complete", "mode", mode, "column", name, "result", res.String())
+	}
+	return err
 }
