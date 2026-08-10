@@ -14,6 +14,7 @@ import (
 
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
+	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/notify"
 )
@@ -312,7 +313,8 @@ func buildNotificationsConfigDB(input notificationsConfigInput, tokenCipher *cry
 	}
 
 	if input.SMTP.Password != "" {
-		encrypted, err := tokenCipher.Seal(input.SMTP.Password)
+		encrypted, err := tokenCipher.SealWithContext(input.SMTP.Password,
+			models.SystemSettingsSMTPPasswordContext())
 		if err != nil {
 			return dbc, err
 		}
@@ -374,7 +376,8 @@ func (h *NotificationsHandler) TestEmail(c *gin.Context) {
 		if raw, err := h.repo.GetNotificationsConfig(ctx); err == nil && raw != nil {
 			var dbc NotificationsConfigDB
 			if json.Unmarshal(raw, &dbc) == nil && dbc.SMTP.PasswordEncrypted != "" {
-				if pw, derr := h.tokenCipher.Open(dbc.SMTP.PasswordEncrypted); derr == nil {
+				if pw, _, derr := h.tokenCipher.OpenWithContextOrLegacy(
+					dbc.SMTP.PasswordEncrypted, models.SystemSettingsSMTPPasswordContext()); derr == nil {
 					tempSMTP.Password = pw
 				}
 			}

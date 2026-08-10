@@ -5,9 +5,11 @@ package maintenance
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	identitynotify "github.com/sethbacon/terraform-suite-identity/identity/notify"
 
@@ -48,6 +50,19 @@ type column struct {
 	context func(id string) []byte
 	// update writes the converted ciphertext back for one row.
 	update func(ctx context.Context, db *sql.DB, id, bound string) error
+	// singleton marks a secret with no row axis: a field inside a config blob
+	// on system_settings, of which there is exactly one row. Its context binds
+	// the purpose (which blob, which field) rather than a row id, so
+	// TestRegisteredColumns_ContextsAreRowScoped cannot apply and this flag
+	// tells it so.
+	//
+	// The flag is "singleton" rather than the more natural "rowScoped" so that
+	// its ZERO VALUE is the strict setting. A rowScoped field would default to
+	// false in Go, which means a column added without a thought about this
+	// would be silently exempted from the row-scoping check — the guard would
+	// quietly stop guarding exactly when someone was not paying attention.
+	// This way, forgetting the field means being checked.
+	singleton bool
 }
 
 // Result is what one column's sweep did. Total is rows examined, not changed.
@@ -73,10 +88,8 @@ var ErrUnboundRemain = errors.New("maintenance: secrets remain unbound")
 
 // columns is the registry of convertible columns.
 //
-// The remaining ones (the LDAP bind password and the SMTP password, both fields
-// inside a JSON config blob rather than columns of their own) are added here as
-// each is converted in the application — the sweep for a column must not exist
-// before
+// This is now every secret this service seals. The rule that got them all here:
+// the sweep for a column must not exist before
 // the code that writes the bound form, or an operator can convert rows the
 // running service then cannot read. "The code" means EVERY writer: the four
 // storage_config entries below were only registrable once both the admin CRUD
@@ -155,6 +168,131 @@ var columns = []column{
 			return err
 		},
 	},
+	blobField("notifications_config", "smtp_password_encrypted",
+		models.SystemSettingsSMTPPasswordContext, "smtp"),
+	blobField("ldap_config", "bind_password_enc",
+		models.SystemSettingsLDAPBindPasswordContext),
+}
+
+// systemSettingsID is the single row every config blob lives on. It is passed
+// through the sweep as the "row id" so the shared logic needs no special case,
+// but the singleton contexts ignore it.
+const systemSettingsID = "1"
+
+// blobField describes a secret stored as a FIELD inside a JSON config blob on
+// the system_settings singleton, rather than as a column of its own.
+//
+// path is the object nesting above the field ("smtp" for the SMTP password, none
+// for the LDAP bind password). The whole blob is one column, so converting the
+// secret means read-modify-write of the JSON.
+//
+// The rewrite goes through a generic map, NEVER through the typed struct the
+// application unmarshals into. Round-tripping the blob through
+// admin.NotificationsConfigDB would silently DROP every field that struct does
+// not know about — an older key, a newer key written by a replica mid-upgrade,
+// anything hand-added — and turn a credential conversion into config data loss.
+// A map preserves what it does not understand, which is the only safe posture
+// for a tool that runs once against production.
+func blobField(
+	blobColumn, field string,
+	contextFor func() []byte,
+	path ...string,
+) column {
+	name := "system_settings." + blobColumn + ":" + strings.Join(append(path, field), ".")
+	return column{
+		name:      name,
+		singleton: true,
+		context:   func(string) []byte { return contextFor() },
+		list: func(ctx context.Context, db *sql.DB) ([]sealedRow, error) {
+			blob, err := readBlob(ctx, db, blobColumn)
+			if err != nil || blob == nil {
+				return nil, err
+			}
+			sealed, _ := blobLookup(blob, append(path, field))
+			if sealed == "" {
+				return nil, nil // unset, not unbound
+			}
+			return []sealedRow{{id: systemSettingsID, sealed: sealed}}, nil
+		},
+		update: func(ctx context.Context, db *sql.DB, _, bound string) error {
+			blob, err := readBlob(ctx, db, blobColumn)
+			if err != nil {
+				return err
+			}
+			if blob == nil {
+				return fmt.Errorf("maintenance: %s disappeared between read and write", blobColumn)
+			}
+			if err := blobAssign(blob, append(path, field), bound); err != nil {
+				return err
+			}
+			encoded, err := json.Marshal(blob)
+			if err != nil {
+				return err
+			}
+			// The blob column only; notifications_configured / ldap_configured
+			// and their timestamps are untouched, because re-sealing a secret
+			// is not the operator configuring anything.
+			_, err = db.ExecContext(ctx,
+				// #nosec G201 -- blobColumn is one of two literals passed by the registry
+				// below, never caller input; the secret itself is a bound parameter.
+				fmt.Sprintf(`UPDATE system_settings SET %s = $1, updated_at = now() WHERE id = 1`, blobColumn),
+				encoded)
+			return err
+		},
+	}
+}
+
+// readBlob loads one JSON config column from system_settings, or nil when it is
+// absent or empty.
+func readBlob(ctx context.Context, db *sql.DB, blobColumn string) (map[string]any, error) {
+	var raw []byte
+	err := db.QueryRowContext(ctx,
+		// #nosec G201 -- blobColumn is one of two literals passed by the registry, never input
+		fmt.Sprintf(`SELECT %s FROM system_settings WHERE id = 1`, blobColumn),
+	).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) || len(raw) == 0 {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var blob map[string]any
+	if err := json.Unmarshal(raw, &blob); err != nil {
+		return nil, fmt.Errorf("maintenance: %s is not a JSON object: %w", blobColumn, err)
+	}
+	return blob, nil
+}
+
+// blobLookup walks path through nested objects and returns the string at the
+// end, or "" if any step is missing or the wrong shape.
+func blobLookup(blob map[string]any, path []string) (string, bool) {
+	cur := blob
+	for _, step := range path[:len(path)-1] {
+		next, ok := cur[step].(map[string]any)
+		if !ok {
+			return "", false
+		}
+		cur = next
+	}
+	s, ok := cur[path[len(path)-1]].(string)
+	return s, ok
+}
+
+// blobAssign sets the string at path, refusing rather than creating missing
+// parents: the sweep only ever rewrites a field it has already READ, so an
+// absent parent means the blob changed underneath the run and guessing at its
+// shape would corrupt it.
+func blobAssign(blob map[string]any, path []string, value string) error {
+	cur := blob
+	for _, step := range path[:len(path)-1] {
+		next, ok := cur[step].(map[string]any)
+		if !ok {
+			return fmt.Errorf("maintenance: %q is missing from the config blob; it changed during the sweep", step)
+		}
+		cur = next
+	}
+	cur[path[len(path)-1]] = value
+	return nil
 }
 
 // storageConfigColumn describes one of the four storage_config credential

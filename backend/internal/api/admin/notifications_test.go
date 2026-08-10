@@ -12,6 +12,7 @@ import (
 	"github.com/jmoiron/sqlx"
 
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
 
@@ -105,12 +106,35 @@ func TestBuildNotificationsConfigDB_SealsNewPassword(t *testing.T) {
 		t.Fatalf("expected a newly sealed ciphertext, got %q", dbc.SMTP.PasswordEncrypted)
 	}
 
-	decrypted, err := tc.Open(dbc.SMTP.PasswordEncrypted)
+	// INVERTED for suite-identity #153. This used to assert that the stored
+	// password opens with a plain tc.Open, i.e. with no additional-authenticated
+	// data — which is precisely the property being retired: a ciphertext that
+	// carries no statement of where it belongs can be moved to another sealed
+	// field and still decrypt. The SMTP password shares the system_settings row
+	// with the LDAP bind password, so "another sealed field" is not theoretical.
+	//
+	// The assertion is therefore reversed rather than dropped: opening WITHOUT a
+	// context must now fail, and opening under this field's own context must
+	// return the password.
+	if _, err := tc.Open(dbc.SMTP.PasswordEncrypted); err == nil {
+		t.Error("the sealed password still opens without a context; it was not bound to its field")
+	}
+
+	decrypted, err := tc.OpenWithContext(dbc.SMTP.PasswordEncrypted,
+		models.SystemSettingsSMTPPasswordContext())
 	if err != nil {
-		t.Fatalf("tc.Open: %v", err)
+		t.Fatalf("the sealed password does not open under its own field context: %v", err)
 	}
 	if decrypted != "hunter2" {
 		t.Errorf("decrypted password = %q, want %q", decrypted, "hunter2")
+	}
+
+	// The binding names the field, not just the blob: an LDAP bind password and
+	// an SMTP password must not be interchangeable in the row they share.
+	if _, err := tc.OpenWithContext(dbc.SMTP.PasswordEncrypted,
+		models.SystemSettingsLDAPBindPasswordContext()); err == nil {
+		t.Error("the sealed SMTP password also opens as the LDAP bind password; " +
+			"the two fields of system_settings are interchangeable")
 	}
 }
 

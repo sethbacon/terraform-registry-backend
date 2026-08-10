@@ -125,7 +125,8 @@ func reloadNotificationsConfigFromDB(cfg *config.Config, repo *repositories.OIDC
 	cfg.Notifications.SMTP.From = dbc.SMTP.From
 	cfg.Notifications.SMTP.UseTLS = dbc.SMTP.UseTLS
 	if dbc.SMTP.PasswordEncrypted != "" {
-		if pw, derr := tokenCipher.Open(dbc.SMTP.PasswordEncrypted); derr == nil {
+		if pw, _, derr := tokenCipher.OpenWithContextOrLegacy(
+			dbc.SMTP.PasswordEncrypted, models.SystemSettingsSMTPPasswordContext()); derr == nil {
 			cfg.Notifications.SMTP.Password = pw
 		} else {
 			log.Printf("notifications startup: failed to decrypt persisted smtp password: %v", derr)

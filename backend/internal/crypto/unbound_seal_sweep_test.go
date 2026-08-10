@@ -39,32 +39,19 @@ import (
 // unboundSealSites maps a repo-relative file to how many TokenCipher.Seal calls
 // it still contains, with the column and why it has not been converted yet.
 //
-// Converted so far: scm_provider_tokens.access_token (the app-token cache), the
-// user OAuth access + refresh tokens across scm_oauth.go, scm_linking.go and
-// scm_publisher.go, the four storage_config credential columns, and the
-// scm_providers client secret + GitHub App private key. What remains is the rest
-// of the operator-entered material, which needs a backfill per column before its
-// reads can stop accepting the unbound form.
+// Every column this service seals is now converted: the SCM app-token cache, the
+// user OAuth access + refresh tokens, the four storage_config credentials, the
+// scm_providers client secret and GitHub App private key, the OIDC client
+// secret, and the two config-blob passwords (SMTP and LDAP).
 //
-// Ordered by recoverability, which is the order the conversion follows: a column
-// whose failure mode is "re-mint" is safe to convert first; one whose failure
-// mode is "an operator re-enters the secret by hand" is converted last, with a
-// verified backfill.
+// The conversion order was by recoverability: a column whose failure mode is
+// "re-mint" first, one whose failure mode is "an operator re-enters the secret
+// by hand" last, each with a backfill registered in internal/maintenance.
+//
+// One entry remains and it is not a deferral — see below. The test is still
+// live: any NEW file that gains a Seal fails it, which is what stops the class
+// growing back now that the migration is done.
 var unboundSealSites = map[string]int{
-	// The LDAP bind password. IRREPLACEABLE, and deferred with the SMTP
-	// password because it is the same shape: a field inside a JSON config blob
-	// on the system_settings singleton, not a column of a row, so it has no row
-	// axis to bind to and needs the blob-aware handling that column has been
-	// waiting for.
-	//
-	// Was 6, then 2. Four were this file's half of the storage_config
-	// credential columns — buildEncryptedStorageConfig writes the SAME four
-	// columns as internal/api/admin/storage.go, so they had to convert
-	// together: a column with one converted writer and one unconverted one
-	// cannot be declared bound, and its backfill would be undone by the next
-	// first-run save. The fifth was the OIDC client secret.
-	"internal/api/setup/handlers.go": 1,
-
 	// This service's own notification channel target is BOUND. The one Seal left
 	// is deliberate and transient: ChannelRepository.Create uses
 	// `INSERT ... RETURNING` and takes no caller-supplied id, so the row is
@@ -74,10 +61,11 @@ var unboundSealSites = map[string]int{
 	//
 	// Kept in the inventory rather than exempted, so that if the re-seal is ever
 	// removed the count still has to be justified by someone.
+	//
+	// Every other create path in this service mints its own id and binds from
+	// the first write; this one cannot, because the id does not exist until the
+	// INSERT returns.
 	"internal/api/admin/notification_channels.go": 1,
-
-	// SMTP password.
-	"internal/api/admin/notifications.go": 1,
 }
 
 // backendRoot walks up to the module root so the test is runnable from its own
