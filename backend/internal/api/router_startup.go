@@ -19,6 +19,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/auth/oidc"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
+	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
 
@@ -162,7 +163,9 @@ func applyPersistedOIDCProvider(authHandlers *admin.AuthHandlers, repo *reposito
 	if oidcErr != nil || activeOIDCCfg == nil {
 		return
 	}
-	clientSecret, decErr := tokenCipher.Open(activeOIDCCfg.ClientSecretCiphertext)
+	clientSecret, _, decErr := tokenCipher.OpenWithContextOrLegacy(
+		activeOIDCCfg.ClientSecretCiphertext,
+		models.OIDCConfigClientSecretContext(activeOIDCCfg.ID.String()))
 	if decErr != nil {
 		slog.Error("Failed to decrypt OIDC client secret from database", "error", decErr)
 		return

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql/driver"
 	"errors"
+	"strings"
 	"testing"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
@@ -351,6 +352,96 @@ func TestBindSecrets_ConvertsEveryStorageCredentialColumn(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// oidc_config.client_secret_encrypted (suite-identity #153)
+// ---------------------------------------------------------------------------
+
+// The sweep must convert EVERY saved configuration, not only the active one: a
+// retired row's secret is what an attacker would promote onto the active row, so
+// a WHERE is_active filter would leave the move available on exactly the rows
+// nobody looks at.
+//
+// That claim cannot be made with rows alone. sqlmock returns whatever the
+// expectation was primed with regardless of the real WHERE clause, so a test
+// that only counts conversions passes just as happily with the filter added —
+// verified by reverting it. The SELECT's own text therefore has to be asserted,
+// which is what recordSQL is for.
+func TestBindSecrets_ConvertsEveryOIDCConfigRow(t *testing.T) {
+	var seen []string
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(recordSQL(&seen)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	tc := newCipher(t)
+
+	const activeID, retiredID = "55555555-5555-5555-5555-555555555555", "66666666-6666-6666-6666-666666666666"
+	legacy, err := tc.Seal("oidc-client-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	drive(t, mock, "oidc_config.client_secret_encrypted", func() {
+		mock.ExpectQuery("SELECT id, client_secret_encrypted FROM oidc_config").
+			WillReturnRows(sqlmock.NewRows([]string{"id", "client_secret_encrypted"}).
+				AddRow(activeID, legacy).
+				AddRow(retiredID, legacy))
+		mock.ExpectExec("UPDATE oidc_config SET client_secret_encrypted").
+			WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectExec("UPDATE oidc_config SET client_secret_encrypted").
+			WillReturnResult(sqlmock.NewResult(0, 1))
+	})
+
+	res, err := BindSecrets(context.Background(), db, tc, false)
+	if err != nil {
+		t.Fatalf("BindSecrets: %v", err)
+	}
+	if got := res["oidc_config.client_secret_encrypted"]; got.Converted != 2 || got.Failed != 0 {
+		t.Fatalf("result = %s; want both the active and the retired row converted", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("both rows should have been written: %v", err)
+	}
+
+	// The listing query must select on nothing but "holds a secret". Any other
+	// predicate narrows the sweep to a subset of rows and silently leaves the
+	// rest unbound — while verify, running the same query, reports success.
+	sel := findSelect(t, seen, "client_secret_encrypted FROM oidc_config")
+	for _, forbidden := range []string{"is_active", "limit", "created_at"} {
+		if strings.Contains(strings.ToLower(sel), forbidden) {
+			t.Errorf("the oidc_config listing query narrows the sweep with %q: %s", forbidden, sel)
+		}
+	}
+}
+
+// recordSQL is a QueryMatcher that appends every query the driver is asked to
+// match, while keeping the default regexp matching behaviour.
+func recordSQL(into *[]string) sqlmock.QueryMatcher {
+	return sqlmock.QueryMatcherFunc(func(expectedSQL, actualSQL string) error {
+		*into = append(*into, actualSQL)
+		return sqlmock.QueryMatcherRegexp.Match(expectedSQL, actualSQL)
+	})
+}
+
+// findSelect returns the one recorded statement containing substr, failing if
+// there is not exactly one. Recorded queries can repeat (the matcher is
+// consulted per candidate expectation), so they are de-duplicated first.
+func findSelect(t *testing.T, seen []string, substr string) string {
+	t.Helper()
+	uniq := map[string]bool{}
+	var hits []string
+	for _, q := range seen {
+		if strings.Contains(q, substr) && !uniq[q] {
+			uniq[q] = true
+			hits = append(hits, q)
+		}
+	}
+	if len(hits) != 1 {
+		t.Fatalf("expected exactly one distinct statement containing %q, got %d: %v", substr, len(hits), hits)
+	}
+	return hits[0]
 }
 
 // ---------------------------------------------------------------------------

@@ -38,9 +38,10 @@ import (
 // written bound and read without a context, which fails at runtime for exactly
 // the rows the conversion just created.
 var unboundOpenSites = map[string]int{
-	// The SMTP password (in the notifications JSON config blob) and the OIDC
-	// client secret, both read during router construction.
-	"internal/api/router_startup.go": 2,
+	// The SMTP password, read out of the notifications JSON config blob during
+	// router construction. Was 2; the OIDC client secret alongside it is now
+	// bound.
+	"internal/api/router_startup.go": 1,
 
 	// The SMTP password again, on the admin test-send path.
 	"internal/api/admin/notifications.go": 1,

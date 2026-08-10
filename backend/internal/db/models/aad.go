@@ -69,3 +69,20 @@ func StorageConfigS3SecretAccessKeyContext(configID string) []byte {
 func StorageConfigGCSCredentialsJSONContext(configID string) []byte {
 	return storageConfigContext(configID, "gcs_credentials_json_encrypted")
 }
+
+// OIDCConfigClientSecretContext binds an OIDC provider's client secret to its
+// row in oidc_config.
+//
+// The row is the unit that matters here even though only one config is active at
+// a time: oidc_config holds every configuration ever saved, active or not, and
+// without a binding a secret could be moved from a retired row onto the active
+// one — which is a way to make the service authenticate to an issuer of
+// someone else's choosing without ever touching the setup API.
+//
+// It lives here rather than in the identity module, unlike notify.TargetContext,
+// because the identity module performs no cryptography on this column: it stores
+// and returns ClientSecretCiphertext opaquely, and both the seal (the setup
+// wizard) and the open (router startup) are this service's own code.
+func OIDCConfigClientSecretContext(configID string) []byte {
+	return []byte("oidc_config:" + configID + ":client_secret_encrypted")
+}
