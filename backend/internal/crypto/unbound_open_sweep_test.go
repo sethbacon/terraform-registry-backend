@@ -37,15 +37,18 @@ import (
 // entry that outlives its Seal counterpart is a bug: it means a column is being
 // written bound and read without a context, which fails at runtime for exactly
 // the rows the conversion just created.
-var unboundOpenSites = map[string]int{
-	// The SMTP password, read out of the notifications JSON config blob during
-	// router construction. Was 2; the OIDC client secret alongside it is now
-	// bound.
-	"internal/api/router_startup.go": 1,
-
-	// The SMTP password again, on the admin test-send path.
-	"internal/api/admin/notifications.go": 1,
-}
+//
+// EMPTY IS THE FINISH LINE, not a broken test. Every read in this service now
+// passes a context. An empty inventory does not make this test vacuous: its job
+// from here is the other direction — any file that gains an unbound Open fails,
+// which is how a new column, or a revert of an old one, gets caught at the point
+// it is written rather than the first time a user's credential will not decrypt.
+//
+// It also stops being a transition tool at that point and becomes a standing
+// rule. Keep it that way: an entry added here now is a claim that a column is
+// deliberately readable without its context, and that claim needs the same
+// justification the transition entries carried.
+var unboundOpenSites = map[string]int{}
 
 // isCipherOpen reports whether a call is <something cipher-ish>.Open(...).
 //

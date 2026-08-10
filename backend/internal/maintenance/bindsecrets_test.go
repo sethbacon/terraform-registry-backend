@@ -245,10 +245,54 @@ func TestBindSecrets_RequiresACipher(t *testing.T) {
 // context would satisfy the round-trip tests above while making the binding
 // vacuous for that column, and this is the cheapest place to catch it as columns
 // are added.
+//
+// The exception is a singleton: a field inside a config blob on system_settings,
+// where there is one row and "bind it to its row" means nothing. Those are
+// exempted by an explicit flag on the column rather than by softening the
+// assertion, so the exemption is a decision someone made and can be seen in a
+// diff — and so a column that is accidentally constant still fails.
+//
+// The exemption is checked in BOTH directions. A singleton must actually be
+// constant: a column marked singleton whose context varies by row is mismarked,
+// and letting that pass would mean the row-scoping guard had been switched off
+// for a column that has a row axis after all.
 func TestRegisteredColumns_ContextsAreRowScoped(t *testing.T) {
 	for _, col := range columns {
-		if string(col.context("row-a")) == string(col.context("row-b")) {
-			t.Errorf("%s derives the same context for different rows; its binding is vacuous", col.name)
+		constant := string(col.context("row-a")) == string(col.context("row-b"))
+
+		if col.singleton {
+			if !constant {
+				t.Errorf("%s is marked singleton but derives a DIFFERENT context per row; "+
+					"either the flag is wrong or the column has a row axis it should be bound to",
+					col.name)
+			}
+			continue
+		}
+		if constant {
+			t.Errorf("%s derives the same context for different rows; its binding is vacuous. "+
+				"If it genuinely has no row axis, mark it singleton and say why.", col.name)
+		}
+	}
+}
+
+// A singleton's context is weaker than a row-scoped one, so the set of them is
+// worth being able to see at a glance — and worth failing on if it grows by
+// accident. Both entries are fields of a JSON blob on system_settings; anything
+// else claiming to have no row axis should have to justify itself here.
+func TestRegisteredColumns_SingletonsAreOnlyTheConfigBlobs(t *testing.T) {
+	want := map[string]bool{
+		"system_settings.notifications_config:smtp.smtp_password_encrypted": true,
+		"system_settings.ldap_config:bind_password_enc":                     true,
+	}
+	for _, col := range columns {
+		if col.singleton && !want[col.name] {
+			t.Errorf("%s is exempted from row-scoping but is not one of the known config blobs. "+
+				"A column with a row axis must be bound to it; add it here only if it genuinely "+
+				"has none.", col.name)
+		}
+		if !col.singleton && want[col.name] {
+			t.Errorf("%s lost its singleton marking; the row-scoping check will now fail it for "+
+				"being constant, which is not the bug it looks like", col.name)
 		}
 	}
 }

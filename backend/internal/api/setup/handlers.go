@@ -977,7 +977,8 @@ func (h *Handlers) SaveLDAPConfig(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	// Encrypt the bind password before storing
-	encryptedPassword, err := h.tokenCipher.Seal(input.BindPassword)
+	encryptedPassword, err := h.tokenCipher.SealWithContext(input.BindPassword,
+		models.SystemSettingsLDAPBindPasswordContext())
 	if err != nil {
 		slog.Error("setup: failed to encrypt LDAP bind password", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt bind password"})

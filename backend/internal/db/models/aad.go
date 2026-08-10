@@ -86,3 +86,39 @@ func StorageConfigGCSCredentialsJSONContext(configID string) []byte {
 func OIDCConfigClientSecretContext(configID string) []byte {
 	return []byte("oidc_config:" + configID + ":client_secret_encrypted")
 }
+
+// The two secrets below have NO row axis, and that is a property of the data
+// rather than an oversight.
+//
+// Both live inside JSON config blobs on system_settings, which is a singleton:
+// there is one row, `WHERE id = 1`, and there will only ever be one. "Bind this
+// to its row" is therefore vacuous for them — every value is already in the only
+// row there is — so what these contexts bind is the PURPOSE: which blob, and
+// which field inside it.
+//
+// That is weaker than the row-scoped contexts above and it is worth being
+// precise about what it does and does not buy. It does not stop anything, since
+// there is nothing to move a value between. What it does stop is the cross-
+// column move: notifications_config and ldap_config sit side by side in the SAME
+// row, so without the blob and field in the context an SMTP password and an LDAP
+// bind password would be interchangeable, as would either of them and any other
+// secret in this service sealed with no context at all. Naming the purpose is
+// the strongest binding available here, and it is strictly better than none.
+//
+// They take no argument on purpose. A parameter that is always ignored reads as
+// though the value varies, and the next person to add a singleton would copy it.
+// The backfill registry adapts them instead, and marks these columns as
+// singletons explicitly so its row-scoping check can tell "deliberately
+// constant" from "accidentally constant".
+
+// SystemSettingsSMTPPasswordContext binds the SMTP password to its field in the
+// notifications_config blob.
+func SystemSettingsSMTPPasswordContext() []byte {
+	return []byte("system_settings:notifications_config:smtp.smtp_password_encrypted")
+}
+
+// SystemSettingsLDAPBindPasswordContext binds the LDAP service-account bind
+// password to its field in the ldap_config blob.
+func SystemSettingsLDAPBindPasswordContext() []byte {
+	return []byte("system_settings:ldap_config:bind_password_enc")
+}
