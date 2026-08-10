@@ -10,8 +10,11 @@ package admin
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
+
+	identitynotify "github.com/sethbacon/terraform-suite-identity/identity/notify"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -167,6 +170,26 @@ func (h *NotificationChannelHandlers) CreateChannel(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create channel"})
 		return
 	}
+	// Bind the stored target to the row that now exists (suite-identity #153).
+	// The id only appears after the INSERT -- ChannelRepository.Create uses
+	// `INSERT ... RETURNING` and takes no caller-supplied id -- so the row is
+	// created unbound and immediately re-sealed against its own id.
+	//
+	// A failure here is logged, not surfaced: the channel exists and delivers
+	// either way (the notifier reads both forms), and erroring on a row that WAS
+	// created would invite a retry that creates a duplicate.
+	if bound, sealErr := h.tokenCipher.SealWithContext(
+		req.Target, identitynotify.TargetContext(saved.ID),
+	); sealErr == nil {
+		if _, updErr := h.repo.Update(c.Request.Context(), saved.ID, saved.Name, saved.Type,
+			saved.Events, saved.Enabled, bound); updErr != nil {
+			slog.Warn("notification channel target stored unbound; row-binding failed",
+				"channel_id", saved.ID, "error", updErr)
+		}
+	} else {
+		slog.Warn("notification channel target stored unbound; row-binding failed",
+			"channel_id", saved.ID, "error", sealErr)
+	}
 	c.JSON(http.StatusCreated, saved)
 }
 
@@ -200,7 +223,9 @@ func (h *NotificationChannelHandlers) UpdateChannel(c *gin.Context) {
 	var encrypted string
 	if req.Target != "" {
 		var err error
-		encrypted, err = h.tokenCipher.Seal(req.Target)
+		// Bound to the row being updated; the id is already in hand, so unlike
+		// create this stays a single write.
+		encrypted, err = h.tokenCipher.SealWithContext(req.Target, identitynotify.TargetContext(id))
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt target"})
 			return
