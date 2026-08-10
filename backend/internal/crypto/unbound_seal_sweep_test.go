@@ -60,10 +60,16 @@ var unboundSealSites = map[string]int{
 	// SCM client secret and app private key. IRREPLACEABLE.
 	"internal/api/admin/scm_providers.go": 4,
 
-	// This service's own notification channel target. The sibling column in
-	// tsm-backend is already bound (tsm #359) via identity/notify.TargetContext;
-	// this one is a separate table in this repo and still needs doing.
-	"internal/api/admin/notification_channels.go": 2,
+	// This service's own notification channel target is BOUND. The one Seal left
+	// is deliberate and transient: ChannelRepository.Create uses
+	// `INSERT ... RETURNING` and takes no caller-supplied id, so the row is
+	// inserted with an unbound ciphertext and immediately re-sealed against its
+	// own id. The value is unbound only between those two writes, and the
+	// notifier reads both forms, so nothing is exposed by the gap.
+	//
+	// Kept in the inventory rather than exempted, so that if the re-seal is ever
+	// removed the count still has to be justified by someone.
+	"internal/api/admin/notification_channels.go": 1,
 
 	// SMTP password.
 	"internal/api/admin/notifications.go": 1,
