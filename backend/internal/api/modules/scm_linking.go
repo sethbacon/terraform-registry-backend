@@ -94,7 +94,8 @@ func (h *SCMLinkingHandler) connectorAndToken(ctx context.Context, provider *scm
 	if err != nil || tokenRecord == nil {
 		return connector, nil, nil
 	}
-	accessToken, err := h.tokenCipher.Open(tokenRecord.AccessTokenEncrypted)
+	accessToken, _, err := h.tokenCipher.OpenWithContextOrLegacy(
+		tokenRecord.AccessTokenEncrypted, scm.UserTokenContext(tokenRecord.UserID, tokenRecord.SCMProviderID))
 	if err != nil {
 		return connector, nil, nil
 	}
@@ -104,7 +105,8 @@ func (h *SCMLinkingHandler) connectorAndToken(ctx context.Context, provider *scm
 		ExpiresAt:   tokenRecord.ExpiresAt,
 	}
 	if tokenRecord.RefreshTokenEncrypted != nil {
-		if rt, rErr := h.tokenCipher.Open(*tokenRecord.RefreshTokenEncrypted); rErr == nil {
+		if rt, _, rErr := h.tokenCipher.OpenWithContextOrLegacy(
+			*tokenRecord.RefreshTokenEncrypted, scm.UserRefreshTokenContext(tokenRecord.UserID, tokenRecord.SCMProviderID)); rErr == nil {
 			token.RefreshToken = rt
 		}
 	}
@@ -562,7 +564,8 @@ func (h *SCMLinkingHandler) TriggerManualSync(c *gin.Context) {
 	}
 
 	// Decrypt the access token
-	accessToken, err := h.tokenCipher.Open(tokenRecord.AccessTokenEncrypted)
+	accessToken, _, err := h.tokenCipher.OpenWithContextOrLegacy(
+		tokenRecord.AccessTokenEncrypted, scm.UserTokenContext(tokenRecord.UserID, tokenRecord.SCMProviderID))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to decrypt access token"})
 		return
@@ -609,7 +612,8 @@ func (h *SCMLinkingHandler) TriggerManualSync(c *gin.Context) {
 	// Parse refresh token if present
 	var decryptedRefreshToken string
 	if tokenRecord.RefreshTokenEncrypted != nil {
-		if rt, err := h.tokenCipher.Open(*tokenRecord.RefreshTokenEncrypted); err == nil {
+		if rt, _, err := h.tokenCipher.OpenWithContextOrLegacy(
+			*tokenRecord.RefreshTokenEncrypted, scm.UserRefreshTokenContext(tokenRecord.UserID, tokenRecord.SCMProviderID)); err == nil {
 			token.RefreshToken = rt
 			decryptedRefreshToken = rt
 		}
@@ -623,12 +627,12 @@ func (h *SCMLinkingHandler) TriggerManualSync(c *gin.Context) {
 			token.RefreshToken = newToken.RefreshToken
 			token.ExpiresAt = newToken.ExpiresAt
 			// Persist the refreshed token so future requests don't need to refresh again.
-			if encAccess, err := h.tokenCipher.Seal(newToken.AccessToken); err == nil {
+			if encAccess, err := h.tokenCipher.SealWithContext(newToken.AccessToken, scm.UserTokenContext(tokenRecord.UserID, tokenRecord.SCMProviderID)); err == nil {
 				tokenRecord.AccessTokenEncrypted = encAccess
 				tokenRecord.ExpiresAt = newToken.ExpiresAt
 				tokenRecord.UpdatedAt = time.Now()
 				if newToken.RefreshToken != "" {
-					if encRefresh, err := h.tokenCipher.Seal(newToken.RefreshToken); err == nil {
+					if encRefresh, err := h.tokenCipher.SealWithContext(newToken.RefreshToken, scm.UserRefreshTokenContext(tokenRecord.UserID, tokenRecord.SCMProviderID)); err == nil {
 						tokenRecord.RefreshTokenEncrypted = &encRefresh
 					}
 				}
