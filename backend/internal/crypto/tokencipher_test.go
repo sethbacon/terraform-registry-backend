@@ -2,6 +2,7 @@ package crypto
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 )
 
@@ -71,7 +72,10 @@ func TestNewTokenCipherIsolatesKey(t *testing.T) {
 func TestDeriveTokenCipher(t *testing.T) {
 	t.Run("valid passphrase and salt", func(t *testing.T) {
 		salt := bytes.Repeat([]byte("s"), 16)
-		tc, err := DeriveTokenCipher("my-secret-passphrase", salt, 100000)
+		// MinPBKDF2Iterations rather than a literal: the floor moved from 10,000
+		// to 600,000 with the swap onto the shared cipher (#835), and a literal
+		// here would need chasing again the next time guidance moves.
+		tc, err := DeriveTokenCipher("my-secret-passphrase", salt, MinPBKDF2Iterations)
 		if err != nil {
 			t.Fatalf("DeriveTokenCipher() unexpected error: %v", err)
 		}
@@ -87,12 +91,33 @@ func TestDeriveTokenCipher(t *testing.T) {
 		}
 	})
 
-	t.Run("low iteration count uses secure default", func(t *testing.T) {
+	// This sub-test previously asserted "low iteration count uses secure
+	// default" — that a caller passing 1 was silently bumped to 100,000. That
+	// was the behaviour suite-identity #153 identified as effectively inverted:
+	// the value silently rewritten was the one nobody chose, while an explicit
+	// 10,000 was honoured, so the weakest ACCEPTED work factor was reachable
+	// only by a caller who had thought about it. The local copy kept that
+	// behaviour after it was fixed upstream (#835); the assertions invert with
+	// the swap onto the shared implementation.
+	t.Run("an explicit iteration count below the floor is rejected", func(t *testing.T) {
 		salt := bytes.Repeat([]byte("s"), 16)
-		// Should not error; low count is silently bumped to 100000
 		tc, err := DeriveTokenCipher("pass", salt, 1)
+		if !errors.Is(err, ErrIterationsTooLow) {
+			t.Fatalf("DeriveTokenCipher(..., 1) error = %v, want ErrIterationsTooLow", err)
+		}
+		if tc != nil {
+			t.Error("a rejected derivation must not also return a usable cipher")
+		}
+	})
+
+	t.Run("no preference uses the secure default", func(t *testing.T) {
+		salt := bytes.Repeat([]byte("s"), 16)
+		// iterations <= 0 means "no preference" and is the one case that is
+		// still filled in rather than rejected — the caller expressed no belief
+		// about the work factor, so there is none to leave standing.
+		tc, err := DeriveTokenCipher("pass", salt, 0)
 		if err != nil {
-			t.Fatalf("DeriveTokenCipher() error: %v", err)
+			t.Fatalf("DeriveTokenCipher(..., 0) error: %v", err)
 		}
 		if tc == nil {
 			t.Fatal("DeriveTokenCipher() returned nil")
@@ -101,13 +126,25 @@ func TestDeriveTokenCipher(t *testing.T) {
 
 	t.Run("different passphrases produce different ciphers", func(t *testing.T) {
 		salt := bytes.Repeat([]byte("s"), 16)
-		tc1, _ := DeriveTokenCipher("passphrase-one", salt, 100000)
-		tc2, _ := DeriveTokenCipher("passphrase-two", salt, 100000)
+		// Was 100000, which is now below the floor: the derivation returned an
+		// error and a nil cipher, and the ignored error meant the next line
+		// dereferenced nil. Use the floor itself so the test exercises a
+		// derivation that is actually allowed.
+		tc1, err := DeriveTokenCipher("passphrase-one", salt, MinPBKDF2Iterations)
+		if err != nil {
+			t.Fatalf("DeriveTokenCipher(one): %v", err)
+		}
+		tc2, err := DeriveTokenCipher("passphrase-two", salt, MinPBKDF2Iterations)
+		if err != nil {
+			t.Fatalf("DeriveTokenCipher(two): %v", err)
+		}
 
-		sealed, _ := tc1.Seal("secret")
+		sealed, err := tc1.Seal("secret")
+		if err != nil {
+			t.Fatalf("Seal: %v", err)
+		}
 		// tc2 should NOT be able to decrypt what tc1 sealed
-		_, err := tc2.Open(sealed)
-		if err == nil {
+		if _, err := tc2.Open(sealed); err == nil {
 			t.Error("different-key cipher decrypted ciphertext; expected failure")
 		}
 	})
