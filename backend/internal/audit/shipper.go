@@ -24,6 +24,7 @@ import (
 
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
+	"github.com/terraform-registry/terraform-registry/internal/safego"
 )
 
 // LogEntry represents a structured audit log entry
@@ -275,7 +276,7 @@ func NewWebhookShipperWithGuard(cfg *WebhookConfig, egress *httpsafe.Guard) (*We
 
 	// Start batch processor if batching is enabled
 	if cfg.BatchSize > 0 {
-		go ws.processBatches()
+		safego.Go(ws.processBatches)
 	}
 
 	return ws, nil

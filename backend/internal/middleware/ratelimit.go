@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/safego"
 	"github.com/terraform-registry/terraform-registry/internal/telemetry"
 )
 
@@ -132,7 +133,7 @@ func NewRateLimiter(config RateLimitConfig) *MemoryRateLimiter {
 	}
 
 	// Start cleanup goroutine
-	go rl.cleanup()
+	safego.Go(rl.cleanup)
 
 	return rl
 }

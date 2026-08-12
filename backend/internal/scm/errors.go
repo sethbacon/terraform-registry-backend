@@ -2,7 +2,10 @@
 // covering configuration, OAuth, PAT, webhook, and repository operation failures.
 package scm
 
-import "errors"
+import (
+	"errors"
+	"log/slog"
+)
 
 var (
 	// Configuration errors
@@ -88,6 +91,15 @@ type APIError struct {
 	StatusCode int
 	Message    string
 	Err        error
+
+	// RemoteBody is a size-capped snippet of the upstream response body, kept out of
+	// Error() on purpose. API handlers routinely format a connector failure straight into
+	// a JSON response (fmt.Sprintf("...: %v", err)), and one of them — the SCM OAuth
+	// callback — is reachable unauthenticated, so anything inside Error() is effectively
+	// public. The body still has to reach the operator, or a misconfigured OAuth app
+	// registration is undiagnosable: read this field deliberately, or log the error as a
+	// slog attribute and let LogValue below include it.
+	RemoteBody string
 }
 
 func (e *APIError) Error() string {
@@ -95,6 +107,23 @@ func (e *APIError) Error() string {
 		return e.Message + ": " + e.Err.Error()
 	}
 	return e.Message
+}
+
+// LogValue renders the error for structured logging, including RemoteBody. slog resolves
+// this when the error is passed as an attribute value (slog.Error("...", "error", err)), so
+// the upstream detail Error() withholds from API clients still lands in the server log.
+func (e *APIError) LogValue() slog.Value {
+	attrs := []slog.Attr{slog.String("message", e.Message)}
+	if e.StatusCode != 0 {
+		attrs = append(attrs, slog.Int("status", e.StatusCode))
+	}
+	if e.Err != nil {
+		attrs = append(attrs, slog.String("cause", e.Err.Error()))
+	}
+	if e.RemoteBody != "" {
+		attrs = append(attrs, slog.String("remote_body", e.RemoteBody))
+	}
+	return slog.GroupValue(attrs...)
 }
 
 func (e *APIError) Unwrap() error {

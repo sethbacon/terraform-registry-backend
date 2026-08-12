@@ -45,6 +45,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/terraform-registry/terraform-registry/internal/safego"
 )
 
 // HTTP metrics — labelled by method, route template, and status code.
@@ -352,7 +353,7 @@ var DBOpenConnections = promauto.NewGauge(
 // StartDBStatsCollector launches a background goroutine that samples sql.DB connection
 // pool statistics every 30 seconds and updates the DBOpenConnections gauge.
 func StartDBStatsCollector(db *sql.DB) {
-	go func() {
+	safego.Go(func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
@@ -362,7 +363,7 @@ func StartDBStatsCollector(db *sql.DB) {
 			}
 			DBOpenConnections.Set(float64(db.Stats().OpenConnections))
 		}
-	}()
+	})
 }
 
 // ReleasesKeyRefreshTotal counts attempts by the releases-key refresh job with

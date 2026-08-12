@@ -221,7 +221,7 @@ func TestExchangeOAuthForm_PostsFormAndDecodes(t *testing.T) {
 	}
 }
 
-func TestExchangeOAuthForm_NonOKCarriesStatusAndBody(t *testing.T) {
+func TestExchangeOAuthForm_NonOKCarriesStatusAndRemoteBody(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte(`{"error":"invalid_client"}`))
@@ -241,8 +241,10 @@ func TestExchangeOAuthForm_NonOKCarriesStatusAndBody(t *testing.T) {
 		t.Errorf("StatusCode = %d, want %d", apiErr.StatusCode, http.StatusBadRequest)
 	}
 	// Unlike the repository APIs, the OAuth failure reason is what makes a misconfigured
-	// app registration diagnosable, so it is deliberately carried in the error.
-	if !strings.Contains(err.Error(), "invalid_client") {
-		t.Errorf("error = %q, want it to carry the provider's failure reason", err.Error())
+	// app registration diagnosable, so it is deliberately retained — in RemoteBody, which
+	// Error() excludes because handlers format these errors into client responses
+	// (see remotebody_test.go).
+	if !strings.Contains(apiErr.RemoteBody, "invalid_client") {
+		t.Errorf("RemoteBody = %q, want it to carry the provider's failure reason", apiErr.RemoteBody)
 	}
 }

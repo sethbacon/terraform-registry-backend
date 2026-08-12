@@ -113,10 +113,12 @@ func DoJSON(req *http.Request, reason string, notFound error, out any) error {
 // return JSON regardless and send no Accept header — so the header stays a caller
 // decision rather than something this helper imposes on every provider.
 //
-// Unlike DoJSON, a non-200 response here carries a size-capped snippet of the response
-// body (LimitErrorBody) in the returned *APIError: the OAuth error body is the provider's
-// machine-readable failure reason (invalid_client, redirect_uri_mismatch, ...) and is what
-// makes a misconfigured app registration diagnosable.
+// Unlike DoJSON, a non-200 response here keeps a size-capped snippet of the response body
+// (LimitErrorBody): the OAuth error body is the provider's machine-readable failure reason
+// (invalid_client, redirect_uri_mismatch, ...) and is what makes a misconfigured app
+// registration diagnosable. It is carried in APIError.RemoteBody rather than in the error
+// text, so an unauthenticated caller of the OAuth callback cannot be handed it by a handler
+// that formats the error into its JSON response; see errors.go.
 func ExchangeOAuthForm(ctx context.Context, tokenURL string, form url.Values, acceptHeader string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
@@ -136,7 +138,9 @@ func ExchangeOAuthForm(ctx context.Context, tokenURL string, form url.Values, ac
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(LimitErrorBody(resp.Body))
-		return WrapRemoteError(resp.StatusCode, "oauth code exchange failed", fmt.Errorf("%s", body))
+		apiErr := WrapRemoteError(resp.StatusCode, "oauth code exchange failed", nil)
+		apiErr.RemoteBody = string(body)
+		return apiErr
 	}
 
 	if err := json.NewDecoder(LimitBody(resp.Body)).Decode(out); err != nil {
