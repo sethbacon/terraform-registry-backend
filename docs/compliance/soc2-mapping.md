@@ -120,7 +120,7 @@ during SOC 2 Type II audits.
 | -------- | --------------------- | ---------------------------------------------------- | ---------------------------------------------------- |
 | P1.1     | Privacy notice        | Privacy policy documentation                         | `PRIVACY.md` (frontend)                              |
 | P3.1     | Collection limitation | Minimal PII collection (email, username from IdP)    | Auth handlers, user model                            |
-| P4.1     | Use limitation        | PII used only for auth/audit; audit destinations are operator-configured and MAY be external — see note below | `security.audit.shippers`, `internal/audit/shipper.go` |
+| P4.1     | Use limitation        | PII used only for auth/audit; audit destinations are operator-configured and MAY be external — see note below | `audit.shippers`, `internal/audit/shipper.go` |
 | P6.1     | Data subject access   | User data export endpoint                            | `/admin/users/:id/export`                            |
 | P8.1     | Data quality          | IdP-sourced attributes; SCIM sync keeps data current | SCIM provisioning                                    |
 
@@ -128,11 +128,17 @@ during SOC 2 Type II audits.
 > externally", evidenced by "audit shipper config (self-hosted destinations only)". The code
 > enforces no such restriction, and the guard it does apply points the other way: audit webhooks
 > are dialled through `internal/httpsafe`, which **denies** loopback/RFC1918/link-local targets and
-> **permits public ones**. So the shipper is, if anything, biased toward external destinations.
+> **permits public ones**. So the shipper is, if anything, biased toward external destinations: a
+> genuinely self-hosted collector on a private address is *rejected* unless the operator adds it to
+> `security.egress.allowlist`.
 >
-> What is actually true: audit records containing user email and identity attributes are sent only
-> to destinations an operator explicitly configures in `security.audit.shippers`, and nowhere by
-> default. That is an operator-controlled disclosure boundary, not a technical guarantee of
+> What is actually true, field by field. The shipped record (`audit.LogEntry`) carries the acting
+> user's **ID**, organization ID, action, resource type/ID, client **IP address**, auth method,
+> status code, and a free-form metadata map whose contents vary by endpoint. It does **not** carry
+> email addresses — email is collected (P3.1) but is not part of the shipped payload, so the
+> identifiers that leave the system are user IDs and client IPs. Those records go only to
+> destinations an operator explicitly configures in `audit.shippers`, and nowhere by default
+> (`shippers: []`). That is an operator-controlled disclosure boundary, not a technical guarantee of
 > non-disclosure. An assessor relying on this row should test the deployed shipper configuration
 > rather than the code.
 
