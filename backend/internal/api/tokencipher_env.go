@@ -27,12 +27,32 @@ import (
 // refusing to convert because the existing key is weak would strand exactly the
 // deployments that most need to re-encrypt.
 func BuildTokenCipherFromEnv() (*crypto.TokenCipher, error) {
+	key, err := CurrentEncryptionKeyFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	if previous := os.Getenv("ENCRYPTION_KEY_PREVIOUS"); previous != "" {
+		return crypto.NewTokenCipherWithPrevious(key, []byte(previous))
+	}
+	return crypto.NewTokenCipher(key)
+}
+
+// CurrentEncryptionKeyFromEnv returns the raw ENCRYPTION_KEY bytes — the key
+// everything is encrypted WITH, without the previous-key decryption fallback.
+//
+// The rekey-secrets maintenance command needs the current key on its own,
+// because a cipher that falls back to the previous key cannot answer the only
+// question that ends a rotation: is this row still encrypted under the key I am
+// about to delete? An open that succeeds through the fallback looks identical to
+// one that did not need it (#848).
+//
+// It reads the key here, beside the cipher constructor, rather than in the
+// command, for the reason above: one key source, so the sweep and the server
+// cannot disagree about what "the current key" is.
+func CurrentEncryptionKeyFromEnv() ([]byte, error) {
 	key := os.Getenv("ENCRYPTION_KEY")
 	if key == "" {
 		return nil, errors.New("ENCRYPTION_KEY must be set")
 	}
-	if previous := os.Getenv("ENCRYPTION_KEY_PREVIOUS"); previous != "" {
-		return crypto.NewTokenCipherWithPrevious([]byte(key), []byte(previous))
-	}
-	return crypto.NewTokenCipher([]byte(key))
+	return []byte(key), nil
 }

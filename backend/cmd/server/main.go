@@ -124,8 +124,24 @@ func run() error {
 		// bind-secrets [verify] — convert stored secrets to the row-bound
 		// ciphertext form, or report what remains without writing.
 		return runBindSecrets(cfg, len(os.Args) > 2 && os.Args[2] == "verify")
+	case "rekey-secrets":
+		// rekey-secrets [verify] — re-encrypt stored secrets under the current
+		// ENCRYPTION_KEY, or report what still needs the previous one.
+		//
+		// An unrecognised argument is rejected rather than ignored: this
+		// command's default mode REWRITES every credential in the database, and
+		// silently reading `verfiy` as "no argument" would run the writing mode
+		// on a typo of the read-only one.
+		verify := false
+		if len(os.Args) > 2 {
+			if os.Args[2] != "verify" {
+				return fmt.Errorf("usage: %s rekey-secrets [verify]", os.Args[0])
+			}
+			verify = true
+		}
+		return runRekeySecrets(cfg, verify)
 	default:
-		return fmt.Errorf("unknown command: %s\nAvailable commands: serve, migrate, version, upgrade, scan-worker, bind-secrets", command)
+		return fmt.Errorf("unknown command: %s\nAvailable commands: serve, migrate, version, upgrade, scan-worker, bind-secrets, rekey-secrets", command)
 	}
 }
 
@@ -999,6 +1015,47 @@ func runBindSecrets(cfg *config.Config, verify bool) error {
 	}
 	for name, res := range results {
 		slog.Info("bind-secrets column complete", "mode", mode, "column", name, "result", res.String())
+	}
+	return err
+}
+
+// runRekeySecrets re-encrypts every stored secret under the current
+// ENCRYPTION_KEY, or with "verify" reports what still requires
+// ENCRYPTION_KEY_PREVIOUS without writing anything.
+//
+// This is what finishes a key rotation. bind-secrets deliberately skips a row it
+// can already open under its own context, and that open falls back to the
+// previous key — so once secrets are row-bound, bind-secrets re-encrypts nothing
+// and the previous key can never be retired (#848).
+//
+// The verify form is the exit criterion, and the reason it takes the key rather
+// than only the cipher: a cipher with a fallback cannot tell "opened with the
+// current key" from "opened with the previous one", so it cannot answer the
+// question the gate asks. It exits non-zero while any row still needs the
+// previous key, which is what a runbook step gates the deletion on.
+func runRekeySecrets(cfg *config.Config, verify bool) error {
+	database, err := db.Connect(cfg.Database.GetDSN(), cfg.Database.MaxConnections, cfg.Database.MinIdleConnections)
+	if err != nil {
+		return fmt.Errorf("failed to connect to database: %w", err)
+	}
+	defer func() { _ = database.Close() }()
+
+	cipher, err := api.BuildTokenCipherFromEnv()
+	if err != nil {
+		return fmt.Errorf("rekey-secrets needs the encryption key the server uses: %w", err)
+	}
+	currentKey, err := api.CurrentEncryptionKeyFromEnv()
+	if err != nil {
+		return fmt.Errorf("rekey-secrets needs the encryption key the server uses: %w", err)
+	}
+
+	results, err := maintenance.RekeySecrets(context.Background(), database, cipher, currentKey, verify)
+	mode := "re-encrypt"
+	if verify {
+		mode = "verify"
+	}
+	for name, res := range results {
+		slog.Info("rekey-secrets column complete", "mode", mode, "column", name, "result", res.String())
 	}
 	return err
 }
