@@ -66,16 +66,36 @@ type column struct {
 }
 
 // Result is what one column's sweep did. Total is rows examined, not changed.
+//
+// The two sweeps share this struct because they answer the same two questions
+// per row — did it need work, and did the work land — and a second
+// near-identical struct would drift from this one exactly the way five bespoke
+// loops would have.
+//
+// They do NOT share a reason for skipping a row, though, and that difference is
+// the whole of #848: bind-secrets skips a row that is already bound, a rekey run
+// skips one that is already on the current key, and a row can be the first
+// without being the second. AlreadyBound therefore carries the count and
+// `skipped` carries what it means, so a rekey run never prints "already-bound"
+// over a row that still needs the key the operator is about to delete.
 type Result struct {
 	Total        int
 	Converted    int
 	AlreadyBound int
 	Failed       int
+
+	// skipped labels AlreadyBound in String(). Empty means the binding sweep's
+	// wording, so a zero Result still prints sensibly.
+	skipped string
 }
 
 func (r Result) String() string {
-	return fmt.Sprintf("examined=%d converted=%d already-bound=%d failed=%d",
-		r.Total, r.Converted, r.AlreadyBound, r.Failed)
+	skipped := r.skipped
+	if skipped == "" {
+		skipped = "already-bound"
+	}
+	return fmt.Sprintf("examined=%d converted=%d %s=%d failed=%d",
+		r.Total, r.Converted, skipped, r.AlreadyBound, r.Failed)
 }
 
 // ErrUnboundRemain is returned by a verify run that found rows still unbound.
@@ -352,6 +372,79 @@ func listRows(ctx context.Context, db *sql.DB, query string) ([]sealedRow, error
 	return out, rows.Err()
 }
 
+// converter decides what a sweep does with one row. needsWork false means the
+// row is already in the target form and must be left alone; otherwise
+// replacement is the ciphertext to store.
+//
+// An error is a row-level failure — reported, stepped over, and counted against
+// the verify gate. It is never a reason to abandon the remaining rows.
+type converter func(col column, row sealedRow) (replacement string, needsWork bool, err error)
+
+// sweep runs one converter over every registered column, writing unless
+// verifyOnly, and reports whether any row needed work or failed.
+//
+// It is shared by BindSecrets and RekeySecrets so that the properties an
+// operator relies on — verify writes nothing, one bad row does not abandon the
+// rest, the whole registry is walked rather than a subset — are implemented once
+// and cannot hold for one command and not the other. `skipped` is only the word
+// the two use for a row they left alone.
+//
+// Writes are per row, not per sweep. A transaction spanning every credential in
+// the database would hold locks for the length of the run and turn a partial
+// failure into an all-or-nothing one; a single-row UPDATE is already atomic, so
+// an interrupted sweep leaves each row either wholly converted or wholly
+// untouched, and both forms still open. That is what makes it resumable.
+func sweep(
+	ctx context.Context,
+	db *sql.DB,
+	verifyOnly bool,
+	skipped string,
+	convert converter,
+) (map[string]Result, bool, error) {
+	results := make(map[string]Result, len(columns))
+	var workRemains bool
+
+	for _, col := range columns {
+		rows, err := col.list(ctx, db)
+		if err != nil {
+			return results, workRemains, fmt.Errorf("maintenance: list %s: %w", col.name, err)
+		}
+
+		res := Result{Total: len(rows), skipped: skipped}
+		for _, row := range rows {
+			replacement, needsWork, err := convert(col, row)
+			if err != nil {
+				res.Failed++
+				slog.Error("secret could not be converted",
+					"column", col.name, "row_id", row.id, "error", err)
+				continue
+			}
+			if !needsWork {
+				res.AlreadyBound++
+				continue
+			}
+			if verifyOnly {
+				res.Converted++ // would convert
+				continue
+			}
+			if err := col.update(ctx, db, row.id, replacement); err != nil {
+				res.Failed++
+				slog.Error("converted secret could not be written",
+					"column", col.name, "row_id", row.id, "error", err)
+				continue
+			}
+			res.Converted++
+		}
+
+		results[col.name] = res
+		if res.Converted > 0 || res.Failed > 0 {
+			workRemains = true
+		}
+	}
+
+	return results, workRemains, nil
+}
+
 // BindSecrets converts every registered column to the row-bound form, or with
 // verifyOnly reports what remains without writing.
 //
@@ -359,6 +452,11 @@ func listRows(ctx context.Context, db *sql.DB, query string) ([]sealedRow, error
 // opening it under its own context — no schema flag can answer this, because the
 // form is a property of the ciphertext, not of the row — and skipped rather than
 // double-sealed.
+//
+// That skip is binding-only, and deliberately so: OpenWithContext falls back to
+// the previous key, so a row bound before a key rotation opens here and is left
+// where it is. Completing a rotation is RekeySecrets' job, not this one's
+// (#848).
 //
 // A row that cannot be decrypted at all is reported and stepped over. That is a
 // pre-existing problem this sweep did not cause and cannot fix, and abandoning
@@ -373,45 +471,16 @@ func BindSecrets(
 		return nil, errors.New("maintenance: no token cipher configured (set ENCRYPTION_KEY)")
 	}
 
-	results := make(map[string]Result, len(columns))
-	var unbound bool
-
-	for _, col := range columns {
-		rows, err := col.list(ctx, db)
-		if err != nil {
-			return results, fmt.Errorf("maintenance: list %s: %w", col.name, err)
-		}
-
-		res := Result{Total: len(rows)}
-		for _, row := range rows {
+	results, unbound, err := sweep(ctx, db, verifyOnly, "already-bound",
+		func(col column, row sealedRow) (string, bool, error) {
 			if _, err := tc.OpenWithContext(row.sealed, col.context(row.id)); err == nil {
-				res.AlreadyBound++
-				continue
+				return "", false, nil
 			}
 			bound, err := tc.ReSealWithContext(row.sealed, col.context(row.id))
-			if err != nil {
-				res.Failed++
-				slog.Error("secret could not be converted",
-					"column", col.name, "row_id", row.id, "error", err)
-				continue
-			}
-			if verifyOnly {
-				res.Converted++ // would convert
-				continue
-			}
-			if err := col.update(ctx, db, row.id, bound); err != nil {
-				res.Failed++
-				slog.Error("converted secret could not be written",
-					"column", col.name, "row_id", row.id, "error", err)
-				continue
-			}
-			res.Converted++
-		}
-
-		results[col.name] = res
-		if res.Converted > 0 || res.Failed > 0 {
-			unbound = true
-		}
+			return bound, true, err
+		})
+	if err != nil {
+		return results, err
 	}
 
 	if verifyOnly && unbound {

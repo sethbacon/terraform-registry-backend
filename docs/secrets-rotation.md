@@ -146,47 +146,51 @@ The encryption key protects SCM OAuth tokens stored in the database. The backend
    - Trigger a tag push or verify the webhook integration is functional.
    - Check logs for decryption errors (there should be none).
 
-6. **(Optional) Re-encrypt every stored secret** with the new key, removing the dependency on the previous key:
+6. **Re-encrypt every stored secret** under the new key, removing the dependency on the previous key:
 
    ```bash
-   terraform-registry bind-secrets
+   terraform-registry rekey-secrets
    ```
 
-   This decrypts through the dual-key path (so rows still on the old key are read via
-   `ENCRYPTION_KEY_PREVIOUS`) and re-encrypts with the **current** key. It covers every
-   encrypted column — SCM provider credentials, user OAuth tokens, storage-backend
-   credentials, the OIDC client secret, SMTP and LDAP passwords — not just
-   `scm_providers`.
+   This is the step that makes the rotation finishable, and it is **not optional** if you
+   intend to reach step 7. It reads each secret through the dual-key path (so rows still
+   on the old key are read via `ENCRYPTION_KEY_PREVIOUS`) and re-seals it with the
+   **current** key, under the same row binding it already had. It covers every swept
+   encrypted column — SCM provider client secrets and GitHub App private keys,
+   storage-backend credentials, the OIDC client secret, notification channel targets,
+   SMTP and LDAP passwords. See [What `rekey-secrets` covers](#what-rekey-secrets-covers)
+   for the two columns it deliberately does not.
 
-   **This only re-encrypts rows that are not yet row-bound.** Read that limitation
-   carefully, because it changes what this step can do for you:
+   A row already on the current key is left untouched, so the command is safe to re-run
+   and cheap to run again after an interruption. A row that is not yet bound to its row
+   is bound *and* re-encrypted in the same pass, so you do not need to run `bind-secrets`
+   first.
 
-   - **If you have not yet run the row-binding migration below** (the usual case on a
-     first rotation after upgrading), every row is unbound, so this one command does
-     both jobs: it binds each secret to its row *and* lands it on the current key.
-   - **If your rows are already bound**, this command detects them as converted and
-     **skips them** — it will not re-encrypt them onto the new key. That detection
-     succeeds via the dual-key fallback, so a bound row sitting on the previous key
-     looks "already done" to it. There is no re-encrypt-only command today; keep
-     `ENCRYPTION_KEY_PREVIOUS` in place, or re-enter those credentials, until one exists.
+   **Do not use `bind-secrets` for this.** It converts a ciphertext's *form* and skips any
+   row it can already open — and that check goes through the dual-key fallback, so a row
+   that is bound but still sealed under the previous key looks finished to it. On a first
+   rotation after upgrading, when nothing is bound yet, it happens to re-encrypt as a side
+   effect; on every rotation after that it re-encrypts nothing.
 
-   Confirm what actually happened before moving to step 7:
+7. **Remove the previous key** — but only once the gate says it is safe:
 
    ```bash
-   terraform-registry bind-secrets verify   # exits non-zero if any row is unbound
+   terraform-registry rekey-secrets verify   # exits non-zero while any row needs the previous key
    ```
 
-   Note this verifies **binding**, not which key a row is encrypted under. It passing
-   does not by itself prove you can safely drop `ENCRYPTION_KEY_PREVIOUS`.
+   **A zero exit from this command is the only thing that authorises removing
+   `ENCRYPTION_KEY_PREVIOUS`.** It writes nothing. It re-checks every swept row against a
+   cipher holding *only* the current key, so unlike `bind-secrets verify` it can tell
+   "opened with the current key" from "opened with the previous one" — which is the
+   question this step actually turns on.
 
-7. **Remove the previous key** once all tokens have been re-encrypted (or after a sufficient grace period).
+   A non-zero exit means at least one row still requires the previous key, or could not be
+   read at all. Both hold the gate shut, and both are logged per column with a row id.
 
-   Be sure step 6 actually re-encrypted, rather than skipping already-bound rows — see
-   the limitation there. Removing `ENCRYPTION_KEY_PREVIOUS` while any row is still
-   encrypted under it makes that secret **permanently unreadable**, by the service and
-   by `bind-secrets` alike, and it has to be re-entered by an administrator. When in
-   doubt, keep the previous key: an extra key in a secrets manager is cheap, and this
-   is not a reversible mistake.
+   Removing `ENCRYPTION_KEY_PREVIOUS` while any row is still encrypted under it makes that
+   secret **permanently unreadable**, by the service and by these commands alike, and it
+   has to be re-entered by an administrator. There is no undo. When the gate is red, keep
+   the previous key: an extra key in a secrets manager is cheap.
 
    ```bash
    kubectl create secret generic registry-secrets \
@@ -198,12 +202,71 @@ The encryption key protects SCM OAuth tokens stored in the database. The backend
 
 ### Timeline Recommendation
 
-| Step                             | When                        |
-| -------------------------------- | --------------------------- |
-| Set new key + previous key       | Day 0                       |
-| Rolling restart                  | Day 0                       |
-| Re-encrypt all tokens (optional) | Day 0 - Day 7               |
-| Remove previous key              | Day 7+ (after verification) |
+| Step                                            | When                                |
+| ----------------------------------------------- | ----------------------------------- |
+| Set new key + previous key                      | Day 0                               |
+| Rolling restart                                  | Day 0                               |
+| `rekey-secrets` (re-encrypt everything)         | Day 0 - Day 7                       |
+| `rekey-secrets verify` returns zero             | Before removing the previous key    |
+| Remove previous key                             | Day 7+ (only after the gate is green) |
+
+### Completing a Rotation: `rekey-secrets`
+
+**Why a second command.** `bind-secrets` answers *"is every ciphertext bound to its
+row?"*; `rekey-secrets` answers *"is every ciphertext readable without the previous
+key?"*. Those look like the same question and are not: a row can be bound and still be
+sealed under the key you are about to delete, and the read path will not tell you,
+because it silently falls back.
+
+**Run it:**
+
+```bash
+# Re-encrypt every swept secret under the current ENCRYPTION_KEY.
+terraform-registry rekey-secrets
+
+# Report what still needs ENCRYPTION_KEY_PREVIOUS, writing nothing.
+terraform-registry rekey-secrets verify
+```
+
+In a container the binary is at `/app/terraform-registry`, so:
+
+```bash
+kubectl exec deploy/terraform-registry -- /app/terraform-registry rekey-secrets verify
+```
+
+Both need `ENCRYPTION_KEY` and — until the rotation is complete — `ENCRYPTION_KEY_PREVIOUS`,
+the same values the server runs with. If `ENCRYPTION_KEY` is not the key the service is
+actually sealing with, the command refuses before reading a single row rather than
+re-encrypting your estate under a key nothing else has.
+
+**Safe to re-run and safe to interrupt.** Rows are written one at a time, and a row is
+skipped once it is bound and on the current key, so a second run is a no-op and an
+interrupted run is resumed by running it again. Nothing is written in `verify` mode.
+
+**A row reported as `failed`** could not be decrypted at all, or is bound to a *different*
+row than the one it was found in. Neither is re-sealed into place: doing so would mint a
+valid binding for a value that was moved, which is the exact tampering the binding exists
+to detect. A failed row is logged with its column and row id, and holds the verify gate
+shut — "one row could not be read" is not evidence that the previous key can go.
+
+<a id="what-rekey-secrets-covers"></a>
+
+**What `rekey-secrets` covers.** Every column the maintenance registry sweeps: notification
+channel targets, all four `storage_config` credentials, the OIDC client secret, the
+`scm_providers` client secret and GitHub App private key, and the SMTP and LDAP passwords
+inside `system_settings`. These are the secrets only an administrator could re-enter.
+
+Two encrypted columns are **not** swept, and `rekey-secrets verify` returning zero says
+nothing about them:
+
+| Column                                    | Why it is not swept                                                                                         |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `scm_provider_tokens.access_token_encrypted` | A cache with an expiry. Entries are re-minted from the identity provider, so the table converts itself.       |
+| `scm_oauth_tokens.access_token_encrypted` / `refresh_token_encrypted` | Per-user OAuth tokens. Rows are re-sealed whenever a token is refreshed; a row that is not refreshed before the previous key is removed becomes unreadable, and that user re-links their SCM account to restore it. |
+
+Neither needs an administrator to recover, which is why the rotation is not blocked on
+them — but if you would rather not have users re-link, leave `ENCRYPTION_KEY_PREVIOUS` in
+place for a token-refresh cycle after the gate goes green.
 
 ### One-Time: Bind Stored Secrets to Their Rows
 
@@ -252,12 +315,17 @@ secret has to be re-entered by an administrator.
 
 **Interaction with key rotation** (this is the non-obvious part): the conversion
 decrypts through the same dual-key path the server uses, then re-encrypts with the
-**current** key. So running `bind-secrets` during a rotation window also completes
-the re-encryption step for every row it touches — the "Re-encrypt all tokens
-(optional)" line in the timeline above. Running it *before* removing
-`ENCRYPTION_KEY_PREVIOUS` is therefore strictly better than running it after: after
-removal, any row still on the old key can no longer be read by anything, including
-this command.
+**current** key — but only for rows it actually converts. A row that is *already*
+bound is skipped, and that skip is decided by an open that falls back to
+`ENCRYPTION_KEY_PREVIOUS`, so a bound row still sealed under the old key looks
+finished here.
+
+The practical consequence: `bind-secrets` re-encrypts as a side effect on the first
+rotation after upgrading (when nothing is bound yet) and on no rotation after that. It
+is not the re-encryption step and `bind-secrets verify` is not the rotation gate — use
+[`rekey-secrets`](#completing-a-rotation-rekey-secrets) for both. Run either one
+*before* removing `ENCRYPTION_KEY_PREVIOUS`: after removal, any row still on the old
+key can no longer be read by anything, including these commands.
 
 **Why `verify` exists.** Until it reports zero, the service must keep accepting
 unbound ciphertexts — which is the weakness being retired. It exits non-zero while
