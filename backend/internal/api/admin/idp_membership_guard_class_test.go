@@ -69,8 +69,14 @@ func callName(call *ast.CallExpr) string {
 	return ""
 }
 
-// guardPositionsIn collects the offsets of guard calls inside n that could
-// actually run on the path to writePos.
+// guardPositionsIn collects the offsets of calls named in names, inside n, that
+// could actually run on the path to writePos.
+//
+// names is a parameter rather than the guardCallNames global it started as
+// because platform_admin_grant_class_test.go runs the same path analysis over
+// the whole module with a wider set (the human-driven checkRoleAssignment
+// ceiling as well as the IdP guard). One walker, two vocabularies — a second
+// copy of this is the divergence the three false results below were caused by.
 //
 // Path-awareness is the whole point, and this test reported a FALSE PASS twice
 // before it had any:
@@ -93,7 +99,7 @@ func callName(call *ast.CallExpr) string {
 // the write sits after the if rather than inside it. Skipping the whole node
 // there produced the opposite error — a false FAILURE on a correctly guarded
 // branch. Init/Cond/Post run on the way past; Body/Else do not.
-func guardPositionsIn(n ast.Node, writePos token.Pos) []token.Pos {
+func guardPositionsIn(n ast.Node, writePos token.Pos, names map[string]bool) []token.Pos {
 	contains := func(x ast.Node) bool {
 		return x != nil && writePos >= x.Pos() && writePos <= x.End()
 	}
@@ -138,7 +144,7 @@ func guardPositionsIn(n ast.Node, writePos token.Pos) []token.Pos {
 					return false
 				}
 			}
-			if call, ok := x.(*ast.CallExpr); ok && guardCallNames[callName(call)] {
+			if call, ok := x.(*ast.CallExpr); ok && names[callName(call)] {
 				out = append(out, call.Pos())
 			}
 			return true
@@ -197,7 +203,7 @@ func TestIdPMembershipWrites_AreAllBehindTheProvisionableGuard(t *testing.T) {
 
 				var guarded bool
 				for _, enclosing := range stack {
-					for _, g := range guardPositionsIn(enclosing, pos) {
+					for _, g := range guardPositionsIn(enclosing, pos, guardCallNames) {
 						// Strictly before the write: a guard that runs after the
 						// membership has already landed is not a guard.
 						if g < pos {
