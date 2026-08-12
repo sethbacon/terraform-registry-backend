@@ -146,12 +146,47 @@ The encryption key protects SCM OAuth tokens stored in the database. The backend
    - Trigger a tag push or verify the webhook integration is functional.
    - Check logs for decryption errors (there should be none).
 
-6. **(Optional) Re-encrypt all tokens** with the new key. This eliminates the dependency on the previous key. **Not yet available as a built-in command — a manual SQL/script step is required today.** Do this by:
-   - Iterating all `scm_providers` rows with encrypted tokens.
-   - Decrypting with the dual-key cipher and re-encrypting with only the current key.
-   - A built-in admin command for this is not yet available; the dual-key fallback (above) is the supported zero-downtime path, and this re-encryption is optional cleanup.
+6. **(Optional) Re-encrypt every stored secret** with the new key, removing the dependency on the previous key:
 
-7. **Remove the previous key** once all tokens have been re-encrypted (or after a sufficient grace period):
+   ```bash
+   terraform-registry bind-secrets
+   ```
+
+   This decrypts through the dual-key path (so rows still on the old key are read via
+   `ENCRYPTION_KEY_PREVIOUS`) and re-encrypts with the **current** key. It covers every
+   encrypted column — SCM provider credentials, user OAuth tokens, storage-backend
+   credentials, the OIDC client secret, SMTP and LDAP passwords — not just
+   `scm_providers`.
+
+   **This only re-encrypts rows that are not yet row-bound.** Read that limitation
+   carefully, because it changes what this step can do for you:
+
+   - **If you have not yet run the row-binding migration below** (the usual case on a
+     first rotation after upgrading), every row is unbound, so this one command does
+     both jobs: it binds each secret to its row *and* lands it on the current key.
+   - **If your rows are already bound**, this command detects them as converted and
+     **skips them** — it will not re-encrypt them onto the new key. That detection
+     succeeds via the dual-key fallback, so a bound row sitting on the previous key
+     looks "already done" to it. There is no re-encrypt-only command today; keep
+     `ENCRYPTION_KEY_PREVIOUS` in place, or re-enter those credentials, until one exists.
+
+   Confirm what actually happened before moving to step 7:
+
+   ```bash
+   terraform-registry bind-secrets verify   # exits non-zero if any row is unbound
+   ```
+
+   Note this verifies **binding**, not which key a row is encrypted under. It passing
+   does not by itself prove you can safely drop `ENCRYPTION_KEY_PREVIOUS`.
+
+7. **Remove the previous key** once all tokens have been re-encrypted (or after a sufficient grace period).
+
+   Be sure step 6 actually re-encrypted, rather than skipping already-bound rows — see
+   the limitation there. Removing `ENCRYPTION_KEY_PREVIOUS` while any row is still
+   encrypted under it makes that secret **permanently unreadable**, by the service and
+   by `bind-secrets` alike, and it has to be re-entered by an administrator. When in
+   doubt, keep the previous key: an extra key in a secrets manager is cheap, and this
+   is not a reversible mistake.
 
    ```bash
    kubectl create secret generic registry-secrets \
@@ -169,6 +204,66 @@ The encryption key protects SCM OAuth tokens stored in the database. The backend
 | Rolling restart                  | Day 0                       |
 | Re-encrypt all tokens (optional) | Day 0 - Day 7               |
 | Remove previous key              | Day 7+ (after verification) |
+
+### One-Time: Bind Stored Secrets to Their Rows
+
+This is a **one-time migration per deployment**, not a recurring rotation. Nothing
+breaks if you skip it — but the protection it adds does not apply to your existing
+data until you run it.
+
+**What it protects against.** A stored ciphertext used to carry no indication of
+*where* it belonged. Anyone able to write to the database could copy one row's
+encrypted value into another row — one SCM provider's client secret into another's,
+one channel's webhook target into another channel — and AES-GCM would accept it,
+because nothing in the ciphertext contradicted the move. Each secret is now bound to
+its own row and column, so a moved value fails to decrypt.
+
+Reading tolerates both forms, so this is safe to run whenever suits you, and safe not
+to run at all.
+
+**Run it:**
+
+```bash
+# Convert every stored secret that is not yet bound.
+terraform-registry bind-secrets
+
+# Report what remains, writing nothing.
+terraform-registry bind-secrets verify
+```
+
+In a container the binary is at `/app/terraform-registry`, so:
+
+```bash
+kubectl exec deploy/terraform-registry -- /app/terraform-registry bind-secrets verify
+```
+
+Both need `ENCRYPTION_KEY` (and `ENCRYPTION_KEY_PREVIOUS`, if set) — the same values
+the server runs with. The conversion happens in the application because AES-GCM
+re-encryption needs the key; there is no SQL migration that can do it.
+
+**Safe to re-run and safe to interrupt.** An already-bound row is detected and
+skipped rather than re-encrypted, so a run that dies halfway is resumed by running it
+again. Nothing is written in `verify` mode.
+
+**A row reported as `failed`** could not be decrypted *at all* — a wrong key, or
+corruption. That is a pre-existing problem this command did not cause and cannot
+repair; it is reported and stepped over so the remaining rows still convert. Such a
+secret has to be re-entered by an administrator.
+
+**Interaction with key rotation** (this is the non-obvious part): the conversion
+decrypts through the same dual-key path the server uses, then re-encrypts with the
+**current** key. So running `bind-secrets` during a rotation window also completes
+the re-encryption step for every row it touches — the "Re-encrypt all tokens
+(optional)" line in the timeline above. Running it *before* removing
+`ENCRYPTION_KEY_PREVIOUS` is therefore strictly better than running it after: after
+removal, any row still on the old key can no longer be read by anything, including
+this command.
+
+**Why `verify` exists.** Until it reports zero, the service must keep accepting
+unbound ciphertexts — which is the weakness being retired. It exits non-zero while
+any row remains unbound, so it can gate a release or a runbook step rather than
+relying on someone reading the output. A future version will require bound values and
+drop the tolerance; `verify` returning zero is what tells you that upgrade is safe.
 
 ---
 
