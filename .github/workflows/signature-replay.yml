@@ -7,20 +7,24 @@
 # schedule can only tell you a class reopened the morning after; only this form
 # can stop the merge that reopened it.
 #
-# SUITE_READ_TOKEN is a fine-grained PAT with contents:read on the six suite
-# repos plus the private security-orchestration repo (checked out here for the
-# ledger and the signatures), and issues:read for --verify-linked-issues, which
-# is what stops a CLOSED linked issue from absorbing residual.
+# The credential is a GitHub App as of 2026-08-12, not a PAT. SUITE_READ_APP_KEY
+# is the App's private KEY; the step below exchanges it for an INSTALLATION
+# token that expires in an hour, rather than a credential that is itself valid
+# forever. It is scoped by `repositories:` to exactly the repos checked out
+# below plus the private security-orchestration repo (checked out here for the
+# ledger and the signatures), with contents:read to clone them and issues:read
+# for --verify-linked-issues, which is what stops a CLOSED linked issue from
+# absorbing residual.
 #
 # Exit codes are not symmetrical: 1 means a signature ran and found something,
 # 2 means a signature could not run at all. Two is never a pass -- a signature
 # that cannot execute establishes nothing about the repo it was pointed at,
 # which is why every checkout below is load-bearing rather than convenience.
 #
-# Known limitation: a pull_request from a FORK receives no secrets, so every
-# checkout fails and the job exits 2 (red). That is the correct direction to
-# fail, but it means this gate is not usable as-is on a repo taking outside
-# contributions.
+# Known limitation: a pull_request from a FORK receives no secrets, so the App
+# key is empty, no token is minted, every checkout fails and the job exits 2
+# (red). That is the correct direction to fail, but it means this gate is not
+# usable as-is on a repo taking outside contributions.
 #
 # Adding this file is NOT enforcement. The check must also be in the branch's
 # required_status_checks, asserted against the live API rather than read off
@@ -49,24 +53,55 @@ jobs:
   replay:
     runs-on: ubuntu-latest
     steps:
+      # `owner:` is load-bearing and so is its absence elsewhere: an App token
+      # is minted PER INSTALLATION and an installation is per account, so this
+      # token reads sethbacon repos and nothing in the 4cloudguru org -- which
+      # is why the cloud-suite-ui checkout below deliberately takes no token.
+      #
+      # `repositories:` narrows it further to only what the checkouts read, and
+      # the two `permission-` inputs narrow it again: without them the token
+      # inherits every permission the installation holds. issues:read is not
+      # incidental -- the replay step passes this token as GH_TOKEN for
+      # --verify-linked-issues.
+      - name: Mint a read token for the sethbacon installation
+        id: token-sethbacon
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: "${{ vars.SUITE_READ_APP_ID }}"
+          private-key: "${{ secrets.SUITE_READ_APP_KEY }}"
+          owner: sethbacon
+          permission-contents: read
+          permission-issues: read
+          repositories: >-
+            terraform-registry-backend,
+            terraform-registry-frontend,
+            terraform-state-manager-backend,
+            terraform-state-manager-frontend,
+            terraform-suite-identity,
+            azure-pipelines-packer,
+            azure-pipelines-terraform,
+            security-orchestration
+
       # Every repo in SIGNATURE_SCOPE must be present. A signature that cannot
       # run against a repo establishes nothing about it, and the job exits 2
       # rather than pretending otherwise — so these checkouts are load-bearing,
       # not convenience.
       #
       # persist-credentials: false on EVERY checkout. Without it, actions/checkout
-      # leaves SUITE_READ_TOKEN in each .git/config -- eight copies of a PAT that
-      # reads seven repositories including a private one -- inside a job that also
-      # uploads an artifact. That is zizmor's `artipacked` audit, and it is not
-      # theoretical here: widen the upload path by one glob and the token ships
-      # with the report. The replay only READS these trees; nothing after the
-      # checkouts needs git credentials.
+      # leaves the minted token in each .git/config -- eight copies of a
+      # credential that reads eight repositories including a private one --
+      # inside a job that also uploads an artifact. That is zizmor's `artipacked`
+      # audit, and it is not theoretical here: widen the upload path by one glob
+      # and the token ships with the report. An installation token expires in an
+      # hour rather than never, which shrinks that window but does not close it.
+      # The replay only READS these trees; nothing after the checkouts needs git
+      # credentials.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           {
             repository: sethbacon/terraform-registry-backend,
             path: suite/terraform-registry-backend,
-            token: "${{ secrets.SUITE_READ_TOKEN }}",
+            token: "${{ steps.token-sethbacon.outputs.token }}",
             persist-credentials: false,
           }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -74,7 +109,7 @@ jobs:
           {
             repository: sethbacon/terraform-state-manager-backend,
             path: suite/terraform-state-manager-backend,
-            token: "${{ secrets.SUITE_READ_TOKEN }}",
+            token: "${{ steps.token-sethbacon.outputs.token }}",
             persist-credentials: false,
           }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -82,7 +117,7 @@ jobs:
           {
             repository: sethbacon/terraform-registry-frontend,
             path: suite/terraform-registry-frontend,
-            token: "${{ secrets.SUITE_READ_TOKEN }}",
+            token: "${{ steps.token-sethbacon.outputs.token }}",
             persist-credentials: false,
           }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -90,7 +125,7 @@ jobs:
           {
             repository: sethbacon/terraform-state-manager-frontend,
             path: suite/terraform-state-manager-frontend,
-            token: "${{ secrets.SUITE_READ_TOKEN }}",
+            token: "${{ steps.token-sethbacon.outputs.token }}",
             persist-credentials: false,
           }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -98,7 +133,7 @@ jobs:
           {
             repository: sethbacon/terraform-suite-identity,
             path: suite/terraform-suite-identity,
-            token: "${{ secrets.SUITE_READ_TOKEN }}",
+            token: "${{ steps.token-sethbacon.outputs.token }}",
             persist-credentials: false,
           }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -112,9 +147,10 @@ jobs:
             # off it, and renaming the working directory would bundle a second,
             # riskier change into a one-line ownership fix.
             #
-            # No token: the repo is public now, so SUITE_READ_TOKEN adds nothing
-            # here — and if it is a fine-grained PAT scoped to sethbacon-owned
-            # repos, keeping it is exactly what would leave this still failing.
+            # No token, and now for a second reason: the repo is public, and an
+            # App installation token is minted per OWNER, so the sethbacon token
+            # above cannot read a 4cloudguru repo at all. The default
+            # GITHUB_TOKEN reads a public repo in any org.
             repository: 4cloudguru/cloud-suite-ui,
             path: suite/terraform-suite-ui,
             persist-credentials: false,
@@ -124,7 +160,7 @@ jobs:
           {
             repository: sethbacon/azure-pipelines-terraform,
             path: suite/azure-pipelines-terraform,
-            token: "${{ secrets.SUITE_READ_TOKEN }}",
+            token: "${{ steps.token-sethbacon.outputs.token }}",
             persist-credentials: false,
           }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -132,7 +168,7 @@ jobs:
           {
             repository: sethbacon/azure-pipelines-packer,
             path: suite/azure-pipelines-packer,
-            token: "${{ secrets.SUITE_READ_TOKEN }}",
+            token: "${{ steps.token-sethbacon.outputs.token }}",
             persist-credentials: false,
           }
 
@@ -152,7 +188,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: sethbacon/security-orchestration
-          token: "${{ secrets.SUITE_READ_TOKEN }}"
+          token: "${{ steps.token-sethbacon.outputs.token }}"
           persist-credentials: false
           path: security-orchestration
 
@@ -172,7 +208,7 @@ jobs:
       # to (see "Wiring it up" in the README for the full token shape).
       - name: Replay recorded signatures
         env:
-          GH_TOKEN: ${{ secrets.SUITE_READ_TOKEN }}
+          GH_TOKEN: ${{ steps.token-sethbacon.outputs.token }}
         run: |
           python security-orchestration/remediation/replay/replay.py \
             --ledger security-orchestration/remediation/signatures/ledger.json \
