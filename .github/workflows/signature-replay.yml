@@ -148,6 +148,15 @@ jobs:
             path: suite/terraform-suite-ui,
             persist-credentials: false,
           }
+      # The shared module both ADO extensions are migrating onto. It is a
+      # checkout rather than an inference: the extensions used to COPY these
+      # modules to each other, and a version pin is only an improvement if
+      # something reads it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: 4cloudguru/pipeline-task-core
+          path: suite/pipeline-task-core
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           {
