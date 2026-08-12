@@ -2,6 +2,7 @@ package admin
 
 import (
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -244,3 +245,161 @@ var (
 	_ func(*sqlx.DB, *repositories.OrganizationRepository) gin.HandlerFunc = GetScanningStatsHandler
 	_ *sql.DB
 )
+
+// --- GET /admin/stats/dashboard --------------------------------------------
+//
+// Issue #566. Found by orgscope_route_class_test.go, which enumerates the real
+// route table: this route is the one authenticated route in the whole table
+// that carries NO RequireScope at all, so every principal reaches it — and two
+// of its queries read mirror_configurations, which carries organization_id.
+// The recent-sync list emitted `c.name`, another tenant's chosen name for its
+// upstream mirror, to anybody with a session.
+
+// dashboardRouter mounts GET /stats/dashboard with a principal holding
+// mirrors:read and a single membership in alpha.
+func dashboardRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	h := NewStatsHandler(sqlx.NewDb(db, "sqlmock")).
+		WithOrgRepo(repositories.NewOrganizationRepository(db))
+
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set("scopes", []string{string(auth.ScopeMirrorsRead)})
+		c.Set("user_id", scopeUserID)
+	})
+	r.GET("/stats/dashboard", h.GetDashboardStats)
+	return mock, r
+}
+
+// TestDashboardStats_MirrorQueriesCarryTheTenantPredicate pins the fix at the
+// SQL level. `= ANY` is what OrgScope.SQL emits for a bounded organization set;
+// the unscoped handler emitted neither that nor any organization_id reference,
+// so the two expectations below would not match and ExpectationsWereMet fails.
+// The assertion is on ExpectationsWereMet, not on a swallowed query error:
+// both statements are best-effort (`_ =`) in the handler, so a bare `err != nil`
+// could never see them at all.
+func TestDashboardStats_MirrorQueriesCarryTheTenantPredicate(t *testing.T) {
+	mock, r := dashboardRouter(t)
+
+	mock.ExpectQuery("(?s)FROM organization_members").
+		WillReturnRows(sqlmock.NewRows(membershipCols).AddRow(
+			orgAlpha, "Alpha", "rt-viewer", time.Now(), "viewer", "Viewer",
+			[]byte(`["mirrors:read"]`),
+		))
+
+	opts := defaultStatsOpts()
+	opts.mirrorHealthQuery = "(?s)FROM mirror_configurations.*organization_id = ANY"
+	opts.recentSyncQuery = "(?s)JOIN mirror_configurations c .*c.organization_id = ANY"
+	opts.recentSyncs = []RecentSyncEntry{{
+		MirrorName: "alpha-upstream", MirrorType: "provider", Status: "success",
+		StartedAt: time.Now(), VersionsSynced: 1, TriggeredBy: "scheduler",
+	}}
+	expectStatsQueries(mock, opts)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/stats/dashboard", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("a mirror_configurations query ran without the tenant predicate: %v", err)
+	}
+}
+
+// TestDashboardStats_NoMemberships_SelectsNothing is the deny direction. A
+// principal with no qualifying membership resolves to the empty scope, which
+// OrgScope.SQL renders as the constant FALSE — not an absent predicate, and not
+// TRUE. Asserted on the emitted SQL, because an empty result set is also what a
+// correctly-scoped query returns for an empty database: only the predicate
+// distinguishes "you may see nothing" from "there is nothing".
+func TestDashboardStats_NoMemberships_SelectsNothing(t *testing.T) {
+	mock, r := dashboardRouter(t)
+
+	// No membership rows: the caller holds mirrors:read in no organization.
+	mock.ExpectQuery("(?s)FROM organization_members").
+		WillReturnRows(sqlmock.NewRows(membershipCols))
+
+	opts := defaultStatsOpts()
+	opts.provMirrorTotal, opts.provMirrorHealthy, opts.provMirrorFailed = 0, 0, 0
+	opts.mirrorHealthQuery = "(?s)FROM mirror_configurations\\s+WHERE enabled = true AND FALSE"
+	opts.recentSyncQuery = "(?s)JOIN mirror_configurations c .*WHERE FALSE"
+	expectStatsQueries(mock, opts)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/stats/dashboard", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("the empty scope did not render as FALSE: %v", err)
+	}
+
+	var body struct {
+		ProviderMirrors ProviderMirrorStats `json:"provider_mirrors"`
+		RecentSyncs     []RecentSyncEntry   `json:"recent_syncs"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.ProviderMirrors.Total != 0 {
+		t.Errorf("provider_mirrors.total = %d, want 0", body.ProviderMirrors.Total)
+	}
+	if len(body.RecentSyncs) != 0 {
+		t.Errorf("recent_syncs = %v, want none", body.RecentSyncs)
+	}
+}
+
+// TestDashboardStats_PlatformAdmin_SeesEveryTenant is the positive control.
+// Without it, a "fix" that hard-coded FALSE would satisfy both tests above and
+// look correct. A platform admin resolves to OrgScopeAllOrganizations, which
+// renders as TRUE and binds no arguments — and reaches no membership query at
+// all, which is why none is queued here.
+func TestDashboardStats_PlatformAdmin_SeesEveryTenant(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	h := NewStatsHandler(sqlx.NewDb(db, "sqlmock")).
+		WithOrgRepo(repositories.NewOrganizationRepository(db))
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set("scopes", []string{string(auth.ScopeAdmin)})
+		c.Set("user_id", scopeUserID)
+	})
+	r.GET("/stats/dashboard", h.GetDashboardStats)
+
+	opts := defaultStatsOpts()
+	opts.mirrorHealthQuery = "(?s)FROM mirror_configurations\\s+WHERE enabled = true AND TRUE"
+	opts.recentSyncQuery = "(?s)JOIN mirror_configurations c .*WHERE TRUE"
+	opts.recentSyncs = []RecentSyncEntry{{
+		MirrorName: "beta-upstream", MirrorType: "provider", Status: "success",
+		StartedAt: time.Now(), VersionsSynced: 3, TriggeredBy: "scheduler",
+	}}
+	expectStatsQueries(mock, opts)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/stats/dashboard", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("the platform-admin scope did not render as TRUE: %v", err)
+	}
+	if !strings.Contains(w.Body.String(), "beta-upstream") {
+		t.Errorf("platform admin lost the cross-tenant view: %s", w.Body.String())
+	}
+}

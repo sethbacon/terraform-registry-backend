@@ -84,7 +84,11 @@ func expectStatsQueries(mock sqlmock.Sqlmock, opts statsOpts) {
 
 	// 6. Provider mirror health
 	provHealthCols := []string{"total", "healthy", "failed"}
-	mock.ExpectQuery("mirror_configurations").
+	mirrorHealthQuery := opts.mirrorHealthQuery
+	if mirrorHealthQuery == "" {
+		mirrorHealthQuery = "mirror_configurations"
+	}
+	mock.ExpectQuery(mirrorHealthQuery).
 		WillReturnRows(sqlmock.NewRows(provHealthCols).AddRow(
 			opts.provMirrorTotal, opts.provMirrorHealthy, opts.provMirrorFailed,
 		))
@@ -99,7 +103,11 @@ func expectStatsQueries(mock sqlmock.Sqlmock, opts statsOpts) {
 		rows.AddRow(e.MirrorName, e.MirrorType, e.Status, e.StartedAt, e.CompletedAt,
 			e.VersionsSynced, e.PlatformsSynced, e.TriggeredBy)
 	}
-	mock.ExpectQuery("terraform_sync_history").WillReturnRows(rows)
+	recentSyncQuery := opts.recentSyncQuery
+	if recentSyncQuery == "" {
+		recentSyncQuery = "terraform_sync_history"
+	}
+	mock.ExpectQuery(recentSyncQuery).WillReturnRows(rows)
 }
 
 type statsOpts struct {
@@ -115,6 +123,12 @@ type statsOpts struct {
 	bySystem                                                []ModuleSystemCount
 	byTool                                                  []BinaryToolCount
 	recentSyncs                                             []RecentSyncEntry
+	// Optional regexes for the two mirror_configurations-derived queries, so a
+	// caller can require the tenant predicate to be present in the SQL text
+	// rather than merely the table name (see cross_org_authz_test.go). Empty
+	// means "match on the table name only".
+	mirrorHealthQuery string
+	recentSyncQuery   string
 }
 
 func defaultStatsOpts() statsOpts {
