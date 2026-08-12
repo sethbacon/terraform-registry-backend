@@ -2,18 +2,22 @@
 package admin
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
+	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
 
 // StatsHandler handles stats-related API requests
 type StatsHandler struct {
 	db       *sqlx.DB
 	scanning *config.ScanningConfig
+	orgRepo  *repositories.OrganizationRepository
 }
 
 // NewStatsHandler creates a new stats handler
@@ -24,6 +28,15 @@ func NewStatsHandler(database *sqlx.DB, scanning ...*config.ScanningConfig) *Sta
 	if len(scanning) > 0 {
 		h.scanning = scanning[0]
 	}
+	return h
+}
+
+// WithOrgRepo wires in the organization repository so GetDashboardStats can
+// re-check the caller's per-organization membership before reporting anything
+// derived from mirror_configurations, which is organization-owned. Returns the
+// handler for chaining, matching NewVersionApprovalHandler().WithOrgRepo(...).
+func (h *StatsHandler) WithOrgRepo(orgRepo *repositories.OrganizationRepository) *StatsHandler {
+	h.orgRepo = orgRepo
 	return h
 }
 
@@ -124,6 +137,34 @@ type RecentSyncEntry struct {
 // GetDashboardStats returns dashboard statistics using a single database round-trip.
 func (h *StatsHandler) GetDashboardStats(c *gin.Context) {
 	ctx := c.Request.Context()
+
+	// GUARD dashboard-mirror-tenant-scope (issue #566, same class as #855).
+	//
+	// This route carries no RequireScope at all — every authenticated principal
+	// reaches it, including a `viewer` whose only membership is in an unrelated
+	// organization. Two of the queries below read mirror_configurations, which
+	// carries organization_id, and the recent-sync list emits `c.name` — another
+	// tenant's chosen name for its upstream mirror. Names are the identifying
+	// data here, and they were returned to everyone.
+	//
+	// The predicate is resolved for mirrors:read, the same scope the
+	// /admin/mirrors family requires, so a caller sees exactly the provider
+	// mirrors it could already list there and nothing more. A platform admin
+	// resolves to OrgScopeAllOrganizations and is unaffected.
+	//
+	// DELIBERATELY NOT SCOPED: the aggregate integer counts above/below
+	// (modules, providers, users, organizations, downloads, scm_providers,
+	// module_version_scans). They are a platform census with no tenant-
+	// identifying values in them, and the module/provider rows they count are
+	// already enumerable anonymously through GET /api/v1/modules/search and
+	// /providers/search. Narrowing them would change what the dashboard means
+	// without closing a disclosure.
+	scope, ok := resolveTenantScope(c, h.orgRepo, auth.ScopeMirrorsRead)
+	if !ok {
+		return
+	}
+	mirrorWhere, mirrorArgs := scope.OrgScope().SQL("organization_id", 1)
+	syncWhere, syncArgs := scope.OrgScope().SQL("c.organization_id", 1)
 
 	// Core counts — single round-trip.
 	query := `
@@ -229,15 +270,16 @@ func (h *StatsHandler) GetDashboardStats(c *gin.Context) {
 		}
 	}
 
-	// Provider mirror health (mirror_configurations table).
-	_ = h.db.QueryRowContext(ctx, `
+	// Provider mirror health (mirror_configurations table) — tenant-scoped, see
+	// GUARD dashboard-mirror-tenant-scope above.
+	_ = h.db.QueryRowContext(ctx, fmt.Sprintf(`
 		SELECT
 			COUNT(*) AS total,
 			COUNT(*) FILTER (WHERE last_sync_status = 'success' OR last_sync_status IS NULL) AS healthy,
 			COUNT(*) FILTER (WHERE last_sync_status = 'failed') AS failed
 		FROM mirror_configurations
-		WHERE enabled = true
-	`).Scan(
+		WHERE enabled = true AND %s
+	`, mirrorWhere), mirrorArgs...).Scan(
 		&stats.ProviderMirrors.Total,
 		&stats.ProviderMirrors.Healthy,
 		&stats.ProviderMirrors.Failed,
@@ -264,7 +306,10 @@ func (h *StatsHandler) GetDashboardStats(c *gin.Context) {
 	)
 
 	// Recent sync activity — last 8 entries unified across both mirror types.
-	recentRows, recentErr := h.db.QueryContext(ctx, `
+	// The provider half is tenant-scoped (it names mirror_configurations rows);
+	// the binary half reads terraform_mirror_configs, which is platform-global
+	// and has no organization_id to scope by.
+	recentRows, recentErr := h.db.QueryContext(ctx, fmt.Sprintf(`
 		SELECT mirror_name, mirror_type, status, started_at, completed_at,
 		       versions_synced, platforms_synced, triggered_by
 		FROM (
@@ -297,12 +342,13 @@ func (h *StatsHandler) GetDashboardStats(c *gin.Context) {
 				'scheduler'                   AS triggered_by
 			FROM mirror_sync_history h
 			JOIN mirror_configurations c ON c.id = h.mirror_config_id
+			WHERE %s
 			ORDER BY h.started_at DESC
 			LIMIT 8
 		) provider_syncs
 		ORDER BY started_at DESC
 		LIMIT 8
-	`)
+	`, syncWhere), syncArgs...)
 	if recentErr == nil {
 		defer recentRows.Close()
 		for recentRows.Next() {
