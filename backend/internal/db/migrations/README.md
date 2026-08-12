@@ -57,6 +57,7 @@ This document catalogs all database migrations, their reversibility, and rollbac
 | 000048 | `notification_channels`                | ✅ Yes         | Drops the notification-channel table (CASCADE); configured destinations must be re-added |
 | 000049 | `add_org_owner_provisioner_roles`      | ✅ Yes         | Deletes the `org_owner` and `org_provisioner` system role templates; memberships referencing them are left with a NULL `role_template_id` by the FK's ON DELETE SET NULL, so those members lose their scopes |
 | 000050 | `quarantine_orphaned_api_keys`         | ⚠️ No-op down  | Data-only: expires `api_keys` rows with `user_id IS NULL` (detached by a user deletion under `ON DELETE SET NULL`). The down cannot distinguish them from deliberately expired keys, so re-arming would undo the retirement; restore individual rows by hand. See `docs/upgrade-guide.md` |
+| 000051 | `platform_admins`                      | ✅ Yes         | Drops the platform-admin carrier table. Safe today: every row is backfilled from an admin-bearing role template and effective admin is `carrier OR the existing scope union`, so the rollback changes nobody's authority. It stops being safe once grants are made through the management API (issue #766 PR 2) — those have no role-template equivalent and are lost; a `NULL` `note` identifies them |
 
 ## How to Run Migrations
 
