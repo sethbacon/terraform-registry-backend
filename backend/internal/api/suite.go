@@ -16,6 +16,7 @@ import (
 
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
+	"github.com/terraform-registry/terraform-registry/internal/safego"
 )
 
 // maxConsumersResponseBytes bounds the sibling's "/consumers" JSON response
@@ -111,7 +112,7 @@ func startSuiteDiscovery(cfg *config.Config) *suite.DiscoveryClient {
 		slog.Error("suite: failed to start sibling discovery client", "sibling_url", cfg.Suite.SiblingURL, "error", err)
 		return nil
 	}
-	go dc.Start(context.Background())
+	safego.Go(func() { dc.Start(context.Background()) })
 	return dc
 }
 

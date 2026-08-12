@@ -11,6 +11,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -225,24 +226,21 @@ func (c *AzureDevOpsConnector) FetchRepositories(ctx context.Context, creds *scm
 
 		req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("azuredevops: create repositories request for project %q: %w", project.Name, err)
 		}
 		c.setAuthHeaders(req, creds)
-		// #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
-		resp, err := scm.HTTPClient.Do(req)
-		if err != nil {
-			continue
-		}
 
 		var result struct {
 			Value []adoRepo `json:"value"`
 		}
 
-		if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&result); err != nil {
-			_ = resp.Body.Close()
-			continue
+		// A failure here used to `continue`, which returned the repositories gathered so
+		// far with a nil error — an expired token (ADO answers 203 with an HTML sign-in
+		// page) produced a silently short listing that every caller read as a complete,
+		// successful result. Fail the whole call instead.
+		if err := doJSON(req, "failed to fetch repositories", nil, &result); err != nil {
+			return nil, err
 		}
-		_ = resp.Body.Close()
 
 		for _, adoRepo := range result.Value {
 			allRepos = append(allRepos, c.convertRepo(&adoRepo, project.Name))
@@ -265,7 +263,7 @@ func (c *AzureDevOpsConnector) FetchRepository(ctx context.Context, creds *scm.A
 	c.setAuthHeaders(req, creds)
 
 	var adoRepo adoRepo
-	if err := scm.DoJSON(req, "failed to fetch repository", scm.ErrRepoNotFound, &adoRepo); err != nil {
+	if err := doJSON(req, "failed to fetch repository", scm.ErrRepoNotFound, &adoRepo); err != nil {
 		return nil, err
 	}
 
@@ -310,7 +308,7 @@ func (c *AzureDevOpsConnector) FetchBranches(ctx context.Context, creds *scm.Acc
 		} `json:"value"`
 	}
 
-	if err := scm.DoJSON(req, "failed to fetch branches", nil, &result); err != nil {
+	if err := doJSON(req, "failed to fetch branches", nil, &result); err != nil {
 		return nil, err
 	}
 
@@ -330,30 +328,12 @@ func (c *AzureDevOpsConnector) FetchTags(ctx context.Context, creds *scm.AccessT
 	// peelTags=true causes ADO to include peeledObjectId for annotated tags,
 	// which is the actual commit SHA (objectId for annotated tags is the tag object SHA, not the commit).
 	endpoint := fmt.Sprintf("%s/%s/%s/_apis/git/repositories/%s/refs?filter=tags/&peelTags=true&api-version=7.0", c.baseURL, c.organization, ownerName, repoName)
-	fmt.Printf("[FetchTags] GET %s\n", endpoint)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("azuredevops: create tags request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
-	// #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
-	resp, err := scm.HTTPClient.Do(req)
-	if err != nil {
-		return nil, scm.WrapRemoteError(0, "failed to fetch tags", err)
-	}
-	defer resp.Body.Close()
-
-	// Azure DevOps returns 203 with an HTML sign-in page when the token is expired
-	// instead of a proper 401. Normalise it so retry logic can detect it.
-	actualStatus := resp.StatusCode
-	if actualStatus == http.StatusNonAuthoritativeInfo {
-		actualStatus = http.StatusUnauthorized
-	}
-	if actualStatus != http.StatusOK {
-		body := readErrorBody(resp)
-		return nil, scm.WrapRemoteError(actualStatus, fmt.Sprintf("failed to fetch tags: HTTP %d: %s", resp.StatusCode, body), nil)
-	}
 
 	var result struct {
 		Value []struct {
@@ -363,8 +343,8 @@ func (c *AzureDevOpsConnector) FetchTags(ctx context.Context, creds *scm.AccessT
 		} `json:"value"`
 	}
 
-	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&result); err != nil {
-		return nil, fmt.Errorf("azuredevops: decode tags: %w", err)
+	if err := doJSON(req, "failed to fetch tags", nil, &result); err != nil {
+		return nil, err
 	}
 
 	tags := make([]*scm.GitTag, len(result.Value))
@@ -420,7 +400,7 @@ func (c *AzureDevOpsConnector) FetchCommit(ctx context.Context, creds *scm.Acces
 		RemoteURL string `json:"remoteUrl"`
 	}
 
-	if err := scm.DoJSON(req, "failed to fetch commit", scm.ErrCommitNotFound, &adoCommit); err != nil {
+	if err := doJSON(req, "failed to fetch commit", scm.ErrCommitNotFound, &adoCommit); err != nil {
 		return nil, err
 	}
 
@@ -564,7 +544,7 @@ func (c *AzureDevOpsConnector) fetchRepoAndProjectIDs(ctx context.Context, creds
 			ID string `json:"id"`
 		} `json:"project"`
 	}
-	if err := scm.DoJSON(req, "failed to fetch repository IDs", nil, &result); err != nil {
+	if err := doJSON(req, "failed to fetch repository IDs", nil, &result); err != nil {
 		return "", "", err
 	}
 	return result.Project.ID, result.ID, nil
@@ -736,17 +716,21 @@ func (c *AzureDevOpsConnector) setAuthHeaders(req *http.Request, creds *scm.Acce
 	req.Header.Set("Content-Type", "application/json")
 }
 
-// readErrorBody reads up to 512 bytes from an error response body for inclusion in error messages.
-func readErrorBody(resp *http.Response) string {
-	if resp == nil || resp.Body == nil {
-		return ""
+// doJSON is the single entry point for every Azure DevOps JSON API call. It delegates to
+// scm.DoJSON — the shared SSRF-safe send/status-check/size-capped-decode helper — and then
+// applies the one status quirk that is specific to this provider: Azure DevOps and Microsoft
+// Entra ID answer an expired or invalid bearer token with HTTP 203 Non-Authoritative
+// Information carrying an HTML sign-in page, not the expected 401. Callers
+// (internal/api/admin/scm_oauth.go) decide whether to refresh the OAuth token by comparing
+// APIError.StatusCode, so the code is normalised here, once, rather than in each method that
+// happens to remember to do it.
+func doJSON(req *http.Request, reason string, notFound error, out any) error {
+	err := scm.DoJSON(req, reason, notFound, out)
+	var apiErr *scm.APIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNonAuthoritativeInfo {
+		apiErr.StatusCode = http.StatusUnauthorized
 	}
-	buf := make([]byte, 512)
-	n, _ := resp.Body.Read(buf)
-	if n == 0 {
-		return ""
-	}
-	return strings.TrimSpace(string(buf[:n]))
+	return err
 }
 
 func (c *AzureDevOpsConnector) fetchProjects(ctx context.Context, creds *scm.AccessToken) ([]adoProject, error) {
@@ -757,30 +741,13 @@ func (c *AzureDevOpsConnector) fetchProjects(ctx context.Context, creds *scm.Acc
 		return nil, fmt.Errorf("azuredevops: create projects request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
-	// #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
-	resp, err := scm.HTTPClient.Do(req)
-	if err != nil {
-		return nil, scm.WrapRemoteError(0, "failed to fetch projects", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		// Azure DevOps / Entra ID returns HTTP 203 Non-Authoritative when the
-		// bearer token is expired or invalid rather than the expected 401.
-		// Normalise 203 to 401 so that callers' token-refresh logic triggers.
-		reportedStatus := resp.StatusCode
-		if reportedStatus == http.StatusNonAuthoritativeInfo {
-			reportedStatus = http.StatusUnauthorized
-		}
-		return nil, scm.WrapRemoteError(reportedStatus, fmt.Sprintf("failed to fetch projects (HTTP %d)", resp.StatusCode), nil)
-	}
 
 	var result struct {
 		Value []adoProject `json:"value"`
 	}
 
-	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&result); err != nil {
-		return nil, scm.WrapRemoteError(0, "failed to parse project list", err)
+	if err := doJSON(req, "failed to fetch projects", nil, &result); err != nil {
+		return nil, err
 	}
 
 	return result.Value, nil

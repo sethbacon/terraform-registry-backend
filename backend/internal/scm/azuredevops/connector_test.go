@@ -560,33 +560,6 @@ func TestParseDelivery_InvalidJSON(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// readErrorBody
-// ---------------------------------------------------------------------------
-
-func TestReadErrorBody_NilResponse(t *testing.T) {
-	result := readErrorBody(nil)
-	if result != "" {
-		t.Errorf("result = %q, want empty", result)
-	}
-}
-
-func TestReadErrorBody_EmptyBody(t *testing.T) {
-	resp := &http.Response{Body: io.NopCloser(strings.NewReader(""))}
-	result := readErrorBody(resp)
-	if result != "" {
-		t.Errorf("result = %q, want empty", result)
-	}
-}
-
-func TestReadErrorBody_WithContent(t *testing.T) {
-	resp := &http.Response{Body: io.NopCloser(strings.NewReader("  error message  "))}
-	result := readErrorBody(resp)
-	if result != "error message" {
-		t.Errorf("result = %q, want 'error message'", result)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // redirectTransport redirects all HTTP(S) requests to a fixed base URL,
 // preserving the path and query — used to intercept scm.HTTPClient calls
 // that use hard-coded external URLs (e.g. Entra token endpoint).

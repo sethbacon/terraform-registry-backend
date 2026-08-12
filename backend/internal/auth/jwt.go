@@ -21,6 +21,7 @@ import (
 
 	identityauth "github.com/sethbacon/terraform-suite-identity/identity/auth"
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
+	"github.com/terraform-registry/terraform-registry/internal/safego"
 )
 
 // jwtIssuer stamps the iss claim on tokens this service generates.
@@ -305,7 +306,7 @@ func StartJWTSecretFileWatch(secretFilePath string, overlapDuration time.Duratio
 
 	stopCh := make(chan struct{})
 
-	go func() {
+	safego.Go(func() {
 		for {
 			select {
 			case event, ok := <-watcher.Events:
@@ -354,7 +355,7 @@ func StartJWTSecretFileWatch(secretFilePath string, overlapDuration time.Duratio
 				return
 			}
 		}
-	}()
+	})
 
 	return func() { close(stopCh) }, nil
 }

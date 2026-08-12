@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/terraform-registry/terraform-registry/internal/safego"
 )
 
 // MemoryStateStore implements StateStore using an in-process map.
@@ -30,7 +32,7 @@ func NewMemoryStateStore(cleanupInterval time.Duration) *MemoryStateStore {
 		entries: make(map[string]*memoryEntry),
 		stopCh:  make(chan struct{}),
 	}
-	go s.cleanup(cleanupInterval)
+	safego.Go(func() { s.cleanup(cleanupInterval) })
 	return s
 }
 

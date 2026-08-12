@@ -532,7 +532,12 @@ func (h *SCMOAuthHandlers) RefreshToken(c *gin.Context) {
 	// token/provider lookups above.
 	newToken, err := connector.RenewToken(c.Request.Context(), refreshToken)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("token refresh failed: %v", err)})
+		// Same reasoning as the OAuth callback above: the connector error can carry the
+		// provider's token-endpoint diagnostics, which belong in the server log rather
+		// than in a response body. slog resolves *scm.APIError via LogValue, so the
+		// upstream failure reason is recorded here in full.
+		slog.Error("oauth token refresh failed", "provider_id", providerID, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "token refresh failed"})
 		return
 	}
 
