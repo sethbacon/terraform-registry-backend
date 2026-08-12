@@ -55,14 +55,7 @@ func (c *BitbucketDCConnector) RenewToken(ctx context.Context, refreshToken stri
 
 // FetchRepositories lists repositories accessible to the authenticated user
 func (c *BitbucketDCConnector) FetchRepositories(ctx context.Context, creds *scm.AccessToken, pagination scm.Pagination) (*scm.RepoListResult, error) {
-	limit := pagination.PageSize
-	if limit < 1 || limit > 100 {
-		limit = 25
-	}
-	start := (pagination.PageNum - 1) * limit
-	if start < 0 {
-		start = 0
-	}
+	limit, start := clampWindow(pagination)
 
 	endpoint := fmt.Sprintf("%s/rest/api/1.0/repos?limit=%d&start=%d", c.baseURL, limit, start)
 
@@ -102,14 +95,7 @@ func (c *BitbucketDCConnector) FetchRepository(ctx context.Context, creds *scm.A
 
 // SearchRepositories finds repositories matching a query
 func (c *BitbucketDCConnector) SearchRepositories(ctx context.Context, creds *scm.AccessToken, searchTerm string, pagination scm.Pagination) (*scm.RepoListResult, error) {
-	limit := pagination.PageSize
-	if limit < 1 || limit > 100 {
-		limit = 25
-	}
-	start := (pagination.PageNum - 1) * limit
-	if start < 0 {
-		start = 0
-	}
+	limit, start := clampWindow(pagination)
 
 	endpoint := fmt.Sprintf("%s/rest/api/1.0/repos?name=%s&limit=%d&start=%d", c.baseURL, searchTerm, limit, start)
 
@@ -137,14 +123,7 @@ func (c *BitbucketDCConnector) SearchRepositories(ctx context.Context, creds *sc
 
 // FetchBranches lists branches in a repository
 func (c *BitbucketDCConnector) FetchBranches(ctx context.Context, creds *scm.AccessToken, ownerName, repoName string, pagination scm.Pagination) ([]*scm.GitBranch, error) {
-	limit := pagination.PageSize
-	if limit < 1 || limit > 100 {
-		limit = 25
-	}
-	start := (pagination.PageNum - 1) * limit
-	if start < 0 {
-		start = 0
-	}
+	limit, start := clampWindow(pagination)
 
 	endpoint := fmt.Sprintf("%s/rest/api/1.0/projects/%s/repos/%s/branches?limit=%d&start=%d", c.baseURL, ownerName, repoName, limit, start)
 
@@ -176,14 +155,7 @@ func (c *BitbucketDCConnector) FetchBranches(ctx context.Context, creds *scm.Acc
 
 // FetchTags lists tags in a repository
 func (c *BitbucketDCConnector) FetchTags(ctx context.Context, creds *scm.AccessToken, ownerName, repoName string, pagination scm.Pagination) ([]*scm.GitTag, error) {
-	limit := pagination.PageSize
-	if limit < 1 || limit > 100 {
-		limit = 25
-	}
-	start := (pagination.PageNum - 1) * limit
-	if start < 0 {
-		start = 0
-	}
+	limit, start := clampWindow(pagination)
 
 	endpoint := fmt.Sprintf("%s/rest/api/1.0/projects/%s/repos/%s/tags?limit=%d&start=%d", c.baseURL, ownerName, repoName, limit, start)
 
@@ -439,6 +411,23 @@ func (c *BitbucketDCConnector) VerifyDeliverySignature(payloadBytes []byte, sign
 func (c *BitbucketDCConnector) setAuthHeaders(req *http.Request, creds *scm.AccessToken) {
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", creds.AccessToken))
 	req.Header.Set("Accept", "application/json")
+}
+
+// clampWindow converts a page-number/page-size Pagination into the limit/start window the
+// Bitbucket Data Center REST API pages with, which is why this is not scm.ClampPagination:
+// that helper returns page/per_page for GitHub and GitLab and defaults to 30, whereas this
+// API is offset-based and defaults to 25. A page size outside the accepted 1..100 range
+// falls back to 25, and a page number of zero or less resolves to the first window.
+func clampWindow(pagination scm.Pagination) (limit, start int) {
+	limit = pagination.PageSize
+	if limit < 1 || limit > 100 {
+		limit = 25
+	}
+	start = (pagination.PageNum - 1) * limit
+	if start < 0 {
+		start = 0
+	}
+	return limit, start
 }
 
 func (c *BitbucketDCConnector) doJSON(ctx context.Context, creds *scm.AccessToken, method, endpoint string, body io.Reader, result interface{}) error {

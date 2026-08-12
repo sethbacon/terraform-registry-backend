@@ -79,32 +79,15 @@ func (c *GitHubConnector) CompleteAuthorization(ctx context.Context, authCode st
 	data.Set("code", authCode)
 	data.Set("redirect_uri", c.callbackURL)
 
-	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/login/oauth/access_token", strings.NewReader(data.Encode()))
-	if err != nil {
-		return nil, fmt.Errorf("github: create token request: %w", err)
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
-	if err != nil {
-		return nil, scm.WrapRemoteError(0, "failed to exchange code", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(scm.LimitErrorBody(resp.Body))
-		return nil, scm.WrapRemoteError(resp.StatusCode, "oauth code exchange failed", fmt.Errorf("%s", body))
-	}
-
 	var result struct {
 		AccessToken string `json:"access_token"`
 		TokenType   string `json:"token_type"`
 		Scope       string `json:"scope"`
 	}
 
-	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&result); err != nil {
-		return nil, fmt.Errorf("github: decode token response: %w", err)
+	// GitHub returns a form-encoded token response unless JSON is explicitly requested.
+	if err := scm.ExchangeOAuthForm(ctx, c.baseURL+"/login/oauth/access_token", data, "application/json", &result); err != nil {
+		return nil, err
 	}
 
 	scopes := []string{}
@@ -126,14 +109,7 @@ func (c *GitHubConnector) RenewToken(ctx context.Context, refreshToken string) (
 
 // FetchRepositories lists repositories the user can access
 func (c *GitHubConnector) FetchRepositories(ctx context.Context, creds *scm.AccessToken, pagination scm.Pagination) (*scm.RepoListResult, error) {
-	page := pagination.PageNum
-	if page < 1 {
-		page = 1
-	}
-	perPage := pagination.PageSize
-	if perPage < 1 || perPage > 100 {
-		perPage = 30
-	}
+	page, perPage := scm.ClampPagination(pagination)
 
 	endpoint := fmt.Sprintf("%s/user/repos?page=%d&per_page=%d&sort=updated&affiliation=owner,collaborator", c.apiURL, page, perPage)
 	repos, err := c.fetchRepoList(ctx, creds, endpoint)
@@ -158,22 +134,9 @@ func (c *GitHubConnector) FetchRepository(ctx context.Context, creds *scm.Access
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
-	if err != nil {
-		return nil, scm.WrapRemoteError(0, "failed to fetch repository", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, scm.ErrRepoNotFound
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, scm.WrapRemoteError(resp.StatusCode, "failed to fetch repository", nil)
-	}
-
 	var ghRepo githubRepo
-	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&ghRepo); err != nil {
-		return nil, fmt.Errorf("github: decode repository: %w", err)
+	if err := scm.DoJSON(req, "failed to fetch repository", scm.ErrRepoNotFound, &ghRepo); err != nil {
+		return nil, err
 	}
 
 	return c.convertRepo(&ghRepo), nil
@@ -181,14 +144,7 @@ func (c *GitHubConnector) FetchRepository(ctx context.Context, creds *scm.Access
 
 // SearchRepositories finds repositories matching a query
 func (c *GitHubConnector) SearchRepositories(ctx context.Context, creds *scm.AccessToken, searchTerm string, pagination scm.Pagination) (*scm.RepoListResult, error) {
-	page := pagination.PageNum
-	if page < 1 {
-		page = 1
-	}
-	perPage := pagination.PageSize
-	if perPage < 1 || perPage > 100 {
-		perPage = 30
-	}
+	page, perPage := scm.ClampPagination(pagination)
 
 	query := url.QueryEscape(fmt.Sprintf("%s in:name user:@me", searchTerm))
 	endpoint := fmt.Sprintf("%s/search/repositories?q=%s&page=%d&per_page=%d", c.apiURL, query, page, perPage)
@@ -199,23 +155,13 @@ func (c *GitHubConnector) SearchRepositories(ctx context.Context, creds *scm.Acc
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
-	if err != nil {
-		return nil, scm.WrapRemoteError(0, "search failed", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, scm.WrapRemoteError(resp.StatusCode, "search failed", nil)
-	}
-
 	var result struct {
 		TotalCount int          `json:"total_count"`
 		Items      []githubRepo `json:"items"`
 	}
 
-	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&result); err != nil {
-		return nil, fmt.Errorf("github: decode search results: %w", err)
+	if err := scm.DoJSON(req, "search failed", nil, &result); err != nil {
+		return nil, err
 	}
 
 	repos := make([]*scm.SourceRepo, len(result.Items))
@@ -233,14 +179,7 @@ func (c *GitHubConnector) SearchRepositories(ctx context.Context, creds *scm.Acc
 
 // FetchBranches lists branches in a repository
 func (c *GitHubConnector) FetchBranches(ctx context.Context, creds *scm.AccessToken, ownerName, repoName string, pagination scm.Pagination) ([]*scm.GitBranch, error) {
-	page := pagination.PageNum
-	if page < 1 {
-		page = 1
-	}
-	perPage := pagination.PageSize
-	if perPage < 1 || perPage > 100 {
-		perPage = 30
-	}
+	page, perPage := scm.ClampPagination(pagination)
 
 	endpoint := fmt.Sprintf("%s/repos/%s/%s/branches?page=%d&per_page=%d", c.apiURL, ownerName, repoName, page, perPage)
 
@@ -250,16 +189,6 @@ func (c *GitHubConnector) FetchBranches(ctx context.Context, creds *scm.AccessTo
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
-	if err != nil {
-		return nil, scm.WrapRemoteError(0, "failed to fetch branches", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, scm.WrapRemoteError(resp.StatusCode, "failed to fetch branches", nil)
-	}
-
 	var ghBranches []struct {
 		Name   string `json:"name"`
 		Commit struct {
@@ -268,8 +197,8 @@ func (c *GitHubConnector) FetchBranches(ctx context.Context, creds *scm.AccessTo
 		Protected bool `json:"protected"`
 	}
 
-	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&ghBranches); err != nil {
-		return nil, fmt.Errorf("github: decode branches: %w", err)
+	if err := scm.DoJSON(req, "failed to fetch branches", nil, &ghBranches); err != nil {
+		return nil, err
 	}
 
 	branches := make([]*scm.GitBranch, len(ghBranches))
@@ -286,14 +215,7 @@ func (c *GitHubConnector) FetchBranches(ctx context.Context, creds *scm.AccessTo
 
 // FetchTags lists tags in a repository
 func (c *GitHubConnector) FetchTags(ctx context.Context, creds *scm.AccessToken, ownerName, repoName string, pagination scm.Pagination) ([]*scm.GitTag, error) {
-	page := pagination.PageNum
-	if page < 1 {
-		page = 1
-	}
-	perPage := pagination.PageSize
-	if perPage < 1 || perPage > 100 {
-		perPage = 30
-	}
+	page, perPage := scm.ClampPagination(pagination)
 
 	endpoint := fmt.Sprintf("%s/repos/%s/%s/tags?page=%d&per_page=%d", c.apiURL, ownerName, repoName, page, perPage)
 
@@ -303,16 +225,6 @@ func (c *GitHubConnector) FetchTags(ctx context.Context, creds *scm.AccessToken,
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
-	if err != nil {
-		return nil, scm.WrapRemoteError(0, "failed to fetch tags", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, scm.WrapRemoteError(resp.StatusCode, "failed to fetch tags", nil)
-	}
-
 	var ghTags []struct {
 		Name   string `json:"name"`
 		Commit struct {
@@ -321,8 +233,8 @@ func (c *GitHubConnector) FetchTags(ctx context.Context, creds *scm.AccessToken,
 		} `json:"commit"`
 	}
 
-	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&ghTags); err != nil {
-		return nil, fmt.Errorf("github: decode tags: %w", err)
+	if err := scm.DoJSON(req, "failed to fetch tags", nil, &ghTags); err != nil {
+		return nil, err
 	}
 
 	tags := make([]*scm.GitTag, len(ghTags))
@@ -346,19 +258,6 @@ func (c *GitHubConnector) FetchTagByName(ctx context.Context, creds *scm.AccessT
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
-	if err != nil {
-		return nil, scm.WrapRemoteError(0, "failed to fetch tag", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, scm.ErrTagNotFound
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, scm.WrapRemoteError(resp.StatusCode, "failed to fetch tag", nil)
-	}
-
 	var ref struct {
 		Ref    string `json:"ref"`
 		Object struct {
@@ -368,8 +267,8 @@ func (c *GitHubConnector) FetchTagByName(ctx context.Context, creds *scm.AccessT
 		} `json:"object"`
 	}
 
-	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&ref); err != nil {
-		return nil, fmt.Errorf("github: decode tag ref: %w", err)
+	if err := scm.DoJSON(req, "failed to fetch tag", scm.ErrTagNotFound, &ref); err != nil {
+		return nil, err
 	}
 
 	return &scm.GitTag{
@@ -388,19 +287,6 @@ func (c *GitHubConnector) FetchCommit(ctx context.Context, creds *scm.AccessToke
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
-	if err != nil {
-		return nil, scm.WrapRemoteError(0, "failed to fetch commit", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, scm.ErrCommitNotFound
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, scm.WrapRemoteError(resp.StatusCode, "failed to fetch commit", nil)
-	}
-
 	var ghCommit struct {
 		SHA     string `json:"sha"`
 		HTMLURL string `json:"html_url"`
@@ -414,8 +300,8 @@ func (c *GitHubConnector) FetchCommit(ctx context.Context, creds *scm.AccessToke
 		} `json:"commit"`
 	}
 
-	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&ghCommit); err != nil {
-		return nil, fmt.Errorf("github: decode commit: %w", err)
+	if err := scm.DoJSON(req, "failed to fetch commit", scm.ErrCommitNotFound, &ghCommit); err != nil {
+		return nil, err
 	}
 
 	return &scm.GitCommit{
@@ -608,19 +494,9 @@ func (c *GitHubConnector) fetchRepoList(ctx context.Context, creds *scm.AccessTo
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
-	if err != nil {
-		return nil, scm.WrapRemoteError(0, "failed to fetch repositories", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, scm.WrapRemoteError(resp.StatusCode, "failed to fetch repositories", nil)
-	}
-
 	var ghRepos []githubRepo
-	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&ghRepos); err != nil {
-		return nil, fmt.Errorf("github: decode repo list: %w", err)
+	if err := scm.DoJSON(req, "failed to fetch repositories", nil, &ghRepos); err != nil {
+		return nil, err
 	}
 
 	repos := make([]*scm.SourceRepo, len(ghRepos))

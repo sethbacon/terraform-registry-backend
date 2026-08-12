@@ -137,24 +137,6 @@ func (c *AzureDevOpsConnector) CompleteAuthorization(ctx context.Context, authCo
 	data.Set("client_id", c.clientID)
 	data.Set("client_secret", c.clientSecret)
 
-	tokenURL := fmt.Sprintf(entraTokenURLTemplate, c.tenantID)
-	req, err := http.NewRequestWithContext(ctx, "POST", tokenURL, strings.NewReader(data.Encode()))
-	if err != nil {
-		return nil, fmt.Errorf("azuredevops: create token request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	// #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
-	resp, err := scm.HTTPClient.Do(req)
-	if err != nil {
-		return nil, scm.WrapRemoteError(0, "failed to exchange code", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(scm.LimitErrorBody(resp.Body))
-		return nil, scm.WrapRemoteError(resp.StatusCode, "oauth code exchange failed", fmt.Errorf("%s", body))
-	}
-
 	var result struct {
 		AccessToken  string `json:"access_token"`
 		TokenType    string `json:"token_type"`
@@ -163,8 +145,9 @@ func (c *AzureDevOpsConnector) CompleteAuthorization(ctx context.Context, authCo
 		Scope        string `json:"scope"`
 	}
 
-	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&result); err != nil {
-		return nil, fmt.Errorf("azuredevops: decode token response: %w", err)
+	tokenURL := fmt.Sprintf(entraTokenURLTemplate, c.tenantID)
+	if err := scm.ExchangeOAuthForm(ctx, tokenURL, data, "", &result); err != nil {
+		return nil, err
 	}
 
 	expiresAt := time.Now().Add(time.Duration(result.ExpiresIn) * time.Second)
@@ -280,23 +263,10 @@ func (c *AzureDevOpsConnector) FetchRepository(ctx context.Context, creds *scm.A
 		return nil, fmt.Errorf("azuredevops: create repo request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
-	// #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
-	resp, err := scm.HTTPClient.Do(req)
-	if err != nil {
-		return nil, scm.WrapRemoteError(0, "failed to fetch repository", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, scm.ErrRepoNotFound
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, scm.WrapRemoteError(resp.StatusCode, "failed to fetch repository", nil)
-	}
 
 	var adoRepo adoRepo
-	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&adoRepo); err != nil {
-		return nil, fmt.Errorf("azuredevops: decode repository: %w", err)
+	if err := scm.DoJSON(req, "failed to fetch repository", scm.ErrRepoNotFound, &adoRepo); err != nil {
+		return nil, err
 	}
 
 	return c.convertRepo(&adoRepo, ownerName), nil
@@ -332,16 +302,6 @@ func (c *AzureDevOpsConnector) FetchBranches(ctx context.Context, creds *scm.Acc
 		return nil, fmt.Errorf("azuredevops: create branches request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
-	// #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
-	resp, err := scm.HTTPClient.Do(req)
-	if err != nil {
-		return nil, scm.WrapRemoteError(0, "failed to fetch branches", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, scm.WrapRemoteError(resp.StatusCode, "failed to fetch branches", nil)
-	}
 
 	var result struct {
 		Value []struct {
@@ -350,8 +310,8 @@ func (c *AzureDevOpsConnector) FetchBranches(ctx context.Context, creds *scm.Acc
 		} `json:"value"`
 	}
 
-	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&result); err != nil {
-		return nil, fmt.Errorf("azuredevops: decode branches: %w", err)
+	if err := scm.DoJSON(req, "failed to fetch branches", nil, &result); err != nil {
+		return nil, err
 	}
 
 	branches := make([]*scm.GitBranch, len(result.Value))
@@ -448,19 +408,6 @@ func (c *AzureDevOpsConnector) FetchCommit(ctx context.Context, creds *scm.Acces
 		return nil, fmt.Errorf("azuredevops: create commit request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
-	// #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
-	resp, err := scm.HTTPClient.Do(req)
-	if err != nil {
-		return nil, scm.WrapRemoteError(0, "failed to fetch commit", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, scm.ErrCommitNotFound
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, scm.WrapRemoteError(resp.StatusCode, "failed to fetch commit", nil)
-	}
 
 	var adoCommit struct {
 		CommitID string `json:"commitId"`
@@ -473,8 +420,8 @@ func (c *AzureDevOpsConnector) FetchCommit(ctx context.Context, creds *scm.Acces
 		RemoteURL string `json:"remoteUrl"`
 	}
 
-	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&adoCommit); err != nil {
-		return nil, fmt.Errorf("azuredevops: decode commit: %w", err)
+	if err := scm.DoJSON(req, "failed to fetch commit", scm.ErrCommitNotFound, &adoCommit); err != nil {
+		return nil, err
 	}
 
 	return &scm.GitCommit{
@@ -610,23 +557,15 @@ func (c *AzureDevOpsConnector) fetchRepoAndProjectIDs(ctx context.Context, creds
 		return "", "", fmt.Errorf("create request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
-	// #nosec G107 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
-	resp, err := scm.HTTPClient.Do(req)
-	if err != nil {
-		return "", "", scm.WrapRemoteError(0, "failed to fetch repository IDs", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", "", scm.WrapRemoteError(resp.StatusCode, "failed to fetch repository IDs", nil)
-	}
+
 	var result struct {
 		ID      string `json:"id"`
 		Project struct {
 			ID string `json:"id"`
 		} `json:"project"`
 	}
-	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&result); err != nil {
-		return "", "", fmt.Errorf("decode repository: %w", err)
+	if err := scm.DoJSON(req, "failed to fetch repository IDs", nil, &result); err != nil {
+		return "", "", err
 	}
 	return result.Project.ID, result.ID, nil
 }

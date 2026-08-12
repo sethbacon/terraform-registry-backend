@@ -81,23 +81,6 @@ func (c *GitLabConnector) CompleteAuthorization(ctx context.Context, authCode st
 	data.Set("grant_type", "authorization_code")
 	data.Set("redirect_uri", c.callbackURL)
 
-	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/oauth/token", strings.NewReader(data.Encode()))
-	if err != nil {
-		return nil, fmt.Errorf("gitlab: create token request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
-	if err != nil {
-		return nil, scm.WrapRemoteError(0, "failed to exchange code", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(scm.LimitErrorBody(resp.Body))
-		return nil, scm.WrapRemoteError(resp.StatusCode, "oauth code exchange failed", fmt.Errorf("%s", body))
-	}
-
 	var result struct {
 		AccessToken  string `json:"access_token"`
 		TokenType    string `json:"token_type"`
@@ -106,8 +89,8 @@ func (c *GitLabConnector) CompleteAuthorization(ctx context.Context, authCode st
 		Scope        string `json:"scope"`
 	}
 
-	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&result); err != nil {
-		return nil, fmt.Errorf("gitlab: decode token response: %w", err)
+	if err := scm.ExchangeOAuthForm(ctx, c.baseURL+"/oauth/token", data, "", &result); err != nil {
+		return nil, err
 	}
 
 	expiresAt := time.Now().Add(time.Duration(result.ExpiresIn) * time.Second)
@@ -172,14 +155,7 @@ func (c *GitLabConnector) RenewToken(ctx context.Context, refreshToken string) (
 
 // FetchRepositories lists projects the user can access
 func (c *GitLabConnector) FetchRepositories(ctx context.Context, creds *scm.AccessToken, pagination scm.Pagination) (*scm.RepoListResult, error) {
-	page := pagination.PageNum
-	if page < 1 {
-		page = 1
-	}
-	perPage := pagination.PageSize
-	if perPage < 1 || perPage > 100 {
-		perPage = 30
-	}
+	page, perPage := scm.ClampPagination(pagination)
 
 	endpoint := fmt.Sprintf("%s/projects?membership=true&page=%d&per_page=%d&order_by=last_activity_at", c.apiURL, page, perPage)
 
@@ -189,19 +165,9 @@ func (c *GitLabConnector) FetchRepositories(ctx context.Context, creds *scm.Acce
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
-	if err != nil {
-		return nil, scm.WrapRemoteError(0, "failed to fetch projects", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, scm.WrapRemoteError(resp.StatusCode, "failed to fetch projects", nil)
-	}
-
 	var glProjects []gitlabProject
-	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&glProjects); err != nil {
-		return nil, fmt.Errorf("gitlab: decode projects: %w", err)
+	if err := scm.DoJSON(req, "failed to fetch projects", nil, &glProjects); err != nil {
+		return nil, err
 	}
 
 	repos := make([]*scm.SourceRepo, len(glProjects))
@@ -228,22 +194,9 @@ func (c *GitLabConnector) FetchRepository(ctx context.Context, creds *scm.Access
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
-	if err != nil {
-		return nil, scm.WrapRemoteError(0, "failed to fetch project", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, scm.ErrRepoNotFound
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, scm.WrapRemoteError(resp.StatusCode, "failed to fetch project", nil)
-	}
-
 	var glProject gitlabProject
-	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&glProject); err != nil {
-		return nil, fmt.Errorf("gitlab: decode project: %w", err)
+	if err := scm.DoJSON(req, "failed to fetch project", scm.ErrRepoNotFound, &glProject); err != nil {
+		return nil, err
 	}
 
 	return c.convertProject(&glProject), nil
@@ -251,14 +204,7 @@ func (c *GitLabConnector) FetchRepository(ctx context.Context, creds *scm.Access
 
 // SearchRepositories searches for projects matching a query
 func (c *GitLabConnector) SearchRepositories(ctx context.Context, creds *scm.AccessToken, searchTerm string, pagination scm.Pagination) (*scm.RepoListResult, error) {
-	page := pagination.PageNum
-	if page < 1 {
-		page = 1
-	}
-	perPage := pagination.PageSize
-	if perPage < 1 || perPage > 100 {
-		perPage = 30
-	}
+	page, perPage := scm.ClampPagination(pagination)
 
 	endpoint := fmt.Sprintf("%s/projects?membership=true&search=%s&page=%d&per_page=%d",
 		c.apiURL, url.QueryEscape(searchTerm), page, perPage)
@@ -269,19 +215,9 @@ func (c *GitLabConnector) SearchRepositories(ctx context.Context, creds *scm.Acc
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
-	if err != nil {
-		return nil, scm.WrapRemoteError(0, "search failed", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, scm.WrapRemoteError(resp.StatusCode, "search failed", nil)
-	}
-
 	var glProjects []gitlabProject
-	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&glProjects); err != nil {
-		return nil, fmt.Errorf("gitlab: decode search results: %w", err)
+	if err := scm.DoJSON(req, "search failed", nil, &glProjects); err != nil {
+		return nil, err
 	}
 
 	repos := make([]*scm.SourceRepo, len(glProjects))
@@ -299,14 +235,7 @@ func (c *GitLabConnector) SearchRepositories(ctx context.Context, creds *scm.Acc
 // FetchBranches lists branches in a project
 func (c *GitLabConnector) FetchBranches(ctx context.Context, creds *scm.AccessToken, ownerName, repoName string, pagination scm.Pagination) ([]*scm.GitBranch, error) {
 	projectPath := url.PathEscape(fmt.Sprintf("%s/%s", ownerName, repoName))
-	page := pagination.PageNum
-	if page < 1 {
-		page = 1
-	}
-	perPage := pagination.PageSize
-	if perPage < 1 || perPage > 100 {
-		perPage = 30
-	}
+	page, perPage := scm.ClampPagination(pagination)
 
 	endpoint := fmt.Sprintf("%s/projects/%s/repository/branches?page=%d&per_page=%d", c.apiURL, projectPath, page, perPage)
 
@@ -315,16 +244,6 @@ func (c *GitLabConnector) FetchBranches(ctx context.Context, creds *scm.AccessTo
 		return nil, fmt.Errorf("gitlab: create branches request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
-
-	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
-	if err != nil {
-		return nil, scm.WrapRemoteError(0, "failed to fetch branches", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, scm.WrapRemoteError(resp.StatusCode, "failed to fetch branches", nil)
-	}
 
 	var glBranches []struct {
 		Name   string `json:"name"`
@@ -335,8 +254,8 @@ func (c *GitLabConnector) FetchBranches(ctx context.Context, creds *scm.AccessTo
 		Default   bool `json:"default"`
 	}
 
-	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&glBranches); err != nil {
-		return nil, fmt.Errorf("gitlab: decode branches: %w", err)
+	if err := scm.DoJSON(req, "failed to fetch branches", nil, &glBranches); err != nil {
+		return nil, err
 	}
 
 	branches := make([]*scm.GitBranch, len(glBranches))
@@ -355,14 +274,7 @@ func (c *GitLabConnector) FetchBranches(ctx context.Context, creds *scm.AccessTo
 // FetchTags lists tags in a project
 func (c *GitLabConnector) FetchTags(ctx context.Context, creds *scm.AccessToken, ownerName, repoName string, pagination scm.Pagination) ([]*scm.GitTag, error) {
 	projectPath := url.PathEscape(fmt.Sprintf("%s/%s", ownerName, repoName))
-	page := pagination.PageNum
-	if page < 1 {
-		page = 1
-	}
-	perPage := pagination.PageSize
-	if perPage < 1 || perPage > 100 {
-		perPage = 30
-	}
+	page, perPage := scm.ClampPagination(pagination)
 
 	endpoint := fmt.Sprintf("%s/projects/%s/repository/tags?page=%d&per_page=%d", c.apiURL, projectPath, page, perPage)
 
@@ -371,16 +283,6 @@ func (c *GitLabConnector) FetchTags(ctx context.Context, creds *scm.AccessToken,
 		return nil, fmt.Errorf("gitlab: create tags request: %w", err)
 	}
 	c.setAuthHeaders(req, creds)
-
-	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
-	if err != nil {
-		return nil, scm.WrapRemoteError(0, "failed to fetch tags", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, scm.WrapRemoteError(resp.StatusCode, "failed to fetch tags", nil)
-	}
 
 	var glTags []struct {
 		Name    string `json:"name"`
@@ -393,8 +295,8 @@ func (c *GitLabConnector) FetchTags(ctx context.Context, creds *scm.AccessToken,
 		} `json:"commit"`
 	}
 
-	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&glTags); err != nil {
-		return nil, fmt.Errorf("gitlab: decode tags: %w", err)
+	if err := scm.DoJSON(req, "failed to fetch tags", nil, &glTags); err != nil {
+		return nil, err
 	}
 
 	tags := make([]*scm.GitTag, len(glTags))
@@ -422,19 +324,6 @@ func (c *GitLabConnector) FetchTagByName(ctx context.Context, creds *scm.AccessT
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
-	if err != nil {
-		return nil, scm.WrapRemoteError(0, "failed to fetch tag", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, scm.ErrTagNotFound
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, scm.WrapRemoteError(resp.StatusCode, "failed to fetch tag", nil)
-	}
-
 	var glTag struct {
 		Name    string `json:"name"`
 		Message string `json:"message"`
@@ -444,8 +333,8 @@ func (c *GitLabConnector) FetchTagByName(ctx context.Context, creds *scm.AccessT
 		} `json:"commit"`
 	}
 
-	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&glTag); err != nil {
-		return nil, fmt.Errorf("gitlab: decode tag: %w", err)
+	if err := scm.DoJSON(req, "failed to fetch tag", scm.ErrTagNotFound, &glTag); err != nil {
+		return nil, err
 	}
 
 	return &scm.GitTag{
@@ -467,19 +356,6 @@ func (c *GitLabConnector) FetchCommit(ctx context.Context, creds *scm.AccessToke
 	}
 	c.setAuthHeaders(req, creds)
 
-	resp, err := scm.HTTPClient.Do(req) // #nosec G704 -- request is routed through the SSRF-safe egress client (internal/httpsafe): scheme allow-list, resolve-and-pin private-range deny-list, per-hop redirect re-validation
-	if err != nil {
-		return nil, scm.WrapRemoteError(0, "failed to fetch commit", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, scm.ErrCommitNotFound
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, scm.WrapRemoteError(resp.StatusCode, "failed to fetch commit", nil)
-	}
-
 	var glCommit struct {
 		ID            string    `json:"id"`
 		Title         string    `json:"title"`
@@ -490,8 +366,8 @@ func (c *GitLabConnector) FetchCommit(ctx context.Context, creds *scm.AccessToke
 		WebURL        string    `json:"web_url"`
 	}
 
-	if err := json.NewDecoder(scm.LimitBody(resp.Body)).Decode(&glCommit); err != nil {
-		return nil, fmt.Errorf("gitlab: decode commit: %w", err)
+	if err := scm.DoJSON(req, "failed to fetch commit", scm.ErrCommitNotFound, &glCommit); err != nil {
+		return nil, err
 	}
 
 	return &scm.GitCommit{

@@ -74,9 +74,33 @@ type Pagination struct {
 	PageSize int
 }
 
+// Pagination bounds for the SCM APIs addressed by page number and page size.
+const (
+	defaultPageSize = 30
+	maxPageSize     = 100
+)
+
 // DefaultPagination returns standard pagination settings
 func DefaultPagination() Pagination {
-	return Pagination{PageNum: 1, PageSize: 30}
+	return Pagination{PageNum: 1, PageSize: defaultPageSize}
+}
+
+// ClampPagination normalises a Pagination for the SCM APIs that page with page/per_page
+// query parameters (GitHub and GitLab): the page number is forced to at least 1, and a
+// page size outside the 1..100 range both APIs accept falls back to the default of 30.
+//
+// Bitbucket Data Center pages with limit/start instead and defaults to 25, so it clamps
+// its own window; Azure DevOps does not paginate its repository APIs at all.
+func ClampPagination(p Pagination) (page, perPage int) {
+	page = p.PageNum
+	if page < 1 {
+		page = 1
+	}
+	perPage = p.PageSize
+	if perPage < 1 || perPage > maxPageSize {
+		perPage = defaultPageSize
+	}
+	return page, perPage
 }
 
 // RepoListResult contains paginated repository results
