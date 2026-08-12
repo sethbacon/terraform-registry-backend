@@ -146,12 +146,47 @@ The encryption key protects SCM OAuth tokens stored in the database. The backend
    - Trigger a tag push or verify the webhook integration is functional.
    - Check logs for decryption errors (there should be none).
 
-6. **(Optional) Re-encrypt all tokens** with the new key. This eliminates the dependency on the previous key. **Not yet available as a built-in command — a manual SQL/script step is required today.** Do this by:
-   - Iterating all `scm_providers` rows with encrypted tokens.
-   - Decrypting with the dual-key cipher and re-encrypting with only the current key.
-   - A built-in admin command for this is not yet available; the dual-key fallback (above) is the supported zero-downtime path, and this re-encryption is optional cleanup.
+6. **(Optional) Re-encrypt every stored secret** with the new key, removing the dependency on the previous key:
 
-7. **Remove the previous key** once all tokens have been re-encrypted (or after a sufficient grace period):
+   ```bash
+   terraform-registry bind-secrets
+   ```
+
+   This decrypts through the dual-key path (so rows still on the old key are read via
+   `ENCRYPTION_KEY_PREVIOUS`) and re-encrypts with the **current** key. It covers every
+   encrypted column — SCM provider credentials, user OAuth tokens, storage-backend
+   credentials, the OIDC client secret, SMTP and LDAP passwords — not just
+   `scm_providers`.
+
+   **This only re-encrypts rows that are not yet row-bound.** Read that limitation
+   carefully, because it changes what this step can do for you:
+
+   - **If you have not yet run the row-binding migration below** (the usual case on a
+     first rotation after upgrading), every row is unbound, so this one command does
+     both jobs: it binds each secret to its row *and* lands it on the current key.
+   - **If your rows are already bound**, this command detects them as converted and
+     **skips them** — it will not re-encrypt them onto the new key. That detection
+     succeeds via the dual-key fallback, so a bound row sitting on the previous key
+     looks "already done" to it. There is no re-encrypt-only command today; keep
+     `ENCRYPTION_KEY_PREVIOUS` in place, or re-enter those credentials, until one exists.
+
+   Confirm what actually happened before moving to step 7:
+
+   ```bash
+   terraform-registry bind-secrets verify   # exits non-zero if any row is unbound
+   ```
+
+   Note this verifies **binding**, not which key a row is encrypted under. It passing
+   does not by itself prove you can safely drop `ENCRYPTION_KEY_PREVIOUS`.
+
+7. **Remove the previous key** once all tokens have been re-encrypted (or after a sufficient grace period).
+
+   Be sure step 6 actually re-encrypted, rather than skipping already-bound rows — see
+   the limitation there. Removing `ENCRYPTION_KEY_PREVIOUS` while any row is still
+   encrypted under it makes that secret **permanently unreadable**, by the service and
+   by `bind-secrets` alike, and it has to be re-entered by an administrator. When in
+   doubt, keep the previous key: an extra key in a secrets manager is cheap, and this
+   is not a reversible mistake.
 
    ```bash
    kubectl create secret generic registry-secrets \
