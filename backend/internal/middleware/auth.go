@@ -35,7 +35,7 @@ import (
 //     originates from a cookie the auth_method is set to "jwt_cookie" so that
 //     downstream middleware (CSRFMiddleware) can distinguish browser-initiated
 //     requests from programmatic ones.
-func AuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, apiKeyRepo *repositories.APIKeyRepository, orgRepo *repositories.OrganizationRepository, tokenRepo *repositories.TokenRepository, userRevocations *repositories.UserTokenRevocationRepository) gin.HandlerFunc {
+func AuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, apiKeyRepo *repositories.APIKeyRepository, orgRepo *repositories.OrganizationRepository, tokenRepo *repositories.TokenRepository, userRevocations *repositories.UserTokenRevocationRepository, platformAdmins *repositories.PlatformAdminRepository) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var token string
 		var fromCookie bool
@@ -151,7 +151,19 @@ func AuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, a
 			if scopes == nil {
 				scopes = []string{}
 			}
-			c.Set("scopes", scopes)
+
+			// GUARD platform-admin-carrier (issue #766). THE insertion point:
+			// resolve platform-admin authority once, here, so the twelve
+			// existing auth.HasScope(scopes, auth.ScopeAdmin) sites keep asking
+			// the same question and start getting the answer from the carrier.
+			// A lookup failure aborts, matching how the revocation checks above
+			// treat an unresolved auth question on this middleware.
+			elevated, status, msg := platformAdminScopes(c.Request.Context(), platformAdmins, user.ID, scopes)
+			if status != 0 {
+				c.AbortWithStatusJSON(status, gin.H{"error": msg})
+				return
+			}
+			c.Set("scopes", elevated)
 
 			c.Next()
 			return
@@ -325,8 +337,60 @@ func currentKeyScopes(ctx context.Context, orgRepo *repositories.OrganizationRep
 	return scopes, 0, ""
 }
 
+// platformAdminScopes returns the effective scopes for a USER SESSION,
+// elevated with auth.ScopeAdmin when the principal holds platform-admin
+// authority through the carrier (issue #766, migration 000051).
+//
+// TRANSITION SEMANTICS ARE `OR`, WHICH IS WHAT MAKES PR 1 NON-BREAKING.
+// Effective admin is `carrier OR the existing scope union`. The union still
+// answers exactly as it did, the carrier can only add, and migration 000051
+// backfills the carrier from the union — so day-one behaviour is identical.
+// PR 3 removes the union side; nothing here changes when it does.
+//
+// APPLIED ON THE USER/SESSION PATH ONLY — NEVER TO AN API KEY. Five of the
+// twelve admin checks are in apikeys.go, and a long-lived credential silently
+// carrying the highest privilege in the product is the exact shape of the
+// problem #766 is about. Keys are already org-bound (#732) and their scopes
+// are already re-derived per request from the owner's CURRENT membership
+// (currentKeyScopes); inheriting the owner's platform-admin status on top of
+// that would hand every CI token its owner's wildcard. Neither middleware
+// calls this from its API-key branch, and
+// TestAuthMiddleware_APIKey_DoesNotInheritOwnersPlatformAdmin holds that shut.
+//
+// A nil repository means the subsystem is not wired (unit tests), matching how
+// tokenRepo/userRevocations/orgRepo nil-checks behave on both middlewares.
+//
+// Returns (scopes, 0, "") when the answer resolved, otherwise an HTTP status
+// and message.
+//
+// The elevation copies rather than appending to the caller's slice. `scopes`
+// is claims.Scopes, which is also published on the context as jwt_claims, so
+// appending in place would write through a shared backing array whenever it
+// has spare capacity. Stated as an idiom, not as a tested guarantee: the JWT
+// decoder happens to produce len == cap today, so a mutation to append-in-place
+// is not observable and no test here would catch it.
+func platformAdminScopes(ctx context.Context, platformAdmins *repositories.PlatformAdminRepository, userID string, scopes []string) ([]string, int, string) {
+	if platformAdmins == nil {
+		return scopes, 0, ""
+	}
+	isAdmin, err := platformAdmins.IsPlatformAdmin(ctx, userID)
+	if err != nil {
+		// 500, not "not an admin". An authority question that did not resolve
+		// must not be served as a completed no: that would silently downgrade a
+		// platform administrator to a 403 during exactly the incident in which
+		// they need the admin surface, with nothing in the response saying why.
+		return nil, http.StatusInternalServerError, "Auth check failed"
+	}
+	if !isAdmin || auth.HasScope(scopes, auth.ScopeAdmin) {
+		return scopes, 0, ""
+	}
+	elevated := make([]string, len(scopes), len(scopes)+1)
+	copy(elevated, scopes)
+	return append(elevated, string(auth.ScopeAdmin)), 0, ""
+}
+
 // OptionalAuthMiddleware - same as AuthMiddleware but doesn't abort if no auth
-func OptionalAuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, apiKeyRepo *repositories.APIKeyRepository, orgRepo *repositories.OrganizationRepository, tokenRepo *repositories.TokenRepository, userRevocations *repositories.UserTokenRevocationRepository) gin.HandlerFunc {
+func OptionalAuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, apiKeyRepo *repositories.APIKeyRepository, orgRepo *repositories.OrganizationRepository, tokenRepo *repositories.TokenRepository, userRevocations *repositories.UserTokenRevocationRepository, platformAdmins *repositories.PlatformAdminRepository) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var token string
 		var fromCookie bool
@@ -389,6 +453,26 @@ func OptionalAuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepos
 					scopes := claims.Scopes
 					if scopes == nil {
 						scopes = []string{}
+					}
+
+					// GUARD platform-admin-carrier (issue #766). Same
+					// elevation as AuthMiddleware, for the same reason the
+					// jwt_claims Set immediately above exists: the two
+					// middlewares must publish the SAME context shape, or a
+					// check behaves differently depending on which group a
+					// route happens to be mounted under — the divergence
+					// tracked as #665 and the bug the jwt_claims comment
+					// records. No route under this middleware consults
+					// ScopeAdmin today; letting that stay true by accident is
+					// not a decision, it is a bet on nobody moving a route.
+					//
+					// A failed lookup leaves the caller UNELEVATED rather than
+					// aborting, matching this middleware's treatment of every
+					// other failed auth lookup (the revocation checks above
+					// swallow their errors too). Fail-closed by construction:
+					// the carrier can only ever add authority.
+					if elevated, status, _ := platformAdminScopes(c.Request.Context(), platformAdmins, user.ID, scopes); status == 0 {
+						scopes = elevated
 					}
 					c.Set("scopes", scopes)
 				}

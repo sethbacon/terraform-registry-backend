@@ -51,7 +51,7 @@ func newAuthRouterWithJWT(t *testing.T, userMock, orgMock sqlmock.Sqlmock,
 	userRepo *repositories.UserRepository, orgRepo *repositories.OrganizationRepository) *gin.Engine {
 	t.Helper()
 	r := gin.New()
-	r.Use(AuthMiddleware(nil, userRepo, nil, orgRepo, nil, nil))
+	r.Use(AuthMiddleware(nil, userRepo, nil, orgRepo, nil, nil, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 	return r
 }
@@ -69,7 +69,7 @@ func generateTestJWT(t *testing.T, userID string) string {
 // nil repos are safe for early-exit paths that abort before any repo call.
 func newAuthRouter() *gin.Engine {
 	r := gin.New()
-	r.Use(AuthMiddleware(nil, nil, nil, nil, nil, nil))
+	r.Use(AuthMiddleware(nil, nil, nil, nil, nil, nil, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 	return r
 }
@@ -77,7 +77,7 @@ func newAuthRouter() *gin.Engine {
 // newOptionalAuthRouter builds a router with OptionalAuthMiddleware using nil repos.
 func newOptionalAuthRouter() *gin.Engine {
 	r := gin.New()
-	r.Use(OptionalAuthMiddleware(nil, nil, nil, nil, nil, nil))
+	r.Use(OptionalAuthMiddleware(nil, nil, nil, nil, nil, nil, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 	return r
 }
@@ -138,7 +138,7 @@ func TestAuthMiddleware_CookieAuth_ValidJWT(t *testing.T) {
 
 	r := gin.New()
 	var capturedAuthMethod string
-	r.Use(AuthMiddleware(nil, userRepo, nil, orgRepo, nil, nil))
+	r.Use(AuthMiddleware(nil, userRepo, nil, orgRepo, nil, nil, nil))
 	r.GET("/", func(c *gin.Context) {
 		if am, ok := c.Get("auth_method"); ok {
 			capturedAuthMethod = am.(string)
@@ -173,7 +173,7 @@ func TestAuthMiddleware_HeaderTakesPrecedenceOverCookie(t *testing.T) {
 
 	r := gin.New()
 	var capturedAuthMethod string
-	r.Use(AuthMiddleware(nil, userRepo, nil, orgRepo, nil, nil))
+	r.Use(AuthMiddleware(nil, userRepo, nil, orgRepo, nil, nil, nil))
 	r.GET("/", func(c *gin.Context) {
 		if am, ok := c.Get("auth_method"); ok {
 			capturedAuthMethod = am.(string)
@@ -334,7 +334,7 @@ func newAuthRouterWithRepos(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	repo, mock := newTestAPIKeyRepo(t)
 
 	r := gin.New()
-	r.Use(AuthMiddleware(nil, nil, repo, nil, nil, nil))
+	r.Use(AuthMiddleware(nil, nil, repo, nil, nil, nil, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 	return mock, r
 }
@@ -514,7 +514,7 @@ func TestAuthMiddleware_APIKeyWithUser(t *testing.T) {
 	userRepo := repositories.NewUserRepository(userDB)
 
 	r := gin.New()
-	r.Use(AuthMiddleware(nil, userRepo, apiKeyRepo, nil, nil, nil))
+	r.Use(AuthMiddleware(nil, userRepo, apiKeyRepo, nil, nil, nil, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	token := "tfr_apikey_test123"
@@ -553,7 +553,7 @@ func TestOptionalAuthMiddleware_ValidJWT_SetsUser(t *testing.T) {
 	orgRepo, orgMock := newOrgRepo(t)
 
 	r := gin.New()
-	r.Use(OptionalAuthMiddleware(nil, userRepo, nil, orgRepo, nil, nil))
+	r.Use(OptionalAuthMiddleware(nil, userRepo, nil, orgRepo, nil, nil, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	token := generateTestJWT(t, "user-1")
@@ -590,7 +590,7 @@ func TestOptionalAuthMiddleware_JWTRevoked_ContinuesUnauthenticated(t *testing.T
 
 	var userWasSet bool
 	r := gin.New()
-	r.Use(OptionalAuthMiddleware(nil, userRepo, nil, orgRepo, tokenRepo, nil))
+	r.Use(OptionalAuthMiddleware(nil, userRepo, nil, orgRepo, tokenRepo, nil, nil))
 	r.GET("/", func(c *gin.Context) {
 		_, userWasSet = c.Get("user")
 		c.Status(http.StatusOK)
@@ -615,7 +615,7 @@ func TestOptionalAuthMiddleware_ValidJWT_UserNotFound_PassesThrough(t *testing.T
 	orgRepo, _ := newOrgRepo(t)
 
 	r := gin.New()
-	r.Use(OptionalAuthMiddleware(nil, userRepo, nil, orgRepo, nil, nil))
+	r.Use(OptionalAuthMiddleware(nil, userRepo, nil, orgRepo, nil, nil, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	token := generateTestJWT(t, "nonexistent-user")
@@ -644,7 +644,7 @@ func TestOptionalAuthMiddleware_APIKey_Valid_SetsContext(t *testing.T) {
 	userRepo := repositories.NewUserRepository(userDB)
 
 	r := gin.New()
-	r.Use(OptionalAuthMiddleware(nil, userRepo, apiKeyRepo, nil, nil, nil))
+	r.Use(OptionalAuthMiddleware(nil, userRepo, apiKeyRepo, nil, nil, nil, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	token := "tfr_optional_test9"
@@ -678,7 +678,7 @@ func TestOptionalAuthMiddleware_APIKey_Expired_PassesThrough(t *testing.T) {
 	apiKeyRepo := repositories.NewAPIKeyRepository(apiKeyDB)
 
 	r := gin.New()
-	r.Use(OptionalAuthMiddleware(nil, nil, apiKeyRepo, nil, nil, nil))
+	r.Use(OptionalAuthMiddleware(nil, nil, apiKeyRepo, nil, nil, nil, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	token := "tfr_expired_key9"
@@ -710,7 +710,7 @@ func TestOptionalAuthMiddleware_APIKey_NoMatch_PassesThrough(t *testing.T) {
 	apiKeyRepo := repositories.NewAPIKeyRepository(apiKeyDB)
 
 	r := gin.New()
-	r.Use(OptionalAuthMiddleware(nil, nil, apiKeyRepo, nil, nil, nil))
+	r.Use(OptionalAuthMiddleware(nil, nil, apiKeyRepo, nil, nil, nil, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	// Return empty rows — no matching key
@@ -749,7 +749,7 @@ func newAuthRouterWithRevocation(t *testing.T,
 ) *gin.Engine {
 	t.Helper()
 	r := gin.New()
-	r.Use(AuthMiddleware(nil, userRepo, nil, orgRepo, tokenRepo, nil))
+	r.Use(AuthMiddleware(nil, userRepo, nil, orgRepo, tokenRepo, nil, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 	return r
 }
@@ -827,7 +827,7 @@ func TestAuthMiddleware_RevokeAllWatermark_Aborts(t *testing.T) {
 	_ = userMock // user lookup is not expected to run — the watermark check aborts first
 
 	r := gin.New()
-	r.Use(AuthMiddleware(nil, userRepo, nil, orgRepo, nil, userRevocations))
+	r.Use(AuthMiddleware(nil, userRepo, nil, orgRepo, nil, userRevocations, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	if code := doAuthRequest(r, "Bearer "+token); code != http.StatusUnauthorized {
@@ -847,7 +847,7 @@ func TestAuthMiddleware_RevokeAllWatermark_DBError(t *testing.T) {
 	_ = userMock
 
 	r := gin.New()
-	r.Use(AuthMiddleware(nil, userRepo, nil, orgRepo, nil, userRevocations))
+	r.Use(AuthMiddleware(nil, userRepo, nil, orgRepo, nil, userRevocations, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	if code := doAuthRequest(r, "Bearer "+token); code != http.StatusInternalServerError {
@@ -869,7 +869,7 @@ func TestAuthMiddleware_RevokeAllWatermark_NotRevoked_PassesThrough(t *testing.T
 			"user-1", "test@example.com", "Test User", nil, time.Now(), time.Now()))
 
 	r := gin.New()
-	r.Use(AuthMiddleware(nil, userRepo, nil, orgRepo, nil, userRevocations))
+	r.Use(AuthMiddleware(nil, userRepo, nil, orgRepo, nil, userRevocations, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	if code := doAuthRequest(r, "Bearer "+token); code != http.StatusOK {
@@ -888,7 +888,7 @@ func TestOptionalAuthMiddleware_RevokeAllWatermark_ContinuesUnauthenticated(t *t
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
 
 	r := gin.New()
-	r.Use(OptionalAuthMiddleware(nil, userRepo, nil, orgRepo, nil, userRevocations))
+	r.Use(OptionalAuthMiddleware(nil, userRepo, nil, orgRepo, nil, userRevocations, nil))
 	var userWasSet bool
 	r.GET("/", func(c *gin.Context) {
 		_, userWasSet = c.Get("user")
@@ -969,7 +969,7 @@ func apiKeyAuthRouter(t *testing.T, handler gin.HandlerFunc) (*gin.Engine, sqlmo
 
 	r := gin.New()
 	r.Use(AuthMiddleware(nil, repositories.NewUserRepository(userDB),
-		repositories.NewAPIKeyRepository(apiKeyDB), orgRepo, nil, nil))
+		repositories.NewAPIKeyRepository(apiKeyDB), orgRepo, nil, nil, nil))
 	r.GET("/", handler)
 	return r, apiKeyMock, orgMock
 }
@@ -1095,7 +1095,7 @@ func TestOptionalAuthMiddleware_OrgBoundAPIKey_OwnerRemoved_ContinuesUnauthentic
 
 	var keyWasSet bool
 	r := gin.New()
-	r.Use(OptionalAuthMiddleware(nil, nil, repositories.NewAPIKeyRepository(apiKeyDB), orgRepo, nil, nil))
+	r.Use(OptionalAuthMiddleware(nil, nil, repositories.NewAPIKeyRepository(apiKeyDB), orgRepo, nil, nil, nil))
 	r.GET("/", func(c *gin.Context) {
 		_, keyWasSet = c.Get("api_key")
 		c.Status(http.StatusOK)

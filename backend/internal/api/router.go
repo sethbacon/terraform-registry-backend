@@ -198,6 +198,13 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// the shared identity schema, or a separate identity database (issue #559
 	// finding [9]).
 	userTokenRevocationRepo := repositories.NewUserTokenRevocationRepository(db)
+	// platformAdminRepo is the carrier for platform-admin authority outside
+	// organization_members (issue #766, migration 000051). Same connection and
+	// same reasoning as userTokenRevocationRepo above: no FK dependency on the
+	// identity schema, so it works unchanged whether identity data is in the
+	// app's public schema, the shared identity schema, or a separate identity
+	// database.
+	platformAdminRepo := repositories.NewPlatformAdminRepository(db)
 
 	// Namespace ownership claims back the object-level authorization on every
 	// module/provider mutation route (issue #555, CWE-639): a namespace binds
@@ -487,6 +494,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		orgRepo:                 orgRepo,
 		tokenRepo:               tokenRepo,
 		userTokenRevocationRepo: userTokenRevocationRepo,
+		platformAdminRepo:       platformAdminRepo,
 		auditRepo:               auditRepo,
 		pullThroughSvc:          pullThroughSvc,
 		tfBinariesHandler:       tfBinariesHandler,
@@ -703,6 +711,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		orgRepo:                     orgRepo,
 		tokenRepo:                   tokenRepo,
 		userTokenRevocationRepo:     userTokenRevocationRepo,
+		platformAdminRepo:           platformAdminRepo,
 		credSweeper:                 credSweeper,
 		moduleAdminHandlers:         moduleAdminHandlers,
 		providerAdminHandlers:       providerAdminHandlers,

@@ -1,0 +1,14 @@
+-- Drops the platform-admin carrier (issue #766, PR 1).
+--
+-- Safe in PR 1, and only in PR 1. Every row this migration created is
+-- DERIVED -- backfilled from an admin-bearing role template -- and effective
+-- admin is `carrier OR the existing scope union`, so dropping the table
+-- restores exactly the authority the deployment had before it. Nobody loses
+-- access.
+--
+-- That stops being true once PR 2 ships the grant API: a grant made through
+-- it has no role-template equivalent, and dropping the table destroys it with
+-- no way to recover the list short of the audit log. Roll back the binary
+-- first and check `SELECT user_id, note FROM platform_admins WHERE note IS
+-- NULL` -- a NULL note is a deliberate grant, not a backfilled row.
+DROP TABLE IF EXISTS platform_admins;
