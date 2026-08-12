@@ -13,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
 
 // ---------------------------------------------------------------------------
@@ -146,7 +147,7 @@ func TestGetScanningStatsHandler_Success(t *testing.T) {
 	sqlxDB := sqlx.NewDb(db, "sqlmock")
 
 	r := gin.New()
-	r.GET("/scanning/stats", GetScanningStatsHandler(sqlxDB))
+	r.GET("/scanning/stats", GetScanningStatsHandler(sqlxDB, repositories.NewOrganizationRepository(db)))
 
 	// Mock aggregate counts
 	mock.ExpectQuery("module_version_scans").
@@ -213,7 +214,7 @@ func TestGetScanningStatsHandler_WithStatusFilter(t *testing.T) {
 	sqlxDB := sqlx.NewDb(db, "sqlmock")
 
 	r := gin.New()
-	r.GET("/scanning/stats", GetScanningStatsHandler(sqlxDB))
+	r.GET("/scanning/stats", GetScanningStatsHandler(sqlxDB, repositories.NewOrganizationRepository(db)))
 
 	// Mock aggregate counts
 	mock.ExpectQuery("module_version_scans").
@@ -273,7 +274,7 @@ func TestGetScanningStatsHandler_InvalidStatusFilter(t *testing.T) {
 	sqlxDB := sqlx.NewDb(db, "sqlmock")
 
 	r := gin.New()
-	r.GET("/scanning/stats", GetScanningStatsHandler(sqlxDB))
+	r.GET("/scanning/stats", GetScanningStatsHandler(sqlxDB, repositories.NewOrganizationRepository(db)))
 
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest("GET", "/scanning/stats?status=invalid", nil)
@@ -294,7 +295,7 @@ func TestGetScanningStatsHandler_CountQueryError(t *testing.T) {
 	sqlxDB := sqlx.NewDb(db, "sqlmock")
 
 	r := gin.New()
-	r.GET("/scanning/stats", GetScanningStatsHandler(sqlxDB))
+	r.GET("/scanning/stats", GetScanningStatsHandler(sqlxDB, repositories.NewOrganizationRepository(db)))
 
 	mock.ExpectQuery("module_version_scans").
 		WillReturnError(&scanTestDBErr{"query failed"})
@@ -318,7 +319,7 @@ func TestGetScanningStatsHandler_RecentQueryError(t *testing.T) {
 	sqlxDB := sqlx.NewDb(db, "sqlmock")
 
 	r := gin.New()
-	r.GET("/scanning/stats", GetScanningStatsHandler(sqlxDB))
+	r.GET("/scanning/stats", GetScanningStatsHandler(sqlxDB, repositories.NewOrganizationRepository(db)))
 
 	// Aggregate succeeds
 	mock.ExpectQuery("module_version_scans").

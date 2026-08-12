@@ -728,7 +728,7 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 				admin.GetScanningConfigHandler(&cfg.Scanning))
 			authenticatedGroup.GET("/admin/scanning/stats",
 				middleware.RequireScope(auth.ScopeScanningRead),
-				admin.GetScanningStatsHandler(sqlxDB))
+				admin.GetScanningStatsHandler(sqlxDB, orgRepo))
 			authenticatedGroup.GET("/admin/scanning/scans/:id",
 				middleware.RequireScope(auth.ScopeScanningRead),
 				admin.GetScanByIDHandler(db, orgRepo))

@@ -36,9 +36,28 @@ func GetModuleScanHandler(db *sql.DB) gin.HandlerFunc {
 		system := c.Param("system")
 		version := c.Param("version")
 
+		// GUARD scan-byversion-tenant-scope: the by-id sibling below resolves the
+		// caller's tenant scope; this axis resolved the DEFAULT organization
+		// regardless of who was asking, so scanning:read held anywhere read the
+		// default org's vulnerability findings. Same class as #783, missed
+		// because addressing a module by namespace/name/system hides the fact
+		// that the lookup needs an organization at all.
+		//
+		// 404 rather than 403, matching the by-id axis: the body is another
+		// tenant's findings, so confirming the module exists is itself the
+		// disclosure.
+		scope, ok := resolveTenantScope(c, orgRepo, auth.ScopeScanningRead)
+		if !ok {
+			return
+		}
+
 		org, err := orgRepo.GetDefaultOrganization(c.Request.Context())
 		if err != nil || org == nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get organization context"})
+			return
+		}
+		if !scope.Permits(org.ID) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "scan not found"})
 			return
 		}
 

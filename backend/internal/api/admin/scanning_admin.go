@@ -9,7 +9,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
+	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/scanner"
 )
 
@@ -120,7 +122,7 @@ func GetScanningConfigHandler(cfg *config.ScanningConfig) gin.HandlerFunc {
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/admin/scanning/stats [get]
-func GetScanningStatsHandler(db *sqlx.DB) gin.HandlerFunc {
+func GetScanningStatsHandler(db *sqlx.DB, orgRepo *repositories.OrganizationRepository) gin.HandlerFunc {
 	validStatuses := map[string]bool{
 		"pending":  true,
 		"scanning": true,
@@ -131,6 +133,22 @@ func GetScanningStatsHandler(db *sqlx.DB) gin.HandlerFunc {
 
 	return func(c *gin.Context) {
 		ctx := c.Request.Context()
+
+		// GUARD scanning-stats-tenant-scope: every query below ran with no
+		// organization predicate at all, so scanning:read -- held by the seeded
+		// `devops` and `auditor` templates -- enumerated EVERY organization's
+		// module namespace/name/system together with its critical/high/medium/low
+		// counts, 100 rows at a time. The aggregate counts leaked the platform's
+		// totals on top of that.
+		//
+		// module_version_scans carries no organization_id of its own; a scan is
+		// organization-owned transitively through module_versions -> modules,
+		// which is why two of these three queries did not even join to a table
+		// that had the column. The joins below exist to reach it.
+		scope, ok := resolveTenantScope(c, orgRepo, auth.ScopeScanningRead)
+		if !ok {
+			return
+		}
 
 		// Parse query parameters.
 		statusFilter := c.Query("status")
@@ -155,17 +173,21 @@ func GetScanningStatsHandler(db *sqlx.DB) gin.HandlerFunc {
 
 		var stats ScanningStatsResponse
 
-		// Aggregate counts by status (always unfiltered).
-		err := db.QueryRowContext(ctx, `
+		// Aggregate counts by status (always unfiltered by status, never by tenant).
+		aggWhere, aggArgs := scope.OrgScope().SQL("m.organization_id", 1)
+		err := db.QueryRowContext(ctx, fmt.Sprintf(`
 			SELECT
 				COUNT(*) AS total,
-				COUNT(*) FILTER (WHERE status = 'pending') AS pending,
-				COUNT(*) FILTER (WHERE status = 'scanning') AS scanning,
-				COUNT(*) FILTER (WHERE status = 'clean') AS clean,
-				COUNT(*) FILTER (WHERE status = 'findings') AS findings,
-				COUNT(*) FILTER (WHERE status = 'error') AS error_count
-			FROM module_version_scans
-		`).Scan(
+				COUNT(*) FILTER (WHERE s.status = 'pending') AS pending,
+				COUNT(*) FILTER (WHERE s.status = 'scanning') AS scanning,
+				COUNT(*) FILTER (WHERE s.status = 'clean') AS clean,
+				COUNT(*) FILTER (WHERE s.status = 'findings') AS findings,
+				COUNT(*) FILTER (WHERE s.status = 'error') AS error_count
+			FROM module_version_scans s
+			JOIN module_versions mv ON mv.id = s.module_version_id
+			JOIN modules m ON m.id = mv.module_id
+			WHERE %s
+		`, aggWhere), aggArgs...).Scan(
 			&stats.Total,
 			&stats.Pending,
 			&stats.Scanning,
@@ -178,19 +200,29 @@ func GetScanningStatsHandler(db *sqlx.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Build filtered recent scans query.
-		var whereClause string
+		// Build filtered recent scans query. The tenant predicate is part of the
+		// shared WHERE rather than appended per query, so the count and the page
+		// below cannot diverge -- a filtered count taken over a wider set than
+		// the rows it describes is its own disclosure.
 		var args []interface{}
 		argIdx := 1
 
+		orgWhere, orgArgs := scope.OrgScope().SQL("m.organization_id", argIdx)
+		args = append(args, orgArgs...)
+		argIdx += len(orgArgs)
+		whereClause := " WHERE " + orgWhere
+
 		if statusFilter != "" {
-			whereClause = fmt.Sprintf(" WHERE s.status = $%d", argIdx)
+			whereClause += fmt.Sprintf(" AND s.status = $%d", argIdx)
 			args = append(args, statusFilter)
 			argIdx++
 		}
 
-		// Get total count for filtered results.
-		countQuery := `SELECT COUNT(*) FROM module_version_scans s` + whereClause
+		// The count must traverse the same joins as the page: module_version_scans
+		// alone cannot express the tenant predicate.
+		countQuery := `SELECT COUNT(*) FROM module_version_scans s
+			JOIN module_versions mv ON mv.id = s.module_version_id
+			JOIN modules m ON m.id = mv.module_id` + whereClause
 		if err := db.QueryRowContext(ctx, countQuery, args...).Scan(&stats.TotalFiltered); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query filtered count"})
 			return

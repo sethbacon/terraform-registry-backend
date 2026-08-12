@@ -42,6 +42,13 @@ func newScanAdminRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	}
 	t.Cleanup(func() { db.Close() })
 	r := gin.New()
+	// Platform admin: tenantscope.Resolve short-circuits to the whole platform,
+	// so these pre-existing cases keep asserting handler behaviour rather than
+	// tenancy. The tenancy case is in cross_org_authz_test.go.
+	r.Use(func(c *gin.Context) {
+		c.Set("scopes", []string{string(auth.ScopeAdmin)})
+		c.Set("user_id", "admin-user")
+	})
 	r.GET("/modules/:namespace/:name/:system/versions/:version/scan",
 		GetModuleScanHandler(db))
 	return mock, r

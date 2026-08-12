@@ -1163,11 +1163,26 @@ func (h *RBACHandlers) EvaluatePolicy(c *gin.Context) {
 		return
 	}
 
+	// GUARD policy-evaluate-tenant-scope: the write axis of this route block is
+	// admin-gated and the by-id read axis carries RequireOrgScopeForResource,
+	// but this one took organization_id straight off the query string and
+	// evaluated against it with no caller check. mirrors:read is granted by the
+	// seeded `viewer` template -- the lowest-privilege role in the product -- so
+	// the result (matched policy name, allow/deny, requires_approval) was
+	// readable across tenants by any member of any organization.
+	//
+	// Omitting organization_id stays open to every caller: ListMirrorPolicies
+	// then matches only `organization_id IS NULL`, the global policies, which
+	// are not owned by any tenant. It is supplying someone else's id that has to
+	// be earned, so the check hangs off the parameter rather than the route.
 	var orgID *uuid.UUID
 	if orgIDStr := c.Query("organization_id"); orgIDStr != "" {
 		id, err := uuid.Parse(orgIDStr)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid organization ID"})
+			return
+		}
+		if !requireTenantScopeForOrg(c, h.orgRepo, auth.ScopeMirrorsRead, id.String()) {
 			return
 		}
 		orgID = &id
