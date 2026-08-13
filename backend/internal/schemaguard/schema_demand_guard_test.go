@@ -31,6 +31,15 @@ import (
 //
 //	pq: column "actor_email" of relation "audit_logs" does not exist (42703)
 //
+// Two flags are involved, not one, and that is the part the issue's own triage
+// got wrong. Removing the TFR_IDENTITY_MIGRATIONS_ENABLED gate does not fix the
+// default topology: migration 000007 is schema-qualified (ALTER TABLE
+// identity.audit_logs), so running the identity chain adds the column to a
+// table the default configuration never writes to. Reproduced on postgres:16 in
+// #864's comments — the 42703 is identical before and after the identity chain
+// is applied. This guard models the resolution, not the flag, which is why it
+// stays red under that "fix" instead of certifying it.
+//
 // THE CLASS
 //
 // A gated capability became load-bearing without anything failing at build or
@@ -108,6 +117,14 @@ import (
 //     configuration cannot execute its own SQL. It cannot say whether that is
 //     survivable, because it does not model startup preconditions. A
 //     fail-fast check in cmd/server/main.go is complementary, not redundant.
+//
+//  8. WRITES CHOSEN AT RUNTIME. Code that probes the catalogue and picks a
+//     narrower statement when a column is missing is safe, and the guard cannot
+//     see that on its own — it reads both branches as unconditional demand. Such
+//     writes need an explicit probedWrites entry, which the guard then re-derives
+//     the justification for on every run (see below). Nothing here detects an
+//     unregistered probe, so a correct fix that is not registered shows up as a
+//     failure rather than being silently credited.
 
 // ---------------------------------------------------------------------------
 // Quarantine
@@ -129,17 +146,134 @@ var knownGaps = []knownGap{
 		Table:  "audit_logs",
 		Column: "actor_email",
 		Issue:  "#864",
-		Why: "the defect this guard was written for. The shared identity store writes " +
-			"actor_email into an unqualified audit_logs; under the default configuration that " +
-			"resolves to public.audit_logs, which this repository's own migration chain never " +
-			"gave the column. Fixed by any of: adding the column to this repository's chain, " +
-			"making the identity-schema cutover the default, or making the library's write " +
-			"tolerate a pre-000007 schema. DELETE THIS ENTRY when it lands.",
+		Why: "the defect this guard was written for, at identity/store/audit_repository.go. The " +
+			"shared identity store writes actor_email into an unqualified audit_logs; under the " +
+			"default configuration that resolves to public.audit_logs, which this repository's " +
+			"own migration chain never gave the column. Removing the migrations gate does NOT " +
+			"clear this — see the topology note at the top of the file. What clears it: a " +
+			"registry migration adding actor_email to public.audit_logs, or making the " +
+			"identity-schema cutover the default, or a probed write in the library " +
+			"(terraform-suite-identity#203), which becomes a probedWrites entry rather than a " +
+			"knownGap. DELETE THIS ENTRY when it lands.",
 	},
 }
 
 func (g knownGap) matches(v violation) bool {
 	return strings.EqualFold(g.Table, v.Table) && strings.EqualFold(g.Column, v.Column)
+}
+
+// ---------------------------------------------------------------------------
+// Probed writes
+// ---------------------------------------------------------------------------
+
+// probedWrite is a write this guard would otherwise flag, and must not,
+// because the code asks the database whether the column is there before
+// choosing the statement. That is not a gap to be excused — it is the correct
+// fix shape for this defect class, so the guard has to recognise it or it
+// punishes the behaviour it is trying to encourage.
+//
+// The entry is NOT taken on trust. Three things must hold or the guard fails:
+//
+//   - it must match a real violation (a stale entry is deleted, like knownGaps);
+//   - the file must still contain Probe, the catalogue lookup that decides;
+//   - the file must still contain a write to the same table that does NOT name
+//     the column — the narrower statement the probe falls back to. Without a
+//     fallback there is nothing to switch to and the probe is decoration.
+//
+// Delete the probe or the fallback and the suppression stops being justified
+// on the next run.
+type probedWrite struct {
+	// FileSuffix identifies the source file by path suffix.
+	FileSuffix string
+	Table      string
+	Column     string
+	// Probe is text that must appear in the file for the suppression to hold.
+	Probe string
+	Why   string
+}
+
+var probedWrites = []probedWrite{
+	{
+		FileSuffix: "internal/audit/sink.go",
+		Table:      "audit_logs",
+		Column:     "actor_email",
+		Probe:      "to_regclass",
+		Why: "PR #865's outbox sink asks to_regclass/information_schema whether the audit_logs " +
+			"this connection resolves to carries actor_email, and uses the nine-column insert " +
+			"when it does not. This is the only write to audit_logs in either codebase that " +
+			"survives a stock deployment, and it is the shape #864's direction (3) would give " +
+			"the shared library.",
+	},
+}
+
+func (p probedWrite) matches(v violation) bool {
+	return strings.EqualFold(p.Table, v.Table) &&
+		strings.EqualFold(p.Column, v.Column) &&
+		strings.Contains(filepath.ToSlash(v.Pos), p.FileSuffix)
+}
+
+// verify re-derives the two facts that make the suppression sound, from the
+// file itself, on every run.
+func (p probedWrite) verify(t *testing.T, v violation) {
+	t.Helper()
+	path := filepath.ToSlash(v.Pos)
+	if i := strings.Index(path, p.FileSuffix); i >= 0 {
+		path = path[:i] + p.FileSuffix
+	}
+	src, err := os.ReadFile(path) // #nosec G304 -- test-only; path comes from a violation this guard produced
+	if err != nil {
+		t.Errorf("probedWrite %s %s.%s: cannot read %s: %v",
+			p.FileSuffix, p.Table, p.Column, path, err)
+		return
+	}
+	if !strings.Contains(string(src), p.Probe) {
+		t.Errorf("probedWrite %s %s.%s: %q is gone from the file. The write is suppressed on the "+
+			"grounds that the code checks the destination first; without that check the "+
+			"suppression is unfounded and the write is a live #864.",
+			p.FileSuffix, p.Table, p.Column, p.Probe)
+	}
+	if !hasFallbackWrite(t, path, p.Table, p.Column) {
+		t.Errorf("probedWrite %s %s.%s: the file no longer contains a write to %s that omits %s. "+
+			"A probe with nothing to fall back to does not make the write safe.",
+			p.FileSuffix, p.Table, p.Column, p.Table, p.Column)
+	}
+}
+
+// hasFallbackWrite reports whether the file contains a write to table that
+// does not name column — the narrower statement a probe selects when the
+// column is absent.
+func hasFallbackWrite(t *testing.T, path, table, column string) bool {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		t.Errorf("schemaguard: parse %s: %v", path, err)
+		return false
+	}
+	found := false
+	ast.Inspect(f, func(n ast.Node) bool {
+		text, pos, ok := stringLiteral(n, fset)
+		if !ok {
+			return true
+		}
+		for _, w := range extractWrites(text, pos) {
+			if !strings.EqualFold(w.Table, table) {
+				continue
+			}
+			names := false
+			for _, c := range w.Columns {
+				if strings.EqualFold(c, column) {
+					names = true
+					break
+				}
+			}
+			if !names && len(w.Columns) > 0 {
+				found = true
+			}
+		}
+		return false
+	})
+	return found
 }
 
 // ---------------------------------------------------------------------------
@@ -558,8 +692,20 @@ func TestDefaultConfigurationCanExecuteItsOwnSQL(t *testing.T) {
 
 	// --- verdict ---------------------------------------------------------
 	matched := make([]bool, len(knownGaps))
+	probed := make([]bool, len(probedWrites))
 	for _, v := range violations {
 		excused := false
+		for i, p := range probedWrites {
+			if p.matches(v) {
+				probed[i] = true
+				p.verify(t, v)
+				excused = true
+				break
+			}
+		}
+		if excused {
+			continue
+		}
 		for i, g := range knownGaps {
 			if g.matches(v) {
 				matched[i] = true
@@ -583,6 +729,13 @@ func TestDefaultConfigurationCanExecuteItsOwnSQL(t *testing.T) {
 				"The gap it excused is fixed — delete the entry. This list may only shrink; "+
 				"leaving stale entries in it is how an allow-list stops guarding anything.",
 				g.Table, g.Column, g.Issue)
+		}
+	}
+	for i, p := range probedWrites {
+		if !probed[i] {
+			t.Errorf("probedWrites entry %s %s.%s no longer matches any violation. Either the "+
+				"write moved, or the column is now in the default schema and the suppression is "+
+				"pointless — delete the entry either way.", p.FileSuffix, p.Table, p.Column)
 		}
 	}
 }
