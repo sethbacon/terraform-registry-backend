@@ -933,6 +933,19 @@ instead. Alert on `terraform_registry_audit_outbox_pending` and
 `terraform_registry_audit_outbox_oldest_age_seconds`; a rising backlog means
 mutations are recorded but have not reached `audit_logs` yet.
 
+> **The relay is unaffected by issue #864, but other audit writes are not.** The
+> shared identity store's `CreateAuditLog` writes `audit_logs.actor_email`
+> unconditionally, and that column exists only on `identity.audit_logs` (identity
+> migration `000007`) — never on the registry's own `public.audit_logs`, which is
+> what `audit_logs` resolves to unless the identity-schema cutover is enabled. On
+> a default deployment every write through that path fails with `42703`, and
+> enabling `TFR_IDENTITY_MIGRATIONS_ENABLED` does not change it, because the
+> column lands on a table the application is not writing. The outbox relay asks
+> the connection which columns the destination actually has, so the
+> platform-admin trail is delivered either way — but `AuditMiddleware`'s
+> route-level entries and the other direct writers are still affected until #864
+> is resolved.
+
 **Emergency SQL against `platform_admins` must carry its own intent.** The
 trigger applies to every writer, which is deliberate — that hand-written path is
 the one issue #766 was raised about. In one transaction:

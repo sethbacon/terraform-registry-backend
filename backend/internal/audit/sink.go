@@ -18,10 +18,18 @@
 //
 // This is a delivery-path duplicate of one INSERT, not a fork of the identity
 // store: the audit WRITE API every handler calls is untouched
-// (AuditRepository.CreateAuditLog), and outbox_integration_test.go reads the
-// delivered rows back through the identity store's own ListAuditLogs so a
-// schema drift between the two shows up as a failing test rather than as an
-// unreadable audit trail.
+// (AuditRepository.CreateAuditLog), and the delivered rows carry the same
+// column set, so a reader cannot tell which writer produced them.
+//
+// AND IT IS WHY THIS PATH STILL WORKS UNDER ISSUE #864. CreateAuditLog writes
+// `actor_email` unconditionally, but that column exists only on
+// identity.audit_logs (identity migration 000007) — never on the registry's own
+// public.audit_logs (migration 000001), which is what `audit_logs` resolves to
+// in the DEFAULT topology. Every call through the shared writer therefore fails
+// with 42703 out of the box. The sink asks the connection which columns the
+// table it is about to write actually has, so the outbox delivers the
+// platform-admin trail on a default deployment today, and would deliver a
+// backlog accumulated before #864 is fixed rather than retrying into a wall.
 package audit
 
 import (

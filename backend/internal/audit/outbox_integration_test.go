@@ -32,18 +32,26 @@ import (
 // database and drops it afterwards, so nothing is written to the database the
 // URL points at beyond the CREATE/DROP.
 
-// minimalSchema is the part of the estate these tests need: the carrier
-// (migration 000051), the audit destination and the users table the sink's
-// actor_email fallback resolves against. Migration 000052 itself is then
-// applied VERBATIM from disk, so the trigger under test is the one that ships.
-var minimalSchema = []string{
-	`CREATE TABLE users (
+// usersTable and platformAdminsTable are the rest of the estate these tests
+// need: the carrier (migration 000051) and the users table the sink's
+// actor_email fallback resolves against.
+const (
+	usersTable = `CREATE TABLE users (
 		id UUID PRIMARY KEY,
 		email VARCHAR(255) NOT NULL,
 		name VARCHAR(255),
 		created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-		updated_at TIMESTAMPTZ NOT NULL DEFAULT now())`,
-	`CREATE TABLE audit_logs (
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT now())`
+
+	platformAdminsTable = `CREATE TABLE platform_admins (
+		user_id UUID PRIMARY KEY,
+		granted_by UUID,
+		granted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+		note TEXT)`
+
+	// identityAuditLogs is identity.audit_logs after identity migration 000007:
+	// it carries actor_email.
+	identityAuditLogs = `CREATE TABLE audit_logs (
 		id UUID PRIMARY KEY,
 		user_id UUID,
 		organization_id UUID,
@@ -53,18 +61,35 @@ var minimalSchema = []string{
 		ip_address VARCHAR(45),
 		metadata JSONB,
 		created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-		actor_email VARCHAR(255))`,
-	`CREATE TABLE platform_admins (
-		user_id UUID PRIMARY KEY,
-		granted_by UUID,
-		granted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-		note TEXT)`,
-}
+		actor_email VARCHAR(255))`
 
-// scratchDB creates a throwaway database, applies the schema above plus
-// migration 000052, and returns a connection to it.
+	// registryAuditLogs is the registry's OWN public.audit_logs, from migration
+	// 000001 — no actor_email, resource_id UUID, ip_address INET. This is what
+	// `audit_logs` resolves to in the DEFAULT topology, and it is the shape
+	// issue #864 is about.
+	registryAuditLogs = `CREATE TABLE audit_logs (
+		id              UUID         PRIMARY KEY,
+		user_id         UUID,
+		organization_id UUID,
+		action          VARCHAR(255) NOT NULL,
+		resource_type   VARCHAR(50),
+		resource_id     UUID,
+		metadata        JSONB,
+		ip_address      INET,
+		created_at      TIMESTAMP    NOT NULL DEFAULT NOW())`
+)
+
+// scratchDB creates a throwaway database with the identity-shaped audit_logs.
 func scratchDB(t *testing.T) (*sql.DB, string) {
 	t.Helper()
+	return scratchDBWithAuditLogs(t, identityAuditLogs)
+}
+
+// scratchDBWithAuditLogs creates a throwaway database, applies the schema plus
+// migration 000052, and returns a connection to it.
+func scratchDBWithAuditLogs(t *testing.T, auditLogsDDL string) (*sql.DB, string) {
+	t.Helper()
+	minimalSchema := []string{usersTable, auditLogsDDL, platformAdminsTable}
 
 	raw := os.Getenv("TFR_TEST_DATABASE_URL")
 	if raw == "" {
@@ -567,5 +592,134 @@ func TestIntegration_RelayDrainsABacklogAcrossBatches(t *testing.T) {
 	}
 	if got := countRows(t, db, `SELECT count(*) FROM audit_logs`); got != n {
 		t.Errorf("audit_logs holds %d rows, want %d", got, n)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GUARD durable-audit-default-topology (issue #864)
+// ---------------------------------------------------------------------------
+
+// THE DELIVERY TARGET IS BROKEN BY DEFAULT, AND THIS PATH IS NOT.
+//
+// Issue #864: the shared identity store's CreateAuditLog writes `actor_email`
+// unconditionally, but that column is added by identity migration 000007 to
+// `identity.audit_logs` only. In the default topology `audit_logs` resolves to
+// the registry's own public.audit_logs (migration 000001), which has never had
+// the column and does not get one from the identity chain either — so every
+// write through the shared writer fails with 42703 on a stock deployment.
+//
+// That is exactly the situation in which a faithful outbox is dangerous: it
+// would retry into a wall forever and turn a per-request failure into a
+// permanently undelivered backlog. It does not, because the sink asks the
+// connection which columns the table it is about to write actually has
+// (sink.go) instead of assuming a schema version.
+//
+// The destination here is public.audit_logs verbatim, including its narrower
+// resource_id and INET ip_address.
+func TestIntegration_SinkDeliversAgainstTheDefaultRegistryAuditLogs(t *testing.T) {
+	db, _ := scratchDBWithAuditLogs(t, registryAuditLogs)
+	outbox := NewOutbox(db)
+	actor := seedUser(t, db, "actor@example.com")
+	target := seedUser(t, db, "target@example.com")
+
+	// The premise, asserted rather than assumed: this destination is the
+	// pre-000007 shape. If it ever gains actor_email, this test is no longer
+	// covering what it says it covers.
+	var hasActorEmail bool
+	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM pg_attribute
+		WHERE attrelid = to_regclass('audit_logs') AND attname = 'actor_email' AND NOT attisdropped)`).
+		Scan(&hasActorEmail); err != nil {
+		t.Fatalf("probing the destination: %v", err)
+	}
+	if hasActorEmail {
+		t.Fatal("the destination in this test has actor_email, so it is not the default-topology shape issue #864 describes")
+	}
+
+	intent := grantWithIntent(t, db, outbox, actor, target)
+
+	relay := NewRelay(outbox, NewAuditLogSink(db), nil, RelayConfig{BatchSize: 10})
+	if _, delivered, err := relay.DeliverBatch(context.Background()); err != nil || delivered != 1 {
+		t.Fatalf("DeliverBatch against the default audit_logs = (%d, %v), want (1, nil) — "+
+			"the outbox must not be blocked by the schema gap in issue #864", delivered, err)
+	}
+
+	var action, resourceID string
+	if err := db.QueryRow(`SELECT action, resource_id::text FROM audit_logs WHERE id = $1`, intent.EventID).
+		Scan(&action, &resourceID); err != nil {
+		t.Fatalf("the delivered row is missing from the default audit_logs: %v", err)
+	}
+	if action != "platform_admin.granted" || resourceID != target {
+		t.Errorf("delivered row = (%q, %q), want (platform_admin.granted, %s)", action, resourceID, target)
+	}
+	if n := countRows(t, db, `SELECT count(*) FROM audit_outbox WHERE delivered_at IS NULL`); n != 0 {
+		t.Errorf("%d intent(s) still pending", n)
+	}
+}
+
+// GUARD durable-audit-persistent-outage. A destination that is not coming back
+// on its own — issue #864's 42703 is the live example — must produce a growing,
+// VISIBLE backlog with every record still intact, and must deliver the whole
+// backlog once the destination is repaired. Never a silent drop, and never a
+// silently unbounded queue.
+func TestIntegration_PersistentlyBrokenDestinationRetainsEveryRecordAndDrainsOnRepair(t *testing.T) {
+	db, _ := scratchDBWithAuditLogs(t, registryAuditLogs)
+	outbox := NewOutbox(db)
+	actor := seedUser(t, db, "actor@example.com")
+
+	const n = 4
+	var intents []*Intent
+	for i := 0; i < n; i++ {
+		intents = append(intents, grantWithIntent(t, db, outbox, actor, seedUser(t, db, fmt.Sprintf("t%d@example.com", i))))
+	}
+
+	// Break the destination the way #864 breaks it: the write cannot succeed,
+	// every time, for every record.
+	if _, err := db.Exec(`ALTER TABLE audit_logs RENAME TO audit_logs_broken`); err != nil {
+		t.Fatalf("breaking the destination: %v", err)
+	}
+
+	relay := NewRelay(outbox, NewAuditLogSink(db), nil, RelayConfig{BatchSize: 10, RetainDelivered: -1})
+	for cycle := 1; cycle <= 3; cycle++ {
+		claimed, delivered, err := relay.DeliverBatch(context.Background())
+		if err != nil {
+			t.Fatalf("cycle %d: DeliverBatch returned %v; a broken destination must not break the relay", cycle, err)
+		}
+		if claimed != n || delivered != 0 {
+			t.Fatalf("cycle %d: claimed=%d delivered=%d, want %d and 0", cycle, claimed, delivered, n)
+		}
+
+		backlog, err := outbox.Backlog(context.Background())
+		if err != nil {
+			t.Fatalf("cycle %d: Backlog: %v", cycle, err)
+		}
+		if backlog.Pending != n || backlog.Failed != n {
+			t.Fatalf("cycle %d: backlog = %+v, want %d pending and %d failed", cycle, backlog, n, n)
+		}
+	}
+
+	// Attempts accumulate on every row, so an operator can see it is stuck
+	// rather than merely busy — and every record is still there.
+	var minAttempts int
+	if err := db.QueryRow(`SELECT min(attempts) FROM audit_outbox WHERE delivered_at IS NULL`).Scan(&minAttempts); err != nil {
+		t.Fatalf("reading attempts: %v", err)
+	}
+	if minAttempts != 3 {
+		t.Errorf("min(attempts) = %d after three cycles, want 3", minAttempts)
+	}
+	if got := countRows(t, db, `SELECT count(*) FROM audit_outbox`); got != n {
+		t.Fatalf("audit_outbox holds %d row(s), want %d — nothing may be dropped for failing to deliver", got, n)
+	}
+
+	// Repair it. Everything that accumulated lands, exactly once each.
+	if _, err := db.Exec(`ALTER TABLE audit_logs_broken RENAME TO audit_logs`); err != nil {
+		t.Fatalf("repairing the destination: %v", err)
+	}
+	if _, delivered, err := relay.DeliverBatch(context.Background()); err != nil || delivered != n {
+		t.Fatalf("after repair: DeliverBatch = (%d, %v), want (%d, nil)", delivered, err, n)
+	}
+	for _, intent := range intents {
+		if got := countRows(t, db, `SELECT count(*) FROM audit_logs WHERE id = $1`, intent.EventID); got != 1 {
+			t.Errorf("audit_logs holds %d row(s) for %s, want exactly 1", got, intent.EventID)
+		}
 	}
 }

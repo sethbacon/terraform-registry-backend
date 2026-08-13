@@ -3,6 +3,7 @@ package audit
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -373,3 +374,85 @@ func TestRelay_StopIsIdempotent(t *testing.T) {
 		t.Fatalf("second Stop: %v", err)
 	}
 }
+
+// GUARD durable-audit-backlog-is-loud. The backlog cannot be bounded by
+// discarding it without destroying the records it holds, so the ONLY thing
+// standing between a stuck relay and an unnoticed audit gap is that it says so.
+// Issue #864 makes this load-bearing rather than decorative: the delivery
+// target is broken in the default configuration, and a relay that retried into
+// it in silence would look healthy while the trail went nowhere.
+//
+// Asserted on the emitted log record — level, message and the pending count —
+// not on "something was logged".
+func TestRelay_ObserveBacklog_ShoutsPastTheThreshold(t *testing.T) {
+	relay, mock := newRelay(t, &recordingSink{}, nil)
+	relay.cfg.BacklogWarn = 3
+
+	mock.ExpectQuery("FROM audit_outbox").
+		WillReturnRows(sqlmock.NewRows([]string{"count", "failed", "oldest"}).
+			AddRow(9, 9, time.Now().Add(-time.Hour)))
+
+	captured := &capturingHandler{}
+	restore := slog.Default()
+	slog.SetDefault(slog.New(captured))
+	relay.observeBacklog(context.Background())
+	slog.SetDefault(restore)
+
+	var alarm *slog.Record
+	for i := range captured.records {
+		if captured.records[i].Level == slog.LevelError &&
+			strings.Contains(captured.records[i].Message, "audit outbox backlog is not draining") {
+			alarm = &captured.records[i]
+			break
+		}
+	}
+	if alarm == nil {
+		t.Fatalf("no ERROR record naming the stuck backlog; got %d record(s). A backlog nobody is told "+
+			"about is exactly the silently-unbounded queue this design must not produce", len(captured.records))
+	}
+	var pending int64 = -1
+	alarm.Attrs(func(a slog.Attr) bool {
+		if a.Key == "pending" {
+			pending = a.Value.Int64()
+		}
+		return true
+	})
+	if pending != 9 {
+		t.Errorf("the alarm reports pending=%d, want 9 — an operator needs the depth, not just the fact", pending)
+	}
+}
+
+// Below the threshold there is no alarm, so the ERROR level keeps meaning
+// something once it does fire.
+func TestRelay_ObserveBacklog_QuietBelowTheThreshold(t *testing.T) {
+	relay, mock := newRelay(t, &recordingSink{}, nil)
+	relay.cfg.BacklogWarn = 10
+
+	mock.ExpectQuery("FROM audit_outbox").
+		WillReturnRows(sqlmock.NewRows([]string{"count", "failed", "oldest"}).
+			AddRow(2, 0, time.Now().Add(-time.Minute)))
+
+	captured := &capturingHandler{}
+	restore := slog.Default()
+	slog.SetDefault(slog.New(captured))
+	relay.observeBacklog(context.Background())
+	slog.SetDefault(restore)
+
+	for _, rec := range captured.records {
+		if rec.Level == slog.LevelError {
+			t.Errorf("a backlog of 2 under a threshold of 10 logged at ERROR: %q", rec.Message)
+		}
+	}
+}
+
+// capturingHandler keeps every record so a test can assert on level, message
+// and attributes rather than on a formatted string.
+type capturingHandler struct{ records []slog.Record }
+
+func (h *capturingHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *capturingHandler) Handle(_ context.Context, r slog.Record) error {
+	h.records = append(h.records, r)
+	return nil
+}
+func (h *capturingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *capturingHandler) WithGroup(string) slog.Handler      { return h }
