@@ -68,18 +68,13 @@ func floorExpectLock(registry sqlmock.Sqlmock) {
 	registry.ExpectExec("pg_advisory_xact_lock").WillReturnResult(sqlmock.NewResult(0, 0))
 }
 
-// expectAnotherPlatformAdmin queues the floor's invariant-A read with a
-// platform administrator in an organization this change does not touch.
-//
-// Every invariant-B case below needs it. Without it invariant A refuses first
-// and the test would pass while never reaching invariant B at all — the inert
-// guard PR #860 found, where every case short-circuits before the code under
-// test.
-func expectAnotherPlatformAdmin(identity sqlmock.Sqlmock) {
-	identity.ExpectQuery("FROM organization_members").
-		WillReturnRows(sqlmock.NewRows([]string{"organization_id", "user_id", "scopes"}).
-			AddRow("org-elsewhere", "platform-admin", []byte(floorAdminScopes)))
-}
+// expectAnotherPlatformAdmin used to queue invariant A's read for the
+// invariant-B cases below, so that A did not refuse first and leave B
+// unreached. It is gone with the read: from migration 000054 invariant A counts
+// the platform_admins carrier alone, and a MEMBERSHIP change cannot reduce it,
+// so A returns before touching a connection and every case below lands in B
+// with no fixture at all. Queueing anything for A would now be an unmatched
+// expectation, which is the ordered mock saying the same thing.
 
 func expectOrganizationState(identity sqlmock.Sqlmock, members ...[2]string) {
 	rows := sqlmock.NewRows([]string{"user_id", "scopes"})
@@ -103,7 +98,6 @@ func decodeError(t *testing.T, w *httptest.ResponseRecorder) string {
 func TestRemoveMemberHandler_RefusesStrandingTheOrganization(t *testing.T) {
 	registry, identity, r := newFlooredOrgRouter(t)
 	floorExpectLock(registry)
-	expectAnotherPlatformAdmin(identity)
 	expectOrganizationState(identity,
 		[2]string{"owner-1", floorOwnerScopes},
 		[2]string{"viewer-1", floorViewerScopes},
@@ -131,7 +125,6 @@ func TestRemoveMemberHandler_RefusesStrandingTheOrganization(t *testing.T) {
 func TestRemoveMemberHandler_AllowsEmptyingAnOrganization(t *testing.T) {
 	registry, identity, r := newFlooredOrgRouter(t)
 	floorExpectLock(registry)
-	expectAnotherPlatformAdmin(identity)
 	expectOrganizationState(identity, [2]string{"owner-1", floorOwnerScopes})
 	identity.ExpectExec("DELETE FROM organization_members").WillReturnResult(sqlmock.NewResult(0, 1))
 	registry.ExpectRollback()
@@ -152,7 +145,6 @@ func TestRemoveMemberHandler_AllowsEmptyingAnOrganization(t *testing.T) {
 func TestRemoveMemberHandler_StaysIdempotentForANonMember(t *testing.T) {
 	registry, identity, r := newFlooredOrgRouter(t)
 	floorExpectLock(registry)
-	expectAnotherPlatformAdmin(identity)
 	expectOrganizationState(identity,
 		[2]string{"owner-1", floorOwnerScopes},
 		[2]string{"viewer-1", floorViewerScopes},
@@ -188,7 +180,6 @@ func TestUpdateMemberHandler_RefusesDemotingTheLastOrganizationAdmin(t *testing.
 	// The floor's own read of the replacement template, then invariant A, then B.
 	identity.ExpectQuery("SELECT scopes FROM role_templates WHERE id").
 		WillReturnRows(sqlmock.NewRows([]string{"scopes"}).AddRow([]byte(floorViewerScopes)))
-	expectAnotherPlatformAdmin(identity)
 	expectOrganizationState(identity,
 		[2]string{"owner-1", floorOwnerScopes},
 		[2]string{"viewer-1", floorViewerScopes},
@@ -223,7 +214,6 @@ func TestUpdateMemberHandler_RefusesClearingTheLastOrganizationAdminsRole(t *tes
 			AddRow("org-1", "owner-1", "role-owner", time.Now()))
 
 	floorExpectLock(registry)
-	expectAnotherPlatformAdmin(identity)
 	expectOrganizationState(identity,
 		[2]string{"owner-1", floorOwnerScopes},
 		[2]string{"viewer-1", floorViewerScopes},
@@ -257,7 +247,6 @@ func TestUpdateMemberHandler_AllowsReRolingOntoAnotherAdministrativeTemplate(t *
 	floorExpectLock(registry)
 	identity.ExpectQuery("SELECT scopes FROM role_templates WHERE id").
 		WillReturnRows(sqlmock.NewRows([]string{"scopes"}).AddRow([]byte(floorOwnerScopes)))
-	expectAnotherPlatformAdmin(identity)
 	expectOrganizationState(identity,
 		[2]string{"owner-1", floorOwnerScopes},
 		[2]string{"viewer-1", floorViewerScopes},
@@ -298,23 +287,22 @@ func TestDeleteOrganizationHandler_RefusesRemovingTheLastPlatformAdmin(t *testin
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 
 	floorExpectLock(registry)
-	// The deployment's only administrator holds an admin template in the very
-	// organization being deleted.
-	identity.ExpectQuery("FROM organization_members").
-		WillReturnRows(sqlmock.NewRows([]string{"organization_id", "user_id", "scopes"}).
-			AddRow("org-1", "only-admin", []byte(floorAdminScopes)))
-	registry.ExpectQuery("FROM platform_admins").
-		WillReturnRows(sqlmock.NewRows([]string{"user_id"}))
+	// Neither invariant-A read is queued. The carrier is the only source of
+	// platform-admin authority from migration 000054, an organization deletion
+	// does not touch it, and an ordered mock turns a floor that still consulted
+	// either connection into a failure here.
+	identity.ExpectExec("DELETE FROM organizations").WillReturnResult(sqlmock.NewResult(0, 1))
 	registry.ExpectRollback()
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/organizations/org-1", nil))
 
-	if w.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want 409: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — deleting an organization cannot remove a carrier grant, "+
+			"so the floor has nothing to refuse: %s", w.Code, w.Body.String())
 	}
-	if got := decodeError(t, w); got != ErrMsgLastPlatformAdmin {
-		t.Fatalf("error = %q, want %q", got, ErrMsgLastPlatformAdmin)
+	if err := identity.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet/unexpected expectations: %v", err)
 	}
 }
 
@@ -382,11 +370,11 @@ func TestEraseUserHandler_RefusesStrandingTheDeployment(t *testing.T) {
 
 	registry.ExpectBegin()
 	registry.ExpectExec("pg_advisory_xact_lock").WillReturnResult(sqlmock.NewResult(0, 0))
-	identity.ExpectQuery("FROM organization_members").
-		WillReturnRows(sqlmock.NewRows([]string{"organization_id", "user_id", "scopes"}).
-			AddRow("org-1", "only-admin", []byte(floorAdminScopes)))
+	// The subject is the deployment's only carrier administrator, and erasing
+	// them makes their own grant unexercisable — the one shape that can still
+	// break invariant A now that authority is carrier-only (migration 000054).
 	registry.ExpectQuery("FROM platform_admins").
-		WillReturnRows(sqlmock.NewRows([]string{"user_id"}))
+		WillReturnRows(sqlmock.NewRows([]string{"user_id"}).AddRow("only-admin"))
 	registry.ExpectRollback()
 
 	r := gin.New()

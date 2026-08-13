@@ -947,7 +947,11 @@ func (h *OrganizationHandlers) AddMemberHandler() gin.HandlerFunc {
 		}
 
 		if chk := h.checkRoleAssignment(c, req.RoleTemplateID); !chk.allowed {
-			c.JSON(chk.status, gin.H{"error": "role assignment not permitted"})
+			msg := chk.message
+			if msg == "" {
+				msg = "role assignment not permitted"
+			}
+			c.JSON(chk.status, gin.H{"error": msg})
 			return
 		}
 
@@ -1062,7 +1066,11 @@ func (h *OrganizationHandlers) UpdateMemberHandler() gin.HandlerFunc {
 		}
 
 		if chk := h.checkRoleAssignment(c, req.RoleTemplateID); !chk.allowed {
-			c.JSON(chk.status, gin.H{"error": "role assignment not permitted"})
+			msg := chk.message
+			if msg == "" {
+				msg = "role assignment not permitted"
+			}
+			c.JSON(chk.status, gin.H{"error": msg})
 			return
 		}
 

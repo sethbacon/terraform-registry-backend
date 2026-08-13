@@ -109,14 +109,6 @@ func expectLock(registry sqlmock.Sqlmock) {
 		WillReturnResult(sqlmock.NewResult(0, 0))
 }
 
-func adminBearingRows(rows ...[3]string) *sqlmock.Rows {
-	r := sqlmock.NewRows([]string{"organization_id", "user_id", "scopes"})
-	for _, row := range rows {
-		r.AddRow(row[0], row[1], []byte(row[2]))
-	}
-	return r
-}
-
 // expectOrganizationState queues one invariant-B read.
 func expectOrganizationState(identity sqlmock.Sqlmock, members ...[2]string) {
 	identity.ExpectQuery("WHERE om.organization_id").WillReturnRows(orgStateRows(members...))
@@ -150,26 +142,53 @@ func runProtect(t *testing.T, g *Guard, ch Change) (err error, wrote bool) {
 
 // ---------------------------------------------------------------------------
 // Invariant A — the deployment
+//
+// THE CARRIER IS THE ONLY SOURCE IT COUNTS, from migration 000054. The auth
+// middleware strips `admin` from a session whose principal has no
+// platform_admins row, so an admin-bearing role template administers nothing
+// and a floor that counted one would answer "an administrator remains" while
+// the deployment's last real one was deleted.
+//
+// Two shapes follow, and both are asserted below rather than inferred:
+//
+//   - only a change that DESTROYS THE PRINCIPAL can break invariant A. A
+//     membership removal, a re-role and an organization deletion do not touch
+//     platform_admins.
+//   - a principal who holds no carrier row is not a reduction either.
+//
+// The tests that must show a read did NOT happen inject an ERROR into it
+// rather than inspecting the mock afterwards: if the floor makes the read, the
+// call returns ErrIndeterminate, which is a different value from both the
+// refusal and the success. "The wrong query ran" then fails on the value being
+// asserted instead of on a bare err != nil.
 // ---------------------------------------------------------------------------
 
-// TestProtect_RefusesRemovingTheLastPlatformAdmin is the headline case: one
-// administrator, held through the role-template union (the shape a deployment
-// bootstrapped by the setup wizard has, because setup predates the carrier),
-// an empty carrier, and a removal.
-func TestProtect_RefusesRemovingTheLastPlatformAdmin(t *testing.T) {
-	registry, identity, g := twoConnections(t)
-	expectLock(registry)
+// expectCarrier queues the one registry read invariant A makes.
+func expectCarrier(registry sqlmock.Sqlmock, holders ...string) {
+	rows := sqlmock.NewRows([]string{"user_id"})
+	for _, h := range holders {
+		rows.AddRow(h)
+	}
+	registry.ExpectQuery("FROM platform_admins").WillReturnRows(rows)
+}
 
-	identity.ExpectQuery("FROM organization_members").
-		WillReturnRows(adminBearingRows([3]string{"org-1", "user-admin", adminScopes}))
-	registry.ExpectQuery("FROM platform_admins").
-		WillReturnRows(sqlmock.NewRows([]string{"user_id"}))
+func expectUserExists(identity sqlmock.Sqlmock, userID string, exists bool) {
+	identity.ExpectQuery("FROM users").WithArgs(userID).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(exists))
+}
+
+// TestProtect_RefusesDestroyingTheLastCarrierAdmin is the headline case: one
+// administrator, held through the carrier, and a user deletion.
+func TestProtect_RefusesDestroyingTheLastCarrierAdmin(t *testing.T) {
+	registry, _, g := twoConnections(t)
+	expectLock(registry)
+	expectCarrier(registry, "user-admin")
 	registry.ExpectRollback()
 
 	err, wrote := runProtect(t, g, Change{
 		UserID:            "user-admin",
-		OrganizationIDs:   []string{"org-1"},
 		RemovesMembership: true,
+		DestroysPrincipal: true,
 	})
 	if !errors.Is(err, ErrLastPlatformAdmin) {
 		t.Fatalf("err = %v, want ErrLastPlatformAdmin", err)
@@ -179,29 +198,25 @@ func TestProtect_RefusesRemovingTheLastPlatformAdmin(t *testing.T) {
 	}
 }
 
-// TestProtect_AllowsWhenAnotherUnionAdminRemains is the positive control. A
-// guard that refused everything would satisfy the test above and look correct.
-func TestProtect_AllowsWhenAnotherUnionAdminRemains(t *testing.T) {
+// TestProtect_AllowsDestroyingAnAdminWhenAnotherCarrierGrantRemains is the
+// positive control. A guard that refused everything would satisfy the test
+// above and look correct.
+func TestProtect_AllowsDestroyingAnAdminWhenAnotherCarrierGrantRemains(t *testing.T) {
 	registry, identity, g := twoConnections(t)
 	expectLock(registry)
-
-	identity.ExpectQuery("FROM organization_members").
-		WillReturnRows(adminBearingRows(
-			[3]string{"org-1", "user-other", adminScopes},
-			[3]string{"org-1", "user-admin", adminScopes},
-		))
-	// Invariant B still runs: org-1 keeps user-other, who holds `admin`.
-	identity.ExpectQuery("WHERE om.organization_id").
-		WillReturnRows(orgStateRows(
-			[2]string{"user-other", adminScopes},
-			[2]string{"user-admin", adminScopes},
-		))
+	expectCarrier(registry, "user-admin", "user-other")
+	expectUserExists(identity, "user-other", true)
+	// Invariant B still runs on a principal destruction; this one belongs to
+	// no organization.
+	identity.ExpectQuery("SELECT organization_id FROM organization_members").
+		WithArgs("user-admin").
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}))
 	registry.ExpectRollback()
 
 	err, wrote := runProtect(t, g, Change{
 		UserID:            "user-admin",
-		OrganizationIDs:   []string{"org-1"},
 		RemovesMembership: true,
+		DestroysPrincipal: true,
 	})
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
@@ -211,83 +226,15 @@ func TestProtect_AllowsWhenAnotherUnionAdminRemains(t *testing.T) {
 	}
 }
 
-// TestProtect_AllowsWhenAnExercisableCarrierGrantRemains: the union side goes
-// to zero but the carrier still names a live user, so effective admin
-// (`carrier OR union`) is non-zero and the change is not a lockout.
-func TestProtect_AllowsWhenAnExercisableCarrierGrantRemains(t *testing.T) {
-	registry, identity, g := twoConnections(t)
-	expectLock(registry)
-
-	identity.ExpectQuery("FROM organization_members").
-		WillReturnRows(adminBearingRows([3]string{"org-1", "user-admin", adminScopes}))
-	registry.ExpectQuery("FROM platform_admins").
-		WillReturnRows(sqlmock.NewRows([]string{"user_id"}).AddRow("user-carrier"))
-	identity.ExpectQuery("FROM users").
-		WithArgs("user-carrier").
-		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
-	identity.ExpectQuery("WHERE om.organization_id").
-		WillReturnRows(orgStateRows(
-			[2]string{"user-admin", adminScopes},
-			[2]string{"user-owner", ownerScopes},
-		))
-	registry.ExpectRollback()
-
-	err, wrote := runProtect(t, g, Change{
-		UserID:            "user-admin",
-		OrganizationIDs:   []string{"org-1"},
-		RemovesMembership: true,
-	})
-	if err != nil {
-		t.Fatalf("err = %v, want nil", err)
-	}
-	if !wrote {
-		t.Fatal("the write did not run despite a live carrier grant remaining")
-	}
-}
-
 // TestProtect_DoesNotCountAnOrphanCarrierGrant. A carrier row whose user no
 // longer resolves elevates nobody — both auth middlewares load the user before
 // consulting the carrier — so counting it would let the last real
-// administrator go against a count of one.
+// administrator go against a count of two.
 func TestProtect_DoesNotCountAnOrphanCarrierGrant(t *testing.T) {
 	registry, identity, g := twoConnections(t)
 	expectLock(registry)
-
-	identity.ExpectQuery("FROM organization_members").
-		WillReturnRows(adminBearingRows([3]string{"org-1", "user-admin", adminScopes}))
-	registry.ExpectQuery("FROM platform_admins").
-		WillReturnRows(sqlmock.NewRows([]string{"user_id"}).AddRow("user-deleted"))
-	identity.ExpectQuery("FROM users").
-		WithArgs("user-deleted").
-		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
-	registry.ExpectRollback()
-
-	err, wrote := runProtect(t, g, Change{
-		UserID:            "user-admin",
-		OrganizationIDs:   []string{"org-1"},
-		RemovesMembership: true,
-	})
-	if !errors.Is(err, ErrLastPlatformAdmin) {
-		t.Fatalf("err = %v, want ErrLastPlatformAdmin", err)
-	}
-	if wrote {
-		t.Fatal("the write ran despite the refusal")
-	}
-}
-
-// TestProtect_DestroyingThePrincipalStopsCountingItsOwnCarrierGrant.
-// platform_admins carries no foreign key to users (migration 000051), so a
-// deleted administrator's grant row SURVIVES the delete while elevating
-// nobody. Counting it would let the deployment's last administrator delete
-// themselves against their own record.
-func TestProtect_DestroyingThePrincipalStopsCountingItsOwnCarrierGrant(t *testing.T) {
-	registry, identity, g := twoConnections(t)
-	expectLock(registry)
-
-	identity.ExpectQuery("FROM organization_members").
-		WillReturnRows(adminBearingRows([3]string{"org-1", "user-admin", adminScopes}))
-	registry.ExpectQuery("FROM platform_admins").
-		WillReturnRows(sqlmock.NewRows([]string{"user_id"}).AddRow("user-admin"))
+	expectCarrier(registry, "user-admin", "user-deleted")
+	expectUserExists(identity, "user-deleted", false)
 	registry.ExpectRollback()
 
 	err, wrote := runProtect(t, g, Change{
@@ -303,27 +250,157 @@ func TestProtect_DestroyingThePrincipalStopsCountingItsOwnCarrierGrant(t *testin
 	}
 }
 
-// TestProtect_ACarrierGrantSurvivesAMembershipOnlyDeprovision is the other
-// half of the pair above, and the reason DestroysPrincipal exists rather than
-// being assumed. A SCIM deprovision strips memberships; the user can still
-// authenticate, so their carrier grant is still exercisable and the deployment
-// still has an administrator.
+// TestProtect_DestroyingThePrincipalStopsCountingItsOwnCarrierGrant.
+// platform_admins carries no foreign key to users (migration 000051), so a
+// deleted administrator's grant row SURVIVES the delete while elevating
+// nobody. Counting it would let the deployment's last administrator delete
+// themselves against their own record — which is what the refusal in
+// TestProtect_RefusesDestroyingTheLastCarrierAdmin depends on, asserted here
+// against a SECOND, orphaned row so the two are not the same test twice.
+func TestProtect_DestroyingThePrincipalStopsCountingItsOwnCarrierGrant(t *testing.T) {
+	registry, identity, g := twoConnections(t)
+	expectLock(registry)
+	expectCarrier(registry, "user-admin", "user-ghost")
+	expectUserExists(identity, "user-ghost", false)
+	registry.ExpectRollback()
+
+	err, wrote := runProtect(t, g, Change{
+		UserID:            "user-admin",
+		DestroysPrincipal: true,
+	})
+	if !errors.Is(err, ErrLastPlatformAdmin) {
+		t.Fatalf("err = %v, want ErrLastPlatformAdmin — the principal's own row is not "+
+			"exercisable once the principal is gone", err)
+	}
+	if wrote {
+		t.Fatal("the write ran despite the refusal")
+	}
+}
+
+// TestProtect_AnAdminBearingTemplateIsNotAPlatformAdministrator IS THE CHANGE
+// migration 000054 makes, asserted where it would otherwise be invisible.
+//
+// The deployment has an admin-bearing membership in an organization this change
+// does not touch. Until this release that membership WAS platform-admin
+// authority, `checkPlatformFloor` found it first and returned nil, and deleting
+// the only carrier administrator was permitted. It confers nothing now, so the
+// deletion must be refused.
+//
+// The union read is queued to SUCCEED, with a surviving admin-bearing
+// membership in it. That is deliberate and it is the difference between a test
+// that catches this and one that does not: injecting an ERROR there would only
+// catch a floor that read the union AND propagated the failure, so a version
+// that swallowed the error would still count the membership and still pass.
+// Returning the row makes any floor that reads it answer nil — a different
+// VALUE from the refusal asserted here — however it handles errors.
+func TestProtect_AnAdminBearingTemplateIsNotAPlatformAdministrator(t *testing.T) {
+	registry, identity, g := twoConnections(t)
+	expectLock(registry)
+	identity.ExpectQuery("FROM organization_members").
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id", "user_id", "scopes"}).
+			AddRow("org-untouched", "user-template", []byte(adminScopes)))
+	expectCarrier(registry, "user-admin")
+	registry.ExpectRollback()
+
+	err, wrote := runProtect(t, g, Change{
+		UserID:            "user-admin",
+		DestroysPrincipal: true,
+	})
+	if !errors.Is(err, ErrLastPlatformAdmin) {
+		t.Fatalf("err = %v, want ErrLastPlatformAdmin: the floor still counts an admin-bearing role "+
+			"template as a platform administrator. It confers nothing from migration 000054, so "+
+			"counting it permits the last real administrator to be deleted (#766)", err)
+	}
+	if wrote {
+		t.Fatal("the write ran despite the refusal")
+	}
+	// The other half of the same claim: the read is not merely discounted, it
+	// is never made. An unmet expectation here is the pass.
+	if err := identity.ExpectationsWereMet(); err == nil {
+		t.Error("invariant A read admin-bearing memberships")
+	}
+}
+
+// TestProtect_AMembershipChangeCannotBreakInvariantA. A removal does not touch
+// platform_admins, so there is nothing for invariant A to decide and the
+// carrier is not read at all. The carrier read is queued to FAIL: reaching it
+// turns this into ErrIndeterminate.
+//
+// This is not a micro-optimisation. Reading the carrier here and refusing on an
+// empty one would block every ordinary offboarding on a deployment that is
+// already missing an administrator — a refusal with no hazard behind it, which
+// detection (admin_floor_violations) exists to report instead.
+func TestProtect_AMembershipChangeCannotBreakInvariantA(t *testing.T) {
+	registry, identity, g := twoConnections(t)
+	expectLock(registry)
+	// An EMPTY carrier, queued to succeed: a floor that consults it here finds
+	// no administrator and refuses, which is a different VALUE from the nil
+	// asserted below however it treats read errors.
+	expectCarrier(registry)
+	expectOrganizationState(identity,
+		[2]string{"user-owner", ownerScopes},
+		[2]string{"user-viewer", viewerScopes},
+	)
+	registry.ExpectRollback()
+
+	err, wrote := runProtect(t, g, Change{
+		UserID:            "user-viewer",
+		OrganizationIDs:   []string{"org-1"},
+		RemovesMembership: true,
+	})
+	if err != nil {
+		t.Fatalf("err = %v, want nil — a membership change does not reduce carrier authority", err)
+	}
+	if !wrote {
+		t.Fatal("the write did not run")
+	}
+}
+
+// TestProtect_DestroyingANonHolderIsNotAReduction. The principal being deleted
+// holds no carrier row, so the administrator count cannot fall and no user
+// resolution is needed. The resolution query is queued to FAIL.
+func TestProtect_DestroyingANonHolderIsNotAReduction(t *testing.T) {
+	registry, identity, g := twoConnections(t)
+	expectLock(registry)
+	expectCarrier(registry, "user-admin")
+	// Unordered on the identity side so the resolution below, which must NOT be
+	// consumed, does not block the read that legitimately follows it. It
+	// answers "this holder does not exist": a floor that scanned the holders
+	// anyway would find none exercisable and refuse, which is a different VALUE
+	// from the nil asserted below.
+	identity.MatchExpectationsInOrder(false)
+	expectUserExists(identity, "user-admin", false)
+	identity.ExpectQuery("SELECT organization_id FROM organization_members").
+		WithArgs("user-viewer").
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}))
+	registry.ExpectRollback()
+
+	err, wrote := runProtect(t, g, Change{
+		UserID:            "user-viewer",
+		RemovesMembership: true,
+		DestroysPrincipal: true,
+	})
+	if err != nil {
+		t.Fatalf("err = %v, want nil — deleting a principal with no carrier grant cannot "+
+			"lower the administrator count", err)
+	}
+	if !wrote {
+		t.Fatal("the write did not run")
+	}
+}
+
+// TestProtect_ACarrierGrantSurvivesAMembershipOnlyDeprovision is the reason
+// DestroysPrincipal exists rather than being assumed. A SCIM deprovision strips
+// memberships; the user can still authenticate, so their carrier grant is still
+// exercisable and the deployment still has an administrator.
 func TestProtect_ACarrierGrantSurvivesAMembershipOnlyDeprovision(t *testing.T) {
 	registry, identity, g := twoConnections(t)
 	expectLock(registry)
-
-	identity.ExpectQuery("FROM organization_members").
-		WillReturnRows(adminBearingRows([3]string{"org-1", "user-admin", adminScopes}))
-	registry.ExpectQuery("FROM platform_admins").
-		WillReturnRows(sqlmock.NewRows([]string{"user_id"}).AddRow("user-admin"))
-	identity.ExpectQuery("FROM users").
-		WithArgs("user-admin").
-		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
 	identity.ExpectQuery("SELECT organization_id FROM organization_members").
 		WithArgs("user-admin").
 		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}).AddRow("org-1"))
 	identity.ExpectQuery("WHERE om.organization_id").
-		WillReturnRows(orgStateRows([2]string{"user-admin", adminScopes}))
+		WillReturnRows(orgStateRows([2]string{"user-admin", ownerScopes}))
 	registry.ExpectRollback()
 
 	err, wrote := runProtect(t, g, Change{
@@ -333,65 +410,6 @@ func TestProtect_ACarrierGrantSurvivesAMembershipOnlyDeprovision(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("err = %v, want nil — a membership-only deprovision leaves the carrier exercisable", err)
-	}
-	if !wrote {
-		t.Fatal("the write did not run")
-	}
-}
-
-// TestProtect_ReRoleOntoAnotherAdminTemplateIsNotAReduction. Moving the only
-// administrator from one admin-bearing template to another leaves the
-// deployment exactly as administered as it was.
-func TestProtect_ReRoleOntoAnotherAdminTemplateIsNotAReduction(t *testing.T) {
-	registry, identity, g := twoConnections(t)
-	expectLock(registry)
-
-	keeps := "role-admin-2"
-	identity.ExpectQuery("SELECT scopes FROM role_templates").
-		WithArgs(keeps).
-		WillReturnRows(sqlmock.NewRows([]string{"scopes"}).AddRow([]byte(adminScopes)))
-	identity.ExpectQuery("FROM organization_members").
-		WillReturnRows(adminBearingRows([3]string{"org-1", "user-admin", adminScopes}))
-	identity.ExpectQuery("WHERE om.organization_id").
-		WillReturnRows(orgStateRows([2]string{"user-admin", adminScopes}))
-	registry.ExpectRollback()
-
-	err, wrote := runProtect(t, g, Change{
-		UserID:              "user-admin",
-		OrganizationIDs:     []string{"org-1"},
-		KeepsRoleTemplateID: &keeps,
-	})
-	if err != nil {
-		t.Fatalf("err = %v, want nil", err)
-	}
-	if !wrote {
-		t.Fatal("the write did not run")
-	}
-}
-
-// TestProtect_KeepsAuthorityThroughAnUntouchedOrganization. The principal
-// administers two organizations and is being removed from one; they are still
-// the deployment's administrator through the other.
-func TestProtect_KeepsAuthorityThroughAnUntouchedOrganization(t *testing.T) {
-	registry, identity, g := twoConnections(t)
-	expectLock(registry)
-
-	identity.ExpectQuery("FROM organization_members").
-		WillReturnRows(adminBearingRows(
-			[3]string{"org-1", "user-admin", adminScopes},
-			[3]string{"org-2", "user-admin", adminScopes},
-		))
-	identity.ExpectQuery("WHERE om.organization_id").
-		WillReturnRows(orgStateRows([2]string{"user-admin", adminScopes}))
-	registry.ExpectRollback()
-
-	err, wrote := runProtect(t, g, Change{
-		UserID:            "user-admin",
-		OrganizationIDs:   []string{"org-1"},
-		RemovesMembership: true,
-	})
-	if err != nil {
-		t.Fatalf("err = %v, want nil", err)
 	}
 	if !wrote {
 		t.Fatal("the write did not run")
@@ -412,8 +430,6 @@ func TestProtect_RefusesRemovingAnOrganizationsLastAdministrator(t *testing.T) {
 	// The deployment keeps a platform administrator elsewhere, so invariant A
 	// passes and invariant B is genuinely REACHED — the inert-guard trap PR
 	// #860 found, where every case short-circuits before the code under test.
-	identity.ExpectQuery("FROM organization_members").
-		WillReturnRows(adminBearingRows([3]string{"org-9", "user-platform", adminScopes}))
 	identity.ExpectQuery("WHERE om.organization_id").
 		WillReturnRows(orgStateRows(
 			[2]string{"user-owner", ownerScopes},
@@ -445,8 +461,6 @@ func TestProtect_AllowsEmptyingAnOrganizationEntirely(t *testing.T) {
 	registry, identity, g := twoConnections(t)
 	expectLock(registry)
 
-	identity.ExpectQuery("FROM organization_members").
-		WillReturnRows(adminBearingRows([3]string{"org-9", "user-platform", adminScopes}))
 	identity.ExpectQuery("WHERE om.organization_id").
 		WillReturnRows(orgStateRows([2]string{"user-owner", ownerScopes}))
 	registry.ExpectRollback()
@@ -475,8 +489,6 @@ func TestProtect_RefusesDemotingAnOrganizationsLastAdministrator(t *testing.T) {
 	identity.ExpectQuery("SELECT scopes FROM role_templates").
 		WithArgs(keeps).
 		WillReturnRows(sqlmock.NewRows([]string{"scopes"}).AddRow([]byte(viewerScopes)))
-	identity.ExpectQuery("FROM organization_members").
-		WillReturnRows(adminBearingRows([3]string{"org-9", "user-platform", adminScopes}))
 	identity.ExpectQuery("WHERE om.organization_id").
 		WillReturnRows(orgStateRows([2]string{"user-owner", ownerScopes}))
 	registry.ExpectRollback()
@@ -503,8 +515,6 @@ func TestProtect_ClearingTheRoleOfTheLastAdministratorIsAlsoRefused(t *testing.T
 	registry, identity, g := twoConnections(t)
 	expectLock(registry)
 
-	identity.ExpectQuery("FROM organization_members").
-		WillReturnRows(adminBearingRows([3]string{"org-9", "user-platform", adminScopes}))
 	identity.ExpectQuery("WHERE om.organization_id").
 		WillReturnRows(orgStateRows(
 			[2]string{"user-owner", ownerScopes},
@@ -531,8 +541,6 @@ func TestProtect_AllowsRemovingANonAdministrator(t *testing.T) {
 	registry, identity, g := twoConnections(t)
 	expectLock(registry)
 
-	identity.ExpectQuery("FROM organization_members").
-		WillReturnRows(adminBearingRows([3]string{"org-9", "user-platform", adminScopes}))
 	identity.ExpectQuery("WHERE om.organization_id").
 		WillReturnRows(orgStateRows(
 			[2]string{"user-owner", ownerScopes},
@@ -561,8 +569,10 @@ func TestProtect_ChecksEveryOrganizationOfAWholePrincipalChange(t *testing.T) {
 	registry, identity, g := twoConnections(t)
 	expectLock(registry)
 
-	identity.ExpectQuery("FROM organization_members").
-		WillReturnRows(adminBearingRows([3]string{"org-9", "user-platform", adminScopes}))
+	// The principal holds no carrier grant, so invariant A passes at once and
+	// invariant B is genuinely REACHED — the inert-guard trap where every case
+	// short-circuits before the code under test.
+	expectCarrier(registry, "user-platform")
 	identity.ExpectQuery("SELECT organization_id FROM organization_members").
 		WithArgs("user-owner").
 		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}).AddRow("org-1").AddRow("org-2"))
@@ -597,46 +607,26 @@ func TestProtect_ChecksEveryOrganizationOfAWholePrincipalChange(t *testing.T) {
 // Organization deletion — the path with no membership statement in it
 // ---------------------------------------------------------------------------
 
-// TestProtect_RefusesDeletingTheOrganizationHoldingTheLastAdmin.
+// TestProtect_OrganizationDeletionNoLongerTouchesInvariantA.
 // organization_members.organization_id is ON DELETE CASCADE, so deleting an
 // organization removes every membership in it with no membership statement
-// anywhere on the path — including the one that carries the deployment's only
-// platform-admin role template.
-func TestProtect_RefusesDeletingTheOrganizationHoldingTheLastAdmin(t *testing.T) {
+// anywhere on the path. That USED to be able to take the deployment's last
+// platform administrator away, because the authority rode on an
+// admin-bearing role template inside one of those memberships.
+//
+// It cannot any more (migration 000054): the authority is in platform_admins,
+// which an organization deletion does not touch. Both reads invariant A used to
+// make are queued to FAIL, so a floor that still made either of them returns
+// ErrIndeterminate instead of the nil asserted here.
+func TestProtect_OrganizationDeletionNoLongerTouchesInvariantA(t *testing.T) {
 	registry, identity, g := twoConnections(t)
 	expectLock(registry)
-
+	// Both reads are queued to SUCCEED and to report NO administrator: a floor
+	// that made either one would refuse, which is a different VALUE from the
+	// nil asserted below, whatever it does with read errors.
 	identity.ExpectQuery("FROM organization_members").
-		WillReturnRows(adminBearingRows([3]string{"org-1", "user-admin", adminScopes}))
-	registry.ExpectQuery("FROM platform_admins").
-		WillReturnRows(sqlmock.NewRows([]string{"user_id"}))
-	registry.ExpectRollback()
-
-	err, wrote := runProtect(t, g, Change{
-		OrganizationIDs:      []string{"org-1"},
-		DeletesOrganizations: true,
-	})
-	if !errors.Is(err, ErrLastPlatformAdmin) {
-		t.Fatalf("err = %v, want ErrLastPlatformAdmin", err)
-	}
-	if wrote {
-		t.Fatal("the organization was deleted despite holding the last platform administrator")
-	}
-}
-
-// TestProtect_AllowsDeletingAnOrganizationWhoseAdminIsAdminElsewhere is the
-// positive control, and the case that separates "this organization is deleted"
-// from "this principal loses authority": the same person administers another
-// organization, so the deployment keeps an administrator.
-func TestProtect_AllowsDeletingAnOrganizationWhoseAdminIsAdminElsewhere(t *testing.T) {
-	registry, identity, g := twoConnections(t)
-	expectLock(registry)
-
-	identity.ExpectQuery("FROM organization_members").
-		WillReturnRows(adminBearingRows(
-			[3]string{"org-1", "user-admin", adminScopes},
-			[3]string{"org-2", "user-admin", adminScopes},
-		))
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id", "user_id", "scopes"}))
+	expectCarrier(registry)
 	registry.ExpectRollback()
 
 	err, wrote := runProtect(t, g, Change{
@@ -644,7 +634,7 @@ func TestProtect_AllowsDeletingAnOrganizationWhoseAdminIsAdminElsewhere(t *testi
 		DeletesOrganizations: true,
 	})
 	if err != nil {
-		t.Fatalf("err = %v, want nil", err)
+		t.Fatalf("err = %v, want nil — deleting an organization cannot remove a carrier grant", err)
 	}
 	if !wrote {
 		t.Fatal("the write did not run")
@@ -658,9 +648,6 @@ func TestProtect_AllowsDeletingAnOrganizationWhoseAdminIsAdminElsewhere(t *testi
 func TestProtect_OrganizationDeletionSkipsInvariantB(t *testing.T) {
 	registry, identity, g := twoConnections(t)
 	expectLock(registry)
-
-	identity.ExpectQuery("FROM organization_members").
-		WillReturnRows(adminBearingRows([3]string{"org-9", "user-platform", adminScopes}))
 	registry.ExpectRollback()
 
 	if err, _ := runProtect(t, g, Change{
@@ -696,31 +683,27 @@ func TestProtect_OrganizationDeletionNamingNoOrganizationIsIndeterminate(t *test
 // Unresolved answers, and the absent guard
 // ---------------------------------------------------------------------------
 
-// TestProtect_AnUnreadableIdentityStoreIsNotPermission. An outage must not
-// read as "no administrators are recorded, so removing this one is fine" — the
-// exact inversion platform_admins.go's errIdentityUnavailable exists to stop.
-func TestProtect_AnUnreadableIdentityStoreIsNotPermission(t *testing.T) {
+// TestProtect_AnUnreadableCarrierIsNotPermission. An outage must not read as
+// "no administrators are recorded, so deleting this one is fine" — the exact
+// inversion platform_admins.go's errIdentityUnavailable exists to stop.
+func TestProtect_AnUnreadableCarrierIsNotPermission(t *testing.T) {
 	registry, identity, g := twoConnections(t)
 	expectLock(registry)
 
-	boom := errors.New("connection refused")
-	identity.ExpectQuery("FROM organization_members").WillReturnError(boom)
+	registry.ExpectQuery("FROM platform_admins").WillReturnError(errors.New("connection refused"))
 	// Invariant B is queued to SUCCEED and to be satisfied. Without it, a
-	// mutant that swallowed the read error above would fall through to an
-	// unqueued query, fail there, and still return ErrIndeterminate — the test
-	// would pass for the wrong reason and prove nothing about the branch it
-	// names. Verified by making checkPlatformFloor return nil on error and
-	// watching this fail.
-	expectOrganizationState(identity,
-		[2]string{"user-admin", adminScopes},
-		[2]string{"user-owner", ownerScopes},
-	)
+	// mutant that swallowed the read error above would fall through to B,
+	// return nil, and this test would fail on the value rather than passing for
+	// the wrong reason on an unqueued query.
+	identity.ExpectQuery("SELECT organization_id FROM organization_members").
+		WithArgs("user-admin").
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}))
 	registry.ExpectRollback()
 
 	err, wrote := runProtect(t, g, Change{
 		UserID:            "user-admin",
-		OrganizationIDs:   []string{"org-1"},
 		RemovesMembership: true,
+		DestroysPrincipal: true,
 	})
 	if !errors.Is(err, ErrIndeterminate) {
 		t.Fatalf("err = %v, want ErrIndeterminate", err)
@@ -732,30 +715,26 @@ func TestProtect_AnUnreadableIdentityStoreIsNotPermission(t *testing.T) {
 
 // TestProtect_AFailedCarrierResolutionIsNotPermission covers the same rule on
 // the cross-connection half, which is the one that fails independently when
-// identity lives in another database.
+// identity lives in another database: the carrier lists a holder and the
+// identity store cannot say whether that holder still exists.
 func TestProtect_AFailedCarrierResolutionIsNotPermission(t *testing.T) {
 	registry, identity, g := twoConnections(t)
 	expectLock(registry)
 
-	identity.ExpectQuery("FROM organization_members").
-		WillReturnRows(adminBearingRows([3]string{"org-1", "user-admin", adminScopes}))
-	registry.ExpectQuery("FROM platform_admins").
-		WillReturnRows(sqlmock.NewRows([]string{"user_id"}).AddRow("user-carrier"))
+	expectCarrier(registry, "user-admin", "user-carrier")
 	identity.ExpectQuery("FROM users").
 		WithArgs("user-carrier").
 		WillReturnError(errors.New("identity store unreachable"))
-	// Same isolation as above: invariant B would pass, so only the carrier
-	// resolution failure can produce the refusal.
-	expectOrganizationState(identity,
-		[2]string{"user-admin", adminScopes},
-		[2]string{"user-owner", ownerScopes},
-	)
+	// Same isolation as above.
+	identity.ExpectQuery("SELECT organization_id FROM organization_members").
+		WithArgs("user-admin").
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}))
 	registry.ExpectRollback()
 
 	err, wrote := runProtect(t, g, Change{
 		UserID:            "user-admin",
-		OrganizationIDs:   []string{"org-1"},
 		RemovesMembership: true,
+		DestroysPrincipal: true,
 	})
 	if !errors.Is(err, ErrIndeterminate) {
 		t.Fatalf("err = %v, want ErrIndeterminate", err)
@@ -771,20 +750,20 @@ func TestProtect_AFailedCarrierResolutionIsNotPermission(t *testing.T) {
 // version that checked first and locked afterwards fails on the mock, not on a
 // race that reproduces one run in a thousand.
 func TestProtect_TakesTheLockBeforeReadingAnything(t *testing.T) {
-	registry, identity, g := twoConnections(t)
+	registry, _, g := twoConnections(t)
 	registry.ExpectBegin()
 	registry.ExpectExec("pg_advisory_xact_lock").WithArgs(advisoryLockKey).
 		WillReturnResult(sqlmock.NewResult(0, 0))
-	identity.ExpectQuery("FROM organization_members").
-		WillReturnRows(adminBearingRows([3]string{"org-1", "user-admin", adminScopes}))
 	registry.ExpectQuery("FROM platform_admins").
 		WillReturnRows(sqlmock.NewRows([]string{"user_id"}))
 	registry.ExpectRollback()
 
+	// DestroysPrincipal, because that is the only shape that reaches the
+	// carrier read this test is ordering the lock against.
 	_, _ = runProtect(t, g, Change{
 		UserID:            "user-admin",
-		OrganizationIDs:   []string{"org-1"},
 		RemovesMembership: true,
+		DestroysPrincipal: true,
 	})
 	if err := registry.ExpectationsWereMet(); err != nil {
 		t.Fatalf("the lock was not taken before the floor was read: %v", err)
@@ -874,8 +853,6 @@ func TestProtect_HalfWiredGuardRefuses(t *testing.T) {
 func TestProtect_PropagatesTheWritesOwnError(t *testing.T) {
 	registry, identity, g := twoConnections(t)
 	expectLock(registry)
-	identity.ExpectQuery("FROM organization_members").
-		WillReturnRows(adminBearingRows([3]string{"org-9", "user-platform", adminScopes}))
 	identity.ExpectQuery("WHERE om.organization_id").
 		WillReturnRows(orgStateRows(
 			[2]string{"user-viewer", viewerScopes},

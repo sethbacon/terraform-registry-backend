@@ -78,7 +78,6 @@ func newTestEnv(t *testing.T) *testEnv {
 		t.Fatalf("sqlmock: %v", err)
 	}
 	t.Cleanup(func() { orgDB.Close() })
-	orgRepo := repositories.NewOrganizationRepository(orgDB)
 
 	// TokenCipher needs a 32-byte key
 	cipher, err := crypto.NewTokenCipher([]byte("01234567890123456789012345678901"))
@@ -92,7 +91,6 @@ func newTestEnv(t *testing.T) *testEnv {
 		oidcRepo,
 		storageRepo,
 		userRepo,
-		orgRepo,
 		nil, // authHandlers — nil is ok; we don't test live OIDC swap here
 	)
 
@@ -688,50 +686,20 @@ func TestConfigureAdmin_InvalidEmail(t *testing.T) {
 	}
 }
 
-func TestConfigureAdmin_OrgNotFound(t *testing.T) {
-	env := newTestEnv(t)
-
-	r := gin.New()
-	r.POST("/admin", env.h.ConfigureAdmin)
-
-	body := jsonBody(map[string]string{"email": "admin@example.com"})
-
-	// GetDefaultOrganization returns nil (not found)
-	env.orgMock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
-		WithArgs("default").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}))
-
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("POST", "/admin", body))
-
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("status = %d, want 500", w.Code)
-	}
-}
-
 func TestConfigureAdmin_Success(t *testing.T) {
-	env := newTestEnv(t)
+	env := newBootstrapEnv(t)
 
 	r := gin.New()
 	r.POST("/admin", env.h.ConfigureAdmin)
 
 	body := jsonBody(map[string]string{"email": "admin@example.com"})
 
-	now := time.Now()
-	orgCols := []string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}
-	env.orgMock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
-		WithArgs("default").
-		WillReturnRows(sqlmock.NewRows(orgCols).AddRow("org-1", "default", "Default Org", nil, nil, now, now))
-
-	// CreateUser
+	// CreateUser. NOTHING is queued on orgMock: from migration 000054 the
+	// wizard writes no organization membership at all, so a handler that still
+	// reached for one would hit sqlmock's unexpected-query error and fail here.
 	env.userMock.ExpectExec("INSERT INTO users").
 		WillReturnResult(sqlmock.NewResult(1, 1))
-
-	// AddMemberWithParams — looks up role_template by name first
-	env.orgMock.ExpectQuery("SELECT id FROM role_templates WHERE name").
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-admin-id"))
-	env.orgMock.ExpectExec("INSERT INTO organization_members").
-		WillReturnResult(sqlmock.NewResult(1, 1))
+	expectCarrierGrant(env, grantLands)
 
 	// SetPendingAdminEmail
 	env.oidcMock.ExpectExec("UPDATE system_settings SET").
@@ -748,10 +716,20 @@ func TestConfigureAdmin_Success(t *testing.T) {
 	if resp["email"] != "admin@example.com" {
 		t.Errorf("email = %v, want admin@example.com", resp["email"])
 	}
+	if resp["platform_admin"] != true {
+		t.Errorf("platform_admin = %v, want true", resp["platform_admin"])
+	}
+	if _, present := resp["organization"]; present {
+		t.Errorf("the response still reports an organization (%v): the wizard writes no membership, "+
+			"so naming one describes a grant that did not happen (#766)", resp["organization"])
+	}
+	if err := env.orgMock.ExpectationsWereMet(); err != nil {
+		t.Errorf("the identity/organization connection was used: %v", err)
+	}
 }
 
 func TestConfigureAdmin_ExistingUserFallback(t *testing.T) {
-	env := newTestEnv(t)
+	env := newBootstrapEnv(t)
 
 	r := gin.New()
 	r.POST("/admin", env.h.ConfigureAdmin)
@@ -759,11 +737,6 @@ func TestConfigureAdmin_ExistingUserFallback(t *testing.T) {
 	body := jsonBody(map[string]string{"email": "admin@example.com"})
 
 	now := time.Now()
-	orgCols := []string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}
-	env.orgMock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
-		WithArgs("default").
-		WillReturnRows(sqlmock.NewRows(orgCols).AddRow("org-1", "default", "Default Org", nil, nil, now, now))
-
 	// CreateUser fails (e.g. duplicate key)
 	env.userMock.ExpectExec("INSERT INTO users").
 		WillReturnError(errDB)
@@ -776,11 +749,7 @@ func TestConfigureAdmin_ExistingUserFallback(t *testing.T) {
 			"existing-user-id", "admin@example.com", "admin@example.com", nil, now, now,
 		))
 
-	// AddMemberWithParams
-	env.orgMock.ExpectQuery("SELECT id FROM role_templates WHERE name").
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-admin-id"))
-	env.orgMock.ExpectExec("INSERT INTO organization_members").
-		WillReturnResult(sqlmock.NewResult(1, 1))
+	expectCarrierGrant(env, grantLands)
 
 	// SetPendingAdminEmail
 	env.oidcMock.ExpectExec("UPDATE system_settings SET").
@@ -807,12 +776,6 @@ func TestConfigureAdmin_CreateAndFindBothFail(t *testing.T) {
 
 	body := jsonBody(map[string]string{"email": "admin@example.com"})
 
-	now := time.Now()
-	orgCols := []string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}
-	env.orgMock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
-		WithArgs("default").
-		WillReturnRows(sqlmock.NewRows(orgCols).AddRow("org-1", "default", "Default Org", nil, nil, now, now))
-
 	// CreateUser fails
 	env.userMock.ExpectExec("INSERT INTO users").
 		WillReturnError(errDB)
@@ -830,112 +793,18 @@ func TestConfigureAdmin_CreateAndFindBothFail(t *testing.T) {
 	}
 }
 
-func TestConfigureAdmin_AddMemberFails_UpdateRoleSucceeds(t *testing.T) {
-	env := newTestEnv(t)
-
-	r := gin.New()
-	r.POST("/admin", env.h.ConfigureAdmin)
-
-	body := jsonBody(map[string]string{"email": "admin@example.com"})
-
-	now := time.Now()
-	orgCols := []string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}
-	env.orgMock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
-		WithArgs("default").
-		WillReturnRows(sqlmock.NewRows(orgCols).AddRow("org-1", "default", "Default Org", nil, nil, now, now))
-
-	// CreateUser succeeds
-	env.userMock.ExpectExec("INSERT INTO users").
-		WillReturnResult(sqlmock.NewResult(1, 1))
-
-	// AddMemberWithParams: role template lookup succeeds but INSERT fails
-	env.orgMock.ExpectQuery("SELECT id FROM role_templates WHERE name").
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-admin-id"))
-	env.orgMock.ExpectExec("INSERT INTO organization_members").
-		WillReturnError(errDB)
-
-	// UpdateMemberRole: role template lookup succeeds and UPDATE succeeds
-	env.orgMock.ExpectQuery("SELECT id FROM role_templates WHERE name").
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-admin-id"))
-	env.orgMock.ExpectExec("UPDATE organization_members").
-		WillReturnResult(sqlmock.NewResult(0, 1))
-
-	// SetPendingAdminEmail
-	env.oidcMock.ExpectExec("UPDATE system_settings SET").
-		WillReturnResult(sqlmock.NewResult(0, 1))
-
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("POST", "/admin", body))
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200, body: %s", w.Code, w.Body.String())
-	}
-
-	resp2 := getJSON(w)
-	if resp2["email"] != "admin@example.com" {
-		t.Errorf("email = %v, want admin@example.com", resp2["email"])
-	}
-}
-
-func TestConfigureAdmin_AddMemberFails_UpdateRoleFails(t *testing.T) {
-	env := newTestEnv(t)
-
-	r := gin.New()
-	r.POST("/admin", env.h.ConfigureAdmin)
-
-	body := jsonBody(map[string]string{"email": "admin@example.com"})
-
-	now := time.Now()
-	orgCols := []string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}
-	env.orgMock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
-		WithArgs("default").
-		WillReturnRows(sqlmock.NewRows(orgCols).AddRow("org-1", "default", "Default Org", nil, nil, now, now))
-
-	// CreateUser succeeds
-	env.userMock.ExpectExec("INSERT INTO users").
-		WillReturnResult(sqlmock.NewResult(1, 1))
-
-	// AddMemberWithParams: role template lookup succeeds but INSERT fails
-	env.orgMock.ExpectQuery("SELECT id FROM role_templates WHERE name").
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-admin-id"))
-	env.orgMock.ExpectExec("INSERT INTO organization_members").
-		WillReturnError(errDB)
-
-	// UpdateMemberRole: role template lookup fails
-	env.orgMock.ExpectQuery("SELECT id FROM role_templates WHERE name").
-		WillReturnError(errDB)
-
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("POST", "/admin", body))
-
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("status = %d, want 500", w.Code)
-	}
-}
-
 func TestConfigureAdmin_PendingAdminEmailFails(t *testing.T) {
-	env := newTestEnv(t)
+	env := newBootstrapEnv(t)
 
 	r := gin.New()
 	r.POST("/admin", env.h.ConfigureAdmin)
 
 	body := jsonBody(map[string]string{"email": "admin@example.com"})
 
-	now := time.Now()
-	orgCols := []string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}
-	env.orgMock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
-		WithArgs("default").
-		WillReturnRows(sqlmock.NewRows(orgCols).AddRow("org-1", "default", "Default Org", nil, nil, now, now))
-
 	// CreateUser succeeds
 	env.userMock.ExpectExec("INSERT INTO users").
 		WillReturnResult(sqlmock.NewResult(1, 1))
-
-	// AddMemberWithParams succeeds
-	env.orgMock.ExpectQuery("SELECT id FROM role_templates WHERE name").
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-admin-id"))
-	env.orgMock.ExpectExec("INSERT INTO organization_members").
-		WillReturnResult(sqlmock.NewResult(1, 1))
+	expectCarrierGrant(env, grantLands)
 
 	// SetPendingAdminEmail fails (non-fatal)
 	env.oidcMock.ExpectExec("UPDATE system_settings SET").

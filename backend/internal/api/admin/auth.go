@@ -879,6 +879,19 @@ func (h *AuthHandlers) RefreshHandler() gin.HandlerFunc {
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/auth/me [get]
 // MeHandler returns the current authenticated user's information including per-org role templates
+// withoutAdminScope returns scopes with the platform-wide wildcard removed. It
+// always copies: the slice it is given comes from the loaded user's role
+// templates and is not this handler's to mutate.
+func withoutAdminScope(scopes []string) []string {
+	out := make([]string, 0, len(scopes)+1)
+	for _, s := range scopes {
+		if s != string(auth.ScopeAdmin) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // GET /api/v1/auth/me
 func (h *AuthHandlers) MeHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -966,18 +979,25 @@ func (h *AuthHandlers) MeHandler() gin.HandlerFunc {
 		// administrator's experience of the product.
 		//
 		// Read from the request's effective scopes rather than querying the
-		// carrier again, so this stays downstream of PR 1's single insertion
-		// point instead of becoming a second, independently-driftable answer to
-		// the same question. It also inherits that point's deliberate exclusion
-		// of API keys: a key never carries the carrier's elevation, so /auth/me
-		// on a key reports the authority the key actually has.
+		// carrier again, so this stays downstream of the single insertion point
+		// in the auth middleware instead of becoming a second,
+		// independently-driftable answer to the same question. It also inherits
+		// that point's deliberate exclusion of API keys: a key never carries
+		// the carrier's elevation, so /auth/me on a key reports the authority
+		// the key actually has.
+		//
+		// IT SUBTRACTS AS WELL AS ADDS, from migration 000054. `admin` on a
+		// role template confers nothing now, and the middleware strips it from
+		// the session; reporting it here anyway would render the whole admin
+		// navigation for a principal whose every admin request answers 403 —
+		// the same union-is-authority mistake, moved from the server to the UI.
+		var effective []string
 		if scopesVal, ok := c.Get("scopes"); ok {
-			if effective, ok := scopesVal.([]string); ok &&
-				auth.HasScope(effective, auth.ScopeAdmin) && !auth.HasScope(allowedScopes, auth.ScopeAdmin) {
-				elevated := make([]string, len(allowedScopes), len(allowedScopes)+1)
-				copy(elevated, allowedScopes)
-				allowedScopes = append(elevated, string(auth.ScopeAdmin))
-			}
+			effective, _ = scopesVal.([]string)
+		}
+		allowedScopes = withoutAdminScope(allowedScopes)
+		if auth.HasScope(effective, auth.ScopeAdmin) {
+			allowedScopes = append(allowedScopes, string(auth.ScopeAdmin))
 		}
 		response["allowed_scopes"] = allowedScopes
 

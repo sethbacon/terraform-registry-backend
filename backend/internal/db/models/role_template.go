@@ -14,7 +14,22 @@ func PredefinedRoleTemplates() []RoleTemplate {
 	viewerDesc := "Read-only access to modules, providers, mirrors, organizations, and SCM configurations"
 	publisherDesc := "Can upload and manage modules and providers"
 	devOpsDesc := "Can manage SCM integrations and provider mirroring for CI/CD pipelines"
-	adminDesc := "Full access to all registry features"
+	// The `admin` template NO LONGER CARRIES THE `admin` SCOPE (issue #766,
+	// migration 000054). Platform-admin authority lives in the platform_admins
+	// carrier and nowhere else; a role template that claimed it would confer
+	// nothing (the auth middleware strips it) and would be refused by every
+	// membership write.
+	//
+	// This list is not decoration: SeedSystemRoleTemplates upserts it by name on
+	// boot under TFR_IDENTITY_SCHEMA_ENABLED, so leaving `admin` here would put
+	// the scope back on the template the migration just cleaned, on the next
+	// restart, for exactly the deployments the migration could reach least well.
+	//
+	// The scopes are the `org_owner` set, matching what migration 000054 writes:
+	// everything the template conferred except the platform-wide reach, so its
+	// existing holders keep administering their organizations.
+	adminDesc := "Full management of an organization's modules, providers, mirrors, SCM integrations, " +
+		"and membership. Platform-wide administration is granted through POST /api/v1/admin/platform-admins (issue #766)"
 	userManagerDesc := "Can manage user accounts and memberships"
 	auditorDesc := "Read-only access with audit log visibility for security and compliance review"
 	orgOwnerDesc := "Full management of a single organization's modules, providers, mirrors, SCM integrations, and membership, without platform-wide admin privileges"
@@ -46,8 +61,9 @@ func PredefinedRoleTemplates() []RoleTemplate {
 			Name:        "admin",
 			DisplayName: "Administrator",
 			Description: &adminDesc,
-			Scopes:      []string{"admin"},
-			IsSystem:    true,
+			Scopes: []string{"organizations:write", "users:read", "api_keys:manage", "modules:read", "modules:write",
+				"providers:read", "providers:write", "mirrors:read", "mirrors:manage", "scm:read", "scm:manage"},
+			IsSystem: true,
 		},
 		{
 			Name:        "user_manager",

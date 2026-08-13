@@ -37,6 +37,13 @@ import (
 //	4. A is released; it reads two administrators, removes one, commits
 //	5. B wakes, reads ONE administrator, and refuses
 //
+// The refusal is invariant B's from migration 000054 — the organization would
+// keep a member and lose its last administrator. It used to be invariant A's,
+// because an admin-bearing role template was platform-admin authority; it is
+// not any more, and a membership removal cannot reduce the carrier. The
+// property under test is unchanged: two concurrent removals must not both
+// succeed, and the second must see the world the first left behind.
+//
 // Set TFR_TEST_DATABASE_URL to run these. Every table is created in a
 // throwaway schema selected through the connection string, so nothing outside
 // it is touched.
@@ -138,10 +145,14 @@ const (
 	userViewerC = "cccccccc-0000-0000-0000-00000000000c"
 )
 
-// seedTwoAdministrators lays out the state both concurrency tests start from:
-// one organization, two administrators, one plain member, and an EMPTY
-// carrier — the shape a deployment bootstrapped by the setup wizard before
-// this release actually has.
+// seedTwoAdministrators lays out the state the concurrency tests start from:
+// one organization, two members who can administer it, one plain member, and a
+// carrier naming ONE of them.
+//
+// The carrier row is what makes invariant A reachable at all now that it counts
+// nothing else (migration 000054). It is inert for the two membership-removal
+// tests, which never consult the carrier, and load-bearing for the
+// DestroysPrincipal case in TestProtect_ReleasesTheLockOnEveryPath.
 func seedTwoAdministrators(t *testing.T, pool *sql.DB) {
 	t.Helper()
 	stmts := []string{
@@ -154,6 +165,7 @@ func seedTwoAdministrators(t *testing.T, pool *sql.DB) {
 		`INSERT INTO organization_members VALUES ('` + orgMain + `', '` + userAdminA + `', '` + tmplAdmin + `')`,
 		`INSERT INTO organization_members VALUES ('` + orgMain + `', '` + userAdminB + `', '` + tmplAdmin + `')`,
 		`INSERT INTO organization_members VALUES ('` + orgMain + `', '` + userViewerC + `', '` + tmplViewer + `')`,
+		`INSERT INTO platform_admins (user_id) VALUES ('` + userAdminA + `')`,
 	}
 	for _, s := range stmts {
 		if _, err := pool.Exec(s); err != nil {
@@ -284,8 +296,8 @@ func TestProtect_ConcurrentRemovalsCannotBothPass(t *testing.T) {
 	if firstErr != nil {
 		t.Fatalf("the first removal failed: %v — it ran against two administrators and must succeed", firstErr)
 	}
-	if !errors.Is(secondErr, ErrLastPlatformAdmin) {
-		t.Fatalf("the second removal returned %v, want ErrLastPlatformAdmin — it ran AFTER the "+
+	if !errors.Is(secondErr, ErrLastOrganizationAdmin) {
+		t.Fatalf("the second removal returned %v, want ErrLastOrganizationAdmin — it ran AFTER the "+
 			"first one committed and must see only one administrator left", secondErr)
 	}
 	if n := administratorsRemaining(t, pool); n != 1 {
@@ -366,8 +378,11 @@ func TestProtect_ReleasesTheLockOnEveryPath(t *testing.T) {
 			write:  removeMember(pool, userViewerC),
 		},
 		{
+			// Invariant A, which only a principal destruction can break now:
+			// userAdminA is the sole carrier grant, and erasing them makes it
+			// unexercisable.
 			name:   "refused",
-			change: Change{UserID: userAdminA, OrganizationIDs: []string{orgMain}, RemovesMembership: true},
+			change: Change{UserID: userAdminA, DestroysPrincipal: true},
 			write:  func(context.Context) error { return nil },
 		},
 		{

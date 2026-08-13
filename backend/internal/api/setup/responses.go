@@ -26,11 +26,14 @@ type SaveStorageConfigResponse struct {
 } // @name StorageConfigSavedResponse
 
 // ConfigureAdminResponse is returned by POST /api/v1/setup/admin.
+//
+// `organization` and `role` are gone (issue #766, migration 000054): the wizard
+// no longer writes an organization membership, so reporting one would describe
+// a grant that did not happen. `platform_admin` is what it does write.
 type ConfigureAdminResponse struct {
-	Message      string `json:"message"`
-	Email        string `json:"email"`
-	Organization string `json:"organization"`
-	Role         string `json:"role"`
+	Message       string `json:"message"`
+	Email         string `json:"email"`
+	PlatformAdmin bool   `json:"platform_admin"`
 }
 
 // CompleteSetupResponse is returned by POST /api/v1/setup/complete.

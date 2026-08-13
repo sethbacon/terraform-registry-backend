@@ -307,6 +307,83 @@ func TestRBACCreateRoleTemplate_Success(t *testing.T) {
 	}
 }
 
+// TestRBACRoleTemplates_RefuseTheAdminScope closes the way back (issue #766,
+// migration 000054).
+//
+// The migration takes `admin` off every role template and the membership writes
+// refuse an admin-bearing one — but this is the route by which a role template
+// gets its scopes, so leaving it open would let the same principal put back,
+// the same afternoon, exactly what the migration removed. The removal would be
+// a one-time cleanup rather than a property.
+//
+// Both verbs, because PUT is a write of the same field. No repository
+// expectation is queued: the refusal happens before the name/id lookup, so an
+// ordered mock also proves nothing reached the database.
+func TestRBACRoleTemplates_RefuseTheAdminScope(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{"create", http.MethodPost, "/role-templates"},
+		{"update", http.MethodPut, "/role-templates/" + knownUUID},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock, r := newRBACRouter(t)
+			if tt.method == http.MethodPut {
+				// Update reads the existing row and refuses system templates
+				// before it binds the body, so this one lookup is legitimate.
+				mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+					WillReturnRows(sampleRTRow())
+			}
+
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, httptest.NewRequest(tt.method, tt.path,
+				jsonBody(map[string]interface{}{
+					"name":         "superuser",
+					"display_name": "Superuser",
+					"scopes":       []string{"modules:read", "admin"},
+				})))
+
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 — a role template must not be able to carry the "+
+					"platform-wide `admin` scope, or migration 000054's removal is a one-time "+
+					"cleanup rather than a property (#766): body=%s", w.Code, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), "admin/platform-admins") {
+				t.Errorf("body = %s, want the refusal to name the route that DOES grant platform "+
+					"administration", w.Body.String())
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Errorf("unmet/unexpected expectations (the refusal must not write): %v", err)
+			}
+		})
+	}
+}
+
+// TestRBACRoleTemplates_StillAcceptOrdinaryScopes is the positive control: a
+// refusal that rejected every scope list would satisfy the test above.
+func TestRBACRoleTemplates_StillAcceptOrdinaryScopes(t *testing.T) {
+	mock, r := newRBACRouter(t)
+	mock.ExpectQuery("SELECT.*FROM role_templates WHERE name").
+		WillReturnRows(emptyRTRows())
+	mock.ExpectExec("INSERT INTO role_templates").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/role-templates",
+		jsonBody(map[string]interface{}{
+			"name":         "almost-admin",
+			"display_name": "Almost Admin",
+			"scopes":       []string{"organizations:write", "users:write", "audit:read"},
+		})))
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+	}
+}
+
 // ---------------------------------------------------------------------------
 // UpdateRoleTemplate
 // ---------------------------------------------------------------------------

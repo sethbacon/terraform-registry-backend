@@ -101,11 +101,18 @@ func deprovisionRequests() []struct {
 	}
 }
 
-// TestSCIMDeprovision_RefusesStrandingTheDeployment covers all four entry
-// points: the target is the deployment's only platform administrator, the
-// carrier is empty, and no membership DELETE is queued — so an ordered-agnostic
-// mock still fails on an unexpected write if the guard is skipped.
-func TestSCIMDeprovision_RefusesStrandingTheDeployment(t *testing.T) {
+// TestSCIMDeprovision_RefusesStrandingAnOrganization covers all four entry
+// points: the target is org-1's only administrator, the organization keeps a
+// member, and no membership DELETE is queued — so an ordered-agnostic mock
+// still fails on an unexpected write if the guard is skipped.
+//
+// This was a DEPLOYMENT-floor case until migration 000054. A SCIM deprovision
+// strips memberships and leaves the user able to authenticate, so it never
+// touched the platform_admins carrier; once the carrier is the only source of
+// platform-admin authority, invariant A has nothing to decide here and
+// invariant B is the refusal that remains. The four entry points are still the
+// point of the table.
+func TestSCIMDeprovision_RefusesStrandingAnOrganization(t *testing.T) {
 	for _, tc := range deprovisionRequests() {
 		t.Run(tc.name, func(t *testing.T) {
 			r, identity, registry := flooredSCIMRouter(t)
@@ -116,12 +123,15 @@ func TestSCIMDeprovision_RefusesStrandingTheDeployment(t *testing.T) {
 
 			registry.ExpectBegin()
 			registry.ExpectExec("pg_advisory_xact_lock").WillReturnResult(sqlmock.NewResult(0, 0))
-			// The target is the only admin-bearing membership anywhere.
-			identity.ExpectQuery("FROM organization_members").
-				WillReturnRows(sqlmock.NewRows([]string{"organization_id", "user_id", "scopes"}).
-					AddRow("org-1", floorTargetID, []byte(`["admin"]`)))
-			registry.ExpectQuery("FROM platform_admins").
-				WillReturnRows(sqlmock.NewRows([]string{"user_id"}))
+			// No invariant-A fixture: a membership-only deprovision cannot
+			// reduce carrier authority, and an ordered mock turns a floor that
+			// consulted it anyway into a failure here.
+			identity.ExpectQuery("SELECT organization_id FROM organization_members").
+				WillReturnRows(sqlmock.NewRows([]string{"organization_id"}).AddRow("org-1"))
+			identity.ExpectQuery("WHERE om.organization_id").
+				WillReturnRows(sqlmock.NewRows([]string{"user_id", "scopes"}).
+					AddRow(floorTargetID, []byte(`["organizations:write"]`)).
+					AddRow("viewer-1", []byte(`["modules:read"]`)))
 			registry.ExpectRollback()
 
 			w := httptest.NewRecorder()
@@ -136,8 +146,8 @@ func TestSCIMDeprovision_RefusesStrandingTheDeployment(t *testing.T) {
 				t.Fatalf("response is not JSON: %v (%s)", err, w.Body.String())
 			}
 			detail, _ := body["detail"].(string)
-			if !strings.Contains(detail, "last platform administrator") {
-				t.Fatalf("detail = %q, want it to name the last platform administrator", detail)
+			if !strings.Contains(detail, "last administrator") {
+				t.Fatalf("detail = %q, want it to name the organization's last administrator", detail)
 			}
 			if err := identity.ExpectationsWereMet(); err != nil {
 				t.Errorf("the membership strip must not be attempted: %v", err)
@@ -160,10 +170,6 @@ func TestSCIMDeprovision_AllowsAnOrdinaryLeaver(t *testing.T) {
 
 			registry.ExpectBegin()
 			registry.ExpectExec("pg_advisory_xact_lock").WillReturnResult(sqlmock.NewResult(0, 0))
-			// Somebody else administers the platform.
-			identity.ExpectQuery("FROM organization_members").
-				WillReturnRows(sqlmock.NewRows([]string{"organization_id", "user_id", "scopes"}).
-					AddRow("org-9", "someone-else", []byte(`["admin"]`)))
 			// The target's own organizations, then each one's state.
 			identity.ExpectQuery("SELECT organization_id FROM organization_members").
 				WillReturnRows(sqlmock.NewRows([]string{"organization_id"}).AddRow("org-1"))

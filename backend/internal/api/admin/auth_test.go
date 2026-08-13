@@ -2619,16 +2619,39 @@ func TestMeHandler_AllowedScopesUnionsThePlatformAdminCarrier(t *testing.T) {
 			wantAdmin:        false,
 		},
 		{
-			name:             "administrator by role template, unchanged",
+			name:             "carrier administrator who also holds a legacy admin template",
 			effectiveScopes:  []string{"admin"},
 			setScopes:        true,
 			membershipScopes: `["admin"]`,
 			wantAdmin:        true,
 		},
 		{
+			// THE SUBTRACTION (migration 000054). A role template carrying
+			// `admin` confers nothing, and the middleware has already stripped
+			// it from this request's effective scopes. Reporting it anyway
+			// would render the whole admin navigation for a principal whose
+			// every admin request answers 403 — the union-is-authority mistake,
+			// moved from the server to the UI.
+			name:             "admin-bearing role template with no carrier grant",
+			effectiveScopes:  []string{"modules:read"},
+			setScopes:        true,
+			membershipScopes: `["modules:read","admin"]`,
+			wantAdmin:        false,
+		},
+		{
 			name:             "no effective scopes on the request",
 			setScopes:        false,
 			membershipScopes: `["modules:read"]`,
+			wantAdmin:        false,
+		},
+		{
+			// Fail-closed on the same unset key: the middleware always
+			// publishes `scopes`, so an absent one is a mis-wired route rather
+			// than a principal, and it must not be answered with the union's
+			// wildcard.
+			name:             "no effective scopes, admin-bearing template",
+			setScopes:        false,
+			membershipScopes: `["admin"]`,
 			wantAdmin:        false,
 		},
 	}
@@ -2690,7 +2713,7 @@ func TestMeHandler_AllowedScopesUnionsThePlatformAdminCarrier(t *testing.T) {
 					found = true
 				}
 			}
-			if !found && tt.membershipScopes != `["admin"]` {
+			if !found && !strings.HasPrefix(tt.membershipScopes, `["admin"]`) {
 				t.Errorf("allowed_scopes = %v, lost the role-template scopes it is built from", raw)
 			}
 		})

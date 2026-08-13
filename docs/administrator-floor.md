@@ -14,16 +14,22 @@ change that would break either one.
 
 ## What counts as an administrator
 
-**Platform administrator** — a principal holding either
+**Platform administrator** — a principal holding a row in `platform_admins`
+(the carrier, migration `000051`). Nothing else, as of migration `000054`.
 
-- a row in `platform_admins` (the carrier, migration `000051`), or
-- an organization membership whose role template carries the `admin` scope
-  (the org-less scope union, #652).
+An organization membership whose role template carries the `admin` scope used to
+count too, through the org-less scope union (#652). It does not any more: the
+auth middleware strips `admin` from the session union, so such a membership
+administers nothing, and a floor that still counted one would report "an
+administrator remains" while the deployment's last real one was deleted.
 
-Effective platform-admin authority is `carrier OR union`, so the floor counts
-the union of both. Refusing a change because the carrier happens to be empty,
-while four role-template administrators remain, would be a refusal with no
-hazard behind it.
+Two consequences follow, and both are behaviour you can observe:
+
+- **A membership change cannot break invariant A.** Removing a member, re-roling
+  one, or deleting an organization does not touch `platform_admins`. Only user
+  deletion and GDPR erasure can, by making a carrier grant unexercisable.
+- **Deleting a principal who holds no carrier row is never refused by invariant
+  A**, because it cannot lower the count.
 
 **Organization administrator** — a member whose role template carries `admin`
 or `organizations:write`. That is not a new definition: `organizations:write`
@@ -105,19 +111,25 @@ lines as actionable:
 
 ## Bootstrap
 
-The setup wizard (`POST /api/v1/setup/admin`) now writes **both** carriers: the
-`admin` role-template membership it always wrote, and a `platform_admins` row.
-Neither requires a pre-existing administrator.
+The setup wizard (`POST /api/v1/setup/admin`) writes the `platform_admins` row
+and **nothing else**. It used to write an `admin` role-template membership as
+well; migration `000054` removed that, because a role template confers no
+platform-admin authority any more and it was the last path by which the
+platform-wide wildcard reached `organization_members` at all.
+
+The bootstrap administrator therefore starts with **no organization
+membership**. That is not a gap: the carrier grants the `admin` wildcard on
+every request, which every organization route already accepts, and invariant B
+is vacuous over an organization with no members. They can enrol themselves, or
+anyone else, through the member API immediately.
 
 If the carrier grant fails — the registry connection is down while the identity
-connection is up — setup still succeeds (the membership already confers the
-authority) and the response carries:
-
-```json
-{ "platform_admin_carrier_incomplete": true }
-```
-
-Repair it with `POST /api/v1/admin/platform-admins` once the connection is back.
+connection is up — **setup fails with `500`**. It used to report
+`platform_admin_carrier_incomplete: true` beside a `200`, on the grounds that
+the membership already conferred the authority. There is no membership now, so a
+clean `200` would leave a deployment with no administrator and no API route able
+to create one. Setup has not been marked complete at that point: fix the
+connection and retry.
 
 Organization creation enrols the creator as `org_owner`, which is what
 establishes invariant B for a new organization.
@@ -161,16 +173,12 @@ migrated-but-not-yet-set-up database, and every fresh install passes through it.
 <summary>Identity-schema equivalent (<code>scopes</code> is <code>TEXT[]</code>, not <code>jsonb</code>)</summary>
 
 ```sql
--- Invariant A
-SELECT 'deployment' AS scope
- WHERE EXISTS (SELECT 1 FROM identity.users)
-   AND NOT EXISTS (
-         SELECT 1 FROM identity.organization_members om
-           JOIN identity.users u ON u.id = om.user_id
-           JOIN identity.role_templates rt ON rt.id = om.role_template_id
-          WHERE 'admin' = ANY(rt.scopes));
--- (the platform_admins half stays on the REGISTRY connection:
---  SELECT 1 FROM platform_admins pa JOIN users u ON u.id = pa.user_id )
+-- Invariant A is entirely on the REGISTRY connection from migration 000054 --
+-- the carrier is the only source -- but the users it resolves against live in
+-- the identity schema, so it is the one query that spans both:
+--   registry: SELECT user_id FROM platform_admins;
+--   identity: SELECT id FROM identity.users WHERE id = ANY(<those ids>);
+-- an empty intersection is the violation.
 
 -- Invariant B
 SELECT o.id, o.name
@@ -204,8 +212,9 @@ curl -X PUT "$REGISTRY/api/v1/organizations/$ORG_ID/members/$USER_ID" \
 Alternatively remove the remaining members — an empty organization satisfies B.
 
 **Invariant A — no platform administrator.** This one has no API route, because
-every route that could grant it requires the `admin` scope nobody holds. It is
-the one case that needs SQL, on the **registry** connection — and that SQL must
+every route that could grant it requires the `admin` scope nobody holds — and
+from migration `000054` there is no role template to grant either, so this SQL
+is the *only* recovery. It runs on the **registry** connection, and it must
 carry its own audit intent, because migration `000052` puts a deferred
 constraint trigger on `platform_admins` that refuses any commit without one:
 
@@ -269,3 +278,43 @@ The serialisation is proven against a real Postgres in
 interleaving rather than racing for it — it waits until Postgres itself reports
 the second caller as blocked in `pg_locks` before releasing the first. Run it
 with `TFR_TEST_DATABASE_URL` set.
+
+---
+
+## Migration `000054` can refuse to apply
+
+This is the migration that makes platform-admin authority carrier-only, and it
+runs three things in order: it re-runs the carrier backfill from any
+admin-bearing role template it can see, then removes `admin` from every role
+template, then asserts an administrator survived.
+
+If the assertion fails it raises, which rolls the whole migration back — the
+templates are untouched, no carrier row was added, and the deployment is exactly
+as it was, on the previous binary, where the scope union still answers. The
+`schema_migrations` row is left **dirty**.
+
+```txt
+migration 000054 REFUSED: this deployment has a platform administrator today and
+would have none afterwards. ... NOTHING HAS BEEN CHANGED.
+```
+
+The recovery is the invariant-A SQL above: grant `platform_admins` by hand to a
+user who can authenticate, verify with
+
+```sql
+SELECT pa.user_id FROM platform_admins pa JOIN users u ON u.id = pa.user_id;
+```
+
+then `migrate force 53` and run the upgrade again.
+
+**On a coherent deployment this refusal cannot fire**, because step 1's backfill
+covers by construction everybody step 0 counted. It fires when the two disagree
+— a predicate edited on one side only, or a schema layout the migration half
+sees. Read both before forcing past it.
+
+**A deployment whose identity lives in a separate database
+(`TFR_IDENTITY_DATABASE_*`) is the case no assertion on this connection can
+make.** The migration cannot see those users or memberships at all — migration
+`000051` states the limitation and this is the release in which it bites — so it
+emits a NOTICE and proceeds. Populate `platform_admins` by hand, with the SQL
+above, **before** starting this release.

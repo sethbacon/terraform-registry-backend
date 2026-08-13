@@ -44,21 +44,22 @@ type Handlers struct {
 	oidcConfigRepo    *repositories.OIDCConfigRepository
 	storageConfigRepo *repositories.StorageConfigRepository
 	userRepo          *repositories.UserRepository
-	orgRepo           *repositories.OrganizationRepository
 	authHandlers      *admin.AuthHandlers // to swap OIDC provider at runtime
 	installFunc       installer.InstallFunc
 	scannerJob        *jobs.ModuleScannerJob
 	egressGuard       *httpsafe.Guard
-	// carrier records the bootstrap administrator in platform_admins as well
-	// as in organization_members (issue #766). See WithPlatformAdminCarrier.
+	// carrier is where the bootstrap administrator is recorded, and from
+	// migration 000054 it is the ONLY place platform-admin authority lives
+	// (issue #766). See WithPlatformAdminCarrier.
 	carrier *repositories.PlatformAdminRepository
 	// outbox carries that grant's audit intent into the same transaction;
 	// migration 000052's constraint trigger refuses the commit without one.
 	outbox *audit.Outbox
 }
 
-// WithPlatformAdminCarrier attaches the platform-admin carrier so the setup
-// wizard establishes invariant A in BOTH places authority can live.
+// WithPlatformAdminCarrier attaches the platform-admin carrier the setup
+// wizard establishes invariant A with. It is not optional from migration
+// 000054: without it ConfigureAdmin has nothing to grant and fails.
 //
 // Injected rather than built from a repo this struct already holds, for the
 // same reason NewOrganizationHandlers takes claimRepo as a parameter: the
@@ -99,7 +100,6 @@ func NewHandlers(
 	oidcConfigRepo *repositories.OIDCConfigRepository,
 	storageConfigRepo *repositories.StorageConfigRepository,
 	userRepo *repositories.UserRepository,
-	orgRepo *repositories.OrganizationRepository,
 	authHandlers *admin.AuthHandlers,
 ) *Handlers {
 	return &Handlers{
@@ -108,7 +108,6 @@ func NewHandlers(
 		oidcConfigRepo:    oidcConfigRepo,
 		storageConfigRepo: storageConfigRepo,
 		userRepo:          userRepo,
-		orgRepo:           orgRepo,
 		authHandlers:      authHandlers,
 	}
 }
@@ -512,8 +511,14 @@ type ConfigureAdminInput struct {
 	Email string `json:"email" binding:"required,email"`
 }
 
+// errNoPlatformAdminCarrier is returned when the wizard was built without the
+// platform-admin carrier. It is a wiring fault, not a database fault, and from
+// migration 000054 it is fatal to setup: the carrier is the only thing
+// ConfigureAdmin grants.
+var errNoPlatformAdminCarrier = errors.New("no platform-admin carrier is wired")
+
 // @Summary      Configure initial admin user
-// @Description  Creates the initial admin user record and adds them to the default organization with admin role. The email must match the OIDC identity that will be used for the first login.
+// @Description  Creates the initial admin user record and grants them platform administration through the platform_admins carrier. No organization membership is written: platform-admin authority no longer travels on a role template (issue #766). The email must match the OIDC identity that will be used for the first login.
 // @Tags         Setup
 // @Security     SetupToken
 // @Accept       json
@@ -535,14 +540,6 @@ func (h *Handlers) ConfigureAdmin(c *gin.Context) {
 	ctx := c.Request.Context()
 	email := strings.TrimSpace(strings.ToLower(input.Email))
 
-	// Get the default organization
-	defaultOrg, err := h.orgRepo.GetDefaultOrganization(ctx)
-	if err != nil || defaultOrg == nil {
-		slog.Error("setup: failed to get default organization", "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to find default organization"})
-		return
-	}
-
 	// Create the user record (without OIDC sub — will be linked on first login)
 	user := &models.User{
 		Email: email,
@@ -560,83 +557,66 @@ func (h *Handlers) ConfigureAdmin(c *gin.Context) {
 		user = existingUser
 	}
 
-	// Add user to default organization with admin role template.
+	// BOOTSTRAP INVARIANT A (issue #766). THE ONLY GRANT THIS WIZARD MAKES.
 	//
-	// Bootstrap: there is no principal yet whose tenancy could be resolved —
-	// this IS the request that creates the first one — so the scope is the
-	// explicit platform-wide one rather than an absent argument.
-	if err := h.orgRepo.AddMemberWithParams(ctx, defaultOrg.ID, user.ID, "admin",
-		repositories.OrgScopeAllOrganizations()); err != nil {
-		// Might already be a member — try to update their role.
-		//
-		// As of identity v0.24.0 this fallback is genuinely verified: if the
-		// user is NOT already a member, UpdateMemberRole matches zero rows and
-		// reports store.ErrNotFound, so the 500 below fires. Previously it
-		// returned nil for that case and setup reported "Admin user configured
-		// successfully" having granted no membership at all — the operator was
-		// told they had an admin they did not have.
-		if updateErr := h.orgRepo.UpdateMemberRole(ctx, defaultOrg.ID, user.ID, "admin",
-			repositories.OrgScopeAllOrganizations()); updateErr != nil {
-			slog.Error("setup: failed to add admin to organization", "error", err, "update_error", updateErr)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to add admin user to organization"})
-			return
-		}
-	}
-
-	// BOOTSTRAP INVARIANT A (issue #766). Record the same person in the
-	// platform-admin carrier.
+	// Until migration 000054 this handler wrote an organization_members row
+	// pointing at the `admin` role template, and the carrier row beside it. The
+	// membership is gone: a role template confers no platform-admin authority
+	// any more, so writing one would be writing something that does nothing,
+	// and it was the last remaining path by which the platform-wide wildcard
+	// reached `organization_members` at all — PR #850's structural guard listed
+	// it as a named exemption precisely because it could not be removed until
+	// now.
 	//
-	// Setup predates the carrier: migration 000051 introduced it with a
-	// one-time backfill from admin-bearing memberships, so a deployment
-	// installed BEFORE that migration has carrier rows and a deployment
-	// installed after it had none at all — the bootstrap administrator existed
-	// only as an `admin` role template on an organization_members row. That is
-	// fine while effective admin is `carrier OR the scope union`, and it is a
-	// lockout the moment PR 3 derives authority from the carrier alone.
+	// The bootstrap administrator therefore starts with NO organization
+	// membership. That is not a gap: the carrier grants the `admin` wildcard on
+	// every request, which is what every organization route already accepts,
+	// and invariant B is vacuous over an organization with no members. They can
+	// enrol themselves, or anyone else, through the member API immediately.
 	//
 	// granted_by is the user themselves rather than NULL: this grant IS
 	// attributable, to whoever holds the one-time setup token, and NULL is
-	// reserved by migration 000051 for rows nobody granted. The note says which
-	// request minted it so the provenance is not silently invented.
+	// reserved by migration 000051 for rows nobody granted.
 	//
-	// NOT FATAL. The membership above already makes this person a platform
-	// administrator today, and failing the wizard here would leave a
-	// half-configured deployment whose only recovery is the SQL the management
-	// API exists to replace. Logged at ERROR and reported in the response so an
-	// operator can see it and grant the carrier row through
-	// POST /api/v1/admin/platform-admins.
-	carrierRecorded := h.recordBootstrapPlatformAdmin(ctx, user.ID, email)
+	// FATAL, WHICH IT WAS NOT BEFORE. While the membership existed a failed
+	// carrier write left a deployment that still had an administrator, so it
+	// was reported and setup continued. Now it leaves a deployment with NO
+	// administrator and no API route able to create one — the exact lockout the
+	// rest of this release is built to prevent. Setup has not been marked
+	// complete at this point, so the operator can simply retry.
+	if err := h.recordBootstrapPlatformAdmin(ctx, user.ID, email); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "failed to grant platform administration to the initial admin user; " +
+				"the deployment would have no administrator. Fix the registry database connection and retry.",
+		})
+		return
+	}
 
 	// Store the pending admin email for email-matching during first OIDC login
 	if err := h.oidcConfigRepo.SetPendingAdminEmail(ctx, email); err != nil {
 		slog.Error("setup: failed to set pending admin email", "error", err)
 	}
 
-	response := gin.H{
-		"message":      "Admin user configured successfully",
-		"email":        email,
-		"organization": defaultOrg.DisplayName,
-		"role":         "Administrator",
-	}
-	if !carrierRecorded {
-		response["platform_admin_carrier_incomplete"] = true
-	}
-	c.JSON(http.StatusOK, response)
+	c.JSON(http.StatusOK, gin.H{
+		"message":        "Admin user configured successfully",
+		"email":          email,
+		"platform_admin": true,
+	})
 }
 
 // recordBootstrapPlatformAdmin writes the bootstrap administrator's
-// platform_admins row and reports whether it landed (issue #766).
+// platform_admins row and returns nil when the grant stands (issue #766).
 //
 // Idempotent: a second run of the wizard, or a deployment whose migration
-// 000051 backfill already captured this person, reports
+// 000051/000054 backfill already captured this person, reports
 // ErrAlreadyPlatformAdmin — which is a SUCCESS here. The row exists, which is
 // the only thing the invariant cares about, and re-granting would rewrite the
 // provenance the carrier exists to keep.
-func (h *Handlers) recordBootstrapPlatformAdmin(ctx context.Context, userID, email string) bool {
+func (h *Handlers) recordBootstrapPlatformAdmin(ctx context.Context, userID, email string) error {
 	if h.carrier == nil {
-		slog.Error("setup: no platform-admin carrier wired; the bootstrap administrator "+
-			"exists only as an organization membership", "email", email)
-		return false
+		slog.Error("setup: no platform-admin carrier wired; this deployment would have no "+
+			"administrator at all", "email", email)
+		return errNoPlatformAdminCarrier
 	}
 	note := "bootstrap administrator configured by the setup wizard"
 	resourceType := repositories.AuditResourcePlatformAdmin
@@ -665,12 +645,12 @@ func (h *Handlers) recordBootstrapPlatformAdmin(ctx context.Context, userID, ema
 	if err == nil || errors.Is(err, repositories.ErrAlreadyPlatformAdmin) {
 		slog.Info("setup: bootstrap administrator recorded in the platform-admin carrier",
 			"user_id", userID, "email", email)
-		return true
+		return nil
 	}
 	slog.Error("setup: failed to record the bootstrap administrator in the platform-admin carrier; "+
-		"grant it through POST /api/v1/admin/platform-admins before relying on carrier-only authority",
+		"nothing else in this wizard grants platform administration, so the deployment has none",
 		"user_id", userID, "email", email, "error", err)
-	return false
+	return err
 }
 
 // @Summary      Complete setup

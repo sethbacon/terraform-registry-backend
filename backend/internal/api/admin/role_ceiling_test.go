@@ -95,11 +95,16 @@ func TestCheckRoleAssignment_SameOrgSufficientScopeAllowed(t *testing.T) {
 }
 
 // TestCheckRoleAssignment_GlobalAdminBypassesPerOrgLookup proves a genuine
-// global admin can still assign any role (including another admin role)
-// without a per-org membership row -- and, critically, without ever querying
-// organization_members: no such expectation is queued, so a regression that
-// still performed the per-org lookup would surface as an unmatched-query
-// error (giving a 500 and chk.allowed == false), not a false pass.
+// global admin can still assign a role without a per-org membership row -- and,
+// critically, without ever querying organization_members: no such expectation
+// is queued, so a regression that still performed the per-org lookup would
+// surface as an unmatched-query error (giving a 500 and chk.allowed == false),
+// not a false pass.
+//
+// The role is NOT admin-bearing any more. It used to be, on the reasoning that
+// "a global admin can assign any role, including another admin role"; migration
+// 000054 removed that exception along with the rest of the wildcard's presence
+// on role templates. See the test below.
 func TestCheckRoleAssignment_GlobalAdminBypassesPerOrgLookup(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -110,15 +115,66 @@ func TestCheckRoleAssignment_GlobalAdminBypassesPerOrgLookup(t *testing.T) {
 
 	roleID := "33333333-3333-3333-3333-333333333333"
 	mock.ExpectQuery("SELECT scopes FROM role_templates WHERE id").
-		WillReturnRows(sqlmock.NewRows([]string{"scopes"}).AddRow([]byte(`["admin"]`)))
+		WillReturnRows(sqlmock.NewRows([]string{"scopes"}).AddRow([]byte(`["users:write","organizations:write"]`)))
 
 	c := newRoleCeilingContext("org-c", "caller-3", []string{"admin"})
 	chk := h.checkRoleAssignment(c, &roleID)
 
 	if !chk.allowed {
-		t.Fatalf("global admin must be allowed to assign any role: got %+v", chk)
+		t.Fatalf("global admin must be allowed to assign a role within its authority: got %+v", chk)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet/unexpected expectations (admin bypass must skip the per-org DB lookup): %v", err)
+	}
+}
+
+// TestCheckRoleAssignment_NobodyMayAssignAnAdminBearingTemplate is issue #766's
+// recommendation at the unit level, and it applies to the platform
+// administrator in particular: RoleScopesPermittedBy answers TRUE for a caller
+// holding `admin`, so folding the refusal into the ceiling would have left this
+// caller — the only one who could ever create the state PR #850 tolerated —
+// able to do it.
+//
+// The refusal is asserted on its own message rather than on the status, because
+// a 403 also comes out of the per-org ceiling and only one of the two holds
+// here.
+func TestCheckRoleAssignment_NobodyMayAssignAnAdminBearingTemplate(t *testing.T) {
+	for _, caller := range []struct {
+		name   string
+		scopes []string
+	}{
+		{"platform administrator", []string{"admin"}},
+		{"organization owner", []string{"organizations:write"}},
+	} {
+		t.Run(caller.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("sqlmock.New: %v", err)
+			}
+			defer db.Close()
+			h := newRoleCeilingHandlers(db)
+
+			roleID := "44444444-4444-4444-4444-444444444444"
+			// Only the template read is queued. The per-org ceiling lookup must
+			// not happen: the answer does not depend on the caller.
+			mock.ExpectQuery("SELECT scopes FROM role_templates WHERE id").
+				WillReturnRows(sqlmock.NewRows([]string{"scopes"}).AddRow([]byte(`["admin"]`)))
+
+			c := newRoleCeilingContext("org-c", "caller-4", caller.scopes)
+			chk := h.checkRoleAssignment(c, &roleID)
+
+			if chk.allowed {
+				t.Fatalf("%s was permitted to assign an admin-bearing template: %+v", caller.name, chk)
+			}
+			if chk.status != http.StatusForbidden {
+				t.Errorf("status = %d, want 403", chk.status)
+			}
+			if chk.message != adminBearingRefusal {
+				t.Errorf("message = %q, want the admin-bearing refusal naming the platform-admins route", chk.message)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Errorf("unmet/unexpected expectations (the refusal must not need a per-org lookup): %v", err)
+			}
+		})
 	}
 }

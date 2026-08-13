@@ -204,12 +204,21 @@ func ValidateScopeString(scope string) error {
 }
 
 // ValidateProvisionableScopes rejects ScopeAdmin ("admin") from a scope list,
-// naming it specifically, and returns nil otherwise. Call this when mapping
-// externally-influenced data (an OIDC/SAML/LDAP IdP group claim, a SCIM
-// attribute, or any other value a lower-trust source contributes) onto a
-// scope/role list, BEFORE that list is trusted or persisted — never on scopes
-// read back from an already-trusted, admin-seeded role_template, where
-// carrying ScopeAdmin is expected and legitimate.
+// naming it specifically, and returns nil otherwise.
+//
+// IT IS NOW THE RULE FOR EVERY MEMBERSHIP WRITE, not only the IdP-driven ones
+// (issue #766, migration 000054). It began as the guard for mapping
+// externally-influenced data — an OIDC/SAML/LDAP group claim, a SCIM attribute
+// — onto a role list before that list was trusted, and it carried the caveat
+// that scopes read back from an already-trusted, admin-seeded role_template
+// were exempt, because `organization_members.role_template_id` was then the
+// only carrier for platform-admin authority and refusing it there would have
+// left a deployment unable to have an administrator at all.
+//
+// That caveat is gone. `platform_admins` is the carrier; no role template may
+// confer the wildcard, whoever is asking and however trusted they are. The
+// human-driven ceiling (internal/api/admin/role_ceiling.go) applies the same
+// predicate, so there is one rule and one name for it.
 //
 // Thin wrapper over identityauth.ValidateProvisionableScopes, matching this
 // file's existing pattern of re-exporting the shared identity module's

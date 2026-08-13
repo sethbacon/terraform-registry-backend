@@ -86,9 +86,12 @@ func expectSessionUserLoad(mock sqlmock.Sqlmock, userID string) {
 
 func carrierDevRequest(t *testing.T, r *gin.Engine, userID string) *httptest.ResponseRecorder {
 	t.Helper()
-	// No scopes whatsoever: the union side of the OR grants nothing here, so
-	// anything that succeeds does so because of the carrier.
-	token, err := auth.GenerateJWT(userID, "carrier@example.com", []string{}, time.Hour)
+	return carrierDevRequestWithScopes(t, r, userID, []string{})
+}
+
+func carrierDevRequestWithScopes(t *testing.T, r *gin.Engine, userID string, scopes []string) *httptest.ResponseRecorder {
+	t.Helper()
+	token, err := auth.GenerateJWT(userID, "carrier@example.com", scopes, time.Hour)
 	if err != nil {
 		t.Fatalf("GenerateJWT: %v", err)
 	}
@@ -143,5 +146,40 @@ func TestPlatformAdminCarrier_WithoutAGrantTheSameRequestIsRefused(t *testing.T)
 	}
 	if err := idMock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet identity expectations: %v", err)
+	}
+}
+
+// THE BREAKING CHANGE, asserted where an operator meets it (issue #766,
+// migration 000054).
+//
+// A session token carrying `admin` in its scope union — exactly what
+// GetUserCombinedScopes minted for anyone holding the seeded `admin` role
+// template, and what every live pre-upgrade session still carries — reaches the
+// same untouched auth.HasScope(scopes, auth.ScopeAdmin) site and is REFUSED,
+// because the principal has no carrier row.
+//
+// Exactly 403, not "not 200": a 500 from an incidental mock miss would satisfy
+// a weaker check while proving nothing, and 403 is the status dev.go answers
+// with. The negative control above supplies no scopes at all; this one supplies
+// the wildcard, so the only thing separating the two is the strip.
+func TestPlatformAdminCarrier_AdminScopeInTheTokenNoLongerAdmits(t *testing.T) {
+	r, idMock, paMock := carrierDevRouter(t)
+
+	expectSessionUserLoad(idMock, "user-template-admin")
+	paMock.ExpectQuery("SELECT EXISTS.*FROM platform_admins").
+		WithArgs("user-template-admin").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+
+	w := carrierDevRequestWithScopes(t, r, "user-template-admin", []string{"admin"})
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("GET /api/v1/dev/users = %d, want 403: a session holding `admin` through the scope union "+
+			"still administers the platform, so authority has not moved to the carrier. body=%s",
+			w.Code, w.Body.String())
+	}
+	if err := paMock.ExpectationsWereMet(); err != nil {
+		t.Errorf("the carrier was not consulted on the session path: %v", err)
+	}
+	if err := idMock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet identity expectations — the handler ran: %v", err)
 	}
 }

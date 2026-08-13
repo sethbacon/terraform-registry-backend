@@ -77,25 +77,32 @@ func expectManagedOrgLookup(identity sqlmock.Sqlmock) {
 			AddRow("org-1", "user-1", &roleID, time.Now()))
 }
 
-// TestIdPReconcile_SkipsADeprovisionThatWouldStrandTheDeployment.
+// TestIdPReconcile_SkipsADeprovisionThatWouldStrandTheOrganization.
+//
+// This used to be a DEPLOYMENT-floor case: the subject held the only
+// admin-bearing role template anywhere, the carrier was empty, and invariant A
+// refused. Migration 000054 makes that membership confer nothing — the
+// subject's platform-admin authority, if they have any, is in the carrier and
+// an IdP deprovision does not touch it — so invariant A no longer applies to
+// this path at all and the refusal that still matters is invariant B's: the
+// organization would keep a member and lose its last administrator.
 //
 // No DELETE is queued. sqlmock is in its default ordered mode, so a regression
 // that dropped the guard would not merely leave the membership gone — it would
 // attempt an unexpected statement and fail on that too.
-func TestIdPReconcile_SkipsADeprovisionThatWouldStrandTheDeployment(t *testing.T) {
+func TestIdPReconcile_SkipsADeprovisionThatWouldStrandTheOrganization(t *testing.T) {
 	h, identity, registry := flooredAuthHandlers(t, idpRevokeConfig())
 
 	expectManagedOrgLookup(identity)
 
 	registry.ExpectBegin()
 	registry.ExpectExec("pg_advisory_xact_lock").WillReturnResult(sqlmock.NewResult(0, 0))
-	// The subject is the only admin-bearing membership anywhere, and the
-	// carrier is empty.
-	identity.ExpectQuery("FROM organization_members").
-		WillReturnRows(sqlmock.NewRows([]string{"organization_id", "user_id", "scopes"}).
-			AddRow("org-1", "user-1", []byte(`["admin"]`)))
-	registry.ExpectQuery("FROM platform_admins").
-		WillReturnRows(sqlmock.NewRows([]string{"user_id"}))
+	// org-1 keeps a viewer after the subject goes, and the subject is its only
+	// administrator.
+	identity.ExpectQuery("WHERE om.organization_id").
+		WillReturnRows(sqlmock.NewRows([]string{"user_id", "scopes"}).
+			AddRow("user-1", []byte(`["organizations:write"]`)).
+			AddRow("viewer-1", []byte(`["modules:read"]`)))
 	registry.ExpectRollback()
 
 	// No group maps to acme any more.
@@ -119,10 +126,8 @@ func TestIdPReconcile_StillDeprovisionsAnOrdinaryLeaver(t *testing.T) {
 
 	registry.ExpectBegin()
 	registry.ExpectExec("pg_advisory_xact_lock").WillReturnResult(sqlmock.NewResult(0, 0))
-	// Somebody else administers the platform.
-	identity.ExpectQuery("FROM organization_members").
-		WillReturnRows(sqlmock.NewRows([]string{"organization_id", "user_id", "scopes"}).
-			AddRow("org-9", "someone-else", []byte(`["admin"]`)))
+	// No invariant-A fixture: a membership removal cannot reduce carrier
+	// authority, so the floor goes straight to invariant B.
 	// org-1 keeps an owner after the subject goes.
 	identity.ExpectQuery("WHERE om.organization_id").
 		WillReturnRows(sqlmock.NewRows([]string{"user_id", "scopes"}).
