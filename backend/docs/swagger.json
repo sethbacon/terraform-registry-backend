@@ -5465,6 +5465,13 @@
                             "additionalProperties": true
                         }
                     },
+                    "409": {
+                        "description": "Would leave no administrator",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
                     "500": {
                         "description": "Internal server error",
                         "schema": {
@@ -8086,7 +8093,7 @@
                         }
                     },
                     "409": {
-                        "description": "Organization still owns namespace claims",
+                        "description": "Organization still owns namespace claims, or deleting it would leave the deployment with no platform administrator",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -8307,6 +8314,13 @@
                             "additionalProperties": true
                         }
                     },
+                    "409": {
+                        "description": "Would leave no administrator",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
                     "500": {
                         "description": "Internal server error",
                         "schema": {
@@ -8322,7 +8336,7 @@
                         "Bearer": []
                     }
                 ],
-                "description": "Remove a user from an organization's membership.",
+                "description": "Remove a user from an organization's membership. Refused with 409 when it would leave the organization with members but no administrator, or the deployment with no platform administrator (issue #766).",
                 "produces": [
                     "application/json"
                 ],
@@ -8355,6 +8369,13 @@
                     },
                     "401": {
                         "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "Would leave no administrator",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
@@ -11784,6 +11805,13 @@
                             "additionalProperties": true
                         }
                     },
+                    "409": {
+                        "description": "Would leave no administrator",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
                     "500": {
                         "description": "Internal server error",
                         "schema": {
@@ -12180,6 +12208,12 @@
                             "$ref": "#/definitions/scim.SCIMError"
                         }
                     },
+                    "409": {
+                        "description": "Would leave no administrator",
+                        "schema": {
+                            "$ref": "#/definitions/scim.SCIMError"
+                        }
+                    },
                     "500": {
                         "description": "Internal server error",
                         "schema": {
@@ -12214,6 +12248,12 @@
                     },
                     "404": {
                         "description": "User not found",
+                        "schema": {
+                            "$ref": "#/definitions/scim.SCIMError"
+                        }
+                    },
+                    "409": {
+                        "description": "Would leave no administrator",
                         "schema": {
                             "$ref": "#/definitions/scim.SCIMError"
                         }
@@ -12276,6 +12316,12 @@
                     },
                     "404": {
                         "description": "User not found",
+                        "schema": {
+                            "$ref": "#/definitions/scim.SCIMError"
+                        }
+                    },
+                    "409": {
+                        "description": "Would leave no administrator",
                         "schema": {
                             "$ref": "#/definitions/scim.SCIMError"
                         }

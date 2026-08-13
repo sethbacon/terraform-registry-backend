@@ -6807,6 +6807,17 @@
                             }
                         }
                     },
+                    "409": {
+                        "description": "Would leave no administrator",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    },
                     "500": {
                         "description": "Internal server error",
                         "content": {
@@ -10005,7 +10016,7 @@
                         }
                     },
                     "409": {
-                        "description": "Organization still owns namespace claims",
+                        "description": "Organization still owns namespace claims, or deleting it would leave the deployment with no platform administrator",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -10287,6 +10298,17 @@
                             }
                         }
                     },
+                    "409": {
+                        "description": "Would leave no administrator",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    },
                     "500": {
                         "description": "Internal server error",
                         "content": {
@@ -10306,7 +10328,7 @@
                         "Bearer": []
                     }
                 ],
-                "description": "Remove a user from an organization's membership.",
+                "description": "Remove a user from an organization's membership. Refused with 409 when it would leave the organization with members but no administrator, or the deployment with no platform administrator (issue #766).",
                 "tags": [
                     "Organizations"
                 ],
@@ -10344,6 +10366,17 @@
                     },
                     "401": {
                         "description": "Unauthorized",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Would leave no administrator",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -14549,6 +14582,17 @@
                             }
                         }
                     },
+                    "409": {
+                        "description": "Would leave no administrator",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    },
                     "500": {
                         "description": "Internal server error",
                         "content": {
@@ -15028,6 +15072,16 @@
                             }
                         }
                     },
+                    "409": {
+                        "description": "Would leave no administrator",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/scim.SCIMError"
+                                }
+                            }
+                        }
+                    },
                     "500": {
                         "description": "Internal server error",
                         "content": {
@@ -15068,6 +15122,16 @@
                     },
                     "404": {
                         "description": "User not found",
+                        "content": {
+                            "*/*": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/scim.SCIMError"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Would leave no administrator",
                         "content": {
                             "*/*": {
                                 "schema": {
@@ -15144,6 +15208,16 @@
                     },
                     "404": {
                         "description": "User not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/scim.SCIMError"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "Would leave no administrator",
                         "content": {
                             "application/json": {
                                 "schema": {

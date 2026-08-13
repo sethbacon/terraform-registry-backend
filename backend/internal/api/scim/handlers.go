@@ -15,6 +15,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/terraform-registry/terraform-registry/internal/adminfloor"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/credlifecycle"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
@@ -51,6 +52,15 @@ type Handlers struct {
 	// May be nil (no sweep) so the handler set stays constructible without the
 	// revocation subsystem.
 	creds *credlifecycle.Sweeper
+
+	// floor holds the never-zero administrator invariants across a deprovision
+	// (issue #766). SCIM is the offboarding channel with no human in the loop:
+	// an IdP that disables the wrong account strips its memberships in every
+	// organization the credential reaches, and nothing else in this package
+	// asks whether one of them was the deployment's last administrator.
+	//
+	// May be nil, on the same convention as creds.
+	floor *adminfloor.Guard
 }
 
 // Option configures optional Handlers construction behaviour.
@@ -60,6 +70,12 @@ type Option func(*Handlers)
 // paths (DELETE /Users/{id}, and active=false via PUT or PATCH).
 func WithCredentialSweeper(s *credlifecycle.Sweeper) Option {
 	return func(h *Handlers) { h.creds = s }
+}
+
+// WithAdminFloor wires the never-zero administrator guard used by the same
+// deprovisioning paths (issue #766).
+func WithAdminFloor(g *adminfloor.Guard) Option {
+	return func(h *Handlers) { h.floor = g }
 }
 
 // NewHandlers creates a SCIM handler set.
@@ -347,6 +363,7 @@ func (h *Handlers) CreateUser() gin.HandlerFunc {
 // @Failure      400  {object}  scim.SCIMError  "Invalid PATCH payload"
 // @Failure      404  {object}  scim.SCIMError  "User not found"
 // @Failure      500  {object}  scim.SCIMError  "Internal server error"
+// @Failure      409  {object}  scim.SCIMError  "Would leave no administrator"
 // @Router       /scim/v2/Users/{id} [patch]
 // PatchUser handles PATCH /scim/v2/Users/:id
 func (h *Handlers) PatchUser() gin.HandlerFunc {
@@ -369,7 +386,15 @@ func (h *Handlers) PatchUser() gin.HandlerFunc {
 		for _, op := range patchReq.Operations {
 			switch strings.ToLower(op.Op) {
 			case "replace":
-				h.applyReplaceOp(c, user, op)
+				// A refused deprovision must not vanish into a 200. Before
+				// issue #766 applyReplaceOp logged and returned, and PatchUser
+				// carried on to answer 200 with the user still fully
+				// provisioned -- an IdP feed had no way to learn that the
+				// deactivation it asked for did not happen.
+				if err := h.applyReplaceOp(c, user, op); err != nil {
+					respondDeprovisionFailure(c, userID, err)
+					return
+				}
 			default:
 				// Ignore unsupported ops per SCIM spec
 			}
@@ -404,6 +429,7 @@ func (h *Handlers) PatchUser() gin.HandlerFunc {
 // @Failure      400  {object}  scim.SCIMError  "Invalid payload"
 // @Failure      404  {object}  scim.SCIMError  "User not found"
 // @Failure      500  {object}  scim.SCIMError  "Internal server error"
+// @Failure      409  {object}  scim.SCIMError  "Would leave no administrator"
 // @Router       /scim/v2/Users/{id} [put]
 // PutUser handles PUT /scim/v2/Users/:id (full replacement)
 func (h *Handlers) PutUser() gin.HandlerFunc {
@@ -446,8 +472,7 @@ func (h *Handlers) PutUser() gin.HandlerFunc {
 			// helper also sweeps the user's JWT sessions and API keys, which
 			// carry a snapshot of the removed authority (issue #736).
 			if err := h.deprovisionUser(c, userID, "scim: user deactivated via PUT"); err != nil {
-				slog.Error("scim: deactivate user failed", "id", userID, "error", err)
-				scimError(c, http.StatusInternalServerError, "Failed to deactivate user")
+				respondDeprovisionFailure(c, userID, err)
 				return
 			}
 			slog.Info("scim: user deactivated via PUT", "id", userID)
@@ -476,6 +501,7 @@ func (h *Handlers) PutUser() gin.HandlerFunc {
 // @Success      204  "User deactivated"
 // @Failure      404  {object}  scim.SCIMError  "User not found"
 // @Failure      500  {object}  scim.SCIMError  "Internal server error"
+// @Failure      409  {object}  scim.SCIMError  "Would leave no administrator"
 // @Router       /scim/v2/Users/{id} [delete]
 // DeleteUser handles DELETE /scim/v2/Users/:id
 // Per the roadmap, this soft-deletes (deactivates) rather than hard-deletes.
@@ -497,8 +523,7 @@ func (h *Handlers) DeleteUser() gin.HandlerFunc {
 		// user lookup fail — without the sweep the "deleted" user would keep a
 		// live session and permanently valid API keys.
 		if err := h.deprovisionUser(c, userID, "scim: user deleted"); err != nil {
-			slog.Error("scim: deactivate user failed", "id", userID, "error", err)
-			scimError(c, http.StatusInternalServerError, "Failed to deactivate user")
+			respondDeprovisionFailure(c, userID, err)
 			return
 		}
 
@@ -570,7 +595,12 @@ func (h *Handlers) GetGroup() gin.HandlerFunc {
 // because the deactivation branches must know WHO is asking: the tenant scope
 // of a SCIM deprovision is a property of the caller, not of the request
 // deadline (issue #719).
-func (h *Handlers) applyReplaceOp(c *gin.Context, user *models.User, op SCIMOperation) {
+//
+// It returns an error so a REFUSED deprovision reaches the response (issue
+// #766). It used to log and return nothing, and PatchUser then answered 200
+// with the user still provisioned — the shape that turns an administrator-floor
+// refusal into a sync that silently never happened.
+func (h *Handlers) applyReplaceOp(c *gin.Context, user *models.User, op SCIMOperation) error {
 	path := strings.ToLower(op.Path)
 
 	switch path {
@@ -588,8 +618,7 @@ func (h *Handlers) applyReplaceOp(c *gin.Context, user *models.User, op SCIMOper
 			// the PATCH "replace active" op; the helper sweeps the same
 			// credential families (issue #736).
 			if err := h.deprovisionUser(c, user.ID, "scim: user deactivated via PATCH"); err != nil {
-				slog.Error("scim: deactivate user failed", "id", user.ID, "error", err)
-				return
+				return err
 			}
 			slog.Info("scim: user deactivated via PATCH", "id", user.ID)
 		}
@@ -611,8 +640,7 @@ func (h *Handlers) applyReplaceOp(c *gin.Context, user *models.User, op SCIMOper
 				// deprovisioning event as the "active" path above and sweeps
 				// identically (issue #736) through the shared helper.
 				if err := h.deprovisionUser(c, user.ID, "scim: user deactivated via pathless PATCH"); err != nil {
-					slog.Error("scim: deactivate user failed", "id", user.ID, "error", err)
-					return
+					return err
 				}
 			}
 			if v, ok := m["userName"].(string); ok && v != "" {
@@ -625,6 +653,7 @@ func (h *Handlers) applyReplaceOp(c *gin.Context, user *models.User, op SCIMOper
 			}
 		}
 	}
+	return nil
 }
 
 func (h *Handlers) baseURL(c *gin.Context) string {

@@ -23,13 +23,62 @@
 package scim
 
 import (
+	"context"
+	"errors"
 	"log/slog"
+	"net/http"
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/terraform-registry/terraform-registry/internal/adminfloor"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
+	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/tenantscope"
 )
+
+// deprovisionOrganizations translates the caller's OrgScope into the
+// organization list the admin floor should evaluate.
+//
+// A scope naming specific organizations gives the floor exactly the rows the
+// DELETE will match. An ALL-organizations scope gives it nothing, which the
+// floor reads as "every organization this principal belongs to" — the same set,
+// spelled the way the floor spells it, and the only spelling that stays correct
+// when the principal joins an organization between the two reads.
+func deprovisionOrganizations(scope repositories.OrgScope) []string {
+	if scope.IsAllOrganizations() {
+		return nil
+	}
+	return scope.OrganizationIDs()
+}
+
+// respondDeprovisionFailure writes the SCIM error for a deprovision that did
+// not happen (issue #766).
+//
+// 409 for an administrator-floor refusal, so an IdP feed can tell "this
+// deactivation is impossible until you appoint somebody else" apart from "the
+// registry is broken, retry". A SCIM client retries a 500 forever and reports
+// nothing to the operator; a 409 with a message is the difference between a
+// deactivation an administrator can act on and one that disappears into a sync
+// log.
+//
+// 500 for everything else, unchanged.
+func respondDeprovisionFailure(c *gin.Context, userID string, err error) {
+	switch {
+	case errors.Is(err, adminfloor.ErrLastPlatformAdmin):
+		slog.Error("scim: deprovision refused — it would leave the deployment with no platform administrator",
+			"id", userID)
+		scimError(c, http.StatusConflict,
+			"Cannot deactivate the deployment's last platform administrator; grant platform-admin to another user first")
+	case errors.Is(err, adminfloor.ErrLastOrganizationAdmin):
+		slog.Error("scim: deprovision refused — it would leave an organization with no administrator",
+			"id", userID, "error", err)
+		scimError(c, http.StatusConflict,
+			"Cannot deactivate an organization's last administrator; give another member a role carrying organizations:write first")
+	default:
+		slog.Error("scim: deactivate user failed", "id", userID, "error", err)
+		scimError(c, http.StatusInternalServerError, "Failed to deactivate user")
+	}
+}
 
 // deprovisionUser removes the target user's organization memberships, limited
 // to the organizations the caller may act in, and then invalidates every
@@ -81,7 +130,29 @@ func (h *Handlers) deprovisionUser(c *gin.Context, userID, reason string) error 
 	// only of organizations this caller has no authority in), and it must not
 	// stop the credential sweep below — the sessions outlive the membership rows
 	// and are the half that still grants access.
-	removed, err := h.orgRepo.RemoveAllMembershipsForUser(ctx, userID, scope.OrgScope())
+	//
+	// GUARD admin-floor (issue #766). The strip runs inside the floor's lock,
+	// with the SAME organizations the OrgScope will actually match, so the
+	// invariants are evaluated over exactly the rows about to be deleted rather
+	// than over the whole platform. A platform-wide caller passes nothing,
+	// which the floor reads as "every organization this principal belongs to" —
+	// the same set that statement will empty.
+	//
+	// DestroysPrincipal is FALSE, and that is the distinction from a user
+	// delete: SCIM leaves the users row intact, so a deprovisioned
+	// administrator holding a platform_admins grant can still authenticate and
+	// still exercise it. Marking the principal destroyed here would refuse
+	// deprovisions that take nothing away.
+	var removed repositories.OrgScope
+	err = h.floor.Protect(ctx, adminfloor.Change{
+		UserID:            userID,
+		OrganizationIDs:   deprovisionOrganizations(scope.OrgScope()),
+		RemovesMembership: true,
+	}, func(ctx context.Context) error {
+		var stripErr error
+		removed, stripErr = h.orgRepo.RemoveAllMembershipsForUser(ctx, userID, scope.OrgScope())
+		return stripErr
+	})
 	if err != nil {
 		return err
 	}

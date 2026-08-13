@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/terraform-registry/terraform-registry/internal/adminfloor"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/auth/azuread"
 	ldappkg "github.com/terraform-registry/terraform-registry/internal/auth/ldap"
@@ -60,6 +62,12 @@ type AuthHandlers struct {
 	// api_keys row -- would otherwise keep working forever (issue #732).
 	// Set via WithCredentialSweeper; nil is a no-op.
 	creds *credlifecycle.Sweeper
+	// floor holds the never-zero administrator invariants across the two
+	// REDUCING branches of reconcileGroupMemberships (issue #766). An IdP
+	// group change is the one authority reduction in this product that nobody
+	// requests: it happens on the next login of whoever was moved. Set via
+	// WithAdminFloor; nil is a no-op.
+	floor *adminfloor.Guard
 }
 
 // AuthHandlersOption configures optional AuthHandlers construction behavior.
@@ -76,6 +84,52 @@ func WithSAMLEgressGuard(g *httpsafe.Guard) AuthHandlersOption {
 // group-mapping deprovisioning branch of reconcileGroupMemberships.
 func WithCredentialSweeper(s *credlifecycle.Sweeper) AuthHandlersOption {
 	return func(h *AuthHandlers) { h.creds = s }
+}
+
+// WithAdminFloor wires the never-zero administrator guard used by the
+// reducing branches of reconcileGroupMemberships (issue #766).
+func WithAdminFloor(g *adminfloor.Guard) AuthHandlersOption {
+	return func(h *AuthHandlers) { h.floor = g }
+}
+
+// idpReduce runs one IdP-driven authority reduction under the admin floor and
+// reports whether the floor refused it (issue #766).
+//
+// A REFUSAL SKIPS THE REDUCTION AND LETS THE LOGIN PROCEED. That is a
+// deliberate decision and the opposite of what the API surfaces do, for a
+// reason that only applies here: this code runs inside the login the reduction
+// is about. Failing the login instead would lock the subject out — and the
+// subject of a refusal is, by definition, the deployment's last administrator
+// or an organization's, i.e. exactly the person who has to log in to fix the
+// IdP mapping that caused it. A refusal that produced a lockout would be the
+// bug this package exists to prevent, arrived at from the other side.
+//
+// It is not silent. The membership survives — an observable, testable outcome,
+// not a no-op — and the skip is logged at ERROR with the invariant that
+// refused, so the mismatch between what the IdP asked for and what the
+// registry did is in the operator's logs rather than only in the IdP's.
+//
+// An INDETERMINATE floor skips too. The reconciliation is best-effort by
+// construction (a missing organization already `continue`s, a vanished
+// membership is already swallowed), so an unreadable floor must leave the
+// authority alone rather than guess in either direction.
+func (h *AuthHandlers) idpReduce(ctx context.Context, ch adminfloor.Change, provider, orgName, what string, write func(context.Context) error) (refused bool, err error) {
+	err = h.floor.Protect(ctx, ch, write)
+	switch {
+	case errors.Is(err, adminfloor.ErrLastPlatformAdmin):
+		slog.Error(provider+" group mapping "+what+" SKIPPED: it would leave the deployment with no platform administrator",
+			"user_id", ch.UserID, "org", orgName)
+		return true, nil
+	case errors.Is(err, adminfloor.ErrLastOrganizationAdmin):
+		slog.Error(provider+" group mapping "+what+" SKIPPED: it would leave the organization with no administrator",
+			"user_id", ch.UserID, "org", orgName)
+		return true, nil
+	case errors.Is(err, adminfloor.ErrIndeterminate):
+		slog.Error(provider+" group mapping "+what+" SKIPPED: could not establish that an administrator would remain",
+			"user_id", ch.UserID, "org", orgName, "error", err)
+		return true, nil
+	}
+	return false, err
 }
 
 // NewAuthHandlers creates a new AuthHandlers instance.
@@ -1135,8 +1189,29 @@ func (h *AuthHandlers) reconcileGroupMemberships(ctx context.Context, userID str
 			// this branch wanted to change no longer exists — and aborting here
 			// would leave every LATER managed organization unreconciled and
 			// fail the user's login outright.
-			if err := h.orgRepo.UpdateMemberRole(ctx, org.ID, userID, role, repositories.OrgScopeAllOrganizations()); err != nil &&
-				!identityerr.IsNotFound(err) {
+			//
+			// GUARD admin-floor (issue #766). This branch commits a REDUCTION
+			// whenever the mapped role is weaker than the one held, with no
+			// human in the loop: an IdP group edit reaches it on the subject's
+			// next login. KeepsScopes is `retained`, the mapped template's
+			// scopes, which resolveProvisionableRole has already read — so a
+			// mapping onto another organizations:write role is correctly seen
+			// as no reduction at all.
+			refused, err := h.idpReduce(ctx, adminfloor.Change{
+				UserID:          userID,
+				OrganizationIDs: []string{org.ID},
+				KeepsScopes:     retained,
+			}, provider, orgName, "role reassignment", func(ctx context.Context) error {
+				if err := h.orgRepo.UpdateMemberRole(ctx, org.ID, userID, role, repositories.OrgScopeAllOrganizations()); err != nil &&
+					!identityerr.IsNotFound(err) {
+					return err
+				}
+				return nil
+			})
+			if refused {
+				continue
+			}
+			if err != nil {
 				return fmt.Errorf("update member role org=%s user=%s role=%s: %w", org.ID, userID, role, err)
 			}
 			// An IdP group change can map the user to a LOWER role than they
@@ -1176,8 +1251,28 @@ func (h *AuthHandlers) reconcileGroupMemberships(ctx context.Context, userID str
 			// Aborting instead would skip that sweep — leaving the offboarded
 			// user's org-bound API keys alive, which is the exact failure
 			// (issue #732) the sweep was added to close.
-			if err := h.orgRepo.RemoveMember(ctx, org.ID, userID, repositories.OrgScopeAllOrganizations()); err != nil &&
-				!identityerr.IsNotFound(err) {
+			//
+			// GUARD admin-floor (issue #766). The widest of the reducing
+			// branches: it fires when NO current IdP group maps to this managed
+			// organization, so a group deleted or renamed at the IdP offboards
+			// its members on their next login. If one of them was the
+			// deployment's last administrator, or this organization's, the
+			// floor refuses and the membership stands.
+			refused, err := h.idpReduce(ctx, adminfloor.Change{
+				UserID:            userID,
+				OrganizationIDs:   []string{org.ID},
+				RemovesMembership: true,
+			}, provider, orgName, "deprovision", func(ctx context.Context) error {
+				if err := h.orgRepo.RemoveMember(ctx, org.ID, userID, repositories.OrgScopeAllOrganizations()); err != nil &&
+					!identityerr.IsNotFound(err) {
+					return err
+				}
+				return nil
+			})
+			if refused {
+				continue
+			}
+			if err != nil {
 				return fmt.Errorf("revoke member org=%s user=%s: %w", org.ID, userID, err)
 			}
 			// Removing the membership does not touch the member's API keys,

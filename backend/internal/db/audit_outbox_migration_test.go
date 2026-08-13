@@ -114,8 +114,16 @@ func TestMigration000052_AppliesRollsBackAndReApplies(t *testing.T) {
 	}
 	defer func() { _, _ = m.Close() }()
 
-	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
-		t.Fatalf("applying migrations: %v", err)
+	// Migrated TO 000052 rather than to head. This test rolls 000052 back with
+	// Steps(-1) and re-applies it with Steps(1), so it has to start standing on
+	// it; migrating to head instead made "the latest migration" and "the
+	// migration under test" the same thing only until the next one landed, and
+	// 000053 (issue #766's administrator floor) is the one that landed.
+	//
+	// Naming the target keeps the rest of this test verbatim and makes it
+	// robust against every future migration rather than just that one.
+	if err := m.Migrate(52); err != nil && err != migrate.ErrNoChange {
+		t.Fatalf("applying migrations through 000052: %v", err)
 	}
 	version, dirty, err := m.Version()
 	if err != nil {

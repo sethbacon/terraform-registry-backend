@@ -8,6 +8,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -21,6 +22,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/terraform-registry/terraform-registry/internal/api/admin"
+	"github.com/terraform-registry/terraform-registry/internal/audit"
 	ldappkg "github.com/terraform-registry/terraform-registry/internal/auth/ldap"
 	"github.com/terraform-registry/terraform-registry/internal/auth/oidc"
 	"github.com/terraform-registry/terraform-registry/internal/config"
@@ -47,6 +49,31 @@ type Handlers struct {
 	installFunc       installer.InstallFunc
 	scannerJob        *jobs.ModuleScannerJob
 	egressGuard       *httpsafe.Guard
+	// carrier records the bootstrap administrator in platform_admins as well
+	// as in organization_members (issue #766). See WithPlatformAdminCarrier.
+	carrier *repositories.PlatformAdminRepository
+	// outbox carries that grant's audit intent into the same transaction;
+	// migration 000052's constraint trigger refuses the commit without one.
+	outbox *audit.Outbox
+}
+
+// WithPlatformAdminCarrier attaches the platform-admin carrier so the setup
+// wizard establishes invariant A in BOTH places authority can live.
+//
+// Injected rather than built from a repo this struct already holds, for the
+// same reason NewOrganizationHandlers takes claimRepo as a parameter: the
+// carrier is on the REGISTRY's connection (migration 000051) while every
+// other repository here is on identity's, and under
+// TFR_IDENTITY_DATABASE_* those are different physical databases.
+//
+// The outbox comes with it and is on that same registry connection, because
+// the grant and the record of the grant have to commit together (migration
+// 000052). Passing the carrier without it produces a bootstrap that cannot
+// commit, which is why they are one argument list rather than two setters.
+func (h *Handlers) WithPlatformAdminCarrier(carrier *repositories.PlatformAdminRepository, outbox *audit.Outbox) *Handlers {
+	h.carrier = carrier
+	h.outbox = outbox
+	return h
 }
 
 // WithScannerJob attaches the scanner job so that SaveScanningConfig can kick
@@ -556,17 +583,94 @@ func (h *Handlers) ConfigureAdmin(c *gin.Context) {
 		}
 	}
 
+	// BOOTSTRAP INVARIANT A (issue #766). Record the same person in the
+	// platform-admin carrier.
+	//
+	// Setup predates the carrier: migration 000051 introduced it with a
+	// one-time backfill from admin-bearing memberships, so a deployment
+	// installed BEFORE that migration has carrier rows and a deployment
+	// installed after it had none at all — the bootstrap administrator existed
+	// only as an `admin` role template on an organization_members row. That is
+	// fine while effective admin is `carrier OR the scope union`, and it is a
+	// lockout the moment PR 3 derives authority from the carrier alone.
+	//
+	// granted_by is the user themselves rather than NULL: this grant IS
+	// attributable, to whoever holds the one-time setup token, and NULL is
+	// reserved by migration 000051 for rows nobody granted. The note says which
+	// request minted it so the provenance is not silently invented.
+	//
+	// NOT FATAL. The membership above already makes this person a platform
+	// administrator today, and failing the wizard here would leave a
+	// half-configured deployment whose only recovery is the SQL the management
+	// API exists to replace. Logged at ERROR and reported in the response so an
+	// operator can see it and grant the carrier row through
+	// POST /api/v1/admin/platform-admins.
+	carrierRecorded := h.recordBootstrapPlatformAdmin(ctx, user.ID, email)
+
 	// Store the pending admin email for email-matching during first OIDC login
 	if err := h.oidcConfigRepo.SetPendingAdminEmail(ctx, email); err != nil {
 		slog.Error("setup: failed to set pending admin email", "error", err)
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	response := gin.H{
 		"message":      "Admin user configured successfully",
 		"email":        email,
 		"organization": defaultOrg.DisplayName,
 		"role":         "Administrator",
+	}
+	if !carrierRecorded {
+		response["platform_admin_carrier_incomplete"] = true
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+// recordBootstrapPlatformAdmin writes the bootstrap administrator's
+// platform_admins row and reports whether it landed (issue #766).
+//
+// Idempotent: a second run of the wizard, or a deployment whose migration
+// 000051 backfill already captured this person, reports
+// ErrAlreadyPlatformAdmin — which is a SUCCESS here. The row exists, which is
+// the only thing the invariant cares about, and re-granting would rewrite the
+// provenance the carrier exists to keep.
+func (h *Handlers) recordBootstrapPlatformAdmin(ctx context.Context, userID, email string) bool {
+	if h.carrier == nil {
+		slog.Error("setup: no platform-admin carrier wired; the bootstrap administrator "+
+			"exists only as an organization membership", "email", email)
+		return false
+	}
+	note := "bootstrap administrator configured by the setup wizard"
+	resourceType := repositories.AuditResourcePlatformAdmin
+	target := userID
+	intent := &audit.Intent{
+		Action:       repositories.AuditActionPlatformAdminGranted,
+		ActorUserID:  &target,
+		ActorEmail:   &email,
+		ResourceType: &resourceType,
+		ResourceID:   &target,
+		Metadata: map[string]interface{}{
+			"target_user_id":    userID,
+			"target_user_email": email,
+			"note":              note,
+			"bootstrap":         true,
+		},
+	}
+	// The intent commits with the grant or neither does (migration 000052).
+	// ActorUserID is the new administrator themselves, matching granted_by
+	// below: the acting principal is whoever holds the one-time setup token,
+	// who has no user row of their own, and naming the subject is the only
+	// attribution that is true.
+	_, err := h.carrier.Grant(ctx, userID, &userID, &note, func(ctx context.Context, tx *sql.Tx) error {
+		return h.outbox.Enqueue(ctx, tx, intent)
 	})
+	if err == nil || errors.Is(err, repositories.ErrAlreadyPlatformAdmin) {
+		slog.Info("setup: bootstrap administrator recorded in the platform-admin carrier",
+			"user_id", userID, "email", email)
+		return true
+	}
+	slog.Error("setup: failed to record the bootstrap administrator in the platform-admin carrier; "+
+		"grant it through POST /api/v1/admin/platform-admins before relying on carrier-only authority",
+		"user_id", userID, "email", email, "error", err)
+	return false
 }
 
 // @Summary      Complete setup

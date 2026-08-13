@@ -58,6 +58,7 @@ func (h *GDPRHandlers) ExportUserDataHandler() gin.HandlerFunc {
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
 // @Failure      403  {object}  map[string]interface{}  "Forbidden — admin scope required"
 // @Failure      404  {object}  map[string]interface{}  "User not found"
+// @Failure      409  {object}  map[string]interface{}  "Would leave no administrator"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/admin/users/{id}/erase [post]
 func (h *GDPRHandlers) EraseUserHandler() gin.HandlerFunc {
@@ -71,7 +72,18 @@ func (h *GDPRHandlers) EraseUserHandler() gin.HandlerFunc {
 			erasedByStr = "system"
 		}
 
-		if err := h.userSvc.EraseUser(c.Request.Context(), userID, erasedByStr); err != nil {
+		// An administrator-floor refusal is not "user not found" (issue #766).
+		// Every error out of EraseUser used to become a 404 carrying the raw
+		// error string, so refusing to erase the deployment's last administrator
+		// would have answered "404: adminfloor: the deployment would be left
+		// with no platform administrator" — a refusal disguised as an absent
+		// resource, which a caller reconciles by giving up rather than by
+		// appointing somebody else.
+		err := h.userSvc.EraseUser(c.Request.Context(), userID, erasedByStr)
+		if respondAdminFloor(c, err) {
+			return
+		}
+		if err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 			return
 		}
