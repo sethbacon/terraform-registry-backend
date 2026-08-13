@@ -895,7 +895,37 @@ func (h *AuthHandlers) MeHandler() gin.HandlerFunc {
 
 		// Calculate combined allowed scopes across all organizations
 		// and provide a "primary" role template (highest privilege) for backward compatibility
-		response["allowed_scopes"] = userWithRoles.GetAllowedScopes() //nolint:staticcheck // SA1019: deliberate suite-wide combined view for this admin display endpoint; narrow legitimate use per the deprecation notice
+		allowedScopes := userWithRoles.GetAllowedScopes() //nolint:staticcheck // SA1019: deliberate suite-wide combined view for this admin display endpoint; narrow legitimate use per the deprecation notice
+
+		// GUARD me-allowed-scopes-carrier (issue #766). GetAllowedScopes reads
+		// the ROLE-TEMPLATE UNION out of the database, which is only one of the
+		// two carriers of platform-admin authority since PR 1 — the other is
+		// the platform_admins table, resolved per request into this request's
+		// effective scopes.
+		//
+		// Without this union, a carrier-only administrator is authorized
+		// server-side at all twelve HasScope(ScopeAdmin) sites and rendered by
+		// the frontend as an ordinary user, because all 43 of its allowedScopes
+		// call sites read THIS field. Today that is invisible (migration 000051
+		// backfilled the carrier from the union, so the two agree); at PR 3,
+		// when the union stops carrying `admin` at all, it would be every
+		// administrator's experience of the product.
+		//
+		// Read from the request's effective scopes rather than querying the
+		// carrier again, so this stays downstream of PR 1's single insertion
+		// point instead of becoming a second, independently-driftable answer to
+		// the same question. It also inherits that point's deliberate exclusion
+		// of API keys: a key never carries the carrier's elevation, so /auth/me
+		// on a key reports the authority the key actually has.
+		if scopesVal, ok := c.Get("scopes"); ok {
+			if effective, ok := scopesVal.([]string); ok &&
+				auth.HasScope(effective, auth.ScopeAdmin) && !auth.HasScope(allowedScopes, auth.ScopeAdmin) {
+				elevated := make([]string, len(allowedScopes), len(allowedScopes)+1)
+				copy(elevated, allowedScopes)
+				allowedScopes = append(elevated, string(auth.ScopeAdmin))
+			}
+		}
+		response["allowed_scopes"] = allowedScopes
 
 		// Include session expiry from JWT claims so the frontend can schedule the
 		// pre-expiry warning dialog for cookie-based sessions. Absent for API-key auth.

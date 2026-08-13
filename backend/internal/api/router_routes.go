@@ -399,20 +399,23 @@ type apiV1RouteDeps struct {
 	tfMirrorAdminHandler        *admin.TerraformMirrorHandler
 	releasesGPGKeysAdminHandler *admin.ReleasesGPGKeysHandler
 	rbacHandlers                *admin.RBACHandlers
-	versionApprovalHandler      *admin.VersionApprovalHandler
-	storageHandlers             *admin.StorageHandlers
-	storageConfigRepo           *repositories.StorageConfigRepository
-	moduleRepo                  *repositories.ModuleRepository
-	providerRepo                *repositories.ProviderRepository
-	tokenCipher                 *crypto.TokenCipher
-	oidcAdminHandlers           *admin.OIDCConfigAdminHandlers
-	auditLogHandlers            *admin.AuditLogHandlers
-	policyAdminHandler          *admin.PolicyHandler
-	cvePollJob                  *jobs.CVEPollJob
-	statsHandlers               *admin.StatsHandler
-	scmWebhookHandler           *webhooks.SCMWebhookHandler
-	approvalWebhookHandler      *webhooks.ApprovalHandler
-	egressGuard                 *httpsafe.Guard
+	// platformAdminHandlers serves the management surface for the
+	// platform-admin carrier (issue #766).
+	platformAdminHandlers  *admin.PlatformAdminHandlers
+	versionApprovalHandler *admin.VersionApprovalHandler
+	storageHandlers        *admin.StorageHandlers
+	storageConfigRepo      *repositories.StorageConfigRepository
+	moduleRepo             *repositories.ModuleRepository
+	providerRepo           *repositories.ProviderRepository
+	tokenCipher            *crypto.TokenCipher
+	oidcAdminHandlers      *admin.OIDCConfigAdminHandlers
+	auditLogHandlers       *admin.AuditLogHandlers
+	policyAdminHandler     *admin.PolicyHandler
+	cvePollJob             *jobs.CVEPollJob
+	statsHandlers          *admin.StatsHandler
+	scmWebhookHandler      *webhooks.SCMWebhookHandler
+	approvalWebhookHandler *webhooks.ApprovalHandler
+	egressGuard            *httpsafe.Guard
 }
 
 // registerAuthenticatedGroupMiddleware wires the middleware stack applied to
@@ -479,6 +482,7 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 	tfMirrorAdminHandler := d.tfMirrorAdminHandler
 	releasesGPGKeysAdminHandler := d.releasesGPGKeysAdminHandler
 	rbacHandlers := d.rbacHandlers
+	platformAdminHandlers := d.platformAdminHandlers
 	versionApprovalHandler := d.versionApprovalHandler
 	storageHandlers := d.storageHandlers
 	storageConfigRepo := d.storageConfigRepo
@@ -1080,6 +1084,27 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 				roleTemplatesGroup.POST("", middleware.RequireScope(auth.ScopeAdmin), rbacHandlers.CreateRoleTemplate)
 				roleTemplatesGroup.PUT("/:id", middleware.RequireScope(auth.ScopeAdmin), rbacHandlers.UpdateRoleTemplate)
 				roleTemplatesGroup.DELETE("/:id", middleware.RequireScope(auth.ScopeAdmin), rbacHandlers.DeleteRoleTemplate)
+			}
+
+			// Platform administrators (issue #766) — the carrier for
+			// platform-admin authority OUTSIDE organization_members. Mounted
+			// next to role-templates because it is the other half of the same
+			// question: this is where the platform-wide wildcard is conferred
+			// once PR 3 removes it from the role templates.
+			//
+			// Gated on RequireScope(ScopeAdmin) like every other /admin surface,
+			// NOT on the carrier directly — see the package comment in
+			// internal/api/admin/platform_admins.go for why. That also means
+			// these routes are classified as guarded by
+			// orgscope_route_class_test.go's platform-admin branch and need no
+			// tenantGuardExemptRoutes entry: they are authorized by a scope no
+			// per-organization role template grants, which is the same standing
+			// the other eleven admin surfaces have.
+			platformAdminsGroup := authenticatedGroup.Group("/admin/platform-admins")
+			{
+				platformAdminsGroup.GET("", middleware.RequireScope(auth.ScopeAdmin), platformAdminHandlers.ListPlatformAdmins)
+				platformAdminsGroup.POST("", middleware.RequireScope(auth.ScopeAdmin), platformAdminHandlers.GrantPlatformAdmin)
+				platformAdminsGroup.DELETE("/:user_id", middleware.RequireScope(auth.ScopeAdmin), platformAdminHandlers.RevokePlatformAdmin)
 			}
 
 			// Mirror Approval Requests
