@@ -114,8 +114,8 @@ func splitStatements(sql string) []string {
 	var cur strings.Builder
 	i := 0
 	for i < len(sql) {
-		switch {
-		case sql[i] == '\'':
+		switch sql[i] {
+		case '\'':
 			j := i + 1
 			for j < len(sql) {
 				if sql[j] == '\'' {
@@ -132,7 +132,7 @@ func splitStatements(sql string) []string {
 			}
 			cur.WriteString(sql[i : j+1])
 			i = j + 1
-		case sql[i] == '$':
+		case '$':
 			if tag, ok := dollarTag(sql, i); ok {
 				end := strings.Index(sql[i+len(tag):], tag)
 				if end < 0 {
@@ -147,7 +147,7 @@ func splitStatements(sql string) []string {
 			}
 			cur.WriteByte(sql[i])
 			i++
-		case sql[i] == ';':
+		case ';':
 			out = append(out, cur.String())
 			cur.Reset()
 			i++

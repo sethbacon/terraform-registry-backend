@@ -288,7 +288,6 @@ const (
 
 	schemaGateFunc      = "identitySchemaEnabled"
 	schemaNameFunc      = "identitySchemaName"
-	migrationsGateFunc  = "identityMigrationsEnabled"
 	identityRunMigrCall = "identity.RunMigrations"
 	appRunMigrCall      = "db.RunMigrations"
 )
@@ -616,13 +615,13 @@ func buildAnalysis(t *testing.T) analysis {
 	m := newSchemaModel()
 	if cfg.AppApplied {
 		if err := m.replay(migrationStream{Name: "app", Dir: appMigrationsDir, DefaultSchema: "public"}); err != nil {
-			t.Fatalf("schemaguard: %v", err)
+			t.Fatalf("%v", err)
 		}
 	}
 	if cfg.IdentityApplied {
 		dir := filepath.Join(idDir, "identity", "migrations")
 		if err := m.replay(migrationStream{Name: "identity", Dir: dir, DefaultSchema: "identity"}); err != nil {
-			t.Fatalf("schemaguard: %v", err)
+			t.Fatalf("%v", err)
 		}
 	}
 	migrationTables := m.tableCount()
@@ -686,7 +685,7 @@ func TestDefaultConfigurationCanExecuteItsOwnSQL(t *testing.T) {
 	// --- resolve ---------------------------------------------------------
 	violations, checked, err := resolve(a.Model, a.Writes, a.Opts)
 	if err != nil {
-		t.Fatalf("schemaguard: %v", err)
+		t.Fatalf("%v", err)
 	}
 	t.Logf("checked %d writes against the default schema universe", checked)
 
@@ -758,7 +757,7 @@ func TestGuardFiresWhenTheDefaultSchemaLosesAColumn(t *testing.T) {
 
 	baseline, checked, err := resolve(a.Model, a.Writes, a.Opts)
 	if err != nil {
-		t.Fatalf("schemaguard: %v", err)
+		t.Fatalf("%v", err)
 	}
 	if checked == 0 {
 		t.Fatal("schemaguard: baseline checked zero writes")
