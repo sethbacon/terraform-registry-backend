@@ -161,6 +161,36 @@ func (r *PlatformAdminRepository) Grant(ctx context.Context, userID string, gran
 	return g, nil
 }
 
+// lockCarrier reads every grant inside tx under FOR UPDATE, separating the one
+// addressed by userID (nil when there is none) from the ones that would remain
+// after it is removed.
+func lockCarrier(ctx context.Context, tx *sql.Tx, userID string) (*PlatformAdminGrant, []PlatformAdminGrant, error) {
+	rows, err := tx.QueryContext(ctx,
+		`SELECT `+grantColumns+` FROM platform_admins ORDER BY granted_at ASC, user_id ASC FOR UPDATE`)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+
+	var target *PlatformAdminGrant
+	var remaining []PlatformAdminGrant
+	for rows.Next() {
+		g, err := scanGrant(rows)
+		if err != nil {
+			return nil, nil, err
+		}
+		if g.UserID == userID {
+			target = g
+			continue
+		}
+		remaining = append(remaining, *g)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	return target, remaining, nil
+}
+
 // Revoke removes userID's carrier row, but only if keepsAnAdmin accepts the
 // grants that would REMAIN afterwards.
 //
@@ -194,30 +224,10 @@ func (r *PlatformAdminRepository) Revoke(ctx context.Context, userID string, kee
 	// only the Commit error is reported.
 	defer func() { _ = tx.Rollback() }()
 
-	rows, err := tx.QueryContext(ctx,
-		`SELECT `+grantColumns+` FROM platform_admins ORDER BY granted_at ASC, user_id ASC FOR UPDATE`)
+	target, remaining, err := lockCarrier(ctx, tx, userID)
 	if err != nil {
 		return nil, err
 	}
-	var target *PlatformAdminGrant
-	var remaining []PlatformAdminGrant
-	for rows.Next() {
-		g, err := scanGrant(rows)
-		if err != nil {
-			rows.Close()
-			return nil, err
-		}
-		if g.UserID == userID {
-			target = g
-			continue
-		}
-		remaining = append(remaining, *g)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return nil, err
-	}
-	rows.Close()
 
 	if target == nil {
 		return nil, ErrNotPlatformAdmin

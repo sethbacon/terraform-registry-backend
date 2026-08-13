@@ -399,21 +399,23 @@ type apiV1RouteDeps struct {
 	tfMirrorAdminHandler        *admin.TerraformMirrorHandler
 	releasesGPGKeysAdminHandler *admin.ReleasesGPGKeysHandler
 	rbacHandlers                *admin.RBACHandlers
-	platformAdminHandlers       *admin.PlatformAdminHandlers
-	versionApprovalHandler      *admin.VersionApprovalHandler
-	storageHandlers             *admin.StorageHandlers
-	storageConfigRepo           *repositories.StorageConfigRepository
-	moduleRepo                  *repositories.ModuleRepository
-	providerRepo                *repositories.ProviderRepository
-	tokenCipher                 *crypto.TokenCipher
-	oidcAdminHandlers           *admin.OIDCConfigAdminHandlers
-	auditLogHandlers            *admin.AuditLogHandlers
-	policyAdminHandler          *admin.PolicyHandler
-	cvePollJob                  *jobs.CVEPollJob
-	statsHandlers               *admin.StatsHandler
-	scmWebhookHandler           *webhooks.SCMWebhookHandler
-	approvalWebhookHandler      *webhooks.ApprovalHandler
-	egressGuard                 *httpsafe.Guard
+	// platformAdminHandlers serves the management surface for the
+	// platform-admin carrier (issue #766).
+	platformAdminHandlers  *admin.PlatformAdminHandlers
+	versionApprovalHandler *admin.VersionApprovalHandler
+	storageHandlers        *admin.StorageHandlers
+	storageConfigRepo      *repositories.StorageConfigRepository
+	moduleRepo             *repositories.ModuleRepository
+	providerRepo           *repositories.ProviderRepository
+	tokenCipher            *crypto.TokenCipher
+	oidcAdminHandlers      *admin.OIDCConfigAdminHandlers
+	auditLogHandlers       *admin.AuditLogHandlers
+	policyAdminHandler     *admin.PolicyHandler
+	cvePollJob             *jobs.CVEPollJob
+	statsHandlers          *admin.StatsHandler
+	scmWebhookHandler      *webhooks.SCMWebhookHandler
+	approvalWebhookHandler *webhooks.ApprovalHandler
+	egressGuard            *httpsafe.Guard
 }
 
 // registerAuthenticatedGroupMiddleware wires the middleware stack applied to
