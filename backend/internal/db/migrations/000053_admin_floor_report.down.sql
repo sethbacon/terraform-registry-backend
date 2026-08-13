@@ -1,0 +1,22 @@
+-- Drops the administrator-floor report (issue #766).
+--
+-- The VIEW is dropped. It is derived, holds no data, and nothing in the
+-- application reads it -- it exists for an operator with a psql prompt.
+--
+-- THE BACKFILLED GRANTS ARE DELIBERATELY LEFT IN PLACE. The up migration adds
+-- platform_admins rows for administrators who held the authority through an
+-- admin-bearing role template and had no carrier row; deleting them here would
+-- remove real authority from real people on a rollback, and the rows are
+-- harmless if the binary is rolled back too (effective admin is `carrier OR the
+-- scope union`, so a carrier row for somebody who already held it through the
+-- union changes nothing).
+--
+-- To find them, if you must:
+--
+--   SELECT user_id, granted_at, note FROM platform_admins
+--    WHERE note LIKE 'backfilled by migration 000053%';
+--
+-- and read migration 000051's down migration first: a NULL note there means a
+-- grant nobody made, while a grant made through the management API has a NULL
+-- note too. Neither is what this migration wrote.
+DROP VIEW IF EXISTS admin_floor_violations;

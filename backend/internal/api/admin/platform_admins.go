@@ -35,6 +35,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/terraform-registry/terraform-registry/internal/adminfloor"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/identityerr"
@@ -63,6 +64,14 @@ var errIdentityUnavailable = errors.New("identity lookup failed")
 
 // PlatformAdminHandlers serves /api/v1/admin/platform-admins.
 type PlatformAdminHandlers struct {
+	// floor is the deployment-wide administrator-floor lock (issue #766). Only
+	// its Serialize is used: the last-standing REFUSAL below is this file's
+	// own, and is deliberately stricter than the floor's. What the lock adds is
+	// ordering against the membership paths, which the FOR UPDATE on
+	// platform_admins cannot reach -- without it, a carrier revoke and a
+	// role-template demotion could each observe the other's administrator still
+	// standing and both commit. May be nil in tests.
+	floor *adminfloor.Guard
 	// carrier is the platform_admins table, on the REGISTRY's connection.
 	carrier *repositories.PlatformAdminRepository
 	// userRepo resolves a grant's user_id to a person. It lives on the IDENTITY
@@ -77,6 +86,13 @@ type PlatformAdminHandlers struct {
 // NewPlatformAdminHandlers constructs the handlers.
 func NewPlatformAdminHandlers(carrier *repositories.PlatformAdminRepository, userRepo *repositories.UserRepository, auditRepo *repositories.AuditRepository) *PlatformAdminHandlers {
 	return &PlatformAdminHandlers{carrier: carrier, userRepo: userRepo, auditRepo: auditRepo}
+}
+
+// WithAdminFloor attaches the deployment-wide administrator-floor lock
+// (issue #766).
+func (h *PlatformAdminHandlers) WithAdminFloor(g *adminfloor.Guard) *PlatformAdminHandlers {
+	h.floor = g
+	return h
 }
 
 // userResolver resolves user ids to people, memoised for the duration of one
@@ -319,11 +335,28 @@ func (h *PlatformAdminHandlers) RevokePlatformAdmin(c *gin.Context) {
 		return
 	}
 
+	// GUARD admin-floor-serialization (issue #766). The refusal itself is
+	// unchanged -- requireAnotherExercisableAdmin under FOR UPDATE, PR #862 --
+	// and is not delegated to the floor, which is deliberately more permissive
+	// here (it would accept a role-template administrator as the one who
+	// remains). Only the ORDERING is new: the row lock below serialises this
+	// revoke against another revoke, but not against a demotion committed on
+	// the identity connection, so the two could each see the other's
+	// administrator still standing.
 	res := newUserResolver(h.userRepo)
-	grant, err := h.carrier.Revoke(c.Request.Context(), targetID.String(), func(ctx context.Context, remaining []repositories.PlatformAdminGrant) error {
-		return h.requireAnotherExercisableAdmin(ctx, res, remaining)
+	var grant *repositories.PlatformAdminGrant
+	err = h.floor.Serialize(c.Request.Context(), func(ctx context.Context) error {
+		var revokeErr error
+		grant, revokeErr = h.carrier.Revoke(ctx, targetID.String(), func(ctx context.Context, remaining []repositories.PlatformAdminGrant) error {
+			return h.requireAnotherExercisableAdmin(ctx, res, remaining)
+		})
+		return revokeErr
 	})
 	switch {
+	case errors.Is(err, adminfloor.ErrIndeterminate):
+		slog.Error("failed to serialize the platform-admin revoke", "error", err, "target_user_id", targetID.String())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to verify remaining platform administrators"})
+		return
 	case errors.Is(err, repositories.ErrNotPlatformAdmin):
 		c.JSON(http.StatusNotFound, gin.H{"error": "User does not hold platform-admin"})
 		return

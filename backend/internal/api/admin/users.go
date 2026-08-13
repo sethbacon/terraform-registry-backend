@@ -2,12 +2,15 @@
 package admin
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/terraform-registry/terraform-registry/internal/adminfloor"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/credlifecycle"
@@ -25,6 +28,15 @@ type UserHandlers struct {
 	// creds invalidates the credential families a deleted principal would
 	// otherwise leave behind. May be nil in tests; the sweep is skipped.
 	creds *credlifecycle.Sweeper
+	// floor holds the never-zero administrator invariants across a principal
+	// deletion (issue #766). May be nil in tests; see WithUserAdminFloor.
+	floor *adminfloor.Guard
+	// carrier removes the deleted principal's platform_admins row. Migration
+	// 000051 declines the foreign key that would do this in SQL -- identity
+	// data may live in another schema or another database -- so the row would
+	// otherwise outlive its user, inert but indistinguishable from a live
+	// grant to anything counting rows. May be nil in tests.
+	carrier *repositories.PlatformAdminRepository
 }
 
 // UserHandlersOption configures optional UserHandlers dependencies.
@@ -67,6 +79,19 @@ func WithUserCredentialSweeper(s *credlifecycle.Sweeper) UserHandlersOption {
 	return func(h *UserHandlers) { h.creds = s }
 }
 
+// WithUserAdminFloor wires the never-zero administrator guard and the
+// platform-admin carrier, which deleting a principal must both consult and
+// clean up (issue #766). One option rather than two: the carrier read the
+// floor makes and the carrier row the delete removes are the same fact, and a
+// deployment that wired one without the other would count a grant it was
+// about to strand.
+func WithUserAdminFloor(floor *adminfloor.Guard, carrier *repositories.PlatformAdminRepository) UserHandlersOption {
+	return func(h *UserHandlers) {
+		h.floor = floor
+		h.carrier = carrier
+	}
+}
+
 // NewUserHandlers creates a new UserHandlers instance
 func NewUserHandlers(cfg *config.Config, db *sql.DB, opts ...UserHandlersOption) *UserHandlers {
 	h := &UserHandlers{
@@ -79,6 +104,39 @@ func NewUserHandlers(cfg *config.Config, db *sql.DB, opts ...UserHandlersOption)
 		opt(h)
 	}
 	return h
+}
+
+// revokePlatformAdminCarrier removes a destroyed principal's platform_admins
+// row (issue #766).
+//
+// The carrier carries no foreign key to users -- migration 000051 explains at
+// length why it cannot -- so nothing in the schema retires this row when its
+// user goes away. It is inert either way, but an inert row that still looks
+// like a grant is what would let the LAST real administrator be removed
+// against a count of two, so the floor and the management API both have to
+// keep skipping it forever. Deleting it keeps the carrier honest instead.
+//
+// The predicate is nil deliberately: this is not an operator revoking a live
+// administrator, it is cleanup after a delete the floor has already cleared,
+// and re-checking here would refuse to tidy up the very row the floor just
+// discounted.
+//
+// Best-effort. The user is already gone; a failure leaves an orphan the
+// management API renders as user_resolved=false, which is exactly what it is.
+func (h *UserHandlers) revokePlatformAdminCarrier(c *gin.Context, userID string) {
+	if h.carrier == nil {
+		return
+	}
+	_, err := h.carrier.Revoke(c.Request.Context(), userID, nil)
+	if err == nil {
+		slog.Info("removed the platform-admin grant of a deleted principal", "user_id", userID)
+		return
+	}
+	if errors.Is(err, repositories.ErrNotPlatformAdmin) {
+		return // the ordinary case: most principals hold no grant
+	}
+	slog.Error("failed to remove a deleted principal's platform-admin grant; it survives as an orphan",
+		"user_id", userID, "error", err)
 }
 
 // @Summary      List users
@@ -387,6 +445,7 @@ func (h *UserHandlers) UpdateUserHandler() gin.HandlerFunc {
 // @Success      200  {object}  admin.MessageResponse
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
 // @Failure      404  {object}  map[string]interface{}  "User not found"
+// @Failure      409  {object}  map[string]interface{}  "Would leave no administrator"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/users/{id} [delete]
 // DeleteUserHandler deletes a user
@@ -463,7 +522,24 @@ func (h *UserHandlers) DeleteUserHandler() gin.HandlerFunc {
 		// destroyed, so a key surviving in any organization outlives its owner.
 		// Authorization is tenant-scoped; the cleanup that follows from it is
 		// whole-principal, and the two are different questions.
-		if err := h.userRepo.DeleteUser(c.Request.Context(), userID, scope); err != nil {
+		//
+		// GUARD admin-floor (issue #766). Deleting a principal takes away every
+		// membership it holds -- by FK cascade, so no membership statement
+		// appears here at all -- and makes its platform_admins row inert without
+		// deleting it. Both invariants are therefore in play, and the change is
+		// DestroysPrincipal so the floor stops counting this user's own carrier
+		// grant as an administrator who remains.
+		err = h.floor.Protect(c.Request.Context(), adminfloor.Change{
+			UserID:            userID,
+			RemovesMembership: true,
+			DestroysPrincipal: true,
+		}, func(ctx context.Context) error {
+			return h.userRepo.DeleteUser(ctx, userID, scope)
+		})
+		if respondAdminFloor(c, err) {
+			return
+		}
+		if err != nil {
 			if identityerr.IsNotFound(err) {
 				c.JSON(http.StatusNotFound, gin.H{
 					"error": "User not found",
@@ -475,6 +551,15 @@ func (h *UserHandlers) DeleteUserHandler() gin.HandlerFunc {
 			})
 			return
 		}
+
+		// The carrier row the missing foreign key leaves behind. Removed AFTER
+		// the delete, not before: a failure here leaves a grant naming a user
+		// that no longer exists, which every consumer already treats as inert
+		// (both middlewares load the user first, and the management API renders
+		// it as user_resolved=false), whereas removing it first and then
+		// failing the delete would silently strip a live administrator's
+		// authority. Best-effort and logged, like the credential sweep.
+		h.revokePlatformAdminCarrier(c, userID)
 
 		c.JSON(http.StatusOK, gin.H{
 			"message": "User deleted successfully",

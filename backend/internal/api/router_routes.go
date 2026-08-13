@@ -25,6 +25,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/sethbacon/terraform-suite-identity/identity/suite"
 	"github.com/terraform-registry/terraform-registry/docs"
+	"github.com/terraform-registry/terraform-registry/internal/adminfloor"
 	"github.com/terraform-registry/terraform-registry/internal/api/admin"
 	"github.com/terraform-registry/terraform-registry/internal/api/advisories"
 	"github.com/terraform-registry/terraform-registry/internal/api/mirror"
@@ -370,7 +371,11 @@ type apiV1RouteDeps struct {
 	// principal's derived authority when a lifecycle event reduces it
 	// (issues #732, #736). Built once in NewRouter because its two halves
 	// live on different connections.
-	credSweeper                 *credlifecycle.Sweeper
+	credSweeper *credlifecycle.Sweeper
+	// adminFloor holds the never-zero administrator invariants (issue #766).
+	// Built once in NewRouter for the same reason as credSweeper: its two
+	// halves live on different connections.
+	adminFloor                  *adminfloor.Guard
 	moduleAdminHandlers         *admin.ModuleAdminHandlers
 	providerAdminHandlers       *admin.ProviderAdminHandlers
 	auditRepo                   *repositories.AuditRepository
@@ -1321,7 +1326,8 @@ func registerSCIMRoutes(router *gin.Engine, d *apiV1RouteDeps) {
 	{
 		// identityDB, not db: NewHandlers builds its own UserRepository and
 		// OrganizationRepository over whatever connection it is handed (#739).
-		scimHandlers := scim.NewHandlers(d.cfg, d.identityDB, scim.WithCredentialSweeper(d.credSweeper))
+		scimHandlers := scim.NewHandlers(d.cfg, d.identityDB,
+			scim.WithCredentialSweeper(d.credSweeper), scim.WithAdminFloor(d.adminFloor))
 		scimGroup.GET("/Users", scimHandlers.ListUsers())
 		scimGroup.GET("/Users/:id", scimHandlers.GetUser())
 		scimGroup.POST("/Users", scimHandlers.CreateUser())

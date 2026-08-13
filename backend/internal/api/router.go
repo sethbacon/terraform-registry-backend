@@ -30,6 +30,7 @@ import (
 	identitymailer "github.com/sethbacon/terraform-suite-identity/identity/mailer"
 	identitynotify "github.com/sethbacon/terraform-suite-identity/identity/notify"
 
+	"github.com/terraform-registry/terraform-registry/internal/adminfloor"
 	"github.com/terraform-registry/terraform-registry/internal/api/admin"
 	"github.com/terraform-registry/terraform-registry/internal/api/modules"
 	"github.com/terraform-registry/terraform-registry/internal/api/oci"
@@ -205,6 +206,18 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// app's public schema, the shared identity schema, or a separate identity
 	// database.
 	platformAdminRepo := repositories.NewPlatformAdminRepository(db)
+	// adminFloor holds the two never-zero administrator invariants (issue
+	// #766): the deployment always has a platform administrator, and an
+	// organization with members always has one of its own.
+	//
+	// Built here, from BOTH connections, and injected into every handler that
+	// can reduce administrative authority. It cannot be constructed inside any
+	// of them: platform_admins is on the registry's connection (see
+	// platformAdminRepo above) while organization_members, role_templates and
+	// users are on identity's, and under TFR_IDENTITY_DATABASE_* those are
+	// different physical databases. Same shape, and the same reason, as
+	// credSweeper below.
+	adminFloor := adminfloor.New(db, identityDB)
 
 	// Namespace ownership claims back the object-level authorization on every
 	// module/provider mutation route (issue #555, CWE-639): a namespace binds
@@ -527,7 +540,8 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 
 	var authHandlers *admin.AuthHandlers
 	authHandlers, err = admin.NewAuthHandlers(cfg, identityDB, oidcConfigRepo, tokenRepo, oidcStateStore,
-		admin.WithSAMLEgressGuard(egressGuard), admin.WithCredentialSweeper(credSweeper))
+		admin.WithSAMLEgressGuard(egressGuard), admin.WithCredentialSweeper(credSweeper),
+		admin.WithAdminFloor(adminFloor))
 	if err != nil {
 		log.Fatalf("Failed to initialize auth handlers: %v", err)
 	}
@@ -542,8 +556,10 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// handler's namespace cascade and the stats handler's feature-table counts
 	// fall back to public via the identity connection's search_path.
 	apiKeyHandlers := admin.NewAPIKeyHandlers(cfg, identityDB)
-	userHandlers := admin.NewUserHandlers(cfg, identityDB, admin.WithUserCredentialSweeper(credSweeper))
-	orgHandlers := admin.NewOrganizationHandlers(cfg, identityDB, nsClaimRepo, userTokenRevocationRepo)
+	userHandlers := admin.NewUserHandlers(cfg, identityDB, admin.WithUserCredentialSweeper(credSweeper),
+		admin.WithUserAdminFloor(adminFloor, platformAdminRepo))
+	orgHandlers := admin.NewOrganizationHandlers(cfg, identityDB, nsClaimRepo, userTokenRevocationRepo).
+		WithAdminFloor(adminFloor)
 	statsHandlers := admin.NewStatsHandler(identitySqlxDB, &cfg.Scanning).WithOrgRepo(orgRepo)
 	mirrorHandlers := admin.NewMirrorHandler(mirrorRepo, orgRepo, providerRepo)
 	mirrorHandlers.SetSyncJob(mirrorSyncJob) // Connect sync job for manual triggers
@@ -564,7 +580,8 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 
 	// GDPR data-subject handlers (Article 15/17/20). Registered under
 	// /api/v1/admin/users/:id/{export,erase} below.
-	userSvc := services.NewUserService(identityDB).WithCredentialSweeper(credSweeper)
+	userSvc := services.NewUserService(identityDB).WithCredentialSweeper(credSweeper).
+		WithAdminFloor(adminFloor, platformAdminRepo)
 	gdprHandlers := admin.NewGDPRHandlers(userSvc)
 
 	// Role-template CRUD follows the identity schema; mirror methods stay public.
@@ -582,7 +599,8 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// platformAdminRepo above, and migration 000051 for why it carries no FK),
 	// while the users it names and the audit trail it writes live on the
 	// identity connection.
-	platformAdminHandlers := admin.NewPlatformAdminHandlers(platformAdminRepo, userRepo, auditRepo)
+	platformAdminHandlers := admin.NewPlatformAdminHandlers(platformAdminRepo, userRepo, auditRepo).
+		WithAdminFloor(adminFloor)
 
 	// Shared app-credential minter (Entra app / GitHub App) for providers opted
 	// into an app auth mode; scmRepo provides the token-cache store. Uses the
@@ -671,7 +689,8 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// Initialize setup wizard handlers
 	setupHandlers := setup.NewHandlers(
 		cfg, tokenCipher, oidcConfigRepo, storageConfigRepo, userRepo, orgRepo, authHandlers,
-	).WithScannerJob(moduleScannerJob).WithEgressGuard(egressGuard)
+	).WithScannerJob(moduleScannerJob).WithEgressGuard(egressGuard).
+		WithPlatformAdminCarrier(platformAdminRepo)
 
 	// Initialize policy engine (no-op when disabled).
 	policyEngineCfg := policy.Config{
@@ -720,6 +739,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		userTokenRevocationRepo:     userTokenRevocationRepo,
 		platformAdminRepo:           platformAdminRepo,
 		credSweeper:                 credSweeper,
+		adminFloor:                  adminFloor,
 		moduleAdminHandlers:         moduleAdminHandlers,
 		providerAdminHandlers:       providerAdminHandlers,
 		auditRepo:                   auditRepo,

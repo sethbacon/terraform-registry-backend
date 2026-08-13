@@ -10,10 +10,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
+	"github.com/terraform-registry/terraform-registry/internal/adminfloor"
 	"github.com/terraform-registry/terraform-registry/internal/credlifecycle"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
@@ -24,6 +26,11 @@ type UserService struct {
 	// creds invalidates the credential families that survive an erasure. May
 	// be nil, in which case the sweep is skipped.
 	creds *credlifecycle.Sweeper
+	// floor holds the never-zero administrator invariants across an erasure
+	// (issue #766), and carrier retires the erased principal's platform_admins
+	// row. May be nil, in which case both are skipped.
+	floor   *adminfloor.Guard
+	carrier *repositories.PlatformAdminRepository
 }
 
 // NewUserService creates a new UserService.
@@ -35,6 +42,15 @@ func NewUserService(db *sql.DB) *UserService {
 // Returns the service for chaining.
 func (s *UserService) WithCredentialSweeper(sweeper *credlifecycle.Sweeper) *UserService {
 	s.creds = sweeper
+	return s
+}
+
+// WithAdminFloor wires the never-zero administrator guard and the
+// platform-admin carrier used by EraseUser (issue #766). Returns the service
+// for chaining.
+func (s *UserService) WithAdminFloor(floor *adminfloor.Guard, carrier *repositories.PlatformAdminRepository) *UserService {
+	s.floor = floor
+	s.carrier = carrier
 	return s
 }
 
@@ -181,18 +197,10 @@ func (s *UserService) ExportUserDataJSON(ctx context.Context, userID string) ([]
 	return json.MarshalIndent(export, "", "  ")
 }
 
-// EraseUser tombstones a user record for GDPR Article 17 compliance.
-//
-// This does NOT delete audit log entries (audit trails must be preserved per
-// regulation). Instead it:
-//  1. Anonymizes PII in the users table (email → "erased-<id>@erased", name → "Erased User").
-//  2. Revokes all API keys.
-//  3. Removes organization memberships.
-//  4. Sets a tombstone flag so the user cannot log in.
-//
-// The user ID is preserved in audit logs for traceability but is no longer
-// linkable to a natural person.
-func (s *UserService) EraseUser(ctx context.Context, userID string, erasedBy string) error {
+// eraseTx is the erasure itself: the three statements that used to be
+// EraseUser's body, unchanged, lifted into their own method so the whole
+// transaction can be the write the floor protects.
+func (s *UserService) eraseTx(ctx context.Context, userID string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -232,6 +240,75 @@ func (s *UserService) EraseUser(ctx context.Context, userID string, erasedBy str
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit erasure: %w", err)
 	}
+	return nil
+}
+
+// revokePlatformAdminCarrier retires an erased principal's platform_admins row
+// (issue #766). Best-effort and logged; the erasure has already committed and
+// answering an error would invite a retry that then reports "user not found".
+//
+// The predicate is nil deliberately: the floor has already cleared this
+// erasure, and re-checking here would refuse to remove the very grant it just
+// discounted.
+func (s *UserService) revokePlatformAdminCarrier(ctx context.Context, userID string) {
+	if s.carrier == nil {
+		return
+	}
+	_, err := s.carrier.Revoke(ctx, userID, nil)
+	if err == nil {
+		slog.Info("removed the platform-admin grant of an erased principal", "user_id", userID)
+		return
+	}
+	if errors.Is(err, repositories.ErrNotPlatformAdmin) {
+		return
+	}
+	slog.Error("failed to remove an erased principal's platform-admin grant; it survives and still resolves to a users row",
+		"user_id", userID, "error", err)
+}
+
+// EraseUser tombstones a user record for GDPR Article 17 compliance.
+//
+// This does NOT delete audit log entries (audit trails must be preserved per
+// regulation). Instead it:
+//  1. Anonymizes PII in the users table (email → "erased-<id>@erased", name → "Erased User").
+//  2. Revokes all API keys.
+//  3. Removes organization memberships.
+//  4. Sets a tombstone flag so the user cannot log in.
+//
+// The user ID is preserved in audit logs for traceability but is no longer
+// linkable to a natural person.
+// GUARD admin-floor (issue #766). The erasure is run inside the floor's lock,
+// with the whole transaction as the protected write.
+//
+// An erasure is the most complete authority reduction the product has and the
+// least obvious one: step 3 is an UNSCOPED `DELETE FROM organization_members`,
+// so it strips the subject's administrative role in every organization on the
+// platform at once, and step 1 NULLs oidc_sub so they can never log in again.
+// Neither statement mentions a role or an administrator, which is why nothing
+// noticed that erasing the deployment's only administrator was a supported
+// operation.
+//
+// DestroysPrincipal, even though the users row survives: what the floor counts
+// is an administrator who can still EXERCISE the grant, and an anonymised row
+// with no oidc_sub cannot authenticate. Counting it would leave the deployment
+// with an administrator nobody can log in as, which is the lockout with extra
+// steps.
+func (s *UserService) EraseUser(ctx context.Context, userID string, erasedBy string) error {
+	if err := s.floor.Protect(ctx, adminfloor.Change{
+		UserID:            userID,
+		RemovesMembership: true,
+		DestroysPrincipal: true,
+	}, func(ctx context.Context) error { return s.eraseTx(ctx, userID) }); err != nil {
+		return err
+	}
+
+	// The carrier row the erasure cannot reach: platform_admins is on the
+	// registry's connection, the transaction above runs on identity's, and
+	// migration 000051 declines the foreign key that would retire it. Left
+	// behind it names a principal who can no longer authenticate but still
+	// resolves to a users row, so — unlike a deleted user's orphan — nothing
+	// downstream can tell it is inert. Best-effort, after the commit.
+	s.revokePlatformAdminCarrier(ctx, userID)
 
 	// 4. Revoke any active JWT sessions.
 	//

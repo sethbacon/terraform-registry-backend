@@ -2,6 +2,7 @@
 package admin
 
 import (
+	"context"
 	"database/sql"
 	"log/slog"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/terraform-registry/terraform-registry/internal/adminfloor"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/credlifecycle"
@@ -35,6 +37,23 @@ type OrganizationHandlers struct {
 	// May be nil in tests; the sweep is skipped when unset, matching the
 	// pre-existing convention that the revocation subsystem is wired as a unit.
 	creds *credlifecycle.Sweeper
+
+	// floor holds the two never-zero administrator invariants (issue #766):
+	// the deployment always has a platform administrator, and an organization
+	// with members always has one of its own. It spans both connections —
+	// platform_admins is on the registry's, memberships on identity's — so it
+	// cannot be built from this handler's single db handle and is injected.
+	//
+	// May be nil, on the same "wired as a unit" convention as creds; see
+	// WithAdminFloor, and admin_floor_class_test.go for the check that stops
+	// the router from quietly leaving it unset.
+	floor *adminfloor.Guard
+}
+
+// WithAdminFloor injects the never-zero administrator guard (issue #766).
+func (h *OrganizationHandlers) WithAdminFloor(floor *adminfloor.Guard) *OrganizationHandlers {
+	h.floor = floor
+	return h
 }
 
 // NewOrganizationHandlers creates a new OrganizationHandlers instance. db
@@ -536,15 +555,37 @@ func (h *OrganizationHandlers) CreateOrganizationHandler() gin.HandlerFunc {
 		// error is no longer swallowed: silently succeeding here would leave
 		// the creator with no membership at all in their own new org, and
 		// would hide a real failure from the caller.
-		if rawUID, exists := c.Get("user_id"); exists {
-			if uid, ok := rawUID.(string); ok && uid != "" {
-				if err := h.orgRepo.AddMemberWithParams(c.Request.Context(), org.ID, uid, "org_owner", repositories.OrgScopeOrganizations(org.ID)); err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{
-						"error": "Organization created but failed to add creator as a member",
-					})
-					return
-				}
+		//
+		// BOOTSTRAP INVARIANT B (issue #766). This is the write that makes a
+		// new organization able to administer itself, and it needs no
+		// pre-existing administrator of its own to do it: org_owner is a fixed
+		// literal carrying organizations:write, and the creator is whoever
+		// asked. Every later membership change in this organization is then
+		// held above zero administrators by the floor.
+		//
+		// AN ORGANIZATION WITH NO MEMBERS AT ALL IS A LEGITIMATE STATE, and
+		// this branch is how one is reached. A request with no attributable
+		// principal — an organization-bound API key whose api_keys.user_id is
+		// NULL, i.e. an organization SERVICE credential — has no creator to
+		// enrol, and there is nobody the registry could honestly name. The
+		// empty organization is not stranded: invariant B is vacuous over it
+		// (adminfloor.checkOrganizationFloor says why at length), and any
+		// platform administrator can add its first member.
+		//
+		// It is logged rather than silently allowed, because "I created an
+		// organization and cannot manage it" is otherwise indistinguishable
+		// from a bug.
+		creatorID, _ := c.Get("user_id")
+		if uid, ok := creatorID.(string); ok && uid != "" {
+			if err := h.orgRepo.AddMemberWithParams(c.Request.Context(), org.ID, uid, "org_owner", repositories.OrgScopeOrganizations(org.ID)); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"error": "Organization created but failed to add creator as a member",
+				})
+				return
 			}
+		} else {
+			slog.Warn("organization created with no members: the request carried no attributable principal to enrol as its owner",
+				"organization_id", org.ID, "organization", org.Name)
 		}
 
 		c.JSON(http.StatusCreated, gin.H{
@@ -714,7 +755,7 @@ func (h *OrganizationHandlers) UpdateOrganizationHandler() gin.HandlerFunc {
 // @Success      200  {object}  admin.MessageResponse
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
 // @Failure      404  {object}  map[string]interface{}  "Organization not found"
-// @Failure      409  {object}  map[string]interface{}  "Organization still owns namespace claims"
+// @Failure      409  {object}  map[string]interface{}  "Organization still owns namespace claims, or deleting it would leave the deployment with no platform administrator"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/organizations/{id} [delete]
 // DeleteOrganizationHandler deletes an organization
@@ -822,7 +863,24 @@ func (h *OrganizationHandlers) DeleteOrganizationHandler() gin.HandlerFunc {
 		// Already gone (a concurrent delete won the race): 404, the same answer
 		// a second DELETE gets from the existence pre-check above, so the two
 		// paths to "this organization does not exist" agree.
-		if err := h.orgRepo.Delete(c.Request.Context(), orgID, repositories.OrgScopeOrganizations(orgID)); err != nil {
+		//
+		// GUARD admin-floor (issue #766). The cascade above is also the ONLY
+		// way to take a deployment's last platform administrator away without
+		// naming a principal at all: if the organization being deleted is the
+		// one holding the admin-bearing membership, `DELETE FROM organizations`
+		// removes it with no membership statement for anything to notice.
+		// Invariant B needs no check here — a deleted organization cannot be
+		// stranded — which is why the Change names organizations and no user.
+		err = h.floor.Protect(c.Request.Context(), adminfloor.Change{
+			OrganizationIDs:      []string{orgID},
+			DeletesOrganizations: true,
+		}, func(ctx context.Context) error {
+			return h.orgRepo.Delete(ctx, orgID, repositories.OrgScopeOrganizations(orgID))
+		})
+		if respondAdminFloor(c, err) {
+			return
+		}
+		if err != nil {
 			if identityerr.IsNotFound(err) {
 				c.JSON(http.StatusNotFound, gin.H{
 					"error": "Organization not found",
@@ -985,6 +1043,7 @@ type UpdateMemberRequest struct {
 // @Failure      400  {object}  map[string]interface{}  "Invalid request"
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
 // @Failure      404  {object}  map[string]interface{}  "Member not found in organization"
+// @Failure      409  {object}  map[string]interface{}  "Would leave no administrator"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/organizations/{id}/members/{user_id} [put]
 // UpdateMemberHandler updates a member's role template in an organization
@@ -1031,8 +1090,26 @@ func (h *OrganizationHandlers) UpdateMemberHandler() gin.HandlerFunc {
 		// The membership vanished between the GetMember above and this write.
 		// 404 matches the pre-check; the old contract reported a role change
 		// that never landed, and the audit log recorded it as though it had.
-		if err := h.orgRepo.UpdateMemberRoleTemplate(c.Request.Context(), orgID, userID, member.RoleTemplateID,
-			repositories.OrgScopeOrganizations(orgID)); err != nil {
+		//
+		// GUARD admin-floor (issue #766). A re-role is a DOWNGRADE whenever the
+		// new template carries less than the old one, and `role_template_id:
+		// null` is the widest downgrade there is. Either can take away the
+		// deployment's last platform-admin template or an organization's last
+		// administrator, so the write runs inside the floor's lock with the
+		// replacement template named — a move onto another admin-bearing
+		// template is not a reduction and is not refused.
+		err = h.floor.Protect(c.Request.Context(), adminfloor.Change{
+			UserID:              userID,
+			OrganizationIDs:     []string{orgID},
+			KeepsRoleTemplateID: req.RoleTemplateID,
+		}, func(ctx context.Context) error {
+			return h.orgRepo.UpdateMemberRoleTemplate(ctx, orgID, userID, member.RoleTemplateID,
+				repositories.OrgScopeOrganizations(orgID))
+		})
+		if respondAdminFloor(c, err) {
+			return
+		}
+		if err != nil {
 			if identityerr.IsNotFound(err) {
 				c.JSON(http.StatusNotFound, gin.H{
 					"error": "Member not found in organization",
@@ -1081,7 +1158,7 @@ func (h *OrganizationHandlers) UpdateMemberHandler() gin.HandlerFunc {
 }
 
 // @Summary      Remove organization member
-// @Description  Remove a user from an organization's membership.
+// @Description  Remove a user from an organization's membership. Refused with 409 when it would leave the organization with members but no administrator, or the deployment with no platform administrator (issue #766).
 // @Tags         Organizations
 // @Security     Bearer
 // @Produce      json
@@ -1089,6 +1166,7 @@ func (h *OrganizationHandlers) UpdateMemberHandler() gin.HandlerFunc {
 // @Param        user_id  path  string  true  "User ID"
 // @Success      200  {object}  admin.MessageResponse
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
+// @Failure      409  {object}  map[string]interface{}  "Would leave no administrator"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/organizations/{id}/members/{user_id} [delete]
 // RemoveMemberHandler removes a member from an organization
@@ -1147,8 +1225,24 @@ func (h *OrganizationHandlers) RemoveMemberHandler() gin.HandlerFunc {
 		// and the handler's own doc comment above is built on that call being
 		// safe to make against a non-member. Turning the second DELETE into a
 		// 500 would break every retry and every concurrent deprovision.
-		if err := h.orgRepo.RemoveMember(c.Request.Context(), orgID, userID, repositories.OrgScopeOrganizations(orgID)); err != nil &&
-			!identityerr.IsNotFound(err) {
+		//
+		// GUARD admin-floor (issue #766). Under the floor's lock, so two
+		// administrators removing each other concurrently serialise: the second
+		// one's check runs after the first one's DELETE, sees the smaller set,
+		// and refuses. IDEMPOTENCE IS PRESERVED — a removal that matches no row
+		// is not a reduction, so the floor's own reads find this principal
+		// carrying nothing and let it through to the same 200 as before.
+		err := h.floor.Protect(c.Request.Context(), adminfloor.Change{
+			UserID:            userID,
+			OrganizationIDs:   []string{orgID},
+			RemovesMembership: true,
+		}, func(ctx context.Context) error {
+			return h.orgRepo.RemoveMember(ctx, orgID, userID, repositories.OrgScopeOrganizations(orgID))
+		})
+		if respondAdminFloor(c, err) {
+			return
+		}
+		if err != nil && !identityerr.IsNotFound(err) {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to remove member from organization",
 			})
