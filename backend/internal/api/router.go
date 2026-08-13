@@ -338,6 +338,23 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	auditCleanupJob := jobs.NewAuditCleanupJob(&cfg.AuditRetention, auditRepo)
 	jobRegistry.Register(auditCleanupJob)
 
+	// The transactional audit outbox (issue #766, migration 000052).
+	//
+	// ON `db`, NOT `identityDB`, AND THAT IS THE WHOLE POINT: the outbox has to
+	// share a transaction with the mutation it records, and the privileged
+	// mutations it covers run on the registry's own connection (see
+	// platformAdminRepo above). The relay then carries each intent across to
+	// audit_logs on identityDB, which is the connection that cannot participate
+	// in the mutation's transaction and is why the outbox exists.
+	auditOutbox := audit.NewOutbox(db)
+	auditRelay := audit.NewRelay(auditOutbox, audit.NewAuditLogSink(identityDB), auditShipper, audit.RelayConfig{
+		PollInterval:    time.Duration(cfg.AuditRetention.OutboxPollSeconds) * time.Second,
+		BatchSize:       cfg.AuditRetention.OutboxBatchSize,
+		BacklogWarn:     int64(cfg.AuditRetention.OutboxBacklogWarn),
+		RetainDelivered: time.Duration(cfg.AuditRetention.OutboxRetainDeliveredHours) * time.Hour,
+	})
+	jobRegistry.Register(auditRelay)
+
 	// Get encryption key from environment for OAuth token encryption
 	encryptionKey := os.Getenv("ENCRYPTION_KEY")
 	if encryptionKey == "" {
@@ -557,7 +574,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// fall back to public via the identity connection's search_path.
 	apiKeyHandlers := admin.NewAPIKeyHandlers(cfg, identityDB)
 	userHandlers := admin.NewUserHandlers(cfg, identityDB, admin.WithUserCredentialSweeper(credSweeper),
-		admin.WithUserAdminFloor(adminFloor, platformAdminRepo))
+		admin.WithUserAdminFloor(adminFloor, platformAdminRepo, auditOutbox))
 	orgHandlers := admin.NewOrganizationHandlers(cfg, identityDB, nsClaimRepo, userTokenRevocationRepo).
 		WithAdminFloor(adminFloor)
 	statsHandlers := admin.NewStatsHandler(identitySqlxDB, &cfg.Scanning).WithOrgRepo(orgRepo)
@@ -581,7 +598,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// GDPR data-subject handlers (Article 15/17/20). Registered under
 	// /api/v1/admin/users/:id/{export,erase} below.
 	userSvc := services.NewUserService(identityDB).WithCredentialSweeper(credSweeper).
-		WithAdminFloor(adminFloor, platformAdminRepo)
+		WithAdminFloor(adminFloor, platformAdminRepo, auditOutbox)
 	gdprHandlers := admin.NewGDPRHandlers(userSvc)
 
 	// Role-template CRUD follows the identity schema; mirror methods stay public.
@@ -597,9 +614,11 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// Platform-admin management (issue #766, PR 2). Spans both connections by
 	// construction: the carrier is on the registry's own connection (see
 	// platformAdminRepo above, and migration 000051 for why it carries no FK),
-	// while the users it names and the audit trail it writes live on the
-	// identity connection.
-	platformAdminHandlers := admin.NewPlatformAdminHandlers(platformAdminRepo, userRepo, auditRepo).
+	// while the users it names live on the identity connection. Its audit trail
+	// is written to the outbox beside the carrier — same connection, same
+	// transaction — and relayed to audit_logs on identityDB afterwards, which
+	// is what stops a grant from committing unrecorded (migration 000052).
+	platformAdminHandlers := admin.NewPlatformAdminHandlers(platformAdminRepo, userRepo, auditOutbox).
 		WithAdminFloor(adminFloor)
 
 	// Shared app-credential minter (Entra app / GitHub App) for providers opted
@@ -690,7 +709,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	setupHandlers := setup.NewHandlers(
 		cfg, tokenCipher, oidcConfigRepo, storageConfigRepo, userRepo, orgRepo, authHandlers,
 	).WithScannerJob(moduleScannerJob).WithEgressGuard(egressGuard).
-		WithPlatformAdminCarrier(platformAdminRepo)
+		WithPlatformAdminCarrier(platformAdminRepo, auditOutbox)
 
 	// Initialize policy engine (no-op when disabled).
 	policyEngineCfg := policy.Config{

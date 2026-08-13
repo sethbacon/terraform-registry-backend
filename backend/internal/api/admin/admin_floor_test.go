@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/terraform-registry/terraform-registry/internal/adminfloor"
+	"github.com/terraform-registry/terraform-registry/internal/audit"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
@@ -376,7 +377,7 @@ func TestEraseUserHandler_RefusesStrandingTheDeployment(t *testing.T) {
 	defer idb.Close()
 
 	svc := services.NewUserService(idb).
-		WithAdminFloor(adminfloor.New(rdb, idb), repositories.NewPlatformAdminRepository(rdb))
+		WithAdminFloor(adminfloor.New(rdb, idb), repositories.NewPlatformAdminRepository(rdb), audit.NewOutbox(rdb))
 	h := NewGDPRHandlers(svc)
 
 	registry.ExpectBegin()

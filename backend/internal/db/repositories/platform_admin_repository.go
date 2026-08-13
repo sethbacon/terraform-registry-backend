@@ -146,16 +146,51 @@ func (r *PlatformAdminRepository) List(ctx context.Context) ([]PlatformAdminGran
 //
 // grantedBy is the acting principal, nil for a grant with no attributable
 // actor (the backfill in migration 000051 writes its rows that way).
-func (r *PlatformAdminRepository) Grant(ctx context.Context, userID string, grantedBy, note *string) (*PlatformAdminGrant, error) {
+//
+// IN A TRANSACTION, FOR THE AUDIT RECORD (issue #766, migration 000052). The
+// insert is a single statement and needs no transaction of its own; it has one
+// so that writeAuditIntent can enlist in it. The grant and the record of the
+// grant then commit together or not at all — which is the whole point, because
+// the audit destination is on a different connection and the previous design
+// (mutate, then write the entry, then log the failure and report success)
+// could produce a platform administrator nobody could account for.
+//
+// writeAuditIntent is MANDATORY: nil is refused with ErrAuditIntentRequired
+// before anything is written. Migration 000052's deferred constraint trigger
+// refuses the commit independently, so a caller that bypasses this repository
+// entirely — including hand-written SQL — is held to the same rule.
+func (r *PlatformAdminRepository) Grant(ctx context.Context, userID string, grantedBy, note *string, writeAuditIntent AuditIntentWriter) (*PlatformAdminGrant, error) {
+	if writeAuditIntent == nil {
+		return nil, ErrAuditIntentRequired
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	// Rolled back unconditionally; a Rollback after a successful Commit is a
+	// no-op returning sql.ErrTxDone, which is why only the Commit error is
+	// reported.
+	defer func() { _ = tx.Rollback() }()
+
 	query := `INSERT INTO platform_admins (user_id, granted_by, note)
 	          VALUES ($1, $2, $3)
 	          ON CONFLICT (user_id) DO NOTHING
 	          RETURNING ` + grantColumns
-	g, err := scanGrant(r.db.QueryRowContext(ctx, query, userID, grantedBy, note))
+	g, err := scanGrant(tx.QueryRowContext(ctx, query, userID, grantedBy, note))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrAlreadyPlatformAdmin
 	}
 	if err != nil {
+		return nil, err
+	}
+
+	// After the mutation, so the intent can describe what actually landed —
+	// and before the commit, so a refusal here takes the grant with it.
+	if err := writeAuditIntent(ctx, tx); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return g, nil
@@ -211,10 +246,19 @@ func lockCarrier(ctx context.Context, tx *sql.Tx, userID string) (*PlatformAdmin
 // with zero administrators — the exact outcome the guard exists to prevent,
 // reachable by two well-formed requests.
 //
+// writeAuditIntent records the revocation in the SAME transaction as the
+// delete (issue #766, migration 000052) and is MANDATORY — nil is refused with
+// ErrAuditIntentRequired before the lock is taken. A revocation that could not
+// be recorded is not performed.
+//
 // Returns ErrNotPlatformAdmin when there is no row to remove, the predicate's
 // own error when it refuses, and the driver's error otherwise. Nothing is
 // deleted in any of those cases.
-func (r *PlatformAdminRepository) Revoke(ctx context.Context, userID string, keepsAnAdmin func(ctx context.Context, remaining []PlatformAdminGrant) error) (*PlatformAdminGrant, error) {
+func (r *PlatformAdminRepository) Revoke(ctx context.Context, userID string, keepsAnAdmin func(ctx context.Context, remaining []PlatformAdminGrant) error, writeAuditIntent AuditIntentWriter) (*PlatformAdminGrant, error) {
+	if writeAuditIntent == nil {
+		return nil, ErrAuditIntentRequired
+	}
+
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -252,6 +296,11 @@ func (r *PlatformAdminRepository) Revoke(ctx context.Context, userID string, kee
 	}
 	if affected != 1 {
 		return nil, fmt.Errorf("revoking platform-admin for %s removed %d rows, want 1", userID, affected)
+	}
+	// Inside the same transaction as the DELETE: a refusal here rolls the
+	// revocation back rather than leaving an unrecorded loss of privilege.
+	if err := writeAuditIntent(ctx, tx); err != nil {
+		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err

@@ -9,6 +9,7 @@ import (
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
 
+	"github.com/terraform-registry/terraform-registry/internal/audit"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
 
@@ -45,8 +46,48 @@ func newBootstrapEnv(t *testing.T) *bootstrapEnv {
 		t.Fatalf("sqlmock: %v", err)
 	}
 	t.Cleanup(func() { carrierDB.Close() })
-	env.h.WithPlatformAdminCarrier(repositories.NewPlatformAdminRepository(carrierDB))
+	env.h.WithPlatformAdminCarrier(
+		repositories.NewPlatformAdminRepository(carrierDB), audit.NewOutbox(carrierDB))
 	return &bootstrapEnv{testEnv: env, carrierMock: carrierMock}
+}
+
+// carrierGrantOutcome selects which of Grant's three endings to queue.
+type carrierGrantOutcome int
+
+const (
+	grantLands carrierGrantOutcome = iota
+	grantConflicts
+	grantFails
+)
+
+// expectCarrierGrant queues the carrier grant as PlatformAdminRepository.Grant
+// now performs it: in a TRANSACTION, with the audit intent written into that
+// same transaction before the commit (issue #766, migration 000052).
+//
+// The intent write is queued explicitly rather than matched loosely, because it
+// is the half migration 000052's constraint trigger enforces: a bootstrap that
+// inserted the carrier row and no audit_outbox row would not commit against a
+// real database, and a mock that did not expect the intent would let exactly
+// that regression pass.
+func expectCarrierGrant(env *bootstrapEnv, outcome carrierGrantOutcome) {
+	env.carrierMock.ExpectBegin()
+	switch outcome {
+	case grantLands:
+		env.carrierMock.ExpectQuery("INSERT INTO platform_admins").
+			WillReturnRows(sqlmock.NewRows([]string{"user_id", "granted_by", "granted_at", "note"}).
+				AddRow("user-1", "user-1", time.Now(), "bootstrap administrator configured by the setup wizard"))
+		env.carrierMock.ExpectExec("INSERT INTO audit_outbox").
+			WillReturnResult(sqlmock.NewResult(1, 1))
+		env.carrierMock.ExpectCommit()
+	case grantConflicts:
+		env.carrierMock.ExpectQuery("INSERT INTO platform_admins").
+			WillReturnRows(sqlmock.NewRows([]string{"user_id", "granted_by", "granted_at", "note"}))
+		env.carrierMock.ExpectRollback()
+	case grantFails:
+		env.carrierMock.ExpectQuery("INSERT INTO platform_admins").
+			WillReturnError(errTestCarrierUnavailable)
+		env.carrierMock.ExpectRollback()
+	}
 }
 
 // expectBootstrapMembership queues everything ConfigureAdmin does before it
@@ -71,9 +112,7 @@ func TestConfigureAdmin_RecordsTheBootstrapAdminInTheCarrier(t *testing.T) {
 	r.POST("/admin", env.h.ConfigureAdmin)
 
 	expectBootstrapMembership(env)
-	env.carrierMock.ExpectQuery("INSERT INTO platform_admins").
-		WillReturnRows(sqlmock.NewRows([]string{"user_id", "granted_by", "granted_at", "note"}).
-			AddRow("user-1", "user-1", time.Now(), "bootstrap administrator configured by the setup wizard"))
+	expectCarrierGrant(env, grantLands)
 	env.oidcMock.ExpectExec("UPDATE system_settings SET").WillReturnResult(sqlmock.NewResult(0, 1))
 
 	w := httptest.NewRecorder()
@@ -107,8 +146,7 @@ func TestConfigureAdmin_TreatsAnExistingGrantAsSuccess(t *testing.T) {
 	expectBootstrapMembership(env)
 	// ON CONFLICT DO NOTHING ... RETURNING yields no rows, which the repository
 	// reports as ErrAlreadyPlatformAdmin.
-	env.carrierMock.ExpectQuery("INSERT INTO platform_admins").
-		WillReturnRows(sqlmock.NewRows([]string{"user_id", "granted_by", "granted_at", "note"}))
+	expectCarrierGrant(env, grantConflicts)
 	env.oidcMock.ExpectExec("UPDATE system_settings SET").WillReturnResult(sqlmock.NewResult(0, 1))
 
 	w := httptest.NewRecorder()
@@ -133,8 +171,7 @@ func TestConfigureAdmin_ReportsAFailedCarrierGrantWithoutFailingSetup(t *testing
 	r.POST("/admin", env.h.ConfigureAdmin)
 
 	expectBootstrapMembership(env)
-	env.carrierMock.ExpectQuery("INSERT INTO platform_admins").
-		WillReturnError(errTestCarrierUnavailable)
+	expectCarrierGrant(env, grantFails)
 	env.oidcMock.ExpectExec("UPDATE system_settings SET").WillReturnResult(sqlmock.NewResult(0, 1))
 
 	w := httptest.NewRecorder()

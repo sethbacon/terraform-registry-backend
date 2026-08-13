@@ -22,6 +22,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/terraform-registry/terraform-registry/internal/api/admin"
+	"github.com/terraform-registry/terraform-registry/internal/audit"
 	ldappkg "github.com/terraform-registry/terraform-registry/internal/auth/ldap"
 	"github.com/terraform-registry/terraform-registry/internal/auth/oidc"
 	"github.com/terraform-registry/terraform-registry/internal/config"
@@ -51,6 +52,9 @@ type Handlers struct {
 	// carrier records the bootstrap administrator in platform_admins as well
 	// as in organization_members (issue #766). See WithPlatformAdminCarrier.
 	carrier *repositories.PlatformAdminRepository
+	// outbox carries that grant's audit intent into the same transaction;
+	// migration 000052's constraint trigger refuses the commit without one.
+	outbox *audit.Outbox
 }
 
 // WithPlatformAdminCarrier attaches the platform-admin carrier so the setup
@@ -61,8 +65,14 @@ type Handlers struct {
 // carrier is on the REGISTRY's connection (migration 000051) while every
 // other repository here is on identity's, and under
 // TFR_IDENTITY_DATABASE_* those are different physical databases.
-func (h *Handlers) WithPlatformAdminCarrier(carrier *repositories.PlatformAdminRepository) *Handlers {
+//
+// The outbox comes with it and is on that same registry connection, because
+// the grant and the record of the grant have to commit together (migration
+// 000052). Passing the carrier without it produces a bootstrap that cannot
+// commit, which is why they are one argument list rather than two setters.
+func (h *Handlers) WithPlatformAdminCarrier(carrier *repositories.PlatformAdminRepository, outbox *audit.Outbox) *Handlers {
 	h.carrier = carrier
+	h.outbox = outbox
 	return h
 }
 
@@ -629,7 +639,29 @@ func (h *Handlers) recordBootstrapPlatformAdmin(ctx context.Context, userID, ema
 		return false
 	}
 	note := "bootstrap administrator configured by the setup wizard"
-	_, err := h.carrier.Grant(ctx, userID, &userID, &note)
+	resourceType := repositories.AuditResourcePlatformAdmin
+	target := userID
+	intent := &audit.Intent{
+		Action:       repositories.AuditActionPlatformAdminGranted,
+		ActorUserID:  &target,
+		ActorEmail:   &email,
+		ResourceType: &resourceType,
+		ResourceID:   &target,
+		Metadata: map[string]interface{}{
+			"target_user_id":    userID,
+			"target_user_email": email,
+			"note":              note,
+			"bootstrap":         true,
+		},
+	}
+	// The intent commits with the grant or neither does (migration 000052).
+	// ActorUserID is the new administrator themselves, matching granted_by
+	// below: the acting principal is whoever holds the one-time setup token,
+	// who has no user row of their own, and naming the subject is the only
+	// attribution that is true.
+	_, err := h.carrier.Grant(ctx, userID, &userID, &note, func(ctx context.Context, tx *sql.Tx) error {
+		return h.outbox.Enqueue(ctx, tx, intent)
+	})
 	if err == nil || errors.Is(err, repositories.ErrAlreadyPlatformAdmin) {
 		slog.Info("setup: bootstrap administrator recorded in the platform-admin carrier",
 			"user_id", userID, "email", email)

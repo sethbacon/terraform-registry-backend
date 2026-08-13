@@ -157,6 +157,36 @@ jobs:
           persist-credentials: false
           repository: 4cloudguru/pipeline-task-core
           path: suite/pipeline-task-core
+      # The GitHub-Actions family plus the drift payload contract they share with
+      # the ADO TerraformDriftReport task. In SIGNATURE_SCOPE and absent here is
+      # exit 2 for the whole job, not a quieter run. Note drift-contract is owned
+      # by 4cloudguru, not sethbacon; each path basename must equal that repo's
+      # `dir` in scope.json, which is what `--repos-root suite` resolves against.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: sethbacon/setup-terraform-hardened
+          path: suite/setup-terraform-hardened
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: sethbacon/terraform-provider-mirror
+          path: suite/terraform-provider-mirror
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: sethbacon/terraform-drift-report
+          path: suite/terraform-drift-report
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: sethbacon/terraform-module-publish
+          path: suite/terraform-module-publish
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: 4cloudguru/terraform-drift-contract
+          path: suite/terraform-drift-contract
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           {
@@ -223,7 +253,7 @@ jobs:
       # report for the run someone will actually want to read.
       - name: Upload report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: signature-replay-report
           path: replay-report.json

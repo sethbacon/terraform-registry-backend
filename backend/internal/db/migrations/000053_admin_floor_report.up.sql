@@ -53,18 +53,44 @@
 --
 -- Idempotent (ON CONFLICT DO NOTHING) and additive only. It never removes a
 -- grant, so re-running it cannot reduce anybody's authority.
+--
+-- EVERY INSERT CARRIES ITS AUDIT INTENT, and it is not decoration. Migration
+-- 000052 put a DEFERRABLE INITIALLY DEFERRED constraint trigger on
+-- `platform_admins` that re-checks at COMMIT for an `audit_outbox` row with the
+-- same pg_current_xact_id(), the same subject and action='platform_admin.granted'.
+-- That trigger holds for migrations exactly as it holds for handlers -- which is
+-- the point of it -- so 000051's backfill statement copied verbatim would abort
+-- this migration at commit. It is written as a CTE so the intents are derived
+-- from `RETURNING user_id`, i.e. from the rows ACTUALLY inserted: the ones
+-- skipped by ON CONFLICT never fire the trigger and must not be given a record
+-- of a grant that did not happen.
+--
+-- actor_user_id is NULL: nobody granted these, they are inferred from an
+-- existing role template. That is the same statement 000051 makes with a NULL
+-- `granted_by`, and the metadata says where the row came from so the provenance
+-- is not silently invented.
 DO $$
 DECLARE
   backfilled BIGINT;
 BEGIN
-  INSERT INTO platform_admins (user_id, note)
-  SELECT DISTINCT om.user_id,
-         'backfilled by migration 000053 from an admin-bearing role template on public.organization_members'
-    FROM public.organization_members om
-    JOIN public.role_templates rt ON rt.id = om.role_template_id
-   WHERE om.user_id IS NOT NULL
-     AND rt.scopes @> '["admin"]'::jsonb
-  ON CONFLICT (user_id) DO NOTHING;
+  WITH granted AS (
+    INSERT INTO platform_admins (user_id, note)
+    SELECT DISTINCT om.user_id,
+           'backfilled by migration 000053 from an admin-bearing role template on public.organization_members'
+      FROM public.organization_members om
+      JOIN public.role_templates rt ON rt.id = om.role_template_id
+     WHERE om.user_id IS NOT NULL
+       AND rt.scopes @> '["admin"]'::jsonb
+    ON CONFLICT (user_id) DO NOTHING
+    RETURNING user_id
+  )
+  INSERT INTO audit_outbox (event_id, action, resource_type, resource_id, metadata)
+  SELECT gen_random_uuid(), 'platform_admin.granted', 'platform_admin', g.user_id::text,
+         jsonb_build_object(
+           'target_user_id', g.user_id,
+           'source', 'migration 000053 backfill',
+           'origin', 'public.organization_members')
+    FROM granted g;
   GET DIAGNOSTICS backfilled = ROW_COUNT;
   IF backfilled > 0 THEN
     RAISE NOTICE 'migration 000053: backfilled % platform admin(s) that postdate migration 000051', backfilled;
@@ -81,14 +107,24 @@ BEGIN
                     AND table_name = 'role_templates'
                     AND column_name = 'scopes'
                     AND data_type = 'ARRAY') THEN
-    INSERT INTO platform_admins (user_id, note)
-    SELECT DISTINCT om.user_id,
-           'backfilled by migration 000053 from an admin-bearing role template on identity.organization_members'
-      FROM identity.organization_members om
-      JOIN identity.role_templates rt ON rt.id = om.role_template_id
-     WHERE om.user_id IS NOT NULL
-       AND 'admin' = ANY(rt.scopes)
-    ON CONFLICT (user_id) DO NOTHING;
+    WITH granted AS (
+      INSERT INTO platform_admins (user_id, note)
+      SELECT DISTINCT om.user_id,
+             'backfilled by migration 000053 from an admin-bearing role template on identity.organization_members'
+        FROM identity.organization_members om
+        JOIN identity.role_templates rt ON rt.id = om.role_template_id
+       WHERE om.user_id IS NOT NULL
+         AND 'admin' = ANY(rt.scopes)
+      ON CONFLICT (user_id) DO NOTHING
+      RETURNING user_id
+    )
+    INSERT INTO audit_outbox (event_id, action, resource_type, resource_id, metadata)
+    SELECT gen_random_uuid(), 'platform_admin.granted', 'platform_admin', g.user_id::text,
+           jsonb_build_object(
+             'target_user_id', g.user_id,
+             'source', 'migration 000053 backfill',
+             'origin', 'identity.organization_members')
+      FROM granted g;
     GET DIAGNOSTICS backfilled = ROW_COUNT;
     IF backfilled > 0 THEN
       RAISE NOTICE 'migration 000053: backfilled % platform admin(s) from identity.organization_members', backfilled;

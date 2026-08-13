@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/terraform-registry/terraform-registry/internal/adminfloor"
+	"github.com/terraform-registry/terraform-registry/internal/audit"
 	"github.com/terraform-registry/terraform-registry/internal/credlifecycle"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
@@ -31,6 +32,12 @@ type UserService struct {
 	// row. May be nil, in which case both are skipped.
 	floor   *adminfloor.Guard
 	carrier *repositories.PlatformAdminRepository
+	// outbox carries the audit intent for that retirement INTO the deleting
+	// transaction. Mandatory once carrier is set: migration 000052's constraint
+	// trigger refuses the commit without a matching intent, so a nil outbox
+	// makes the cleanup fail rather than silently skip -- see
+	// revokePlatformAdminCarrier.
+	outbox *audit.Outbox
 }
 
 // NewUserService creates a new UserService.
@@ -45,12 +52,18 @@ func (s *UserService) WithCredentialSweeper(sweeper *credlifecycle.Sweeper) *Use
 	return s
 }
 
-// WithAdminFloor wires the never-zero administrator guard and the
-// platform-admin carrier used by EraseUser (issue #766). Returns the service
-// for chaining.
-func (s *UserService) WithAdminFloor(floor *adminfloor.Guard, carrier *repositories.PlatformAdminRepository) *UserService {
+// WithAdminFloor wires the never-zero administrator guard, the platform-admin
+// carrier, and the audit outbox that carrier writes through (issue #766).
+// Returns the service for chaining.
+//
+// One option rather than three: the floor's read of the carrier, the row the
+// erasure retires, and the intent that retirement must commit with are the same
+// fact seen three ways, and a deployment that wired one without the others
+// would either count a grant it was about to strand or fail its commit.
+func (s *UserService) WithAdminFloor(floor *adminfloor.Guard, carrier *repositories.PlatformAdminRepository, outbox *audit.Outbox) *UserService {
 	s.floor = floor
 	s.carrier = carrier
+	s.outbox = outbox
 	return s
 }
 
@@ -247,14 +260,41 @@ func (s *UserService) eraseTx(ctx context.Context, userID string) error {
 // (issue #766). Best-effort and logged; the erasure has already committed and
 // answering an error would invite a retry that then reports "user not found".
 //
-// The predicate is nil deliberately: the floor has already cleared this
-// erasure, and re-checking here would refuse to remove the very grant it just
-// discounted.
-func (s *UserService) revokePlatformAdminCarrier(ctx context.Context, userID string) {
+// The last-standing predicate is nil deliberately: the floor has already
+// cleared this erasure, and re-checking here would refuse to remove the very
+// grant it just discounted.
+//
+// The AUDIT INTENT is not optional in the same way. Migration 000052's deferred
+// constraint trigger refuses any commit that deletes a carrier row without a
+// matching intent in the same transaction, so this cleanup carries one — with
+// the action the trigger pins and metadata saying why the grant went, which is
+// the difference between "an administrator was revoked" and "an administrator
+// was erased" in the trail. A nil outbox therefore cannot be skipped past: the
+// DELETE would abort at COMMIT anyway, and saying so here is clearer than
+// letting Postgres say it.
+func (s *UserService) revokePlatformAdminCarrier(ctx context.Context, userID, erasedBy string) {
 	if s.carrier == nil {
 		return
 	}
-	_, err := s.carrier.Revoke(ctx, userID, nil)
+	resourceType := repositories.AuditResourcePlatformAdmin
+	target := userID
+	intent := &audit.Intent{
+		Action:       repositories.AuditActionPlatformAdminRevoked,
+		ResourceType: &resourceType,
+		ResourceID:   &target,
+		Metadata: map[string]interface{}{
+			"target_user_id": userID,
+			"reason":         "gdpr erasure",
+		},
+	}
+	if erasedBy != "" && erasedBy != "system" {
+		actor := erasedBy
+		intent.ActorUserID = &actor
+	}
+
+	_, err := s.carrier.Revoke(ctx, userID, nil, func(ctx context.Context, tx *sql.Tx) error {
+		return s.outbox.Enqueue(ctx, tx, intent)
+	})
 	if err == nil {
 		slog.Info("removed the platform-admin grant of an erased principal", "user_id", userID)
 		return
@@ -308,7 +348,7 @@ func (s *UserService) EraseUser(ctx context.Context, userID string, erasedBy str
 	// behind it names a principal who can no longer authenticate but still
 	// resolves to a users row, so — unlike a deleted user's orphan — nothing
 	// downstream can tell it is inert. Best-effort, after the commit.
-	s.revokePlatformAdminCarrier(ctx, userID)
+	s.revokePlatformAdminCarrier(ctx, userID, erasedBy)
 
 	// 4. Revoke any active JWT sessions.
 	//

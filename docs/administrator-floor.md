@@ -205,14 +205,30 @@ Alternatively remove the remaining members — an empty organization satisfies B
 
 **Invariant A — no platform administrator.** This one has no API route, because
 every route that could grant it requires the `admin` scope nobody holds. It is
-the one case that needs SQL, on the **registry** connection:
+the one case that needs SQL, on the **registry** connection — and that SQL must
+carry its own audit intent, because migration `000052` puts a deferred
+constraint trigger on `platform_admins` that refuses any commit without one:
 
 ```sql
--- Pick a user who can actually authenticate.
-INSERT INTO platform_admins (user_id, note)
-VALUES ('<user-uuid>', 'recovered after issue #766 detection')
-ON CONFLICT (user_id) DO NOTHING;
+BEGIN;
+WITH granted AS (
+  -- Pick a user who can actually authenticate.
+  INSERT INTO platform_admins (user_id, note)
+  VALUES ('<user-uuid>', 'recovered after issue #766 detection')
+  ON CONFLICT (user_id) DO NOTHING
+  RETURNING user_id
+)
+INSERT INTO audit_outbox (event_id, action, resource_type, resource_id, metadata)
+SELECT gen_random_uuid(), 'platform_admin.granted', 'platform_admin', g.user_id::text,
+       jsonb_build_object('target_user_id', g.user_id, 'source', 'manual recovery')
+  FROM granted g;
+COMMIT;
 ```
+
+Without the second statement the `COMMIT` fails with
+`audit outbox: platform_admin.granted on ... has no audit intent in this
+transaction`. `docs/configuration.md` documents the same requirement for
+emergency SQL generally.
 
 The change takes effect on that user's next request — the carrier is read per
 request, not frozen into the token (`platform_admin_repository.go`). Verify with
@@ -239,6 +255,14 @@ not a hot path.
 over `platform_admins`, PR #862) and takes only the lock, so a carrier revoke
 and a role-template demotion on the other connection cannot each observe the
 other's administrator still standing.
+
+**The floor's lock and the audit outbox do not interact.** `Serialize` holds a
+write-free transaction open purely to scope `pg_advisory_xact_lock`; the carrier
+mutation opens its *own* transaction, and that is the one migration `000052`'s
+trigger examines for a matching `pg_current_xact_id()`. Every path that touches
+`platform_admins` — the setup wizard's bootstrap grant, and the cleanups that
+retire a deleted or erased principal's grant — writes its intent into that inner
+transaction, so the grant and the record of it commit together or neither does.
 
 The serialisation is proven against a real Postgres in
 `backend/internal/adminfloor/adminfloor_postgres_test.go`, which forces the

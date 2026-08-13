@@ -26,6 +26,7 @@ package admin
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -36,6 +37,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/terraform-registry/terraform-registry/internal/adminfloor"
+	"github.com/terraform-registry/terraform-registry/internal/audit"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/identityerr"
@@ -43,10 +45,18 @@ import (
 
 // Audit actions written by this file. Dotted, like the rest of the estate's
 // hand-written actions ("mirror.created", "provider.delete").
+//
+// ALIASES, not literals, since issue #766's floor work: migration 000052's
+// trigger matches on these exact strings, and the carrier now has callers in
+// two other packages (the setup wizard's bootstrap grant, and the lifecycle
+// cleanups that retire a destroyed principal's grant). A second spelling
+// anywhere is not a wrong audit entry, it is a failed COMMIT, so there is one
+// definition — repositories/platform_admin_audit_actions.go — and these names
+// stay for the readers of this file.
 const (
-	auditActionPlatformAdminGranted = "platform_admin.granted"
-	auditActionPlatformAdminRevoked = "platform_admin.revoked"
-	auditResourcePlatformAdmin      = "platform_admin"
+	auditActionPlatformAdminGranted = repositories.AuditActionPlatformAdminGranted
+	auditActionPlatformAdminRevoked = repositories.AuditActionPlatformAdminRevoked
+	auditResourcePlatformAdmin      = repositories.AuditResourcePlatformAdmin
 )
 
 // maxPlatformAdminNoteLen bounds the operator note. The column is TEXT; the
@@ -79,13 +89,16 @@ type PlatformAdminHandlers struct {
 	// (migration 000051) and why resolution is a lookup here rather than a join
 	// there.
 	userRepo *repositories.UserRepository
-	// auditRepo writes the grant/revoke trail. Also on the identity connection.
-	auditRepo *repositories.AuditRepository
+	// outbox records the grant/revoke trail. It is on the REGISTRY connection,
+	// beside the carrier, so the record commits in the same transaction as the
+	// mutation; the relay delivers it to audit_logs on the identity connection
+	// afterwards (issue #766, migration 000052).
+	outbox *audit.Outbox
 }
 
 // NewPlatformAdminHandlers constructs the handlers.
-func NewPlatformAdminHandlers(carrier *repositories.PlatformAdminRepository, userRepo *repositories.UserRepository, auditRepo *repositories.AuditRepository) *PlatformAdminHandlers {
-	return &PlatformAdminHandlers{carrier: carrier, userRepo: userRepo, auditRepo: auditRepo}
+func NewPlatformAdminHandlers(carrier *repositories.PlatformAdminRepository, userRepo *repositories.UserRepository, outbox *audit.Outbox) *PlatformAdminHandlers {
+	return &PlatformAdminHandlers{carrier: carrier, userRepo: userRepo, outbox: outbox}
 }
 
 // WithAdminFloor attaches the deployment-wide administrator-floor lock
@@ -274,9 +287,23 @@ func (h *PlatformAdminHandlers) GrantPlatformAdmin(c *gin.Context) {
 		notePtr = &note
 	}
 
-	grant, err := h.carrier.Grant(c.Request.Context(), targetID.String(), grantedBy, notePtr)
+	// The audit intent travels INTO the mutation's transaction. There is no
+	// "grant succeeded but the audit write failed" branch below any more,
+	// because that combination can no longer commit.
+	grant, err := h.carrier.Grant(c.Request.Context(), targetID.String(), grantedBy, notePtr,
+		h.auditIntent(c, auditActionPlatformAdminGranted, targetID.String(), map[string]interface{}{
+			"target_user_id":    targetID.String(),
+			"target_user_email": target.Email,
+			"note":              note,
+		}))
 	if errors.Is(err, repositories.ErrAlreadyPlatformAdmin) {
 		c.JSON(http.StatusConflict, gin.H{"error": "User already holds platform-admin"})
+		return
+	}
+	if unaudited(err) {
+		slog.Error("refused to grant platform admin: the change could not be recorded",
+			"error", err, "target_user_id", targetID.String())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": errUnauditableMutation})
 		return
 	}
 	if err != nil {
@@ -284,12 +311,6 @@ func (h *PlatformAdminHandlers) GrantPlatformAdmin(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to grant platform administrator"})
 		return
 	}
-
-	h.writeAudit(c, auditActionPlatformAdminGranted, grant.UserID, map[string]interface{}{
-		"target_user_id":    grant.UserID,
-		"target_user_email": target.Email,
-		"note":              note,
-	})
 
 	item, err := h.toItem(c.Request.Context(), res, *grant)
 	if err != nil {
@@ -344,12 +365,40 @@ func (h *PlatformAdminHandlers) RevokePlatformAdmin(c *gin.Context) {
 	// the identity connection, so the two could each see the other's
 	// administrator still standing.
 	res := newUserResolver(h.userRepo)
-	var grant *repositories.PlatformAdminGrant
+
+	// Resolved BEFORE the revocation, because the audit intent is now written
+	// inside the revoking transaction and has to be complete by then. A lookup
+	// failure leaves the address empty rather than blocking the revocation —
+	// the same tolerance the post-hoc write had, and unrelated to the
+	// last-standing guard's own refusal to proceed on an unresolved answer.
+	targetEmail := ""
+	if user, uerr := res.get(c.Request.Context(), targetID.String()); uerr == nil && user != nil {
+		targetEmail = user.Email
+	}
+
+	// GUARD admin-floor-serialization (issue #766). The refusal itself is
+	// unchanged -- requireAnotherExercisableAdmin under FOR UPDATE, PR #862 --
+	// and is not delegated to the floor, which is deliberately more permissive
+	// here (it would accept a role-template administrator as the one who
+	// remains). Only the ORDERING is new: the row lock inside Revoke serialises
+	// this revoke against another revoke, but not against a membership demotion
+	// committed on the identity connection, so the two could each see the
+	// other's administrator still standing.
+	//
+	// THE FLOOR'S LOCK AND THE AUDIT INTENT DO NOT INTERACT. Serialize holds a
+	// write-free transaction open on the registry connection purely to scope
+	// pg_advisory_xact_lock; Revoke opens its OWN transaction, on its own
+	// pooled connection, and that is the one migration 000052's trigger
+	// examines for a matching pg_current_xact_id(). Nesting the revoke inside
+	// the lock therefore changes neither the intent nor the trigger's answer.
 	err = h.floor.Serialize(c.Request.Context(), func(ctx context.Context) error {
-		var revokeErr error
-		grant, revokeErr = h.carrier.Revoke(ctx, targetID.String(), func(ctx context.Context, remaining []repositories.PlatformAdminGrant) error {
+		_, revokeErr := h.carrier.Revoke(ctx, targetID.String(), func(ctx context.Context, remaining []repositories.PlatformAdminGrant) error {
 			return h.requireAnotherExercisableAdmin(ctx, res, remaining)
-		})
+		}, h.auditIntent(c, auditActionPlatformAdminRevoked, targetID.String(), map[string]interface{}{
+			"target_user_id":    targetID.String(),
+			"target_user_email": targetEmail,
+			"self_revocation":   c.GetString("user_id") == targetID.String(),
+		}))
 		return revokeErr
 	})
 	switch {
@@ -373,21 +422,16 @@ func (h *PlatformAdminHandlers) RevokePlatformAdmin(c *gin.Context) {
 		slog.Error("failed to verify remaining platform admins", "error", err, "target_user_id", targetID.String())
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to verify remaining platform administrators"})
 		return
+	case unaudited(err):
+		slog.Error("refused to revoke platform admin: the change could not be recorded",
+			"error", err, "target_user_id", targetID.String())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": errUnauditableMutation})
+		return
 	case err != nil:
 		slog.Error("failed to revoke platform admin", "error", err, "target_user_id", targetID.String())
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to revoke platform administrator"})
 		return
 	}
-
-	targetEmail := ""
-	if user, uerr := res.get(c.Request.Context(), grant.UserID); uerr == nil && user != nil {
-		targetEmail = user.Email
-	}
-	h.writeAudit(c, auditActionPlatformAdminRevoked, grant.UserID, map[string]interface{}{
-		"target_user_id":    grant.UserID,
-		"target_user_email": targetEmail,
-		"self_revocation":   c.GetString("user_id") == grant.UserID,
-	})
 
 	c.JSON(http.StatusOK, MessageResponse{Message: "Platform administrator revoked"})
 }
@@ -418,12 +462,32 @@ func (h *PlatformAdminHandlers) requireAnotherExercisableAdmin(ctx context.Conte
 	return errLastPlatformAdmin
 }
 
-// writeAudit records a grant or revoke: who acted, on whom, and when.
+// errUnauditableMutation is what a caller is told when the change was refused
+// because it could not be recorded. Distinct from a generic failure on purpose:
+// a retry will not help until the audit outbox is reachable, and the operator
+// needs to know the privilege did NOT change hands.
+const errUnauditableMutation = "Refused: the change could not be recorded in the audit trail, so it was not made"
+
+// unaudited reports whether err is a refusal to proceed unrecorded, as opposed
+// to an ordinary failure of the mutation itself.
+func unaudited(err error) bool {
+	return errors.Is(err, repositories.ErrAuditIntentRequired) ||
+		errors.Is(err, audit.ErrNoOutbox) ||
+		errors.Is(err, audit.ErrIntentIncomplete)
+}
+
+// auditIntent builds the audit record for a grant or revoke and returns it as
+// the writer the carrier repository runs INSIDE the mutation's transaction.
 //
-// SYNCHRONOUS, unlike the download-counter audits elsewhere in this package.
-// This is the record the whole design exists to produce, so it is written on
-// the request path where its failure is observable and where a test can assert
-// it was written at all rather than race a goroutine.
+// TRANSACTIONAL, not "written afterwards and hoped for" (issue #766, migration
+// 000052). This is the record the whole design exists to produce, and the
+// previous version of it — a second write, on a second connection, after the
+// mutation had already committed — could fail while the mutation still reported
+// success. Now the record is an audit_outbox row on the SAME connection as the
+// carrier: it commits with the grant or neither commits, migration 000052's
+// deferred constraint trigger refuses the commit if it is missing, and the
+// relay (internal/audit) delivers it to audit_logs afterwards, at least once
+// and idempotently.
 //
 // organization_id is left NULL deliberately: platform-admin is not an
 // organization-owned fact, and audit_logs' platform-wide scope
@@ -431,20 +495,14 @@ func (h *PlatformAdminHandlers) requireAnotherExercisableAdmin(ctx context.Conte
 // uses) admits NULL-owner rows, so the entry is readable by the principals
 // entitled to review it.
 //
-// A failed write does NOT fail the request. The mutation already happened on a
-// different connection and cannot be rolled back with it, and answering 500
-// would invite a retry that then conflicts. It is logged at error level, and
-// AuditMiddleware's own route-level entry for the same request is written
-// independently of this one.
-func (h *PlatformAdminHandlers) writeAudit(c *gin.Context, action, targetUserID string, metadata map[string]interface{}) {
-	if h.auditRepo == nil {
-		slog.Error("platform-admin change not audited: no audit repository wired",
-			"action", action, "target_user_id", targetUserID)
-		return
-	}
+// The actor's address is captured HERE rather than resolved at delivery, so an
+// actor deleted between the grant and its delivery is still named. Absent it,
+// the sink falls back to resolving it, exactly as the identity store's own
+// insert does.
+func (h *PlatformAdminHandlers) auditIntent(c *gin.Context, action, targetUserID string, metadata map[string]interface{}) repositories.AuditIntentWriter {
 	resourceType := auditResourcePlatformAdmin
 	ip := c.ClientIP()
-	entry := &models.AuditLog{
+	intent := &audit.Intent{
 		Action:       action,
 		ResourceType: &resourceType,
 		ResourceID:   &targetUserID,
@@ -452,10 +510,15 @@ func (h *PlatformAdminHandlers) writeAudit(c *gin.Context, action, targetUserID 
 		Metadata:     metadata,
 	}
 	if actor := c.GetString("user_id"); actor != "" {
-		entry.UserID = &actor
+		intent.ActorUserID = &actor
 	}
-	if err := h.auditRepo.CreateAuditLog(c.Request.Context(), entry); err != nil {
-		slog.Error("failed to write platform-admin audit entry",
-			"error", err, "action", action, "target_user_id", targetUserID)
+	if actor, ok := c.Get("user"); ok {
+		if u, ok := actor.(*models.User); ok && u != nil && u.Email != "" {
+			email := u.Email
+			intent.ActorEmail = &email
+		}
+	}
+	return func(ctx context.Context, tx *sql.Tx) error {
+		return h.outbox.Enqueue(ctx, tx, intent)
 	}
 }

@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/adminfloor"
+	"github.com/terraform-registry/terraform-registry/internal/audit"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/credlifecycle"
@@ -37,6 +38,10 @@ type UserHandlers struct {
 	// otherwise outlive its user, inert but indistinguishable from a live
 	// grant to anything counting rows. May be nil in tests.
 	carrier *repositories.PlatformAdminRepository
+	// outbox carries the audit intent for that retirement into the deleting
+	// transaction; migration 000052's constraint trigger refuses the commit
+	// without one.
+	outbox *audit.Outbox
 }
 
 // UserHandlersOption configures optional UserHandlers dependencies.
@@ -79,16 +84,20 @@ func WithUserCredentialSweeper(s *credlifecycle.Sweeper) UserHandlersOption {
 	return func(h *UserHandlers) { h.creds = s }
 }
 
-// WithUserAdminFloor wires the never-zero administrator guard and the
-// platform-admin carrier, which deleting a principal must both consult and
-// clean up (issue #766). One option rather than two: the carrier read the
-// floor makes and the carrier row the delete removes are the same fact, and a
-// deployment that wired one without the other would count a grant it was
-// about to strand.
-func WithUserAdminFloor(floor *adminfloor.Guard, carrier *repositories.PlatformAdminRepository) UserHandlersOption {
+// WithUserAdminFloor wires the never-zero administrator guard, the
+// platform-admin carrier, and the audit outbox that carrier writes through
+// (issue #766).
+//
+// One option rather than three: the carrier read the floor makes, the carrier
+// row the delete removes, and the intent that removal must commit with are the
+// same fact seen three ways. A deployment that wired one without the others
+// would either count a grant it was about to strand, or fail its commit against
+// migration 000052's trigger.
+func WithUserAdminFloor(floor *adminfloor.Guard, carrier *repositories.PlatformAdminRepository, outbox *audit.Outbox) UserHandlersOption {
 	return func(h *UserHandlers) {
 		h.floor = floor
 		h.carrier = carrier
+		h.outbox = outbox
 	}
 }
 
@@ -116,10 +125,16 @@ func NewUserHandlers(cfg *config.Config, db *sql.DB, opts ...UserHandlersOption)
 // against a count of two, so the floor and the management API both have to
 // keep skipping it forever. Deleting it keeps the carrier honest instead.
 //
-// The predicate is nil deliberately: this is not an operator revoking a live
-// administrator, it is cleanup after a delete the floor has already cleared,
-// and re-checking here would refuse to tidy up the very row the floor just
-// discounted.
+// The last-standing predicate is nil deliberately: this is not an operator
+// revoking a live administrator, it is cleanup after a delete the floor has
+// already cleared, and re-checking here would refuse to tidy up the very row
+// the floor just discounted.
+//
+// The AUDIT INTENT is mandatory, not optional in the same way. Migration
+// 000052's deferred constraint trigger refuses any commit that deletes a
+// carrier row without a matching intent, so this carries one — with the action
+// the trigger pins, and metadata saying the grant went because its principal
+// was deleted rather than because an operator revoked it.
 //
 // Best-effort. The user is already gone; a failure leaves an orphan the
 // management API renders as user_resolved=false, which is exactly what it is.
@@ -127,7 +142,26 @@ func (h *UserHandlers) revokePlatformAdminCarrier(c *gin.Context, userID string)
 	if h.carrier == nil {
 		return
 	}
-	_, err := h.carrier.Revoke(c.Request.Context(), userID, nil)
+	resourceType := repositories.AuditResourcePlatformAdmin
+	target := userID
+	ip := c.ClientIP()
+	intent := &audit.Intent{
+		Action:       repositories.AuditActionPlatformAdminRevoked,
+		ResourceType: &resourceType,
+		ResourceID:   &target,
+		IPAddress:    &ip,
+		Metadata: map[string]interface{}{
+			"target_user_id": userID,
+			"reason":         "user deleted by administrator",
+		},
+	}
+	if actor := c.GetString("user_id"); actor != "" {
+		intent.ActorUserID = &actor
+	}
+
+	_, err := h.carrier.Revoke(c.Request.Context(), userID, nil, func(ctx context.Context, tx *sql.Tx) error {
+		return h.outbox.Enqueue(ctx, tx, intent)
+	})
 	if err == nil {
 		slog.Info("removed the platform-admin grant of a deleted principal", "user_id", userID)
 		return
