@@ -24,6 +24,7 @@ package mirror
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -364,7 +365,11 @@ func (c *GitHubReleasesClient) parseRelease(rel gitHubRelease) (TerraformVersion
 // individual .sha256 sidecar files for each binary asset.
 func (c *GitHubReleasesClient) FetchSHASums(ctx context.Context, version string) (map[string]string, []byte, error) {
 	sumsURL, err := c.findSHA256SumsURL(ctx, version)
-	if err != nil {
+	// ErrNoMatchingAsset is expected for tools that ship per-file .sha256
+	// sidecars instead of a combined file (OPA) — fall through to those. Any
+	// other error means the release itself could not be read, and must not be
+	// laundered into "this release has no checksums".
+	if err != nil && !errors.Is(err, ErrNoMatchingAsset) {
 		return nil, nil, err
 	}
 
@@ -429,10 +434,18 @@ func (c *GitHubReleasesClient) fetchPerFileSHASums(ctx context.Context, version 
 func (c *GitHubReleasesClient) FetchSHASumsSignature(ctx context.Context, version string) ([]byte, error) {
 	sigURL, err := c.findSHA256SumsSigURL(ctx, version)
 	if err != nil {
+		// Both misses are errors now (see findAssetURL). Keep the original
+		// wording for the "release exists, no .sig asset" case — callers log
+		// it as an expected outcome for unsigned-upstream tools — but let the
+		// sentinel travel with it so it stays machine-distinguishable from an
+		// unreachable upstream.
+		if errors.Is(err, ErrNoMatchingAsset) {
+			return nil, fmt.Errorf("no SHA256SUMS signature asset found for version %s in %s/%s: %w", version, c.Owner, c.Repo, err)
+		}
 		return nil, err
 	}
 	if sigURL == "" {
-		return nil, fmt.Errorf("no SHA256SUMS signature asset found for version %s in %s/%s", version, c.Owner, c.Repo)
+		return nil, fmt.Errorf("no SHA256SUMS signature asset found for version %s in %s/%s: %w", version, c.Owner, c.Repo, ErrNoMatchingAsset)
 	}
 	return c.fetchURL(ctx, sigURL, 65536) // 64 KB cap
 }
@@ -469,15 +482,41 @@ func (c *GitHubReleasesClient) findSHA256SumsSigURL(ctx context.Context, version
 	return c.findAssetURL(ctx, version, sha256sumsSigRE)
 }
 
+// ErrNoMatchingAsset reports that the upstream release for a version was
+// fetched successfully but carries no asset matching the requested pattern
+// (or whose product prefix does not match c.ProductName).
+//
+// This is a legitimate outcome for some tools — OPA publishes no combined
+// SHA256SUMS file and terraform-docs publishes no detached signature — so
+// callers that have a fallback check for it with errors.Is. It is returned as
+// an error rather than an empty string because the alternative ("", nil) is
+// indistinguishable from a rate-limited or unreachable upstream, which is what
+// let a permanently unverifiable mirrored version go unnoticed (issue #869).
+var ErrNoMatchingAsset = errors.New("no matching release asset")
+
+// ErrReleaseNotFound reports that no upstream release could be fetched for a
+// version under either tag spelling — a 404, a rate-limit response, or a
+// transport failure. Unlike ErrNoMatchingAsset this is never an expected
+// outcome for a version the mirror has already ingested: it means the checksum
+// source is temporarily or permanently unreachable, and any caller that would
+// otherwise treat "no checksum" as "nothing to do" must surface it.
+var ErrReleaseNotFound = errors.New("upstream release not found")
+
 // findAssetURL fetches the specific release by tag (tries with and without
 // leading "v") and returns the browser_download_url of the first asset whose
 // name matches any of the supplied regexes and whose product prefix (capture
 // group 1) matches c.ProductName.
+//
+// It never returns ("", nil): a miss is always ErrNoMatchingAsset (release
+// reachable, nothing matched) or ErrReleaseNotFound (release unreachable), so
+// callers can tell "this tool has no such asset" from "we could not look".
 func (c *GitHubReleasesClient) findAssetURL(ctx context.Context, version string, res ...*regexp.Regexp) (string, error) {
 	// GitHub tags may use "v1.9.0" or "1.9.0" — try both.
+	var lastErr error
 	for _, tag := range []string{"v" + version, version} {
 		rel, err := c.fetchReleaseByTag(ctx, tag)
 		if err != nil {
+			lastErr = err
 			continue
 		}
 		for _, asset := range rel.Assets {
@@ -490,9 +529,11 @@ func (c *GitHubReleasesClient) findAssetURL(ctx context.Context, version string,
 			}
 		}
 		// Found the release but not the asset — no point checking the other tag.
-		return "", nil
+		return "", fmt.Errorf("%w: %s/%s release %q has %d assets, none matching product %q",
+			ErrNoMatchingAsset, c.Owner, c.Repo, tag, len(rel.Assets), c.ProductName)
 	}
-	return "", nil
+	return "", fmt.Errorf("%w: %s/%s version %s (tried tags %q and %q): %w",
+		ErrReleaseNotFound, c.Owner, c.Repo, version, "v"+version, version, lastErr)
 }
 
 func (c *GitHubReleasesClient) fetchReleaseByTag(ctx context.Context, tag string) (gitHubRelease, error) {

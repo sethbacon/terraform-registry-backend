@@ -554,7 +554,16 @@ func (r *TerraformMirrorRepository) UpsertPlatform(ctx context.Context, p *model
 		ON CONFLICT (version_id, os, arch) DO UPDATE
 		SET upstream_url     = EXCLUDED.upstream_url,
 		    filename         = EXCLUDED.filename,
-		    sha256           = EXCLUDED.sha256,
+		    -- An incoming empty sha256 must never erase a stored one (issue
+		    -- #869). This upsert re-runs on EVERY sync tick from the upstream
+		    -- release index, and that index row carries no checksum: the hash
+		    -- is learned later, from the SHA256SUMS file. A plain
+		    -- "sha256 = EXCLUDED.sha256" therefore wiped the verified hash off
+		    -- every already-synced platform on every run, leaving the row
+		    -- sync_status='synced' with sha256='' — which the download API
+		    -- serves as an empty string while every fail-closed installer
+		    -- refuses it. Only a non-empty incoming value may overwrite.
+		    sha256           = COALESCE(NULLIF(EXCLUDED.sha256, ''), terraform_version_platforms.sha256),
 		    updated_at       = EXCLUDED.updated_at
 		RETURNING id
 	`
@@ -731,13 +740,20 @@ func (r *TerraformMirrorRepository) UpdatePlatformAttestationVerified(ctx contex
 // BackfillPlatformSHA256 populates sha256 from the supplied SUMS map for any
 // synced platform of the given version whose sha256 column is still empty.
 // No binaries are re-downloaded. sums maps filename -> hex SHA256.
-func (r *TerraformMirrorRepository) BackfillPlatformSHA256(ctx context.Context, versionID uuid.UUID, sums map[string]string) error {
-	if len(sums) == 0 {
-		return nil
-	}
+//
+// It returns how many rows it filled and, separately, every row it could not:
+// a synced platform whose filename has no entry in the SUMS map is a version
+// that can never be verified, and the caller must be able to say so. Returning
+// only an error would keep that case silent, which is how issue #869 survived
+// from ingestion until a consumer hit it.
+func (r *TerraformMirrorRepository) BackfillPlatformSHA256(
+	ctx context.Context,
+	versionID uuid.UUID,
+	sums map[string]string,
+) (filled int, unresolved []models.TerraformVersionPlatform, err error) {
 	platforms, err := r.ListPlatformsForVersion(ctx, versionID)
 	if err != nil {
-		return err
+		return 0, nil, err
 	}
 	for _, p := range platforms {
 		if p.SHA256 != "" || p.SyncStatus != "synced" {
@@ -745,13 +761,77 @@ func (r *TerraformMirrorRepository) BackfillPlatformSHA256(ctx context.Context, 
 		}
 		hash, ok := sums[p.Filename]
 		if !ok || hash == "" {
+			unresolved = append(unresolved, p)
 			continue
 		}
 		if updErr := r.UpdatePlatformSHA256(ctx, p.ID, hash); updErr != nil {
-			return updErr
+			return filled, unresolved, updErr
 		}
+		filled++
 	}
-	return nil
+	return filled, unresolved, nil
+}
+
+// ListVersionsMissingSHA256 returns every version of a config that still has at
+// least one platform in sync_status='synced' with an empty sha256 — the defect
+// state of issue #869: a binary the registry serves but cannot give a consumer
+// a checksum for.
+//
+// This deliberately does NOT filter on the version's own sync_status. The
+// invariant is a property of the platform row, and a version left 'partial' or
+// 'failed' by one unavailable platform still serves the platforms that did
+// succeed. Gating the SHA256 back-fill on version sync_status='synced' meant
+// exactly those versions were skipped forever while their rows kept being
+// served without a checksum.
+//
+// Deprecated versions are excluded: their platforms are no longer offered.
+func (r *TerraformMirrorRepository) ListVersionsMissingSHA256(ctx context.Context, configID uuid.UUID) ([]models.TerraformVersion, error) {
+	query := `
+		SELECT v.id, v.config_id, v.version, v.is_latest, v.is_deprecated, v.release_date,
+		       v.sync_status, v.sync_error, v.synced_at, v.created_at, v.updated_at,
+		       v.sums_storage_key, v.sig_storage_key, v.approval_status
+		FROM terraform_versions v
+		WHERE v.config_id = $1
+		  AND v.is_deprecated = false
+		  AND EXISTS (
+		        SELECT 1 FROM terraform_version_platforms p
+		        WHERE p.version_id = v.id
+		          AND p.sync_status = 'synced'
+		          AND p.sha256 = ''
+		      )
+		ORDER BY v.version
+	`
+
+	var versions []models.TerraformVersion
+	if err := r.db.SelectContext(ctx, &versions, query, configID); err != nil {
+		return nil, fmt.Errorf("failed to list terraform versions missing sha256: %w", err)
+	}
+	return versions, nil
+}
+
+// CountPlatformsMissingSHA256 counts the config's platform rows that are marked
+// synced but carry no checksum. Zero is the ingestion invariant of issue #869;
+// any other value is a defect state that must be reported, because the download
+// API fails open on it (it serves "") while every well-behaved consumer fails
+// closed.
+//
+// Deprecated versions are excluded so a deliberately retired version cannot
+// hold the invariant red forever.
+func (r *TerraformMirrorRepository) CountPlatformsMissingSHA256(ctx context.Context, configID uuid.UUID) (int, error) {
+	var count int
+	err := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM terraform_version_platforms p
+		JOIN terraform_versions v ON v.id = p.version_id
+		WHERE v.config_id = $1
+		  AND v.is_deprecated = false
+		  AND p.sync_status = 'synced'
+		  AND p.sha256 = ''
+	`, configID).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count terraform platforms missing sha256: %w", err)
+	}
+	return count, nil
 }
 
 // UpdateGPGVerifiedForVersion sets gpg_verified on all synced platforms for a version.

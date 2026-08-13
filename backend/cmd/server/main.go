@@ -140,8 +140,12 @@ func run() error {
 			verify = true
 		}
 		return runRekeySecrets(cfg, verify)
+	case "verify-mirror-sha256":
+		// verify-mirror-sha256 — list every mirrored binary the registry
+		// serves with no checksum. Read-only; exits non-zero while any remain.
+		return runVerifyMirrorSHA256(cfg)
 	default:
-		return fmt.Errorf("unknown command: %s\nAvailable commands: serve, migrate, version, upgrade, scan-worker, bind-secrets, rekey-secrets", command)
+		return fmt.Errorf("unknown command: %s\nAvailable commands: serve, migrate, version, upgrade, scan-worker, bind-secrets, rekey-secrets, verify-mirror-sha256", command)
 	}
 }
 
@@ -1017,6 +1021,42 @@ func runBindSecrets(cfg *config.Config, verify bool) error {
 		slog.Info("bind-secrets column complete", "mode", mode, "column", name, "result", res.String())
 	}
 	return err
+}
+
+// runVerifyMirrorSHA256 lists every mirrored binary the registry serves without
+// a checksum (issue #869) and exits non-zero while any remain.
+//
+// Read-only, and no encryption key required: unlike the two sweeps above it
+// writes nothing at all. Repopulating a missing hash is the mirror sync job's
+// work, because only the sync path fetches the checksum from the UPSTREAM
+// release. Deriving it here from the SHA256SUMS blob in our own storage would
+// be easier and wrong: that blob and the binary share a storage host, and the
+// inline sha256 exists precisely so a compromise of that host is still caught.
+//
+// The intended use is the same as the verify forms of bind-secrets and
+// rekey-secrets — a runbook or CI step that gates on the exit code — plus a
+// direct answer to "which tools are affected?" that stays correct as the mirror
+// grows, rather than a list someone checked by hand once.
+func runVerifyMirrorSHA256(cfg *config.Config) error {
+	database, err := db.Connect(cfg.Database.GetDSN(), cfg.Database.MaxConnections, cfg.Database.MinIdleConnections)
+	if err != nil {
+		return fmt.Errorf("failed to connect to database: %w", err)
+	}
+	defer func() { _ = database.Close() }()
+
+	found, verifyErr := maintenance.VerifyMirrorSHA256(context.Background(), database)
+	for _, line := range maintenance.SummariseUnverifiable(found) {
+		slog.Warn("verify-mirror-sha256", "summary", line)
+	}
+	for _, u := range found {
+		slog.Warn("mirrored binary has no sha256 — checksum-enforcing clients cannot install it",
+			"config", u.Config, "tool", u.Tool, "version", u.Version,
+			"os", u.OS, "arch", u.Arch, "filename", u.Filename, "sums_blob_stored", u.HasSums)
+	}
+	if verifyErr == nil {
+		slog.Info("verify-mirror-sha256: every synced platform has a sha256")
+	}
+	return verifyErr
 }
 
 // runRekeySecrets re-encrypts every stored secret under the current

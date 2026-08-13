@@ -585,6 +585,54 @@ If a mirror has `auto_approve_rules` configured but versions still land in
 - Invalid `auto_approve_rules` JSON is treated as "no rules" and the version is
   held for manual review.
 
+### Binary Mirror Returns an Empty `sha256`
+
+A checksum-enforcing installer refuses to install a mirrored binary:
+
+```text
+Checksum verification is required but the registry did not provide a sha256 for
+https://registry.example.com/terraform/binaries/terraform-docs/versions/0.24.0/linux/amd64
+```
+
+The installer is behaving correctly. The download endpoint returns `200` with
+`"sha256": ""` — it fails **open** where the client fails **closed** — so the mirror
+looks healthy from the outside while being unusable to any client that verifies.
+
+**Diagnose:**
+
+- List every affected binary across all mirror configs. Read-only, safe to run against
+  a live registry, and exits non-zero while any remain, so it works as a runbook or CI
+  gate:
+
+  ```bash
+  terraform-registry verify-mirror-sha256
+  ```
+
+  Each row names the config, tool, version, platform, filename, and whether the version
+  has a stored `SHA256SUMS` blob.
+
+- The same count is exported per config as
+  `terraform_mirror_unverifiable_platforms` (see [observability.md](observability.md)),
+  and is written into each sync run's `sync_details` as `unverifiable_platforms`.
+
+**Fix:**
+
+- **Trigger a sync for the affected config** (Admin → Terraform Mirrors → **Sync now**,
+  or `POST /api/v1/admin/terraform-mirror/configs/{id}/sync`; the scheduler will also
+  pick it up on its next tick). The sync job's SHA256 back-fill re-fetches the upstream
+  `SHA256SUMS` and repopulates the column — no binaries are re-downloaded, only a few KB
+  of checksum text per version.
+- Re-run `verify-mirror-sha256` to confirm it now exits zero.
+- If a version stays listed after a sync, the run's logs name the reason per platform —
+  a `SHA256SUMS` that could not be fetched (rate limit, network) resolves itself on a
+  later run, while `NO CHECKSUM for …` means the platform's filename is absent from the
+  upstream checksum file and needs looking at.
+
+> Do **not** work around this by having clients fall back to the mirror's own
+> `shasums_url`. That file and the binary it describes are served from the same storage
+> host, while the inline `sha256` comes from the API — keeping them separate is what
+> makes a storage-account compromise detectable. Collapsing them removes the control.
+
 ---
 
 ## Frontend Issues
