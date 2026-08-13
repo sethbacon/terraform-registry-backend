@@ -26,42 +26,53 @@ import (
 // Issue #766 — the platform-wide `admin` role template is assignable as an
 // organization membership role.
 //
-// It is, and it has to stay that way: `organization_members.role_template_id`
-// is the ONLY carrier for scopes in this system, so it is also the only carrier
-// for the platform-wide wildcard. The setup wizard bootstraps the first
-// operator that way (internal/api/setup/handlers.go), and after setup closes
-// the org-member API is the only route left that can mint another one.
-// Rejecting admin-bearing templates there — #766's headline recommendation —
-// would leave a deployment unable to have a platform administrator at all.
+// IT IS NOT, ANY MORE, AND THAT IS WHAT THIS FILE NOW ASSERTS.
 //
-// What CAN be made enforceable is the property that the #719 tenant-scoping
-// exemptions actually rest on:
+// PR #850 wrote the strongest property reachable at the time:
 //
 //	an admin-bearing role template becomes a membership role only where a
 //	principal that already holds platform-admin authority put it there.
 //
-// PR #815 enforced that on the IdP-driven writes in auth.go
-// (idp_membership_guard_class_test.go). The human-driven writes in
-// organizations.go are enforced by checkRoleAssignment's ceiling, which
-// auth.RoleScopesPermittedBy makes fail-closed for ScopeAdmin specifically:
-// a caller who does not hold `admin` can never assign a role that carries it,
-// in any organization. That half had unit coverage on checkRoleAssignment
-// itself but nothing tying it to the routes #719 exempted, and no structural
-// guard outside auth.go — so a third membership-write handler could be added
-// with no ceiling at all and every existing test would stay green.
+// It declined #766's headline recommendation — reject admin-bearing templates
+// on the member API — and was right to: `organization_members.role_template_id`
+// was then the ONLY carrier for scopes, so the refusal would have left a
+// deployment unable to have a platform administrator at all.
 //
-// This file closes both: the behavioural half on the two exempted routes, and
-// the structural half across the whole backend tree.
+// `platform_admins` is that carrier now (migration 000051), the management API
+// grants through it (PR #862), the setup wizard bootstraps through it, and
+// migration 000054 has taken `admin` off the role templates. So the property
+// flips to the one the issue asked for:
+//
+//	an admin-bearing role template cannot become a membership role AT ALL.
+//
+// Two consequences visible below. The behavioural half now asserts the refusal
+// for a PLATFORM ADMINISTRATOR as well as for an organization owner — the
+// caller PR #850 deliberately permitted, and the only one who could ever have
+// created the state it tolerated. And `bootstrapExemptions` loses its
+// `ConfigureAdmin` entry, because the setup wizard writes the carrier and no
+// membership at all; the list is checked in both directions, so that entry
+// could not simply be left behind.
 
 // ---------------------------------------------------------------------------
 // Behavioural half: the routes #719 exempted
 // ---------------------------------------------------------------------------
 
 // newOrgScopedMemberRouter wires the two member-write routes with a principal
-// that is an organization owner in org-1 and nothing more — deliberately NOT
-// the platform administrator newOrgRouter installs, since that principal is
-// allowed to assign anything and so cannot show the ceiling working.
+// that is an organization owner in org-1 and nothing more.
 func newOrgScopedMemberRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
+	t.Helper()
+	return newMemberRouterAs(t, "org-owner-1", []string{string(auth.ScopeOrganizationsWrite)})
+}
+
+// newPlatformAdminMemberRouter wires the same two routes with the principal PR
+// #850 deliberately allowed through: a platform administrator, holding the
+// wildcard the carrier now confers.
+func newPlatformAdminMemberRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
+	t.Helper()
+	return newMemberRouterAs(t, "platform-admin-1", []string{string(auth.ScopeAdmin)})
+}
+
+func newMemberRouterAs(t *testing.T, userID string, scopes []string) (sqlmock.Sqlmock, *gin.Engine) {
 	t.Helper()
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -73,24 +84,31 @@ func newOrgScopedMemberRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
-		c.Set("user_id", "org-owner-1")
+		c.Set("user_id", userID)
 		c.Set("auth_method", "jwt")
-		// The flat, org-less union a session JWT carries (#652). It is enough
-		// to pass RequireScope(organizations:write) on these routes, which is
-		// why the per-org ceiling below is the check that matters.
-		c.Set("scopes", []string{string(auth.ScopeOrganizationsWrite)})
+		// The flat, org-less union a session JWT carries (#652).
+		c.Set("scopes", scopes)
 	})
 	r.POST("/organizations/:id/members", h.AddMemberHandler())
 	r.PUT("/organizations/:id/members/:user_id", h.UpdateMemberHandler())
 	return mock, r
 }
 
-// expectOrgOwnerCeilingLookups queues the two reads checkRoleAssignment makes
-// for a non-platform-admin caller: the target template's scopes, then the
-// caller's own role IN THE TARGET ORG.
-func expectOrgOwnerCeilingLookups(mock sqlmock.Sqlmock, roleScopesJSON string) {
+// expectRoleTemplateLookup queues the ONE read a refusal costs: the target
+// template's scopes. The per-organization ceiling lookup that used to follow it
+// is deliberately not queued — the refusal happens before it, and sqlmock's
+// ordered mode makes an unconsumed expectation a failure, so queueing it would
+// assert the opposite of the property.
+func expectRoleTemplateLookup(mock sqlmock.Sqlmock, roleScopesJSON string) {
 	mock.ExpectQuery("SELECT scopes FROM role_templates WHERE id").
 		WillReturnRows(sqlmock.NewRows([]string{"scopes"}).AddRow([]byte(roleScopesJSON)))
+}
+
+// expectOrgOwnerCeilingLookups queues both reads checkRoleAssignment makes for
+// a non-platform-admin caller assigning a template it does NOT refuse outright:
+// the target template's scopes, then the caller's own role IN THE TARGET ORG.
+func expectOrgOwnerCeilingLookups(mock sqlmock.Sqlmock, roleScopesJSON string) {
+	expectRoleTemplateLookup(mock, roleScopesJSON)
 	mock.ExpectQuery("SELECT.*FROM organization_members.*JOIN.*role_templates").
 		WillReturnRows(sqlmock.NewRows(orgMembersWithUserCols).AddRow(
 			"org-1", "org-owner-1", "role-owner", time.Now(),
@@ -103,42 +121,67 @@ func expectOrgOwnerCeilingLookups(mock sqlmock.Sqlmock, roleScopesJSON string) {
 
 const adminBearingRoleUUID = "44444444-4444-4444-4444-444444444444"
 
-// TestPlatformAdminGrantClass_OrgScopedCallerCannotGrantAdminTemplate is the
-// property #719's route exemptions depend on, asserted at the route rather than
-// at checkRoleAssignment: an organization owner — the strongest per-org role
-// migration 000049 defines — cannot hand out an admin-bearing template through
-// either member-write route, and no membership write reaches the database.
+// memberWriteRoutes are the two routes #719 exempted from tenant scoping on the
+// grounds that ScopeAdmin is platform-wide by intent.
+var memberWriteRoutes = []struct {
+	name   string
+	method string
+	path   string
+}{
+	{"add member", http.MethodPost, "/organizations/org-1/members"},
+	{"update member", http.MethodPut, "/organizations/org-1/members/target-1"},
+}
+
+// TestPlatformAdminGrantClass_NobodyCanGrantAnAdminBearingTemplate is #766's
+// recommendation, asserted at the routes rather than at checkRoleAssignment.
+//
+// BOTH principals are refused, and the platform administrator is the case that
+// changed: under PR #850 that caller was allowed, because they already held the
+// authority they were handing out and `organization_members` was the only place
+// to put it. It is now refused everywhere, so the state PR #850 tolerated
+// cannot arise at all.
 //
 // sqlmock is in its default ordered mode with no INSERT/UPDATE queued, so a
-// regression that dropped the ceiling would not merely return the wrong status,
-// it would attempt an unexpected write and fail here on that too.
-func TestPlatformAdminGrantClass_OrgScopedCallerCannotGrantAdminTemplate(t *testing.T) {
-	tests := []struct {
-		name   string
-		method string
-		path   string
+// regression that dropped the refusal would not merely return the wrong status,
+// it would attempt an unexpected write and fail here on that too. The body is
+// asserted on the exact sentence the handler returns, because a 403 from the
+// per-org ceiling and a 403 from this refusal are different properties and only
+// one of them holds for a platform administrator.
+func TestPlatformAdminGrantClass_NobodyCanGrantAnAdminBearingTemplate(t *testing.T) {
+	callers := []struct {
+		name  string
+		build func(*testing.T) (sqlmock.Sqlmock, *gin.Engine)
 	}{
-		{"add member", http.MethodPost, "/organizations/org-1/members"},
-		{"update member", http.MethodPut, "/organizations/org-1/members/target-1"},
+		{"organization owner", newOrgScopedMemberRouter},
+		{"platform administrator", newPlatformAdminMemberRouter},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			mock, r := newOrgScopedMemberRouter(t)
-			expectOrgOwnerCeilingLookups(mock, `["admin"]`)
+	for _, caller := range callers {
+		for _, rt := range memberWriteRoutes {
+			t.Run(caller.name+"/"+rt.name, func(t *testing.T) {
+				mock, r := caller.build(t)
+				expectRoleTemplateLookup(mock, `["admin"]`)
 
-			body := `{"user_id":"target-1","role_template_id":"` + adminBearingRoleUUID + `"}`
-			w := httptest.NewRecorder()
-			r.ServeHTTP(w, httptest.NewRequest(tt.method, tt.path, bytes.NewBufferString(body)))
+				body := `{"user_id":"target-1","role_template_id":"` + adminBearingRoleUUID + `"}`
+				w := httptest.NewRecorder()
+				r.ServeHTTP(w, httptest.NewRequest(rt.method, rt.path, bytes.NewBufferString(body)))
 
-			if w.Code != http.StatusForbidden {
-				t.Fatalf("status = %d, want 403 — an org-scoped caller must not be able to "+
-					"grant the platform-wide admin template (#766): body=%s", w.Code, w.Body.String())
-			}
-			if err := mock.ExpectationsWereMet(); err != nil {
-				t.Errorf("unmet/unexpected expectations (a membership write must not be attempted): %v", err)
-			}
-		})
+				if w.Code != http.StatusForbidden {
+					t.Fatalf("status = %d, want 403 — an admin-bearing template must not become a "+
+						"membership role for anybody (#766): body=%s", w.Code, w.Body.String())
+				}
+				if !strings.Contains(w.Body.String(), "platform-admin role cannot be assigned") {
+					t.Errorf("body = %s, want the admin-bearing refusal naming "+
+						"POST /api/v1/admin/platform-admins — a 403 from the per-org ceiling is a "+
+						"different property and does not hold for a platform administrator",
+						w.Body.String())
+				}
+				if err := mock.ExpectationsWereMet(); err != nil {
+					t.Errorf("unmet/unexpected expectations (no membership write, and no per-org "+
+						"ceiling lookup, may be attempted): %v", err)
+				}
+			})
+		}
 	}
 }
 
@@ -147,8 +190,11 @@ func TestPlatformAdminGrantClass_OrgScopedCallerCannotGrantAdminTemplate(t *test
 // every role assignment outright would satisfy the negative case and look like
 // a fix.
 //
-// The role assigned here is one the org owner holds itself, so the ceiling
-// permits it and the handler proceeds to the membership write.
+// The role assigned here is one the org owner holds itself, so the refusal does
+// not apply, the ceiling permits it, and the handler proceeds to the membership
+// write. It also proves the per-org ceiling is still REACHED — the refusal was
+// added ahead of it, and a refusal that swallowed every path would leave #648
+// and #733 unguarded.
 func TestPlatformAdminGrantClass_OrgScopedCallerCanStillGrantWithinItsAuthority(t *testing.T) {
 	mock, r := newOrgScopedMemberRouter(t)
 	expectOrgOwnerCeilingLookups(mock, `["modules:write"]`)
@@ -177,39 +223,65 @@ func TestPlatformAdminGrantClass_OrgScopedCallerCanStillGrantWithinItsAuthority(
 	}
 }
 
+// TestPlatformAdminGrantClass_OrgScopedCallerStillRefusedAboveItsCeiling keeps
+// the OTHER refusal honest. The admin-bearing check runs first, so a template
+// that merely exceeds the caller's authority — without carrying the wildcard —
+// must still be refused by the per-org ceiling (#648, #733).
+func TestPlatformAdminGrantClass_OrgScopedCallerStillRefusedAboveItsCeiling(t *testing.T) {
+	mock, r := newOrgScopedMemberRouter(t)
+	// users:write is not in the org_owner scope set queued below.
+	expectOrgOwnerCeilingLookups(mock, `["users:write"]`)
+
+	body := `{"user_id":"target-1","role_template_id":"66666666-6666-6666-6666-666666666666"}`
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/organizations/org-1/members", bytes.NewBufferString(body)))
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 from the per-org ceiling: body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("the per-org ceiling lookup was not made — the admin-bearing refusal is short-circuiting "+
+			"paths it has no business deciding: %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Structural half: every membership write in the tree, not just auth.go
 // ---------------------------------------------------------------------------
 
 // ceilingGuardNames are the accepted ways a membership write can have proven
-// the writer's authority to grant the role it is about to write:
+// that the role it is about to write may be written at all. Every one of them
+// now applies the SAME refusal — auth.ValidateProvisionableScopes, which denies
+// `admin` to every caller — on top of whatever else it does:
 //
-//   - checkRoleAssignment — the human-driven ceiling (role_ceiling.go). Denies
-//     any admin-bearing template to a caller who does not already hold `admin`,
-//     because auth.RoleScopesPermittedBy refuses ScopeAdmin outright for a
-//     non-admin caller.
+//   - checkRoleAssignment — the human-driven guard (role_ceiling.go). Refuses
+//     any admin-bearing template outright, ahead of the per-org ceiling it
+//     still applies to everything else (#648, #733).
 //   - guardProvisionableRole / resolveProvisionableRole — the IdP-driven guard
-//     (group_mapping_guard.go), which refuses admin-bearing templates to every
-//     caller, human or not (#604, #815).
+//     (group_mapping_guard.go), which has refused admin-bearing templates to
+//     every caller since #604/#815.
 var ceilingGuardNames = map[string]bool{
 	"checkRoleAssignment":      true,
 	"guardProvisionableRole":   true,
 	"resolveProvisionableRole": true,
 }
 
-// bootstrapExemptions are membership writes that deliberately grant the
-// platform-wide template with no caller authority to check, keyed by
-// "<path>:<function>". Being a map rather than a prefix rule is the point: a
-// new unguarded write cannot join the exemption by living in a plausible-looking
-// file, someone has to name it here.
+// bootstrapExemptions are membership writes that deliberately proceed with no
+// caller authority to check, keyed by "<path>:<function>". Being a map rather
+// than a prefix rule is the point: a new unguarded write cannot join the
+// exemption by living in a plausible-looking file, someone has to name it here.
 //
 // Checked in BOTH directions — an entry naming a site that no longer exists
 // fails the test too, so the list cannot rot into names nobody has re-examined.
+//
+// `internal/api/setup/handlers.go:ConfigureAdmin` USED TO BE HERE, and its
+// removal is the point of PR 3 rather than an incidental tidy-up. It was the
+// one write that deliberately put the platform-wide template on a membership,
+// and it was unremovable while `organization_members` was the only carrier for
+// the wildcard. The wizard now grants through `platform_admins` and writes no
+// membership at all, so the site is gone — and the bidirectional check below is
+// what forced this entry to go with it.
 var bootstrapExemptions = map[string]string{
-	"internal/api/setup/handlers.go:ConfigureAdmin": "Setup-wizard bootstrap: creates the FIRST platform " +
-		"administrator, before any principal exists whose authority could be checked. Gated on the " +
-		"one-time setup token and refused once setup completes. This is the grant that makes every " +
-		"later ceiling check able to succeed for somebody.",
 	"internal/api/admin/organizations.go:CreateOrganizationHandler": "Auto-adds the creating user as " +
 		"org_owner in the organization they just created (#648). The template is a fixed literal with " +
 		"no wildcard scope, not caller-supplied, so there is nothing for a ceiling to constrain.",
@@ -341,12 +413,12 @@ func TestPlatformAdminGrantClass_EveryMembershipWriteProvesItsAuthority(t *testi
 		if guarded[key] {
 			continue
 		}
-		t.Errorf("%s: %s writes a membership role in %s with no ceiling guard "+
-			"(checkRoleAssignment / guardProvisionableRole) ahead of it. A membership write "+
-			"that does not check its caller's authority can hand out the platform-wide `admin` "+
-			"template, which the org-less session scope union (#652) then carries into every "+
-			"organization (#766). Guard it, or — if it genuinely has no caller to check — add "+
-			"it to bootstrapExemptions with the reason.",
+		t.Errorf("%s: %s writes a membership role in %s with no guard "+
+			"(checkRoleAssignment / guardProvisionableRole) ahead of it. A membership write that "+
+			"does not refuse an admin-bearing template can put the platform-wide `admin` scope on "+
+			"an organization membership, which is the state issue #766 is about and which nothing "+
+			"in the product may reach any more. Guard it, or — if it genuinely has no caller to "+
+			"check and no caller-supplied template — add it to bootstrapExemptions with the reason.",
 			s.pos, s.fn, s.path)
 	}
 

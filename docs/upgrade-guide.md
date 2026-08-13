@@ -98,6 +98,77 @@ If issues are found after upgrade:
 > pair means there was nothing version-specific to do beyond the standard procedure
 > above — not that the note is missing.
 
+### 4.x → 5.0.0 — platform-admin authority moves to the `platform_admins` carrier
+
+**Breaking, and the action is required BEFORE the deploy on one class of
+deployment only.** Read the whole note if you run `TFR_IDENTITY_DATABASE_*`.
+
+#### What changes
+
+Until this release a principal was a platform administrator if they held a row
+in `platform_admins` **or** an organization membership whose role template
+carried the `admin` scope — the org-less session scope union (#652). From
+`5.0.0` the carrier is the only source. Concretely:
+
+- The auth middleware **strips `admin`** from a session whose principal has no
+  `platform_admins` row, and adds it to one that does. An API key never carries
+  it at all.
+- Migration `000054` **removes `admin` from every role template**, replacing it
+  with the `org_owner` scope set — everything the template conferred except the
+  platform-wide reach — so its holders keep administering their organizations
+  and stop administering the platform.
+- **Assigning an admin-bearing role template as an organization membership role
+  is refused** (`403`), for every caller including a platform administrator.
+  This is issue #766's original recommendation.
+- **`POST`/`PUT /api/v1/admin/role-templates` refuse `admin` in `scopes`**
+  (`400`), so the removal cannot be undone through the API.
+- **`POST /api/v1/setup/admin` writes only the carrier.** No organization
+  membership; the response drops `organization` and `role` and reports
+  `platform_admin: true`. A failed carrier grant is now a `500` rather than a
+  flagged `200`.
+
+#### What you have to do
+
+**Nothing, on a default deployment.** Migration `000054` re-runs the carrier
+backfill before it removes anything, so anyone holding the `admin` template —
+including administrators granted it after the `000051`/`000053` backfills ran —
+gains a `platform_admins` row in the same transaction. It then asserts an
+administrator survived and **refuses to apply**, rolling everything back, if one
+did not.
+
+**If identity lives in a separate database (`TFR_IDENTITY_DATABASE_*`):** the
+migration runs on the registry connection and cannot see your users,
+memberships or role templates, so it cannot back-fill them and cannot detect
+that it has not. Populate `platform_admins` **before** deploying `5.0.0` — the
+SQL, which must carry its own `audit_outbox` intent, is in
+[The administrator floor](administrator-floor.md#remediation). Verify with
+
+```sql
+SELECT pa.user_id FROM platform_admins pa;   -- registry connection
+```
+
+and confirm each id exists in your identity database's `users` table.
+
+#### Verifying after the deploy
+
+```sql
+SELECT * FROM admin_floor_violations;                    -- expect zero rows
+SELECT name, scopes FROM role_templates WHERE scopes @> '["admin"]'::jsonb;  -- expect zero rows
+```
+
+`GET /api/v1/admin/platform-admins` lists the administrators; `/api/v1/auth/me`
+shows the effective scopes of the caller.
+
+#### Rolling back
+
+Roll the **binary** back first, then `migrate ... goto 53`. The down migration
+restores the seeded `admin` template's `["admin"]` scope and migration
+`000053`'s `admin_floor_violations` definition. It does **not** restore custom
+templates that carried `admin` (they were not recorded) and does **not** delete
+backfilled carrier grants — deleting them would strip real authority from real
+people. Restoring the template while `5.0.0` is still running achieves nothing:
+that binary strips `admin` from the session union regardless.
+
 ### 4.0.x → 4.1.0 — `terraform-suite-identity` v0.25.0
 
 **Action required before the deploy, on one setting only.** Every other change in

@@ -10033,7 +10033,7 @@
                         "SetupToken": []
                     }
                 ],
-                "description": "Creates the initial admin user record and adds them to the default organization with admin role. The email must match the OIDC identity that will be used for the first login.",
+                "description": "Creates the initial admin user record and grants them platform administration through the platform_admins carrier. No organization membership is written: platform-admin authority no longer travels on a role template (issue #766). The email must match the OIDC identity that will be used for the first login.",
                 "consumes": [
                     "application/json"
                 ],
@@ -18273,11 +18273,8 @@
                 "message": {
                     "type": "string"
                 },
-                "organization": {
-                    "type": "string"
-                },
-                "role": {
-                    "type": "string"
+                "platform_admin": {
+                    "type": "boolean"
                 }
             }
         },

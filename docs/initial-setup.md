@@ -59,7 +59,7 @@ This approach follows the same pattern used by ArgoCD, Rancher, and other infras
 │  ▸ Setup token is invalidated (hash cleared from DB)    │
 │  ▸ Setup endpoints return 403 permanently               │
 │  ▸ OIDC login is available                              │
-│  ▸ Admin user logs in and inherits admin role           │
+│  ▸ Admin user logs in as a platform administrator       │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -326,7 +326,21 @@ The admin email must match the email claim in your OIDC provider. When this user
 
 1. The system matches the OIDC email to the pre-provisioned user record
 2. Links the OIDC identity (`sub` claim) to the user
-3. The user inherits the admin role template and default organization membership
+3. The user holds platform administration through the `platform_admins` carrier,
+   which `POST /api/v1/setup/admin` wrote
+
+The wizard writes **no organization membership** (issue #766). Platform-admin
+authority no longer travels on a role template, so the bootstrap administrator
+starts in no organization and adds themselves — or anyone else — through the
+member API. The response reports what it actually did:
+
+```json
+{ "message": "Admin user configured successfully", "email": "admin@example.com", "platform_admin": true }
+```
+
+If the carrier grant cannot be written the wizard fails with `500` and setup is
+not marked complete; fix the registry database connection and retry. See
+[The administrator floor](administrator-floor.md).
 
 ## Security Model
 

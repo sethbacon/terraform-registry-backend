@@ -130,10 +130,14 @@ curl -s -X POST http://localhost:8080/api/v1/setup/admin \
   }' | jq .
 ```
 
-The response confirms the admin assignment (`message`, `email`, `organization`,
-`role`); it does **not** issue a JWT. The registry has no local-password login —
-the admin signs in through your configured IdP (OIDC/SAML/LDAP) to obtain a
-browser session.
+The response confirms the grant (`message`, `email`, `platform_admin`); it does
+**not** issue a JWT. The registry has no local-password login — the admin signs
+in through your configured IdP (OIDC/SAML/LDAP) to obtain a browser session.
+
+This writes a `platform_admins` row and no organization membership: platform
+administration is carried by that table alone (issue #766), so the first
+operator starts in no organization and enrols themselves, or anyone else,
+through the member API. See [The administrator floor](administrator-floor.md).
 
 #### Step 4: Complete Setup
 

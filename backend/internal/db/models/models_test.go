@@ -190,24 +190,45 @@ func TestPredefinedRoleTemplates_Names(t *testing.T) {
 	}
 }
 
-func TestPredefinedRoleTemplates_AdminHasAdminScope(t *testing.T) {
-	templates := PredefinedRoleTemplates()
-	for _, tmpl := range templates {
+// TestPredefinedRoleTemplates_NoTemplateCarriesTheAdminScope is issue #766's
+// removal, held in the ONE place it can silently come back.
+//
+// SeedSystemRoleTemplates upserts this list by name on every boot under
+// TFR_IDENTITY_SCHEMA_ENABLED, so a template carrying `admin` here would put
+// the scope back on the row migration 000054 just cleaned — on the next
+// restart, without a migration, and only on the deployments whose live data the
+// migration reaches least well. The assertion is over EVERY template rather
+// than the one named `admin`, because the hazard is the scope, not the name.
+func TestPredefinedRoleTemplates_NoTemplateCarriesTheAdminScope(t *testing.T) {
+	adminSeen := false
+	for _, tmpl := range PredefinedRoleTemplates() {
 		if tmpl.Name == "admin" {
-			found := false
+			adminSeen = true
+			// It still exists, and still administers an organization: emptying
+			// it would strip its holders of the organization management the
+			// wildcard also conferred (administrator floor, invariant B).
+			hasOrgWrite := false
 			for _, s := range tmpl.Scopes {
-				if s == "admin" {
-					found = true
-					break
+				if s == "organizations:write" {
+					hasOrgWrite = true
 				}
 			}
-			if !found {
-				t.Error("admin role template should have 'admin' scope")
+			if !hasOrgWrite {
+				t.Errorf("the admin template = %v, want the org_owner scope set: its holders must keep "+
+					"administering the organizations they administer", tmpl.Scopes)
 			}
-			return
+		}
+		for _, s := range tmpl.Scopes {
+			if s == "admin" {
+				t.Errorf("role template %q carries the `admin` scope. Platform-admin authority is "+
+					"carried by platform_admins alone (issue #766, migration 000054); seeding it onto a "+
+					"template puts back, on the next boot, what the migration removed", tmpl.Name)
+			}
 		}
 	}
-	t.Error("admin role template not found")
+	if !adminSeen {
+		t.Error("admin role template not found")
+	}
 }
 
 func TestPredefinedRoleTemplates_AuditorHasAuditReadScope(t *testing.T) {

@@ -32,6 +32,14 @@ const tfMirrorCfgID = "5b0f2c9a-6d3e-4a1b-9c8d-2e7f4a6b1c30"
 // gin.Recovery turns that into a 500 (or the handler's own 400 when it binds
 // JSON before touching its repository). Either way the pass/fail signal is
 // "403 or not", which is exactly the authority decision under test.
+//
+// PLATFORM-ADMIN AUTHORITY COMES FROM THE CARRIER, NOT FROM THE TOKEN (issue
+// #766, migration 000054). `admin` is stripped out of the minted JWT and a
+// platform_admins row is mocked in its place, so a principal listed with the
+// `admin` scope is admitted because the carrier says so — which is what the
+// production middleware now requires and what these route tables are really
+// asserting about. Leaving it in the token would make every case here pass on a
+// claim the middleware discards.
 func platformRouteCase(t *testing.T, method, path string, scopes []string) int {
 	t.Helper()
 
@@ -41,12 +49,31 @@ func platformRouteCase(t *testing.T, method, path string, scopes []string) int {
 	}
 	defer db.Close()
 
-	token, err := auth.GenerateJWT(mirrorUserID, "mallory@example.com", scopes, time.Hour)
+	carrierDB, carrierMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New (platform_admins): %v", err)
+	}
+	defer carrierDB.Close()
+
+	tokenScopes := make([]string, 0, len(scopes))
+	isPlatformAdmin := false
+	for _, sc := range scopes {
+		if sc == string(auth.ScopeAdmin) {
+			isPlatformAdmin = true
+			continue
+		}
+		tokenScopes = append(tokenScopes, sc)
+	}
+
+	token, err := auth.GenerateJWT(mirrorUserID, "mallory@example.com", tokenScopes, time.Hour)
 	if err != nil {
 		t.Fatalf("GenerateJWT: %v", err)
 	}
 
 	mock.ExpectQuery("(?s)FROM users WHERE id").WillReturnRows(userRowsFor(mirrorUserID))
+	carrierMock.ExpectQuery("SELECT EXISTS.*FROM platform_admins").
+		WithArgs(mirrorUserID).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(isPlatformAdmin))
 
 	sqlxDB := sqlx.NewDb(db, "sqlmock")
 	limiter := middleware.NewRateLimiter(middleware.RateLimitConfig{
@@ -67,9 +94,10 @@ func platformRouteCase(t *testing.T, method, path string, scopes []string) int {
 			repositories.NewModuleRepository(db),
 			repositories.NewProviderRepository(db),
 		),
-		mirrorRepo:       repositories.NewMirrorRepository(sqlxDB),
-		rbacRepo:         repositories.NewRBACRepositoryWithIdentity(sqlxDB, sqlxDB),
-		auditLogHandlers: admin.NewAuditLogHandlers(db),
+		mirrorRepo:        repositories.NewMirrorRepository(sqlxDB),
+		rbacRepo:          repositories.NewRBACRepositoryWithIdentity(sqlxDB, sqlxDB),
+		auditLogHandlers:  admin.NewAuditLogHandlers(db),
+		platformAdminRepo: repositories.NewPlatformAdminRepository(carrierDB),
 	})
 
 	w := httptest.NewRecorder()

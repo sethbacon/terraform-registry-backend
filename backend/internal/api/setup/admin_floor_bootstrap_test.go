@@ -16,18 +16,18 @@ import (
 // Issue #766, bootstrap half: the setup wizard must establish invariant A, and
 // it must be able to do so with no pre-existing administrator to check.
 //
-// It could not. Until this change ConfigureAdmin wrote ONE thing — an
+// It could not. Before PR #866 ConfigureAdmin wrote ONE thing — an
 // organization_members row pointing at the `admin` role template — and nothing
-// at all to platform_admins. That is invisible today, because effective
-// platform-admin is `carrier OR the role-template scope union` and the union
-// answers. It stops being invisible the moment authority derives from the
-// carrier alone: a deployment installed after migration 000051 (whose backfill
-// runs once, at migration time, over rows that do not yet exist) would have a
-// bootstrap administrator with no carrier row, and nobody able to administer
-// it.
+// at all to platform_admins. From migration 000054 it writes exactly the
+// opposite ONE thing: the carrier row, and no membership. A role template
+// confers no platform-admin authority any more, so the membership would have
+// been a write that did nothing — and it was the last path by which the
+// platform-wide wildcard reached `organization_members` at all.
 //
-// `grep -rn platform_admins internal/api/setup/` returned nothing before this
-// change, which is the whole finding.
+// That makes the carrier grant LOAD-BEARING rather than belt-and-braces, and
+// the tests below say so: a failed or unwired carrier now fails setup, where it
+// used to be reported beside a membership that had already conferred the
+// authority.
 
 // bootstrapEnv extends newTestEnv with the platform-admin carrier on its own
 // mocked connection — the registry connection, which is where migration 000051
@@ -90,18 +90,16 @@ func expectCarrierGrant(env *bootstrapEnv, outcome carrierGrantOutcome) {
 	}
 }
 
-// expectBootstrapMembership queues everything ConfigureAdmin does before it
-// reaches the carrier.
-func expectBootstrapMembership(env *bootstrapEnv) {
-	now := time.Now()
-	orgCols := []string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}
-	env.orgMock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
-		WithArgs("default").
-		WillReturnRows(sqlmock.NewRows(orgCols).AddRow("org-1", "default", "Default Org", nil, nil, now, now))
+// expectBootstrapUser queues everything ConfigureAdmin does before it reaches
+// the carrier, which is now only the user insert.
+//
+// NOTHING is queued on orgMock, and that is an assertion rather than an
+// omission: sqlmock is in its default ordered mode, so a handler that went back
+// to writing an organization membership would take an unexpected-query error on
+// that connection instead of quietly re-establishing the carrier the rest of
+// this release removed.
+func expectBootstrapUser(env *bootstrapEnv) {
 	env.userMock.ExpectExec("INSERT INTO users").WillReturnResult(sqlmock.NewResult(1, 1))
-	env.orgMock.ExpectQuery("SELECT id FROM role_templates WHERE name").
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-admin-id"))
-	env.orgMock.ExpectExec("INSERT INTO organization_members").WillReturnResult(sqlmock.NewResult(1, 1))
 }
 
 // TestConfigureAdmin_RecordsTheBootstrapAdminInTheCarrier is the assertion the
@@ -111,7 +109,7 @@ func TestConfigureAdmin_RecordsTheBootstrapAdminInTheCarrier(t *testing.T) {
 	r := gin.New()
 	r.POST("/admin", env.h.ConfigureAdmin)
 
-	expectBootstrapMembership(env)
+	expectBootstrapUser(env)
 	expectCarrierGrant(env, grantLands)
 	env.oidcMock.ExpectExec("UPDATE system_settings SET").WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -143,7 +141,7 @@ func TestConfigureAdmin_TreatsAnExistingGrantAsSuccess(t *testing.T) {
 	r := gin.New()
 	r.POST("/admin", env.h.ConfigureAdmin)
 
-	expectBootstrapMembership(env)
+	expectBootstrapUser(env)
 	// ON CONFLICT DO NOTHING ... RETURNING yields no rows, which the repository
 	// reports as ErrAlreadyPlatformAdmin.
 	expectCarrierGrant(env, grantConflicts)
@@ -160,53 +158,54 @@ func TestConfigureAdmin_TreatsAnExistingGrantAsSuccess(t *testing.T) {
 	}
 }
 
-// TestConfigureAdmin_ReportsAFailedCarrierGrantWithoutFailingSetup. The
-// membership already makes this person an administrator today, so failing the
-// wizard would leave a half-configured deployment whose only recovery is the
-// SQL the management API exists to replace. It must be VISIBLE, though — a
-// clean 200 over a missing carrier row is the silent half-bootstrap.
-func TestConfigureAdmin_ReportsAFailedCarrierGrantWithoutFailingSetup(t *testing.T) {
+// TestConfigureAdmin_FailsSetupWhenTheCarrierGrantDoesNot. This inverted when
+// the membership went away (migration 000054).
+//
+// While ConfigureAdmin also wrote an admin-bearing membership, a failed carrier
+// write left a deployment that still had an administrator, so it was reported
+// beside a 200 and the operator repaired it later. Now the carrier is the only
+// thing this handler grants: a failed write leaves NO administrator and no API
+// route able to create one, which is the lockout the rest of this release
+// exists to prevent. Setup has not been marked complete at this point, so the
+// operator can retry — a clean 200 is what would make it unrecoverable.
+func TestConfigureAdmin_FailsSetupWhenTheCarrierGrantDoesNot(t *testing.T) {
 	env := newBootstrapEnv(t)
 	r := gin.New()
 	r.POST("/admin", env.h.ConfigureAdmin)
 
-	expectBootstrapMembership(env)
+	expectBootstrapUser(env)
 	expectCarrierGrant(env, grantFails)
-	env.oidcMock.ExpectExec("UPDATE system_settings SET").WillReturnResult(sqlmock.NewResult(0, 1))
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/admin", jsonBody(map[string]string{"email": "admin@example.com"})))
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 — the membership grant succeeded, so setup must not fail: %s",
-			w.Code, w.Body.String())
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 — the carrier is the only grant this wizard makes, so a failed "+
+			"one leaves the deployment with no administrator at all: %s", w.Code, w.Body.String())
 	}
-	resp := getJSON(w)
-	if resp["platform_admin_carrier_incomplete"] != true {
-		t.Fatalf("platform_admin_carrier_incomplete = %v, want true — a failed carrier grant must "+
-			"be visible to the operator who has to repair it", resp["platform_admin_carrier_incomplete"])
+	// The pending-admin email is NOT recorded: nothing was queued for it, so a
+	// handler that carried on past the failure would take an unexpected-query
+	// error and this test would fail on that too.
+	if err := env.oidcMock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations after a failed bootstrap: %v", err)
 	}
 }
 
-// TestConfigureAdmin_ReportsAnUnwiredCarrier. A deployment whose router never
-// passed the carrier bootstraps only half of invariant A, and must say so
-// rather than report a clean success.
-func TestConfigureAdmin_ReportsAnUnwiredCarrier(t *testing.T) {
+// TestConfigureAdmin_FailsSetupWithAnUnwiredCarrier. A deployment whose router
+// never passed the carrier cannot bootstrap invariant A at all, and must say so
+// with a failure rather than a flagged success.
+func TestConfigureAdmin_FailsSetupWithAnUnwiredCarrier(t *testing.T) {
 	env := newTestEnv(t) // no WithPlatformAdminCarrier
 	r := gin.New()
 	r.POST("/admin", env.h.ConfigureAdmin)
 
-	expectBootstrapMembership(&bootstrapEnv{testEnv: env})
-	env.oidcMock.ExpectExec("UPDATE system_settings SET").WillReturnResult(sqlmock.NewResult(0, 1))
+	expectBootstrapUser(&bootstrapEnv{testEnv: env})
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/admin", jsonBody(map[string]string{"email": "admin@example.com"})))
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
-	}
-	if resp := getJSON(w); resp["platform_admin_carrier_incomplete"] != true {
-		t.Fatalf("platform_admin_carrier_incomplete = %v, want true", resp["platform_admin_carrier_incomplete"])
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500: %s", w.Code, w.Body.String())
 	}
 }
 
