@@ -56,9 +56,33 @@ type Config struct {
 
 // AuditRetentionConfig controls the background audit log cleanup job.
 // When RetentionDays is 0 the job is disabled and logs are kept forever.
+//
+// The Outbox* fields tune the audit-outbox relay (issue #766, migration
+// 000052), which carries each audit intent from the registry connection — where
+// it committed with the mutation it records — to audit_logs on the identity
+// connection. Every one of them is a delivery knob: none of them can cause an
+// audit record to be lost, because an undelivered intent is retained and
+// retried until it lands.
 type AuditRetentionConfig struct {
 	RetentionDays    int `mapstructure:"retention_days"`
 	CleanupBatchSize int `mapstructure:"cleanup_batch_size"`
+	// OutboxPollSeconds is how often the relay looks for undelivered intents.
+	// 0 means the built-in default (10s).
+	OutboxPollSeconds int `mapstructure:"outbox_poll_seconds"`
+	// OutboxBatchSize is how many intents one claim takes. 0 means the default
+	// (100).
+	OutboxBatchSize int `mapstructure:"outbox_batch_size"`
+	// OutboxBacklogWarn is the undelivered depth at which the relay logs at
+	// ERROR every cycle. 0 means the default (100); negative silences it, which
+	// is not recommended — the backlog cannot be bounded by discarding it, so
+	// this alarm and the terraform_registry_audit_outbox_* gauges are the only
+	// things standing between a stuck relay and an unnoticed audit gap.
+	OutboxBacklogWarn int `mapstructure:"outbox_backlog_warn"`
+	// OutboxRetainDeliveredHours is how long a DELIVERED intent is kept before
+	// the relay prunes it. 0 means the default (168h / 7 days); negative keeps
+	// them forever, turning the outbox into a delivery ledger. Undelivered
+	// intents are never pruned at any setting.
+	OutboxRetainDeliveredHours int `mapstructure:"outbox_retain_delivered_hours"`
 }
 
 // WebhooksConfig controls webhook retry behaviour.
@@ -1002,6 +1026,10 @@ func bindEnvVars(v *viper.Viper) error {
 		// Audit retention
 		"audit_retention.retention_days",
 		"audit_retention.cleanup_batch_size",
+		"audit_retention.outbox_poll_seconds",
+		"audit_retention.outbox_batch_size",
+		"audit_retention.outbox_backlog_warn",
+		"audit_retention.outbox_retain_delivered_hours",
 
 		// Webhooks
 		"webhooks.max_retries",
@@ -1221,6 +1249,13 @@ func setDefaults(v *viper.Viper) {
 	// Audit retention defaults
 	v.SetDefault("audit_retention.retention_days", 90)
 	v.SetDefault("audit_retention.cleanup_batch_size", 1000)
+	// Audit outbox relay defaults (issue #766). These match the relay's own
+	// built-in defaults; they are declared here so `config dump` shows an
+	// operator what is running rather than four zeros.
+	v.SetDefault("audit_retention.outbox_poll_seconds", 10)
+	v.SetDefault("audit_retention.outbox_batch_size", 100)
+	v.SetDefault("audit_retention.outbox_backlog_warn", 100)
+	v.SetDefault("audit_retention.outbox_retain_delivered_hours", 168)
 
 	// Webhooks defaults
 	v.SetDefault("webhooks.max_retries", 3)

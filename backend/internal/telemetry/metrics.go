@@ -308,6 +308,82 @@ var AuditLogsCleanedTotal = promauto.NewCounter(
 	},
 )
 
+// Audit outbox (issue #766, migration 000052).
+//
+// A privileged mutation and its audit intent commit together on the registry
+// connection; the relay then delivers the intent to audit_logs on the identity
+// connection. Everything below describes the gap between those two moments —
+// records that exist and are guaranteed, but have not arrived yet.
+//
+// THE BACKLOG IS THE ALERT. It cannot be bounded by discarding it without
+// destroying the records it holds, so these gauges are how it stops being
+// silently unbounded. Alert on either of the first two.
+//
+// Example PromQL queries:
+//   - Backlog is not draining:  terraform_registry_audit_outbox_pending > 100
+//   - Oldest record is stale:   terraform_registry_audit_outbox_oldest_age_seconds > 900
+//   - Something is rejecting:   terraform_registry_audit_outbox_failed > 0
+//   - Delivery rate:            rate(terraform_registry_audit_outbox_delivered_total[5m])
+var (
+	// AuditOutboxPending is the number of audit intents written but not yet
+	// delivered to audit_logs.
+	AuditOutboxPending = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "terraform_registry_audit_outbox_pending",
+			Help: "Audit intents committed with their mutation but not yet delivered to audit_logs.",
+		},
+	)
+	// AuditOutboxFailed is the subset of pending intents that have already
+	// failed at least one delivery attempt. Pending alone cannot tell "written
+	// a moment ago" from "stuck".
+	AuditOutboxFailed = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "terraform_registry_audit_outbox_failed",
+			Help: "Undelivered audit intents that have failed at least one delivery attempt.",
+		},
+	)
+	// AuditOutboxOldestAgeSeconds is how long the oldest undelivered intent has
+	// been waiting. 0 when the outbox is empty.
+	AuditOutboxOldestAgeSeconds = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "terraform_registry_audit_outbox_oldest_age_seconds",
+			Help: "Age in seconds of the oldest undelivered audit intent; 0 when the outbox is drained.",
+		},
+	)
+	// AuditOutboxDeliveredTotal counts intents delivered to audit_logs.
+	AuditOutboxDeliveredTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "terraform_registry_audit_outbox_delivered_total",
+			Help: "Total audit intents delivered from the outbox to audit_logs.",
+		},
+	)
+	// AuditOutboxDeliveryFailuresTotal counts failed delivery attempts. The
+	// intent is retained and retried, so this is a rate to alarm on, not a loss.
+	AuditOutboxDeliveryFailuresTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "terraform_registry_audit_outbox_delivery_failures_total",
+			Help: "Total failed attempts to deliver an audit intent to audit_logs; the intent is retained and retried.",
+		},
+	)
+	// AuditOutboxShipFailuresTotal counts external-shipper failures during
+	// relay delivery. Best-effort by design: audit_logs already holds the
+	// record when this increments.
+	AuditOutboxShipFailuresTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "terraform_registry_audit_outbox_ship_failures_total",
+			Help: "Total external-shipper failures while relaying audit intents; the audit_logs record is unaffected.",
+		},
+	)
+	// AuditOutboxPrunedTotal counts delivered intents removed by the relay's
+	// prune step. Undelivered intents are never pruned.
+	AuditOutboxPrunedTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "terraform_registry_audit_outbox_pruned_total",
+			Help: "Total delivered audit intents removed from the outbox after their retention elapsed.",
+		},
+	)
+)
+
 // WebhookRetriesTotal is a CounterVec with label {outcome} tracking webhook retry
 // attempts. Possible outcome values: "success", "failure", "exhausted".
 //

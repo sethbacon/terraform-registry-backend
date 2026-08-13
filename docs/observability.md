@@ -428,6 +428,47 @@ increase(terraform_registry_audit_logs_cleaned_total[24h])
 
 ---
 
+#### Audit outbox: `terraform_registry_audit_outbox_*`
+
+| Property | Value                                                       |
+| -------- | ----------------------------------------------------------- |
+| Type     | Gauges and counters                                         |
+| Labels   | None                                                        |
+| Source   | Audit outbox relay (`internal/audit/relay.go`)              |
+| Updated  | Every relay cycle (`audit_retention.outbox_poll_seconds`)   |
+
+A privileged mutation and its audit record commit together on the registry
+connection; the relay then delivers the record to `audit_logs`, which may be on
+a different connection entirely. These metrics describe the gap between those
+two moments — records that are **guaranteed but have not arrived yet**.
+
+| Metric                                                    | Meaning                                                                       |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `terraform_registry_audit_outbox_pending`                 | Audit records written but not yet in `audit_logs`.                            |
+| `terraform_registry_audit_outbox_failed`                  | Of those, how many have already failed at least one delivery attempt.         |
+| `terraform_registry_audit_outbox_oldest_age_seconds`      | Age of the oldest undelivered record; `0` when the outbox is drained.         |
+| `terraform_registry_audit_outbox_delivered_total`         | Records delivered to `audit_logs`.                                            |
+| `terraform_registry_audit_outbox_delivery_failures_total` | Failed delivery attempts. The record is retained and retried, never dropped.  |
+| `terraform_registry_audit_outbox_ship_failures_total`     | External-shipper failures. Best-effort: `audit_logs` already holds the record. |
+| `terraform_registry_audit_outbox_pruned_total`            | Delivered records removed after their retention. Undelivered ones are never pruned. |
+
+**The backlog is the alert.** It cannot be bounded by discarding it without
+destroying the records it holds, so these gauges are what keep it from being
+silently unbounded.
+
+```promql
+# Backlog is not draining
+terraform_registry_audit_outbox_pending > 100
+
+# Oldest record has been waiting more than 15 minutes
+terraform_registry_audit_outbox_oldest_age_seconds > 900
+
+# Something is rejecting deliveries
+rate(terraform_registry_audit_outbox_delivery_failures_total[10m]) > 0
+```
+
+---
+
 #### `db_open_connections`
 
 | Property          | Value                                                     |

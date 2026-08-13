@@ -12,6 +12,7 @@ import (
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
 
+	"github.com/terraform-registry/terraform-registry/internal/audit"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
@@ -73,7 +74,7 @@ func newPlatformAdminRouter(t *testing.T, callerID string) (sqlmock.Sqlmock, *gi
 	h := NewPlatformAdminHandlers(
 		repositories.NewPlatformAdminRepository(db),
 		repositories.NewUserRepository(db),
-		repositories.NewAuditRepository(db),
+		audit.NewOutbox(db),
 	)
 
 	r := gin.New()
@@ -103,7 +104,15 @@ func expectUserLookup(mock sqlmock.Sqlmock, userID, email string, found bool) {
 		AddRow(userID, email, "Name "+email, nil, time.Now(), time.Now()))
 }
 
-// expectAuditWrite primes the audit INSERT and returns the metadata capture.
+// expectAuditWrite primes the audit intent write and returns the metadata
+// capture.
+//
+// The intent goes to `audit_outbox` on the carrier's OWN connection, inside the
+// mutation's transaction (issue #766, migration 000052) — it is no longer a
+// second write to audit_logs on the identity connection after the fact. Where
+// it sits in the ordered expectations is therefore itself an assertion: between
+// the mutation and the COMMIT. The relay delivers it to audit_logs afterwards
+// (internal/audit/relay.go, covered by its own tests).
 //
 // The actor, action, resource type and resource id are matched EXACTLY: an
 // audit row that records the wrong target, or attributes the change to nobody,
@@ -112,20 +121,20 @@ func expectUserLookup(mock sqlmock.Sqlmock, userID, email string, found bool) {
 // scope is what makes NULL-owner rows readable.
 func expectAuditWrite(mock sqlmock.Sqlmock, actor, action, targetID string) *capturedJSONArg {
 	meta := &capturedJSONArg{}
-	mock.ExpectQuery("INSERT INTO audit_logs").
+	mock.ExpectExec("INSERT INTO audit_outbox").
 		WithArgs(
-			sqlmock.AnyArg(), // id
-			actor,            // user_id
-			nil,              // organization_id
+			sqlmock.AnyArg(), // event_id
+			sqlmock.AnyArg(), // occurred_at
 			action,
+			actor,            // actor_user_id
+			nil,              // actor_email — resolved at delivery when absent
+			nil,              // organization_id
 			"platform_admin", // resource_type
 			targetID,         // resource_id
-			meta,             // metadata
 			sqlmock.AnyArg(), // ip_address
-			sqlmock.AnyArg(), // created_at
-			nil,              // actor_email (filled by COALESCE in SQL)
+			meta,             // metadata
 		).
-		WillReturnRows(sqlmock.NewRows([]string{"actor_email"}).AddRow(nil))
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	return meta
 }
 
@@ -254,10 +263,12 @@ func TestGrantPlatformAdmin_WritesGrantAndAuditEntry(t *testing.T) {
 
 	granted := time.Date(2026, 8, 12, 13, 0, 0, 0, time.UTC)
 	expectUserLookup(mock, paTarget, "target@example.com", true)
+	mock.ExpectBegin()
 	mock.ExpectQuery("INSERT INTO platform_admins").
 		WithArgs(paTarget, paCaller, "incident 42").
 		WillReturnRows(sqlmock.NewRows(paGrantCols).AddRow(paTarget, paCaller, granted, "incident 42"))
 	meta := expectAuditWrite(mock, paCaller, "platform_admin.granted", paTarget)
+	mock.ExpectCommit()
 	expectUserLookup(mock, paCaller, "caller@example.com", true) // grantor, for the rendered row
 
 	w := paDo(t, r, http.MethodPost, "/platform-admins",
@@ -319,8 +330,10 @@ func TestGrantPlatformAdmin_UnknownUser(t *testing.T) {
 func TestGrantPlatformAdmin_AlreadyGranted(t *testing.T) {
 	mock, r := newPlatformAdminRouter(t, paCaller)
 	expectUserLookup(mock, paTarget, "target@example.com", true)
+	mock.ExpectBegin()
 	mock.ExpectQuery("INSERT INTO platform_admins").
 		WillReturnRows(sqlmock.NewRows(paGrantCols)) // ON CONFLICT DO NOTHING
+	mock.ExpectRollback()
 
 	w := paDo(t, r, http.MethodPost, "/platform-admins", `{"user_id":"`+paTarget+`"}`)
 	if w.Code != http.StatusConflict {
@@ -385,6 +398,10 @@ func TestRevokePlatformAdmin_WritesAuditEntry(t *testing.T) {
 	mock, r := newPlatformAdminRouter(t, paCaller)
 
 	now := time.Now()
+	// The target's address is resolved BEFORE the lock now, because the audit
+	// intent is written inside the revoking transaction and has to be complete
+	// by the time the DELETE runs.
+	expectUserLookup(mock, paTarget, "target@example.com", true)
 	expectRevokeLock(mock, sqlmock.NewRows(paGrantCols).
 		AddRow(paCaller, nil, now, nil).
 		AddRow(paTarget, paCaller, now, nil))
@@ -392,9 +409,8 @@ func TestRevokePlatformAdmin_WritesAuditEntry(t *testing.T) {
 	mock.ExpectExec("DELETE FROM platform_admins WHERE user_id").
 		WithArgs(paTarget).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectCommit()
-	expectUserLookup(mock, paTarget, "target@example.com", true) // for the audit metadata
 	meta := expectAuditWrite(mock, paCaller, "platform_admin.revoked", paTarget)
+	mock.ExpectCommit()
 
 	w := paDo(t, r, http.MethodDelete, "/platform-admins/"+paTarget, "")
 	if w.Code != http.StatusOK {
@@ -426,6 +442,7 @@ func TestRevokePlatformAdmin_SelfRevocationAllowedWhenAnotherRemains(t *testing.
 	mock, r := newPlatformAdminRouter(t, paCaller)
 
 	now := time.Now()
+	expectUserLookup(mock, paCaller, "caller@example.com", true) // the target, for the record
 	expectRevokeLock(mock, sqlmock.NewRows(paGrantCols).
 		AddRow(paCaller, nil, now, nil).
 		AddRow(paTarget, paCaller, now, nil))
@@ -433,9 +450,8 @@ func TestRevokePlatformAdmin_SelfRevocationAllowedWhenAnotherRemains(t *testing.
 	mock.ExpectExec("DELETE FROM platform_admins WHERE user_id").
 		WithArgs(paCaller).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectCommit()
-	expectUserLookup(mock, paCaller, "caller@example.com", true)
 	meta := expectAuditWrite(mock, paCaller, "platform_admin.revoked", paCaller)
+	mock.ExpectCommit()
 
 	w := paDo(t, r, http.MethodDelete, "/platform-admins/"+paCaller, "")
 	if w.Code != http.StatusOK {
@@ -455,6 +471,7 @@ func TestRevokePlatformAdmin_SelfRevocationAllowedWhenAnotherRemains(t *testing.
 func TestRevokePlatformAdmin_RefusesTheLastAdministrator(t *testing.T) {
 	mock, r := newPlatformAdminRouter(t, paCaller)
 
+	expectUserLookup(mock, paCaller, "caller@example.com", true) // the target, for the record
 	expectRevokeLock(mock, sqlmock.NewRows(paGrantCols).
 		AddRow(paCaller, nil, time.Now(), nil))
 	mock.ExpectRollback()
@@ -483,6 +500,7 @@ func TestRevokePlatformAdmin_OrphanGrantDoesNotCountAsTheRemainingAdmin(t *testi
 	mock, r := newPlatformAdminRouter(t, paCaller)
 
 	now := time.Now()
+	expectUserLookup(mock, paCaller, "caller@example.com", true) // the target, for the record
 	expectRevokeLock(mock, sqlmock.NewRows(paGrantCols).
 		AddRow(paCaller, nil, now, nil).
 		AddRow(paThird, nil, now, "grant left behind by a deleted user"))
@@ -509,6 +527,11 @@ func TestRevokePlatformAdmin_IdentityFailureBlocksTheRevocation(t *testing.T) {
 	mock, r := newPlatformAdminRouter(t, paCaller)
 
 	now := time.Now()
+	// The pre-resolve of the target's address fails too. It is SWALLOWED — the
+	// record simply carries no address — while the same failure inside the
+	// last-standing guard aborts the revocation. The two are different
+	// questions and must not collapse.
+	mock.ExpectQuery("(?s)FROM users WHERE id").WithArgs(paCaller).WillReturnError(errDB)
 	expectRevokeLock(mock, sqlmock.NewRows(paGrantCols).
 		AddRow(paCaller, nil, now, nil).
 		AddRow(paTarget, nil, now, nil))
@@ -531,6 +554,7 @@ func TestRevokePlatformAdmin_IdentityFailureBlocksTheRevocation(t *testing.T) {
 func TestRevokePlatformAdmin_NotAnAdministrator(t *testing.T) {
 	mock, r := newPlatformAdminRouter(t, paCaller)
 
+	expectUserLookup(mock, paTarget, "target@example.com", true) // the target, for the record
 	expectRevokeLock(mock, sqlmock.NewRows(paGrantCols).
 		AddRow(paCaller, nil, time.Now(), nil))
 	mock.ExpectRollback()
@@ -588,5 +612,103 @@ func TestListPlatformAdmins_NoUserRepositoryFailsClosed(t *testing.T) {
 	}
 	if got := paJSON(t, w)["error"]; got != "Failed to resolve platform administrator identities" {
 		t.Errorf("error = %v, want the identity-resolution message", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Issue #766 PR 3 — the mutation cannot commit unaudited
+// ---------------------------------------------------------------------------
+
+// newUnauditablePlatformAdminRouter mounts the routes with NO audit outbox, so
+// every attempt to record a change fails. That is the failure injection the
+// durability requirement asks for: the audit destination is unavailable, and
+// the question is what happens to the mutation.
+func newUnauditablePlatformAdminRouter(t *testing.T, callerID string) (sqlmock.Sqlmock, *gin.Engine) {
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	h := NewPlatformAdminHandlers(
+		repositories.NewPlatformAdminRepository(db),
+		repositories.NewUserRepository(db),
+		nil, // no outbox: nowhere to record the change
+	)
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set("user_id", callerID)
+		c.Set("scopes", []string{string(auth.ScopeAdmin)})
+		c.Next()
+	})
+	r.POST("/platform-admins", h.GrantPlatformAdmin)
+	r.DELETE("/platform-admins/:user_id", h.RevokePlatformAdmin)
+	return mock, r
+}
+
+// GUARD durable-audit-atomic (grant, through the handler). The carrier INSERT
+// runs, the audit record cannot be written, and the transaction is ROLLED BACK
+// — there is no committed grant to go looking for afterwards.
+//
+// Before this change the same situation produced a 201 and a platform
+// administrator nobody could account for. The status is asserted exactly, and
+// so is the message, because "500" alone would not distinguish this from the
+// grant itself failing — and an operator has to know the privilege did NOT
+// change hands.
+func TestGrantPlatformAdmin_UnauditableGrantIsRolledBack(t *testing.T) {
+	mock, r := newUnauditablePlatformAdminRouter(t, paCaller)
+
+	expectUserLookup(mock, paTarget, "target@example.com", true)
+	mock.ExpectBegin()
+	mock.ExpectQuery("INSERT INTO platform_admins").
+		WithArgs(paTarget, paCaller, nil).
+		WillReturnRows(sqlmock.NewRows(paGrantCols).AddRow(paTarget, paCaller, time.Now(), nil))
+	// No ExpectCommit. A commit is an unexpected call and fails the test, which
+	// is the assertion that matters: the grant did not land.
+	mock.ExpectRollback()
+
+	w := paDo(t, r, http.MethodPost, "/platform-admins", `{"user_id":"`+paTarget+`"}`)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 — an unauditable grant must be refused, not reported as created: %s",
+			w.Code, w.Body.String())
+	}
+	if got := paJSON(t, w)["error"]; got != errUnauditableMutation {
+		t.Errorf("error = %v, want %q", got, errUnauditableMutation)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations (the unaudited grant committed): %v", err)
+	}
+}
+
+// GUARD durable-audit-atomic (revoke, through the handler). Same shape: the
+// DELETE runs inside the transaction, the record cannot be written, nothing
+// commits, and the caller is told the privilege was NOT removed.
+func TestRevokePlatformAdmin_UnauditableRevocationIsRolledBack(t *testing.T) {
+	mock, r := newUnauditablePlatformAdminRouter(t, paCaller)
+
+	now := time.Now()
+	expectUserLookup(mock, paTarget, "target@example.com", true)
+	mock.ExpectBegin()
+	mock.ExpectQuery("(?s)FROM platform_admins.*FOR UPDATE").
+		WillReturnRows(sqlmock.NewRows(paGrantCols).
+			AddRow(paCaller, nil, now, nil).
+			AddRow(paTarget, paCaller, now, nil))
+	expectUserLookup(mock, paCaller, "caller@example.com", true) // the remaining admin
+	mock.ExpectExec("DELETE FROM platform_admins WHERE user_id").
+		WithArgs(paTarget).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectRollback()
+
+	w := paDo(t, r, http.MethodDelete, "/platform-admins/"+paTarget, "")
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 — an unauditable revocation must be refused: %s",
+			w.Code, w.Body.String())
+	}
+	if got := paJSON(t, w)["error"]; got != errUnauditableMutation {
+		t.Errorf("error = %v, want %q", got, errUnauditableMutation)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations (the unaudited revocation committed): %v", err)
 	}
 }
