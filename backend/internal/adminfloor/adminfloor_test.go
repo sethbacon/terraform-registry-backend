@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -904,5 +905,9 @@ func TestSentinelsAreDistinct(t *testing.T) {
 		errors.Is(ErrIndeterminate, ErrLastPlatformAdmin) {
 		t.Fatal("the floor's sentinels are not distinguishable")
 	}
-	var _ error = sql.ErrNoRows
+	// And the driver's own "no rows" -- which roleTemplateScopes absorbs
+	// legitimately -- is not mistakable for a refusal.
+	if errors.Is(fmt.Errorf("wrapped: %w", sql.ErrNoRows), ErrIndeterminate) {
+		t.Fatal("sql.ErrNoRows matches a floor sentinel")
+	}
 }
