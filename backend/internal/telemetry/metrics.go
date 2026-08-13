@@ -266,6 +266,28 @@ var AppInfo = promauto.NewGaugeVec(
 	[]string{"version", "go_version", "build_date"},
 )
 
+// TerraformMirrorUnverifiablePlatforms is the ingestion invariant of issue
+// #869 as a metric: per mirror config, the number of platform rows marked
+// synced that carry no sha256. Set by the mirror sync job at the end of every
+// run, including to 0, so a clean config is distinguishable from one that has
+// not been checked.
+//
+// It deserves an alert at > 0. The binary-download API fails OPEN on this state
+// (it returns sha256:"") while checksum-enforcing installers fail CLOSED, so
+// the mirror looks healthy from the outside while being unusable to exactly the
+// clients that verify.
+//
+// Example PromQL queries:
+//   - Any unverifiable binary:  max(terraform_mirror_unverifiable_platforms) > 0
+//   - By tool:                  sum by (tool) (terraform_mirror_unverifiable_platforms)
+var TerraformMirrorUnverifiablePlatforms = promauto.NewGaugeVec(
+	prometheus.GaugeOpts{
+		Name: "terraform_mirror_unverifiable_platforms",
+		Help: "Platform rows marked synced with an empty sha256, by mirror config (0 is the healthy value)",
+	},
+	[]string{"config", "tool"},
+)
+
 // ModuleScanQueueDepth tracks how many modules are awaiting a security scan.
 // Updated by the scanning subsystem whenever a module is enqueued or dequeued.
 var ModuleScanQueueDepth = promauto.NewGauge(

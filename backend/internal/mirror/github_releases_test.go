@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -987,5 +988,134 @@ func TestGitHubFetchSHASums_PerFileFallback(t *testing.T) {
 	}
 	if len(raw) == 0 {
 		t.Error("raw bytes should not be empty")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// findAssetURL sentinels (issue #869)
+// ---------------------------------------------------------------------------
+
+// TestFindAssetURL_ReleaseFetchedButNoMatchingAsset: the release exists and was
+// read, and simply has no asset of the requested shape. That is an expected
+// outcome for some tools, and it must be reported as ErrNoMatchingAsset rather
+// than ("", nil) — the ambiguity of the old return is what made a version that
+// could never be verified indistinguishable from one that needed no work.
+func TestFindAssetURL_ReleaseFetchedButNoMatchingAsset(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rel := gitHubRelease{TagName: "v0.24.0", Assets: []gitHubAsset{
+			{Name: "terraform-docs-v0.24.0-linux-amd64.tar.gz", BrowserDownloadURL: "https://example.com/a"},
+		}}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(rel)
+	}))
+	defer ts.Close()
+
+	c := newTestGitHubClient(ts, "terraform-docs", "terraform-docs", "terraform-docs")
+	url, err := c.findAssetURL(context.Background(), "0.24.0", sha256sumsSigRE)
+	if url != "" {
+		t.Errorf("url = %q, want empty", url)
+	}
+	if !errors.Is(err, ErrNoMatchingAsset) {
+		t.Fatalf("err = %v, want ErrNoMatchingAsset", err)
+	}
+	if errors.Is(err, ErrReleaseNotFound) {
+		t.Error("a reachable release must not be reported as ErrReleaseNotFound")
+	}
+	if !strings.Contains(err.Error(), "terraform-docs") {
+		t.Errorf("err = %v, want the product name in the message so a log line identifies the tool", err)
+	}
+}
+
+// TestFindAssetURL_ReleaseUnreachable: every tag lookup failed (404, rate
+// limit, transport). Nothing can be concluded about the assets, and returning
+// ("", nil) here let a rate-limited sync look like a tool with no checksums.
+func TestFindAssetURL_ReleaseUnreachable(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden) // e.g. secondary rate limit
+	}))
+	defer ts.Close()
+
+	c := newTestGitHubClient(ts, "terraform-docs", "terraform-docs", "terraform-docs")
+	url, err := c.findAssetURL(context.Background(), "0.24.0", tfDocsSumsRE)
+	if url != "" {
+		t.Errorf("url = %q, want empty", url)
+	}
+	if !errors.Is(err, ErrReleaseNotFound) {
+		t.Fatalf("err = %v, want ErrReleaseNotFound", err)
+	}
+	if errors.Is(err, ErrNoMatchingAsset) {
+		t.Error("an unreachable release must not be reported as ErrNoMatchingAsset — that is the confusion being removed")
+	}
+	if !strings.Contains(err.Error(), "403") {
+		t.Errorf("err = %v, want the upstream status preserved for diagnosis", err)
+	}
+}
+
+// A rate-limited upstream must surface as an error from FetchSHASums, not as an
+// empty checksum map that a caller reads as "nothing to back-fill".
+func TestGitHubFetchSHASums_UnreachableReleaseIsAnError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer ts.Close()
+
+	c := newTestGitHubClient(ts, "terraform-docs", "terraform-docs", "terraform-docs")
+	sums, _, err := c.FetchSHASums(context.Background(), "0.24.0")
+	if err == nil {
+		t.Fatal("expected an error when the release cannot be fetched, got nil")
+	}
+	if !errors.Is(err, ErrReleaseNotFound) {
+		t.Errorf("err = %v, want ErrReleaseNotFound", err)
+	}
+	if len(sums) != 0 {
+		t.Errorf("sums = %v, want empty", sums)
+	}
+}
+
+// TestGitHubFetchSHASums_TerraformDocsCombinedFile pins the half of issue #869
+// that turned out NOT to be the defect, so it stays that way: for the
+// terraform-docs layout, FetchSHASums finds the combined .sha256sum asset and
+// returns a map keyed by exactly the asset filenames stored in
+// terraform_version_platforms.filename. The body is the real upstream
+// v0.20.0 checksum file.
+func TestGitHubFetchSHASums_TerraformDocsCombinedFile(t *testing.T) {
+	const sumsBody = "" +
+		"8c7ea42429d7f5e3dae3de32f3873fde0419332932549147f40916d3f613b8f7  terraform-docs-v0.20.0-darwin-amd64.tar.gz\n" +
+		"34ae01772412bb11474e6718ea62113e38ff5964ee570a98c69fafe3a6dff286  terraform-docs-v0.20.0-linux-amd64.tar.gz\n" +
+		"fb372a26f934dc0e163ca914a5aa99fe13d094b1f64f937efe9dc79bdddf05a0  terraform-docs-v0.20.0-windows-amd64.zip\n"
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".sha256sum") {
+			_, _ = w.Write([]byte(sumsBody))
+			return
+		}
+		if strings.Contains(r.URL.Path, "/releases/tags/v0.20.0") {
+			rel := gitHubRelease{TagName: "v0.20.0", Assets: []gitHubAsset{
+				{Name: "terraform-docs-v0.20.0-linux-amd64.tar.gz", BrowserDownloadURL: "https://example.com/terraform-docs-v0.20.0-linux-amd64.tar.gz"},
+				{Name: "terraform-docs-v0.20.0-windows-amd64.zip", BrowserDownloadURL: "https://example.com/terraform-docs-v0.20.0-windows-amd64.zip"},
+				{Name: "terraform-docs-v0.20.0.sha256sum", BrowserDownloadURL: "https://example.com/terraform-docs-v0.20.0.sha256sum"},
+			}}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(rel)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	c := newTestGitHubClient(ts, "terraform-docs", "terraform-docs", "terraform-docs")
+	sums, raw, err := c.FetchSHASums(context.Background(), "0.20.0")
+	if err != nil {
+		t.Fatalf("FetchSHASums error: %v", err)
+	}
+	if string(raw) != sumsBody {
+		t.Errorf("raw bytes differ from the served checksum file")
+	}
+	const wantKey = "terraform-docs-v0.20.0-linux-amd64.tar.gz"
+	if got := sums[wantKey]; got != "34ae01772412bb11474e6718ea62113e38ff5964ee570a98c69fafe3a6dff286" {
+		t.Errorf("sums[%q] = %q, want the upstream linux/amd64 hash — the map must be keyed by the stored platform filename", wantKey, got)
+	}
+	if len(sums) != 3 {
+		t.Errorf("len(sums) = %d, want 3", len(sums))
 	}
 }

@@ -3,6 +3,7 @@ package repositories
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -1151,10 +1152,33 @@ func TestTerraformMirrorUpdatePlatformSHA256_DBError(t *testing.T) {
 
 // --- BackfillPlatformSHA256 ---
 
+// An empty SUMS map is not "nothing to do" (issue #869): every synced platform
+// with no hash is then unresolvable, and must be reported as such rather than
+// silently skipped.
 func TestTerraformMirrorBackfillPlatformSHA256_NoSums(t *testing.T) {
-	repo, _ := newTerraformMirrorRepo(t)
-	if err := repo.BackfillPlatformSHA256(context.Background(), uuid.New(), nil); err != nil {
+	repo, mock := newTerraformMirrorRepo(t)
+	versionID := uuid.New()
+
+	pNeed := testTFPlatform(versionID)
+	pNeed.SHA256 = ""
+	pNeed.SyncStatus = "synced"
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_version_platforms\s+WHERE version_id`).
+		WithArgs(versionID).
+		WillReturnRows(newTFPlatformRow(mock, pNeed))
+
+	filled, unresolved, err := repo.BackfillPlatformSHA256(context.Background(), versionID, nil)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if filled != 0 {
+		t.Errorf("filled = %d, want 0", filled)
+	}
+	if len(unresolved) != 1 {
+		t.Fatalf("unresolved = %d rows, want 1", len(unresolved))
+	}
+	if unresolved[0].ID != pNeed.ID {
+		t.Errorf("unresolved[0].ID = %v, want %v", unresolved[0].ID, pNeed.ID)
 	}
 }
 
@@ -1198,8 +1222,49 @@ func TestTerraformMirrorBackfillPlatformSHA256_UpdatesEmptyHashes(t *testing.T) 
 		pHas.Filename:     "darwinhash",
 		pPending.Filename: "windowshash",
 	}
-	if err := repo.BackfillPlatformSHA256(context.Background(), versionID, sums); err != nil {
+	filled, unresolved, err := repo.BackfillPlatformSHA256(context.Background(), versionID, sums)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if filled != 1 {
+		t.Errorf("filled = %d, want 1 (only the synced row with an empty sha256)", filled)
+	}
+	if len(unresolved) != 0 {
+		t.Errorf("unresolved = %d rows, want 0", len(unresolved))
+	}
+}
+
+// A synced platform whose filename is absent from the SUMS file can never be
+// verified. It is reported as unresolved rather than skipped in silence —
+// the distinction issue #869 turned on.
+func TestTerraformMirrorBackfillPlatformSHA256_FilenameAbsentFromSums(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	versionID := uuid.New()
+
+	pNeed := testTFPlatform(versionID)
+	pNeed.SHA256 = ""
+	pNeed.SyncStatus = "synced"
+	pNeed.Filename = "terraform-docs-v0.24.0-linux-amd64.tar.gz"
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_version_platforms\s+WHERE version_id`).
+		WithArgs(versionID).
+		WillReturnRows(newTFPlatformRow(mock, pNeed))
+
+	// SUMS parsed fine but keyed by a different name.
+	sums := map[string]string{"terraform-docs-v0.24.0-linux-arm64.tar.gz": "somehash"}
+
+	filled, unresolved, err := repo.BackfillPlatformSHA256(context.Background(), versionID, sums)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if filled != 0 {
+		t.Errorf("filled = %d, want 0", filled)
+	}
+	if len(unresolved) != 1 {
+		t.Fatalf("unresolved = %d rows, want 1", len(unresolved))
+	}
+	if unresolved[0].Filename != "terraform-docs-v0.24.0-linux-amd64.tar.gz" {
+		t.Errorf("unresolved[0].Filename = %q, want the platform's stored filename", unresolved[0].Filename)
 	}
 }
 
@@ -1209,8 +1274,89 @@ func TestTerraformMirrorBackfillPlatformSHA256_ListError(t *testing.T) {
 	mock.ExpectQuery(`SELECT.*FROM terraform_version_platforms\s+WHERE version_id`).
 		WillReturnError(fmt.Errorf("db error"))
 
-	if err := repo.BackfillPlatformSHA256(context.Background(), versionID, map[string]string{"x": "y"}); err == nil {
+	_, _, err := repo.BackfillPlatformSHA256(context.Background(), versionID, map[string]string{"x": "y"})
+	if err == nil {
 		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to list terraform platforms") {
+		t.Errorf("error = %v, want the platform-list failure to be surfaced", err)
+	}
+}
+
+// --- ListVersionsMissingSHA256 / CountPlatformsMissingSHA256 (issue #869) ---
+//
+// The semantics of these two queries (which rows they select, and that a
+// 'partial' version is included) are pinned against real PostgreSQL in
+// terraform_mirror_sha256_pg_test.go. What is checked here is the plumbing
+// that runs in every CI job: the config scoping and the error wrapping.
+
+func TestListVersionsMissingSHA256_Success(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	configID := uuid.New()
+	v := testTFVersion(configID)
+	v.Version = "0.24.0"
+
+	mock.ExpectQuery(`SELECT.*FROM terraform_versions v\s+WHERE v.config_id`).
+		WithArgs(configID).
+		WillReturnRows(newTFVersionRow(mock, v))
+
+	versions, err := repo.ListVersionsMissingSHA256(context.Background(), configID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(versions) != 1 {
+		t.Fatalf("got %d versions, want 1", len(versions))
+	}
+	if versions[0].Version != "0.24.0" {
+		t.Errorf("version = %q, want 0.24.0", versions[0].Version)
+	}
+}
+
+func TestListVersionsMissingSHA256_DBError(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	mock.ExpectQuery(`SELECT.*FROM terraform_versions v`).
+		WillReturnError(fmt.Errorf("db error"))
+
+	_, err := repo.ListVersionsMissingSHA256(context.Background(), uuid.New())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to list terraform versions missing sha256") {
+		t.Errorf("error = %v, want the query failure named", err)
+	}
+}
+
+func TestCountPlatformsMissingSHA256_Success(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	configID := uuid.New()
+
+	mock.ExpectQuery(`SELECT COUNT\(\*\)\s+FROM terraform_version_platforms p`).
+		WithArgs(configID).
+		WillReturnRows(mock.NewRows([]string{"count"}).AddRow(3))
+
+	count, err := repo.CountPlatformsMissingSHA256(context.Background(), configID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("count = %d, want 3", count)
+	}
+}
+
+func TestCountPlatformsMissingSHA256_DBError(t *testing.T) {
+	repo, mock := newTerraformMirrorRepo(t)
+	mock.ExpectQuery(`SELECT COUNT\(\*\)\s+FROM terraform_version_platforms p`).
+		WillReturnError(fmt.Errorf("db error"))
+
+	count, err := repo.CountPlatformsMissingSHA256(context.Background(), uuid.New())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if count != 0 {
+		t.Errorf("count = %d, want 0 on error — a failed check must not read as clean", count)
+	}
+	if !strings.Contains(err.Error(), "failed to count terraform platforms missing sha256") {
+		t.Errorf("error = %v, want the query failure named", err)
 	}
 }
 

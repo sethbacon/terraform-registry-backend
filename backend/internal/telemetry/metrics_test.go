@@ -19,6 +19,7 @@ func TestMetricRegistration(t *testing.T) {
 		{"ModuleDownloadsTotal", ModuleDownloadsTotal},
 		{"ProviderDownloadsTotal", ProviderDownloadsTotal},
 		{"TerraformBinaryDownloadsTotal", TerraformBinaryDownloadsTotal},
+		{"TerraformMirrorUnverifiablePlatforms", TerraformMirrorUnverifiablePlatforms},
 		{"MirrorSyncDuration", MirrorSyncDuration},
 		{"MirrorSyncErrorsTotal", MirrorSyncErrorsTotal},
 		{"APIKeyExpiryNotificationsSentTotal", APIKeyExpiryNotificationsSentTotal},
@@ -62,6 +63,10 @@ func TestProviderDownloadsTotalLabels(t *testing.T) {
 
 func TestTerraformBinaryDownloadsTotalLabels(t *testing.T) {
 	TerraformBinaryDownloadsTotal.WithLabelValues("1.9.0", "linux", "amd64").Inc()
+}
+
+func TestTerraformMirrorUnverifiablePlatformsLabels(t *testing.T) {
+	TerraformMirrorUnverifiablePlatforms.WithLabelValues("tools", "terraform-docs").Set(0)
 }
 
 func TestMirrorSyncDurationLabels(t *testing.T) {

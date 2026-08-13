@@ -245,6 +245,52 @@ sum by (os) (rate(terraform_binary_downloads_total[5m]))
 sum by (version) (increase(terraform_binary_downloads_total[24h]))
 ```
 
+#### `terraform_mirror_unverifiable_platforms`
+
+| Property | Value                                                                        |
+| -------- | ---------------------------------------------------------------------------- |
+| Type     | Gauge (GaugeVec)                                                             |
+| Labels   | `config` (mirror config name), `tool` (e.g. `terraform`, `terraform-docs`)   |
+| Source   | `internal/jobs/terraform_mirror_sync.go` — `reportUnverifiablePlatforms`     |
+| Updated  | At the end of every sync run for the config, including when the value is `0` |
+
+Counts platform rows marked `synced` that carry no `sha256`. **The healthy value is `0`, and
+any other value should page someone.**
+
+This measures a failure the mirror cannot report any other way. The binary-download API
+fails *open* on a missing checksum — it returns `200` with `"sha256": ""` — while every
+well-behaved installer fails *closed* and refuses to install an unverified binary. From the
+outside the mirror looks healthy; to exactly the clients that verify, it is unusable. Nobody
+downstream is in a position to raise the alarm, so it is raised here.
+
+The gauge is published on every run even when clean, so a value of `0` means "checked, clean"
+rather than "never checked". Run `terraform-registry verify-mirror-sha256` for the list of
+affected binaries (see [troubleshooting.md](troubleshooting.md)).
+
+```promql
+# Any mirrored binary that cannot be verified
+max(terraform_mirror_unverifiable_platforms) > 0
+
+# Which tool is affected
+sum by (tool) (terraform_mirror_unverifiable_platforms)
+```
+
+Suggested alert:
+
+```yaml
+- alert: MirrorBinaryWithoutChecksum
+  expr: max(terraform_mirror_unverifiable_platforms) > 0
+  for: 15m
+  labels:
+    severity: critical
+  annotations:
+    summary: "Mirrored binaries are being served without a checksum"
+    description: >
+      The binary mirror is serving at least one platform with an empty sha256.
+      Checksum-enforcing clients cannot install it. Run
+      `terraform-registry verify-mirror-sha256` for the affected list.
+```
+
 ---
 
 ### API Key Notification Metrics

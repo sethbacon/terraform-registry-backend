@@ -34,6 +34,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/mirror"
 	"github.com/terraform-registry/terraform-registry/internal/safego"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
+	"github.com/terraform-registry/terraform-registry/internal/telemetry"
 	"github.com/terraform-registry/terraform-registry/internal/validation"
 
 	"github.com/google/uuid"
@@ -304,6 +305,11 @@ func githubBinaryPrefix(productName string) string {
 type terraformSyncDetails struct {
 	VersionsFound int      `json:"versions_found"`
 	Errors        []string `json:"errors,omitempty"`
+	// UnverifiablePlatforms is the number of platform rows left marked synced
+	// with an empty sha256 after this run (issue #869). Recorded on every run,
+	// including zero, so the sync-history view distinguishes "checked, clean"
+	// from "never checked" — the ambiguity that let the defect sit unnoticed.
+	UnverifiablePlatforms int `json:"unverifiable_platforms"`
 }
 
 // coverage:skip:integration-only — performs live upstream HTTP + storage + DB writes for the complete sync pipeline; exercised by api-test integration suite.
@@ -452,7 +458,7 @@ func (j *TerraformMirrorSyncJob) performSync(
 	// 6b. SHA256 back-fill: for already-synced platforms with sha256='', fetch the
 	// upstream SHA256SUMS text (~5KB) and write the per-filename hashes into the
 	// sha256 column. No binaries are re-downloaded.
-	if backfillErr := j.backfillSHA256(ctx, client, cfg, allVersions); backfillErr != nil {
+	if backfillErr := j.backfillSHA256(ctx, client, cfg); backfillErr != nil {
 		log.Printf("[terraform-mirror] SHA256 back-fill error for %s: %v", cfg.Name, backfillErr)
 	}
 
@@ -472,6 +478,10 @@ func (j *TerraformMirrorSyncJob) performSync(
 	if backfillErr := j.backfillAttestation(ctx, cfg, allVersions); backfillErr != nil {
 		log.Printf("[terraform-mirror] attestation back-fill error for %s: %v", cfg.Name, backfillErr)
 	}
+
+	// 6e. Ingestion invariant: after every repair path has had its turn, no
+	// platform may still be marked synced with an empty sha256 (issue #869).
+	details.UnverifiablePlatforms = j.reportUnverifiablePlatforms(ctx, cfg)
 
 	// 7. Mark the highest fully-synced stable version as is_latest.
 	if setLatestErr := j.updateLatestVersion(ctx, cfg.ID); setLatestErr != nil {
@@ -684,7 +694,12 @@ func (j *TerraformMirrorSyncJob) syncOnePlatform(
 		if err == nil && exists {
 			backendName := j.storageBackendName
 			attestationVerified := verifyBinaryAttestation(ctx, attestVerifier, version, p.OS, p.Arch, p.SHA256)
-			_ = j.repo.UpdatePlatformSyncStatus(ctx, p.ID, "synced", p.StorageKey, &backendName, true, sumsGPGVerified, attestationVerified, nil)
+			// sha256_verified must reflect the row, not the fact that a blob
+			// exists: a platform with no stored hash has had nothing checked
+			// against it. Asserting true here (issue #869) made the admin view
+			// claim verification for exactly the rows the download API was
+			// serving without a checksum.
+			_ = j.repo.UpdatePlatformSyncStatus(ctx, p.ID, "synced", p.StorageKey, &backendName, p.SHA256 != "", sumsGPGVerified, attestationVerified, nil)
 			return true
 		}
 	}
@@ -789,63 +804,87 @@ func (j *TerraformMirrorSyncJob) syncOnePlatform(
 }
 
 // backfillSHA256 populates the sha256 column for already-synced platforms whose
-// hash was not persisted during their original sync run. It fetches the
-// lightweight upstream SHA256SUMS text for each filtered version (~5KB each)
-// and writes per-filename hashes — no binary downloads.
-// coverage:skip:integration-only — fetches SUMS files over HTTP and writes to the database; covered by integration tests.
+// hash is not currently persisted. It fetches the lightweight upstream
+// SHA256SUMS text for each affected version (~5KB each) and writes per-filename
+// hashes — no binary downloads.
+//
+// Two properties matter here, both learned from issue #869.
+//
+// First, the candidate set is "every non-deprecated version with a synced
+// platform that has no checksum" (ListVersionsMissingSHA256), not "versions in
+// this run's filtered upstream index whose version row says 'synced'". The
+// filter governs what the mirror ACQUIRES; it must not govern what the mirror
+// can VERIFY, because a row outside the filter is still being served. Likewise
+// a version left 'partial' by one unavailable platform still serves the
+// platforms that did succeed — gating on the version's own sync_status skipped
+// exactly those, permanently.
+//
+// Second, every way this can decline to fill a row is logged. A version that
+// can never be verified must not look like a version that needed no work.
 func (j *TerraformMirrorSyncJob) backfillSHA256(
 	ctx context.Context,
 	client terraformReleasesClient,
 	cfg *models.TerraformMirrorConfig,
-	filteredVersions []mirror.TerraformVersionInfo,
 ) error {
-	wantedVersions := make(map[string]bool, len(filteredVersions))
-	for _, vi := range filteredVersions {
-		wantedVersions[vi.Version] = true
-	}
-
-	syncedVersions, err := j.repo.ListVersions(ctx, cfg.ID, true /* syncedOnly */)
+	versions, err := j.repo.ListVersionsMissingSHA256(ctx, cfg.ID)
 	if err != nil {
-		return fmt.Errorf("failed to list synced versions: %w", err)
+		return fmt.Errorf("failed to list versions missing sha256: %w", err)
 	}
 
-	for _, sv := range syncedVersions {
-		if !wantedVersions[sv.Version] {
-			continue
-		}
-
-		platforms, plErr := j.repo.ListPlatformsForVersion(ctx, sv.ID)
-		if plErr != nil {
-			log.Printf("[terraform-mirror] sha256 backfill: failed to list platforms for %s: %v", sv.Version, plErr)
-			continue
-		}
-		needsBackfill := false
-		for _, p := range platforms {
-			if p.SyncStatus == "synced" && p.SHA256 == "" {
-				needsBackfill = true
-				break
-			}
-		}
-		if !needsBackfill {
-			continue
-		}
-
+	for _, sv := range versions {
 		sums, _, sumsErr := client.FetchSHASums(ctx, sv.Version)
 		if sumsErr != nil {
-			log.Printf("[terraform-mirror] sha256 backfill: failed to fetch SUMS for %s: %v", sv.Version, sumsErr)
+			log.Printf("[terraform-mirror] sha256 backfill: %s@%s has synced platforms with no checksum and its SUMS could not be fetched — they stay unverifiable: %v",
+				cfg.Name, sv.Version, sumsErr)
 			continue
 		}
 		if len(sums) == 0 {
+			log.Printf("[terraform-mirror] sha256 backfill: %s@%s has synced platforms with no checksum and upstream returned an EMPTY SUMS map — they stay unverifiable",
+				cfg.Name, sv.Version)
 			continue
 		}
-		if bfErr := j.repo.BackfillPlatformSHA256(ctx, sv.ID, sums); bfErr != nil {
-			log.Printf("[terraform-mirror] sha256 backfill: DB update failed for %s: %v", sv.Version, bfErr)
+
+		filled, unresolved, bfErr := j.repo.BackfillPlatformSHA256(ctx, sv.ID, sums)
+		if bfErr != nil {
+			log.Printf("[terraform-mirror] sha256 backfill: DB update failed for %s@%s after filling %d: %v", cfg.Name, sv.Version, filled, bfErr)
 			continue
 		}
-		log.Printf("[terraform-mirror] sha256 backfill: populated hashes for version %s", sv.Version)
+		if filled > 0 {
+			log.Printf("[terraform-mirror] sha256 backfill: populated %d hash(es) for %s@%s", filled, cfg.Name, sv.Version)
+		}
+		for _, p := range unresolved {
+			// The SUMS file was fetched and parsed, and it has no line for
+			// this platform's filename. Nothing further will fix this on its
+			// own — it is a filename/upstream mismatch, not a transient miss.
+			log.Printf("[terraform-mirror] sha256 backfill: NO CHECKSUM for %s@%s %s/%s — filename %q absent from upstream SUMS (%d entries); the download API will serve an empty sha256 for it",
+				cfg.Name, sv.Version, p.OS, p.Arch, p.Filename, len(sums))
+		}
 	}
 
 	return nil
+}
+
+// reportUnverifiablePlatforms enforces the ingestion invariant of issue #869: a
+// platform row marked synced with an empty sha256 is a defect state, not a
+// benign gap. The registry serves that row's binary and reports sha256:"" for
+// it — the API fails OPEN where every well-behaved consumer fails CLOSED, so
+// nothing downstream can raise the alarm and it has to be raised here.
+//
+// It reports rather than repairs: repair is backfillSHA256's job and has
+// already run by this point. Reaching a non-zero count means repair could not
+// complete, which is precisely what an operator needs told.
+func (j *TerraformMirrorSyncJob) reportUnverifiablePlatforms(ctx context.Context, cfg *models.TerraformMirrorConfig) int {
+	count, err := j.repo.CountPlatformsMissingSHA256(ctx, cfg.ID)
+	if err != nil {
+		log.Printf("[terraform-mirror] failed to check the sha256 ingestion invariant for %s: %v", cfg.Name, err)
+		return 0
+	}
+	telemetry.TerraformMirrorUnverifiablePlatforms.WithLabelValues(cfg.Name, cfg.Tool).Set(float64(count))
+	if count > 0 {
+		log.Printf("[terraform-mirror] INVARIANT VIOLATION for %s (%s): %d platform(s) are marked synced with an empty sha256. The download API returns sha256:\"\" for these and checksum-enforcing clients cannot install them. Run 'terraform-registry verify-mirror-sha256' for the list.",
+			cfg.Name, cfg.Tool, count)
+	}
+	return count
 }
 
 // backfillGPGVerification re-verifies the SHA256SUMS GPG signature for any synced
