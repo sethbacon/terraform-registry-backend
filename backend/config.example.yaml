@@ -290,6 +290,16 @@ notifications:
 audit_retention:
   retention_days: 90        # Days to keep audit logs (0 = keep forever)
   cleanup_batch_size: 1000  # Number of records to delete per batch
+  # Audit outbox relay. Privileged mutations (platform-admin grant/revoke)
+  # record themselves in the same transaction as the mutation; the relay then
+  # delivers those records to audit_logs and to any shippers above. Delivery is
+  # at-least-once and idempotent, so none of these settings can lose a record —
+  # an undelivered one is retained and retried. Watch the backlog:
+  # terraform_registry_audit_outbox_pending / _oldest_age_seconds.
+  outbox_poll_seconds: 10             # How often the relay looks for undelivered records
+  outbox_batch_size: 100              # Records claimed per pass
+  outbox_backlog_warn: 100            # Log at ERROR once this many are undelivered (negative = never)
+  outbox_retain_delivered_hours: 168  # Prune DELIVERED records after 7 days (negative = keep forever)
 
 # Webhook retry configuration
 # When a webhook-triggered publish fails, the event can be retried automatically

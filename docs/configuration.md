@@ -896,6 +896,59 @@ The cleanup job runs periodically in the background and emits the
 `terraform_registry_audit_logs_cleaned_total` Prometheus counter. See
 [Observability Reference](observability.md) for monitoring details.
 
+### Audit outbox relay
+
+Privileged mutations — today, platform-admin grants and revocations — record
+themselves through a **transactional outbox**. The audit record is written to
+`audit_outbox` in the same transaction, on the same connection, as the mutation
+it describes, so the two commit together or neither does; a deferred constraint
+trigger on `platform_admins` refuses at COMMIT any change that has no matching
+intent, including one made by hand-written SQL. A background relay then delivers
+each intent to `audit_logs` (which may be a different schema or a different
+database entirely) and to any configured audit shippers.
+
+Delivery is at-least-once and idempotent: the intent's `event_id` becomes
+`audit_logs.id`, so a redelivery after a crash collides with the row already
+there instead of duplicating it. **No setting below can lose an audit record** —
+an undelivered intent is retained and retried until it lands.
+
+```yaml
+audit_retention:
+  outbox_poll_seconds: 10             # how often the relay looks for undelivered intents
+  outbox_batch_size: 100              # intents claimed per pass
+  outbox_backlog_warn: 100            # log at ERROR once this many are undelivered
+  outbox_retain_delivered_hours: 168  # prune DELIVERED intents after 7 days
+```
+
+| Variable                                            | Type | Default | Description                                                                                                                    |
+| --------------------------------------------------- | ---- | ------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `TFR_AUDIT_RETENTION_OUTBOX_POLL_SECONDS`           | int  | `10`    | Relay poll interval. `0` uses the built-in default.                                                                            |
+| `TFR_AUDIT_RETENTION_OUTBOX_BATCH_SIZE`             | int  | `100`   | Intents claimed per pass (`FOR UPDATE SKIP LOCKED`, so replicas take disjoint sets). `0` uses the default.                      |
+| `TFR_AUDIT_RETENTION_OUTBOX_BACKLOG_WARN`           | int  | `100`   | Undelivered depth at which every cycle logs at ERROR. Negative silences it — **not recommended**, see below.                    |
+| `TFR_AUDIT_RETENTION_OUTBOX_RETAIN_DELIVERED_HOURS` | int  | `168`   | How long a **delivered** intent is kept before pruning. Negative keeps them forever. Undelivered intents are never pruned.      |
+
+**Watch the backlog.** It cannot be bounded by discarding it — that would
+destroy records of privileged mutations — so it is bounded by being loud
+instead. Alert on `terraform_registry_audit_outbox_pending` and
+`terraform_registry_audit_outbox_oldest_age_seconds`; a rising backlog means
+mutations are recorded but have not reached `audit_logs` yet.
+
+**Emergency SQL against `platform_admins` must carry its own intent.** The
+trigger applies to every writer, which is deliberate — that hand-written path is
+the one issue #766 was raised about. In one transaction:
+
+```sql
+BEGIN;
+INSERT INTO platform_admins (user_id) VALUES ('<uuid>');
+INSERT INTO audit_outbox (event_id, action, resource_type, resource_id, metadata)
+VALUES (gen_random_uuid(), 'platform_admin.granted', 'platform_admin', '<uuid>',
+        '{"reason":"break-glass"}'::jsonb);
+COMMIT;
+```
+
+Use `platform_admin.revoked` for a `DELETE`. The relay picks the intent up and
+delivers it like any other.
+
 ---
 
 ## Webhooks

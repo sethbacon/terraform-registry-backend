@@ -2,6 +2,7 @@ package repositories
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
 	"testing"
@@ -9,6 +10,37 @@ import (
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 )
+
+// ---------------------------------------------------------------------------
+// Audit intent test doubles (issue #766, migration 000052)
+// ---------------------------------------------------------------------------
+
+// intentSQL is what the test doubles below write. It stands in for the real
+// outbox INSERT (internal/audit) and exists so the assertions can be about
+// ORDER and TRANSACTION MEMBERSHIP — sqlmock matches in order, so a writer that
+// ran outside the mutation's transaction, or after the commit, fails.
+const intentSQL = "INSERT INTO audit_outbox"
+
+// writingIntent returns an AuditIntentWriter that writes an intent on the
+// transaction it is handed, and records that it ran.
+func writingIntent(ran *bool) AuditIntentWriter {
+	return func(ctx context.Context, tx *sql.Tx) error {
+		*ran = true
+		_, err := tx.ExecContext(ctx, intentSQL+" (event_id) VALUES ($1)", "event-1")
+		return err
+	}
+}
+
+// expectIntentWrite primes the intent write the mutation must perform.
+func expectIntentWrite(mock sqlmock.Sqlmock) {
+	mock.ExpectExec(intentSQL).WillReturnResult(sqlmock.NewResult(0, 1))
+}
+
+// refusingIntent returns an AuditIntentWriter that fails with cause, standing
+// in for an outbox that cannot accept the record.
+func refusingIntent(cause error) AuditIntentWriter {
+	return func(context.Context, *sql.Tx) error { return cause }
+}
 
 func newTestPlatformAdminRepo(t *testing.T) (*PlatformAdminRepository, sqlmock.Sqlmock) {
 	t.Helper()
@@ -181,14 +213,24 @@ func TestPlatformAdminRepository_Grant(t *testing.T) {
 
 	granted := time.Date(2026, 8, 12, 11, 0, 0, 0, time.UTC)
 	note := "promoted by ops"
+	// ORDERED: begin, insert the grant, write the audit intent on the SAME
+	// transaction, commit. sqlmock matches in sequence, so an intent written
+	// after the commit — the shape this replaces — is an unexpected call.
+	mock.ExpectBegin()
 	mock.ExpectQuery("INSERT INTO platform_admins").
 		WithArgs(adminB, adminA, note).
 		WillReturnRows(sqlmock.NewRows(grantCols).AddRow(adminB, adminA, granted, note))
+	expectIntentWrite(mock)
+	mock.ExpectCommit()
 
 	grantor := adminA
-	got, err := repo.Grant(context.Background(), adminB, &grantor, &note)
+	var audited bool
+	got, err := repo.Grant(context.Background(), adminB, &grantor, &note, writingIntent(&audited))
 	if err != nil {
 		t.Fatalf("Grant: %v", err)
+	}
+	if !audited {
+		t.Error("the grant committed without the audit intent writer being run")
 	}
 	if got.UserID != adminB {
 		t.Errorf("UserID = %q, want %q", got.UserID, adminB)
@@ -210,25 +252,40 @@ func TestPlatformAdminRepository_Grant(t *testing.T) {
 func TestPlatformAdminRepository_Grant_AlreadyGranted(t *testing.T) {
 	repo, mock := newTestPlatformAdminRepo(t)
 
+	mock.ExpectBegin()
 	mock.ExpectQuery("INSERT INTO platform_admins").
 		WithArgs(adminB, nil, nil).
 		WillReturnRows(sqlmock.NewRows(grantCols)) // conflict: nothing returned
+	mock.ExpectRollback()
 
-	got, err := repo.Grant(context.Background(), adminB, nil, nil)
+	var audited bool
+	got, err := repo.Grant(context.Background(), adminB, nil, nil, writingIntent(&audited))
 	if !errors.Is(err, ErrAlreadyPlatformAdmin) {
 		t.Fatalf("err = %v, want ErrAlreadyPlatformAdmin", err)
 	}
 	if got != nil {
 		t.Errorf("Grant = %+v on a conflict, want nil", got)
 	}
+	// Nothing changed hands, so there is nothing to audit. Writing an intent
+	// here would put a "granted" record in the trail for a grant that did not
+	// happen.
+	if audited {
+		t.Error("an audit intent was written for a grant that conflicted and changed nothing")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations (did it commit?): %v", err)
+	}
 }
 
 func TestPlatformAdminRepository_Grant_DBError(t *testing.T) {
 	repo, mock := newTestPlatformAdminRepo(t)
 	sentinel := errors.New("insert failed")
+	mock.ExpectBegin()
 	mock.ExpectQuery("INSERT INTO platform_admins").WillReturnError(sentinel)
+	mock.ExpectRollback()
 
-	got, err := repo.Grant(context.Background(), adminB, nil, nil)
+	var audited bool
+	got, err := repo.Grant(context.Background(), adminB, nil, nil, writingIntent(&audited))
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("err = %v, want the driver's error %v", err, sentinel)
 	}
@@ -237,6 +294,59 @@ func TestPlatformAdminRepository_Grant_DBError(t *testing.T) {
 	}
 	if got != nil {
 		t.Errorf("Grant = %+v on failure, want nil", got)
+	}
+	if audited {
+		t.Error("an audit intent was written for a grant that failed")
+	}
+}
+
+// GUARD durable-audit-mandatory-writer (Grant). A privileged mutation with
+// nowhere to record itself does not happen — and does not even open a
+// transaction. The mock is primed with NO expectations, so a BEGIN would fail
+// ExpectationsWereMet: this asserts the refusal came before the database, not
+// merely that an error came back.
+func TestPlatformAdminRepository_Grant_NilIntentWriter_RefusesWithoutTouchingTheDatabase(t *testing.T) {
+	repo, mock := newTestPlatformAdminRepo(t)
+
+	got, err := repo.Grant(context.Background(), adminB, nil, nil, nil)
+	if !errors.Is(err, ErrAuditIntentRequired) {
+		t.Fatalf("err = %v, want ErrAuditIntentRequired", err)
+	}
+	if got != nil {
+		t.Errorf("Grant = %+v with no audit writer, want nil", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations (the unauditable grant reached the database): %v", err)
+	}
+}
+
+// GUARD durable-audit-atomic (Grant). THE DEFECT THIS PR EXISTS FOR: the audit
+// destination refuses, and the grant must not commit.
+//
+// Asserted on the writer's own sentinel and on ExpectationsWereMet, because a
+// bare "err != nil" would also be satisfied by sqlmock's unexpected-call error
+// — which is how a guard in this estate passed while protecting nothing.
+func TestPlatformAdminRepository_Grant_AuditIntentFails_DoesNotCommit(t *testing.T) {
+	repo, mock := newTestPlatformAdminRepo(t)
+
+	granted := time.Date(2026, 8, 12, 11, 0, 0, 0, time.UTC)
+	mock.ExpectBegin()
+	mock.ExpectQuery("INSERT INTO platform_admins").
+		WithArgs(adminB, nil, nil).
+		WillReturnRows(sqlmock.NewRows(grantCols).AddRow(adminB, nil, granted, nil))
+	// No ExpectCommit: a commit here is an unexpected call and fails the test.
+	mock.ExpectRollback()
+
+	outboxDown := errors.New("audit outbox unreachable")
+	got, err := repo.Grant(context.Background(), adminB, nil, nil, refusingIntent(outboxDown))
+	if !errors.Is(err, outboxDown) {
+		t.Fatalf("err = %v, want the audit writer's own error %v", err, outboxDown)
+	}
+	if got != nil {
+		t.Errorf("Grant = %+v when the audit record could not be written, want nil", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations (the unaudited grant committed): %v", err)
 	}
 }
 
@@ -257,15 +367,20 @@ func TestPlatformAdminRepository_Revoke(t *testing.T) {
 	mock.ExpectExec("DELETE FROM platform_admins WHERE user_id").
 		WithArgs(adminB).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	expectIntentWrite(mock)
 	mock.ExpectCommit()
 
 	var sawRemaining []PlatformAdminGrant
+	var audited bool
 	got, err := repo.Revoke(context.Background(), adminB, func(_ context.Context, remaining []PlatformAdminGrant) error {
 		sawRemaining = remaining
 		return nil
-	})
+	}, writingIntent(&audited))
 	if err != nil {
 		t.Fatalf("Revoke: %v", err)
+	}
+	if !audited {
+		t.Error("the revocation committed without the audit intent writer being run")
 	}
 	if got.UserID != adminB {
 		t.Errorf("Revoke returned %q, want the revoked grant %q", got.UserID, adminB)
@@ -292,12 +407,13 @@ func TestPlatformAdminRepository_Revoke_PredicateRefuses_DoesNotDelete(t *testin
 	mock.ExpectRollback()
 
 	refusal := errors.New("last one standing")
+	var audited bool
 	got, err := repo.Revoke(context.Background(), adminA, func(_ context.Context, remaining []PlatformAdminGrant) error {
 		if len(remaining) != 0 {
 			t.Errorf("remaining = %+v, want empty for a sole administrator", remaining)
 		}
 		return refusal
-	})
+	}, writingIntent(&audited))
 	if !errors.Is(err, refusal) {
 		t.Fatalf("err = %v, want the predicate's own error %v", err, refusal)
 	}
@@ -317,10 +433,11 @@ func TestPlatformAdminRepository_Revoke_NotAnAdmin(t *testing.T) {
 	mock.ExpectRollback()
 
 	called := false
+	var audited bool
 	got, err := repo.Revoke(context.Background(), adminB, func(context.Context, []PlatformAdminGrant) error {
 		called = true
 		return nil
-	})
+	}, writingIntent(&audited))
 	if !errors.Is(err, ErrNotPlatformAdmin) {
 		t.Fatalf("err = %v, want ErrNotPlatformAdmin", err)
 	}
@@ -345,7 +462,8 @@ func TestPlatformAdminRepository_Revoke_DeleteMatchedNothing(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectRollback()
 
-	got, err := repo.Revoke(context.Background(), adminB, nil)
+	var audited bool
+	got, err := repo.Revoke(context.Background(), adminB, nil, writingIntent(&audited))
 	if err == nil {
 		t.Fatal("Revoke reported success for a DELETE that removed no rows")
 	}
@@ -369,7 +487,8 @@ func TestPlatformAdminRepository_Revoke_ReadError(t *testing.T) {
 		WillReturnError(sentinel)
 	mock.ExpectRollback()
 
-	got, err := repo.Revoke(context.Background(), adminA, nil)
+	var audited bool
+	got, err := repo.Revoke(context.Background(), adminA, nil, writingIntent(&audited))
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("err = %v, want the driver's error %v", err, sentinel)
 	}
@@ -378,5 +497,54 @@ func TestPlatformAdminRepository_Revoke_ReadError(t *testing.T) {
 	}
 	if got != nil {
 		t.Errorf("Revoke = %+v on a failed read, want nil", got)
+	}
+}
+
+// GUARD durable-audit-mandatory-writer (Revoke). Same rule as Grant, and the
+// same proof: no writer, no transaction, ErrAuditIntentRequired. The mock has
+// no expectations, so a BEGIN fails ExpectationsWereMet.
+func TestPlatformAdminRepository_Revoke_NilIntentWriter_RefusesWithoutTouchingTheDatabase(t *testing.T) {
+	repo, mock := newTestPlatformAdminRepo(t)
+
+	got, err := repo.Revoke(context.Background(), adminA, nil, nil)
+	if !errors.Is(err, ErrAuditIntentRequired) {
+		t.Fatalf("err = %v, want ErrAuditIntentRequired", err)
+	}
+	if got != nil {
+		t.Errorf("Revoke = %+v with no audit writer, want nil", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations (the unauditable revocation reached the database): %v", err)
+	}
+}
+
+// GUARD durable-audit-atomic (Revoke). The audit destination refuses AFTER the
+// row has been deleted inside the transaction; the deletion must go with it.
+//
+// This is the direction that used to be impossible to get right: the delete was
+// on the registry connection and the audit entry on the identity connection, so
+// "roll the delete back" was not available and the handler reported success.
+func TestPlatformAdminRepository_Revoke_AuditIntentFails_DoesNotCommit(t *testing.T) {
+	repo, mock := newTestPlatformAdminRepo(t)
+
+	expectRevokeRead(mock, sqlmock.NewRows(grantCols).
+		AddRow(adminA, nil, time.Now(), nil).
+		AddRow(adminB, nil, time.Now(), nil))
+	mock.ExpectExec("DELETE FROM platform_admins WHERE user_id").
+		WithArgs(adminB).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	// No ExpectCommit: committing here is an unexpected call.
+	mock.ExpectRollback()
+
+	outboxDown := errors.New("audit outbox unreachable")
+	got, err := repo.Revoke(context.Background(), adminB, nil, refusingIntent(outboxDown))
+	if !errors.Is(err, outboxDown) {
+		t.Fatalf("err = %v, want the audit writer's own error %v", err, outboxDown)
+	}
+	if got != nil {
+		t.Errorf("Revoke = %+v when the audit record could not be written, want nil", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations (the unaudited revocation committed): %v", err)
 	}
 }
