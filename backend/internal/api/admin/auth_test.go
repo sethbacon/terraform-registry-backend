@@ -2573,3 +2573,126 @@ func TestLogoutPost_CSRFMiddlewareRejectsForgedRequest(t *testing.T) {
 		t.Errorf("legitimate logout: status = %d, want 200 (%s)", w.Code, w.Body.String())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// MeHandler — allowed_scopes and the platform-admin carrier (issue #766)
+// ---------------------------------------------------------------------------
+
+// GUARD me-allowed-scopes-carrier.
+//
+// allowed_scopes was built solely from GetAllowedScopes() — the role-template
+// union read out of the database — while platform-admin authority has had a
+// SECOND carrier since PR 1: the platform_admins table, resolved per request
+// into the request's effective scopes. All 43 frontend allowedScopes call sites
+// read this field, so a carrier-only administrator would be authorized at every
+// one of the twelve server-side HasScope(ScopeAdmin) sites and rendered as an
+// ordinary user. Invisible today (migration 000051 backfilled the carrier from
+// the union, so the two agree); at PR 3 it is every administrator's experience.
+//
+// The elevation is read from the request's effective scopes rather than by
+// querying the carrier again, so this stays downstream of PR 1's single
+// insertion point — including its deliberate exclusion of API keys.
+func TestMeHandler_AllowedScopesUnionsThePlatformAdminCarrier(t *testing.T) {
+	tests := []struct {
+		name string
+		// effectiveScopes is what the auth middleware published on the request.
+		// nil means the key was never set (the mTLS path, and any handler test
+		// that does not set it).
+		effectiveScopes []string
+		setScopes       bool
+		// membershipScopes is the role-template union in the database.
+		membershipScopes string
+		wantAdmin        bool
+	}{
+		{
+			name:             "carrier-only administrator",
+			effectiveScopes:  []string{"modules:read", "admin"},
+			setScopes:        true,
+			membershipScopes: `["modules:read"]`,
+			wantAdmin:        true,
+		},
+		{
+			name:             "ordinary user is not elevated",
+			effectiveScopes:  []string{"modules:read"},
+			setScopes:        true,
+			membershipScopes: `["modules:read"]`,
+			wantAdmin:        false,
+		},
+		{
+			name:             "administrator by role template, unchanged",
+			effectiveScopes:  []string{"admin"},
+			setScopes:        true,
+			membershipScopes: `["admin"]`,
+			wantAdmin:        true,
+		},
+		{
+			name:             "no effective scopes on the request",
+			setScopes:        false,
+			membershipScopes: `["modules:read"]`,
+			wantAdmin:        false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, mock, _ := sqlmock.New()
+			defer db.Close()
+
+			h, _ := NewAuthHandlers(&config.Config{}, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
+			r := gin.New()
+			r.Use(func(c *gin.Context) {
+				c.Set("user_id", "user-1")
+				if tt.setScopes {
+					c.Set("scopes", tt.effectiveScopes)
+				}
+				c.Next()
+			})
+			r.GET("/auth/me", h.MeHandler())
+
+			mock.ExpectQuery("SELECT.*FROM users WHERE id").
+				WillReturnRows(sqlmock.NewRows(authUserCols).
+					AddRow("user-1", "me@example.com", "Me User", nil, time.Now(), time.Now()))
+			mock.ExpectQuery("SELECT.*FROM organization_members").
+				WillReturnRows(sqlmock.NewRows(meOrgMembershipCols).
+					AddRow("org-1", "acme", "role-1", time.Now(), "reader", "Reader", tt.membershipScopes))
+
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/auth/me", nil))
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+			}
+
+			raw, ok := getJSON(w)["allowed_scopes"].([]interface{})
+			if !ok {
+				t.Fatalf("allowed_scopes missing or not a list: %s", w.Body.String())
+			}
+			admins := 0
+			for _, s := range raw {
+				if s == "admin" {
+					admins++
+				}
+			}
+			if tt.wantAdmin && admins == 0 {
+				t.Errorf("allowed_scopes = %v, want it to carry \"admin\". The frontend renders "+
+					"this field; without the carrier unioned in, a platform administrator is "+
+					"authorized server-side and shown as a non-admin.", raw)
+			}
+			if !tt.wantAdmin && admins != 0 {
+				t.Errorf("allowed_scopes = %v, want NO \"admin\" — the union must not invent authority", raw)
+			}
+			if admins > 1 {
+				t.Errorf("allowed_scopes = %v, \"admin\" appears %d times", raw, admins)
+			}
+			// The rest of the union must survive the elevation.
+			found := false
+			for _, s := range raw {
+				if s == "modules:read" {
+					found = true
+				}
+			}
+			if !found && tt.membershipScopes != `["admin"]` {
+				t.Errorf("allowed_scopes = %v, lost the role-template scopes it is built from", raw)
+			}
+		})
+	}
+}

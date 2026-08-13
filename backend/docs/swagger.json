@@ -2473,6 +2473,213 @@
                 }
             }
         },
+        "/api/v1/admin/platform-admins": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "List every platform-admin grant, with its provenance. A grant whose user no longer resolves is returned with user_resolved=false rather than hidden. Requires admin scope.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Platform Admins"
+                ],
+                "summary": "List platform administrators",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/admin.ListPlatformAdminsResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden — admin scope required",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Grant platform-admin authority to a user and record who granted it. Requires admin scope.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Platform Admins"
+                ],
+                "summary": "Grant platform admin",
+                "parameters": [
+                    {
+                        "description": "Grant request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/admin.GrantPlatformAdminRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/admin.PlatformAdminResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request body",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden — admin scope required",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "User not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "User already holds platform-admin",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/admin/platform-admins/{user_id}": {
+            "delete": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Remove a user's platform-admin authority. Refuses to remove the last remaining administrator. Self-revocation is permitted, subject to that same rule. Requires admin scope.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Platform Admins"
+                ],
+                "summary": "Revoke platform admin",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User ID",
+                        "name": "user_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/admin.MessageResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid user ID",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden — admin scope required",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "User does not hold platform-admin",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "Cannot revoke the last platform administrator",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/admin/policies": {
             "get": {
                 "security": [
@@ -13822,6 +14029,22 @@
                 }
             }
         },
+        "admin.GrantPlatformAdminRequest": {
+            "type": "object",
+            "required": [
+                "user_id"
+            ],
+            "properties": {
+                "note": {
+                    "description": "Note is a free-text operator note recorded alongside the grant.",
+                    "type": "string"
+                },
+                "user_id": {
+                    "description": "UserID is the principal to grant platform-admin authority to.",
+                    "type": "string"
+                }
+            }
+        },
         "admin.ListAPIKeysResponse": {
             "type": "object",
             "properties": {
@@ -13873,6 +14096,17 @@
                 "organizations": {},
                 "pagination": {
                     "$ref": "#/definitions/admin.PaginationMeta"
+                }
+            }
+        },
+        "admin.ListPlatformAdminsResponse": {
+            "type": "object",
+            "properties": {
+                "platform_admins": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/admin.PlatformAdminItem"
+                    }
                 }
             }
         },
@@ -14303,6 +14537,44 @@
                 },
                 "total": {
                     "type": "integer"
+                }
+            }
+        },
+        "admin.PlatformAdminItem": {
+            "type": "object",
+            "properties": {
+                "email": {
+                    "type": "string"
+                },
+                "granted_at": {
+                    "type": "string"
+                },
+                "granted_by": {
+                    "description": "GrantedBy is NULL for rows written by migration 000051's backfill —\nnobody granted those, they were inferred from an admin-bearing role\ntemplate, and Note says so.",
+                    "type": "string"
+                },
+                "granted_by_email": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "note": {
+                    "type": "string"
+                },
+                "user_id": {
+                    "type": "string"
+                },
+                "user_resolved": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "admin.PlatformAdminResponse": {
+            "type": "object",
+            "properties": {
+                "platform_admin": {
+                    "$ref": "#/definitions/admin.PlatformAdminItem"
                 }
             }
         },

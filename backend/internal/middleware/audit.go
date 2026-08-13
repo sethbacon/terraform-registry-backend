@@ -189,6 +189,12 @@ func getResourceType(c *gin.Context) string {
 		return "storage"
 	case strings.HasPrefix(fullPath, "/api/v1/admin/roles"):
 		return "role"
+	// The platform-admin carrier (issue #766). The grant/revoke handlers write
+	// their own entries naming the target; this labels the coarse route-level
+	// entry this middleware writes for the same request, which would otherwise
+	// fall through to "unknown".
+	case strings.HasPrefix(fullPath, "/api/v1/admin/platform-admins"):
+		return "platform_admin"
 	case strings.HasPrefix(fullPath, "/api/v1/admin/scm-providers"):
 		return "scm_provider"
 	case strings.HasPrefix(fullPath, "/api/v1/admin/webhooks"):

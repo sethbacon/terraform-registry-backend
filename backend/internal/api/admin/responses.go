@@ -346,6 +346,39 @@ type NamespaceOwnershipResponse struct {
 	OwnerOrganizationIDs []string   `json:"owner_organization_ids,omitempty"`
 }
 
+// PlatformAdminItem is one platform-admin grant in list/get responses
+// (issue #766).
+//
+// UserResolved is the orphan flag. The carrier carries no foreign key to users
+// (migration 000051 — identity data may live in another schema or another
+// database), so a deleted user leaves the grant row behind. Such a row is
+// returned with UserResolved false and no Email/Name, rather than dropped: it
+// is inert authority-wise but it is still a row, and the listing is the only
+// place an operator can see it in order to remove it.
+type PlatformAdminItem struct {
+	UserID       string `json:"user_id"`
+	Email        string `json:"email,omitempty"`
+	Name         string `json:"name,omitempty"`
+	UserResolved bool   `json:"user_resolved"`
+	// GrantedBy is NULL for rows written by migration 000051's backfill —
+	// nobody granted those, they were inferred from an admin-bearing role
+	// template, and Note says so.
+	GrantedBy      *string   `json:"granted_by"`
+	GrantedByEmail string    `json:"granted_by_email,omitempty"`
+	GrantedAt      time.Time `json:"granted_at"`
+	Note           *string   `json:"note"`
+}
+
+// ListPlatformAdminsResponse is returned by GET /api/v1/admin/platform-admins.
+type ListPlatformAdminsResponse struct {
+	PlatformAdmins []PlatformAdminItem `json:"platform_admins"`
+}
+
+// PlatformAdminResponse is returned by POST /api/v1/admin/platform-admins.
+type PlatformAdminResponse struct {
+	PlatformAdmin PlatformAdminItem `json:"platform_admin"`
+}
+
 // AuditLogResponse represents a single audit log entry in list or get responses.
 type AuditLogResponse struct {
 	ID             string                 `json:"id"`

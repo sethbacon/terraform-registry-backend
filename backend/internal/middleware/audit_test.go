@@ -241,6 +241,12 @@ func TestAuditMiddleware_ResourceTypeDetection(t *testing.T) {
 		// /api/v1) and must be audited distinctly rather than falling through
 		// to "unknown" — see issue #666.
 		{"/scim/v2/Users", "scim_provisioning"},
+		// The platform-admin carrier's management surface (issue #766). Its
+		// handlers write their own per-target entries; this labels the coarse
+		// route-level entry, which would otherwise read "unknown" for the route
+		// that confers the highest privilege in the product.
+		{"/api/v1/admin/platform-admins", "platform_admin"},
+		{"/api/v1/admin/platform-admins/some-id", "platform_admin"},
 		{"/other/z", "unknown"},
 	}
 

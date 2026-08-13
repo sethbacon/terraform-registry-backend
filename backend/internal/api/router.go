@@ -577,6 +577,13 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// Initialize audit log handlers
 	auditLogHandlers := admin.NewAuditLogHandlers(identityDB)
 
+	// Platform-admin management (issue #766, PR 2). Spans both connections by
+	// construction: the carrier is on the registry's own connection (see
+	// platformAdminRepo above, and migration 000051 for why it carries no FK),
+	// while the users it names and the audit trail it writes live on the
+	// identity connection.
+	platformAdminHandlers := admin.NewPlatformAdminHandlers(platformAdminRepo, userRepo, auditRepo)
+
 	// Shared app-credential minter (Entra app / GitHub App) for providers opted
 	// into an app auth mode; scmRepo provides the token-cache store. Uses the
 	// shared egress guard for parity with the other SCM outbound paths (#676).
@@ -741,6 +748,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		tfMirrorAdminHandler:        tfMirrorAdminHandler,
 		releasesGPGKeysAdminHandler: releasesGPGKeysAdminHandler,
 		rbacHandlers:                rbacHandlers,
+		platformAdminHandlers:       platformAdminHandlers,
 		versionApprovalHandler:      versionApprovalHandler,
 		storageHandlers:             storageHandlers,
 		storageConfigRepo:           storageConfigRepo,
