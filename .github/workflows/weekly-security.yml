@@ -105,7 +105,7 @@ jobs:
         # the job summary as warnings, and the govulncheck job covers whether
         # they are reachable.
         if: steps.osv_triage_weekly.outcome == 'failure'
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const fs = require('fs');
@@ -177,7 +177,7 @@ jobs:
         # Issue creation stays weekly-only to avoid opening a new issue on
         # every PR push; per-PR runs fail the job instead (next step).
         if: steps.govulncheck.outcome == 'failure' && github.event_name == 'schedule'
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const title = `govulncheck: reachable vulnerabilities found — ${new Date().toISOString().slice(0,10)}`;
@@ -270,7 +270,7 @@ jobs:
       issues: write
     steps:
       - name: Create failure issue
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const title = `Scheduled build failed — ${new Date().toISOString().slice(0,10)}`;
