@@ -176,6 +176,7 @@ jobs:
   docker:
     name: Publish Docker image
     runs-on: ubuntu-latest
+    environment: release
     needs: ci
     permissions:
       contents: read
@@ -296,6 +297,7 @@ jobs:
   docker-fips:
     name: Publish FIPS Docker image
     runs-on: ubuntu-latest
+    environment: release
     needs: ci
     permissions:
       contents: read
