@@ -26,9 +26,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
 
+	"github.com/sethbacon/terraform-suite-identity/identity/auditoutbox"
 	identityhttpsafe "github.com/sethbacon/terraform-suite-identity/identity/httpsafe"
 	identitymailer "github.com/sethbacon/terraform-suite-identity/identity/mailer"
 	identitynotify "github.com/sethbacon/terraform-suite-identity/identity/notify"
+	"github.com/sethbacon/terraform-suite-identity/identity/platformadmin"
 
 	"github.com/terraform-registry/terraform-registry/internal/adminfloor"
 	"github.com/terraform-registry/terraform-registry/internal/api/admin"
@@ -67,6 +69,18 @@ import (
 	_ "github.com/terraform-registry/terraform-registry/internal/scm/github"
 	_ "github.com/terraform-registry/terraform-registry/internal/scm/gitlab"
 )
+
+// platformAdminTable is the carrier table this application's platform-admin
+// mechanism addresses (migration 000051). Unqualified, so the connection's
+// search_path places it — the same resolution the hand-written statements had
+// before the mechanism moved into the shared library, which is why the swap
+// needs no migration.
+//
+// ONE SPELLING. platformadmin derives the carrier's advisory-lock key from this
+// name, so a process constructing it as "public.platform_admins" would address
+// the same table under a different lock and lose the serialisation between the
+// two.
+const platformAdminTable = "platform_admins"
 
 // BackgroundServices holds references to background jobs and resources that must
 // be stopped during graceful shutdown. The caller (cmd/server) is responsible for
@@ -199,13 +213,36 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// the shared identity schema, or a separate identity database (issue #559
 	// finding [9]).
 	userTokenRevocationRepo := repositories.NewUserTokenRevocationRepository(db)
-	// platformAdminRepo is the carrier for platform-admin authority outside
-	// organization_members (issue #766, migration 000051). Same connection and
-	// same reasoning as userTokenRevocationRepo above: no FK dependency on the
+	// platformAdminCarrier is the carrier for platform-admin authority outside
+	// organization_members (issue #766, migration 000051), and since
+	// terraform-suite-identity#206 the mechanism is the shared library's,
+	// instantiated against THIS application's table. Same connection and same
+	// reasoning as userTokenRevocationRepo above: no FK dependency on the
 	// identity schema, so it works unchanged whether identity data is in the
 	// app's public schema, the shared identity schema, or a separate identity
 	// database.
-	platformAdminRepo := repositories.NewPlatformAdminRepository(db)
+	//
+	// The name is unqualified and is spelled ONCE, here. The library derives
+	// the carrier's advisory-lock key from it, so a second spelling elsewhere
+	// ("public.platform_admins") would address one table under two locks and
+	// lose the serialisation between them.
+	platformAdminCarrier, err := platformadmin.New(db, platformAdminTable)
+	if err != nil {
+		log.Fatalf("failed to construct the platform-admin carrier: %v", err)
+	}
+	// Reported, not assumed. The table is this application's, in whatever
+	// schema this connection's search_path resolves to, and the assertion
+	// covers the unique index on user_id as well as the columns: a carrier
+	// table with every expected column but no arbiter for
+	// ON CONFLICT (user_id) passes every column check and then fails EVERY
+	// grant at write time. Logged rather than fatal because a deployment
+	// mid-migration must still be able to boot and report why.
+	if resolved, vErr := platformAdminCarrier.VerifyTable(context.Background()); vErr != nil {
+		slog.Error("platform-admin carrier table did not verify; grants and revocations will fail until it does",
+			"table", platformAdminTable, "error", vErr)
+	} else {
+		slog.Info("platform-admin carrier table verified", "table", resolved)
+	}
 	// adminFloor holds the two never-zero administrator invariants (issue
 	// #766): the deployment always has a platform administrator, and an
 	// organization with members always has one of its own.
@@ -213,11 +250,11 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// Built here, from BOTH connections, and injected into every handler that
 	// can reduce administrative authority. It cannot be constructed inside any
 	// of them: platform_admins is on the registry's connection (see
-	// platformAdminRepo above) while organization_members, role_templates and
+	// platformAdminCarrier above) while organization_members, role_templates and
 	// users are on identity's, and under TFR_IDENTITY_DATABASE_* those are
 	// different physical databases. Same shape, and the same reason, as
 	// credSweeper below.
-	adminFloor := adminfloor.New(db, identityDB)
+	adminFloor := adminfloor.New(platformAdminCarrier, identityDB)
 
 	// Namespace ownership claims back the object-level authorization on every
 	// module/provider mutation route (issue #555, CWE-639): a namespace binds
@@ -343,11 +380,34 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// ON `db`, NOT `identityDB`, AND THAT IS THE WHOLE POINT: the outbox has to
 	// share a transaction with the mutation it records, and the privileged
 	// mutations it covers run on the registry's own connection (see
-	// platformAdminRepo above). The relay then carries each intent across to
+	// platformAdminCarrier above). The relay then carries each intent across to
 	// audit_logs on identityDB, which is the connection that cannot participate
 	// in the mutation's transaction and is why the outbox exists.
-	auditOutbox := audit.NewOutbox(db)
-	auditRelay := audit.NewRelay(auditOutbox, audit.NewAuditLogSink(identityDB), auditShipper, audit.RelayConfig{
+	auditOutbox, err := auditoutbox.New(db, audit.OutboxTable)
+	if err != nil {
+		log.Fatalf("failed to construct the audit outbox: %v", err)
+	}
+	auditSink, err := auditoutbox.NewTableSink(identityDB, audit.AuditLogTable)
+	if err != nil {
+		log.Fatalf("failed to construct the audit outbox sink: %v", err)
+	}
+	// Both ends reported, for the same reason as the carrier above: these are
+	// unqualified names placed by each connection's search_path, and an
+	// operator who cannot see where intents are written and where they land
+	// discovers a misplacement as an audit trail that stopped draining.
+	if resolved, vErr := auditOutbox.Verify(context.Background()); vErr != nil {
+		slog.Error("audit outbox table did not verify; privileged mutations will refuse to commit until it does",
+			"table", audit.OutboxTable, "error", vErr)
+	} else {
+		slog.Info("audit outbox table verified", "table", resolved)
+	}
+	if resolved, vErr := auditSink.Verify(context.Background()); vErr != nil {
+		slog.Error("audit destination table did not verify; delivered intents will stay in the backlog",
+			"table", audit.AuditLogTable, "error", vErr)
+	} else {
+		slog.Info("audit destination table verified", "table", resolved)
+	}
+	auditRelay := audit.NewOutboxRelay(auditOutbox, auditSink, auditShipper, auditoutbox.RelayConfig{
 		PollInterval:    time.Duration(cfg.AuditRetention.OutboxPollSeconds) * time.Second,
 		BatchSize:       cfg.AuditRetention.OutboxBatchSize,
 		BacklogWarn:     int64(cfg.AuditRetention.OutboxBacklogWarn),
@@ -524,7 +584,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		orgRepo:                 orgRepo,
 		tokenRepo:               tokenRepo,
 		userTokenRevocationRepo: userTokenRevocationRepo,
-		platformAdminRepo:       platformAdminRepo,
+		platformAdminCarrier:    platformAdminCarrier,
 		auditRepo:               auditRepo,
 		pullThroughSvc:          pullThroughSvc,
 		tfBinariesHandler:       tfBinariesHandler,
@@ -574,7 +634,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// fall back to public via the identity connection's search_path.
 	apiKeyHandlers := admin.NewAPIKeyHandlers(cfg, identityDB)
 	userHandlers := admin.NewUserHandlers(cfg, identityDB, admin.WithUserCredentialSweeper(credSweeper),
-		admin.WithUserAdminFloor(adminFloor, platformAdminRepo, auditOutbox))
+		admin.WithUserAdminFloor(adminFloor, platformAdminCarrier, auditOutbox))
 	orgHandlers := admin.NewOrganizationHandlers(cfg, identityDB, nsClaimRepo, userTokenRevocationRepo).
 		WithAdminFloor(adminFloor)
 	statsHandlers := admin.NewStatsHandler(identitySqlxDB, &cfg.Scanning).WithOrgRepo(orgRepo)
@@ -598,7 +658,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// GDPR data-subject handlers (Article 15/17/20). Registered under
 	// /api/v1/admin/users/:id/{export,erase} below.
 	userSvc := services.NewUserService(identityDB).WithCredentialSweeper(credSweeper).
-		WithAdminFloor(adminFloor, platformAdminRepo, auditOutbox)
+		WithAdminFloor(adminFloor, platformAdminCarrier, auditOutbox)
 	gdprHandlers := admin.NewGDPRHandlers(userSvc)
 
 	// Role-template CRUD follows the identity schema; mirror methods stay public.
@@ -613,12 +673,12 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 
 	// Platform-admin management (issue #766, PR 2). Spans both connections by
 	// construction: the carrier is on the registry's own connection (see
-	// platformAdminRepo above, and migration 000051 for why it carries no FK),
+	// platformAdminCarrier above, and migration 000051 for why it carries no FK),
 	// while the users it names live on the identity connection. Its audit trail
 	// is written to the outbox beside the carrier — same connection, same
 	// transaction — and relayed to audit_logs on identityDB afterwards, which
 	// is what stops a grant from committing unrecorded (migration 000052).
-	platformAdminHandlers := admin.NewPlatformAdminHandlers(platformAdminRepo, userRepo, auditOutbox).
+	platformAdminHandlers := admin.NewPlatformAdminHandlers(platformAdminCarrier, userRepo, auditOutbox).
 		WithAdminFloor(adminFloor)
 
 	// Shared app-credential minter (Entra app / GitHub App) for providers opted
@@ -709,7 +769,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	setupHandlers := setup.NewHandlers(
 		cfg, tokenCipher, oidcConfigRepo, storageConfigRepo, userRepo, authHandlers,
 	).WithScannerJob(moduleScannerJob).WithEgressGuard(egressGuard).
-		WithPlatformAdminCarrier(platformAdminRepo, auditOutbox)
+		WithPlatformAdminCarrier(platformAdminCarrier, auditOutbox)
 
 	// Initialize policy engine (no-op when disabled).
 	policyEngineCfg := policy.Config{
@@ -756,7 +816,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		orgRepo:                     orgRepo,
 		tokenRepo:                   tokenRepo,
 		userTokenRevocationRepo:     userTokenRevocationRepo,
-		platformAdminRepo:           platformAdminRepo,
+		platformAdminCarrier:        platformAdminCarrier,
 		credSweeper:                 credSweeper,
 		adminFloor:                  adminFloor,
 		moduleAdminHandlers:         moduleAdminHandlers,

@@ -9,6 +9,9 @@ import (
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
+
+	"github.com/sethbacon/terraform-suite-identity/identity/platformadmin"
+
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
@@ -31,20 +34,24 @@ import (
 // most worried about: an API key must NEVER carry platform-admin authority.
 // ---------------------------------------------------------------------------
 
-func newPlatformAdminRepo(t *testing.T) (*repositories.PlatformAdminRepository, sqlmock.Sqlmock) {
+func newPlatformAdminRepo(t *testing.T) (*platformadmin.Carrier, sqlmock.Sqlmock) {
 	t.Helper()
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("sqlmock.New (platform_admins): %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	return repositories.NewPlatformAdminRepository(db), mock
+	carrier, err := platformadmin.New(db, "platform_admins")
+	if err != nil {
+		t.Fatalf("platformadmin.New: %v", err)
+	}
+	return carrier, mock
 }
 
 // expectCarrierLookup queues the one indexed read the middleware makes per
 // user-session request.
 func expectCarrierLookup(mock sqlmock.Sqlmock, userID string, granted bool) {
-	mock.ExpectQuery("SELECT EXISTS.*FROM platform_admins").
+	mock.ExpectQuery(`SELECT EXISTS.*FROM "platform_admins"`).
 		WithArgs(userID).
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(granted))
 }
@@ -60,7 +67,7 @@ func generateScopedJWT(t *testing.T, userID string, scopes []string) string {
 
 // carrierJWTRouter wires AuthMiddleware over a mocked user repository and the
 // carrier repository, and captures the effective scopes the handler sees.
-func carrierJWTRouter(t *testing.T, userID string, paRepo *repositories.PlatformAdminRepository, got *[]string) *gin.Engine {
+func carrierJWTRouter(t *testing.T, userID string, paRepo *platformadmin.Carrier, got *[]string) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	userRepo, userMock := newUserRepo(t)
@@ -512,5 +519,90 @@ func TestAuthMiddleware_APIKey_AdminScopeInTheSnapshotIsStripped(t *testing.T) {
 	if len(got) != 1 || got[0] != "modules:read" {
 		t.Errorf("scopes = %v, want exactly [modules:read]: an api_keys row carrying the `admin` wildcard "+
 			"presented it to a handler, and a key never consults the carrier (#766)", got)
+	}
+}
+
+// The same claim as TestAuthMiddleware_APIKey_AdminScopeInTheSnapshotIsStripped,
+// at the OTHER TWO sites that publish an API key's scopes. Three sites strip
+// `admin`, and until these existed only one of them was held shut: mutating
+// either of the others to publish the snapshot verbatim left the whole package
+// green.
+//
+// This one is the re-derivation path: the key's frozen scopes are intersected
+// with the owner's CURRENT role template, and the template here carries `admin`
+// too — so an intersection that did not drop the wildcard FIRST would keep it,
+// which is the exact shape the belt-and-braces strip in currentKeyScopes exists
+// for.
+func TestAuthMiddleware_APIKey_AdminIsStrippedBeforeTheOwnerIntersection(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	apiKeyDB, keyMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New (apikey): %v", err)
+	}
+	t.Cleanup(func() { apiKeyDB.Close() })
+	orgRepo, orgMock := newOrgRepo(t)
+	userRepo, userMock := newUserRepo(t)
+
+	token := "tfr_interad"
+	userID := "user-1"
+	expectAPIKeyLookup(keyMock, token, &userID, []byte(`["admin","modules:read"]`))
+	expectKeyOwnerMembership(orgMock, "org-1", userID, []byte(`["admin","modules:read"]`))
+	userMock.ExpectQuery("SELECT.*FROM users WHERE id").
+		WillReturnRows(sqlmock.NewRows(jwtUserCols).
+			AddRow(userID, "owner@example.com", "Owner", nil, time.Now(), time.Now()))
+
+	var got []string
+	r := gin.New()
+	r.Use(AuthMiddleware(nil, userRepo, repositories.NewAPIKeyRepository(apiKeyDB), orgRepo, nil, nil, nil))
+	r.GET("/", func(c *gin.Context) {
+		if v, ok := c.Get("scopes"); ok {
+			got, _ = v.([]string)
+		}
+		c.Status(http.StatusOK)
+	})
+
+	if w := doKeyRequest(r, token); w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	if len(got) != 1 || got[0] != "modules:read" {
+		t.Errorf("scopes = %v, want exactly [modules:read]: the wildcard survived the owner "+
+			"intersection, so a key would hold platform-admin authority it never resolved (#766)", got)
+	}
+}
+
+// And the optionally-authenticated public routes, which publish the snapshot on
+// their own branch.
+func TestOptionalAuthMiddleware_APIKey_AdminScopeInTheSnapshotIsStripped(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	apiKeyDB, keyMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New (apikey): %v", err)
+	}
+	t.Cleanup(func() { apiKeyDB.Close() })
+	userRepo, _ := newUserRepo(t)
+
+	token := "tfr_optfroz"
+	userID := "user-1"
+	expectAPIKeyLookup(keyMock, token, &userID, []byte(`["admin","modules:read"]`))
+
+	var got []string
+	r := gin.New()
+	// orgRepo is nil, so the re-derivation is skipped: this is the snapshot path.
+	r.Use(OptionalAuthMiddleware(nil, userRepo, repositories.NewAPIKeyRepository(apiKeyDB), nil, nil, nil, nil))
+	r.GET("/", func(c *gin.Context) {
+		if v, ok := c.Get("scopes"); ok {
+			got, _ = v.([]string)
+		}
+		c.Status(http.StatusOK)
+	})
+
+	if w := doKeyRequest(r, token); w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	if len(got) != 1 || got[0] != "modules:read" {
+		t.Errorf("scopes = %v, want exactly [modules:read]: an api_keys row carrying the `admin` "+
+			"wildcard presented it to a public-route handler (#766)", got)
 	}
 }

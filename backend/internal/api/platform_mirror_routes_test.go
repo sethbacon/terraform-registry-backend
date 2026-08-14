@@ -71,7 +71,7 @@ func platformRouteCase(t *testing.T, method, path string, scopes []string) int {
 	}
 
 	mock.ExpectQuery("(?s)FROM users WHERE id").WillReturnRows(userRowsFor(mirrorUserID))
-	carrierMock.ExpectQuery("SELECT EXISTS.*FROM platform_admins").
+	carrierMock.ExpectQuery(`SELECT EXISTS.*FROM "platform_admins"`).
 		WithArgs(mirrorUserID).
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(isPlatformAdmin))
 
@@ -94,10 +94,10 @@ func platformRouteCase(t *testing.T, method, path string, scopes []string) int {
 			repositories.NewModuleRepository(db),
 			repositories.NewProviderRepository(db),
 		),
-		mirrorRepo:        repositories.NewMirrorRepository(sqlxDB),
-		rbacRepo:          repositories.NewRBACRepositoryWithIdentity(sqlxDB, sqlxDB),
-		auditLogHandlers:  admin.NewAuditLogHandlers(db),
-		platformAdminRepo: repositories.NewPlatformAdminRepository(carrierDB),
+		mirrorRepo:           repositories.NewMirrorRepository(sqlxDB),
+		rbacRepo:             repositories.NewRBACRepositoryWithIdentity(sqlxDB, sqlxDB),
+		auditLogHandlers:     admin.NewAuditLogHandlers(db),
+		platformAdminCarrier: carrierOver(t, carrierDB),
 	})
 
 	w := httptest.NewRecorder()

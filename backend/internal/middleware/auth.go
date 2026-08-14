@@ -19,6 +19,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/sethbacon/terraform-suite-identity/identity/platformadmin"
+
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
@@ -35,7 +38,7 @@ import (
 //     originates from a cookie the auth_method is set to "jwt_cookie" so that
 //     downstream middleware (CSRFMiddleware) can distinguish browser-initiated
 //     requests from programmatic ones.
-func AuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, apiKeyRepo *repositories.APIKeyRepository, orgRepo *repositories.OrganizationRepository, tokenRepo *repositories.TokenRepository, userRevocations *repositories.UserTokenRevocationRepository, platformAdmins *repositories.PlatformAdminRepository) gin.HandlerFunc {
+func AuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, apiKeyRepo *repositories.APIKeyRepository, orgRepo *repositories.OrganizationRepository, tokenRepo *repositories.TokenRepository, userRevocations *repositories.UserTokenRevocationRepository, platformAdmins *platformadmin.Carrier) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var token string
 		var fromCookie bool
@@ -234,7 +237,7 @@ func AuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, a
 			// present it either -- and this is the branch that runs when the
 			// re-derivation below is skipped, which is precisely where an
 			// unbound key would otherwise keep it.
-			c.Set("scopes", withoutScope(apiKey.Scopes, auth.ScopeAdmin))
+			c.Set("scopes", platformadmin.KeyScopes(apiKey.Scopes))
 
 			// Re-derive the key's authority HERE, where the binding is
 			// established, rather than only at the two call sites that happened
@@ -342,7 +345,7 @@ func currentKeyScopes(ctx context.Context, orgRepo *repositories.OrganizationRep
 	// resolves no platform-admin authority even if a template is edited back by
 	// hand, because a key never consults the carrier and the carrier is the
 	// only source.
-	keyScopes := withoutScope(apiKey.Scopes, auth.ScopeAdmin)
+	keyScopes := platformadmin.KeyScopes(apiKey.Scopes)
 	scopes := make([]string, 0, len(keyScopes))
 	for _, s := range keyScopes {
 		if auth.HasScope(member.RoleTemplateScopes, auth.Scope(s)) {
@@ -350,32 +353,6 @@ func currentKeyScopes(ctx context.Context, orgRepo *repositories.OrganizationRep
 		}
 	}
 	return scopes, 0, ""
-}
-
-// withoutScope returns scopes with every occurrence of `drop` removed, and
-// returns the input unchanged when there is nothing to remove.
-//
-// It copies rather than filtering in place because the slice it is usually
-// given is claims.Scopes, which is also published on the context as
-// jwt_claims: filtering in place would write through a shared backing array.
-func withoutScope(scopes []string, drop auth.Scope) []string {
-	present := false
-	for _, s := range scopes {
-		if s == string(drop) {
-			present = true
-			break
-		}
-	}
-	if !present {
-		return scopes
-	}
-	out := make([]string, 0, len(scopes))
-	for _, s := range scopes {
-		if s != string(drop) {
-			out = append(out, s)
-		}
-	}
-	return out
 }
 
 // platformAdminScopes returns the effective scopes for a USER SESSION.
@@ -400,45 +377,41 @@ func withoutScope(scopes []string, drop auth.Scope) []string {
 // calls this from its API-key branch, and
 // TestAuthMiddleware_APIKey_DoesNotInheritOwnersPlatformAdmin holds that shut.
 //
-// A nil repository means the subsystem is not wired (unit tests), matching how
+// A nil carrier means the subsystem is not wired (unit tests), matching how
 // tokenRepo/userRevocations/orgRepo nil-checks behave on both middlewares. It
 // still strips: an unwired carrier cannot answer the authority question, and
 // serving the union's `admin` instead would answer it from the source this
-// release stopped trusting.
+// release stopped trusting. platformadmin.KeyScopes is the library's strip-only
+// path — it takes no connection and cannot elevate anything — which is exactly
+// what "there is no carrier to ask" means here.
+//
+// The elevation itself is platformadmin.Carrier.SessionScopes: one indexed read
+// on every request, never a token claim, stripping `admin` on every return path
+// including the error one.
 //
 // Returns the effective scopes and (0, "") when the answer resolved, otherwise
 // an HTTP status and message — WITH the stripped scopes, so a caller that
 // chooses to continue (OptionalAuthMiddleware) continues unelevated rather than
 // with whatever the token claimed.
-func platformAdminScopes(ctx context.Context, platformAdmins *repositories.PlatformAdminRepository, userID string, scopes []string) ([]string, int, string) {
-	// FIRST, and on every path: `admin` in the token is not authority any more.
-	base := withoutScope(scopes, auth.ScopeAdmin)
-
+func platformAdminScopes(ctx context.Context, platformAdmins *platformadmin.Carrier, userID string, scopes []string) ([]string, int, string) {
 	if platformAdmins == nil {
-		return base, 0, ""
+		return platformadmin.KeyScopes(scopes), 0, ""
 	}
-	isAdmin, err := platformAdmins.IsPlatformAdmin(ctx, userID)
+	effective, err := platformAdmins.SessionScopes(ctx, userID, scopes)
 	if err != nil {
 		// 500, not "not an admin". An authority question that did not resolve
 		// must not be served as a completed no: that would silently downgrade a
 		// platform administrator to a 403 during exactly the incident in which
 		// they need the admin surface, with nothing in the response saying why.
-		return base, http.StatusInternalServerError, "Auth check failed"
+		// SessionScopes returns the STRIPPED scopes alongside its error, so the
+		// caller that continues anyway continues unelevated.
+		return effective, http.StatusInternalServerError, "Auth check failed"
 	}
-	if !isAdmin {
-		return base, 0, ""
-	}
-	// The elevation copies rather than appending to the caller's slice.
-	// `scopes` is claims.Scopes, which is also published on the context as
-	// jwt_claims, so appending in place would write through a shared backing
-	// array whenever it has spare capacity.
-	elevated := make([]string, len(base), len(base)+1)
-	copy(elevated, base)
-	return append(elevated, string(auth.ScopeAdmin)), 0, ""
+	return effective, 0, ""
 }
 
 // OptionalAuthMiddleware - same as AuthMiddleware but doesn't abort if no auth
-func OptionalAuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, apiKeyRepo *repositories.APIKeyRepository, orgRepo *repositories.OrganizationRepository, tokenRepo *repositories.TokenRepository, userRevocations *repositories.UserTokenRevocationRepository, platformAdmins *repositories.PlatformAdminRepository) gin.HandlerFunc {
+func OptionalAuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, apiKeyRepo *repositories.APIKeyRepository, orgRepo *repositories.OrganizationRepository, tokenRepo *repositories.TokenRepository, userRevocations *repositories.UserTokenRevocationRepository, platformAdmins *platformadmin.Carrier) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var token string
 		var fromCookie bool
@@ -566,7 +539,7 @@ func OptionalAuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepos
 				// request simply continues UNAUTHENTICATED, exactly as a
 				// revoked JWT does above. That is the fail-closed direction:
 				// private artifacts stop resolving for the stale key.
-				scopes := withoutScope(apiKey.Scopes, auth.ScopeAdmin)
+				scopes := platformadmin.KeyScopes(apiKey.Scopes)
 				if orgRepo != nil && apiKey.OrganizationID != "" {
 					current, status, _ := currentKeyScopes(c.Request.Context(), orgRepo, apiKey)
 					if status != 0 {

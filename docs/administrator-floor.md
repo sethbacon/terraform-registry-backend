@@ -240,7 +240,8 @@ transaction`. `docs/configuration.md` documents the same requirement for
 emergency SQL generally.
 
 The change takes effect on that user's next request — the carrier is read per
-request, not frozen into the token (`platform_admin_repository.go`). Verify with
+request, not frozen into the token (`identity/platformadmin`, instantiated in
+`internal/api/router.go` against `platform_admins`). Verify with
 `SELECT * FROM admin_floor_violations;` returning zero rows.
 
 If identity lives in a separate database, confirm the user exists there first;
@@ -254,11 +255,20 @@ nobody and the floor will keep reporting the violation.
 Every check-then-write runs under one advisory lock
 (`pg_advisory_xact_lock`) taken on the registry connection, scoped to a
 transaction that carries no writes so the lock is released however the call
-exits. A single deployment-wide lock rather than a per-organization one because
-invariant A is deployment-wide and both invariants are decided by the same
+exits. A single application-wide lock rather than a per-organization one because
+invariant A is application-wide and both invariants are decided by the same
 reads — and because identity data may live on a different connection, where a
 row lock taken here would reach nothing. These are rare administrative writes,
 not a hot path.
+
+The lock is the carrier's (`identity/platformadmin`), and its key is derived
+from the carrier's qualified table name rather than being a constant. That is
+what keeps two applications sharing one database — the deployment the suite
+identity model is built for — from serialising against each other's unrelated
+administrator changes. It also means the name must be spelled the same way in
+every process: `internal/api/router.go` holds the single spelling
+(`platformAdminTable`), and a process that constructed the carrier as
+`public.platform_admins` would address the same table under a different lock.
 
 `RevokePlatformAdmin` keeps its own, stricter refusal (`SELECT … FOR UPDATE`
 over `platform_admins`, PR #862) and takes only the lock, so a carrier revoke

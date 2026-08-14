@@ -1,6 +1,7 @@
 package scim
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,8 @@ import (
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
+
+	"github.com/sethbacon/terraform-suite-identity/identity/platformadmin"
 
 	"github.com/terraform-registry/terraform-registry/internal/adminfloor"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
@@ -33,6 +36,17 @@ import (
 // adminfloor.Guard over two mocked connections, behind a PLATFORM-ADMIN
 // principal so the tenant scope resolves platform-wide and the floor, rather
 // than the tenant predicate, is what refuses.
+// carrierOver constructs the platform-admin carrier the floor serialises and
+// reads through, over the registry-side mock.
+func carrierOver(t *testing.T, db *sql.DB) *platformadmin.Carrier {
+	t.Helper()
+	carrier, err := platformadmin.New(db, "platform_admins")
+	if err != nil {
+		t.Fatalf("platformadmin.New: %v", err)
+	}
+	return carrier
+}
+
 func flooredSCIMRouter(t *testing.T) (*gin.Engine, sqlmock.Sqlmock, sqlmock.Sqlmock) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -47,7 +61,7 @@ func flooredSCIMRouter(t *testing.T) (*gin.Engine, sqlmock.Sqlmock, sqlmock.Sqlm
 	}
 	t.Cleanup(func() { _ = rdb.Close() })
 
-	h := NewHandlers(&config.Config{}, idb, WithAdminFloor(adminfloor.New(rdb, idb)))
+	h := NewHandlers(&config.Config{}, idb, WithAdminFloor(adminfloor.New(carrierOver(t, rdb), idb)))
 	identity.MatchExpectationsInOrder(false)
 	registry.MatchExpectationsInOrder(false)
 

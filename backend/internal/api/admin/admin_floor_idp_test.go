@@ -46,7 +46,7 @@ func flooredAuthHandlers(t *testing.T, cfg *config.Config) (*AuthHandlers, sqlmo
 	t.Cleanup(func() { rdb.Close() })
 
 	h, err := NewAuthHandlers(cfg, idb, nil, nil, auth.NewMemoryStateStore(time.Hour),
-		WithAdminFloor(adminfloor.New(rdb, idb)))
+		WithAdminFloor(adminfloor.New(carrierOver(t, rdb), idb)))
 	if err != nil {
 		t.Fatalf("NewAuthHandlers: %v", err)
 	}

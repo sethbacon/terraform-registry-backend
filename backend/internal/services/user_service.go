@@ -15,8 +15,10 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/sethbacon/terraform-suite-identity/identity/auditoutbox"
+	"github.com/sethbacon/terraform-suite-identity/identity/platformadmin"
+
 	"github.com/terraform-registry/terraform-registry/internal/adminfloor"
-	"github.com/terraform-registry/terraform-registry/internal/audit"
 	"github.com/terraform-registry/terraform-registry/internal/credlifecycle"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
@@ -31,13 +33,13 @@ type UserService struct {
 	// (issue #766), and carrier retires the erased principal's platform_admins
 	// row. May be nil, in which case both are skipped.
 	floor   *adminfloor.Guard
-	carrier *repositories.PlatformAdminRepository
+	carrier *platformadmin.Carrier
 	// outbox carries the audit intent for that retirement INTO the deleting
 	// transaction. Mandatory once carrier is set: migration 000052's constraint
 	// trigger refuses the commit without a matching intent, so a nil outbox
 	// makes the cleanup fail rather than silently skip -- see
 	// revokePlatformAdminCarrier.
-	outbox *audit.Outbox
+	outbox *auditoutbox.Outbox
 }
 
 // NewUserService creates a new UserService.
@@ -60,7 +62,7 @@ func (s *UserService) WithCredentialSweeper(sweeper *credlifecycle.Sweeper) *Use
 // erasure retires, and the intent that retirement must commit with are the same
 // fact seen three ways, and a deployment that wired one without the others
 // would either count a grant it was about to strand or fail its commit.
-func (s *UserService) WithAdminFloor(floor *adminfloor.Guard, carrier *repositories.PlatformAdminRepository, outbox *audit.Outbox) *UserService {
+func (s *UserService) WithAdminFloor(floor *adminfloor.Guard, carrier *platformadmin.Carrier, outbox *auditoutbox.Outbox) *UserService {
 	s.floor = floor
 	s.carrier = carrier
 	s.outbox = outbox
@@ -260,9 +262,12 @@ func (s *UserService) eraseTx(ctx context.Context, userID string) error {
 // (issue #766). Best-effort and logged; the erasure has already committed and
 // answering an error would invite a retry that then reports "user not found".
 //
-// The last-standing predicate is nil deliberately: the floor has already
-// cleared this erasure, and re-checking here would refuse to remove the very
-// grant it just discounted.
+// The last-standing predicate accepts unconditionally, and that is stated in
+// one explicit line (noFloorTheErasureAlreadyCleared) rather than passed as
+// nil: the floor has already cleared this erasure under its own lock, and
+// re-checking here would refuse to remove the very grant it just discounted.
+// The carrier refuses a nil predicate outright, because "no predicate" is the
+// one way the never-zero floor can be silently absent.
 //
 // The AUDIT INTENT is not optional in the same way. Migration 000052's deferred
 // constraint trigger refuses any commit that deletes a carrier row without a
@@ -272,14 +277,20 @@ func (s *UserService) eraseTx(ctx context.Context, userID string) error {
 // was erased" in the trail. A nil outbox therefore cannot be skipped past: the
 // DELETE would abort at COMMIT anyway, and saying so here is clearer than
 // letting Postgres say it.
+// noFloorTheErasureAlreadyCleared is the explicit "this call site has no floor"
+// predicate. Named, so that a reader of Revoke's argument list sees a decision
+// rather than an omission: the floor ran in EraseUser, under the lock, against
+// the state this delete produces.
+func noFloorTheErasureAlreadyCleared(context.Context, []platformadmin.Grant) error { return nil }
+
 func (s *UserService) revokePlatformAdminCarrier(ctx context.Context, userID, erasedBy string) {
 	if s.carrier == nil {
 		return
 	}
-	resourceType := repositories.AuditResourcePlatformAdmin
+	resourceType := platformadmin.AuditResourceType
 	target := userID
-	intent := &audit.Intent{
-		Action:       repositories.AuditActionPlatformAdminRevoked,
+	intent := &auditoutbox.Intent{
+		Action:       platformadmin.AuditActionRevoked,
 		ResourceType: &resourceType,
 		ResourceID:   &target,
 		Metadata: map[string]interface{}{
@@ -292,14 +303,14 @@ func (s *UserService) revokePlatformAdminCarrier(ctx context.Context, userID, er
 		intent.ActorUserID = &actor
 	}
 
-	_, err := s.carrier.Revoke(ctx, userID, nil, func(ctx context.Context, tx *sql.Tx) error {
+	_, err := s.carrier.Revoke(ctx, userID, noFloorTheErasureAlreadyCleared, func(ctx context.Context, tx *sql.Tx) error {
 		return s.outbox.Enqueue(ctx, tx, intent)
 	})
 	if err == nil {
 		slog.Info("removed the platform-admin grant of an erased principal", "user_id", userID)
 		return
 	}
-	if errors.Is(err, repositories.ErrNotPlatformAdmin) {
+	if errors.Is(err, platformadmin.ErrNotPlatformAdmin) {
 		return
 	}
 	slog.Error("failed to remove an erased principal's platform-admin grant; it survives and still resolves to a users row",

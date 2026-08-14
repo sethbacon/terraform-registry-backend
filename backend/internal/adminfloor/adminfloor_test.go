@@ -5,10 +5,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"reflect"
 	"testing"
+	"time"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
+
+	"github.com/sethbacon/terraform-suite-identity/identity/platformadmin"
 )
 
 // ---------------------------------------------------------------------------
@@ -98,8 +102,31 @@ func twoConnections(t *testing.T) (registry, identity sqlmock.Sqlmock, g *Guard)
 		t.Fatalf("sqlmock.New (identity): %v", err)
 	}
 	t.Cleanup(func() { idb.Close() })
-	return rmock, imock, New(rdb, idb)
+	carrier, err := platformadmin.New(rdb, carrierTable)
+	if err != nil {
+		t.Fatalf("platformadmin.New: %v", err)
+	}
+	return rmock, imock, New(carrier, idb)
 }
+
+// carrierTable is the name this package's tests construct the carrier with —
+// the same one internal/api/router.go uses.
+const carrierTable = "platform_admins"
+
+// advisoryLockKey recomputes the key platformadmin derives from the carrier's
+// QUOTED table name.
+//
+// Recomputed rather than read from the library, deliberately: it pins WHICH key
+// is taken. The fixed constant this package used to hash would serialise two
+// applications sharing one database against each other's unrelated
+// revocations, and a return to that shape fails here on the argument rather
+// than silently in a deployment nobody has yet.
+var advisoryLockKey = func() int64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte("terraform-suite-identity/platformadmin\x00"))
+	_, _ = h.Write([]byte(`"` + carrierTable + `"`))
+	return int64(h.Sum64())
+}()
 
 // expectLock queues the lock transaction. It carries no writes, so it is
 // always rolled back.
@@ -165,11 +192,17 @@ func runProtect(t *testing.T, g *Guard, ch Change) (err error, wrote bool) {
 
 // expectCarrier queues the one registry read invariant A makes.
 func expectCarrier(registry sqlmock.Sqlmock, holders ...string) {
-	rows := sqlmock.NewRows([]string{"user_id"})
+	registry.ExpectQuery(`FROM "platform_admins"`).WillReturnRows(carrierRows(holders...))
+}
+
+// carrierRows is the carrier's full projection, which is what the mechanism
+// scans: user_id, granted_by, granted_at, note.
+func carrierRows(holders ...string) *sqlmock.Rows {
+	rows := sqlmock.NewRows([]string{"user_id", "granted_by", "granted_at", "note"})
 	for _, h := range holders {
-		rows.AddRow(h)
+		rows.AddRow(h, nil, time.Now(), nil)
 	}
-	registry.ExpectQuery("FROM platform_admins").WillReturnRows(rows)
+	return rows
 }
 
 func expectUserExists(identity sqlmock.Sqlmock, userID string, exists bool) {
@@ -690,7 +723,7 @@ func TestProtect_AnUnreadableCarrierIsNotPermission(t *testing.T) {
 	registry, identity, g := twoConnections(t)
 	expectLock(registry)
 
-	registry.ExpectQuery("FROM platform_admins").WillReturnError(errors.New("connection refused"))
+	registry.ExpectQuery(`FROM "platform_admins"`).WillReturnError(errors.New("connection refused"))
 	// Invariant B is queued to SUCCEED and to be satisfied. Without it, a
 	// mutant that swallowed the read error above would fall through to B,
 	// return nil, and this test would fail on the value rather than passing for
@@ -754,8 +787,8 @@ func TestProtect_TakesTheLockBeforeReadingAnything(t *testing.T) {
 	registry.ExpectBegin()
 	registry.ExpectExec("pg_advisory_xact_lock").WithArgs(advisoryLockKey).
 		WillReturnResult(sqlmock.NewResult(0, 0))
-	registry.ExpectQuery("FROM platform_admins").
-		WillReturnRows(sqlmock.NewRows([]string{"user_id"}))
+	registry.ExpectQuery(`FROM "platform_admins"`).
+		WillReturnRows(carrierRows())
 	registry.ExpectRollback()
 
 	// DestroysPrincipal, because that is the only shape that reaches the
@@ -833,7 +866,11 @@ func TestProtect_HalfWiredGuardRefuses(t *testing.T) {
 	}
 	defer db.Close()
 
-	for _, g := range []*Guard{New(db, nil), New(nil, db), New(nil, nil)} {
+	carrier, err := platformadmin.New(db, carrierTable)
+	if err != nil {
+		t.Fatalf("platformadmin.New: %v", err)
+	}
+	for _, g := range []*Guard{New(carrier, nil), New(nil, db), New(nil, nil)} {
 		wrote := false
 		err := g.Protect(context.Background(), Change{UserID: "u"}, func(context.Context) error {
 			wrote = true

@@ -23,7 +23,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+	"github.com/sethbacon/terraform-suite-identity/identity/platformadmin"
 	"github.com/sethbacon/terraform-suite-identity/identity/suite"
+
 	"github.com/terraform-registry/terraform-registry/docs"
 	"github.com/terraform-registry/terraform-registry/internal/adminfloor"
 	"github.com/terraform-registry/terraform-registry/internal/api/admin"
@@ -63,7 +65,7 @@ type publicRouteDeps struct {
 	orgRepo                 *repositories.OrganizationRepository
 	tokenRepo               *repositories.TokenRepository
 	userTokenRevocationRepo *repositories.UserTokenRevocationRepository
-	platformAdminRepo       *repositories.PlatformAdminRepository
+	platformAdminCarrier    *platformadmin.Carrier
 	auditRepo               *repositories.AuditRepository
 	pullThroughSvc          *services.PullThroughService
 	tfBinariesHandler       *terraform_binaries.Handler
@@ -86,7 +88,7 @@ func registerPublicRoutes(router *gin.Engine, d *publicRouteDeps) {
 	orgRepo := d.orgRepo
 	tokenRepo := d.tokenRepo
 	userTokenRevocationRepo := d.userTokenRevocationRepo
-	platformAdminRepo := d.platformAdminRepo
+	platformAdminCarrier := d.platformAdminCarrier
 	auditRepo := d.auditRepo
 	pullThroughSvc := d.pullThroughSvc
 	tfBinariesHandler := d.tfBinariesHandler
@@ -297,7 +299,7 @@ func registerPublicRoutes(router *gin.Engine, d *publicRouteDeps) {
 	// These are public endpoints that support optional authentication
 	v1Modules := router.Group("/v1/modules")
 	v1Modules.Use(protocolLimit)
-	v1Modules.Use(middleware.OptionalAuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo, userTokenRevocationRepo, platformAdminRepo))
+	v1Modules.Use(middleware.OptionalAuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo, userTokenRevocationRepo, platformAdminCarrier))
 	{
 		v1Modules.GET("/:namespace/:name/:system/versions", modules.ListVersionsHandler(db, cfg))
 		v1Modules.GET("/:namespace/:name/:system/:version/download", modules.DownloadHandler(db, storageBackend, cfg, auditRepo))
@@ -310,7 +312,7 @@ func registerPublicRoutes(router *gin.Engine, d *publicRouteDeps) {
 	// These are for the standard Provider Registry Protocol
 	v1Providers := router.Group("/v1/providers")
 	v1Providers.Use(protocolLimit)
-	v1Providers.Use(middleware.OptionalAuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo, userTokenRevocationRepo, platformAdminRepo))
+	v1Providers.Use(middleware.OptionalAuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo, userTokenRevocationRepo, platformAdminCarrier))
 	{
 		v1Providers.GET("/:namespace/:type/versions", providers.ListVersionsHandler(db, cfg))
 		v1Providers.GET("/:namespace/:type/:version/download/:os/:arch", providers.DownloadHandler(db, storageBackend, cfg, auditRepo))
@@ -366,7 +368,7 @@ type apiV1RouteDeps struct {
 	orgRepo                 *repositories.OrganizationRepository
 	tokenRepo               *repositories.TokenRepository
 	userTokenRevocationRepo *repositories.UserTokenRevocationRepository
-	platformAdminRepo       *repositories.PlatformAdminRepository
+	platformAdminCarrier    *platformadmin.Carrier
 	// credSweeper invalidates every credential family that snapshots a
 	// principal's derived authority when a lifecycle event reduces it
 	// (issues #732, #736). Built once in NewRouter because its two halves
@@ -433,7 +435,7 @@ type apiV1RouteDeps struct {
 // than the pre-#659 hardcoded nils — has a direct regression test
 // (TestRegisterAuthenticatedGroupMiddleware_AuditShipsToRealShipper).
 func registerAuthenticatedGroupMiddleware(authenticatedGroup *gin.RouterGroup, d *apiV1RouteDeps) {
-	authenticatedGroup.Use(middleware.AuthMiddleware(d.cfg, d.userRepo, d.apiKeyRepo, d.orgRepo, d.tokenRepo, d.userTokenRevocationRepo, d.platformAdminRepo))
+	authenticatedGroup.Use(middleware.AuthMiddleware(d.cfg, d.userRepo, d.apiKeyRepo, d.orgRepo, d.tokenRepo, d.userTokenRevocationRepo, d.platformAdminCarrier))
 	authenticatedGroup.Use(middleware.CSRFMiddleware(d.cfg)) // double-submit cookie CSRF protection + browser-origin Bearer allowlist
 	authenticatedGroup.Use(middleware.PrincipalRateLimitMiddleware(d.generalRateLimiter, d.principalOverrides))
 	authenticatedGroup.Use(middleware.OrgRateLimitMiddleware(d.generalRateLimiter, d.orgRateLimiter))
@@ -463,7 +465,7 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 	orgRepo := d.orgRepo
 	tokenRepo := d.tokenRepo
 	userTokenRevocationRepo := d.userTokenRevocationRepo
-	platformAdminRepo := d.platformAdminRepo
+	platformAdminCarrier := d.platformAdminCarrier
 	moduleAdminHandlers := d.moduleAdminHandlers
 	providerAdminHandlers := d.providerAdminHandlers
 	nsAuthz := d.nsAuthz
@@ -566,7 +568,7 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 			// header-JWT branch, loosening a check this route already passes.
 			authGroup.POST("/logout",
 				middleware.CSRFMiddleware(cfg),
-				middleware.OptionalAuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo, userTokenRevocationRepo, platformAdminRepo),
+				middleware.OptionalAuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo, userTokenRevocationRepo, platformAdminCarrier),
 				authHandlers.LogoutPostHandler())
 			authGroup.GET("/providers", authHandlers.ProvidersHandler())
 
@@ -604,7 +606,7 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 		// Public detail endpoints — no auth required; optional auth populates user context if a
 		// token is present (used by the frontend to conditionally show management actions).
 		publicDetailGroup := apiV1.Group("")
-		publicDetailGroup.Use(middleware.OptionalAuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo, userTokenRevocationRepo, platformAdminRepo))
+		publicDetailGroup.Use(middleware.OptionalAuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo, userTokenRevocationRepo, platformAdminCarrier))
 		publicDetailGroup.Use(middleware.RateLimitMiddleware(generalRateLimiter))
 		{
 			publicDetailGroup.GET("/modules/:namespace/:name/:system", moduleAdminHandlers.GetModule)
@@ -1285,7 +1287,7 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 				// another user with a cross-site POST. The group sits outside
 				// authenticatedGroup, so it does not inherit that protection --
 				// which is exactly why it was missing.
-				devGroup.Use(middleware.AuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo, userTokenRevocationRepo, platformAdminRepo))
+				devGroup.Use(middleware.AuthMiddleware(cfg, userRepo, apiKeyRepo, orgRepo, tokenRepo, userTokenRevocationRepo, platformAdminCarrier))
 				devGroup.Use(middleware.CSRFMiddleware(cfg))
 				devGroup.GET("/users", devHandlers.ListUsersForImpersonationHandler())
 				devGroup.POST("/impersonate/:user_id", devHandlers.ImpersonateUserHandler())
@@ -1312,7 +1314,7 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 // subject to the same abuse protection as admin-initiated mutations.
 func registerSCIMRoutes(router *gin.Engine, d *apiV1RouteDeps) {
 	scimGroup := router.Group("/scim/v2")
-	scimGroup.Use(middleware.AuthMiddleware(d.cfg, d.userRepo, d.apiKeyRepo, d.orgRepo, d.tokenRepo, d.userTokenRevocationRepo, d.platformAdminRepo))
+	scimGroup.Use(middleware.AuthMiddleware(d.cfg, d.userRepo, d.apiKeyRepo, d.orgRepo, d.tokenRepo, d.userTokenRevocationRepo, d.platformAdminCarrier))
 	scimGroup.Use(middleware.PrincipalRateLimitMiddleware(d.generalRateLimiter, d.principalOverrides))
 	scimGroup.Use(middleware.OrgRateLimitMiddleware(d.generalRateLimiter, d.orgRateLimiter))
 	scimGroup.Use(middleware.AuditMiddleware(d.auditRepo))

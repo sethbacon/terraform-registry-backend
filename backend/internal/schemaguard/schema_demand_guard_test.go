@@ -192,19 +192,18 @@ type probedWrite struct {
 	Why   string
 }
 
-var probedWrites = []probedWrite{
-	{
-		FileSuffix: "internal/audit/sink.go",
-		Table:      "audit_logs",
-		Column:     "actor_email",
-		Probe:      "to_regclass",
-		Why: "PR #865's outbox sink asks to_regclass/information_schema whether the audit_logs " +
-			"this connection resolves to carries actor_email, and uses the nine-column insert " +
-			"when it does not. This is the only write to audit_logs in either codebase that " +
-			"survives a stock deployment, and it is the shape #864's direction (3) would give " +
-			"the shared library.",
-	},
-}
+// EMPTY since the outbox sink moved into the shared library
+// (identity/auditoutbox, terraform-suite-identity#206). PR #865's sink was a
+// two-branch statement — the ten-column insert when the destination carries
+// actor_email, the nine-column one when it does not — and this entry existed to
+// recognise the probe that chose between them. The library's sink asks the
+// destination for its WHOLE column set and builds the insert from the
+// intersection, so it names no column literally and this guard's scanner sees
+// no write to attribute to it at all. There is nothing left here to suppress.
+//
+// The property that entry stood for did not go away; it moved to where the
+// statement is, and identity/auditoutbox's own sink tests hold it.
+var probedWrites = []probedWrite{}
 
 func (p probedWrite) matches(v violation) bool {
 	return strings.EqualFold(p.Table, v.Table) &&

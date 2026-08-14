@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -8,6 +9,8 @@ import (
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
+
+	"github.com/sethbacon/terraform-suite-identity/identity/platformadmin"
 
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
@@ -38,6 +41,17 @@ import (
 // carrier repository wired in, and returns the engine plus the identity mock
 // (userRepo + the dev handlers' own repositories share it) and the carrier
 // mock.
+// carrierOver constructs the platform-admin carrier the auth middleware
+// resolves through, with the same table name internal/api/router.go uses.
+func carrierOver(t *testing.T, db *sql.DB) *platformadmin.Carrier {
+	t.Helper()
+	carrier, err := platformadmin.New(db, "platform_admins")
+	if err != nil {
+		t.Fatalf("platformadmin.New: %v", err)
+	}
+	return carrier
+}
+
 func carrierDevRouter(t *testing.T) (*gin.Engine, sqlmock.Sqlmock, sqlmock.Sqlmock) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -64,14 +78,14 @@ func carrierDevRouter(t *testing.T) (*gin.Engine, sqlmock.Sqlmock, sqlmock.Sqlmo
 	r := gin.New()
 	r.Use(gin.Recovery())
 	registerAPIV1Routes(r, &apiV1RouteDeps{
-		cfg:                &config.Config{},
-		db:                 idDB,
-		identityDB:         idDB,
-		userRepo:           repositories.NewUserRepository(idDB),
-		orgRepo:            repositories.NewOrganizationRepository(idDB),
-		platformAdminRepo:  repositories.NewPlatformAdminRepository(paDB),
-		generalRateLimiter: limiter,
-		orgRateLimiter:     limiter,
+		cfg:                  &config.Config{},
+		db:                   idDB,
+		identityDB:           idDB,
+		userRepo:             repositories.NewUserRepository(idDB),
+		orgRepo:              repositories.NewOrganizationRepository(idDB),
+		platformAdminCarrier: carrierOver(t, paDB),
+		generalRateLimiter:   limiter,
+		orgRateLimiter:       limiter,
 	})
 	return r, idMock, paMock
 }
@@ -107,7 +121,7 @@ func TestPlatformAdminCarrier_AdmitsAtAnUneditedHasScopeSite(t *testing.T) {
 	r, idMock, paMock := carrierDevRouter(t)
 
 	expectSessionUserLoad(idMock, "user-carrier")
-	paMock.ExpectQuery("SELECT EXISTS.*FROM platform_admins").
+	paMock.ExpectQuery(`SELECT EXISTS.*FROM "platform_admins"`).
 		WithArgs("user-carrier").
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
 	// Past the gate, ListUsersForImpersonationHandler lists users. An empty
@@ -135,7 +149,7 @@ func TestPlatformAdminCarrier_WithoutAGrantTheSameRequestIsRefused(t *testing.T)
 	r, idMock, paMock := carrierDevRouter(t)
 
 	expectSessionUserLoad(idMock, "user-plain")
-	paMock.ExpectQuery("SELECT EXISTS.*FROM platform_admins").
+	paMock.ExpectQuery(`SELECT EXISTS.*FROM "platform_admins"`).
 		WithArgs("user-plain").
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 
@@ -166,7 +180,7 @@ func TestPlatformAdminCarrier_AdminScopeInTheTokenNoLongerAdmits(t *testing.T) {
 	r, idMock, paMock := carrierDevRouter(t)
 
 	expectSessionUserLoad(idMock, "user-template-admin")
-	paMock.ExpectQuery("SELECT EXISTS.*FROM platform_admins").
+	paMock.ExpectQuery(`SELECT EXISTS.*FROM "platform_admins"`).
 		WithArgs("user-template-admin").
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 
