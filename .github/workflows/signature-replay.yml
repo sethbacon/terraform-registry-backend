@@ -157,6 +157,18 @@ jobs:
           persist-credentials: false
           repository: 4cloudguru/pipeline-task-core
           path: suite/pipeline-task-core
+      # The SECOND shared destination package, added to SIGNATURE_SCOPE in 2026-08.
+      # The two ADO extensions are splitting their duplicated modules across two
+      # packages rather than one: pipeline-task-core stays platform-agnostic (it
+      # imports neither azure-pipelines-task-lib nor undici) and pipeline-task-ado
+      # takes the code that must name Azure DevOps. Nothing consumes it yet, which
+      # is not a reason to leave it out -- in scope.json and absent here is exit 2
+      # for the whole job, not a quieter run.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: 4cloudguru/pipeline-task-ado
+          path: suite/pipeline-task-ado
       # The GitHub-Actions family plus the drift payload contract they share with
       # the ADO TerraformDriftReport task. In SIGNATURE_SCOPE and absent here is
       # exit 2 for the whole job, not a quieter run. Note drift-contract is owned
