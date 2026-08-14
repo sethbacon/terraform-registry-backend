@@ -7,6 +7,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.5.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.4.0...v4.5.0) (2026-08-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **auth:** platform-admin authority now derives only from the `platform_admins` carrier. Holding a role template that carries the `admin` scope no longer confers it, on a session or an API key, and migration 000054 removes that scope from every role template (replacing it with the `org_owner` scope set, so holders keep administering their organizations). Assigning an admin-bearing role template as an organization membership role is refused with 403 for every caller, and POST/PUT /api/v1/admin/role-templates refuse `admin` in `scopes` with 400. POST /api/v1/setup/admin writes no organization membership: its response drops `organization` and `role` for `platform_admin`, and a failed carrier grant is now a 500 rather than a flagged 200. Migration 000054 re-runs the carrier backfill before removing anything and REFUSES TO APPLY, rolling itself back, if the deployment would be left with no administrator -- except where identity lives in a separate database (TFR_IDENTITY_DATABASE_*), which the registry connection cannot read: those deployments must populate `platform_admins` by hand BEFORE upgrading. Grant platform administration through POST /api/v1/admin/platform-admins. See docs/upgrade-guide.md and docs/administrator-floor.md.
+* **admin:** operations that previously succeeded are now refused with 409. Removing or demoting an organization's last administrator, deleting or erasing the deployment's last platform administrator, deleting the organization holding it, and the equivalent SCIM deactivations all fail where they used to succeed. IdP group-mapping reductions are SKIPPED rather than failed, so a login is never refused, but the registry and the identity provider then disagree -- the skip is logged at ERROR. Deployments already in violation are detected by migration 000053, not repaired by it.
+
+### Features
+
+* **admin:** audited management API for the platform-admin carrier ([#862](https://github.com/sethbacon/terraform-registry-backend/issues/862)) ([6f1e0a4](https://github.com/sethbacon/terraform-registry-backend/commit/6f1e0a42ee6481490ad92229c873476a2caaa501))
+* **admin:** never-zero administrator invariants, bootstrap through lifecycle ([#866](https://github.com/sethbacon/terraform-registry-backend/issues/866)) ([c124de6](https://github.com/sethbacon/terraform-registry-backend/commit/c124de6388059c83a7b1e8cefe27fcb3cede94a1))
+* **audit:** commit the audit record with the mutation, and refuse the commit without it ([#865](https://github.com/sethbacon/terraform-registry-backend/issues/865)) ([ac81b71](https://github.com/sethbacon/terraform-registry-backend/commit/ac81b71416e40ca627f98b5a5e542e59a4ee0f05)), closes [#766](https://github.com/sethbacon/terraform-registry-backend/issues/766)
+* **auth:** derive platform-admin authority from the carrier alone ([#874](https://github.com/sethbacon/terraform-registry-backend/issues/874)) ([713d86b](https://github.com/sethbacon/terraform-registry-backend/commit/713d86bc75b8fe107b7a66a9851b3c2fc42239f3))
+* **auth:** platform-admin carrier outside organization_members ([#860](https://github.com/sethbacon/terraform-registry-backend/issues/860)) ([224f957](https://github.com/sethbacon/terraform-registry-backend/commit/224f957924f3f4182fa3f988fe0f6629789d993e))
+
+
+### Bug Fixes
+
+* **deps:** raise Go to 1.26.6 and x/mod to 0.40.0 for six reachable stdlib advisories ([#875](https://github.com/sethbacon/terraform-registry-backend/issues/875)) ([c583d7f](https://github.com/sethbacon/terraform-registry-backend/commit/c583d7f4e3c46a5efc66eaa3637557f878ea83dc))
+* **mirror:** stop the sync from erasing stored binary checksums, and refuse to hide it when one is missing ([#873](https://github.com/sethbacon/terraform-registry-backend/issues/873)) ([494ecf9](https://github.com/sethbacon/terraform-registry-backend/commit/494ecf9938ab653e48933e78e843f68217125e8d))
+
 ## [4.4.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.3.0...v4.4.0) (2026-08-12)
 
 
