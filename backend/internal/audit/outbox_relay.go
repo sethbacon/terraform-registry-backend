@@ -53,14 +53,14 @@ const (
 	AuditLogTable = "audit_logs"
 )
 
-// RelayObserver publishes one relay cycle's outcome to this repository's
+// relayObserver publishes one relay cycle's outcome to this repository's
 // Prometheus metrics.
 //
 // The library ships no metrics registry and must not pick one for its two
 // consuming applications, so the gauges and counters stay here and the relay
 // calls into them. Every metric that existed before the swap is still fed, by
 // the same arithmetic.
-func RelayObserver() auditoutbox.Observer {
+func relayObserver() auditoutbox.Observer {
 	return auditoutbox.Observer{
 		Backlog: func(b auditoutbox.Backlog) {
 			telemetry.AuditOutboxPending.Set(float64(b.Pending))
@@ -131,6 +131,6 @@ func NewOutboxRelay(outbox *auditoutbox.Outbox, sink auditoutbox.Sink, shipper S
 	if shipper != nil {
 		bridged = shipperBridge{shipper: shipper}
 	}
-	cfg.Observer = RelayObserver()
+	cfg.Observer = relayObserver()
 	return auditoutbox.NewRelay(outbox, sink, bridged, cfg)
 }

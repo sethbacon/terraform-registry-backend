@@ -134,7 +134,7 @@ func TestNewOutboxRelay_NilShipperStaysNil(t *testing.T) {
 // on a delta rather than on an absolute: these are process-wide collectors that
 // another test in this package may already have moved.
 func TestRelayObserver_PublishesEveryMetric(t *testing.T) {
-	observer := RelayObserver()
+	observer := relayObserver()
 
 	deliveredBefore := testutil.ToFloat64(telemetry.AuditOutboxDeliveredTotal)
 	failuresBefore := testutil.ToFloat64(telemetry.AuditOutboxDeliveryFailuresTotal)
@@ -178,7 +178,7 @@ func TestRelayObserver_PublishesEveryMetric(t *testing.T) {
 // TestRelayObserver_ReportsNoAgeForAnEmptyBacklog. An age carried over from the
 // last non-empty cycle is an alert that never clears.
 func TestRelayObserver_ReportsNoAgeForAnEmptyBacklog(t *testing.T) {
-	observer := RelayObserver()
+	observer := relayObserver()
 	observer.Backlog(auditoutbox.Backlog{Pending: 5, OldestPending: time.Now().Add(-time.Hour)})
 	if age := testutil.ToFloat64(telemetry.AuditOutboxOldestAgeSeconds); age < 3000 {
 		t.Fatalf("oldest age = %v, want the backlog's real age before the drain", age)

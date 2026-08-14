@@ -342,3 +342,107 @@ func TestSinkDeliversIntoTheRegistrysOwnAuditLogs(t *testing.T) {
 		t.Errorf("resource_id = %q, want %q", gotResource, resourceID)
 	}
 }
+
+// TestTriggerRejectsAMismatchedOrStaleIntent pins what migration 000052's
+// trigger actually requires, which is more than "an intent exists": one naming
+// THIS subject, with THIS action, written in THIS transaction.
+//
+// It is registry's own SQL rather than the library's — the mechanism supplies
+// the intent, the migration decides whether it counts — so it is asserted here.
+// It travelled with internal/audit's integration tests before those moved into
+// identity/auditoutbox; the outbox below is the library's, the property is this
+// repository's.
+func TestTriggerRejectsAMismatchedOrStaleIntent(t *testing.T) {
+	db := migratedRegistry(t)
+	_, outbox := carrierAndOutbox(t, db)
+	ctx := context.Background()
+
+	target := uuid.New().String()
+	other := uuid.New().String()
+	seedUser(t, db, target, "target@example.com")
+	seedUser(t, db, other, "other@example.com")
+
+	intent := func(action, subject string) *auditoutbox.Intent {
+		resourceType := platformadmin.AuditResourceType
+		resourceID := subject
+		return &auditoutbox.Intent{
+			EventID:      uuid.New().String(),
+			Action:       action,
+			ResourceType: &resourceType,
+			ResourceID:   &resourceID,
+		}
+	}
+
+	t.Run("intent names another subject", func(t *testing.T) {
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Begin: %v", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.Exec(`INSERT INTO platform_admins (user_id) VALUES ($1)`, target); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+		if err := outbox.Enqueue(ctx, tx, intent(platformadmin.AuditActionGranted, other)); err != nil {
+			t.Fatalf("Enqueue: %v", err)
+		}
+		if err := tx.Commit(); err == nil {
+			t.Fatal("a grant committed against an audit record naming somebody else")
+		} else if !strings.Contains(err.Error(), "no audit intent in this transaction") {
+			t.Fatalf("commit failed with %v, want the audit-intent refusal", err)
+		}
+	})
+
+	t.Run("intent from an earlier transaction", func(t *testing.T) {
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Begin: %v", err)
+		}
+		if err := outbox.Enqueue(ctx, tx, intent(platformadmin.AuditActionGranted, target)); err != nil {
+			t.Fatalf("Enqueue: %v", err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatalf("committing the intent alone: %v", err)
+		}
+
+		second, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Begin: %v", err)
+		}
+		defer func() { _ = second.Rollback() }()
+		if _, err := second.Exec(`INSERT INTO platform_admins (user_id) VALUES ($1)`, target); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+		if err := second.Commit(); err == nil {
+			t.Fatal("a grant committed against an audit record written by an EARLIER transaction; " +
+				"\"same transaction\" is the property, and a foreign key would not have expressed it")
+		}
+	})
+
+	t.Run("revocation under a grant's record", func(t *testing.T) {
+		carrier, _ := carrierAndOutbox(t, db)
+		if _, err := carrier.Grant(ctx, other, nil, nil,
+			grantIntent(outbox, platformadmin.AuditActionGranted, other)); err != nil {
+			t.Fatalf("Grant: %v", err)
+		}
+
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatalf("Begin: %v", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.Exec(`DELETE FROM platform_admins WHERE user_id = $1`, other); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		// The wrong ACTION: a revocation cannot commit under a record that says
+		// "granted".
+		if err := outbox.Enqueue(ctx, tx, intent(platformadmin.AuditActionGranted, other)); err != nil {
+			t.Fatalf("Enqueue: %v", err)
+		}
+		if err := tx.Commit(); err == nil {
+			t.Fatal("a REVOCATION committed under a record that says \"granted\"")
+		}
+		if got := carrierRowCount(t, db, other); got != 1 {
+			t.Errorf("carrier rows = %d, want the grant still there after the refused commit", got)
+		}
+	})
+}
