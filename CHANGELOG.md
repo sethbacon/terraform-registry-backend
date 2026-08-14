@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.6.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.5.0...v4.6.0) (2026-08-14)
+
+
+### Bug Fixes
+
+* **dev:** grant the dev admin a platform-admin carrier row when seeding ([#881](https://github.com/sethbacon/terraform-registry-backend/issues/881)) ([db56a77](https://github.com/sethbacon/terraform-registry-backend/commit/db56a77b6705f176a6b65d9c887503a4131ee916))
+
 ## [4.5.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.4.0...v4.5.0) (2026-08-14)
 
 
