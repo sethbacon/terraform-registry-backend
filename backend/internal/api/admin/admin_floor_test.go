@@ -12,7 +12,6 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/terraform-registry/terraform-registry/internal/adminfloor"
-	"github.com/terraform-registry/terraform-registry/internal/audit"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
@@ -50,7 +49,7 @@ func newFlooredOrgRouter(t *testing.T) (registry, identity sqlmock.Sqlmock, r *g
 	t.Cleanup(func() { idb.Close() })
 
 	h := NewOrganizationHandlers(&config.Config{}, idb, repositories.NewNamespaceClaimRepository(idb), nil).
-		WithAdminFloor(adminfloor.New(rdb, idb))
+		WithAdminFloor(adminfloor.New(carrierOver(t, rdb), idb))
 
 	r = gin.New()
 	r.Use(func(c *gin.Context) {
@@ -365,7 +364,7 @@ func TestEraseUserHandler_RefusesStrandingTheDeployment(t *testing.T) {
 	defer idb.Close()
 
 	svc := services.NewUserService(idb).
-		WithAdminFloor(adminfloor.New(rdb, idb), repositories.NewPlatformAdminRepository(rdb), audit.NewOutbox(rdb))
+		WithAdminFloor(adminfloor.New(carrierOver(t, rdb), idb), carrierOver(t, rdb), outboxOver(t, rdb))
 	h := NewGDPRHandlers(svc)
 
 	registry.ExpectBegin()
@@ -373,8 +372,8 @@ func TestEraseUserHandler_RefusesStrandingTheDeployment(t *testing.T) {
 	// The subject is the deployment's only carrier administrator, and erasing
 	// them makes their own grant unexercisable — the one shape that can still
 	// break invariant A now that authority is carrier-only (migration 000054).
-	registry.ExpectQuery("FROM platform_admins").
-		WillReturnRows(sqlmock.NewRows([]string{"user_id"}).AddRow("only-admin"))
+	registry.ExpectQuery(`FROM "platform_admins"`).
+		WillReturnRows(sqlmock.NewRows(paGrantCols).AddRow("only-admin", nil, time.Now(), nil))
 	registry.ExpectRollback()
 
 	r := gin.New()

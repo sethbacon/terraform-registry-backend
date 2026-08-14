@@ -137,12 +137,15 @@ var adminFloorExemptions = map[string]string{
 // map above because the two tests scan DIFFERENT universes: an entry that
 // applies to one is stale in the other, and a shared map would report every
 // entry as stale in whichever test did not find it.
-var rawReductionExemptions = map[string]string{
-	"internal/db/repositories/platform_admin_repository.go:Revoke": "The repository primitive behind " +
-		"RevokePlatformAdmin, not a call site of its own. It takes the caller's last-standing predicate as " +
-		"a parameter and refuses when the predicate does, so the check lives with the caller that has the " +
-		"identity connection to resolve grants against.",
-}
+//
+// EMPTY, and that is a fact worth reading rather than an oversight. The one
+// entry this map used to hold was the carrier repository's own
+// `DELETE FROM platform_admins`; that primitive is now
+// platformadmin.Carrier.Revoke in the shared identity library, so no
+// hand-written carrier mutation exists in this module at all. The pattern stays
+// in rawAuthorityReductionRe: the day one comes back, it is a finding rather
+// than a pre-approved exemption.
+var rawReductionExemptions = map[string]string{}
 
 // rawReductionGuardedByCaller are hand-written reductions whose guard is ONE
 // FRAME UP, mapped to the function that must be holding it.
@@ -531,11 +534,22 @@ func TestAdminFloorClass_EveryFloorInjectorIsWired(t *testing.T) {
 	}
 
 	// And the deployment must build exactly one Guard, from BOTH connections.
-	if !strings.Contains(routerText, "adminfloor.New(db, identityDB)") {
-		t.Error("internal/api/router.go no longer constructs the floor as adminfloor.New(db, identityDB).\n" +
-			"    The carrier is on the registry connection and the membership tables are on identity's; " +
-			"handing the same handle twice would make the floor read platform_admins from a database " +
-			"that may not have it (migration 000051).")
+	if !strings.Contains(routerText, "adminfloor.New(platformAdminCarrier, identityDB)") {
+		t.Error("internal/api/router.go no longer constructs the floor as " +
+			"adminfloor.New(platformAdminCarrier, identityDB).\n" +
+			"    The carrier is built over the registry connection and the membership tables are on " +
+			"identity's; handing the identity handle to both would make the floor read platform_admins " +
+			"from a database that may not have it (migration 000051).")
+	}
+	// And the carrier itself must be built over the REGISTRY connection. The
+	// floor now reads the carrier THROUGH it, so a carrier constructed over
+	// identityDB would move the read without changing the line above.
+	if !strings.Contains(routerText, "platformadmin.New(db, platformAdminTable)") {
+		t.Error("internal/api/router.go no longer constructs the carrier as " +
+			"platformadmin.New(db, platformAdminTable).\n" +
+			"    platform_admins is on the registry's own connection (migration 000051), and the " +
+			"carrier's advisory-lock key is derived from the table name — so both the connection and " +
+			"the single spelling of the name are load-bearing.")
 	}
 
 	t.Logf("checked %d floor injector(s)", len(injectors))

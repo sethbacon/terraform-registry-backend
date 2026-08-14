@@ -11,6 +11,8 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
+
+	"github.com/sethbacon/terraform-suite-identity/identity/platformadmin"
 )
 
 // The concurrency half of issue #766, against a real Postgres.
@@ -123,6 +125,17 @@ func postgresPool(t *testing.T) *sql.DB {
 	return pool
 }
 
+// carrierOver constructs the platform-admin carrier the guard serialises and
+// reads through, over the same pool the schema above was created in.
+func carrierOver(t *testing.T, pool *sql.DB) *platformadmin.Carrier {
+	t.Helper()
+	carrier, err := platformadmin.New(pool, carrierTable)
+	if err != nil {
+		t.Fatalf("platformadmin.New: %v", err)
+	}
+	return carrier
+}
+
 // withSearchPath rewrites a DSN so every connection from the pool resolves
 // unqualified table names in schema and nowhere else.
 func withSearchPath(dsn, schema string) (string, error) {
@@ -231,8 +244,8 @@ func TestProtect_ConcurrentRemovalsCannotBothPass(t *testing.T) {
 	seedTwoAdministrators(t, pool)
 
 	// Two guards over the same pools, as two HTTP requests would be.
-	first := New(pool, pool)
-	second := New(pool, pool)
+	first := New(carrierOver(t, pool), pool)
+	second := New(carrierOver(t, pool), pool)
 
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -362,7 +375,7 @@ func TestUnserialisedRemovalsReachZero(t *testing.T) {
 func TestProtect_ReleasesTheLockOnEveryPath(t *testing.T) {
 	pool := postgresPool(t)
 	seedTwoAdministrators(t, pool)
-	g := New(pool, pool)
+	g := New(carrierOver(t, pool), pool)
 	ctx := context.Background()
 
 	writeErr := errors.New("the write itself failed")
@@ -434,7 +447,7 @@ func TestProtect_UsesADeterministicLockKey(t *testing.T) {
 	releaseAll := func() { releaseOnce.Do(func() { close(release) }) }
 	t.Cleanup(releaseAll)
 
-	first := New(pool, pool)
+	first := New(carrierOver(t, pool), pool)
 	first.beforeCheck = func(context.Context) {
 		close(held)
 		<-release
@@ -445,7 +458,7 @@ func TestProtect_UsesADeterministicLockKey(t *testing.T) {
 	<-held
 
 	// A second, independently constructed Guard must block.
-	second := New(pool, pool)
+	second := New(carrierOver(t, pool), pool)
 	blocked := make(chan error, 1)
 	go func() {
 		blocked <- second.Serialize(context.Background(), func(context.Context) error { return nil })

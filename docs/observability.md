@@ -480,7 +480,7 @@ increase(terraform_registry_audit_logs_cleaned_total[24h])
 | -------- | ----------------------------------------------------------- |
 | Type     | Gauges and counters                                         |
 | Labels   | None                                                        |
-| Source   | Audit outbox relay (`internal/audit/relay.go`)              |
+| Source   | Audit outbox relay (`identity/auditoutbox`, wired in `internal/audit/outbox_relay.go`) |
 | Updated  | Every relay cycle (`audit_retention.outbox_poll_seconds`)   |
 
 A privileged mutation and its audit record commit together on the registry

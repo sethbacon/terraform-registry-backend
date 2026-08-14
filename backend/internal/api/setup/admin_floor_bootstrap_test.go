@@ -9,8 +9,8 @@ import (
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
 
-	"github.com/terraform-registry/terraform-registry/internal/audit"
-	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/sethbacon/terraform-suite-identity/identity/auditoutbox"
+	"github.com/sethbacon/terraform-suite-identity/identity/platformadmin"
 )
 
 // Issue #766, bootstrap half: the setup wizard must establish invariant A, and
@@ -46,8 +46,15 @@ func newBootstrapEnv(t *testing.T) *bootstrapEnv {
 		t.Fatalf("sqlmock: %v", err)
 	}
 	t.Cleanup(func() { carrierDB.Close() })
-	env.h.WithPlatformAdminCarrier(
-		repositories.NewPlatformAdminRepository(carrierDB), audit.NewOutbox(carrierDB))
+	carrier, err := platformadmin.New(carrierDB, "platform_admins")
+	if err != nil {
+		t.Fatalf("platformadmin.New: %v", err)
+	}
+	outbox, err := auditoutbox.New(carrierDB, "audit_outbox")
+	if err != nil {
+		t.Fatalf("auditoutbox.New: %v", err)
+	}
+	env.h.WithPlatformAdminCarrier(carrier, outbox)
 	return &bootstrapEnv{testEnv: env, carrierMock: carrierMock}
 }
 
@@ -60,7 +67,7 @@ const (
 	grantFails
 )
 
-// expectCarrierGrant queues the carrier grant as PlatformAdminRepository.Grant
+// expectCarrierGrant queues the carrier grant as platformadmin.Carrier.Grant
 // now performs it: in a TRANSACTION, with the audit intent written into that
 // same transaction before the commit (issue #766, migration 000052).
 //
@@ -73,18 +80,18 @@ func expectCarrierGrant(env *bootstrapEnv, outcome carrierGrantOutcome) {
 	env.carrierMock.ExpectBegin()
 	switch outcome {
 	case grantLands:
-		env.carrierMock.ExpectQuery("INSERT INTO platform_admins").
+		env.carrierMock.ExpectQuery(`INSERT INTO "platform_admins"`).
 			WillReturnRows(sqlmock.NewRows([]string{"user_id", "granted_by", "granted_at", "note"}).
 				AddRow("user-1", "user-1", time.Now(), "bootstrap administrator configured by the setup wizard"))
-		env.carrierMock.ExpectExec("INSERT INTO audit_outbox").
+		env.carrierMock.ExpectExec(`INSERT INTO "audit_outbox"`).
 			WillReturnResult(sqlmock.NewResult(1, 1))
 		env.carrierMock.ExpectCommit()
 	case grantConflicts:
-		env.carrierMock.ExpectQuery("INSERT INTO platform_admins").
+		env.carrierMock.ExpectQuery(`INSERT INTO "platform_admins"`).
 			WillReturnRows(sqlmock.NewRows([]string{"user_id", "granted_by", "granted_at", "note"}))
 		env.carrierMock.ExpectRollback()
 	case grantFails:
-		env.carrierMock.ExpectQuery("INSERT INTO platform_admins").
+		env.carrierMock.ExpectQuery(`INSERT INTO "platform_admins"`).
 			WillReturnError(errTestCarrierUnavailable)
 		env.carrierMock.ExpectRollback()
 	}

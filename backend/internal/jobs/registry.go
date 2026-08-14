@@ -5,9 +5,9 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/sethbacon/terraform-suite-identity/identity/auditoutbox"
 	identitynotify "github.com/sethbacon/terraform-suite-identity/identity/notify"
 
-	"github.com/terraform-registry/terraform-registry/internal/audit"
 	"github.com/terraform-registry/terraform-registry/internal/safego"
 )
 
@@ -28,7 +28,7 @@ var (
 	_ Job = (*ModuleScannerJob)(nil)
 	_ Job = (*ScannerUpdateJob)(nil)
 	_ Job = (*AuditCleanupJob)(nil)
-	_ Job = (*audit.Relay)(nil)
+	_ Job = (*auditoutbox.Relay)(nil)
 	_ Job = (*WebhookRetryJob)(nil)
 	_ Job = (*CVEPollJob)(nil)
 )

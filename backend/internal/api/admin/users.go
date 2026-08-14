@@ -10,8 +10,10 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/sethbacon/terraform-suite-identity/identity/auditoutbox"
+	"github.com/sethbacon/terraform-suite-identity/identity/platformadmin"
+
 	"github.com/terraform-registry/terraform-registry/internal/adminfloor"
-	"github.com/terraform-registry/terraform-registry/internal/audit"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/credlifecycle"
@@ -37,11 +39,11 @@ type UserHandlers struct {
 	// data may live in another schema or another database -- so the row would
 	// otherwise outlive its user, inert but indistinguishable from a live
 	// grant to anything counting rows. May be nil in tests.
-	carrier *repositories.PlatformAdminRepository
+	carrier *platformadmin.Carrier
 	// outbox carries the audit intent for that retirement into the deleting
 	// transaction; migration 000052's constraint trigger refuses the commit
 	// without one.
-	outbox *audit.Outbox
+	outbox *auditoutbox.Outbox
 }
 
 // UserHandlersOption configures optional UserHandlers dependencies.
@@ -93,7 +95,7 @@ func WithUserCredentialSweeper(s *credlifecycle.Sweeper) UserHandlersOption {
 // same fact seen three ways. A deployment that wired one without the others
 // would either count a grant it was about to strand, or fail its commit against
 // migration 000052's trigger.
-func WithUserAdminFloor(floor *adminfloor.Guard, carrier *repositories.PlatformAdminRepository, outbox *audit.Outbox) UserHandlersOption {
+func WithUserAdminFloor(floor *adminfloor.Guard, carrier *platformadmin.Carrier, outbox *auditoutbox.Outbox) UserHandlersOption {
 	return func(h *UserHandlers) {
 		h.floor = floor
 		h.carrier = carrier
@@ -115,6 +117,12 @@ func NewUserHandlers(cfg *config.Config, db *sql.DB, opts ...UserHandlersOption)
 	return h
 }
 
+// noFloorTheDeleteAlreadyCleared is the explicit "this call site has no floor"
+// predicate. Named, so a reader of Revoke's argument list sees a decision
+// rather than an omission: the floor ran in the delete handler, under its lock,
+// against the state this cleanup follows.
+func noFloorTheDeleteAlreadyCleared(context.Context, []platformadmin.Grant) error { return nil }
+
 // revokePlatformAdminCarrier removes a destroyed principal's platform_admins
 // row (issue #766).
 //
@@ -125,10 +133,13 @@ func NewUserHandlers(cfg *config.Config, db *sql.DB, opts ...UserHandlersOption)
 // against a count of two, so the floor and the management API both have to
 // keep skipping it forever. Deleting it keeps the carrier honest instead.
 //
-// The last-standing predicate is nil deliberately: this is not an operator
-// revoking a live administrator, it is cleanup after a delete the floor has
-// already cleared, and re-checking here would refuse to tidy up the very row
-// the floor just discounted.
+// The last-standing predicate accepts unconditionally, stated in one explicit
+// line (noFloorTheDeleteAlreadyCleared) rather than passed as nil: this is not
+// an operator revoking a live administrator, it is cleanup after a delete the
+// floor has already cleared, and re-checking here would refuse to tidy up the
+// very row the floor just discounted. The carrier refuses a nil predicate
+// outright, because "no predicate" is the one way the floor can be silently
+// absent.
 //
 // The AUDIT INTENT is mandatory, not optional in the same way. Migration
 // 000052's deferred constraint trigger refuses any commit that deletes a
@@ -142,11 +153,11 @@ func (h *UserHandlers) revokePlatformAdminCarrier(c *gin.Context, userID string)
 	if h.carrier == nil {
 		return
 	}
-	resourceType := repositories.AuditResourcePlatformAdmin
+	resourceType := platformadmin.AuditResourceType
 	target := userID
 	ip := c.ClientIP()
-	intent := &audit.Intent{
-		Action:       repositories.AuditActionPlatformAdminRevoked,
+	intent := &auditoutbox.Intent{
+		Action:       platformadmin.AuditActionRevoked,
 		ResourceType: &resourceType,
 		ResourceID:   &target,
 		IPAddress:    &ip,
@@ -159,14 +170,14 @@ func (h *UserHandlers) revokePlatformAdminCarrier(c *gin.Context, userID string)
 		intent.ActorUserID = &actor
 	}
 
-	_, err := h.carrier.Revoke(c.Request.Context(), userID, nil, func(ctx context.Context, tx *sql.Tx) error {
+	_, err := h.carrier.Revoke(c.Request.Context(), userID, noFloorTheDeleteAlreadyCleared, func(ctx context.Context, tx *sql.Tx) error {
 		return h.outbox.Enqueue(ctx, tx, intent)
 	})
 	if err == nil {
 		slog.Info("removed the platform-admin grant of a deleted principal", "user_id", userID)
 		return
 	}
-	if errors.Is(err, repositories.ErrNotPlatformAdmin) {
+	if errors.Is(err, platformadmin.ErrNotPlatformAdmin) {
 		return // the ordinary case: most principals hold no grant
 	}
 	slog.Error("failed to remove a deleted principal's platform-admin grant; it survives as an orphan",

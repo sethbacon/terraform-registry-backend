@@ -36,8 +36,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/sethbacon/terraform-suite-identity/identity/auditoutbox"
+	"github.com/sethbacon/terraform-suite-identity/identity/platformadmin"
+
 	"github.com/terraform-registry/terraform-registry/internal/adminfloor"
-	"github.com/terraform-registry/terraform-registry/internal/audit"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/identityerr"
@@ -51,26 +53,32 @@ import (
 // two other packages (the setup wizard's bootstrap grant, and the lifecycle
 // cleanups that retire a destroyed principal's grant). A second spelling
 // anywhere is not a wrong audit entry, it is a failed COMMIT, so there is one
-// definition — repositories/platform_admin_audit_actions.go — and these names
-// stay for the readers of this file.
+// definition — platformadmin's own vocabulary, which the carrier mechanism and
+// every app that instantiates it share — and these names stay for the readers
+// of this file.
 const (
-	auditActionPlatformAdminGranted = repositories.AuditActionPlatformAdminGranted
-	auditActionPlatformAdminRevoked = repositories.AuditActionPlatformAdminRevoked
-	auditResourcePlatformAdmin      = repositories.AuditResourcePlatformAdmin
+	auditActionPlatformAdminGranted = platformadmin.AuditActionGranted
+	auditActionPlatformAdminRevoked = platformadmin.AuditActionRevoked
+	auditResourcePlatformAdmin      = platformadmin.AuditResourceType
 )
 
 // maxPlatformAdminNoteLen bounds the operator note. The column is TEXT; the
 // limit is here so an unbounded body cannot be parked in the carrier.
 const maxPlatformAdminNoteLen = 500
 
-// errLastPlatformAdmin is the refusal from the last-standing guard.
-var errLastPlatformAdmin = errors.New("cannot revoke the last platform administrator")
-
-// errIdentityUnavailable marks a failure to resolve a user, as distinct from
-// resolving them to "no such user". The two must not collapse: an identity
-// store that is down would otherwise read as "every remaining grant is an
-// orphan", and the guard would let the final administrator revoke themselves.
-var errIdentityUnavailable = errors.New("identity lookup failed")
+// The refusals of the last-standing guard, both from the carrier mechanism so
+// that this file and the library agree on which fact each names.
+//
+// errLastPlatformAdmin is "there is genuinely nobody else" — a conflict the
+// operator resolves by granting first. errIdentityUnavailable is a failure to
+// RESOLVE a principal, as distinct from resolving it to "no such user": the two
+// must not collapse, or an identity store that is down would read as "every
+// remaining grant is an orphan" and the guard would let the final administrator
+// revoke themselves.
+var (
+	errLastPlatformAdmin   = platformadmin.ErrLastPlatformAdmin
+	errIdentityUnavailable = platformadmin.ErrIdentityUnavailable
+)
 
 // PlatformAdminHandlers serves /api/v1/admin/platform-admins.
 type PlatformAdminHandlers struct {
@@ -83,7 +91,7 @@ type PlatformAdminHandlers struct {
 	// standing and both commit. May be nil in tests.
 	floor *adminfloor.Guard
 	// carrier is the platform_admins table, on the REGISTRY's connection.
-	carrier *repositories.PlatformAdminRepository
+	carrier *platformadmin.Carrier
 	// userRepo resolves a grant's user_id to a person. It lives on the IDENTITY
 	// connection, which is why the carrier carries no foreign key to users
 	// (migration 000051) and why resolution is a lookup here rather than a join
@@ -93,11 +101,11 @@ type PlatformAdminHandlers struct {
 	// beside the carrier, so the record commits in the same transaction as the
 	// mutation; the relay delivers it to audit_logs on the identity connection
 	// afterwards (issue #766, migration 000052).
-	outbox *audit.Outbox
+	outbox *auditoutbox.Outbox
 }
 
 // NewPlatformAdminHandlers constructs the handlers.
-func NewPlatformAdminHandlers(carrier *repositories.PlatformAdminRepository, userRepo *repositories.UserRepository, outbox *audit.Outbox) *PlatformAdminHandlers {
+func NewPlatformAdminHandlers(carrier *platformadmin.Carrier, userRepo *repositories.UserRepository, outbox *auditoutbox.Outbox) *PlatformAdminHandlers {
 	return &PlatformAdminHandlers{carrier: carrier, userRepo: userRepo, outbox: outbox}
 }
 
@@ -156,7 +164,7 @@ func (u *userResolver) get(ctx context.Context, id string) (*models.User, error)
 // there is a grant, and nobody answers to it — which is the same choice
 // migration 000050 made for orphaned api_keys: keep the row visible to an
 // operator rather than make it disappear.
-func (h *PlatformAdminHandlers) toItem(ctx context.Context, res *userResolver, g repositories.PlatformAdminGrant) (PlatformAdminItem, error) {
+func (h *PlatformAdminHandlers) toItem(ctx context.Context, res *userResolver, g platformadmin.Grant) (PlatformAdminItem, error) {
 	item := PlatformAdminItem{
 		UserID:    g.UserID,
 		GrantedBy: g.GrantedBy,
@@ -296,7 +304,7 @@ func (h *PlatformAdminHandlers) GrantPlatformAdmin(c *gin.Context) {
 			"target_user_email": target.Email,
 			"note":              note,
 		}))
-	if errors.Is(err, repositories.ErrAlreadyPlatformAdmin) {
+	if errors.Is(err, platformadmin.ErrAlreadyPlatformAdmin) {
 		c.JSON(http.StatusConflict, gin.H{"error": "User already holds platform-admin"})
 		return
 	}
@@ -392,13 +400,30 @@ func (h *PlatformAdminHandlers) RevokePlatformAdmin(c *gin.Context) {
 	// examines for a matching pg_current_xact_id(). Nesting the revoke inside
 	// the lock therefore changes neither the intent nor the trigger's answer.
 	err = h.floor.Serialize(c.Request.Context(), func(ctx context.Context) error {
-		_, revokeErr := h.carrier.Revoke(ctx, targetID.String(), func(ctx context.Context, remaining []repositories.PlatformAdminGrant) error {
-			return h.requireAnotherExercisableAdmin(ctx, res, remaining)
-		}, h.auditIntent(c, auditActionPlatformAdminRevoked, targetID.String(), map[string]interface{}{
-			"target_user_id":    targetID.String(),
-			"target_user_email": targetEmail,
-			"self_revocation":   c.GetString("user_id") == targetID.String(),
-		}))
+		// GUARD platform-admin-last-standing. The predicate is the library's:
+		// it accepts as soon as ONE remaining grant resolves to a live user,
+		// skips a grant that resolves to nobody (an orphan row is a record, not
+		// an administrator — both middlewares load the user before consulting
+		// the carrier), and ABORTS on a lookup failure rather than skipping,
+		// because treating an unreachable identity store as "this one does not
+		// count" turns an outage into the lockout. It is handed this request's
+		// memoised resolver so a carrier holding several grants costs one
+		// lookup each, and it runs INSIDE the revoking transaction between the
+		// locking read and the DELETE.
+		_, revokeErr := h.carrier.Revoke(ctx, targetID.String(),
+			platformadmin.RequireAnotherExercisableAdmin(platformadmin.ResolverFunc(
+				func(ctx context.Context, userID string) (bool, error) {
+					user, err := res.get(ctx, userID)
+					if err != nil {
+						return false, err
+					}
+					return user != nil, nil
+				})),
+			h.auditIntent(c, auditActionPlatformAdminRevoked, targetID.String(), map[string]interface{}{
+				"target_user_id":    targetID.String(),
+				"target_user_email": targetEmail,
+				"self_revocation":   c.GetString("user_id") == targetID.String(),
+			}))
 		return revokeErr
 	})
 	switch {
@@ -406,7 +431,7 @@ func (h *PlatformAdminHandlers) RevokePlatformAdmin(c *gin.Context) {
 		slog.Error("failed to serialize the platform-admin revoke", "error", err, "target_user_id", targetID.String())
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to verify remaining platform administrators"})
 		return
-	case errors.Is(err, repositories.ErrNotPlatformAdmin):
+	case errors.Is(err, platformadmin.ErrNotPlatformAdmin):
 		c.JSON(http.StatusNotFound, gin.H{"error": "User does not hold platform-admin"})
 		return
 	case errors.Is(err, errLastPlatformAdmin):
@@ -436,32 +461,6 @@ func (h *PlatformAdminHandlers) RevokePlatformAdmin(c *gin.Context) {
 	c.JSON(http.StatusOK, MessageResponse{Message: "Platform administrator revoked"})
 }
 
-// requireAnotherExercisableAdmin is the last-standing predicate handed to
-// PlatformAdminRepository.Revoke (GUARD platform-admin-last-standing).
-//
-// It accepts as soon as ONE remaining grant resolves to a live user. A grant
-// that resolves to nobody is skipped rather than counted, because it cannot be
-// exercised: both auth middlewares load the user and abort before reaching the
-// carrier, so an orphan row is a record, not an administrator. Counting rows
-// instead would let the final real administrator revoke themselves whenever a
-// deleted colleague's grant was still on the table.
-//
-// A lookup FAILURE aborts rather than skipping. Treating an unreachable
-// identity store as "this one does not count" would turn an outage into the
-// lockout the guard exists to prevent.
-func (h *PlatformAdminHandlers) requireAnotherExercisableAdmin(ctx context.Context, res *userResolver, remaining []repositories.PlatformAdminGrant) error {
-	for _, g := range remaining {
-		user, err := res.get(ctx, g.UserID)
-		if err != nil {
-			return err
-		}
-		if user != nil {
-			return nil
-		}
-	}
-	return errLastPlatformAdmin
-}
-
 // errUnauditableMutation is what a caller is told when the change was refused
 // because it could not be recorded. Distinct from a generic failure on purpose:
 // a retry will not help until the audit outbox is reachable, and the operator
@@ -471,9 +470,10 @@ const errUnauditableMutation = "Refused: the change could not be recorded in the
 // unaudited reports whether err is a refusal to proceed unrecorded, as opposed
 // to an ordinary failure of the mutation itself.
 func unaudited(err error) bool {
-	return errors.Is(err, repositories.ErrAuditIntentRequired) ||
-		errors.Is(err, audit.ErrNoOutbox) ||
-		errors.Is(err, audit.ErrIntentIncomplete)
+	return errors.Is(err, platformadmin.ErrAuditIntentRequired) ||
+		errors.Is(err, auditoutbox.ErrIntentRequired) ||
+		errors.Is(err, auditoutbox.ErrNoOutbox) ||
+		errors.Is(err, auditoutbox.ErrIntentIncomplete)
 }
 
 // auditIntent builds the audit record for a grant or revoke and returns it as
@@ -495,14 +495,17 @@ func unaudited(err error) bool {
 // uses) admits NULL-owner rows, so the entry is readable by the principals
 // entitled to review it.
 //
-// The actor's address is captured HERE rather than resolved at delivery, so an
-// actor deleted between the grant and its delivery is still named. Absent it,
-// the sink falls back to resolving it, exactly as the identity store's own
-// insert does.
-func (h *PlatformAdminHandlers) auditIntent(c *gin.Context, action, targetUserID string, metadata map[string]interface{}) repositories.AuditIntentWriter {
+// The actor's address is captured HERE, on the request path, and NOTHING
+// downstream can recover it. The delivery sink used to fall back to
+// `COALESCE($10, (SELECT email FROM users WHERE id = $2))`, a join from the
+// audit destination into identity — a boundary that may be another schema or
+// another database, where that sub-select resolves to nothing or does not run
+// at all. So this is the only place the address is known, and an intent that
+// leaves it empty delivers an entry with no address.
+func (h *PlatformAdminHandlers) auditIntent(c *gin.Context, action, targetUserID string, metadata map[string]interface{}) platformadmin.AuditIntentWriter {
 	resourceType := auditResourcePlatformAdmin
 	ip := c.ClientIP()
-	intent := &audit.Intent{
+	intent := &auditoutbox.Intent{
 		Action:       action,
 		ResourceType: &resourceType,
 		ResourceID:   &targetUserID,

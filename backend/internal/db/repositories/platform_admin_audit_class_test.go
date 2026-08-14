@@ -1,125 +1,110 @@
 package repositories
 
 import (
-	"go/ast"
-	"go/parser"
-	"go/token"
+	"errors"
 	"path/filepath"
-	"regexp"
-	"strconv"
-	"strings"
 	"testing"
+
+	"github.com/sethbacon/terraform-suite-identity/identity/auditoutbox"
 )
 
 // Issue #766 — the re-runnable signature for "a privileged mutation with no
-// audit record".
+// audit record", now run with the shared library's scanner
+// (identity/auditoutbox.Guard) rather than this package's own copy.
 //
-// TestPlatformAdminRepository_Grant_NilIntentWriter and its Revoke twin prove
-// the two accessors that exist today refuse to run unaudited. They cannot say
-// anything about the third one somebody adds next year. This does: it fails the
-// moment ANY function in this package writes to `platform_admins` without
-// taking an AuditIntentWriter, including a helper nobody thought to write a
-// behavioural test for.
+// WHY THE LIBRARY'S. This package's version matched SQL only in string literals
+// written INSIDE a function body. This repository's own outbox INSERT was a
+// package-level const — so the same idiom applied to a carrier mutation walked
+// straight past the guard that existed to catch it. The library's scan resolves
+// package-level constants and variables, and literal concatenation, before
+// matching. It is strictly stronger, and TestCarrierMutationGuardIsLive proves
+// it on exactly that idiom.
 //
-// It is a source scan rather than a type assertion because the property is
-// about the shape of the API, not about a value: "you cannot express this
-// mutation without also expressing its audit record". Migration 000052's
-// deferred constraint trigger is the runtime half of the same rule and holds
-// for callers that never come through this package at all.
-var carrierMutationSQL = regexp.MustCompile(`(?is)(insert\s+into|delete\s+from|update)\s+platform_admins`)
+// WHAT IT PROTECTS NOW. The carrier's own Grant and Revoke live in
+// platformadmin.Carrier and are guarded there. What is guarded HERE is the way
+// back in: a hand-written mutation of platform_admins added to this package,
+// which would bypass the mechanism, its mandatory AuditIntentWriter and
+// migration 000052's constraint trigger check at the Go layer. Module-wide
+// coverage of raw carrier SQL is separate and lives in
+// internal/api/admin/admin_floor_class_test.go's rawAuthorityReductionRe.
 
+// carrierGuard is the scanner both tests below run, in one place so the
+// non-vacuity test cannot end up proving a different configuration live than
+// the one the real scan uses.
+func carrierGuard() auditoutbox.Guard {
+	return auditoutbox.Guard{Tables: []string{"platform_admins"}}
+}
+
+// TestCarrierMutationsRequireAnAuditIntentWriter fails the moment any function
+// in this package writes platform_admins without taking an audit-intent writer
+// — including a helper nobody thought to write a behavioural test for.
 func TestCarrierMutationsRequireAnAuditIntentWriter(t *testing.T) {
-	// filepath.Glob + ParseFile, matching migration_conn_leak_test.go's idiom,
-	// rather than the deprecated parser.ParseDir.
-	sources, err := filepath.Glob("*.go")
+	report, err := carrierGuard().ScanDir(".")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("ScanDir: %v", err)
 	}
-
-	fset := token.NewFileSet()
-	var scanned, mutators int
-	for _, path := range sources {
-		if strings.HasSuffix(path, "_test.go") {
-			continue
-		}
-		file, err := parser.ParseFile(fset, path, nil, 0)
-		if err != nil {
-			t.Fatalf("parsing %s: %v", path, err)
-		}
-		scanned++
-		for _, decl := range file.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Body == nil {
-				continue
-			}
-			if !bodyMutatesCarrier(fn.Body) {
-				continue
-			}
-			mutators++
-			if !takesAuditIntentWriter(fn) {
-				t.Errorf("%s: %s writes to platform_admins but takes no repositories.AuditIntentWriter. "+
-					"The highest privilege in the product must not be changeable without a record of the "+
-					"change committing with it (issue #766, migration 000052).",
-					fset.Position(fn.Pos()), funcName(fn))
-			}
-		}
+	// A scan that parsed nothing establishes nothing. ScanDir refuses an empty
+	// directory outright; this asserts the count it reports is real, because a
+	// glob that silently matched one file would otherwise read as a clean
+	// package.
+	if report.Files < 2 {
+		t.Fatalf("scanned %d non-test source file(s) in this package — the scan is not looking at "+
+			"what it thinks it is", report.Files)
 	}
-
-	// Guard the guard. A renamed table, a moved file or a changed SQL idiom
-	// would otherwise make every assertion above vacuously true, and this test
-	// would keep reporting green while protecting nothing.
-	if scanned == 0 {
-		t.Fatal("scanned no non-test sources — the guard is vacuous")
+	for _, finding := range report.Findings {
+		t.Errorf("%s: %s writes to %s but takes no audit-intent writer. "+
+			"The highest privilege in the product must not be changeable without a record of the "+
+			"change committing with it (issue #766, migration 000052). Route it through "+
+			"platformadmin.Carrier, which takes the writer as a mandatory parameter.",
+			finding.Position, finding.Func, finding.Table)
 	}
-	if mutators < 2 {
-		t.Fatalf("found %d function(s) writing to platform_admins across %d source file(s); expected at "+
-			"least the Grant and Revoke accessors. The scan is not looking at what it thinks it is.",
-			mutators, scanned)
+	// The carrier mutations themselves are the library's now, so this package
+	// is expected to hold none of its own. Asserted rather than assumed: if one
+	// appears, the loop above is what has to catch it, and that is what
+	// TestCarrierMutationGuardIsLive proves it can do.
+	if report.Mutators != 0 {
+		t.Errorf("found %d function(s) writing platform_admins in this package; the mechanism is "+
+			"platformadmin.Carrier and this package should hold none", report.Mutators)
 	}
 }
 
-// bodyMutatesCarrier reports whether any string literal in the body is a write
-// against platform_admins.
-func bodyMutatesCarrier(body *ast.BlockStmt) bool {
-	found := false
-	ast.Inspect(body, func(n ast.Node) bool {
-		lit, ok := n.(*ast.BasicLit)
-		if !ok || lit.Kind != token.STRING {
-			return true
-		}
-		text, err := strconv.Unquote(lit.Value)
-		if err != nil {
-			text = lit.Value
-		}
-		if carrierMutationSQL.MatchString(text) {
-			found = true
-			return false
-		}
-		return true
-	})
-	return found
+// TestCarrierMutationGuardIsLive is the non-vacuity half, and the reason the
+// test above can assert zero mutators without becoming decoration.
+//
+// It points the SAME guard at a fixture that does mutate the carrier — one
+// function unaudited, one audited, both with the SQL hoisted into a
+// package-level const — and requires it to report exactly the unaudited one.
+// A guard that stopped matching (a renamed table, a changed SQL idiom, a scan
+// that no longer resolves consts) fails here rather than reporting a clean
+// package forever.
+func TestCarrierMutationGuardIsLive(t *testing.T) {
+	report, err := carrierGuard().ScanDir(filepath.Join("testdata", "carrier_mutations"))
+	if err != nil {
+		t.Fatalf("ScanDir: %v", err)
+	}
+	if report.Mutators != 2 {
+		t.Fatalf("Mutators = %d, want 2 (the fixture's audited and unaudited carrier writes); "+
+			"the scan no longer recognises the estate's SQL idiom", report.Mutators)
+	}
+	if len(report.Findings) != 1 {
+		t.Fatalf("findings = %v, want exactly one: the unaudited PurgeAdmin", report.Findings)
+	}
+	if got := report.Findings[0].Func; got != "(receiver).PurgeAdmin" {
+		t.Errorf("finding = %q, want %q", got, "(receiver).PurgeAdmin")
+	}
+	if got := report.Findings[0].Table; got != "platform_admins" {
+		t.Errorf("finding table = %q, want %q", got, "platform_admins")
+	}
 }
 
-// takesAuditIntentWriter reports whether fn declares an AuditIntentWriter
-// parameter.
-func takesAuditIntentWriter(fn *ast.FuncDecl) bool {
-	if fn.Type.Params == nil {
-		return false
+// TestCarrierMutationGuardRefusesAnEmptyUniverse pins the other way a source
+// scan reads as protection while protecting nothing: no protected tables at
+// all. The library refuses it with ErrGuard rather than returning an empty,
+// passing report.
+func TestCarrierMutationGuardRefusesAnEmptyUniverse(t *testing.T) {
+	_, err := auditoutbox.Guard{}.ScanDir(".")
+	if !errors.Is(err, auditoutbox.ErrGuard) {
+		t.Fatalf("err = %v, want auditoutbox.ErrGuard: a guard with nothing to protect must refuse "+
+			"rather than pass", err)
 	}
-	for _, field := range fn.Type.Params.List {
-		if ident, ok := field.Type.(*ast.Ident); ok && ident.Name == "AuditIntentWriter" {
-			return true
-		}
-		if sel, ok := field.Type.(*ast.SelectorExpr); ok && sel.Sel.Name == "AuditIntentWriter" {
-			return true
-		}
-	}
-	return false
-}
-
-func funcName(fn *ast.FuncDecl) string {
-	if fn.Recv != nil && len(fn.Recv.List) == 1 {
-		return "(receiver)." + fn.Name.Name
-	}
-	return fn.Name.Name
 }

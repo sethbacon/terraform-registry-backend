@@ -9,7 +9,7 @@
 //
 // Neither invariant is broken in one place. The reported path — an explicit
 // platform-admin revoke — is guarded by
-// PlatformAdminRepository.Revoke/requireAnotherExercisableAdmin (PR #862), but
+// platformadmin.Carrier.Revoke with the exercisable-admin predicate (PR #862), but
 // the same authority is reduced by nine other write paths: the two membership
 // handlers, user deletion, GDPR erasure, four SCIM deprovision entry points,
 // the IdP login reconciliation's remove and downgrade branches, and
@@ -41,13 +41,30 @@
 //
 // # Serialization
 //
-// Every check-then-write runs under ONE deployment-wide Postgres advisory
+// Every check-then-write runs under ONE application-wide Postgres advisory
 // lock, taken on the registry connection. A per-organization lock would be
-// finer, but invariant A is deployment-wide and both invariants are decided by
+// finer, but invariant A is application-wide and both invariants are decided by
 // the same reads, so a single lock is the only one that makes the composition
 // safe — including across the two connections this product may be deployed
 // with (identity data can live in another schema or another database entirely,
 // migration 000051). These are rare administrative writes, not a hot path.
+//
+// The lock itself is the carrier's (platformadmin.Carrier.Serialize), so this
+// package and every carrier mutation take the SAME lock — and, because the
+// library derives its key from the carrier's qualified table name rather than
+// from a constant, a second application sharing this database takes a
+// different one. The fixed key this package used to hash would have had
+// registry and state-manager blocking each other on unrelated revocations the
+// moment they shared a database, which is the deployment the identity model
+// exists to support.
+//
+// # Mechanism from the library, policy here
+//
+// Invariant A's arithmetic — count only the grants that still RESOLVE, and
+// treat a failed lookup as unresolved rather than as an orphan — is
+// platformadmin.RequireAnotherExercisableAdmin. Invariant B is registry policy
+// and has no equivalent anywhere else: it is decided from organization
+// membership and this application's role templates.
 package adminfloor
 
 import (
@@ -56,8 +73,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"strings"
+
+	"github.com/sethbacon/terraform-suite-identity/identity/platformadmin"
 
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 )
@@ -68,7 +86,13 @@ import (
 var (
 	// ErrLastPlatformAdmin means the change would leave the deployment with no
 	// principal holding platform-admin authority (invariant A).
-	ErrLastPlatformAdmin = errors.New("adminfloor: the deployment would be left with no platform administrator")
+	//
+	// It IS the carrier mechanism's sentinel rather than a second one beside
+	// it: the explicit revoke path refuses through platformadmin.Revoke and
+	// every other authority-reducing path refuses through this package, and a
+	// handler that had to test for two sentinels meaning one fact would
+	// eventually test for one.
+	ErrLastPlatformAdmin = platformadmin.ErrLastPlatformAdmin
 
 	// ErrLastOrganizationAdmin means the change would leave an organization
 	// with members but nobody able to administer it (invariant B).
@@ -153,13 +177,13 @@ type Change struct {
 
 // Guard evaluates and serializes the two invariants.
 //
-// registry owns platform_admins and the advisory lock; identity owns
+// The carrier owns platform_admins and the advisory lock; identity owns
 // organizations, organization_members, role_templates and users. They are the
 // same *sql.DB in the default deployment mode and genuinely different
 // databases under TFR_IDENTITY_DATABASE_* — which is why the floor never
 // assumes it can put both sides in one transaction.
 type Guard struct {
-	registry *sql.DB
+	carrier  *platformadmin.Carrier
 	identity *sql.DB
 
 	// beforeCheck runs inside the lock, before the invariant is evaluated.
@@ -169,24 +193,14 @@ type Guard struct {
 	beforeCheck func(context.Context)
 }
 
-// New constructs a Guard. registryDB backs platform_admins and the advisory
-// lock; identityDB backs the membership tables.
-func New(registryDB, identityDB *sql.DB) *Guard {
-	return &Guard{registry: registryDB, identity: identityDB}
+// New constructs a Guard. carrier backs platform_admins and the advisory lock;
+// identityDB backs the membership tables.
+func New(carrier *platformadmin.Carrier, identityDB *sql.DB) *Guard {
+	return &Guard{carrier: carrier, identity: identityDB}
 }
 
-// advisoryLockKey namespaces the deployment-wide lock. Derived from a string
-// rather than written as a magic number so it cannot be mistyped, and so a
-// reader can see what else could collide with it (nothing: no other advisory
-// lock is taken anywhere in this module).
-var advisoryLockKey = func() int64 {
-	h := fnv.New64a()
-	_, _ = h.Write([]byte("terraform-registry/adminfloor"))
-	return int64(h.Sum64())
-}()
-
 // Protect serializes check-then-write for one authority reduction: it takes
-// the deployment-wide lock, evaluates both invariants against the state that
+// the application-wide lock, evaluates both invariants against the state that
 // would result from ch, and runs write only if both still hold.
 //
 // A nil Guard runs write unprotected. That is the same "wired as a unit"
@@ -212,7 +226,7 @@ func (g *Guard) Protect(ctx context.Context, ch Change, write func(context.Conte
 	})
 }
 
-// Serialize runs fn under the deployment-wide administrator-floor lock WITHOUT
+// Serialize runs fn under the application-wide administrator-floor lock WITHOUT
 // evaluating the invariants itself.
 //
 // For the one caller that already has its own last-standing check and needs
@@ -230,29 +244,26 @@ func (g *Guard) Serialize(ctx context.Context, fn func(context.Context) error) e
 	if g == nil {
 		return fn(ctx)
 	}
-	if g.registry == nil || g.identity == nil {
-		return fmt.Errorf("%w: guard constructed without both connections", ErrIndeterminate)
+	if g.carrier == nil || g.identity == nil {
+		return fmt.Errorf("%w: guard constructed without both the carrier and the identity connection", ErrIndeterminate)
 	}
 
-	// A transaction that carries no writes. It exists ONLY to scope the
-	// advisory lock: pg_advisory_xact_lock pins the lock to this transaction,
-	// so it is released by the rollback below however this function exits.
-	// The session-level pg_advisory_lock would need a hand-written unlock on
-	// every path, and would leak the lock forever if one were missed.
-	tx, err := g.registry.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrIndeterminate, err)
+	// The carrier's lock, not one of this package's own: it is
+	// pg_advisory_xact_lock on a write-free transaction, keyed by the carrier
+	// table so two applications in one database do not serialise against each
+	// other. A failure to TAKE it is ErrNotSerialized and fn does not run,
+	// which this package reports as ErrIndeterminate — an unserialised change
+	// is not a safe fallback for a serialised one.
+	err := g.carrier.Serialize(ctx, func(ctx context.Context) error {
+		if g.beforeCheck != nil {
+			g.beforeCheck(ctx)
+		}
+		return fn(ctx)
+	})
+	if errors.Is(err, platformadmin.ErrNotSerialized) || errors.Is(err, platformadmin.ErrNotConfigured) {
+		return fmt.Errorf("%w: %w", ErrIndeterminate, err)
 	}
-	defer func() { _ = tx.Rollback() }()
-
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, advisoryLockKey); err != nil {
-		return fmt.Errorf("%w: %v", ErrIndeterminate, err)
-	}
-
-	if g.beforeCheck != nil {
-		g.beforeCheck(ctx)
-	}
-	return fn(ctx)
+	return err
 }
 
 // check evaluates both invariants. Order is deliberate: invariant A first,
@@ -331,30 +342,40 @@ func (g *Guard) checkPlatformFloor(ctx context.Context, ch Change) error {
 		return nil
 	}
 
-	holders, err := g.carrierHolders(ctx)
+	grants, err := g.carrier.List(ctx)
 	if err != nil {
 		return fmt.Errorf("%w: reading the platform-admin carrier: %v", ErrIndeterminate, err)
 	}
-	if !containsUser(holders, ch.UserID) {
+
+	// The grants that would REMAIN exercisable: every row except this
+	// principal's, whose row survives the delete but stops being exercisable.
+	var remaining []platformadmin.Grant
+	var holdsGrant bool
+	for _, grant := range grants {
+		if grant.UserID == ch.UserID {
+			holdsGrant = true
+			continue
+		}
+		remaining = append(remaining, grant)
+	}
+	if !holdsGrant {
 		return nil
 	}
 
-	for _, holder := range holders {
-		if holder == ch.UserID {
-			continue // the row survives the delete but stops being exercisable
-		}
-		exercisable, err := g.userExists(ctx, holder)
-		if err != nil {
-			// An identity store that is down must not read as "every remaining
-			// grant is an orphan" — the failure mode PR #862 named.
-			return fmt.Errorf("%w: resolving carrier holder %s: %v", ErrIndeterminate, holder, err)
-		}
-		if exercisable {
-			return nil
-		}
+	// The same predicate the explicit revoke path runs, so "an administrator
+	// that remains" means one thing in this product: a grant that still
+	// RESOLVES, with a lookup failure aborting rather than counting as an
+	// orphan.
+	err = platformadmin.RequireAnotherExercisableAdmin(
+		platformadmin.ResolverFunc(g.userExists))(ctx, remaining)
+	if err == nil || errors.Is(err, ErrLastPlatformAdmin) {
+		return err
 	}
-
-	return ErrLastPlatformAdmin
+	// An identity store that is down must not read as "every remaining grant
+	// is an orphan" — the failure mode PR #862 named. Both sentinels survive:
+	// this package's callers test ErrIndeterminate, and the cause says which
+	// lookup failed.
+	return fmt.Errorf("%w: %w", ErrIndeterminate, err)
 }
 
 // ---------------------------------------------------------------------------
@@ -516,26 +537,6 @@ func (g *Guard) roleTemplateScopes(ctx context.Context, roleTemplateID string) (
 		return nil, err
 	}
 	return parseRoleScopes(raw), nil
-}
-
-// carrierHolders lists every platform_admins row. On the REGISTRY connection,
-// which is where the carrier lives (migration 000051).
-func (g *Guard) carrierHolders(ctx context.Context) ([]string, error) {
-	rows, err := g.registry.QueryContext(ctx, `SELECT user_id FROM platform_admins`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		out = append(out, id)
-	}
-	return out, rows.Err()
 }
 
 // userExists answers whether a carrier grant names a principal that still
