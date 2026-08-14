@@ -129,9 +129,12 @@ type Change struct {
 	// reason it is easy to miss).
 	//
 	// Invariant B is vacuous for a deleted organization: it cannot be stranded
-	// because it will not exist. Invariant A is not, and this is the only path
-	// that can take a deployment's last administrator away without naming a
-	// principal at all.
+	// because it will not exist. Invariant A is vacuous over it too from
+	// migration 000054 — platform-admin authority lives in the carrier, which
+	// an organization deletion does not touch — so this flag now only tells
+	// invariant B to stand down. It is kept because the shape of the change is
+	// worth naming at the call site, and because the write still runs under the
+	// floor's lock.
 	DeletesOrganizations bool
 
 	// DestroysPrincipal is true when the change removes or anonymises the USER
@@ -139,10 +142,12 @@ type Change struct {
 	//
 	// It matters because platform_admins carries no foreign key to users
 	// (migration 000051, deliberately). Destroying the principal makes its
-	// carrier row inert without deleting it, so the carrier side of invariant
-	// A must stop counting that row. A SCIM deprovision, by contrast, leaves
-	// the user able to authenticate and its carrier grant exercisable, so it
-	// sets this false.
+	// carrier row inert without deleting it, so invariant A must stop counting
+	// that row — and from migration 000054 this is the ONLY flag that can put
+	// invariant A in play at all, because the carrier is the only thing that
+	// carries the authority. A SCIM deprovision, by contrast, leaves the user
+	// able to authenticate and its carrier grant exercisable, so it sets this
+	// false.
 	DestroysPrincipal bool
 }
 
@@ -265,9 +270,14 @@ func (g *Guard) check(ctx context.Context, ch Change) error {
 		return fmt.Errorf("%w: organization deletion names no organization", ErrIndeterminate)
 	}
 
+	if err := g.checkPlatformFloor(ctx, ch); err != nil {
+		return err
+	}
+
 	// The scopes the principal is left holding in the organization being
-	// re-roled. Read ONCE, here, because both invariants need the answer and a
-	// second read would be a second chance for the two to disagree.
+	// re-roled. Read after invariant A rather than before it: A no longer needs
+	// the answer (it counts the carrier alone), and a change refused there must
+	// not have cost a role-template lookup to say so.
 	keeps := ch.KeepsScopes
 	if ch.KeepsRoleTemplateID != nil {
 		var err error
@@ -275,10 +285,6 @@ func (g *Guard) check(ctx context.Context, ch Change) error {
 		if err != nil {
 			return fmt.Errorf("%w: reading the replacement role template: %v", ErrIndeterminate, err)
 		}
-	}
-
-	if err := g.checkPlatformFloor(ctx, ch, keeps); err != nil {
-		return err
 	}
 	return g.checkOrganizationFloor(ctx, ch, keeps)
 }
@@ -290,44 +296,51 @@ func (g *Guard) check(ctx context.Context, ch Change) error {
 // checkPlatformFloor refuses a change that would leave no exercisable platform
 // administrator anywhere.
 //
-// Effective admin is the UNION of the two carriers, evaluated as the change
-// would leave them:
+// THE CARRIER IS THE ONLY SOURCE IT COUNTS (migration 000054). Until this
+// release effective admin was `platform_admins OR an admin-bearing role
+// template held through a membership`, and this function counted both. The
+// union half is gone, for the reason the package doc gives: the middleware
+// strips `admin` from a session whose principal has no carrier row, so a
+// membership carrying an admin-bearing template administers nothing. A floor
+// that still counted it would answer "an administrator remains" and permit the
+// deployment's last real one to be deleted — the exact failure this package
+// exists to prevent, arrived at by counting a source of authority that no
+// longer is one.
 //
-//   - platform_admins, minus this principal when the change destroys it
-//     (migration 000051 declines the foreign key that would do this in SQL, so
-//     the arithmetic has to do it here);
-//   - an admin-bearing role template held through a membership, minus the
-//     memberships this change removes or re-roles.
+// TWO CONSEQUENCES, both deliberate:
 //
-// Both sides require the principal to still resolve to a user, because a grant
-// nobody can exercise is a record rather than an administrator.
-func (g *Guard) checkPlatformFloor(ctx context.Context, ch Change, keeps []string) error {
-	// The union side first: it is the side a fresh deployment relies on
-	// entirely, because the setup wizard's bootstrap grant predates the
-	// carrier and migration 000051's backfill only ran once.
-	admins, err := g.adminBearingMemberships(ctx)
-	if err != nil {
-		return fmt.Errorf("%w: reading admin-bearing memberships: %v", ErrIndeterminate, err)
-	}
-	for _, m := range admins {
-		if ch.survives(m) {
-			return nil
-		}
-	}
-	// Every surviving admin-bearing membership is being taken away — unless
-	// the change re-roles the principal onto another admin-bearing template,
-	// which is not a reduction at all.
-	if !ch.RemovesMembership && !ch.DeletesOrganizations && auth.HasScope(keeps, auth.ScopeAdmin) {
+//  1. A MEMBERSHIP CHANGE CANNOT BREAK INVARIANT A. Removing a member,
+//     re-roling one, or deleting an organization and cascading its memberships
+//     away does not touch platform_admins, so there is nothing to check and
+//     refusing would be a refusal with no hazard behind it. Only a change that
+//     destroys the PRINCIPAL — user deletion and GDPR erasure — can make a
+//     carrier grant unexercisable, because migration 000051 declines the
+//     foreign key that would remove the row, so the arithmetic has to do it
+//     here. Invariant B still runs on every one of those paths.
+//  2. A PRINCIPAL WHO HOLDS NO CARRIER ROW IS NOT A REDUCTION EITHER. Deleting
+//     an ordinary user cannot lower the administrator count, and the previous
+//     shape refused it on an already-empty carrier — blocking unrelated work
+//     on a deployment that was already broken, which detection
+//     (admin_floor_violations), not this guard, is there to report.
+//
+// The explicit revoke path is unaffected: RevokePlatformAdmin keeps its own,
+// stricter last-standing check under SELECT ... FOR UPDATE (PR #862) and uses
+// Serialize rather than Protect.
+func (g *Guard) checkPlatformFloor(ctx context.Context, ch Change) error {
+	if !ch.DestroysPrincipal {
 		return nil
 	}
 
-	// The carrier side.
 	holders, err := g.carrierHolders(ctx)
 	if err != nil {
 		return fmt.Errorf("%w: reading the platform-admin carrier: %v", ErrIndeterminate, err)
 	}
+	if !containsUser(holders, ch.UserID) {
+		return nil
+	}
+
 	for _, holder := range holders {
-		if holder == ch.UserID && ch.DestroysPrincipal {
+		if holder == ch.UserID {
 			continue // the row survives the delete but stops being exercisable
 		}
 		exercisable, err := g.userExists(ctx, holder)
@@ -342,40 +355,6 @@ func (g *Guard) checkPlatformFloor(ctx context.Context, ch Change, keeps []strin
 	}
 
 	return ErrLastPlatformAdmin
-}
-
-// survives reports whether an admin-bearing membership still confers
-// platform-admin authority once the change has been written.
-//
-// One predicate for all four shapes, so a new shape cannot pick up a different
-// answer by taking a different branch:
-//
-//	untouched organization  -> survives, whoever holds it
-//	organization deleted    -> every membership in it goes, principal or not
-//	somebody else's row     -> survives
-//	this principal's row    -> goes
-func (ch Change) survives(m membership) bool {
-	if !ch.affects(m.orgID) {
-		return true
-	}
-	if ch.DeletesOrganizations {
-		return false
-	}
-	return m.userID != ch.UserID
-}
-
-// affects reports whether the change touches the principal's membership in
-// orgID. An empty OrganizationIDs means every organization.
-func (ch Change) affects(orgID string) bool {
-	if len(ch.OrganizationIDs) == 0 {
-		return true
-	}
-	for _, id := range ch.OrganizationIDs {
-		if id == orgID {
-			return true
-		}
-	}
-	return false
 }
 
 // ---------------------------------------------------------------------------
@@ -473,51 +452,6 @@ func withoutUser(users []string, id string) []string {
 // ---------------------------------------------------------------------------
 // Reads
 // ---------------------------------------------------------------------------
-
-type membership struct {
-	orgID  string
-	userID string
-}
-
-// adminScopePrefilter is an over-approximating SQL predicate, refined exactly
-// in Go by parseRoleScopes.
-//
-// It cannot be an exact SQL test because role_templates.scopes has TWO
-// encodings in this estate: jsonb in the registry's public schema
-// (000001_initial_schema) and TEXT[] in the shared identity schema
-// (terraform-suite-identity 000001) — the same split that forced migration
-// 000051 to write its backfill twice. `scopes::text LIKE` reads both
-// (`["admin"]` and `{admin}`) and never drops a row that the exact test would
-// have kept, which is the only direction that matters for a floor.
-const adminScopePrefilter = `(rt.scopes::text LIKE '%admin%' OR rt.scopes::text LIKE '%organizations:write%')`
-
-// adminBearingMemberships returns every membership whose role template carries
-// the platform-wide `admin` scope AND whose user still resolves.
-func (g *Guard) adminBearingMemberships(ctx context.Context) ([]membership, error) {
-	rows, err := g.identity.QueryContext(ctx, `
-		SELECT om.organization_id, om.user_id, rt.scopes
-		  FROM organization_members om
-		  JOIN users u ON u.id = om.user_id
-		  JOIN role_templates rt ON rt.id = om.role_template_id
-		 WHERE `+adminScopePrefilter)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []membership
-	for rows.Next() {
-		var m membership
-		var raw []byte
-		if err := rows.Scan(&m.orgID, &m.userID, &raw); err != nil {
-			return nil, err
-		}
-		if auth.HasScope(parseRoleScopes(raw), auth.ScopeAdmin) {
-			out = append(out, m)
-		}
-	}
-	return out, rows.Err()
-}
 
 // organizationState returns the organization's members and, of those, the ones
 // who can administer it. Both lists name only users that still resolve.

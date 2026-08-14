@@ -299,6 +299,38 @@ func (h *RBACHandlers) GetRoleTemplate(c *gin.Context) {
 	c.JSON(http.StatusOK, template)
 }
 
+// adminScopeAcceptedOnATemplate reports whether the submitted scope list may
+// be written to a role template, answering the request itself when it may not
+// (issue #766, migration 000054).
+//
+// WHY PR 3 CLOSES THIS PATH TOO, stated because it was a real decision.
+// Migration 000054 takes `admin` off the seeded templates and every membership
+// write refuses an admin-bearing one — but both of those are about the state of
+// the data, and this route is how the data gets written. Leaving it open would
+// mean the thing just removed could be put back by the same principal, on the
+// same afternoon, with no migration and no restart. The removal would be a
+// one-time cleanup rather than a property.
+//
+// Nothing is lost by closing it. `admin` on a template confers no authority
+// from this release on: the auth middleware strips it from the session union
+// and only the `platform_admins` carrier adds it back. So the only templates
+// this refuses are ones that would have been inert AND unassignable — a
+// template no membership write would accept, whose holders could never be
+// re-assigned to their own role.
+//
+// 400 rather than 403: the caller holds `admin` and is entitled to this route.
+// It is the body that is not writable, which is what 400 says.
+func adminScopeAcceptedOnATemplate(c *gin.Context, scopes []string) bool {
+	if err := auth.ValidateProvisionableScopes(scopes); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "the `admin` scope cannot be placed on a role template; platform administration is " +
+				"granted through POST /api/v1/admin/platform-admins",
+		})
+		return false
+	}
+	return true
+}
+
 // CreateRoleTemplateRequest represents the request to create a role template
 type CreateRoleTemplateRequest struct {
 	Name        string   `json:"name" binding:"required"`
@@ -326,6 +358,10 @@ func (h *RBACHandlers) CreateRoleTemplate(c *gin.Context) {
 	var req CreateRoleTemplateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if !adminScopeAcceptedOnATemplate(c, req.Scopes) {
 		return
 	}
 
@@ -407,6 +443,10 @@ func (h *RBACHandlers) UpdateRoleTemplate(c *gin.Context) {
 	var req CreateRoleTemplateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if !adminScopeAcceptedOnATemplate(c, req.Scopes) {
 		return
 	}
 

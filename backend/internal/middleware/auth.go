@@ -227,7 +227,14 @@ func AuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepository, a
 			c.Set("api_key_id", apiKey.ID)
 			c.Set("auth_method", "api_key")
 			c.Set("organization_id", apiKey.OrganizationID)
-			c.Set("scopes", apiKey.Scopes)
+			// `admin` is stripped from the key's frozen scope list here and
+			// again in currentKeyScopes (issue #766). The carrier is the only
+			// source of platform-admin authority and a key never consults it,
+			// so a key that carries the wildcard in its own snapshot must not
+			// present it either -- and this is the branch that runs when the
+			// re-derivation below is skipped, which is precisely where an
+			// unbound key would otherwise keep it.
+			c.Set("scopes", withoutScope(apiKey.Scopes, auth.ScopeAdmin))
 
 			// Re-derive the key's authority HERE, where the binding is
 			// established, rather than only at the two call sites that happened
@@ -328,8 +335,16 @@ func currentKeyScopes(ctx context.Context, orgRepo *repositories.OrganizationRep
 	if err != nil {
 		return nil, http.StatusInternalServerError, "Failed to verify API key organization membership"
 	}
-	scopes := make([]string, 0, len(apiKey.Scopes))
-	for _, s := range apiKey.Scopes {
+	// `admin` is dropped before the intersection rather than filtered by it
+	// (issue #766). The intersection asks whether the OWNER's role template
+	// still grants the scope, and from migration 000054 no role template
+	// carries the wildcard at all — so this is belt to that braces: an API key
+	// resolves no platform-admin authority even if a template is edited back by
+	// hand, because a key never consults the carrier and the carrier is the
+	// only source.
+	keyScopes := withoutScope(apiKey.Scopes, auth.ScopeAdmin)
+	scopes := make([]string, 0, len(keyScopes))
+	for _, s := range keyScopes {
 		if auth.HasScope(member.RoleTemplateScopes, auth.Scope(s)) {
 			scopes = append(scopes, s)
 		}
@@ -337,15 +352,43 @@ func currentKeyScopes(ctx context.Context, orgRepo *repositories.OrganizationRep
 	return scopes, 0, ""
 }
 
-// platformAdminScopes returns the effective scopes for a USER SESSION,
-// elevated with auth.ScopeAdmin when the principal holds platform-admin
-// authority through the carrier (issue #766, migration 000051).
+// withoutScope returns scopes with every occurrence of `drop` removed, and
+// returns the input unchanged when there is nothing to remove.
 //
-// TRANSITION SEMANTICS ARE `OR`, WHICH IS WHAT MAKES PR 1 NON-BREAKING.
-// Effective admin is `carrier OR the existing scope union`. The union still
-// answers exactly as it did, the carrier can only add, and migration 000051
-// backfills the carrier from the union — so day-one behaviour is identical.
-// PR 3 removes the union side; nothing here changes when it does.
+// It copies rather than filtering in place because the slice it is usually
+// given is claims.Scopes, which is also published on the context as
+// jwt_claims: filtering in place would write through a shared backing array.
+func withoutScope(scopes []string, drop auth.Scope) []string {
+	present := false
+	for _, s := range scopes {
+		if s == string(drop) {
+			present = true
+			break
+		}
+	}
+	if !present {
+		return scopes
+	}
+	out := make([]string, 0, len(scopes))
+	for _, s := range scopes {
+		if s != string(drop) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// platformAdminScopes returns the effective scopes for a USER SESSION.
+// auth.ScopeAdmin is present if and only if the principal holds a row in the
+// platform-admin carrier (issue #766, migration 000051).
+//
+// THE CARRIER IS THE ONLY SOURCE, AND THAT IS THE BREAKING CHANGE (migration
+// 000054). Until this release effective admin was `carrier OR the session's
+// scope union`, and the union is where an admin-bearing role template put it.
+// Now the union is stripped of `admin` first — unconditionally, on every
+// return path below — and only the carrier can add it back. Removing `admin`
+// from the seeded templates is data and data can be re-added; this is the half
+// that makes it enforcement.
 //
 // APPLIED ON THE USER/SESSION PATH ONLY — NEVER TO AN API KEY. Five of the
 // twelve admin checks are in apikeys.go, and a long-lived credential silently
@@ -358,20 +401,21 @@ func currentKeyScopes(ctx context.Context, orgRepo *repositories.OrganizationRep
 // TestAuthMiddleware_APIKey_DoesNotInheritOwnersPlatformAdmin holds that shut.
 //
 // A nil repository means the subsystem is not wired (unit tests), matching how
-// tokenRepo/userRevocations/orgRepo nil-checks behave on both middlewares.
+// tokenRepo/userRevocations/orgRepo nil-checks behave on both middlewares. It
+// still strips: an unwired carrier cannot answer the authority question, and
+// serving the union's `admin` instead would answer it from the source this
+// release stopped trusting.
 //
-// Returns (scopes, 0, "") when the answer resolved, otherwise an HTTP status
-// and message.
-//
-// The elevation copies rather than appending to the caller's slice. `scopes`
-// is claims.Scopes, which is also published on the context as jwt_claims, so
-// appending in place would write through a shared backing array whenever it
-// has spare capacity. Stated as an idiom, not as a tested guarantee: the JWT
-// decoder happens to produce len == cap today, so a mutation to append-in-place
-// is not observable and no test here would catch it.
+// Returns the effective scopes and (0, "") when the answer resolved, otherwise
+// an HTTP status and message — WITH the stripped scopes, so a caller that
+// chooses to continue (OptionalAuthMiddleware) continues unelevated rather than
+// with whatever the token claimed.
 func platformAdminScopes(ctx context.Context, platformAdmins *repositories.PlatformAdminRepository, userID string, scopes []string) ([]string, int, string) {
+	// FIRST, and on every path: `admin` in the token is not authority any more.
+	base := withoutScope(scopes, auth.ScopeAdmin)
+
 	if platformAdmins == nil {
-		return scopes, 0, ""
+		return base, 0, ""
 	}
 	isAdmin, err := platformAdmins.IsPlatformAdmin(ctx, userID)
 	if err != nil {
@@ -379,13 +423,17 @@ func platformAdminScopes(ctx context.Context, platformAdmins *repositories.Platf
 		// must not be served as a completed no: that would silently downgrade a
 		// platform administrator to a 403 during exactly the incident in which
 		// they need the admin surface, with nothing in the response saying why.
-		return nil, http.StatusInternalServerError, "Auth check failed"
+		return base, http.StatusInternalServerError, "Auth check failed"
 	}
-	if !isAdmin || auth.HasScope(scopes, auth.ScopeAdmin) {
-		return scopes, 0, ""
+	if !isAdmin {
+		return base, 0, ""
 	}
-	elevated := make([]string, len(scopes), len(scopes)+1)
-	copy(elevated, scopes)
+	// The elevation copies rather than appending to the caller's slice.
+	// `scopes` is claims.Scopes, which is also published on the context as
+	// jwt_claims, so appending in place would write through a shared backing
+	// array whenever it has spare capacity.
+	elevated := make([]string, len(base), len(base)+1)
+	copy(elevated, base)
 	return append(elevated, string(auth.ScopeAdmin)), 0, ""
 }
 
@@ -469,12 +517,19 @@ func OptionalAuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepos
 					// A failed lookup leaves the caller UNELEVATED rather than
 					// aborting, matching this middleware's treatment of every
 					// other failed auth lookup (the revocation checks above
-					// swallow their errors too). Fail-closed by construction:
-					// the carrier can only ever add authority.
-					if elevated, status, _ := platformAdminScopes(c.Request.Context(), platformAdmins, user.ID, scopes); status == 0 {
-						scopes = elevated
-					}
-					c.Set("scopes", scopes)
+					// swallow their errors too).
+					//
+					// The returned slice is taken WHATEVER the status, which is
+					// what keeps that fail-closed now that the carrier both adds
+					// and removes: platformAdminScopes has already stripped
+					// `admin`, so an unresolved lookup leaves a token that
+					// merely CLAIMS the wildcard holding nothing. Keeping the
+					// caller's own slice on error — the shape this had while the
+					// carrier could only add — would have served the union's
+					// `admin` on exactly the requests where authority could not
+					// be established.
+					elevated, _, _ := platformAdminScopes(c.Request.Context(), platformAdmins, user.ID, scopes)
+					c.Set("scopes", elevated)
 				}
 			}
 			c.Next()
@@ -511,7 +566,7 @@ func OptionalAuthMiddleware(cfg *config.Config, userRepo *repositories.UserRepos
 				// request simply continues UNAUTHENTICATED, exactly as a
 				// revoked JWT does above. That is the fail-closed direction:
 				// private artifacts stop resolving for the stale key.
-				scopes := apiKey.Scopes
+				scopes := withoutScope(apiKey.Scopes, auth.ScopeAdmin)
 				if orgRepo != nil && apiKey.OrganizationID != "" {
 					current, status, _ := currentKeyScopes(c.Request.Context(), orgRepo, apiKey)
 					if status != 0 {

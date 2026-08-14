@@ -14,7 +14,19 @@ import (
 type roleAssignmentCheck struct {
 	allowed bool
 	status  int
+	// message is what the handler returns to the caller. Empty means the
+	// generic refusal; the admin-bearing refusal below sets it, because "role
+	// assignment not permitted" would send an operator looking for a role they
+	// lack rather than at the route that now grants this.
+	message string
 }
+
+// adminBearingRefusal is the answer to a request to make an admin-bearing role
+// template somebody's organization membership role. It names the replacement
+// route, because there IS one now — which is the entire reason this refusal
+// became shippable.
+const adminBearingRefusal = "the platform-admin role cannot be assigned as an organization membership role; " +
+	"grant platform administration through POST /api/v1/admin/platform-admins"
 
 func (h *OrganizationHandlers) checkRoleAssignment(c *gin.Context, roleTemplateID *string) roleAssignmentCheck {
 	if roleTemplateID == nil || *roleTemplateID == "" {
@@ -39,6 +51,27 @@ func (h *OrganizationHandlers) checkRoleAssignment(c *gin.Context, roleTemplateI
 	var roleScopes []string
 	if err := json.Unmarshal(scopesJSON, &roleScopes); err != nil {
 		return roleAssignmentCheck{allowed: false, status: http.StatusInternalServerError}
+	}
+
+	// GUARD platform-admin-carrier (issue #766). NO membership may carry the
+	// platform-wide wildcard, whoever is asking.
+	//
+	// This is #766's headline recommendation, and PR #850 was right to decline
+	// it then: `organization_members.role_template_id` was the only carrier for
+	// scopes, so refusing it here would have left a deployment unable to have a
+	// platform administrator at all. `platform_admins` is that carrier now
+	// (migration 000051), the management API grants through it (PR #862), and
+	// migration 000054 has taken `admin` off the templates — so the refusal
+	// costs nobody anything and closes the route by which an org-scoped grant
+	// silently conferred cross-tenant reach.
+	//
+	// AHEAD OF THE CEILING, not folded into it. RoleScopesPermittedBy answers
+	// TRUE for a caller who already holds `admin`, so a platform administrator
+	// would sail past it — and a platform administrator granting the template
+	// to a colleague is exactly how the state PR #850 tolerated used to arise.
+	// The point of this release is that it can no longer arise at all.
+	if err := auth.ValidateProvisionableScopes(roleScopes); err != nil {
+		return roleAssignmentCheck{allowed: false, status: http.StatusForbidden, message: adminBearingRefusal}
 	}
 
 	// Vacuous case: skip deriving caller scopes entirely. This matches

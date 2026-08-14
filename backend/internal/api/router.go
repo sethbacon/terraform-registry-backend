@@ -707,7 +707,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 
 	// Initialize setup wizard handlers
 	setupHandlers := setup.NewHandlers(
-		cfg, tokenCipher, oidcConfigRepo, storageConfigRepo, userRepo, orgRepo, authHandlers,
+		cfg, tokenCipher, oidcConfigRepo, storageConfigRepo, userRepo, authHandlers,
 	).WithScannerJob(moduleScannerJob).WithEgressGuard(egressGuard).
 		WithPlatformAdminCarrier(platformAdminRepo, auditOutbox)
 

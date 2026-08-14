@@ -125,12 +125,13 @@ var adminFloorExemptions = map[string]string{
 
 	"internal/services/user_service.go:revokePlatformAdminCarrier": "The same cleanup after a GDPR erasure, " +
 		"and for the same reason.",
-
-	"internal/api/setup/handlers.go:ConfigureAdmin": "Setup-wizard bootstrap. Its UpdateMemberRole is the " +
-		"fallback half of a PROMOTION to the admin template -- it raises the first operator's authority, " +
-		"it cannot lower anybody's, and it runs before any principal exists whose floor could be " +
-		"evaluated. This is the grant that makes every later refusal able to be satisfied by somebody.",
 }
+
+// `internal/api/setup/handlers.go:ConfigureAdmin` used to be exempted here for
+// its UpdateMemberRole fallback. Migration 000054 removed the wizard's
+// membership writes entirely -- it grants the platform_admins carrier and
+// nothing else -- so the site no longer exists and the bidirectional check
+// above is what required this entry to go with it.
 
 // rawReductionExemptions are the hand-written statements, kept apart from the
 // map above because the two tests scan DIFFERENT universes: an entry that
