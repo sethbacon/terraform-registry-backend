@@ -258,6 +258,12 @@ func (s *UserService) eraseTx(ctx context.Context, userID string) error {
 	return nil
 }
 
+// noFloorTheErasureAlreadyCleared is the explicit "this call site has no floor"
+// predicate. Named, so that a reader of Revoke's argument list sees a decision
+// rather than an omission: the floor ran in EraseUser, under the lock, against
+// the state this delete produces.
+func noFloorTheErasureAlreadyCleared(context.Context, []platformadmin.Grant) error { return nil }
+
 // revokePlatformAdminCarrier retires an erased principal's platform_admins row
 // (issue #766). Best-effort and logged; the erasure has already committed and
 // answering an error would invite a retry that then reports "user not found".
@@ -277,12 +283,6 @@ func (s *UserService) eraseTx(ctx context.Context, userID string) error {
 // was erased" in the trail. A nil outbox therefore cannot be skipped past: the
 // DELETE would abort at COMMIT anyway, and saying so here is clearer than
 // letting Postgres say it.
-// noFloorTheErasureAlreadyCleared is the explicit "this call site has no floor"
-// predicate. Named, so that a reader of Revoke's argument list sees a decision
-// rather than an omission: the floor ran in EraseUser, under the lock, against
-// the state this delete produces.
-func noFloorTheErasureAlreadyCleared(context.Context, []platformadmin.Grant) error { return nil }
-
 func (s *UserService) revokePlatformAdminCarrier(ctx context.Context, userID, erasedBy string) {
 	if s.carrier == nil {
 		return

@@ -117,6 +117,12 @@ func NewUserHandlers(cfg *config.Config, db *sql.DB, opts ...UserHandlersOption)
 	return h
 }
 
+// noFloorTheDeleteAlreadyCleared is the explicit "this call site has no floor"
+// predicate. Named, so a reader of Revoke's argument list sees a decision
+// rather than an omission: the floor ran in the delete handler, under its lock,
+// against the state this cleanup follows.
+func noFloorTheDeleteAlreadyCleared(context.Context, []platformadmin.Grant) error { return nil }
+
 // revokePlatformAdminCarrier removes a destroyed principal's platform_admins
 // row (issue #766).
 //
@@ -143,12 +149,6 @@ func NewUserHandlers(cfg *config.Config, db *sql.DB, opts ...UserHandlersOption)
 //
 // Best-effort. The user is already gone; a failure leaves an orphan the
 // management API renders as user_resolved=false, which is exactly what it is.
-// noFloorTheDeleteAlreadyCleared is the explicit "this call site has no floor"
-// predicate. Named, so a reader of Revoke's argument list sees a decision
-// rather than an omission: the floor ran in the delete handler, under its lock,
-// against the state this cleanup follows.
-func noFloorTheDeleteAlreadyCleared(context.Context, []platformadmin.Grant) error { return nil }
-
 func (h *UserHandlers) revokePlatformAdminCarrier(c *gin.Context, userID string) {
 	if h.carrier == nil {
 		return
