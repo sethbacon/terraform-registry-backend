@@ -315,6 +315,34 @@ func TestOrganizationRepository_MirrorFailureDoesNotFailTheRequest(t *testing.T)
 	}
 }
 
+// TestMemberRoleMirror_ClearUserEverywhere_IsUnscopedByTenant is the GDPR
+// erasure's mirror call, and it is deliberately unscoped.
+//
+// It is the one path that must reach every organization: eraseTx removes the
+// subject's memberships with no tenant predicate at all, so a scoped mirror
+// delete would leave the erased subject's authorization behind wherever the
+// erasure had already removed the membership. The assertion is on the exact
+// statement, because "unscoped" is the property and a WHERE clause is how it
+// would silently stop being true.
+func TestMemberRoleMirror_ClearUserEverywhere_IsUnscopedByTenant(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectExec("DELETE FROM organization_member_roles WHERE user_id = \\$1").
+		WithArgs(testUserID).
+		WillReturnResult(sqlmock.NewResult(0, 3))
+
+	if err := NewMemberRoleMirror(db).ClearUserEverywhere(context.Background(), testUserID); err != nil {
+		t.Fatalf("ClearUserEverywhere: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("the erased subject's mirrored assignments were not cleared: %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Role templates
 // ---------------------------------------------------------------------------
