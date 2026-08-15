@@ -40,11 +40,22 @@ type UserService struct {
 	// makes the cleanup fail rather than silently skip -- see
 	// revokePlatformAdminCarrier.
 	outbox *auditoutbox.Outbox
+	// roleMirror clears the erased subject's rows in registry's own
+	// organization_member_roles (sethbacon/terraform-suite-identity#206,
+	// migration 000055).
+	//
+	// This path needs its own mirror call because it is the ONE membership
+	// write in the product that does not go through the identity store's
+	// repository: eraseTx issues the DELETE itself, so the dual-write built
+	// into repositories.OrganizationRepository never sees it. Without this an
+	// erased subject's authorization would survive in the table the read
+	// cutover switches onto.
+	roleMirror *repositories.MemberRoleMirror
 }
 
 // NewUserService creates a new UserService.
 func NewUserService(db *sql.DB) *UserService {
-	return &UserService{db: db}
+	return &UserService{db: db, roleMirror: repositories.NewMemberRoleMirror(db)}
 }
 
 // WithCredentialSweeper wires the credential sweeper used by EraseUser.
@@ -360,6 +371,27 @@ func (s *UserService) EraseUser(ctx context.Context, userID string, erasedBy str
 	// resolves to a users row, so — unlike a deleted user's orphan — nothing
 	// downstream can tell it is inert. Best-effort, after the commit.
 	s.revokePlatformAdminCarrier(ctx, userID, erasedBy)
+
+	// The mirrored authorization the erasure cannot reach either
+	// (terraform-suite-identity#206). eraseTx's step 3 is a raw, unscoped
+	// DELETE against organization_members, so it bypasses the dual-write in
+	// repositories.OrganizationRepository entirely; without this the erased
+	// subject keeps a role in registry's own organization_member_roles.
+	//
+	// After the commit, and best-effort, for the same reason as the carrier
+	// above: registry's tables are on registry's connection while this
+	// transaction runs on identity's, and under TFR_IDENTITY_DATABASE_* those
+	// are different physical databases. Joining the statement to the erasure
+	// transaction would make a GDPR erasure FAIL in that topology, which is a
+	// behaviour change this phase must not make. The startup reconcile removes
+	// the row on the next boot, and the divergence query reports it meanwhile.
+	if s.roleMirror != nil {
+		if err := s.roleMirror.ClearUserEverywhere(ctx, userID); err != nil {
+			slog.Error("failed to clear an erased principal's mirrored role assignments; "+
+				"they survive in registry's own organization_member_roles until the next startup reconcile",
+				"user_id", userID, "error", err)
+		}
+	}
 
 	// 4. Revoke any active JWT sessions.
 	//

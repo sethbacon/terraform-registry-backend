@@ -287,6 +287,53 @@ var bootstrapExemptions = map[string]string{
 		"no wildcard scope, not caller-supplied, so there is nothing for a ceiling to constrain.",
 }
 
+// isEmbeddedStoreDelegation reports whether a call is
+// repositories.OrganizationRepository's override of a store method calling
+// THROUGH to the very method it overrides.
+//
+// That type embeds the shared identity store's repository and re-declares each
+// membership writer so the call also lands in registry's own
+// organization_member_roles (terraform-suite-identity#206, migration 000055).
+// The re-declaration is the transport every guarded handler already goes
+// through — it is the repository, not a use of it — so counting it as a call
+// site would demand a ceiling check inside the plumbing, where there is no
+// caller and no caller-supplied template to check.
+//
+// The predicate is deliberately narrow, and all three conditions matter:
+//
+//	func (r *OrganizationRepository) AddMemberWithParams(...) {
+//	        r.OrganizationRepository.AddMemberWithParams(...)   // <- only this
+//	}
+//
+// a method ON that type, whose OWN NAME equals the method being called, calling
+// it on the EMBEDDED field. A new unguarded membership write anywhere in that
+// file — including a differently-named method on the same type, or the same
+// method reaching a different writer — fails all three and is still reported.
+// An exemption by filename would not have that property, which is why this is
+// not one.
+func isEmbeddedStoreDelegation(fn *ast.FuncDecl, call *ast.CallExpr) bool {
+	if fn.Recv == nil || len(fn.Recv.List) != 1 {
+		return false
+	}
+	star, ok := fn.Recv.List[0].Type.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	recvType, ok := star.X.(*ast.Ident)
+	if !ok || recvType.Name != "OrganizationRepository" {
+		return false
+	}
+	if fn.Name.Name != callName(call) {
+		return false
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	embedded, ok := sel.X.(*ast.SelectorExpr)
+	return ok && embedded.Sel.Name == "OrganizationRepository"
+}
+
 // membershipWriteSite is one call to a membership-write repository method.
 type membershipWriteSite struct {
 	path string // repo-relative, slash-separated
@@ -355,6 +402,9 @@ func findMembershipWriteSites(t *testing.T, root string) (sites []membershipWrit
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
 				call, ok := n.(*ast.CallExpr)
 				if !ok || !membershipWriteMethods[callName(call)] {
+					return true
+				}
+				if isEmbeddedStoreDelegation(fn, call) {
 					return true
 				}
 				key := rel + ":" + fn.Name.Name

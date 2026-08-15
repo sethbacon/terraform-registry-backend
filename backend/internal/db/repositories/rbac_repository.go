@@ -22,6 +22,16 @@ type RBACRepository struct {
 	db            *sqlx.DB
 	identityDB    *sqlx.DB
 	roleTemplates *identitystore.RoleTemplateRepository
+	// mirror writes registry's own registry_role_templates
+	// (sethbacon/terraform-suite-identity#206, migration 000055).
+	//
+	// Built on `db`, the REGISTRY connection, not on identityDB: unlike the
+	// membership mirror -- which has to share a connection with the
+	// organization_members write it shadows -- a role template has no
+	// cross-connection statement to stay consistent with, so it goes where
+	// migration 000055 actually created the table. That is correct in every
+	// identity topology, including a separate identity database.
+	mirror *MemberRoleMirror
 }
 
 // NewRBACRepository creates a new RBAC repository whose role-template access uses
@@ -39,6 +49,7 @@ func NewRBACRepositoryWithIdentity(db, identityDB *sqlx.DB) *RBACRepository {
 		db:            db,
 		identityDB:    identityDB,
 		roleTemplates: identitystore.NewRoleTemplateRepository(identityDB.DB),
+		mirror:        NewMemberRoleMirror(db.DB),
 	}
 }
 
@@ -98,19 +109,49 @@ func (r *RBACRepository) GetRoleTemplateByName(ctx context.Context, name string)
 	return r.roleTemplates.GetRoleTemplateByName(ctx, name)
 }
 
-// CreateRoleTemplate creates a new role template.
+// CreateRoleTemplate creates a new role template, and mirrors it into
+// registry's own registry_role_templates.
 func (r *RBACRepository) CreateRoleTemplate(ctx context.Context, template *models.RoleTemplate) error {
-	return r.roleTemplates.CreateRoleTemplate(ctx, template)
+	if err := r.roleTemplates.CreateRoleTemplate(ctx, template); err != nil {
+		return err
+	}
+	if err := r.mirror.UpsertRoleTemplate(ctx, template); err != nil {
+		mirrorFailed(ctx, "create role template", err, "role_template_id", template.ID, "name", template.Name)
+	}
+	return nil
 }
 
-// UpdateRoleTemplate updates an existing role template.
+// UpdateRoleTemplate updates an existing role template, and mirrors the new
+// scope set.
+//
+// The mirror matters more here than on create: changing a template's scopes
+// changes the effective authority of every member holding it, and that is the
+// role change with no statement naming a membership anywhere.
 func (r *RBACRepository) UpdateRoleTemplate(ctx context.Context, template *models.RoleTemplate) error {
-	return r.roleTemplates.UpdateRoleTemplate(ctx, template)
+	if err := r.roleTemplates.UpdateRoleTemplate(ctx, template); err != nil {
+		return err
+	}
+	if err := r.mirror.UpsertRoleTemplate(ctx, template); err != nil {
+		mirrorFailed(ctx, "update role template", err, "role_template_id", template.ID, "name", template.Name)
+	}
+	return nil
 }
 
-// DeleteRoleTemplate deletes a role template (only non-system templates).
+// DeleteRoleTemplate deletes a role template (only non-system templates), and
+// deletes registry's mirrored copy.
+//
+// Deleting the mirrored template also clears role_template_id on every mirrored
+// membership that held it, through migration 000055's ON DELETE SET NULL --
+// matching what 000001_initial_schema's FK does on the source side. That is the
+// second role change carried entirely by a foreign key.
 func (r *RBACRepository) DeleteRoleTemplate(ctx context.Context, id uuid.UUID) error {
-	return r.roleTemplates.DeleteRoleTemplate(ctx, id)
+	if err := r.roleTemplates.DeleteRoleTemplate(ctx, id); err != nil {
+		return err
+	}
+	if err := r.mirror.DeleteRoleTemplate(ctx, id); err != nil {
+		mirrorFailed(ctx, "delete role template", err, "role_template_id", id)
+	}
+	return nil
 }
 
 // ============================================================================
