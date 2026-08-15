@@ -68,7 +68,7 @@ func NewOrganizationRepository(db *sql.DB) *OrganizationRepository {
 // that into one answer that is true by observation. Role writes are rare
 // administrative actions, so the extra SELECT costs nothing that matters.
 func (r *OrganizationRepository) mirrorMemberFromSource(ctx context.Context, orgID, userID string, scope identitystore.OrgScope) {
-	member, err := r.OrganizationRepository.GetMember(ctx, orgID, userID, scope)
+	member, err := r.GetMember(ctx, orgID, userID, scope)
 	if err != nil {
 		mirrorFailed(ctx, "read back membership", err, "organization_id", orgID, "user_id", userID)
 		return

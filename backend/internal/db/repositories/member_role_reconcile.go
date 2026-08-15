@@ -304,33 +304,49 @@ func sameRole(a, b *string) bool {
 	return *a == *b
 }
 
-// pruneMirroredRoleTemplates deletes mirrored templates with no source row.
-func pruneMirroredRoleTemplates(ctx context.Context, registryDB *sql.DB, mirror *MemberRoleMirror, live map[uuid.UUID]bool) (int, error) {
+// readMirroredRoleTemplateIDs loads the ids registry's own template table holds.
+//
+// Reading is a separate step from deleting, exactly as it is for memberships:
+// the deletes must not be issued while this result set is still open, since on a
+// small pool the writing statement would wait for a connection the scan is
+// holding. Returning the ids first makes that ordering structural instead of a
+// hand-placed Close nobody can see the reason for.
+func readMirroredRoleTemplateIDs(ctx context.Context, registryDB *sql.DB) ([]uuid.UUID, error) {
 	rows, err := registryDB.QueryContext(ctx, `SELECT id FROM registry_role_templates`)
 	if err != nil {
-		return 0, fmt.Errorf("read mirrored role templates: %w", err)
+		return nil, fmt.Errorf("read mirrored role templates: %w", err)
 	}
-	var stale []uuid.UUID
+	defer rows.Close()
+
+	var ids []uuid.UUID
 	for rows.Next() {
 		var id uuid.UUID
 		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return 0, fmt.Errorf("scan mirrored role template: %w", err)
+			return nil, fmt.Errorf("scan mirrored role template: %w", err)
 		}
-		if !live[id] {
-			stale = append(stale, id)
-		}
+		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
-		return 0, fmt.Errorf("read mirrored role templates: %w", err)
+		return nil, fmt.Errorf("read mirrored role templates: %w", err)
 	}
-	rows.Close()
+	return ids, nil
+}
 
-	for _, id := range stale {
+// pruneMirroredRoleTemplates deletes mirrored templates with no source row.
+func pruneMirroredRoleTemplates(ctx context.Context, registryDB *sql.DB, mirror *MemberRoleMirror, live map[uuid.UUID]bool) (int, error) {
+	ids, err := readMirroredRoleTemplateIDs(ctx, registryDB)
+	if err != nil {
+		return 0, err
+	}
+	var removed int
+	for _, id := range ids {
+		if live[id] {
+			continue
+		}
 		if err := mirror.DeleteRoleTemplate(ctx, id); err != nil {
 			return 0, fmt.Errorf("prune mirrored role template %s: %w", id, err)
 		}
+		removed++
 	}
-	return len(stale), nil
+	return removed, nil
 }
