@@ -266,15 +266,37 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	}
 	// Registry's role→scope policy, into registry's own table.
 	//
-	// Gated on the same suite.role_seed_owner as the shared-table seed in
-	// cmd/server, deliberately, even though registry's own table has no
-	// cross-application contention for the flag to arbitrate. While the
+	// Gated on EXACTLY the same two conditions as the shared-table seed in
+	// cmd/server, and both matter.
+	//
+	// suite.role_seed_owner, even though registry's own table has no
+	// cross-application contention for the flag to arbitrate: while the
 	// reconcile above still derives this table from the shared one, seeding one
 	// without the other would make the two disagree by construction and leave
 	// `role-drift` -- the gate on this whole phase -- permanently non-zero on a
-	// deployment that is in fact healthy. The flag retires in phase 4, together
-	// with the reconcile that creates the coupling.
-	if cfg.Suite.ShouldSeedRoles("registry") {
+	// deployment that is in fact healthy.
+	//
+	// The identity-schema CUTOVER, because that is the only topology this seed
+	// was ever for. It exists because the shared identity module seeds role
+	// templates with identity-core scopes only, so registry layers its own
+	// domain scopes on top. In the DEFAULT topology the templates are seeded by
+	// registry's own migrations and have been amended by them since -- migration
+	// 000018 added `scanning:read` to `devops` and `auditor`, which
+	// models.PredefinedRoleTemplates() does not carry -- so running the seed
+	// there would strip that scope from both roles on every boot. The migrations
+	// are the more current statement of registry's policy in that topology, and
+	// the reconcile above has already copied them.
+	//
+	// (That mismatch is a PRE-EXISTING defect in the cutover topology, where
+	// this list has always been what gets seeded. It is not made better or worse
+	// here, and it is not this change's to fix: correcting the list changes what
+	// two role templates confer, which a read cutover gated on equivalence must
+	// not do quietly.)
+	//
+	// identityDB != db is the cutover test. NewRouter is handed the same handle
+	// twice when identity data lives in the app's own schema, and a distinct one
+	// exactly when cmd/server opened a dedicated identity pool.
+	if identityDB != db && cfg.Suite.ShouldSeedRoles("registry") {
 		if sErr := repositories.SeedSystemRoleTemplates(
 			context.Background(), db, models.PredefinedRoleTemplates(),
 		); sErr != nil {

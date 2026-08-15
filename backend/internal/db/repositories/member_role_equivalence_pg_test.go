@@ -14,6 +14,7 @@ import (
 	identitystore "github.com/sethbacon/terraform-suite-identity/identity/store"
 
 	registryauth "github.com/terraform-registry/terraform-registry/internal/auth"
+	"github.com/terraform-registry/terraform-registry/internal/db/models"
 )
 
 // THE EQUIVALENCE PROOF for the read cutover
@@ -625,4 +626,119 @@ func derefOrEmpty(id *string) string {
 		return ""
 	}
 	return *id
+}
+
+// TestEquivalence_TheBootSequenceLeavesTheGateAtZero exercises the ACTUAL order
+// internal/api/router.go runs on every start and requires `role-drift` to be
+// clean afterwards, in BOTH topologies.
+//
+// This is the property most easily reasoned into existence and hardest to notice
+// the loss of, and reasoning got it wrong once already: seeding registry's table
+// unconditionally left permanent `template_scopes_differ` drift on a completely
+// healthy default deployment, because migration 000018 added `scanning:read` to
+// `devops` and `auditor` and models.PredefinedRoleTemplates() does not carry it.
+// A gate that can never return zero is not a gate -- it gets ignored, and the
+// real divergence it exists to catch is ignored with it.
+//
+// It also pins the ORDER. Seeding first and reconciling second leaves the
+// reconcile's copy of identity's templates as the final state, which is the same
+// failure with the two halves swapped.
+func TestEquivalence_TheBootSequenceLeavesTheGateAtZero(t *testing.T) {
+	// boot runs the startup sequence router.go performs, once.
+	boot := func(t *testing.T, db *sql.DB, cutover bool) {
+		t.Helper()
+		ctx := context.Background()
+		if cutover {
+			// cmd/server, before NewRouter: the shared table gets registry's
+			// scopes layered onto the identity module's core-only seed.
+			if err := SeedSharedIdentityRoleTemplates(ctx, db, models.PredefinedRoleTemplates()); err != nil {
+				t.Fatalf("seed the shared identity role templates: %v", err)
+			}
+		}
+		if _, err := ReconcileMemberRoles(ctx, db, db); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+		if cutover {
+			if err := SeedSystemRoleTemplates(ctx, db, models.PredefinedRoleTemplates()); err != nil {
+				t.Fatalf("seed registry's own role templates: %v", err)
+			}
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		// cutover is TFR_IDENTITY_SCHEMA_ENABLED: the only topology either seed
+		// runs in. Both are modelled on one database because what is under test
+		// is the DRIFT the sequence leaves, not which schema each statement
+		// resolves to -- that is
+		// TestReconcile_UsesTheEffectiveSourceUnderTheSchemaCutover's subject.
+		cutover bool
+	}{
+		{"default topology (migrations are the policy; neither seed runs)", false},
+		{"identity-schema cutover (both seeds run)", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, _ := reconcileScratchDB(t, 55)
+			seedEquivalenceEstate(t, db)
+			ctx := context.Background()
+
+			boot(t, db, tc.cutover)
+
+			report, err := CheckMemberRoleDrift(ctx, db, db)
+			if err != nil {
+				t.Fatalf("CheckMemberRoleDrift: %v", err)
+			}
+			if !report.Clean() {
+				for _, row := range report.Rows {
+					t.Errorf("boot left drift behind: %s", row)
+				}
+				t.Fatal("the startup sequence leaves `role-drift` non-zero on a healthy " +
+					"deployment, which makes the gate on this whole phase un-passable")
+			}
+
+			// A second boot must be identical: both seeds are idempotent and
+			// the reconcile must not undo either.
+			boot(t, db, tc.cutover)
+			report, err = CheckMemberRoleDrift(ctx, db, db)
+			if err != nil {
+				t.Fatalf("CheckMemberRoleDrift after a second boot: %v", err)
+			}
+			for _, row := range report.Rows {
+				t.Errorf("the second boot introduced drift: %s", row)
+			}
+
+			// Whatever the topology, registry must resolve every system role
+			// template by NAME, under the id its memberships name. A seed that
+			// inserted a second row under a fresh uuid instead of updating the
+			// reconciled one would strip every holder of their role.
+			reader := NewMemberRoleReader(db)
+			for _, want := range models.PredefinedRoleTemplates() {
+				got, tErr := reader.GetRoleTemplateByName(ctx, want.Name)
+				if tErr != nil {
+					t.Errorf("registry cannot resolve role template %q: %v", want.Name, tErr)
+					continue
+				}
+				identityScopes := templateScopesTheOldWay(t, db, want.Name)
+				if !sameStringSet(got.Scopes, identityScopes) {
+					t.Errorf("role template %q: registry resolves %v, the identity tables hold %v",
+						want.Name, sortedCopy(got.Scopes), sortedCopy(identityScopes))
+				}
+			}
+		})
+	}
+}
+
+// templateScopesTheOldWay reads a system template's scopes from the shared table,
+// the way the pre-cutover code did.
+func templateScopesTheOldWay(t *testing.T, db *sql.DB, name string) []string {
+	t.Helper()
+	var raw []byte
+	if err := db.QueryRow(`SELECT scopes FROM role_templates WHERE name = $1`, name).Scan(&raw); err != nil {
+		t.Fatalf("read %q the old way: %v", name, err)
+	}
+	var scopes []string
+	if err := json.Unmarshal(raw, &scopes); err != nil {
+		t.Fatalf("parse %q scopes: %v", name, err)
+	}
+	return scopes
 }
