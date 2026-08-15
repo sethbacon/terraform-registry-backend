@@ -51,6 +51,9 @@ func TestSCIMDeprovision_PartiallyRemovedMembershipsStillSucceed(t *testing.T) {
 				"provisioner", "Provisioner", []byte(`["scim:provision"]`)).
 			AddRow(scimOrgBeta, "Beta", "role-2", time.Now(),
 				"provisioner", "Provisioner", []byte(`["scim:provision"]`)))
+	// The same two memberships, with the roles registry's own tables hold for
+	// them (terraform-suite-identity#206, phase 3b).
+	expectCallerRegistryRoles(mock, scimOrgAlpha, scimOrgBeta)
 
 	// Alpha's membership was already gone; only Beta's row is removed, so only
 	// Beta comes back.
@@ -85,6 +88,7 @@ func TestSCIMDeprovision_AllMembershipsAlreadyRemovedSucceeds(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(scimMembershipCols).AddRow(
 			scimOrgAlpha, "Alpha", "role-1", time.Now(),
 			"provisioner", "Provisioner", []byte(`["scim:provision"]`)))
+	expectCallerRegistryRoles(mock, scimOrgAlpha)
 
 	mock.ExpectQuery("(?s)DELETE FROM organization_members").
 		WithArgs(scimTargetID, boundScope{want: []string{scimOrgAlpha}}).

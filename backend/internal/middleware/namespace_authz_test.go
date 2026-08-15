@@ -101,6 +101,14 @@ func memberRow(orgID, userID string, roleScopes string) *sqlmock.Rows {
 	)
 }
 
+// expectMirroredMemberRole queues the registry-side half of a memberRow: the
+// SAME template and the SAME scopes, because the identity row supplies the
+// membership fact while the role itself is now read from registry's own tables
+// (see the helpers in auth_test.go).
+func expectMirroredMemberRole(mock sqlmock.Sqlmock, roleScopes string) {
+	expectRegistryRoleFor(mock, "role-pub", "publisher", "Publisher", []byte(roleScopes))
+}
+
 func doNamespaceReq(r *gin.Engine, method, path string) *httptest.ResponseRecorder {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(method, path, nil))
@@ -163,6 +171,7 @@ func TestRequireNamespaceAccessFromPath_SameOrgPublisher_Allowed(t *testing.T) {
 			nsOrgA, nsUserID, "role-pub", time.Now(),
 			"Pub User", "pub@test.com", "publisher", "Publisher", []byte(`["modules:write"]`),
 		))
+	expectRegistryRoleFor(mock, "role-pub", "publisher", "Publisher", []byte(`["modules:write"]`))
 
 	r := gin.New()
 	r.DELETE("/modules/:namespace/:name/:system",
@@ -228,6 +237,7 @@ func TestRequireNamespaceAccessFromPath_APIKeyOrgMatch_Allowed(t *testing.T) {
 	// membership and role scopes decide it.
 	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
 		WillReturnRows(memberRow(nsOrgA, nsUserID, `["modules:write"]`))
+	expectMirroredMemberRole(mock, `["modules:write"]`)
 
 	r := gin.New()
 	r.DELETE("/modules/:namespace/:name/:system",
@@ -387,6 +397,10 @@ func TestRequirePublishAccessFromForm_FirstClaim_BindsToCallerOrg(t *testing.T) 
 		WillReturnRows(sqlmock.NewRows(userMembershipCols).AddRow(
 			nsOrgA, "Org A", "role-pub", time.Now(), "publisher", "Publisher", []byte(`["modules:write"]`),
 		)) // single membership → unambiguous caller org
+	expectRegistryRolesForUser(mock, registryRoleForOrg{
+		OrganizationID: nsOrgA, RoleTemplateID: "role-pub",
+		Name: "publisher", DisplayName: "Publisher", Scopes: []byte(`["modules:write"]`),
+	})
 	mock.ExpectExec("INSERT INTO namespace_claims").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectQuery("SELECT.*FROM namespace_claims").
@@ -395,6 +409,7 @@ func TestRequirePublishAccessFromForm_FirstClaim_BindsToCallerOrg(t *testing.T) 
 	// which is also what enforces the required scope on this path.
 	mock.ExpectQuery("SELECT.*FROM organization_members.*JOIN.*role_templates").
 		WillReturnRows(memberRow(nsOrgA, nsUserID, `["modules:write"]`))
+	expectMirroredMemberRole(mock, `["modules:write"]`)
 
 	r := gin.New()
 	r.POST("/modules",
@@ -445,6 +460,7 @@ func TestRequirePublishAccessFromForm_ExistingClaimSameOrg_Allowed(t *testing.T)
 			nsOrgA, nsUserID, "role-pub", time.Now(),
 			"Pub", "pub@test.com", "publisher", "Publisher", []byte(`["modules:write"]`),
 		))
+	expectRegistryRoleFor(mock, "role-pub", "publisher", "Publisher", []byte(`["modules:write"]`))
 
 	r := gin.New()
 	r.POST("/modules",
@@ -488,6 +504,11 @@ func TestRequirePublishAccessFromForm_AmbiguousMemberships_NonAdminDenied(t *tes
 		WillReturnRows(sqlmock.NewRows(userMembershipCols).
 			AddRow(nsOrgA, "Org A", "role-pub", time.Now(), "publisher", "Publisher", []byte(`["modules:write"]`)).
 			AddRow(nsOrgB, "Org B", "role-pub", time.Now(), "publisher", "Publisher", []byte(`["modules:write"]`)))
+	expectRegistryRolesForUser(mock,
+		registryRoleForOrg{OrganizationID: nsOrgA, RoleTemplateID: "role-pub",
+			Name: "publisher", DisplayName: "Publisher", Scopes: []byte(`["modules:write"]`)},
+		registryRoleForOrg{OrganizationID: nsOrgB, RoleTemplateID: "role-pub",
+			Name: "publisher", DisplayName: "Publisher", Scopes: []byte(`["modules:write"]`)})
 
 	r := gin.New()
 	r.POST("/modules",
@@ -547,6 +568,7 @@ func TestRequirePublishAccessFromForm_APIKeyOwned_FirstClaim_ReverifiesMembershi
 	// resolveCallerOrg re-verifies before the claim is created.
 	mock.ExpectQuery("SELECT.*FROM organization_members.*JOIN.*role_templates").
 		WillReturnRows(memberRow(nsOrgA, nsUserID, `["modules:write"]`))
+	expectMirroredMemberRole(mock, `["modules:write"]`)
 	mock.ExpectExec("INSERT INTO namespace_claims").
 		WithArgs("ci-team", nsOrgA, sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -555,6 +577,7 @@ func TestRequirePublishAccessFromForm_APIKeyOwned_FirstClaim_ReverifiesMembershi
 	// authorizeOrgAccess re-verifies against the claim's owner, unconditionally.
 	mock.ExpectQuery("SELECT.*FROM organization_members.*JOIN.*role_templates").
 		WillReturnRows(memberRow(nsOrgA, nsUserID, `["modules:write"]`))
+	expectMirroredMemberRole(mock, `["modules:write"]`)
 
 	r := gin.New()
 	r.POST("/modules",
@@ -618,6 +641,7 @@ func TestRequirePublishAccessFromForm_APIKeyOwnerDowngraded_FirstClaimDenied(t *
 	// Still a member, but the role template no longer grants modules:write.
 	mock.ExpectQuery("SELECT.*FROM organization_members.*JOIN.*role_templates").
 		WillReturnRows(memberRow(nsOrgA, nsUserID, `["modules:read"]`))
+	expectMirroredMemberRole(mock, `["modules:read"]`)
 
 	r := gin.New()
 	r.POST("/modules",
@@ -646,6 +670,7 @@ func TestRequireNamespaceAccessFromPath_APIKeyOwnerDowngraded_Denied(t *testing.
 		WillReturnRows(sqlmock.NewRows(claimCols).AddRow("acme", nsOrgA, nil, time.Now()))
 	mock.ExpectQuery("SELECT.*FROM organization_members.*JOIN.*role_templates").
 		WillReturnRows(memberRow(nsOrgA, nsUserID, `["modules:read"]`))
+	expectMirroredMemberRole(mock, `["modules:read"]`)
 
 	r := gin.New()
 	r.DELETE("/modules/:namespace/:name/:system",
@@ -680,6 +705,11 @@ func TestRequirePublishAccessFromForm_MultiOrgAdmin_NoExplicitOrg_FailsClosed(t 
 		WillReturnRows(sqlmock.NewRows(userMembershipCols).
 			AddRow(nsOrgA, "Org A", "role-adm", time.Now(), "admin", "Administrator", []byte(`["admin"]`)).
 			AddRow(nsOrgB, "Org B", "role-adm", time.Now(), "admin", "Administrator", []byte(`["admin"]`)))
+	expectRegistryRolesForUser(mock,
+		registryRoleForOrg{OrganizationID: nsOrgA, RoleTemplateID: "role-adm",
+			Name: "admin", DisplayName: "Administrator", Scopes: []byte(`["admin"]`)},
+		registryRoleForOrg{OrganizationID: nsOrgB, RoleTemplateID: "role-adm",
+			Name: "admin", DisplayName: "Administrator", Scopes: []byte(`["admin"]`)})
 
 	r := gin.New()
 	r.POST("/modules",
@@ -743,6 +773,11 @@ func TestRequirePublishAccessFromForm_NonAdminExplicitOrg_Member_Claims(t *testi
 		WillReturnRows(sqlmock.NewRows(userMembershipCols).
 			AddRow(nsOrgA, "Org A", "role-pub", time.Now(), "publisher", "Publisher", []byte(`["modules:write"]`)).
 			AddRow(nsOrgB, "Org B", "role-pub", time.Now(), "publisher", "Publisher", []byte(`["modules:write"]`)))
+	expectRegistryRolesForUser(mock,
+		registryRoleForOrg{OrganizationID: nsOrgA, RoleTemplateID: "role-pub",
+			Name: "publisher", DisplayName: "Publisher", Scopes: []byte(`["modules:write"]`)},
+		registryRoleForOrg{OrganizationID: nsOrgB, RoleTemplateID: "role-pub",
+			Name: "publisher", DisplayName: "Publisher", Scopes: []byte(`["modules:write"]`)})
 	mock.ExpectExec("INSERT INTO namespace_claims").
 		WithArgs("newteam", nsOrgB, sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -752,6 +787,7 @@ func TestRequirePublishAccessFromForm_NonAdminExplicitOrg_Member_Claims(t *testi
 	// chosen org; the unconditional post-claim check supplies that.
 	mock.ExpectQuery("SELECT.*FROM organization_members.*JOIN.*role_templates").
 		WillReturnRows(memberRow(nsOrgB, nsUserID, `["modules:write"]`))
+	expectMirroredMemberRole(mock, `["modules:write"]`)
 
 	r := gin.New()
 	r.POST("/modules",
@@ -781,6 +817,10 @@ func TestRequirePublishAccessFromForm_NonAdminExplicitOrg_NotMember_Denied(t *te
 	mock.ExpectQuery("SELECT.*FROM organization_members.*JOIN organizations").
 		WillReturnRows(sqlmock.NewRows(userMembershipCols).
 			AddRow(nsOrgA, "Org A", "role-pub", time.Now(), "publisher", "Publisher", []byte(`["modules:write"]`)))
+	expectRegistryRolesForUser(mock, registryRoleForOrg{
+		OrganizationID: nsOrgA, RoleTemplateID: "role-pub",
+		Name: "publisher", DisplayName: "Publisher", Scopes: []byte(`["modules:write"]`),
+	})
 
 	r := gin.New()
 	r.POST("/modules",
@@ -813,6 +853,7 @@ func TestRequirePublishAccessFromForm_APIKeyOrg_IgnoresExplicitOrg(t *testing.T)
 	// row is written, once afterwards against the claim's actual owner.
 	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
 		WillReturnRows(memberRow(nsOrgA, nsUserID, `["modules:write"]`))
+	expectMirroredMemberRole(mock, `["modules:write"]`)
 	mock.ExpectExec("INSERT INTO namespace_claims").
 		WithArgs("ci-team", nsOrgA, sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -820,6 +861,7 @@ func TestRequirePublishAccessFromForm_APIKeyOrg_IgnoresExplicitOrg(t *testing.T)
 		WillReturnRows(sqlmock.NewRows(claimCols).AddRow("ci-team", nsOrgA, nil, time.Now()))
 	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
 		WillReturnRows(memberRow(nsOrgA, nsUserID, `["modules:write"]`))
+	expectMirroredMemberRole(mock, `["modules:write"]`)
 
 	r := gin.New()
 	r.POST("/modules",
@@ -858,6 +900,7 @@ func TestRequirePublishAccessFromJSON_BodyRestoredForHandler(t *testing.T) {
 			nsOrgA, nsUserID, "role-pub", time.Now(),
 			"Pub", "pub@test.com", "publisher", "Publisher", []byte(`["modules:write"]`),
 		))
+	expectRegistryRoleFor(mock, "role-pub", "publisher", "Publisher", []byte(`["modules:write"]`))
 
 	var gotNamespace string
 	r := gin.New()
@@ -896,6 +939,7 @@ func TestRequirePublishAccessFromJSON_OrgOverrideMismatch_Denied(t *testing.T) {
 			nsOrgA, nsUserID, "role-pub", time.Now(),
 			"Pub", "pub@test.com", "publisher", "Publisher", []byte(`["modules:write"]`),
 		))
+	expectRegistryRoleFor(mock, "role-pub", "publisher", "Publisher", []byte(`["modules:write"]`))
 
 	r := gin.New()
 	r.POST("/admin/providers",
@@ -1002,6 +1046,7 @@ func TestRequireProviderAccessByID_SameOrg_Allowed(t *testing.T) {
 			nsOrgA, nsUserID, "role-pub", time.Now(),
 			"Pub", "pub@test.com", "publisher", "Publisher", []byte(`["providers:write"]`),
 		))
+	expectRegistryRoleFor(mock, "role-pub", "publisher", "Publisher", []byte(`["providers:write"]`))
 
 	r := gin.New()
 	r.PUT("/admin/providers/:id",
@@ -1031,6 +1076,7 @@ func TestRequireModuleUpdateAccess_MoveToUnclaimedNamespace_ClaimsForCurrentOrg(
 			nsOrgA, nsUserID, "role-pub", time.Now(),
 			"Pub", "pub@test.com", "publisher", "Publisher", []byte(`["modules:write"]`),
 		))
+	expectRegistryRoleFor(mock, "role-pub", "publisher", "Publisher", []byte(`["modules:write"]`))
 	// Target namespace "newhome" is unclaimed and has no artifacts.
 	mock.ExpectQuery("SELECT.*FROM namespace_claims").
 		WillReturnRows(sqlmock.NewRows(claimCols))
@@ -1073,6 +1119,7 @@ func TestRequireModuleUpdateAccess_MoveToOtherOrgNamespace_Denied(t *testing.T) 
 			nsOrgA, nsUserID, "role-pub", time.Now(),
 			"Pub", "pub@test.com", "publisher", "Publisher", []byte(`["modules:write"]`),
 		))
+	expectRegistryRoleFor(mock, "role-pub", "publisher", "Publisher", []byte(`["modules:write"]`))
 	// Target namespace "rivals" is owned by org B.
 	mock.ExpectQuery("SELECT.*FROM namespace_claims").
 		WillReturnRows(sqlmock.NewRows(claimCols).AddRow("rivals", nsOrgB, nil, time.Now()))

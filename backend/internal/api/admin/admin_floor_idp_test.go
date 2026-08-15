@@ -75,6 +75,8 @@ func expectManagedOrgLookup(identity sqlmock.Sqlmock) {
 	identity.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
 		WillReturnRows(sqlmock.NewRows(authMemberCols).
 			AddRow("org-1", "user-1", &roleID, time.Now()))
+	// The membership FACT is still identity's; the role it holds is registry's.
+	expectRegistryRoleFor(identity, registryRole{id: roleID})
 }
 
 // TestIdPReconcile_SkipsADeprovisionThatWouldStrandTheOrganization.

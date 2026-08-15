@@ -163,6 +163,26 @@ func classMembershipRowsWithScopes(orgID string, scopes string) *sqlmock.Rows {
 		orgID, "Org", "role-1", time.Now(), "custom", "Custom", []byte(scopes))
 }
 
+// expectClassRegistryRoles queues the read of registry's own role tables that
+// now follows every classMembershipRows lookup, answering with the SAME role and
+// the SAME scopes so each site's resolved tenant scope is unchanged.
+func expectClassRegistryRoles(mock sqlmock.Sqlmock, member bool) {
+	orgID := classOrgAlpha
+	if member {
+		orgID = classOrgBeta
+	}
+	expectRegistryRolesForUser(mock, registryRole{
+		orgID: orgID, id: "role-1", name: "devops", displayName: "DevOps", scopes: classRoleScopes,
+	})
+}
+
+// expectClassRegistryRolesWithScopes is the same for classMembershipRowsWithScopes.
+func expectClassRegistryRolesWithScopes(mock sqlmock.Sqlmock, orgID, scopes string) {
+	expectRegistryRolesForUser(mock, registryRole{
+		orgID: orgID, id: "role-1", name: "custom", displayName: "Custom", scopes: scopes,
+	})
+}
+
 func tenantScopeSites() []tenantScopeSite {
 	return []tenantScopeSite{
 		{
@@ -172,6 +192,7 @@ func tenantScopeSites() []tenantScopeSite {
 			mount: func(t *testing.T, member bool) (*gin.Engine, sqlmock.Sqlmock) {
 				mock, sqlxDB, r := classSQLMock(t)
 				mock.ExpectQuery("(?s)FROM organization_members").WillReturnRows(classMembershipRows(member))
+				expectClassRegistryRoles(mock, member)
 				// The tenant constraint is a QUERY PREDICATE, so the expectation
 				// requires it in the statement: strip the guard and the emitted
 				// SQL no longer matches, the read errors, and this row goes red.
@@ -208,6 +229,7 @@ func tenantScopeSites() []tenantScopeSite {
 			mount: func(t *testing.T, member bool) (*gin.Engine, sqlmock.Sqlmock) {
 				mock, sqlxDB, r := classSQLMock(t)
 				mock.ExpectQuery("(?s)FROM organization_members").WillReturnRows(classMembershipRows(member))
+				expectClassRegistryRoles(mock, member)
 				// As with the by-id axis: the predicate is in the statement, so
 				// the stream never receives the foreign tenant's rows. The
 				// earlier revision of this batch filtered them out in Go after
@@ -239,6 +261,7 @@ func tenantScopeSites() []tenantScopeSite {
 			mount: func(t *testing.T, member bool) (*gin.Engine, sqlmock.Sqlmock) {
 				mock, sqlxDB, r := classSQLMock(t)
 				mock.ExpectQuery("(?s)FROM organization_members").WillReturnRows(classMembershipRows(member))
+				expectClassRegistryRoles(mock, member)
 				mock.ExpectQuery("(?s)FROM mirror_configurations").WillReturnRows(
 					sqlmock.NewRows(mirrorCfgCols).AddRow(
 						classResource, "beta-mirror", nil, "https://registry.terraform.io", classOrgBeta,
@@ -266,6 +289,7 @@ func tenantScopeSites() []tenantScopeSite {
 				mock, sqlxDB, r := classSQLMock(t)
 				mock.ExpectQuery("(?s)FROM mirror_configurations").WillReturnRows(sqlmock.NewRows(mirrorCfgCols))
 				mock.ExpectQuery("(?s)FROM organization_members").WillReturnRows(classMembershipRows(member))
+				expectClassRegistryRoles(mock, member)
 				mock.ExpectQuery("(?s)INSERT INTO mirror_configurations").WillReturnRows(
 					sqlmock.NewRows([]string{"id", "created_at", "updated_at"}).
 						AddRow(classResource, time.Now(), time.Now()))
@@ -299,6 +323,7 @@ func tenantScopeSites() []tenantScopeSite {
 						nil, nil, nil, nil, true, 24, nil, nil, nil,
 						time.Now(), time.Now(), nil))
 				mock.ExpectQuery("(?s)FROM organization_members").WillReturnRows(classMembershipRows(member))
+				expectClassRegistryRoles(mock, member)
 				mock.ExpectExec("(?s)UPDATE mirror_configurations").WillReturnResult(sqlmock.NewResult(1, 1))
 				h := NewMirrorHandler(repositories.NewMirrorRepository(sqlxDB),
 					repositories.NewOrganizationRepository(sqlxDB.DB),
@@ -328,6 +353,7 @@ func tenantScopeSites() []tenantScopeSite {
 			mount: func(t *testing.T, member bool) (*gin.Engine, sqlmock.Sqlmock) {
 				mock, sqlxDB, r := classSQLMock(t)
 				mock.ExpectQuery("(?s)FROM organization_members").WillReturnRows(classMembershipRows(member))
+				expectClassRegistryRoles(mock, member)
 				mock.ExpectQuery("(?s)FROM mirror_policies").WillReturnRows(
 					sqlmock.NewRows(mpListCols).AddRow(
 						classResource, classOrgBeta, "beta-policy", nil, "allow",
@@ -356,6 +382,7 @@ func tenantScopeSites() []tenantScopeSite {
 			mount: func(t *testing.T, member bool) (*gin.Engine, sqlmock.Sqlmock) {
 				mock, sqlxDB, r := classSQLMock(t)
 				mock.ExpectQuery("(?s)FROM organization_members").WillReturnRows(classMembershipRows(member))
+				expectClassRegistryRoles(mock, member)
 				mock.ExpectQuery("(?s)FROM mirror_policies").WillReturnRows(
 					sqlmock.NewRows(mpListCols).AddRow(
 						classResource, nil, "global-policy", nil, "deny",
@@ -381,6 +408,7 @@ func tenantScopeSites() []tenantScopeSite {
 			mount: func(t *testing.T, member bool) (*gin.Engine, sqlmock.Sqlmock) {
 				mock, sqlxDB, r := classSQLMock(t)
 				mock.ExpectQuery("(?s)FROM organization_members").WillReturnRows(classMembershipRows(member))
+				expectClassRegistryRoles(mock, member)
 				mock.ExpectQuery("(?s)FROM mirror_approval_requests").WillReturnRows(
 					sqlmock.NewRows(approvalListCols).AddRow(
 						classResource, classResource, classOrgBeta, nil,
@@ -413,6 +441,7 @@ func tenantScopeSites() []tenantScopeSite {
 				mock, sqlxDB, r := classSQLMock(t)
 				mock.ExpectQuery("(?s)FROM mirror_configurations").WillReturnRows(sqlmock.NewRows(mirrorCfgCols))
 				mock.ExpectQuery("(?s)FROM organization_members").WillReturnRows(classMembershipRows(member))
+				expectClassRegistryRoles(mock, member)
 				mock.ExpectExec("(?s)INSERT INTO mirror_configurations").
 					WillReturnResult(sqlmock.NewResult(1, 1))
 				h := NewMirrorHandler(repositories.NewMirrorRepository(sqlxDB),
@@ -454,6 +483,7 @@ func tenantScopeSites() []tenantScopeSite {
 						nil, nil, nil, nil, true, 24, nil, nil, nil,
 						time.Now(), time.Now(), nil))
 				mock.ExpectQuery("(?s)FROM organization_members").WillReturnRows(classMembershipRows(member))
+				expectClassRegistryRoles(mock, member)
 				mock.ExpectExec("(?s)UPDATE mirror_configurations").WillReturnResult(sqlmock.NewResult(1, 1))
 				h := NewMirrorHandler(repositories.NewMirrorRepository(sqlxDB),
 					repositories.NewOrganizationRepository(sqlxDB.DB),
@@ -543,6 +573,7 @@ func tenantScopeSites() []tenantScopeSite {
 				}
 				mock.ExpectQuery("(?s)FROM organization_members").
 					WillReturnRows(classMembershipRowsWithScopes(classOrgBeta, scopes))
+				expectClassRegistryRolesWithScopes(mock, classOrgBeta, scopes)
 				mock.ExpectQuery("(?s)FROM mirror_configurations").WillReturnRows(
 					sqlmock.NewRows(mirrorCfgCols).AddRow(
 						classResource, "beta-mirror", nil, "https://registry.terraform.io", classOrgBeta,
@@ -573,6 +604,7 @@ func tenantScopeSites() []tenantScopeSite {
 			mount: func(t *testing.T, member bool) (*gin.Engine, sqlmock.Sqlmock) {
 				mock, sqlxDB, r := classSQLMock(t)
 				mock.ExpectQuery("(?s)FROM organization_members").WillReturnRows(classMembershipRows(member))
+				expectClassRegistryRoles(mock, member)
 				mock.ExpectExec("(?s)INSERT INTO mirror_policies").
 					WillReturnResult(sqlmock.NewResult(1, 1))
 				h := NewRBACHandlers(repositories.NewRBACRepository(sqlxDB), nil, nil).
@@ -609,6 +641,7 @@ func tenantScopeSites() []tenantScopeSite {
 						nil, nil, nil, nil, true, 24, nil, nil, nil,
 						time.Now(), time.Now(), nil))
 				mock.ExpectQuery("(?s)FROM organization_members").WillReturnRows(classMembershipRows(member))
+				expectClassRegistryRoles(mock, member)
 				mock.ExpectExec("(?s)INSERT INTO mirror_approval_requests").
 					WillReturnResult(sqlmock.NewResult(1, 1))
 				h := NewRBACHandlers(repositories.NewRBACRepository(sqlxDB), nil, nil).
@@ -635,6 +668,7 @@ func tenantScopeSites() []tenantScopeSite {
 			mount: func(t *testing.T, member bool) (*gin.Engine, sqlmock.Sqlmock) {
 				mock, sqlxDB, r := classSQLMock(t)
 				mock.ExpectQuery("(?s)FROM organization_members").WillReturnRows(classMembershipRows(member))
+				expectClassRegistryRoles(mock, member)
 				// The predicate must be in the statement. Strip the guard and
 				// the emitted SQL stops matching, so the row goes red.
 				mock.ExpectQuery(`(?s)SELECT COUNT.*organization_id = ANY`).
@@ -659,6 +693,7 @@ func tenantScopeSites() []tenantScopeSite {
 			mount: func(t *testing.T, member bool) (*gin.Engine, sqlmock.Sqlmock) {
 				mock, sqlxDB, r := classSQLMock(t)
 				mock.ExpectQuery("(?s)FROM organization_members").WillReturnRows(classMembershipRows(member))
+				expectClassRegistryRoles(mock, member)
 				mock.ExpectQuery(`(?s)SELECT va\.organization_id FROM`).
 					WillReturnRows(sqlmock.NewRows([]string{"organization_id"}).AddRow(classOrgBeta))
 				mock.ExpectQuery("(?s)FROM version_approval_events").WillReturnRows(
@@ -690,6 +725,7 @@ func tenantScopeSites() []tenantScopeSite {
 			mount: func(t *testing.T, member bool) (*gin.Engine, sqlmock.Sqlmock) {
 				mock, sqlxDB, r := classSQLMock(t)
 				mock.ExpectQuery("(?s)FROM organization_members").WillReturnRows(classMembershipRows(member))
+				expectClassRegistryRoles(mock, member)
 				mock.ExpectQuery("(?s)FROM namespace_claims").WillReturnRows(
 					sqlmock.NewRows([]string{"namespace", "organization_id", "claimed_by", "created_at"}).
 						AddRow("beta-ns", classOrgBeta, nil, time.Now()))
@@ -714,6 +750,7 @@ func tenantScopeSites() []tenantScopeSite {
 			mount: func(t *testing.T, member bool) (*gin.Engine, sqlmock.Sqlmock) {
 				mock, sqlxDB, r := classSQLMock(t)
 				mock.ExpectQuery("(?s)FROM organization_members").WillReturnRows(classMembershipRows(member))
+				expectClassRegistryRoles(mock, member)
 				mock.ExpectQuery("(?s)FROM namespace_claims").WillReturnRows(
 					sqlmock.NewRows([]string{"namespace", "organization_id", "claimed_by", "created_at"}).
 						AddRow("beta-ns", classOrgBeta, nil, time.Now()))
@@ -743,6 +780,7 @@ func tenantScopeSites() []tenantScopeSite {
 			mount: func(t *testing.T, member bool) (*gin.Engine, sqlmock.Sqlmock) {
 				mock, sqlxDB, r := classSQLMock(t)
 				mock.ExpectQuery("(?s)FROM organization_members").WillReturnRows(classMembershipRows(member))
+				expectClassRegistryRoles(mock, member)
 				// The tenant constraint is a QUERY PREDICATE since identity
 				// v0.25.0, on BOTH statements this handler issues: the page and
 				// its total. Previously the handler fetched each in-scope id one
@@ -781,6 +819,7 @@ func tenantScopeSites() []tenantScopeSite {
 			mount: func(t *testing.T, member bool) (*gin.Engine, sqlmock.Sqlmock) {
 				mock, sqlxDB, r := classSQLMock(t)
 				mock.ExpectQuery("(?s)FROM organization_members").WillReturnRows(classMembershipRows(member))
+				expectClassRegistryRoles(mock, member)
 				name, display := "alpha", "Alpha"
 				orgID := classOrgAlpha
 				if member {
@@ -813,6 +852,7 @@ func tenantScopeSites() []tenantScopeSite {
 			mount: func(t *testing.T, member bool) (*gin.Engine, sqlmock.Sqlmock) {
 				mock, sqlxDB, r := classSQLMock(t)
 				mock.ExpectQuery("(?s)FROM organization_members").WillReturnRows(classMembershipRows(member))
+				expectClassRegistryRoles(mock, member)
 				mock.ExpectQuery("(?s)FROM scm_providers").WillReturnRows(sqlmock.NewRows(scmProvCols))
 				mock.ExpectExec("(?s)INSERT INTO scm_providers").WillReturnResult(sqlmock.NewResult(1, 1))
 				h := NewSCMProviderHandlers(&config.Config{},
@@ -843,6 +883,7 @@ func tenantScopeSites() []tenantScopeSite {
 			mount: func(t *testing.T, member bool) (*gin.Engine, sqlmock.Sqlmock) {
 				mock, sqlxDB, r := classSQLMock(t)
 				mock.ExpectQuery("(?s)FROM organization_members").WillReturnRows(classMembershipRows(member))
+				expectClassRegistryRoles(mock, member)
 				mock.ExpectQuery("(?s)FROM scm_providers").WillReturnRows(sqlmock.NewRows(scmProvCols))
 				mock.ExpectExec("(?s)INSERT INTO scm_providers").WillReturnResult(sqlmock.NewResult(1, 1))
 				h := NewSCMProviderHandlers(&config.Config{},

@@ -102,10 +102,19 @@ func postgresPool(t *testing.T) *sql.DB {
 		_, _ = cleanup.Exec(`DROP SCHEMA IF EXISTS ` + testSchema + ` CASCADE`)
 	})
 
-	// The columns the floor actually reads, with the types migration 000001
-	// and 000051 give them. scopes is JSONB here, the registry's own encoding;
-	// the TEXT[] form the shared identity schema uses is covered by
+	// The columns the floor actually reads, with the types migration 000001,
+	// 000051 and 000055 give them. scopes is JSONB here, the registry's own
+	// encoding; the TEXT[] form the shared identity schema uses is covered by
 	// TestParseRoleScopes, which does not need a database.
+	//
+	// `role_templates` and `organization_members` are still here even though
+	// the floor no longer reads a role from them: the membership FACT is still
+	// identity's, and the shared table is still what a rollback reads. Since
+	// terraform-suite-identity#206 phase 3b the floor resolves SCOPES from
+	// registry's own pair below, which is why they have to exist for these
+	// tests to run at all -- a schema missing them made every query error, and
+	// the floor correctly refused with ErrIndeterminate rather than counting
+	// administrators it could not see.
 	schema := []string{
 		`CREATE TABLE users (id UUID PRIMARY KEY, email VARCHAR(255) NOT NULL)`,
 		`CREATE TABLE organizations (id UUID PRIMARY KEY, name VARCHAR(255) NOT NULL)`,
@@ -114,6 +123,12 @@ func postgresPool(t *testing.T) *sql.DB {
 			organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
 			user_id UUID REFERENCES users(id) ON DELETE CASCADE,
 			role_template_id UUID REFERENCES role_templates(id) ON DELETE SET NULL,
+			PRIMARY KEY (organization_id, user_id))`,
+		`CREATE TABLE registry_role_templates (id UUID PRIMARY KEY, name TEXT NOT NULL UNIQUE, scopes JSONB NOT NULL DEFAULT '[]')`,
+		`CREATE TABLE organization_member_roles (
+			organization_id UUID NOT NULL,
+			user_id UUID NOT NULL,
+			role_template_id UUID REFERENCES registry_role_templates(id) ON DELETE SET NULL,
 			PRIMARY KEY (organization_id, user_id))`,
 		`CREATE TABLE platform_admins (user_id UUID PRIMARY KEY, granted_by UUID, granted_at TIMESTAMPTZ NOT NULL DEFAULT now(), note TEXT)`,
 	}
@@ -178,6 +193,15 @@ func seedTwoAdministrators(t *testing.T, pool *sql.DB) {
 		`INSERT INTO organization_members VALUES ('` + orgMain + `', '` + userAdminA + `', '` + tmplAdmin + `')`,
 		`INSERT INTO organization_members VALUES ('` + orgMain + `', '` + userAdminB + `', '` + tmplAdmin + `')`,
 		`INSERT INTO organization_members VALUES ('` + orgMain + `', '` + userViewerC + `', '` + tmplViewer + `')`,
+		// Registry's own copy, reconciled (terraform-suite-identity#206 phase
+		// 3b). The floor reads the SCOPES from here; seeding it with anything
+		// other than the identity rows above would test a divergence rather
+		// than the invariant.
+		`INSERT INTO registry_role_templates (id, name, scopes) VALUES ('` + tmplAdmin + `', 'admin', '["admin"]'::jsonb)`,
+		`INSERT INTO registry_role_templates (id, name, scopes) VALUES ('` + tmplViewer + `', 'viewer', '["modules:read"]'::jsonb)`,
+		`INSERT INTO organization_member_roles VALUES ('` + orgMain + `', '` + userAdminA + `', '` + tmplAdmin + `')`,
+		`INSERT INTO organization_member_roles VALUES ('` + orgMain + `', '` + userAdminB + `', '` + tmplAdmin + `')`,
+		`INSERT INTO organization_member_roles VALUES ('` + orgMain + `', '` + userViewerC + `', '` + tmplViewer + `')`,
 		`INSERT INTO platform_admins (user_id) VALUES ('` + userAdminA + `')`,
 	}
 	for _, s := range stmts {

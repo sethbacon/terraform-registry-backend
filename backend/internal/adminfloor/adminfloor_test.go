@@ -519,7 +519,7 @@ func TestProtect_RefusesDemotingAnOrganizationsLastAdministrator(t *testing.T) {
 	expectLock(registry)
 
 	keeps := viewerTemplate
-	identity.ExpectQuery("SELECT scopes FROM role_templates").
+	identity.ExpectQuery("SELECT scopes FROM registry_role_templates").
 		WithArgs(keeps).
 		WillReturnRows(sqlmock.NewRows([]string{"scopes"}).AddRow([]byte(viewerScopes)))
 	identity.ExpectQuery("WHERE om.organization_id").

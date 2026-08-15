@@ -20,7 +20,6 @@ import (
 // is delegated to the shared identity store so it follows the identity schema.
 type RBACRepository struct {
 	db            *sqlx.DB
-	identityDB    *sqlx.DB
 	roleTemplates *identitystore.RoleTemplateRepository
 	// mirror writes registry's own registry_role_templates
 	// (sethbacon/terraform-suite-identity#206, migration 000055).
@@ -32,6 +31,17 @@ type RBACRepository struct {
 	// migration 000055 actually created the table. That is correct in every
 	// identity topology, including a separate identity database.
 	mirror *MemberRoleMirror
+
+	// roles READS registry's own tables. Since phase 3b every role template
+	// this repository RETURNS comes from `registry_role_templates`, and the
+	// membership sweep that follows a template change reads
+	// `organization_member_roles`. Writes still go to both locations -- the
+	// shared table is what the state manager and the rollback path read, and
+	// phase 4 is what removes it.
+	//
+	// Built on `db` for the same reason the mirror is: that is the connection
+	// migration 000055 created the tables on.
+	roles *MemberRoleReader
 }
 
 // NewRBACRepository creates a new RBAC repository whose role-template access uses
@@ -47,9 +57,9 @@ func NewRBACRepository(db *sqlx.DB) *RBACRepository {
 func NewRBACRepositoryWithIdentity(db, identityDB *sqlx.DB) *RBACRepository {
 	return &RBACRepository{
 		db:            db,
-		identityDB:    identityDB,
 		roleTemplates: identitystore.NewRoleTemplateRepository(identityDB.DB),
 		mirror:        NewMemberRoleMirror(db.DB),
+		roles:         NewMemberRoleReader(db.DB),
 	}
 }
 
@@ -71,42 +81,41 @@ type RoleTemplateMembership struct {
 // where they actually held this template must be revoked (issue #732). Without
 // the organization this query cannot express the second sweep without either
 // over-revoking (every key the member holds anywhere) or not revoking at all.
+//
+// It reads REGISTRY's own `organization_member_roles` since phase 3b
+// (terraform-suite-identity#206). The sweep withdraws credentials that
+// snapshotted the authority a template conferred, and since the cutover that
+// authority came from registry's tables -- so sweeping the identity table's
+// holders would revoke exactly the wrong set on any row where the two disagree,
+// which is the state this phase's drift check and divergence metric exist to
+// surface.
 func (r *RBACRepository) ListRoleTemplateMemberships(ctx context.Context, roleTemplateID uuid.UUID) ([]RoleTemplateMembership, error) {
-	query := `SELECT DISTINCT user_id, organization_id FROM organization_members WHERE role_template_id = $1`
-	rows, err := r.identityDB.QueryContext(ctx, query, roleTemplateID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []RoleTemplateMembership
-	for rows.Next() {
-		var m RoleTemplateMembership
-		if err := rows.Scan(&m.UserID, &m.OrganizationID); err != nil {
-			return nil, err
-		}
-		out = append(out, m)
-	}
-	return out, rows.Err()
+	return r.roles.MembershipsWithTemplate(ctx, roleTemplateID)
 }
 
 // ============================================================================
-// Role Templates (delegated to the shared identity store)
+// Role Templates
 // ============================================================================
+//
+// READS come from registry's own `registry_role_templates` (phase 3b); WRITES
+// still go to the shared identity store as well as registry's table. The
+// asymmetry is deliberate and is what makes the rollback in
+// docs/identity-schema.md real: deploying the previous image returns every read
+// to a shared table that has been kept current all along.
 
-// ListRoleTemplates returns all role templates.
+// ListRoleTemplates returns registry's own role templates.
 func (r *RBACRepository) ListRoleTemplates(ctx context.Context) ([]*models.RoleTemplate, error) {
-	return r.roleTemplates.ListRoleTemplates(ctx)
+	return r.roles.ListRoleTemplates(ctx)
 }
 
-// GetRoleTemplate retrieves a role template by ID.
+// GetRoleTemplate retrieves one of registry's own role templates by ID.
 func (r *RBACRepository) GetRoleTemplate(ctx context.Context, id uuid.UUID) (*models.RoleTemplate, error) {
-	return r.roleTemplates.GetRoleTemplate(ctx, id)
+	return r.roles.GetRoleTemplate(ctx, id)
 }
 
-// GetRoleTemplateByName retrieves a role template by name.
+// GetRoleTemplateByName retrieves one of registry's own role templates by name.
 func (r *RBACRepository) GetRoleTemplateByName(ctx context.Context, name string) (*models.RoleTemplate, error) {
-	return r.roleTemplates.GetRoleTemplateByName(ctx, name)
+	return r.roles.GetRoleTemplateByName(ctx, name)
 }
 
 // CreateRoleTemplate creates a new role template, and mirrors it into

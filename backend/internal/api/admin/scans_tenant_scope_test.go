@@ -62,10 +62,20 @@ func membershipRowsForScanScope(orgID string, scopes string) *sqlmock.Rows {
 		AddRow(orgID, "org-alpha", "role-1", time.Now(), "devops", "DevOps", []byte(scopes))
 }
 
+// expectScanScopeRegistryRole queues the read of registry's own role tables that
+// now follows the membership lookup above, repeating the same role and the same
+// scopes so the caller's resolved scope is unchanged.
+func expectScanScopeRegistryRole(mock sqlmock.Sqlmock, orgID, scopes string) {
+	expectRegistryRolesForUser(mock, registryRole{
+		orgID: orgID, id: "role-1", name: "devops", displayName: "DevOps", scopes: scopes,
+	})
+}
+
 func TestGetScanByID_ScopedCallerGetsTheScopedQuery(t *testing.T) {
 	mock, r := scopedScanRouter(t)
 	mock.ExpectQuery("(?s)FROM organization_members").
 		WillReturnRows(membershipRowsForScanScope(scanOrgAlpha, `["scanning:read"]`))
+	expectScanScopeRegistryRole(mock, scanOrgAlpha, `["scanning:read"]`)
 	// The scoped form joins through module_versions -> modules and binds
 	// m.organization_id. A platform-wide scope emits the literal TRUE and would
 	// not match this expectation, which is what makes the test meaningful.
@@ -84,6 +94,7 @@ func TestGetScanByID_OutOfScopeIs404NotForbidden(t *testing.T) {
 	mock, r := scopedScanRouter(t)
 	mock.ExpectQuery("(?s)FROM organization_members").
 		WillReturnRows(membershipRowsForScanScope(scanOrgAlpha, `["scanning:read"]`))
+	expectScanScopeRegistryRole(mock, scanOrgAlpha, `["scanning:read"]`)
 	// A scan owned by another organization matches no row under this scope.
 	mock.ExpectQuery("(?s)JOIN modules.*m.organization_id").
 		WillReturnRows(sqlmock.NewRows(scanAdminCols))
@@ -112,6 +123,7 @@ func TestGetScanByID_MembershipWithoutScanningReadReachesNothing(t *testing.T) {
 	// scanning:read. Membership is not authority (#719).
 	mock.ExpectQuery("(?s)FROM organization_members").
 		WillReturnRows(membershipRowsForScanScope(scanOrgAlpha, `["modules:read"]`))
+	expectScanScopeRegistryRole(mock, scanOrgAlpha, `["modules:read"]`)
 	// The empty scope emits the literal FALSE rather than binding a column, so
 	// the predicate is unsatisfiable before the database considers a single row.
 	// Matching on FALSE here is the assertion: if this ever became a bound

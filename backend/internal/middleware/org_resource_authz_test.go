@@ -62,6 +62,7 @@ func TestRequireOrgScopeForResource_SameOrg_Allowed(t *testing.T) {
 			nsOrgA, nsUserID, "role-devops", time.Now(),
 			"Dev", "dev@test.com", "devops", "DevOps", []byte(`["scm:manage"]`),
 		))
+	expectRegistryRoleFor(mock, "role-devops", "devops", "DevOps", []byte(`["scm:manage"]`))
 
 	resolve, _ := resolverFor(nsOrgA, true, nil)
 	r := resourceRouter(authz.RequireOrgScopeForResource(auth.ScopeSCMManage, resolve),
@@ -81,6 +82,7 @@ func TestRequireOrgScopeForResource_MemberWithoutScopeInOwningOrg_Denied(t *test
 			nsOrgA, nsUserID, "role-viewer", time.Now(),
 			"View", "view@test.com", "viewer", "Viewer", []byte(`["scm:read"]`),
 		))
+	expectRegistryRoleFor(mock, "role-viewer", "viewer", "Viewer", []byte(`["scm:read"]`))
 
 	resolve, _ := resolverFor(nsOrgA, true, nil)
 	r := resourceRouter(authz.RequireOrgScopeForResource(auth.ScopeSCMManage, resolve),

@@ -1284,7 +1284,7 @@ Optional runtime coupling to a sibling Suite app (Terraform State Manager). With
 | --------------------------------- | -------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `TFR_SUITE_SIBLING_URL`           | string   | —       | Sibling app URL (e.g. `https://tfstate.example.com`). Empty = standalone.                                                                                                                                                                                    |
 | `TFR_SUITE_POLL_INTERVAL`         | duration | `60s`   | How often the sibling manifest is polled.                                                                                                                                                                                                                    |
-| `TFR_SUITE_ROLE_SEED_OWNER`       | string   | `self`  | Which app seeds shared identity role templates: `self`, `registry`, or `tsm`. With a shared identity DB, exactly one app must own the seed.                                                                                                                  |
+| `TFR_SUITE_ROLE_SEED_OWNER`       | string   | `self`  | Which app seeds the **shared** identity role templates: `self`, `registry`, or `tsm`. With a shared identity DB, exactly one app must own the seed. Registry no longer *reads* that table — see the note below — but the flag is still load-bearing.          |
 | `TFR_SUITE_IDENTITY_SHARED_STORE` | bool     | `false` | Operator assertion that this app uses the shared identity store + single IdP (advertised in the manifest).                                                                                                                                                   |
 | `TFR_SUITE_SIBLING_TOKEN`         | string   | —       | Shared secret (`X-Suite-Service-Token`) for cross-app reads (the "Consumed by" panel). Set to the same value as the sibling's service token.                                                                                                                 |
 | `TFR_SUITE_TRUSTED_ISSUERS`       | []string | `[]`    | Comma-separated additional JWT `iss` values this app accepts, on top of its own (`terraform-registry`). Only relevant when `TFR_JWT_SECRET` is shared with a sibling app — without an entry here, a sibling's tokens are rejected even with the same secret. |
@@ -1292,3 +1292,20 @@ Optional runtime coupling to a sibling Suite app (Terraform State Manager). With
 **A shared `TFR_JWT_SECRET` alone does not grant cross-app trust.** JWT validation always
 pins `iss` to this app's own issuer plus whatever `TFR_SUITE_TRUSTED_ISSUERS` lists — a
 token minted by another app sharing the secret is rejected until its issuer is added here.
+
+**`TFR_SUITE_ROLE_SEED_OWNER` cannot be retired yet, and the reason has moved.** It exists
+because `role_templates.name` is globally `UNIQUE`, so two applications seeding the shared
+table overwrite each other on restart. Registry's own authorization no longer reads that
+table — it reads `registry_role_templates`
+([`docs/identity-schema.md`](identity-schema.md)) — so the collision the flag arbitrates no
+longer decides what registry enforces. Two things still depend on it:
+
+- **The state manager still reads the shared table.** It has not done its own read cutover,
+  so whether registry writes those rows still changes another application's roles.
+- **Registry's own table is still *derived* from the shared one** by the startup reconcile,
+  which is what makes rollback a plain redeploy. So the same flag gates both seeds: seeding
+  one without the other would make the two copies disagree by construction and leave
+  `role-drift` permanently non-zero on a healthy deployment.
+
+Both dependencies end in phase 4 of `sethbacon/terraform-suite-identity#206`, which drops
+the shared table and the reconcile together. The flag goes with them.

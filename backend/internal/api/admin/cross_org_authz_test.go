@@ -68,6 +68,9 @@ func TestEvaluatePolicy_ForeignOrg_Denied(t *testing.T) {
 			orgAlpha, "Alpha", "rt-viewer", time.Now(), "viewer", "Viewer",
 			[]byte(`["mirrors:read"]`),
 		))
+	expectRegistryRolesForUser(mock, registryRole{
+		orgID: orgAlpha, id: "rt-viewer", name: "viewer", displayName: "Viewer", scopes: `["mirrors:read"]`,
+	})
 
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequest(http.MethodPost, "/evaluate?organization_id="+orgBeta, strings.NewReader(evaluateBody))
@@ -97,6 +100,9 @@ func TestEvaluatePolicy_OwnOrg_Allowed(t *testing.T) {
 			orgAlpha, "Alpha", "rt-viewer", time.Now(), "viewer", "Viewer",
 			[]byte(`["mirrors:read"]`),
 		))
+	expectRegistryRolesForUser(mock, registryRole{
+		orgID: orgAlpha, id: "rt-viewer", name: "viewer", displayName: "Viewer", scopes: `["mirrors:read"]`,
+	})
 	mock.ExpectQuery("(?s)FROM mirror_policies").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "organization_id", "name", "description", "policy_type",
@@ -157,6 +163,9 @@ func TestScanningStats_NonAdmin_EveryQueryCarriesTheTenantPredicate(t *testing.T
 			orgAlpha, "Alpha", "rt-devops", time.Now(), "devops", "DevOps",
 			[]byte(`["scanning:read"]`),
 		))
+	expectRegistryRolesForUser(mock, registryRole{
+		orgID: orgAlpha, id: "rt-devops", name: "devops", displayName: "DevOps", scopes: `["scanning:read"]`,
+	})
 
 	// Each of the three queries must join through to modules AND constrain
 	// m.organization_id. `= ANY` is what OrgScope.SQL emits for a bounded set;
@@ -212,6 +221,9 @@ func TestModuleScanByVersion_CallerOutsideDefaultOrg_NotFound(t *testing.T) {
 			orgAlpha, "Alpha", "rt-devops", time.Now(), "devops", "DevOps",
 			[]byte(`["scanning:read"]`),
 		))
+	expectRegistryRolesForUser(mock, registryRole{
+		orgID: orgAlpha, id: "rt-devops", name: "devops", displayName: "DevOps", scopes: `["scanning:read"]`,
+	})
 	mock.ExpectQuery("(?s)FROM organizations").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}).
 			AddRow(orgBeta, "default", "Beta", nil, nil, time.Now(), time.Now()))
@@ -292,6 +304,9 @@ func TestDashboardStats_MirrorQueriesCarryTheTenantPredicate(t *testing.T) {
 			orgAlpha, "Alpha", "rt-viewer", time.Now(), "viewer", "Viewer",
 			[]byte(`["mirrors:read"]`),
 		))
+	expectRegistryRolesForUser(mock, registryRole{
+		orgID: orgAlpha, id: "rt-viewer", name: "viewer", displayName: "Viewer", scopes: `["mirrors:read"]`,
+	})
 
 	opts := defaultStatsOpts()
 	opts.mirrorHealthQuery = "(?s)FROM mirror_configurations.*organization_id = ANY"

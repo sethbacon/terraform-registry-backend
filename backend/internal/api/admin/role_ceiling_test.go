@@ -48,7 +48,7 @@ func TestCheckRoleAssignment_CrossOrgCallerCannotEscalate(t *testing.T) {
 	h := newRoleCeilingHandlers(db)
 
 	roleID := "11111111-1111-1111-1111-111111111111"
-	mock.ExpectQuery("SELECT scopes FROM role_templates WHERE id").
+	mock.ExpectQuery("SELECT scopes FROM registry_role_templates WHERE id").
 		WillReturnRows(sqlmock.NewRows([]string{"scopes"}).AddRow([]byte(`["organizations:write"]`)))
 	// Caller has no membership row at all in the target org.
 	mock.ExpectQuery("SELECT.*FROM organization_members.*JOIN.*role_templates").
@@ -77,7 +77,7 @@ func TestCheckRoleAssignment_SameOrgSufficientScopeAllowed(t *testing.T) {
 	h := newRoleCeilingHandlers(db)
 
 	roleID := "22222222-2222-2222-2222-222222222222"
-	mock.ExpectQuery("SELECT scopes FROM role_templates WHERE id").
+	mock.ExpectQuery("SELECT scopes FROM registry_role_templates WHERE id").
 		WillReturnRows(sqlmock.NewRows([]string{"scopes"}).AddRow([]byte(`["modules:read"]`)))
 	mock.ExpectQuery("SELECT.*FROM organization_members.*JOIN.*role_templates").
 		WillReturnRows(sqlmock.NewRows(orgMembersWithUserCols).AddRow(
@@ -85,6 +85,10 @@ func TestCheckRoleAssignment_SameOrgSufficientScopeAllowed(t *testing.T) {
 			"Caller Two", "caller2@example.com", "org_owner", "Organization Owner",
 			[]byte(`["organizations:write","modules:read","modules:write"]`),
 		))
+	expectRegistryRoleFor(mock, registryRole{
+		id: "role-1", name: "org_owner", displayName: "Organization Owner",
+		scopes: `["organizations:write","modules:read","modules:write"]`,
+	})
 
 	c := newRoleCeilingContext("org-a", "caller-2", nil)
 	chk := h.checkRoleAssignment(c, &roleID)
@@ -114,7 +118,7 @@ func TestCheckRoleAssignment_GlobalAdminBypassesPerOrgLookup(t *testing.T) {
 	h := newRoleCeilingHandlers(db)
 
 	roleID := "33333333-3333-3333-3333-333333333333"
-	mock.ExpectQuery("SELECT scopes FROM role_templates WHERE id").
+	mock.ExpectQuery("SELECT scopes FROM registry_role_templates WHERE id").
 		WillReturnRows(sqlmock.NewRows([]string{"scopes"}).AddRow([]byte(`["users:write","organizations:write"]`)))
 
 	c := newRoleCeilingContext("org-c", "caller-3", []string{"admin"})
@@ -157,7 +161,7 @@ func TestCheckRoleAssignment_NobodyMayAssignAnAdminBearingTemplate(t *testing.T)
 			roleID := "44444444-4444-4444-4444-444444444444"
 			// Only the template read is queued. The per-org ceiling lookup must
 			// not happen: the answer does not depend on the caller.
-			mock.ExpectQuery("SELECT scopes FROM role_templates WHERE id").
+			mock.ExpectQuery("SELECT scopes FROM registry_role_templates WHERE id").
 				WillReturnRows(sqlmock.NewRows([]string{"scopes"}).AddRow([]byte(`["admin"]`)))
 
 			c := newRoleCeilingContext("org-c", "caller-4", caller.scopes)

@@ -302,6 +302,7 @@ func TestCredentialLifecycleClass_AuthorityReductionInvalidatesAllCredentialFami
 
 				mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
 					WillReturnRows(sampleMemberWithRoleRow())
+				expectSampleMemberRegistryRole(mock)
 				mock.ExpectExec("DELETE FROM organization_members").
 					WillReturnResult(sqlmock.NewResult(1, 1))
 				mock.ExpectExec("INSERT INTO user_token_revocations").
@@ -325,10 +326,11 @@ func TestCredentialLifecycleClass_AuthorityReductionInvalidatesAllCredentialFami
 				r := gin.New()
 				r.PUT("/organizations/:id/members/:user_id", h.UpdateMemberHandler())
 
-				mock.ExpectQuery("SELECT scopes FROM role_templates WHERE id").
+				mock.ExpectQuery("SELECT scopes FROM registry_role_templates WHERE id").
 					WillReturnRows(sqlmock.NewRows([]string{"scopes"}).AddRow([]byte(`[]`)))
 				mock.ExpectQuery("SELECT.*FROM organization_members WHERE organization_id").
 					WillReturnRows(sampleOrgMemberRowWithRole(oldRoleTemplateUUID))
+				expectRegistryRoleFor(mock, registryRole{id: oldRoleTemplateUUID})
 				mock.ExpectExec("UPDATE organization_members").
 					WillReturnResult(sqlmock.NewResult(1, 1))
 				// The scopes the member RETAINS under the new role template
@@ -336,6 +338,7 @@ func TestCredentialLifecycleClass_AuthorityReductionInvalidatesAllCredentialFami
 				// modules:read, so a key with providers:write is deleted.
 				mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
 					WillReturnRows(sampleMemberWithRoleRow())
+				expectSampleMemberRegistryRole(mock)
 				mock.ExpectExec("INSERT INTO user_token_revocations").
 					WithArgs("user-1").
 					WillReturnResult(sqlmock.NewResult(1, 1))
@@ -343,6 +346,7 @@ func TestCredentialLifecycleClass_AuthorityReductionInvalidatesAllCredentialFami
 					[]byte(`["providers:write"]`))
 				mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
 					WillReturnRows(sampleMemberWithRoleRow())
+				expectSampleMemberRegistryRole(mock)
 
 				w := httptest.NewRecorder()
 				r.ServeHTTP(w, httptest.NewRequest("PUT", "/organizations/org-1/members/user-1",
@@ -363,11 +367,11 @@ func TestCredentialLifecycleClass_AuthorityReductionInvalidatesAllCredentialFami
 				r.Use(func(c *gin.Context) { c.Set("user_id", knownUserUUID) })
 				r.PUT("/role-templates/:id", h.UpdateRoleTemplate)
 
-				mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+				mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 					WillReturnRows(sampleRTRow())
 				mock.ExpectExec("UPDATE role_templates.*SET display_name").
 					WillReturnResult(sqlmock.NewResult(1, 1))
-				mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_members").
+				mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_member_roles").
 					WillReturnRows(sqlmock.NewRows([]string{"user_id", "organization_id"}).
 						AddRow("member-1", "org-1"))
 				mock.ExpectExec("INSERT INTO user_token_revocations").
@@ -401,9 +405,9 @@ func TestCredentialLifecycleClass_AuthorityReductionInvalidatesAllCredentialFami
 				r.Use(func(c *gin.Context) { c.Set("user_id", knownUserUUID) })
 				r.DELETE("/role-templates/:id", h.DeleteRoleTemplate)
 
-				mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+				mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 					WillReturnRows(sampleRTRow())
-				mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_members").
+				mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_member_roles").
 					WillReturnRows(sqlmock.NewRows([]string{"user_id", "organization_id"}).
 						AddRow("member-1", "org-1"))
 				mock.ExpectExec("DELETE FROM role_templates WHERE id").
@@ -446,6 +450,7 @@ func TestCredentialLifecycleClass_AuthorityReductionInvalidatesAllCredentialFami
 				mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
 					WillReturnRows(sqlmock.NewRows(authMemberCols).
 						AddRow("org-1", "user-1", &roleID, time.Now()))
+				expectRegistryRoleFor(mock, registryRole{id: roleID})
 				mock.ExpectExec("DELETE FROM organization_members").
 					WillReturnResult(sqlmock.NewResult(0, 1))
 				expectOrgKeySweep(mock, "user-1", "org-1", "key-idp-deprovision")
@@ -488,6 +493,7 @@ func TestCredentialLifecycleClass_AuthorityReductionInvalidatesAllCredentialFami
 				mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
 					WillReturnRows(sqlmock.NewRows(authMemberCols).
 						AddRow("org-1", "user-1", &oldRole, time.Now()))
+				expectRegistryRoleFor(mock, registryRole{id: oldRole})
 				// The guard's lookup doubles as the retention filter: "viewer"
 				// grants read only, so it is what the member retains.
 				expectRoleScopesLookup(mock, "viewer", []string{"modules:read"})
@@ -545,6 +551,7 @@ func TestCredentialLifecycleClass_AuthorityReductionInvalidatesAllCredentialFami
 				mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
 					WillReturnRows(sqlmock.NewRows(authMemberCols).
 						AddRow("org-1", "user-1", &oldRole, time.Now()))
+				expectRegistryRoleFor(mock, registryRole{id: oldRole})
 				expectRoleScopesLookup(mock, "publisher", []string{"modules:read", "modules:write"})
 				mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
 					WithArgs("publisher").
@@ -672,6 +679,7 @@ func TestCredentialLifecycleClass_AuthorityReductionInvalidatesAllCredentialFami
 				mock.ExpectQuery("SELECT.*FROM organization_members WHERE organization_id").
 					WillReturnRows(sqlmock.NewRows(authMemberCols).
 						AddRow("org-1", "user-1", nil, time.Now()))
+				expectRegistryRolesForOrg(mock, registryRole{userID: "user-1"})
 				mock.ExpectExec("DELETE FROM organizations").
 					WillReturnResult(sqlmock.NewResult(0, 1))
 				mock.ExpectExec("INSERT INTO user_token_revocations").
@@ -786,6 +794,9 @@ func TestCredentialLifecycleClass_AuthorityReductionInvalidatesAllCredentialFami
 						"org-1", "user-1", "rt-viewer", time.Now(),
 						"Alice", "alice@example.com", "viewer", "Viewer",
 						[]byte(`["modules:read"]`)))
+				expectRegistryRoleFor(mock, registryRole{
+					id: "rt-viewer", name: "viewer", displayName: "Viewer", scopes: `["modules:read"]`,
+				})
 
 				owner := "user-1"
 				r := gin.New()

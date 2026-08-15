@@ -46,9 +46,15 @@ import (
 // — a transient DB error here should not silently let an unverified role's
 // scopes through.
 func (h *AuthHandlers) guardProvisionableRole(ctx context.Context, roleTemplateName string) ([]string, error) {
+	// REGISTRY's own table (terraform-suite-identity#206, phase 3b), for the same
+	// reason as role_ceiling.go: the returned scopes are what the member WILL
+	// hold once the write commits, and since the read cutover that is decided by
+	// `registry_role_templates`. They are also the retention filter for the
+	// credential sweep, so reading the shared table would retain credentials
+	// against an authority the product no longer confers.
 	var scopesJSON []byte
 	err := h.db.QueryRowContext(ctx,
-		`SELECT scopes FROM role_templates WHERE name = $1`, roleTemplateName).Scan(&scopesJSON)
+		`SELECT scopes FROM registry_role_templates WHERE name = $1`, roleTemplateName).Scan(&scopesJSON)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

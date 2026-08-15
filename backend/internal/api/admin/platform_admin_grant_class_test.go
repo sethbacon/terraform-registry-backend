@@ -100,7 +100,7 @@ func newMemberRouterAs(t *testing.T, userID string, scopes []string) (sqlmock.Sq
 // ordered mode makes an unconsumed expectation a failure, so queueing it would
 // assert the opposite of the property.
 func expectRoleTemplateLookup(mock sqlmock.Sqlmock, roleScopesJSON string) {
-	mock.ExpectQuery("SELECT scopes FROM role_templates WHERE id").
+	mock.ExpectQuery("SELECT scopes FROM registry_role_templates WHERE id").
 		WillReturnRows(sqlmock.NewRows([]string{"scopes"}).AddRow([]byte(roleScopesJSON)))
 }
 
@@ -117,6 +117,10 @@ func expectOrgOwnerCeilingLookups(mock sqlmock.Sqlmock, roleScopesJSON string) {
 			// organization needs, and no wildcard.
 			[]byte(`["organizations:write","users:read","api_keys:manage","modules:read","modules:write","providers:read","providers:write","mirrors:read","mirrors:manage","scm:read","scm:manage"]`),
 		))
+	expectRegistryRoleFor(mock, registryRole{
+		id: "role-owner", name: "org_owner", displayName: "Organization Owner",
+		scopes: `["organizations:write","users:read","api_keys:manage","modules:read","modules:write","providers:read","providers:write","mirrors:read","mirrors:manage","scm:read","scm:manage"]`,
+	})
 }
 
 const adminBearingRoleUUID = "44444444-4444-4444-4444-444444444444"
@@ -212,6 +216,9 @@ func TestPlatformAdminGrantClass_OrgScopedCallerCanStillGrantWithinItsAuthority(
 			"Target One", "target@example.com", "publisher", "Publisher",
 			[]byte(`["modules:write"]`),
 		))
+	expectRegistryRoleFor(mock, registryRole{
+		id: "role-pub", name: "publisher", displayName: "Publisher", scopes: `["modules:write"]`,
+	})
 
 	body := `{"user_id":"target-1","role_template_id":"55555555-5555-5555-5555-555555555555"}`
 	w := httptest.NewRecorder()
