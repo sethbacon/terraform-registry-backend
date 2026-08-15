@@ -86,6 +86,9 @@ func TestSCMList_NonAdmin_OwnOrgFilter_Allowed(t *testing.T) {
 			orgAlpha, "Alpha", "role-viewer", time.Now(),
 			"viewer", "Viewer", []byte(`["scm:read"]`),
 		))
+	expectRegistryRolesForUser(mock, registryRole{
+		orgID: orgAlpha, id: "role-viewer", name: "viewer", displayName: "Viewer", scopes: `["scm:read"]`,
+	})
 	mock.ExpectQuery("(?s)FROM scm_providers").WillReturnRows(sqlmock.NewRows(scmProvCols))
 
 	w := httptest.NewRecorder()
@@ -104,6 +107,9 @@ func TestSCMList_NonAdmin_Unfiltered_ScopedToOwnOrgs(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(membershipCols).AddRow(
 			orgAlpha, "Alpha", "role-viewer", time.Now(), "viewer", "Viewer", []byte(`["scm:read"]`),
 		))
+	expectRegistryRolesForUser(mock, registryRole{
+		orgID: orgAlpha, id: "role-viewer", name: "viewer", displayName: "Viewer", scopes: `["scm:read"]`,
+	})
 	mock.ExpectQuery("(?s)FROM scm_providers WHERE organization_id").
 		WillReturnRows(sqlmock.NewRows(scmProvCols))
 
@@ -162,6 +168,9 @@ func TestListAuditLogs_NonAdmin_ForeignOrgFilter_Denied(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(membershipCols).AddRow(
 			orgAlpha, "Alpha", "role-auditor", time.Now(), "auditor", "Auditor", []byte(`["audit:read"]`),
 		))
+	expectRegistryRolesForUser(mock, registryRole{
+		orgID: orgAlpha, id: "role-auditor", name: "auditor", displayName: "Auditor", scopes: `["audit:read"]`,
+	})
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("GET", "/audit-logs?organization_id="+orgBeta, nil))
@@ -190,6 +199,10 @@ func TestListAuditLogs_NonAdmin_MultiOrg_ScopesToAllOwnOrgs(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(membershipCols).
 			AddRow(orgAlpha, "Alpha", "r1", time.Now(), "auditor", "Auditor", []byte(`["audit:read"]`)).
 			AddRow(orgBeta, "Beta", "r2", time.Now(), "auditor", "Auditor", []byte(`["audit:read"]`)))
+	expectRegistryRolesForUser(mock,
+		registryRole{orgID: orgAlpha, id: "r1", name: "auditor", displayName: "Auditor", scopes: `["audit:read"]`},
+		registryRole{orgID: orgBeta, id: "r2", name: "auditor", displayName: "Auditor", scopes: `["audit:read"]`},
+	)
 	mock.ExpectQuery(`SELECT COUNT.*FROM audit_logs.*organization_id = ANY`).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectQuery(`SELECT al\.id.*FROM audit_logs.*organization_id = ANY`).

@@ -111,7 +111,7 @@ func samplePolicyListRow() *sqlmock.Rows {
 
 func TestListRoleTemplates_Success(t *testing.T) {
 	repo, mock := newRBACRepo(t)
-	mock.ExpectQuery("SELECT id.*FROM role_templates").
+	mock.ExpectQuery("SELECT id.*FROM registry_role_templates ORDER BY name").
 		WillReturnRows(sampleRoleTemplateRow())
 
 	templates, err := repo.ListRoleTemplates(context.Background())
@@ -125,7 +125,7 @@ func TestListRoleTemplates_Success(t *testing.T) {
 
 func TestListRoleTemplates_Empty(t *testing.T) {
 	repo, mock := newRBACRepo(t)
-	mock.ExpectQuery("SELECT id.*FROM role_templates").
+	mock.ExpectQuery("SELECT id.*FROM registry_role_templates ORDER BY name").
 		WillReturnRows(sqlmock.NewRows(roleTemplateCols))
 
 	templates, err := repo.ListRoleTemplates(context.Background())
@@ -139,7 +139,7 @@ func TestListRoleTemplates_Empty(t *testing.T) {
 
 func TestListRoleTemplates_Error(t *testing.T) {
 	repo, mock := newRBACRepo(t)
-	mock.ExpectQuery("SELECT id.*FROM role_templates").
+	mock.ExpectQuery("SELECT id.*FROM registry_role_templates ORDER BY name").
 		WillReturnError(errDB)
 
 	_, err := repo.ListRoleTemplates(context.Background())
@@ -155,7 +155,7 @@ func TestListRoleTemplates_Error(t *testing.T) {
 func TestGetRoleTemplate_Found(t *testing.T) {
 	repo, mock := newRBACRepo(t)
 	id := uuid.MustParse("11111111-1111-1111-1111-111111111111")
-	mock.ExpectQuery("SELECT id.*FROM role_templates.*WHERE id").
+	mock.ExpectQuery("SELECT id.*FROM registry_role_templates WHERE id").
 		WillReturnRows(sampleRoleTemplateRow())
 
 	tpl, err := repo.GetRoleTemplate(context.Background(), id)
@@ -169,7 +169,7 @@ func TestGetRoleTemplate_Found(t *testing.T) {
 
 func TestGetRoleTemplate_NotFound(t *testing.T) {
 	repo, mock := newRBACRepo(t)
-	mock.ExpectQuery("SELECT id.*FROM role_templates.*WHERE id").
+	mock.ExpectQuery("SELECT id.*FROM registry_role_templates WHERE id").
 		WillReturnRows(sqlmock.NewRows(roleTemplateCols))
 
 	tpl, err := repo.GetRoleTemplate(context.Background(), uuid.New())
@@ -187,7 +187,7 @@ func TestGetRoleTemplate_NotFound(t *testing.T) {
 
 func TestGetRoleTemplate_Error(t *testing.T) {
 	repo, mock := newRBACRepo(t)
-	mock.ExpectQuery("SELECT id.*FROM role_templates.*WHERE id").
+	mock.ExpectQuery("SELECT id.*FROM registry_role_templates WHERE id").
 		WillReturnError(errDB)
 
 	_, err := repo.GetRoleTemplate(context.Background(), uuid.New())
@@ -202,7 +202,7 @@ func TestGetRoleTemplate_Error(t *testing.T) {
 
 func TestGetRoleTemplateByName_Found(t *testing.T) {
 	repo, mock := newRBACRepo(t)
-	mock.ExpectQuery("SELECT id.*FROM role_templates.*WHERE name").
+	mock.ExpectQuery("SELECT id.*FROM registry_role_templates WHERE name").
 		WillReturnRows(sampleRoleTemplateRow())
 
 	tpl, err := repo.GetRoleTemplateByName(context.Background(), "admin")
@@ -216,7 +216,7 @@ func TestGetRoleTemplateByName_Found(t *testing.T) {
 
 func TestGetRoleTemplateByName_NotFound(t *testing.T) {
 	repo, mock := newRBACRepo(t)
-	mock.ExpectQuery("SELECT id.*FROM role_templates.*WHERE name").
+	mock.ExpectQuery("SELECT id.*FROM registry_role_templates WHERE name").
 		WillReturnRows(sqlmock.NewRows(roleTemplateCols))
 
 	tpl, err := repo.GetRoleTemplateByName(context.Background(), "unknown")
@@ -692,7 +692,7 @@ func TestListRoleTemplateMemberships_Success(t *testing.T) {
 	repo, mock := newRBACRepo(t)
 	id := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 
-	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_members WHERE role_template_id").
+	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_member_roles WHERE role_template_id").
 		WithArgs(id).
 		WillReturnRows(sqlmock.NewRows([]string{"user_id", "organization_id"}).
 			AddRow("user-1", "org-1").
@@ -717,7 +717,7 @@ func TestListRoleTemplateMemberships_Empty(t *testing.T) {
 	repo, mock := newRBACRepo(t)
 	id := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 
-	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_members WHERE role_template_id").
+	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_member_roles WHERE role_template_id").
 		WillReturnRows(sqlmock.NewRows([]string{"user_id", "organization_id"}))
 
 	memberships, err := repo.ListRoleTemplateMemberships(context.Background(), id)
@@ -733,7 +733,7 @@ func TestListRoleTemplateMemberships_DBError(t *testing.T) {
 	repo, mock := newRBACRepo(t)
 	id := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 
-	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_members WHERE role_template_id").
+	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_member_roles WHERE role_template_id").
 		WillReturnError(errDB)
 
 	_, err := repo.ListRoleTemplateMemberships(context.Background(), id)

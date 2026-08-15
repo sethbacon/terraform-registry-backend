@@ -536,13 +536,22 @@ func serve(cfg *config.Config) error {
 		// Under a shared identity database, exactly one app must own role-template
 		// seeding (suite.role_seed_owner) or the apps overwrite each other's role
 		// scopes on restart. Default "self" preserves standalone behavior.
+		//
+		// REGISTRY NO LONGER READS THIS TABLE (terraform-suite-identity#206,
+		// phase 3b): authorization comes from registry's own
+		// `registry_role_templates`, seeded in internal/api/router.go after the
+		// reconcile. This call stays because the STATE MANAGER still reads the
+		// shared table, and because it is the surface a rollback to the previous
+		// image reads -- both of which need it current. It is the one call
+		// suite.role_seed_owner still gates.
 		if cfg.Suite.ShouldSeedRoles("registry") {
-			if err := repositories.SeedSystemRoleTemplates(
+			if err := repositories.SeedSharedIdentityRoleTemplates(
 				context.Background(), identityDB, models.PredefinedRoleTemplates(),
 			); err != nil {
 				return fmt.Errorf("failed to seed system role templates: %w", err)
 			}
-			slog.Info("system role templates seeded into identity schema")
+			slog.Info("system role templates seeded into the shared identity schema " +
+				"(read by the state manager and by a rollback, not by this process)")
 		} else {
 			slog.Info("skipping system role template seeding; another app owns it",
 				"role_seed_owner", cfg.Suite.RoleSeedOwner)

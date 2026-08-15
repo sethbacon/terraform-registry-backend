@@ -130,6 +130,7 @@ func TestRequireOrgScopeForPathOrg_SameOrgAllowed(t *testing.T) {
 			orgMWOrgID, orgMWUserID, "role-1", time.Now(),
 			"User Name", "user@test.com", "user_manager", "User Manager", []byte(`["organizations:write"]`),
 		))
+	expectRegistryRoleFor(mock, "role-1", "user_manager", "User Manager", []byte(`["organizations:write"]`))
 
 	w := doGetPath(pathOrgRouter(mid, []string{"organizations:write"}, orgMWUserID), "/organizations/"+orgMWOrgID)
 	if w.Code != http.StatusOK {
@@ -151,6 +152,7 @@ func TestRequireOrgScopeForPathOrg_InsufficientOrgScope(t *testing.T) {
 			orgMWOrgID, orgMWUserID, "role-1", time.Now(),
 			"User Name", "user@test.com", "viewer", "Viewer", []byte(`["organizations:read"]`),
 		))
+	expectRegistryRoleFor(mock, "role-1", "viewer", "Viewer", []byte(`["organizations:read"]`))
 
 	w := doGetPath(pathOrgRouter(mid, []string{"organizations:write"}, orgMWUserID), "/organizations/"+orgMWOrgID)
 	if w.Code != http.StatusForbidden {
@@ -239,6 +241,7 @@ func TestRequireOrgScopeForPathOrg_KeyBoundToTargetOrgAllowed(t *testing.T) {
 			orgMWOrgID, orgMWUserID, "role-1", time.Now(),
 			"User Name", "user@test.com", "user_manager", "User Manager", []byte(`["organizations:write"]`),
 		))
+	expectRegistryRoleFor(mock, "role-1", "user_manager", "User Manager", []byte(`["organizations:write"]`))
 
 	r := gin.New()
 	r.GET("/organizations/:id",

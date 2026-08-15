@@ -64,6 +64,16 @@ func sampleMemberRoleRow() *sqlmock.Rows {
 		)
 }
 
+// expectSampleMemberRegistryRoleAK queues the read of registry's own role tables
+// that now follows every sampleMemberRoleRow, answering with the SAME role
+// template id and the SAME scopes so the caller's derived authority is unchanged.
+func expectSampleMemberRegistryRoleAK(mock sqlmock.Sqlmock) {
+	expectRegistryRoleFor(mock, registryRole{
+		id: "role-1", name: "admin-role", displayName: "Admin Role",
+		scopes: string(testAdminRoleScopes),
+	})
+}
+
 // ---------------------------------------------------------------------------
 // Router helper
 // ---------------------------------------------------------------------------
@@ -174,6 +184,9 @@ func TestListAPIKeys_OrgFilter_WithManageScope(t *testing.T) {
 			&roleName, &roleDisplay,
 			[]byte(`["api_keys:manage"]`),
 		))
+	expectRegistryRoleFor(mock, registryRole{
+		id: roleID, name: roleName, displayName: roleDisplay, scopes: `["api_keys:manage"]`,
+	})
 	// Manager sees all keys in the org.
 	mock.ExpectQuery("WHERE ak.organization_id").
 		WillReturnRows(sampleAKListRow())
@@ -317,6 +330,7 @@ func TestCreateAPIKey_Success(t *testing.T) {
 	// GetMemberWithRole
 	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE").
 		WillReturnRows(sampleMemberRoleRow())
+	expectSampleMemberRegistryRoleAK(mock)
 	// CreateAPIKey INSERT
 	mock.ExpectExec("INSERT INTO api_keys").
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -361,6 +375,7 @@ func TestCreateAPIKey_InvalidExpiry(t *testing.T) {
 	mock, r := newAPIKeyRouter(t, "user-1", nil)
 	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE").
 		WillReturnRows(sampleMemberRoleRow())
+	expectSampleMemberRegistryRoleAK(mock)
 
 	badExpiry := "not-a-date"
 	w := httptest.NewRecorder()
@@ -454,6 +469,7 @@ func TestCreateAPIKey_NoRoleTemplate(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE").
 		WillReturnRows(sqlmock.NewRows(memberRoleCols).
 			AddRow("org-1", "user-1", nil, time.Now(), "Alice", "alice@example.com", nil, nil, testKeyScopes))
+	expectRegistryRoleFor(mock, registryRole{scopes: string(testKeyScopes)})
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/apikeys",
@@ -479,6 +495,9 @@ func TestCreateAPIKey_ScopeExceedsRole(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(memberRoleCols).
 			AddRow("org-1", "user-1", &roleTemplateID, time.Now(), "Alice", "alice@example.com",
 				&roleName, &roleDisplay, limitedScopes))
+	expectRegistryRoleFor(mock, registryRole{
+		id: roleTemplateID, name: roleName, displayName: roleDisplay, scopes: string(limitedScopes),
+	})
 
 	w := httptest.NewRecorder()
 	// Request providers:write which user doesn't have
@@ -498,6 +517,7 @@ func TestCreateAPIKey_CreateDBError(t *testing.T) {
 	mock, r := newAPIKeyRouter(t, "user-1", nil)
 	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE").
 		WillReturnRows(sampleMemberRoleRow())
+	expectSampleMemberRegistryRoleAK(mock)
 	mock.ExpectExec("INSERT INTO api_keys").
 		WillReturnError(errDB)
 
@@ -731,6 +751,7 @@ func TestRotateAPIKey_ImmediateRevoke(t *testing.T) {
 	// key's stored scopes (issue #733).
 	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
 		WillReturnRows(sampleMemberRoleRow())
+	expectSampleMemberRegistryRoleAK(mock)
 	mock.ExpectExec("INSERT INTO api_keys").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("DELETE FROM api_keys").WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -754,6 +775,7 @@ func TestRotateAPIKey_WithGracePeriod(t *testing.T) {
 	// key's stored scopes (issue #733).
 	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
 		WillReturnRows(sampleMemberRoleRow())
+	expectSampleMemberRegistryRoleAK(mock)
 	mock.ExpectExec("INSERT INTO api_keys").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("UPDATE api_keys.*SET name").WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -816,6 +838,9 @@ func TestUpdateAPIKey_ScopeExceedsUserRole(t *testing.T) {
 			&roleName, &roleDisplay,
 			[]byte(`["modules:read"]`),
 		))
+	expectRegistryRoleFor(mock, registryRole{
+		id: roleID, name: roleName, displayName: roleDisplay, scopes: `["modules:read"]`,
+	})
 
 	// User tries to give "admin" scope (exceeds their role)
 	body := `{"scopes":["modules:read","admin"]}`
@@ -850,6 +875,7 @@ func TestUpdateAPIKey_WithValidScopes_AdminRole(t *testing.T) {
 	// Admin role - any scope is allowed
 	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
 		WillReturnRows(sampleMemberRoleRow())
+	expectSampleMemberRegistryRoleAK(mock)
 	mock.ExpectExec("UPDATE api_keys").WillReturnResult(sqlmock.NewResult(1, 1))
 
 	body := `{"scopes":["modules:read","modules:write"]}`
@@ -931,6 +957,7 @@ func TestUpdateAPIKey_ScopeChange_NullRole_FailsClosed(t *testing.T) {
 			"Alice", "alice@example.com",
 			nil, nil, []byte(`[]`),
 		))
+	expectRegistryRoleFor(mock, registryRole{})
 
 	body := `{"scopes":["modules:read"]}`
 	w := httptest.NewRecorder()

@@ -190,7 +190,7 @@ func newRBACRouterWithRevocation(t *testing.T, withRevocation bool) (sqlmock.Sql
 
 func TestRBACListRoleTemplates_Success(t *testing.T) {
 	mock, r := newRBACRouter(t)
-	mock.ExpectQuery("SELECT.*FROM role_templates.*ORDER BY").
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates.*ORDER BY").
 		WillReturnRows(sampleRTRow())
 
 	w := httptest.NewRecorder()
@@ -203,7 +203,7 @@ func TestRBACListRoleTemplates_Success(t *testing.T) {
 
 func TestRBACListRoleTemplates_DBError(t *testing.T) {
 	mock, r := newRBACRouter(t)
-	mock.ExpectQuery("SELECT.*FROM role_templates").WillReturnError(errDB)
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates").WillReturnError(errDB)
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("GET", "/role-templates", nil))
@@ -229,7 +229,7 @@ func TestRBACGetRoleTemplate_InvalidID(t *testing.T) {
 
 func TestRBACGetRoleTemplate_NotFound(t *testing.T) {
 	mock, r := newRBACRouter(t)
-	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnRows(emptyRTRows())
 
 	w := httptest.NewRecorder()
@@ -242,7 +242,7 @@ func TestRBACGetRoleTemplate_NotFound(t *testing.T) {
 
 func TestRBACGetRoleTemplate_Found(t *testing.T) {
 	mock, r := newRBACRouter(t)
-	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnRows(sampleRTRow())
 
 	w := httptest.NewRecorder()
@@ -271,7 +271,7 @@ func TestRBACCreateRoleTemplate_MissingFields(t *testing.T) {
 func TestRBACCreateRoleTemplate_Conflict(t *testing.T) {
 	mock, r := newRBACRouter(t)
 	// GetRoleTemplateByName finds existing
-	mock.ExpectQuery("SELECT.*FROM role_templates WHERE name").
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE name").
 		WillReturnRows(sampleRTRow())
 
 	w := httptest.NewRecorder()
@@ -289,7 +289,7 @@ func TestRBACCreateRoleTemplate_Conflict(t *testing.T) {
 
 func TestRBACCreateRoleTemplate_Success(t *testing.T) {
 	mock, r := newRBACRouter(t)
-	mock.ExpectQuery("SELECT.*FROM role_templates WHERE name").
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE name").
 		WillReturnRows(emptyRTRows())
 	mock.ExpectExec("INSERT INTO role_templates").
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -334,7 +334,7 @@ func TestRBACRoleTemplates_RefuseTheAdminScope(t *testing.T) {
 			if tt.method == http.MethodPut {
 				// Update reads the existing row and refuses system templates
 				// before it binds the body, so this one lookup is legitimate.
-				mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+				mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 					WillReturnRows(sampleRTRow())
 			}
 
@@ -366,7 +366,7 @@ func TestRBACRoleTemplates_RefuseTheAdminScope(t *testing.T) {
 // refusal that rejected every scope list would satisfy the test above.
 func TestRBACRoleTemplates_StillAcceptOrdinaryScopes(t *testing.T) {
 	mock, r := newRBACRouter(t)
-	mock.ExpectQuery("SELECT.*FROM role_templates WHERE name").
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE name").
 		WillReturnRows(emptyRTRows())
 	mock.ExpectExec("INSERT INTO role_templates").
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -390,7 +390,7 @@ func TestRBACRoleTemplates_StillAcceptOrdinaryScopes(t *testing.T) {
 
 func TestRBACUpdateRoleTemplate_NotFound(t *testing.T) {
 	mock, r := newRBACRouter(t)
-	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnRows(emptyRTRows())
 
 	w := httptest.NewRecorder()
@@ -408,7 +408,7 @@ func TestRBACUpdateRoleTemplate_NotFound(t *testing.T) {
 
 func TestRBACUpdateRoleTemplate_SystemTemplate(t *testing.T) {
 	mock, r := newRBACRouter(t)
-	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnRows(sampleRTSystemRow())
 
 	w := httptest.NewRecorder()
@@ -426,7 +426,7 @@ func TestRBACUpdateRoleTemplate_SystemTemplate(t *testing.T) {
 
 func TestRBACUpdateRoleTemplate_Success(t *testing.T) {
 	mock, r := newRBACRouter(t)
-	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnRows(sampleRTRow())
 	mock.ExpectExec("UPDATE role_templates.*SET display_name").
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -453,11 +453,11 @@ func TestRBACUpdateRoleTemplate_Success(t *testing.T) {
 func TestRBACUpdateRoleTemplate_ScopesChanged_RevokesMemberTokens(t *testing.T) {
 	mock, r := newRBACRouterWithRevocation(t, true)
 	logs := captureSlogOutput(t)
-	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnRows(sampleRTRow()) // scopes = testRTScopes = ["modules:read","providers:write"]
 	mock.ExpectExec("UPDATE role_templates.*SET display_name").
 		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_members WHERE role_template_id").
+	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_member_roles WHERE role_template_id").
 		WillReturnRows(sqlmock.NewRows([]string{"user_id", "organization_id"}).
 			AddRow("member-1", "org-1").
 			AddRow("member-2", "org-2"))
@@ -511,7 +511,7 @@ func TestRBACUpdateRoleTemplate_ScopesChanged_RevokesMemberTokens(t *testing.T) 
 func TestRBACUpdateRoleTemplate_ScopesWidened_SkipsRevocation(t *testing.T) {
 	mock, r := newRBACRouterWithRevocation(t, true)
 	logs := captureSlogOutput(t)
-	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnRows(sampleRTRow()) // scopes = testRTScopes = ["modules:read","providers:write"]
 	mock.ExpectExec("UPDATE role_templates.*SET display_name").
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -557,7 +557,7 @@ func assertNoSweepAttempted(t *testing.T, mock sqlmock.Sqlmock, logs *bytes.Buff
 func TestRBACUpdateRoleTemplate_ScopesReordered_SkipsRevocation(t *testing.T) {
 	mock, r := newRBACRouterWithRevocation(t, true)
 	logs := captureSlogOutput(t)
-	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnRows(sampleRTRow()) // scopes = testRTScopes = ["modules:read","providers:write"]
 	mock.ExpectExec("UPDATE role_templates.*SET display_name").
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -582,7 +582,7 @@ func TestRBACUpdateRoleTemplate_ScopesReordered_SkipsRevocation(t *testing.T) {
 // unexpected query or exec.
 func TestRBACUpdateRoleTemplate_ScopesUnchanged_SkipsRevocation(t *testing.T) {
 	mock, r := newRBACRouterWithRevocation(t, true)
-	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnRows(sampleRTRow()) // scopes = testRTScopes = ["modules:read","providers:write"]
 	mock.ExpectExec("UPDATE role_templates.*SET display_name").
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -609,7 +609,7 @@ func TestRBACUpdateRoleTemplate_ScopesUnchanged_SkipsRevocation(t *testing.T) {
 
 func TestRBACDeleteRoleTemplate_NotFound(t *testing.T) {
 	mock, r := newRBACRouter(t)
-	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnRows(emptyRTRows())
 
 	w := httptest.NewRecorder()
@@ -622,7 +622,7 @@ func TestRBACDeleteRoleTemplate_NotFound(t *testing.T) {
 
 func TestRBACDeleteRoleTemplate_SystemTemplate(t *testing.T) {
 	mock, r := newRBACRouter(t)
-	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnRows(sampleRTSystemRow())
 
 	w := httptest.NewRecorder()
@@ -635,7 +635,7 @@ func TestRBACDeleteRoleTemplate_SystemTemplate(t *testing.T) {
 
 func TestRBACDeleteRoleTemplate_Success(t *testing.T) {
 	mock, r := newRBACRouter(t)
-	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnRows(sampleRTRow())
 	mock.ExpectExec("DELETE FROM role_templates WHERE id").
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -654,9 +654,9 @@ func TestRBACDeleteRoleTemplate_Success(t *testing.T) {
 // revoked (issue #559 finding [9]).
 func TestRBACDeleteRoleTemplate_RevokesMemberTokens(t *testing.T) {
 	mock, r := newRBACRouterWithRevocation(t, true)
-	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnRows(sampleRTRow())
-	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_members WHERE role_template_id").
+	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_member_roles WHERE role_template_id").
 		WillReturnRows(sqlmock.NewRows([]string{"user_id", "organization_id"}).
 			AddRow("member-1", "org-1").
 			AddRow("member-2", "org-2"))
@@ -688,9 +688,9 @@ func TestRBACDeleteRoleTemplate_RevokesMemberTokens(t *testing.T) {
 // over-privileged or compromised role template.
 func TestRBACDeleteRoleTemplate_MemberLookupDBError_StillDeletes(t *testing.T) {
 	mock, r := newRBACRouterWithRevocation(t, true)
-	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnRows(sampleRTRow())
-	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_members WHERE role_template_id").
+	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_member_roles WHERE role_template_id").
 		WillReturnError(errDB)
 	mock.ExpectExec("DELETE FROM role_templates WHERE id").
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -1200,7 +1200,7 @@ func TestRBACListMirrorPolicies_DBError(t *testing.T) {
 
 func TestRBACDeleteRoleTemplate_GetDBError(t *testing.T) {
 	mock, r := newRBACRouter(t)
-	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnError(errDB)
 
 	w := httptest.NewRecorder()
@@ -1213,7 +1213,7 @@ func TestRBACDeleteRoleTemplate_GetDBError(t *testing.T) {
 
 func TestRBACDeleteRoleTemplate_DeleteDBError(t *testing.T) {
 	mock, r := newRBACRouter(t)
-	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnRows(sampleRTRow())
 	mock.ExpectExec("DELETE FROM role_templates WHERE id").
 		WillReturnError(errDB)
@@ -1354,7 +1354,7 @@ func newRBACRouterWithOrg(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 
 func TestRBACGetRoleTemplate_DBError(t *testing.T) {
 	mock, r := newRBACRouter(t)
-	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnError(errDB)
 
 	w := httptest.NewRecorder()
@@ -1371,7 +1371,7 @@ func TestRBACGetRoleTemplate_DBError(t *testing.T) {
 
 func TestRBACCreateRoleTemplate_GetByNameDBError(t *testing.T) {
 	mock, r := newRBACRouter(t)
-	mock.ExpectQuery("SELECT.*FROM role_templates WHERE name").
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE name").
 		WillReturnError(errDB)
 
 	w := httptest.NewRecorder()
@@ -1389,7 +1389,7 @@ func TestRBACCreateRoleTemplate_GetByNameDBError(t *testing.T) {
 
 func TestRBACCreateRoleTemplate_CreateDBError(t *testing.T) {
 	mock, r := newRBACRouter(t)
-	mock.ExpectQuery("SELECT.*FROM role_templates WHERE name").
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE name").
 		WillReturnRows(emptyRTRows())
 	mock.ExpectExec("INSERT INTO role_templates").
 		WillReturnError(errDB)
@@ -1424,7 +1424,7 @@ func TestRBACUpdateRoleTemplate_InvalidID(t *testing.T) {
 
 func TestRBACUpdateRoleTemplate_GetDBError(t *testing.T) {
 	mock, r := newRBACRouter(t)
-	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnError(errDB)
 
 	w := httptest.NewRecorder()
@@ -1438,7 +1438,7 @@ func TestRBACUpdateRoleTemplate_GetDBError(t *testing.T) {
 
 func TestRBACUpdateRoleTemplate_BindJSONError(t *testing.T) {
 	mock, r := newRBACRouter(t)
-	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnRows(sampleRTRow())
 
 	w := httptest.NewRecorder()
@@ -1452,7 +1452,7 @@ func TestRBACUpdateRoleTemplate_BindJSONError(t *testing.T) {
 
 func TestRBACUpdateRoleTemplate_UpdateDBError(t *testing.T) {
 	mock, r := newRBACRouter(t)
-	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnRows(sampleRTRow())
 	mock.ExpectExec("UPDATE role_templates.*SET display_name").
 		WillReturnError(errDB)
@@ -1569,6 +1569,10 @@ func TestRBACCreateApproval_OrgComesFromConfigNotContext(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(membershipCols).AddRow(
 			knownUUID, "Owner", "role-1", time.Now(),
 			"devops", "DevOps", []byte(`["mirrors:manage"]`)))
+	expectRegistryRolesForUser(mock, registryRole{
+		orgID: knownUUID, id: "role-1", name: "devops", displayName: "DevOps",
+		scopes: `["mirrors:manage"]`,
+	})
 	mock.ExpectExec("INSERT INTO mirror_approval_requests").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -2057,12 +2061,12 @@ func TestRBACEvaluatePolicy_RequiresApproval(t *testing.T) {
 // go away, and the admin had no way to know.
 func TestRBACUpdateRoleTemplate_SweepFails_ReportsRevocationIncomplete(t *testing.T) {
 	mock, r := newRBACRouterWithRevocation(t, true)
-	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnRows(sampleRTRow()) // scopes = ["modules:read","providers:write"]
 	mock.ExpectExec("UPDATE role_templates.*SET display_name").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	// The member lookup that drives the sweep fails after the edit committed.
-	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_members").
+	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_member_roles").
 		WillReturnError(errDB)
 
 	w := httptest.NewRecorder()
@@ -2095,11 +2099,11 @@ func TestRBACUpdateRoleTemplate_SweepFails_ReportsRevocationIncomplete(t *testin
 // The happy path must NOT carry the flag, or it means nothing.
 func TestRBACUpdateRoleTemplate_SweepSucceeds_NoRevocationIncomplete(t *testing.T) {
 	mock, r := newRBACRouterWithRevocation(t, true)
-	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnRows(sampleRTRow())
 	mock.ExpectExec("UPDATE role_templates.*SET display_name").
 		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_members").
+	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_member_roles").
 		WillReturnRows(sqlmock.NewRows([]string{"user_id", "organization_id"}).
 			AddRow("member-1", "org-1"))
 	mock.ExpectExec("INSERT INTO user_token_revocations").
@@ -2133,9 +2137,9 @@ func TestRBACUpdateRoleTemplate_SweepSucceeds_NoRevocationIncomplete(t *testing.
 // and must report the same way.
 func TestRBACDeleteRoleTemplate_SweepFails_ReportsRevocationIncomplete(t *testing.T) {
 	mock, r := newRBACRouterWithRevocation(t, true)
-	mock.ExpectQuery("SELECT.*FROM role_templates WHERE id").
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnRows(sampleRTRow())
-	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_members").
+	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_member_roles").
 		WillReturnRows(sqlmock.NewRows([]string{"user_id", "organization_id"}).
 			AddRow("member-1", "org-1"))
 	mock.ExpectExec("DELETE FROM role_templates WHERE id").

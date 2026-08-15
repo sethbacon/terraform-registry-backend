@@ -765,6 +765,7 @@ func TestAddMember_AlreadyMember(t *testing.T) {
 	// GetMember finds existing
 	mock.ExpectQuery("SELECT.*FROM organization_members WHERE organization_id").
 		WillReturnRows(sampleOrgMemberRow())
+	expectRegistryRoleFor(mock, registryRole{})
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/organizations/org-1/members",
@@ -825,6 +826,7 @@ func TestRemoveMember_RevokesUserTokens(t *testing.T) {
 
 	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
 		WillReturnRows(sampleMemberWithRoleRow())
+	expectSampleMemberRegistryRole(mock)
 	mock.ExpectExec("DELETE FROM organization_members").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("INSERT INTO user_token_revocations").
@@ -851,6 +853,7 @@ func TestRemoveMember_RevocationErrorDoesNotFailRequest(t *testing.T) {
 
 	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
 		WillReturnRows(sampleMemberWithRoleRow())
+	expectSampleMemberRegistryRole(mock)
 	mock.ExpectExec("DELETE FROM organization_members").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("INSERT INTO user_token_revocations").
@@ -934,6 +937,7 @@ func TestRemoveMember_APIKeyRevocationFails_FlagsIncomplete(t *testing.T) {
 
 	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
 		WillReturnRows(sampleMemberWithRoleRow())
+	expectSampleMemberRegistryRole(mock)
 	mock.ExpectExec("DELETE FROM organization_members").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	// The JWT half succeeds ...
@@ -1076,6 +1080,14 @@ func sampleMemberWithRoleRow() *sqlmock.Rows {
 	)
 }
 
+// expectSampleMemberRegistryRole queues the read of registry's own role tables
+// that now follows every sampleMemberWithRoleRow, answering with the SAME
+// (absent) role template id and the SAME scopes, so the membership still confers
+// exactly what the row above described.
+func expectSampleMemberRegistryRole(mock sqlmock.Sqlmock) {
+	expectRegistryRoleFor(mock, registryRole{scopes: `["modules:read"]`})
+}
+
 func TestUpdateMember_InvalidJSON(t *testing.T) {
 	_, r := newOrgRouter(t)
 	w := httptest.NewRecorder()
@@ -1123,6 +1135,7 @@ func TestUpdateMember_UpdateDBError(t *testing.T) {
 	mock, r := newOrgRouter(t)
 	mock.ExpectQuery("SELECT.*FROM organization_members WHERE organization_id").
 		WillReturnRows(sampleOrgMemberRow())
+	expectRegistryRoleFor(mock, registryRole{})
 	// UpdateMember → UpdateMemberRoleTemplate → ExecContext
 	mock.ExpectExec("UPDATE organization_members").
 		WillReturnError(errDB)
@@ -1141,11 +1154,13 @@ func TestUpdateMember_Success(t *testing.T) {
 	mock, r := newOrgRouter(t)
 	mock.ExpectQuery("SELECT.*FROM organization_members WHERE organization_id").
 		WillReturnRows(sampleOrgMemberRow())
+	expectRegistryRoleFor(mock, registryRole{})
 	mock.ExpectExec("UPDATE organization_members").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	// GetMemberWithRole returns member with role info
 	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
 		WillReturnRows(sampleMemberWithRoleRow())
+	expectSampleMemberRegistryRole(mock)
 
 	body := `{"role_template_id": null}`
 	w := httptest.NewRecorder()
@@ -1168,12 +1183,13 @@ const (
 func TestUpdateMember_RoleTemplateChanged_RevokesUserTokens(t *testing.T) {
 	mock, r := newOrgRouterWithRevocation(t, true)
 	// checkRoleAssignment looks up the target role template's scopes first.
-	mock.ExpectQuery("SELECT scopes FROM role_templates WHERE id").
+	mock.ExpectQuery("SELECT scopes FROM registry_role_templates WHERE id").
 		WillReturnRows(sqlmock.NewRows([]string{"scopes"}).AddRow([]byte(`[]`)))
 	// Member currently holds oldRoleTemplateUUID; the request reassigns to
 	// newRoleTemplateUUID — a real change that must trigger revocation.
 	mock.ExpectQuery("SELECT.*FROM organization_members WHERE organization_id").
 		WillReturnRows(sampleOrgMemberRowWithRole(oldRoleTemplateUUID))
+	expectRegistryRoleFor(mock, registryRole{id: oldRoleTemplateUUID})
 	mock.ExpectExec("UPDATE organization_members").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("INSERT INTO user_token_revocations").
@@ -1182,6 +1198,7 @@ func TestUpdateMember_RoleTemplateChanged_RevokesUserTokens(t *testing.T) {
 	expectOrgKeySweep(mock, "user-1", "org-1", "key-1")
 	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
 		WillReturnRows(sampleMemberWithRoleRow())
+	expectSampleMemberRegistryRole(mock)
 
 	body := `{"role_template_id": "` + newRoleTemplateUUID + `"}`
 	w := httptest.NewRecorder()
@@ -1202,14 +1219,16 @@ func TestUpdateMember_RoleTemplateChanged_RevokesUserTokens(t *testing.T) {
 // tries to run an unexpected exec.
 func TestUpdateMember_RoleTemplateUnchanged_SkipsRevocation(t *testing.T) {
 	mock, r := newOrgRouterWithRevocation(t, true)
-	mock.ExpectQuery("SELECT scopes FROM role_templates WHERE id").
+	mock.ExpectQuery("SELECT scopes FROM registry_role_templates WHERE id").
 		WillReturnRows(sqlmock.NewRows([]string{"scopes"}).AddRow([]byte(`[]`)))
 	mock.ExpectQuery("SELECT.*FROM organization_members WHERE organization_id").
 		WillReturnRows(sampleOrgMemberRowWithRole(oldRoleTemplateUUID))
+	expectRegistryRoleFor(mock, registryRole{id: oldRoleTemplateUUID})
 	mock.ExpectExec("UPDATE organization_members").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
 		WillReturnRows(sampleMemberWithRoleRow())
+	expectSampleMemberRegistryRole(mock)
 
 	body := `{"role_template_id": "` + oldRoleTemplateUUID + `"}`
 	w := httptest.NewRecorder()
@@ -1438,6 +1457,7 @@ func TestAddMember_SuccessWithRole(t *testing.T) {
 	// GetMemberWithRole succeeds
 	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
 		WillReturnRows(sampleMemberWithRoleRow())
+	expectSampleMemberRegistryRole(mock)
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/organizations/org-1/members",
@@ -1561,6 +1581,7 @@ func TestUpdateMember_GetMemberWithRoleDBError(t *testing.T) {
 	mock, r := newOrgRouter(t)
 	mock.ExpectQuery("SELECT.*FROM organization_members WHERE organization_id").
 		WillReturnRows(sampleOrgMemberRow())
+	expectRegistryRoleFor(mock, registryRole{})
 	mock.ExpectExec("UPDATE organization_members").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	// GetMemberWithRole fails - handler should return basic member info (200)
@@ -1637,14 +1658,16 @@ func TestUpdateMemberHandler_SweepFails_ReportsRevocationIncomplete(t *testing.T
 	r := gin.New()
 	r.PUT("/organizations/:id/members/:user_id", h.UpdateMemberHandler())
 
-	mock.ExpectQuery("SELECT scopes FROM role_templates WHERE id").
+	mock.ExpectQuery("SELECT scopes FROM registry_role_templates WHERE id").
 		WillReturnRows(sqlmock.NewRows([]string{"scopes"}).AddRow([]byte(`[]`)))
 	mock.ExpectQuery("SELECT.*FROM organization_members WHERE organization_id").
 		WillReturnRows(sampleOrgMemberRowWithRole(oldRoleTemplateUUID))
+	expectRegistryRoleFor(mock, registryRole{id: oldRoleTemplateUUID})
 	mock.ExpectExec("UPDATE organization_members").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
 		WillReturnRows(sampleMemberWithRoleRow())
+	expectSampleMemberRegistryRole(mock)
 	// The JWT half of the sweep fails after the reassignment committed.
 	mock.ExpectExec("INSERT INTO user_token_revocations").
 		WillReturnError(errDB)
@@ -1652,6 +1675,7 @@ func TestUpdateMemberHandler_SweepFails_ReportsRevocationIncomplete(t *testing.T
 		[]byte(`["providers:write"]`))
 	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
 		WillReturnRows(sampleMemberWithRoleRow())
+	expectSampleMemberRegistryRole(mock)
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("PUT", "/organizations/org-1/members/user-1",

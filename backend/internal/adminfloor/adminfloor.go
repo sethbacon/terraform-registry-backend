@@ -476,12 +476,27 @@ func withoutUser(users []string, id string) []string {
 
 // organizationState returns the organization's members and, of those, the ones
 // who can administer it. Both lists name only users that still resolve.
+// The membership and the user come from the identity tables -- who belongs
+// where, and whether the grant resolves to somebody who can exercise it, are
+// still identity's facts. The SCOPES come from registry's own tables
+// (terraform-suite-identity#206, phase 3b): invariant B asks who can administer
+// this organization IN REGISTRY, and since the read cutover that is decided by
+// `organization_member_roles` joined to `registry_role_templates`. Reading the
+// shared tables here would let the floor certify an administrator the request
+// path does not recognise -- refusing a safe demotion, or permitting the one
+// that empties the organization.
+//
+// Both LEFT JOINs, so a member with no mirrored role is still COUNTED AS A
+// MEMBER and not as an administrator. That is the fail-closed direction for
+// invariant B: it can only make the guard refuse more, never less.
 func (g *Guard) organizationState(ctx context.Context, orgID string) (members, admins []string, err error) {
 	rows, err := g.identity.QueryContext(ctx, `
-		SELECT om.user_id, rt.scopes
+		SELECT om.user_id, rrt.scopes
 		  FROM organization_members om
 		  JOIN users u ON u.id = om.user_id
-		  LEFT JOIN role_templates rt ON rt.id = om.role_template_id
+		  LEFT JOIN organization_member_roles omr
+		         ON omr.organization_id = om.organization_id AND omr.user_id = om.user_id
+		  LEFT JOIN registry_role_templates rrt ON rrt.id = omr.role_template_id
 		 WHERE om.organization_id = $1`, orgID)
 	if err != nil {
 		return nil, nil, err
@@ -526,10 +541,15 @@ func (g *Guard) organizationsOf(ctx context.Context, userID string) ([]string, e
 // exist carries nothing, which is the fail-closed reading: the caller uses
 // this to decide whether the principal KEEPS authority, so "unknown" must not
 // answer yes.
+//
+// Registry's own table since phase 3b, matching organizationState above and the
+// request path: the caller passes Change.KeepsRoleTemplateID, the id a
+// membership write is ABOUT to store, and what that id will confer after the
+// write is decided by `registry_role_templates`.
 func (g *Guard) roleTemplateScopes(ctx context.Context, roleTemplateID string) ([]string, error) {
 	var raw []byte
 	err := g.identity.QueryRowContext(ctx,
-		`SELECT scopes FROM role_templates WHERE id = $1`, roleTemplateID).Scan(&raw)
+		`SELECT scopes FROM registry_role_templates WHERE id = $1`, roleTemplateID).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

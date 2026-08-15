@@ -140,6 +140,16 @@ func ownerMemberRow() *sqlmock.Rows {
 	)
 }
 
+// expectOwnerRegistryRole queues the read of registry's own role tables that now
+// follows every ownerMemberRow, answering with the SAME role template id and the
+// SAME scopes so the owner-derived ceiling is unchanged.
+func expectOwnerRegistryRole(mock sqlmock.Sqlmock) {
+	expectRegistryRoleFor(mock, registryRole{
+		id: "role-owner", name: "owner", displayName: "Owner",
+		scopes: string(ownerRoleScopes),
+	})
+}
+
 // storedKeyRow is an existing api_keys row owned by user-1 in org-1 carrying
 // scopes -- the subject of update and rotate.
 func storedKeyRow(scopes string) *sqlmock.Rows {
@@ -180,6 +190,7 @@ func TestCredentialBindingClass_KeyMinting(t *testing.T) {
 				case "create":
 					mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
 						WillReturnRows(ownerMemberRow())
+					expectOwnerRegistryRole(mock)
 					if allowed {
 						mock.ExpectExec("INSERT INTO api_keys").
 							WillReturnResult(sqlmock.NewResult(1, 1))
@@ -196,6 +207,7 @@ func TestCredentialBindingClass_KeyMinting(t *testing.T) {
 						WillReturnRows(storedKeyRow(`["modules:read"]`))
 					mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
 						WillReturnRows(ownerMemberRow())
+					expectOwnerRegistryRole(mock)
 					if allowed {
 						mock.ExpectExec("UPDATE api_keys.*SET name").
 							WillReturnResult(sqlmock.NewResult(1, 1))
@@ -212,6 +224,7 @@ func TestCredentialBindingClass_KeyMinting(t *testing.T) {
 						WillReturnRows(storedKeyRow(`["` + tc.requested + `"]`))
 					mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
 						WillReturnRows(ownerMemberRow())
+					expectOwnerRegistryRole(mock)
 					if allowed {
 						mock.ExpectExec("INSERT INTO api_keys").
 							WillReturnResult(sqlmock.NewResult(1, 1))
@@ -302,7 +315,7 @@ func TestCredentialBindingClass_RoleAssignment(t *testing.T) {
 			defer db.Close()
 			h := &OrganizationHandlers{db: db, orgRepo: repositories.NewOrganizationRepository(db)}
 
-			mock.ExpectQuery("SELECT scopes FROM role_templates WHERE id").
+			mock.ExpectQuery("SELECT scopes FROM registry_role_templates WHERE id").
 				WillReturnRows(sqlmock.NewRows([]string{"scopes"}).
 					AddRow([]byte(`["` + tt.roleScope + `"]`)))
 			// The caller's role in the target org grants both scopes, so the
@@ -314,6 +327,10 @@ func TestCredentialBindingClass_RoleAssignment(t *testing.T) {
 					"Alice", "alice@example.com", "owner", "Owner",
 					[]byte(`["organizations:write","modules:read"]`),
 				))
+			expectRegistryRoleFor(mock, registryRole{
+				id: "role-owner", name: "owner", displayName: "Owner",
+				scopes: `["organizations:write","modules:read"]`,
+			})
 
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())
 			c.Request = httptest.NewRequest(http.MethodPut, "/organizations/org-1/members/u", nil)

@@ -66,6 +66,17 @@ func membershipRow(orgID string, scopes []string) *sqlmock.Rows {
 		AddRow(orgID, "org-"+orgID[:4], "role-1", time.Now(), "user_manager", "User Manager", raw)
 }
 
+// expectMembershipRowRegistryRole queues the read of registry's own role tables
+// that now follows a membershipRow, answering with the SAME role and the SAME
+// scopes so the resolved tenant scope is exactly what the row above granted.
+func expectMembershipRowRegistryRole(mock sqlmock.Sqlmock, orgID string, scopes []string) {
+	raw, _ := json.Marshal(scopes)
+	expectRegistryRolesForUser(mock, registryRole{
+		orgID: orgID, id: "role-1", name: "user_manager", displayName: "User Manager",
+		scopes: string(raw),
+	})
+}
+
 func TestUserAxisScope_ByPrincipal(t *testing.T) {
 	tests := []struct {
 		name string
@@ -74,6 +85,10 @@ func TestUserAxisScope_ByPrincipal(t *testing.T) {
 		userID string
 		// membership rows OrgScopeForUser will read (nil = no query expected)
 		rows *sqlmock.Rows
+		// the scopes those rows carry. Registry's own role tables are read
+		// straight after and must answer with the same set, or the resolved
+		// scope stops being the one the row above describes.
+		roleScopes []string
 		// expectations
 		wantAll          bool
 		wantPermitsAlpha bool
@@ -94,6 +109,7 @@ func TestUserAxisScope_ByPrincipal(t *testing.T) {
 			scopes:           []string{string(auth.ScopeUsersRead)},
 			userID:           scopeUserID,
 			rows:             membershipRow(orgAlpha, []string{string(auth.ScopeUsersRead)}),
+			roleScopes:       []string{string(auth.ScopeUsersRead)},
 			wantPermitsAlpha: true,
 			wantPermitsBeta:  false,
 			wantUnowned:      true,
@@ -105,6 +121,7 @@ func TestUserAxisScope_ByPrincipal(t *testing.T) {
 			// A member of alpha, but the role template there does not carry
 			// users:read. Membership is not authority (#719).
 			rows:             membershipRow(orgAlpha, []string{string(auth.ScopeModulesRead)}),
+			roleScopes:       []string{string(auth.ScopeModulesRead)},
 			wantPermitsAlpha: false,
 			wantPermitsBeta:  false,
 			wantUnowned:      true,
@@ -122,6 +139,7 @@ func TestUserAxisScope_ByPrincipal(t *testing.T) {
 			c, mock, db := userScopeCtx(t, tt.scopes, tt.userID)
 			if tt.rows != nil {
 				mock.ExpectQuery("(?s)FROM organization_members").WillReturnRows(tt.rows)
+				expectMembershipRowRegistryRole(mock, orgAlpha, tt.roleScopes)
 			}
 			h := NewUserHandlers(&config.Config{}, db)
 
@@ -156,6 +174,7 @@ func TestUserAxisScope_ScopedCallerIsNotPlatformWide(t *testing.T) {
 	c, mock, db := userScopeCtx(t, []string{string(auth.ScopeUsersRead)}, scopeUserID)
 	mock.ExpectQuery("(?s)FROM organization_members").
 		WillReturnRows(membershipRow(orgAlpha, []string{string(auth.ScopeUsersRead)}))
+	expectMembershipRowRegistryRole(mock, orgAlpha, []string{string(auth.ScopeUsersRead)})
 	h := NewUserHandlers(&config.Config{}, db)
 
 	scope, ok := userAxisScope(c, h.orgRepo, auth.ScopeUsersRead)
@@ -202,6 +221,7 @@ func TestGetUser_OutOfScopeTarget_Is404(t *testing.T) {
 	// OrgScopeForUser: caller holds users:read in alpha.
 	mock.ExpectQuery("(?s)FROM organization_members").
 		WillReturnRows(membershipRow(orgAlpha, []string{string(auth.ScopeUsersRead)}))
+	expectMembershipRowRegistryRole(mock, orgAlpha, []string{string(auth.ScopeUsersRead)})
 	// Match the SCOPED form of the query specifically. sqlmock does not
 	// evaluate predicates, so an expectation that merely said "FROM" would be
 	// satisfied by the unscoped query too and this test would pass with the
@@ -232,6 +252,7 @@ func TestGetUserMemberships_FiltersOutOfScopeOrganizations(t *testing.T) {
 	mock, r := scopedUserRouter(t)
 	mock.ExpectQuery("(?s)FROM organization_members").
 		WillReturnRows(membershipRow(orgAlpha, []string{string(auth.ScopeUsersRead)}))
+	expectMembershipRowRegistryRole(mock, orgAlpha, []string{string(auth.ScopeUsersRead)})
 	// Scoped form, for the same reason as above.
 	mock.ExpectQuery("(?s)osm.organization_id = ANY").WillReturnRows(sampleUserRow())
 	// The target belongs to BOTH organizations; only alpha may be disclosed.
@@ -239,6 +260,10 @@ func TestGetUserMemberships_FiltersOutOfScopeOrganizations(t *testing.T) {
 		AddRow(orgAlpha, "org-alpha", "role-1", time.Now(), "viewer", "Viewer", []byte(`[]`)).
 		AddRow(orgBeta, "org-beta", "role-2", time.Now(), "viewer", "Viewer", []byte(`[]`))
 	mock.ExpectQuery("(?s)FROM organization_members").WillReturnRows(both)
+	expectRegistryRolesForUser(mock,
+		registryRole{orgID: orgAlpha, id: "role-1", name: "viewer", displayName: "Viewer", scopes: `[]`},
+		registryRole{orgID: orgBeta, id: "role-2", name: "viewer", displayName: "Viewer", scopes: `[]`},
+	)
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("GET", "/users/target/memberships", nil))

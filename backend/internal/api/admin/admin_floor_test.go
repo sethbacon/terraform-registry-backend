@@ -168,16 +168,19 @@ func TestUpdateMemberHandler_RefusesDemotingTheLastOrganizationAdmin(t *testing.
 
 	// checkRoleAssignment runs first; the caller is a platform administrator so
 	// the ceiling permits anything and no per-org lookup happens.
-	identity.ExpectQuery("SELECT scopes FROM role_templates WHERE id").
+	identity.ExpectQuery("SELECT scopes FROM registry_role_templates WHERE id").
 		WillReturnRows(sqlmock.NewRows([]string{"scopes"}).AddRow([]byte(floorViewerScopes)))
-	// Then the existing-member read.
+	// Then the existing-member read, whose ROLE now comes from registry's own
+	// tables -- the same role the identity row above carries.
 	identity.ExpectQuery("SELECT.*FROM organization_members WHERE organization_id").
 		WillReturnRows(sqlmock.NewRows([]string{"organization_id", "user_id", "role_template_id", "created_at"}).
 			AddRow("org-1", "owner-1", "role-owner", time.Now()))
+	expectRegistryRoleFor(identity, registryRole{id: "role-owner"})
 
 	floorExpectLock(registry)
-	// The floor's own read of the replacement template, then invariant A, then B.
-	identity.ExpectQuery("SELECT scopes FROM role_templates WHERE id").
+	// The floor's own read of the replacement template -- registry's table since
+	// phase 3b -- then invariant A, then B.
+	identity.ExpectQuery("SELECT scopes FROM registry_role_templates WHERE id").
 		WillReturnRows(sqlmock.NewRows([]string{"scopes"}).AddRow([]byte(floorViewerScopes)))
 	expectOrganizationState(identity,
 		[2]string{"owner-1", floorOwnerScopes},
@@ -211,6 +214,7 @@ func TestUpdateMemberHandler_RefusesClearingTheLastOrganizationAdminsRole(t *tes
 	identity.ExpectQuery("SELECT.*FROM organization_members WHERE organization_id").
 		WillReturnRows(sqlmock.NewRows([]string{"organization_id", "user_id", "role_template_id", "created_at"}).
 			AddRow("org-1", "owner-1", "role-owner", time.Now()))
+	expectRegistryRoleFor(identity, registryRole{id: "role-owner"})
 
 	floorExpectLock(registry)
 	expectOrganizationState(identity,
@@ -237,14 +241,15 @@ func TestUpdateMemberHandler_RefusesClearingTheLastOrganizationAdminsRole(t *tes
 func TestUpdateMemberHandler_AllowsReRolingOntoAnotherAdministrativeTemplate(t *testing.T) {
 	registry, identity, r := newFlooredOrgRouter(t)
 
-	identity.ExpectQuery("SELECT scopes FROM role_templates WHERE id").
+	identity.ExpectQuery("SELECT scopes FROM registry_role_templates WHERE id").
 		WillReturnRows(sqlmock.NewRows([]string{"scopes"}).AddRow([]byte(floorOwnerScopes)))
 	identity.ExpectQuery("SELECT.*FROM organization_members WHERE organization_id").
 		WillReturnRows(sqlmock.NewRows([]string{"organization_id", "user_id", "role_template_id", "created_at"}).
 			AddRow("org-1", "owner-1", "role-owner", time.Now()))
+	expectRegistryRoleFor(identity, registryRole{id: "role-owner"})
 
 	floorExpectLock(registry)
-	identity.ExpectQuery("SELECT scopes FROM role_templates WHERE id").
+	identity.ExpectQuery("SELECT scopes FROM registry_role_templates WHERE id").
 		WillReturnRows(sqlmock.NewRows([]string{"scopes"}).AddRow([]byte(floorOwnerScopes)))
 	expectOrganizationState(identity,
 		[2]string{"owner-1", floorOwnerScopes},
@@ -259,6 +264,10 @@ func TestUpdateMemberHandler_AllowsReRolingOntoAnotherAdministrativeTemplate(t *
 			"Owner One", "owner@example.com", "org_owner", "Organization Owner",
 			[]byte(floorOwnerScopes),
 		))
+	expectRegistryRoleFor(identity, registryRole{
+		id: "role-owner-2", name: "org_owner", displayName: "Organization Owner",
+		scopes: floorOwnerScopes,
+	})
 
 	body := `{"role_template_id":"77777777-7777-7777-7777-777777777777"}`
 	w := httptest.NewRecorder()

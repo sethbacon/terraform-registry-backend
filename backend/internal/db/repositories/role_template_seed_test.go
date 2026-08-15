@@ -46,8 +46,8 @@ func TestSeedSystemRoleTemplates_UpsertsEachTemplate(t *testing.T) {
 		t.Fatalf("expected %d Exec calls, got %d", len(templates), len(f.calls))
 	}
 	for i, call := range f.calls {
-		if call.query != upsertSystemRoleTemplateQuery {
-			t.Errorf("call %d: query did not match the upsert statement", i)
+		if call.query != upsertSystemRoleTemplateSQL(registryRoleTemplateTable) {
+			t.Errorf("call %d: query did not match the upsert statement for %s", i, registryRoleTemplateTable)
 		}
 		if len(call.args) != 4 {
 			t.Fatalf("call %d: expected 4 args, got %d", i, len(call.args))
@@ -80,17 +80,60 @@ func TestSeedSystemRoleTemplates_UpsertsEachTemplate(t *testing.T) {
 // TestSeedSystemRoleTemplates_GuardedUpsertSQL locks the shape of the bootstrap
 // write: it must be a guarded ON CONFLICT upsert that reaches is_system rows and
 // no-ops when nothing changed.
+//
+// Both tables, and the ON CONFLICT TARGET asserted explicitly. Conflicting on
+// (name) rather than (id) is what lets the seed update the row the reconcile
+// already inserted under the identity copy's id, instead of inserting a second
+// row under a fresh uuid that no membership names — which would silently strip
+// every member of their role (terraform-suite-identity#206, phase 3b).
 func TestSeedSystemRoleTemplates_GuardedUpsertSQL(t *testing.T) {
-	q := upsertSystemRoleTemplateQuery
-	for _, want := range []string{
-		"INSERT INTO role_templates",
-		"ON CONFLICT (name) DO UPDATE SET",
-		"is_system    = true",
-		"IS DISTINCT FROM",
-	} {
-		if !strings.Contains(q, want) {
-			t.Errorf("upsert query is missing %q", want)
+	for _, table := range []string{registryRoleTemplateTable, sharedRoleTemplateTable} {
+		q := upsertSystemRoleTemplateSQL(table)
+		for _, want := range []string{
+			"INSERT INTO " + table + " (id, name, display_name, description, scopes, is_system, created_at, updated_at)",
+			"ON CONFLICT (name) DO UPDATE SET",
+			"is_system    = true",
+			table + ".scopes       IS DISTINCT FROM EXCLUDED.scopes",
+		} {
+			if !strings.Contains(q, want) {
+				t.Errorf("%s upsert query is missing %q", table, want)
+			}
 		}
+	}
+}
+
+// TestSeedRoleTemplates_TargetsAreDistinctTables is the property phase 3b turns
+// on: the seed that feeds registry's authorization and the seed that keeps the
+// shared table current for the state manager and for a rollback must write
+// DIFFERENT tables. A refactor that collapsed them back onto one would restore
+// exactly the cross-application collision TFR_SUITE_ROLE_SEED_OWNER exists to
+// arbitrate, and every test above would still pass.
+func TestSeedRoleTemplates_TargetsAreDistinctTables(t *testing.T) {
+	templates := []models.RoleTemplate{{Name: "viewer", DisplayName: "Viewer", Scopes: []string{"modules:read"}}}
+
+	own := &fakeExecer{}
+	if err := SeedSystemRoleTemplates(context.Background(), own, templates); err != nil {
+		t.Fatalf("SeedSystemRoleTemplates: %v", err)
+	}
+	shared := &fakeExecer{}
+	if err := SeedSharedIdentityRoleTemplates(context.Background(), shared, templates); err != nil {
+		t.Fatalf("SeedSharedIdentityRoleTemplates: %v", err)
+	}
+
+	if len(own.calls) != 1 || len(shared.calls) != 1 {
+		t.Fatalf("expected one call each, got own=%d shared=%d", len(own.calls), len(shared.calls))
+	}
+	if !strings.Contains(own.calls[0].query, "INSERT INTO registry_role_templates") {
+		t.Errorf("SeedSystemRoleTemplates must write registry's own table; query was:\n%s", own.calls[0].query)
+	}
+	if strings.Contains(own.calls[0].query, "INSERT INTO role_templates") {
+		t.Errorf("SeedSystemRoleTemplates still writes the shared table; query was:\n%s", own.calls[0].query)
+	}
+	if !strings.Contains(shared.calls[0].query, "INSERT INTO role_templates") {
+		t.Errorf("SeedSharedIdentityRoleTemplates must write the shared table; query was:\n%s", shared.calls[0].query)
+	}
+	if own.calls[0].query == shared.calls[0].query {
+		t.Error("both seeds issue the same statement — they are writing one table, not two")
 	}
 }
 
@@ -132,14 +175,14 @@ func TestSeedSystemRoleTemplates_Idempotent_NoOpReRun(t *testing.T) {
 
 	// First run: every template upsert inserts a row (RowsAffected = 1).
 	for range templates {
-		mock.ExpectExec("INSERT INTO role_templates").
+		mock.ExpectExec("INSERT INTO registry_role_templates").
 			WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 			WillReturnResult(sqlmock.NewResult(0, 1))
 	}
 	// Second run with identical values: the guarded WHERE suppresses every write,
 	// so each upsert reports 0 rows affected — the steady-state no-op.
 	for range templates {
-		mock.ExpectExec("INSERT INTO role_templates").
+		mock.ExpectExec("INSERT INTO registry_role_templates").
 			WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 			WillReturnResult(sqlmock.NewResult(0, 0))
 	}

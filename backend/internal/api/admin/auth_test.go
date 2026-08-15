@@ -750,6 +750,10 @@ func TestMeHandler_SuccessWithMemberships(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organization_members").
 		WillReturnRows(sqlmock.NewRows(meOrgMembershipCols).
 			AddRow("org-1", "acme", "role-1", time.Now(), "admin", "Administrator", `["admin","write","read"]`))
+	expectRegistryRolesForUser(mock, registryRole{
+		orgID: "org-1", id: "role-1", name: "admin", displayName: "Administrator",
+		scopes: `["admin","write","read"]`,
+	})
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/auth/me", nil))
@@ -904,7 +908,7 @@ var authMemberCols = []string{"organization_id", "user_id", "role_template_id", 
 // scopes is marshaled to the JSON array the real `scopes` column holds.
 func expectRoleScopesLookup(mock sqlmock.Sqlmock, roleName string, scopes []string) {
 	scopesJSON, _ := json.Marshal(scopes)
-	mock.ExpectQuery("SELECT scopes FROM role_templates WHERE name").
+	mock.ExpectQuery("SELECT scopes FROM registry_role_templates WHERE name").
 		WithArgs(roleName).
 		WillReturnRows(sqlmock.NewRows([]string{"scopes"}).AddRow(scopesJSON))
 }
@@ -978,6 +982,7 @@ func TestApplyGroupMappings_MatchingGroup_UpdateMember(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
 		WillReturnRows(sqlmock.NewRows(authMemberCols).
 			AddRow("org-1", "user-1", &roleID, time.Now()))
+	expectRegistryRoleFor(mock, registryRole{id: roleID})
 
 	// guardProvisionableRole → scopes lookup (non-admin, so the write proceeds)
 	expectRoleScopesLookup(mock, "editor", []string{"modules:read", "modules:write"})
@@ -1269,6 +1274,7 @@ func TestApplyGroupMappings_DefaultRole_ExistingMemberNotOverwritten(t *testing.
 	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
 		WillReturnRows(sqlmock.NewRows(authMemberCols).
 			AddRow("org-default", "user-1", "rt-manual", time.Now()))
+	expectRegistryRoleFor(mock, registryRole{id: "rt-manual"})
 
 	// No role-template lookup and no UPDATE/INSERT must follow.
 
@@ -1697,6 +1703,8 @@ func expectIsMember(mock sqlmock.Sqlmock, orgID, userID, roleID string) {
 	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
 		WillReturnRows(sqlmock.NewRows(authMemberCols).
 			AddRow(orgID, userID, roleID, time.Now()))
+	// The membership FACT is still identity's; the ROLE it holds is registry's.
+	expectRegistryRoleFor(mock, registryRole{id: roleID})
 }
 
 // expectNotMember queues a CheckMembership lookup that reports no membership.
@@ -2137,7 +2145,7 @@ func TestReconcile_GuardProvisionableRole_UnknownRoleTemplate_DefersToRealLookup
 	expectOrgByName(mock, "acme", "org-acme")
 	expectNotMember(mock)
 	// guardProvisionableRole's own scopes lookup finds no such role template.
-	mock.ExpectQuery("SELECT scopes FROM role_templates WHERE name").
+	mock.ExpectQuery("SELECT scopes FROM registry_role_templates WHERE name").
 		WithArgs("ghost-role").
 		WillReturnRows(sqlmock.NewRows([]string{"scopes"}))
 	// AddMemberWithParams's lookup is reached and fails with its own clear error.
@@ -2678,6 +2686,10 @@ func TestMeHandler_AllowedScopesUnionsThePlatformAdminCarrier(t *testing.T) {
 			mock.ExpectQuery("SELECT.*FROM organization_members").
 				WillReturnRows(sqlmock.NewRows(meOrgMembershipCols).
 					AddRow("org-1", "acme", "role-1", time.Now(), "reader", "Reader", tt.membershipScopes))
+			expectRegistryRolesForUser(mock, registryRole{
+				orgID: "org-1", id: "role-1", name: "reader", displayName: "Reader",
+				scopes: tt.membershipScopes,
+			})
 
 			w := httptest.NewRecorder()
 			r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/auth/me", nil))

@@ -51,6 +51,35 @@ var scimUserCols = []string{
 	"id", "email", "name", "oidc_sub", "created_at", "updated_at",
 }
 
+// scimRegistryRoleCols is the projection MemberRoleReader.RolesForUser selects
+// (terraform-suite-identity#206, phase 3b).
+var scimRegistryRoleCols = []string{
+	"organization_id", "role_template_id", "role_template_name",
+	"role_template_display_name", "role_template_scopes",
+}
+
+// expectCallerRegistryRoles primes the SECOND read every membership accessor
+// now issues: the shared identity store still answers "which organizations is
+// this caller a member of", and registry's own organization_member_roles
+// answers "with what role, here".
+//
+// The rows given must carry the SAME role ids and scopes as the identity rows
+// queued just before, so these fixtures keep testing the tenant predicate they
+// were written for rather than accidentally testing a divergence. A mismatch is
+// not silent -- the read path logs it and increments
+// registry_role_read_divergence_total -- but it would change what the
+// surrounding assertion means, which is worse than loud.
+func expectCallerRegistryRoles(mock sqlmock.Sqlmock, orgIDs ...string) {
+	rows := sqlmock.NewRows(scimRegistryRoleCols)
+	for i, orgID := range orgIDs {
+		rows.AddRow(orgID, fmt.Sprintf("role-%d", i+1),
+			"provisioner", "Provisioner", []byte(`["scim:provision"]`))
+	}
+	mock.ExpectQuery(`(?s)FROM organization_member_roles omr.*WHERE omr\.user_id`).
+		WithArgs(scimCallerID).
+		WillReturnRows(rows)
+}
+
 // scimDeprovisionPath is one enumerated deactivation path over
 // organization_members.
 type scimDeprovisionPath struct {
@@ -196,6 +225,10 @@ func TestSCIMDeprovisionClass_OnlyRemovesInScopeMemberships(t *testing.T) {
 				WillReturnRows(sqlmock.NewRows(scimMembershipCols).AddRow(
 					scimOrgAlpha, "Alpha", "role-1", time.Now(),
 					"provisioner", "Provisioner", []byte(`["scim:provision"]`)))
+			// ...and the role each of those memberships carries IN REGISTRY,
+			// which is where the scope that resolves the tenant predicate now
+			// comes from (terraform-suite-identity#206, phase 3b).
+			expectCallerRegistryRoles(mock, scimOrgAlpha)
 
 			// GUARD scim-deprovision-tenant-scope. One statement, scoped to
 			// Alpha, RETURNING the organizations it actually removed — the value

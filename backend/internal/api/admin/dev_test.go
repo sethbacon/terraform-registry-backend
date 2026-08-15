@@ -375,6 +375,10 @@ func TestListDevUsers_Success(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organization_members").
 		WillReturnRows(sqlmock.NewRows(membershipSQLCols).
 			AddRow("org-1", "default", "rt-1", now, "admin", "Administrator", `["admin"]`))
+	// 3. the role that membership holds, from registry's own tables
+	expectRegistryRolesForUser(mock, registryRole{
+		orgID: "org-1", id: "rt-1", name: "admin", displayName: "Administrator", scopes: `["admin"]`,
+	})
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("GET", "/dev/users", nil))

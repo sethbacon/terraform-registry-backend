@@ -82,15 +82,28 @@ func createAxisAdmin() gin.HandlerFunc {
 	}
 }
 
+// createAxisMembershipFixture is a GetUserMemberships result together with the
+// read of registry's own role tables that now follows it. They are built from
+// the same scopes in one place so the membership and the role it confers cannot
+// drift apart -- if they did, the resolver would see different authority than
+// the row below describes and the case would silently stop testing what it says.
+type createAxisMembershipFixture struct {
+	rows  *sqlmock.Rows
+	roles []registryRole
+}
+
 // createAxisMemberships builds a GetUserMemberships result granting `scopes` in
 // each named organization.
-func createAxisMemberships(scopes string, orgIDs ...string) *sqlmock.Rows {
-	rows := sqlmock.NewRows(membershipCols)
+func createAxisMemberships(scopes string, orgIDs ...string) *createAxisMembershipFixture {
+	f := &createAxisMembershipFixture{rows: sqlmock.NewRows(membershipCols)}
 	for i, id := range orgIDs {
-		rows.AddRow(id, fmt.Sprintf("org-%d", i), "role-1", time.Now(),
+		f.rows.AddRow(id, fmt.Sprintf("org-%d", i), "role-1", time.Now(),
 			"devops", "DevOps", []byte(scopes))
+		f.roles = append(f.roles, registryRole{
+			orgID: id, id: "role-1", name: "devops", displayName: "DevOps", scopes: scopes,
+		})
 	}
-	return rows
+	return f
 }
 
 // createAxisWant is the outcome required of ONE create path.
@@ -119,7 +132,7 @@ type createAxisCase struct {
 	// memberships is primed only when the fallback resolver is expected to
 	// reach GetUserMemberships; a nil value asserts by omission that it does
 	// not (an unexpected statement fails the row).
-	memberships *sqlmock.Rows
+	memberships *createAxisMembershipFixture
 	// membershipsErr makes the membership lookup fail.
 	membershipsErr error
 	// wantDefaultOrgLookup primes GetDefaultOrganization, which only the
@@ -298,7 +311,10 @@ func primeResolution(mock sqlmock.Sqlmock, tc createAxisCase) {
 	case tc.membershipsErr != nil:
 		mock.ExpectQuery("(?s)FROM organization_members").WillReturnError(tc.membershipsErr)
 	case tc.memberships != nil:
-		mock.ExpectQuery("(?s)FROM organization_members").WillReturnRows(tc.memberships)
+		mock.ExpectQuery("(?s)FROM organization_members").WillReturnRows(tc.memberships.rows)
+		if len(tc.memberships.roles) > 0 {
+			expectRegistryRolesForUser(mock, tc.memberships.roles...)
+		}
 	}
 	if tc.wantDefaultOrgLookup {
 		mock.ExpectQuery("SELECT.*FROM organizations").

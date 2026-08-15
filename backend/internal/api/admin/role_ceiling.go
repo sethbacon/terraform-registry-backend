@@ -38,9 +38,16 @@ func (h *OrganizationHandlers) checkRoleAssignment(c *gin.Context, roleTemplateI
 		return roleAssignmentCheck{allowed: false, status: http.StatusBadRequest}
 	}
 
+	// REGISTRY's own table (terraform-suite-identity#206, phase 3b). This asks
+	// "what will this template confer once it is assigned", and since the read
+	// cutover the answer is `registry_role_templates`. Reading the shared table
+	// would compute the ceiling — and the platform-admin refusal below — from a
+	// scope set the product does not actually enforce, so a template registry
+	// treats as admin-bearing could be waved through on the strength of what
+	// identity says it carries.
 	var scopesJSON []byte
 	err = h.db.QueryRowContext(c.Request.Context(),
-		`SELECT scopes FROM role_templates WHERE id = $1`, id).Scan(&scopesJSON)
+		`SELECT scopes FROM registry_role_templates WHERE id = $1`, id).Scan(&scopesJSON)
 	if err == sql.ErrNoRows {
 		return roleAssignmentCheck{allowed: false, status: http.StatusBadRequest}
 	}

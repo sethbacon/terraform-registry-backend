@@ -935,6 +935,8 @@ var memberWithRoleCols = []string{
 func expectKeyOwnerMembership(mock sqlmock.Sqlmock, orgID, userID string, roleScopes []byte) {
 	q := mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN")
 	if roleScopes == nil {
+		// No membership: the store answers ErrNotFound and the accessor returns
+		// before it ever asks registry's tables, so no mirrored read follows.
 		q.WillReturnRows(sqlmock.NewRows(memberWithRoleCols))
 		return
 	}
@@ -942,6 +944,67 @@ func expectKeyOwnerMembership(mock sqlmock.Sqlmock, orgID, userID string, roleSc
 		orgID, userID, "rt-1", time.Now(),
 		"Test User", "test@example.com",
 		"viewer", "Viewer", roleScopes))
+	// Same template, same scopes: the membership this fixture describes is
+	// unchanged, only the table the ROLE half of it is read from.
+	expectRegistryRoleFor(mock, "rt-1", "viewer", "Viewer", roleScopes)
+}
+
+// ---------------------------------------------------------------------------
+// Registry's own role tables (sethbacon/terraform-suite-identity#206, phase 3b)
+//
+// repositories.OrganizationRepository still asks the shared identity store for
+// the membership FACT -- which is what every `organization_members` expectation
+// in this package supplies, and why none of them may be dropped -- and then
+// issues ONE MORE query against registry's own `organization_member_roles` /
+// `registry_role_templates`, returning THAT role. So a fixture that seeds a
+// member row has to seed the mirrored role immediately after it, on the same
+// mock, in the same order.
+//
+// The mirrored row must carry the SAME role_template_id and the SAME scopes as
+// the identity row it follows. A different value is the DIVERGENCE case:
+// compareRole logs an ERROR and increments registry_role_read_divergence_total,
+// and the authorization outcome silently becomes a statement about drift rather
+// than about the access-control rule the test was written for.
+// ---------------------------------------------------------------------------
+
+// registryRoleCols is member_role_reader.go's mirroredRoleColumns projection:
+// role_template_id (nullable), name, display_name, scopes (JSON array).
+var registryRoleCols = []string{"role_template_id", "name", "display_name", "scopes"}
+
+// expectRegistryRoleFor queues the single-membership read (MemberRoleReader
+// .RoleFor) that follows GetMember and GetMemberWithRole -- and, through them,
+// CheckMembership and GetUserScopesForOrg. A nil scopes slice means registry
+// holds no mirrored row for the membership, which confers nothing.
+func expectRegistryRoleFor(mock sqlmock.Sqlmock, roleTemplateID, name, displayName string, scopes []byte) {
+	rows := sqlmock.NewRows(registryRoleCols)
+	if scopes != nil {
+		rows.AddRow(roleTemplateID, name, displayName, scopes)
+	}
+	mock.ExpectQuery(`SELECT omr\.role_template_id.*FROM organization_member_roles.*WHERE omr\.organization_id = \$1 AND omr\.user_id = \$2`).
+		WillReturnRows(rows)
+}
+
+// registryRoleForOrg is one organization's mirrored role in a whole-user read.
+type registryRoleForOrg struct {
+	OrganizationID string
+	RoleTemplateID string
+	Name           string
+	DisplayName    string
+	Scopes         []byte
+}
+
+// expectRegistryRolesForUser queues the whole-user read (MemberRoleReader
+// .RolesForUser) that follows GetUserMemberships -- and, through it,
+// GetUserCombinedScopes and OrgScopeForUser. The store's own read runs first
+// and this one only when that returned at least one membership, so pass one
+// registryRoleForOrg per membership the store fixture seeded.
+func expectRegistryRolesForUser(mock sqlmock.Sqlmock, roles ...registryRoleForOrg) {
+	rows := sqlmock.NewRows(append([]string{"organization_id"}, registryRoleCols...))
+	for _, role := range roles {
+		rows.AddRow(role.OrganizationID, role.RoleTemplateID, role.Name, role.DisplayName, role.Scopes)
+	}
+	mock.ExpectQuery(`SELECT omr\.organization_id,.*FROM organization_member_roles.*WHERE omr\.user_id = \$1`).
+		WillReturnRows(rows)
 }
 
 // apiKeyAuthRouter wires AuthMiddleware over mocked repositories and returns

@@ -46,6 +46,64 @@ func emptyOrgMemberRow() *sqlmock.Rows {
 	return sqlmock.NewRows(orgMemberCols)
 }
 
+// ---------------------------------------------------------------------------
+// Registry's own role tables (terraform-suite-identity#206, phase 3b)
+// ---------------------------------------------------------------------------
+//
+// Every role-bearing accessor now issues a SECOND query, against registry's own
+// organization_member_roles, immediately after the shared store's. The helpers
+// below queue it.
+//
+// The role and scopes they carry MUST match the identity row queued just before,
+// or the fixture stops testing the accessor and starts testing a divergence:
+// the read path notices the disagreement, logs it at ERROR and increments
+// registry_role_read_divergence_total, and the assertion above it silently
+// changes meaning. Divergence has its own tests, in
+// member_role_divergence_test.go, where it is the subject rather than an
+// accident.
+
+// registryRoleCols is MemberRoleReader.mirroredRoleColumns.
+var registryRoleCols = []string{
+	"role_template_id", "role_template_name", "role_template_display_name", "role_template_scopes",
+}
+
+// expectRegistryRoleFor queues the single-membership read (RoleFor). A nil
+// scopes argument queues NO ROW, which is how "registry has no mirror for this
+// membership" is expressed.
+func expectRegistryRoleFor(mock sqlmock.Sqlmock, roleID string, scopes []byte) {
+	rows := sqlmock.NewRows(registryRoleCols)
+	if scopes != nil {
+		rows.AddRow(nullableRole(roleID), "viewer", "Viewer", scopes)
+	}
+	mock.ExpectQuery(`(?s)FROM organization_member_roles omr.*WHERE omr\.organization_id = \$1 AND omr\.user_id = \$2`).
+		WillReturnRows(rows)
+}
+
+// expectRegistryRolesForOrg queues the per-organization read (RolesForOrg),
+// keyed by user id.
+func expectRegistryRolesForOrg(mock sqlmock.Sqlmock, userID, roleID string, scopes []byte) {
+	mock.ExpectQuery(`(?s)SELECT omr\.user_id,.*FROM organization_member_roles omr.*WHERE omr\.organization_id = \$1`).
+		WillReturnRows(sqlmock.NewRows(append([]string{"user_id"}, registryRoleCols...)).
+			AddRow(userID, nullableRole(roleID), "viewer", "Viewer", scopes))
+}
+
+// expectRegistryRolesForUser queues the per-user read (RolesForUser), keyed by
+// organization id.
+func expectRegistryRolesForUser(mock sqlmock.Sqlmock, orgID, roleID string, scopes []byte) {
+	mock.ExpectQuery(`(?s)SELECT omr\.organization_id,.*FROM organization_member_roles omr.*WHERE omr\.user_id = \$1`).
+		WillReturnRows(sqlmock.NewRows(append([]string{"organization_id"}, registryRoleCols...)).
+			AddRow(orgID, nullableRole(roleID), "viewer", "Viewer", scopes))
+}
+
+// nullableRole renders an empty role id as SQL NULL, so a fixture can express a
+// mirrored membership that carries no role.
+func nullableRole(roleID string) interface{} {
+	if roleID == "" {
+		return nil
+	}
+	return roleID
+}
+
 func newOrgRepo(t *testing.T) (*OrganizationRepository, sqlmock.Sqlmock) {
 	t.Helper()
 	db, mock, err := sqlmock.New()
@@ -397,6 +455,7 @@ func TestGetMember_Found(t *testing.T) {
 	repo, mock := newOrgRepo(t)
 	mock.ExpectQuery("SELECT.*FROM organization_members WHERE organization_id").
 		WillReturnRows(sampleOrgMemberRow())
+	expectRegistryRoleFor(mock, "", []byte(`[]`))
 
 	m, err := repo.GetMember(context.Background(), "org-1", "user-1", OrgScopeAllOrganizations())
 	if err != nil {
@@ -461,6 +520,7 @@ func TestListMembersWithUsers_WithMember(t *testing.T) {
 		AddRow("org-1", "user-1", nil, time.Now(), "Alice", "alice@example.com", nil, nil, scopesJSON)
 	mock.ExpectQuery("SELECT.*FROM organization_members.*JOIN users").
 		WillReturnRows(rows)
+	expectRegistryRolesForOrg(mock, "user-1", "", scopesJSON)
 
 	members, err := repo.ListMembersWithUsers(context.Background(), "org-1", OrgScopeAllOrganizations())
 	if err != nil {
@@ -572,6 +632,7 @@ func TestGetMemberWithRole_Found(t *testing.T) {
 	repo, mock := newOrgRepo(t)
 	mock.ExpectQuery("SELECT.*FROM organization_members").
 		WillReturnRows(sampleMemberWithRoleRepoRow())
+	expectRegistryRoleFor(mock, "", []byte(`["modules:read"]`))
 
 	m, err := repo.GetMemberWithRole(context.Background(), "org-1", "user-1", OrgScopeAllOrganizations())
 	if err != nil {
@@ -596,6 +657,7 @@ func TestListMembers_Success(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organization_members WHERE organization_id").
 		WillReturnRows(sqlmock.NewRows(orgMemberRepoCols).
 			AddRow("org-1", "user-1", nil, time.Now()))
+	expectRegistryRolesForOrg(mock, "user-1", "", []byte(`[]`))
 
 	members, err := repo.ListMembers(context.Background(), "org-1", OrgScopeAllOrganizations())
 	if err != nil {
@@ -732,6 +794,7 @@ func TestCheckMembership_IsMember(t *testing.T) {
 	repo, mock := newOrgRepo(t)
 	mock.ExpectQuery("SELECT.*FROM organization_members WHERE organization_id").
 		WillReturnRows(sqlmock.NewRows(orgMemberRepoCols).AddRow("org-1", "user-1", nil, time.Now()))
+	expectRegistryRoleFor(mock, "", []byte(`[]`))
 
 	isMember, _, err := repo.CheckMembership(context.Background(), "org-1", "user-1", OrgScopeAllOrganizations())
 	if err != nil {
@@ -776,6 +839,7 @@ func TestGetUserMemberships_Success(t *testing.T) {
 			"org-1", "default", nil, time.Now(),
 			"viewer", "Viewer", []byte(`["modules:read"]`),
 		))
+	expectRegistryRolesForUser(mock, "org-1", "", []byte(`["modules:read"]`))
 
 	memberships, err := repo.GetUserMemberships(context.Background(), "user-1")
 	if err != nil {
@@ -811,6 +875,7 @@ func TestGetUserCombinedScopes_Success(t *testing.T) {
 			"org-1", "default", nil, time.Now(),
 			"viewer", "Viewer", []byte(`["modules:read","modules:write"]`),
 		))
+	expectRegistryRolesForUser(mock, "org-1", "", []byte(`["modules:read","modules:write"]`))
 
 	scopes, err := repo.GetUserCombinedScopes(context.Background(), "user-1") //nolint:staticcheck // SA1019: unit test for the deprecated-but-retained method itself
 	if err != nil {

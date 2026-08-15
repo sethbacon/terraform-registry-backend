@@ -139,12 +139,21 @@ func (s *UserService) ExportUserData(ctx context.Context, userID string) (*UserD
 		return nil, fmt.Errorf("user not found: %w", err)
 	}
 
-	// 2. Organization memberships
+	// 2. Organization memberships.
+	//
+	// The membership and the organization are identity's; the ROLE comes from
+	// registry's own tables (terraform-suite-identity#206, phase 3b). A GDPR
+	// export must describe the authority the subject actually holds in this
+	// application, and since the read cutover that is what
+	// `organization_member_roles` says -- naming the identity table's role here
+	// would export a role the product no longer acts on.
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT o.id, o.name, COALESCE(rt.name, 'none')
+		SELECT o.id, o.name, COALESCE(rrt.name, 'none')
 		FROM organization_members om
 		JOIN organizations o ON o.id = om.organization_id
-		LEFT JOIN role_templates rt ON rt.id = om.role_template_id
+		LEFT JOIN organization_member_roles omr
+		       ON omr.organization_id = om.organization_id AND omr.user_id = om.user_id
+		LEFT JOIN registry_role_templates rrt ON rrt.id = omr.role_template_id
 		WHERE om.user_id = $1
 	`, userID)
 	if err == nil {

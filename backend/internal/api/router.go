@@ -46,6 +46,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/credlifecycle"
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
+	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/jobs"
@@ -208,48 +209,78 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	orgRepo := repositories.NewOrganizationRepository(identityDB)
 	tokenRepo := repositories.NewTokenRepository(identityDB)
 	// Registry's own per-app authorization tables
-	// (sethbacon/terraform-suite-identity#206, migration 000055). NOTHING READS
-	// THEM YET; the repositories above dual-write them so the read cutover has
-	// a populated copy to switch onto.
+	// (sethbacon/terraform-suite-identity#206, migration 000055). SINCE PHASE 3b
+	// EVERY ROLE AND EVERY SCOPE SET READ BY THIS PROCESS COMES FROM THEM. The
+	// repositories above still dual-write the identity tables, which is what
+	// keeps the rollback (deploy the previous image) real.
 	//
-	// Two INDEPENDENT startup steps, for the same reason the carrier is verified
-	// above -- reported, not assumed. Independent because they concern different
-	// connections, and the topology that breaks one leaves the other working.
+	// Three startup steps, in this order, and the order is load-bearing.
 	//
-	// 1. Probe the tables on the IDENTITY connection, which is where the LIVE
-	//    dual-write lands: the membership half has to share a connection with
-	//    the organization_members write it shadows. In the default topology that
-	//    connection is the registry connection; under TFR_IDENTITY_SCHEMA_ENABLED
-	//    it resolves them through the trailing `,public` of its search_path. In
-	//    the one topology where it cannot -- identity in a SEPARATE DATABASE --
-	//    this is where that is said out loud, rather than left to be discovered
-	//    as missing rows at the cutover.
+	// 1. VERIFY, and now FATALLY. The probe asks whether the connection the
+	//    repositories resolve `organization_members` through also resolves
+	//    registry's two tables. In the default topology it is one connection; under
+	//    TFR_IDENTITY_SCHEMA_ENABLED the identity pool's `search_path` resolves
+	//    them through its trailing `,public`. The one topology where it cannot is
+	//    identity in a SEPARATE DATABASE.
 	//
-	// 2. Reconcile, which is the backfill. It reads through the identity
-	//    connection and writes through the REGISTRY one, so it is correct in
-	//    every topology INCLUDING the one step 1 rejects -- which is why it is
-	//    not conditional on that probe. In a separate-database deployment this
-	//    is the only thing keeping the two copies together, so skipping it there
-	//    would be exactly backwards.
+	//    Before the cutover that was logged and survivable: nothing read these
+	//    tables, so an unreachable mirror cost only diagnosis. It is not
+	//    survivable now. Every authorization decision would be served from a table
+	//    this connection cannot see -- which is not "degraded", it is every
+	//    principal resolving to no role, i.e. a total outage that presents as a
+	//    permissions problem. Refusing to boot is the smaller failure and the one
+	//    an operator can act on.
 	//
-	//    It runs on every boot rather than once: 000055 deliberately ships no
-	//    SQL backfill (a migration cannot see which schema or database is live),
-	//    a re-derivation is a no-op when nothing changed, and it repairs
-	//    whatever a transient mirror failure left behind.
+	// 2. RECONCILE, which re-derives registry's tables from the identity source.
+	//    It runs on every boot: 000055 ships no SQL backfill (a migration cannot
+	//    see which schema or database is live), a re-derivation is a no-op when
+	//    nothing changed, and it repairs whatever a transient mirror failure left
+	//    behind.
 	//
-	// Both are logged, never fatal. A deployment whose mirror is broken must
-	// still boot -- reads do not come from these tables, so a failure here
-	// costs nothing at request time and everything at diagnosis time.
+	//    IT IS STILL CORRECT TO RUN IT AFTER THE READ CUTOVER, which is worth
+	//    stating because phase 3a's comment predicted the opposite. It would be
+	//    wrong if registry's tables were the only record of registry's decisions,
+	//    because re-deriving would then overwrite them. They are not: every write
+	//    path still writes the identity tables FIRST and mirrors only on success,
+	//    so identity is by construction at least as current as the mirror, and
+	//    "make the mirror equal identity" can only repair. When phase 4 drops the
+	//    dual-write, this call goes with it.
+	//
+	// 3. SEED registry's own role templates -- AFTER the reconcile, never before.
+	//    Step 2 rewrites each template from the identity copy, so a seed that ran
+	//    first would be undone on the same boot.
 	if vErr := repositories.NewMemberRoleMirror(identityDB).Verify(context.Background()); vErr != nil {
-		slog.Error("registry's own role tables are not reachable from the identity connection; "+
-			"role assignments will not be mirrored as they happen, only re-derived at each restart. "+
-			"This does not affect authorization today, and MUST be resolved before the read cutover",
-			"error", vErr)
+		log.Fatalf("registry's own role tables (migration 000055) are not reachable from the connection "+
+			"this process resolves identity reads through, and since terraform-suite-identity#206 phase 3b "+
+			"they are where every role and scope set comes from. Booting would serve every principal no role "+
+			"at all. This is the separate-identity-database topology (TFR_IDENTITY_DATABASE_*): create "+
+			"registry_role_templates and organization_member_roles where that connection can resolve them, "+
+			"or run identity in the registry database. Cause: %v", vErr)
 	}
 	if report, rErr := repositories.ReconcileMemberRoles(context.Background(), identityDB, db); rErr != nil {
-		slog.Error("could not reconcile registry's own role tables from the identity source", "error", rErr)
+		slog.Error("could not reconcile registry's own role tables from the identity source; "+
+			"authorization is served from whatever they already hold, and role changes made while the "+
+			"live mirror was failing are NOT repaired. Run `role-drift`", "error", rErr)
 	} else {
 		slog.Info("registry role tables reconciled", "report", report)
+	}
+	// Registry's role→scope policy, into registry's own table.
+	//
+	// Gated on the same suite.role_seed_owner as the shared-table seed in
+	// cmd/server, deliberately, even though registry's own table has no
+	// cross-application contention for the flag to arbitrate. While the
+	// reconcile above still derives this table from the shared one, seeding one
+	// without the other would make the two disagree by construction and leave
+	// `role-drift` -- the gate on this whole phase -- permanently non-zero on a
+	// deployment that is in fact healthy. The flag retires in phase 4, together
+	// with the reconcile that creates the coupling.
+	if cfg.Suite.ShouldSeedRoles("registry") {
+		if sErr := repositories.SeedSystemRoleTemplates(
+			context.Background(), db, models.PredefinedRoleTemplates(),
+		); sErr != nil {
+			slog.Error("could not seed registry's own role templates; roles resolve to whatever "+
+				"the reconcile derived from the identity tables", "error", sErr)
+		}
 	}
 	// userTokenRevocationRepo lives on the registry's own domain connection
 	// (not identityDB) since it has no FK dependency on the identity schema and
