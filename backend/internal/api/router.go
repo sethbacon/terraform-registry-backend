@@ -207,6 +207,50 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	auditRepo := repositories.NewAuditRepository(identityDB)
 	orgRepo := repositories.NewOrganizationRepository(identityDB)
 	tokenRepo := repositories.NewTokenRepository(identityDB)
+	// Registry's own per-app authorization tables
+	// (sethbacon/terraform-suite-identity#206, migration 000055). NOTHING READS
+	// THEM YET; the repositories above dual-write them so the read cutover has
+	// a populated copy to switch onto.
+	//
+	// Two INDEPENDENT startup steps, for the same reason the carrier is verified
+	// above -- reported, not assumed. Independent because they concern different
+	// connections, and the topology that breaks one leaves the other working.
+	//
+	// 1. Probe the tables on the IDENTITY connection, which is where the LIVE
+	//    dual-write lands: the membership half has to share a connection with
+	//    the organization_members write it shadows. In the default topology that
+	//    connection is the registry connection; under TFR_IDENTITY_SCHEMA_ENABLED
+	//    it resolves them through the trailing `,public` of its search_path. In
+	//    the one topology where it cannot -- identity in a SEPARATE DATABASE --
+	//    this is where that is said out loud, rather than left to be discovered
+	//    as missing rows at the cutover.
+	//
+	// 2. Reconcile, which is the backfill. It reads through the identity
+	//    connection and writes through the REGISTRY one, so it is correct in
+	//    every topology INCLUDING the one step 1 rejects -- which is why it is
+	//    not conditional on that probe. In a separate-database deployment this
+	//    is the only thing keeping the two copies together, so skipping it there
+	//    would be exactly backwards.
+	//
+	//    It runs on every boot rather than once: 000055 deliberately ships no
+	//    SQL backfill (a migration cannot see which schema or database is live),
+	//    a re-derivation is a no-op when nothing changed, and it repairs
+	//    whatever a transient mirror failure left behind.
+	//
+	// Both are logged, never fatal. A deployment whose mirror is broken must
+	// still boot -- reads do not come from these tables, so a failure here
+	// costs nothing at request time and everything at diagnosis time.
+	if vErr := repositories.NewMemberRoleMirror(identityDB).Verify(context.Background()); vErr != nil {
+		slog.Error("registry's own role tables are not reachable from the identity connection; "+
+			"role assignments will not be mirrored as they happen, only re-derived at each restart. "+
+			"This does not affect authorization today, and MUST be resolved before the read cutover",
+			"error", vErr)
+	}
+	if report, rErr := repositories.ReconcileMemberRoles(context.Background(), identityDB, db); rErr != nil {
+		slog.Error("could not reconcile registry's own role tables from the identity source", "error", rErr)
+	} else {
+		slog.Info("registry role tables reconciled", "report", report)
+	}
 	// userTokenRevocationRepo lives on the registry's own domain connection
 	// (not identityDB) since it has no FK dependency on the identity schema and
 	// must work unchanged whether identity data is in the app's public schema,

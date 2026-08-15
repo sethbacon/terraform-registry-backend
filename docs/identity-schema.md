@@ -124,6 +124,113 @@ to `public` to remain visible.
 
 ---
 
+## Registry's own authorization tables (per-app authorization)
+
+Migration `000055` adds two tables that belong to **registry**, not to identity:
+
+| Table | Holds |
+| --- | --- |
+| `registry_role_templates` | registry's own role → scope definitions |
+| `organization_member_roles` | `(organization_id, user_id) → role_template_id` — the role a member holds **in registry** |
+
+They exist because identity is shared across the suite while authorization is
+per-application (design: `sethbacon/terraform-suite-identity#206`). Eventually
+`organization_members` carries membership only, and the role moves here.
+
+**Today they are written and not read.** Every authorization decision still comes from
+`organization_members.role_template_id` joined to `role_templates`, wherever this
+deployment's `search_path` puts them. The application dual-writes both tables, and
+re-derives them from the live identity tables on every start, so that the later read
+cutover has a copy it can trust.
+
+`registry_role_templates` carries a prefix only because `public.role_templates` still
+exists and is still what registry reads; it takes the unprefixed name when that duplicate
+is dropped. Neither table has a foreign key into identity — identity may be another schema
+or another database, where such a key cannot be expressed at all (same reasoning as
+`000046` and `000051`).
+
+### Divergence query — run this before trusting the copy
+
+This is the gate on the read cutover. **It must return zero rows.** Run it on the
+connection that owns registry's tables; under the schema cutover, replace
+`public.organization_members` with `identity.organization_members` and
+`public.role_templates` with `identity.role_templates` so you are comparing against the
+copy this deployment actually reads.
+
+```sql
+-- Memberships whose registry role does not match the identity role.
+-- FULL OUTER JOIN so a mirrored row with no membership is reported too:
+-- that direction GRANTS authority the product never issued.
+SELECT COALESCE(om.organization_id, omr.organization_id) AS organization_id,
+       COALESCE(om.user_id, omr.user_id)                 AS user_id,
+       om.role_template_id                               AS identity_role,
+       omr.role_template_id                              AS registry_role,
+       CASE WHEN om.user_id  IS NULL THEN 'mirrored row with no membership'
+            WHEN omr.user_id IS NULL THEN 'membership never mirrored'
+            ELSE 'roles disagree'
+       END AS problem
+  FROM public.organization_members om
+  FULL OUTER JOIN organization_member_roles omr
+    ON  omr.organization_id = om.organization_id
+    AND omr.user_id         = om.user_id
+ WHERE om.user_id IS NULL
+    OR omr.user_id IS NULL
+    OR om.role_template_id IS DISTINCT FROM omr.role_template_id
+
+UNION ALL
+
+-- Role templates that differ, are missing, or are left over.
+SELECT NULL, COALESCE(rt.id, rrt.id), NULL, NULL,
+       CASE WHEN rt.id  IS NULL THEN 'mirrored template no longer exists'
+            WHEN rrt.id IS NULL THEN 'template never mirrored'
+            ELSE 'scopes disagree'
+       END
+  FROM public.role_templates rt
+  FULL OUTER JOIN registry_role_templates rrt ON rrt.id = rt.id
+ WHERE rt.id IS NULL
+    OR rrt.id IS NULL
+    OR rt.scopes IS DISTINCT FROM rrt.scopes;
+```
+
+### What an operator does about a non-empty result
+
+Rows here are a report, not an outage: nothing reads these tables, so authorization is
+unaffected either way. In order of cost:
+
+1. **Restart the backend.** The startup reconcile re-derives both tables from the live
+   identity tables and is the intended repair for anything a transient write failure left
+   behind. Re-run the query; most results clear here.
+2. **If rows persist, read the boot log.** `registry role tables reconciled` reports what
+   the last pass did, including `orphaned_role_refs` (a membership naming a role template
+   that does not exist — mirrored with **no** role, deliberately, because inventing an
+   assignment is worse than recording none) and `unparseable_rows`. A membership whose
+   role template is missing is an inconsistency in the *identity* data; decide what that
+   member's role should be and set it through the normal member API, which repairs both
+   sides.
+3. **If the log says the tables are not reachable**, identity is in a separate database
+   (`TFR_IDENTITY_DATABASE_*`) — see the limitation below.
+4. **Do not enable the read cutover while the query returns rows.** That is the entire
+   purpose of running it.
+
+### Limitation: a separate identity database
+
+When identity lives in its own database, the identity connection cannot see registry's
+tables, so the live dual-write has nowhere to land. The backend says so at boot:
+
+```text
+ERROR registry's own role tables are not reachable from the identity connection;
+      role assignments will not be mirrored until they are.
+```
+
+Reads are unaffected, and the startup reconcile still populates both tables correctly —
+it reads through the identity connection and writes through registry's own. So the copy
+converges at each restart but drifts between restarts. That topology needs the mirror
+tables reachable from the identity connection before the read cutover, and it is the same
+topology in which migration `000051`'s backfill and `000054`'s assertions are already
+inoperative for the same reason.
+
+---
+
 ## See also
 
 - `docs/configuration.md` — the full environment-variable reference.
