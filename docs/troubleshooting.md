@@ -116,6 +116,45 @@ psql -U registry -d terraform_registry \
   -c "UPDATE api_keys SET key_hash='$HASH' WHERE prefix='tfr_myap';"
 ```
 
+### cmd/role-drift — compare registry's authorization tables against identity's
+
+Registry resolves every role and scope set from its own `organization_member_roles`
+and `registry_role_templates`, which are derived from the identity tables and kept in
+step by a dual-write (`sethbacon/terraform-suite-identity#206`). This reports every way
+the two copies disagree.
+
+Unlike the tools above it reads the **server's config file** and the `TFR_IDENTITY_*`
+environment as well as `TFR_DATABASE_*`, because which schema and which database hold
+the live identity rows is decided at process start. Point it at the same configuration
+the server runs with, or it will compare something the server does not.
+
+```bash
+cd backend
+
+go run ./cmd/role-drift                          # compare, print, exit 0 only if clean
+go run ./cmd/role-drift -config /etc/tfr.yaml    # the server's config file
+go run ./cmd/role-drift -v                       # also print what was compared
+```
+
+| Exit | Meaning |
+| --- | --- |
+| `0` | the two copies agree |
+| `1` | they disagree; every disagreement is printed |
+| `2` | the comparison could not be made — unreachable table, bad config |
+
+`2` is deliberately not `1`: "could not check" must never be reported the same way as
+"checked and found nothing".
+
+**A non-empty result affects authorization.** In order of cost: restart the backend
+(the startup reconcile re-derives both tables and repairs anything a transient mirror
+write failure left behind), then re-run this; if rows persist, read the boot log's
+`registry role tables reconciled` line. Full remediation, including which rows an
+operator must decide rather than repair, is in
+[`docs/identity-schema.md`](identity-schema.md).
+
+Between runs, the read path reports the same disagreement per request via the
+`registry_role_read_divergence_total` metric and an `ERROR` log. Steady state is zero.
+
 ### cmd/api-test — end-to-end API smoke test
 
 Runs a full suite of HTTP requests against a live registry, covering modules,
