@@ -199,6 +199,37 @@ func (r *SCMRepository) DeleteUserToken(ctx context.Context, userID, providerID 
 	return err
 }
 
+// DeleteAllUserTokens destroys every SCM OAuth token a principal holds, across
+// all providers, and reports how many rows it removed.
+//
+// This is the code half of an invariant that used to be a foreign key.
+// scm_oauth_tokens.user_id was declared ON DELETE CASCADE, so deleting a user
+// destroyed their tokens as a side effect of the delete statement. Migration
+// 000056 drops that constraint along with the rest of the registry's foreign
+// keys into the identity tables (issue #883) -- it cannot survive an identity
+// store in another schema or another database -- so the cascade has to be
+// performed rather than declared.
+//
+// The rows hold access_token_encrypted and refresh_token_encrypted: live SCM
+// credentials. Leaving them attached to a deleted principal is the stranded-
+// credential shape of #732/#736 in a family the credential sweep never knew
+// about, which is why this deletes rather than expires.
+func (r *SCMRepository) DeleteAllUserTokens(ctx context.Context, userID uuid.UUID) (int64, error) {
+	query := `DELETE FROM scm_oauth_tokens WHERE user_id = $1`
+	res, err := r.db.ExecContext(ctx, query, userID)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		// The delete committed; only the count is unavailable. Report success
+		// with an unknown count rather than a failure the caller would log as
+		// stranded credentials.
+		return 0, nil
+	}
+	return n, nil
+}
+
 // Module Source Repository Linking
 
 // CreateModuleSourceRepo creates a link between a module and a repository

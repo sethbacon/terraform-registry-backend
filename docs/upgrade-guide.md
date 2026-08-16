@@ -98,6 +98,38 @@ If issues are found after upgrade:
 > pair means there was nothing version-specific to do beyond the standard procedure
 > above — not that the note is missing.
 
+### Any version → the release carrying migration `000056` — feature-table foreign keys into identity are dropped
+
+**Not breaking, and nothing to do.** Listed here because it repairs an outage some
+deployments are living with right now.
+
+**Applies to:** every deployment. It **fixes** any deployment where the `identity` schema
+exists but `TFR_IDENTITY_SCHEMA_ENABLED` is unset — including step 1 of the cutover
+rollout in `docs/identity-schema.md`, and any install that set
+`TFR_IDENTITY_MIGRATIONS_ENABLED=true` without cutting over. On those, the constraints
+added by `000038`/`000045` resolved at `identity` while every row carried a `public` id, so
+`POST /api/v1/modules` returned `500 {"error":"Failed to claim namespace"}` and the network
+mirror's pull-through cache could not populate a provider. Issue #883.
+
+**Migrations:**
+
+- `000056_drop_identity_attribution_fks` — drops 24 foreign keys from the registry's
+  feature tables to `users`/`organizations`, by constraint name, in every topology.
+  Idempotent, scans no data, drops no index, and holds `ACCESS EXCLUSIVE` only
+  momentarily. Identity's own tables keep their foreign keys.
+
+**Behaviour change to be aware of:** deleting a user no longer fails, and no longer nulls
+attribution columns, when that user published a module or provider — a deleted user's UUID
+can remain in `created_by` / `published_by`. Every read `LEFT JOIN`s it, so the effect is a
+blank author. The deployment-critical invariants moved to application code: organization
+deletion is still refused with `409` while the organization owns claims or artifacts, and
+user deletion now destroys the principal's SCM OAuth tokens explicitly.
+
+**Rollback:** the down migration is a deliberate **no-op**. Re-adding the constraints
+validates the whole table and would fail on exactly the deployments the up migration
+repaired, leaving the migration version dirty; `NOT VALID` would silently restore the
+outage for new writes. The `.down.sql` carries the reasoning and by-hand restore SQL.
+
 ### 4.x → 5.0.0 — platform-admin authority moves to the `platform_admins` carrier
 
 **Breaking, and the action is required BEFORE the deploy on one class of
@@ -370,6 +402,12 @@ recreation to hold locks briefly — schedule accordingly rather than during pea
 traffic.
 
 **Rollback:** `000038` is reversible.
+
+> **Superseded.** Migration `000056` drops these 24 constraints outright (issue #883):
+> a target chosen at migration time from schema *existence* cannot be right in both
+> topologies, and under `TFR_IDENTITY_DATABASE_*` it cannot be expressed at all. If you
+> are upgrading past `000056`, this note is history — see the note at the top of this
+> section list.
 
 ### 2.x → 3.0.0
 

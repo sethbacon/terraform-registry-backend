@@ -659,8 +659,25 @@ func (a *NamespaceAuthorizer) resolveCallerOrg(c *gin.Context, scope auth.Scope)
 
 	if requestedOrg != "" {
 		// Admins may bind a new namespace to any organization (registry
-		// operator). The claim's foreign key enforces that the organization
-		// actually exists; the binding is audit-logged by the caller.
+		// operator). The binding is audit-logged by the caller.
+		//
+		// UNCHECKED, and knowingly so since #883. This used to read "the
+		// claim's foreign key enforces that the organization actually exists",
+		// and it was the only place in the codebase that named one of those
+		// foreign keys as its enforcement. Migration 000056 drops them --
+		// namespace_claims lives on the registry's connection while
+		// organizations may live in another schema or another database, so the
+		// constraint could not be expressed in every topology and was rejecting
+		// legitimate writes in one of them.
+		//
+		// Nothing replaces it here yet: an existence check has to be a lookup
+		// on the identity connection, and this middleware holds only the
+		// membership reader. The exposure is a platform admin -- the highest-
+		// trust principal, acting deliberately -- mistyping an organization id
+		// in a publish body and getting a permanent claim naming an
+		// organization that does not exist, which leaves the namespace
+		// admin-only rather than granting anyone access. Tracked separately;
+		// do not restore the constraint to close it.
 		if callerIsAdmin(c) {
 			return requestedOrg, 0, ""
 		}

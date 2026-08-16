@@ -43,34 +43,61 @@ reversible — turning it off routes identity access back to `public`.
 
 ---
 
-## Cross-schema foreign keys (resolved in backend 2.0)
+## Cross-schema foreign keys (removed in migration 000056)
 
-> **Read this before enabling the cutover on a registry with module/provider data.**
+> **If you are upgrading from a release before migration `000056`, read this.**
 
-The cutover routes **identity** data to the `identity` schema. In backend 2.0, migration
-`000038_feature_fk_to_identity` automatically repoints the registry's **feature**-table
-foreign keys from `public.{users,organizations}` to `identity.{users,organizations}`.
-This is guarded — it only executes when the `identity` schema exists (cutover deployments)
-and is a no-op otherwise. It is idempotent and fully reversible (the `.down.sql` repoints
-back to `public`).
+The registry's **feature** tables (`modules`, `providers`, `namespace_claims`,
+`mirror_*`, `scm_*`, `storage_*`, …) store the id of the user or organization that
+created a row. Those columns used to carry foreign keys into the identity tables, and
+migrations `000038` and `000045` chose the target schema at migration time by asking
+whether the `identity` schema existed.
 
-After the migration, feature writes by users/orgs created **after** the cutover work
-correctly — the FK now resolves against `identity.users` / `identity.organizations`
-where those rows live.
+**That was wrong, and migration `000056` drops all 24 of those constraints** (issue #883).
+Schema existence is not schema authority. `TFR_IDENTITY_MIGRATIONS_ENABLED` creates the
+schema; `TFR_IDENTITY_SCHEMA_ENABLED` decides whether the application reads and writes it.
+Step 1 of the rollout below deliberately sits between the two — and any deployment that
+enables migrations without the cutover sits there permanently. In that state the
+constraints resolved at `identity` while every row the application wrote carried a
+`public` id, so:
 
-### Caveats
+- `POST /api/v1/modules` failed with `500 {"error":"Failed to claim namespace"}`
+  (`namespace_claims_organization_id_fkey`), and the module row itself was rejected too;
+- the **network mirror's pull-through cache** could not populate a provider on an
+  anonymous `GET .../index.json`, because that path inserts into `providers` in the
+  request (`providers_organization_id_fkey`).
 
-1. **Non-default schema name.** If you set `TFR_IDENTITY_SCHEMA_NAME` to something other
-   than `identity`, the migration's hardcoded schema literal will not match. Edit the
-   `.up.sql` and `.down.sql` files to replace `identity.` with your custom schema name
-   before applying.
+Repointing them at `public` instead would only move the breakage to the deployments that
+did cut over, and where identity lives in a separate database (`TFR_IDENTITY_DATABASE_*`)
+PostgreSQL cannot express the constraint at all. So the registry now stores these ids as
+plain attributions, with no database constraint, in every topology — the same choice
+migrations `000046_user_token_revocations` and `000051_platform_admins` already made.
 
-2. **Identity enabled after initial migration.** If you enable
-   `TFR_IDENTITY_MIGRATIONS_ENABLED` on a deployment whose app migrations already ran
-   (i.e. migration 000038 already executed as a no-op), golang-migrate will not re-run
-   it. In this case, run the body of `000038_feature_fk_to_identity.up.sql` manually
-   against the database — the SQL is safe to execute by hand (idempotent
-   `DROP CONSTRAINT IF EXISTS` + `ADD CONSTRAINT`).
+**Nothing to do on upgrade.** `000056` is idempotent, drops by constraint name (so it
+works whichever schema they currently resolve at, including a hand-edited custom schema
+name), scans no data, and is fast on any table size. Identity's *own* tables — `api_keys`,
+`audit_logs`, `oidc_config`, `org_quotas`, `org_quota_usage`, `organization_members`,
+`revoked_tokens` — keep their foreign keys; they move to the `identity` schema wholesale
+at cutover and their constraints travel with them.
+
+### What enforces these invariants now
+
+- **Organization deletion** is refused with `409` while the organization owns namespace
+  claims or module/provider rows (`OrganizationHandlers.DeleteOrganizationHandler`). This
+  is now the only enforcement, not a friendlier face on a database constraint.
+- **User deletion** destroys the principal's API keys, JWT watermark and **SCM OAuth
+  tokens** in application code before the user row is removed.
+- Attribution columns (`created_by`, `published_by`, `claimed_by`, …) are no longer
+  scrubbed or blocked when a user is deleted; a deleted user's UUID can remain in one.
+  Every consumer `LEFT JOIN`s, so the effect is a blank author, and the
+  separate-identity-database topology has always behaved this way.
+
+### Caveat: non-default schema name
+
+`TFR_IDENTITY_SCHEMA_NAME` still only affects the runtime `search_path`. The identity
+library creates the schema under the literal name `identity`, and several registry
+migrations reference that literal. Setting it to anything else is not supported without
+hand-editing migrations, and there is no startup validation that catches the mismatch.
 
 ---
 

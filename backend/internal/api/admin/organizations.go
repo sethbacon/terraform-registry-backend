@@ -782,9 +782,15 @@ func (h *OrganizationHandlers) DeleteOrganizationHandler() gin.HandlerFunc {
 		// artifact-row fallback, which — since every write handler stamps
 		// organization_id from the default organization regardless of the
 		// real caller — reliably re-attributes ownership to the default org
-		// rather than leaving it (correctly) unowned. The namespace_claims FK
-		// is ON DELETE RESTRICT as a fail-closed backstop; this check exists
-		// to surface the reason with a clear 409 instead of an opaque 500.
+		// rather than leaving it (correctly) unowned.
+		//
+		// This check is now the ONLY thing holding that invariant. It was
+		// written alongside an ON DELETE RESTRICT foreign key on
+		// namespace_claims.organization_id, as the half that turns an opaque
+		// 500 into a clear 409; migration 000056 dropped the constraint
+		// (issue #883) because it could not be expressed once organizations
+		// may live in another schema or another database. Nothing below the
+		// application refuses this any more -- do not weaken it.
 		claimCount, err := h.claimRepo.CountByOrganization(c.Request.Context(), orgID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
@@ -804,13 +810,16 @@ func (h *OrganizationHandlers) DeleteOrganizationHandler() gin.HandlerFunc {
 		// artifacts already span more than one organization is deliberately
 		// left unclaimed (ambiguous ownership, admin-only at runtime), so the
 		// claim count check above is 0 for it even though this organization
-		// still owns rows there. modules/providers' organization_id FK is
-		// still ON DELETE CASCADE (unrelated to the namespace_claims RESTRICT
-		// above); deleting this organization would silently remove its rows
-		// from the shared namespace, collapsing it from admin-only ambiguous
-		// to unchecked sole ownership by whichever organization's rows
-		// survive -- the same defect this table exists to close, reached via
-		// a shared namespace instead of via a claim.
+		// still owns rows there. Deleting this organization would leave its
+		// rows in the shared namespace unowned, collapsing it from admin-only
+		// ambiguous to unchecked sole ownership by whichever organization's
+		// rows survive -- the same defect this table exists to close, reached
+		// via a shared namespace instead of via a claim.
+		//
+		// modules/providers.organization_id was ON DELETE CASCADE until
+		// migration 000056 (issue #883). While it existed this refusal made
+		// the cascade unreachable, so dropping it changed nothing an API
+		// caller can observe -- but only for as long as this check stands.
 		ownsArtifacts, err := h.claimRepo.OwnsArtifacts(c.Request.Context(), orgID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{

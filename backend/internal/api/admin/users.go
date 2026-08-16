@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/sethbacon/terraform-suite-identity/identity/auditoutbox"
 	"github.com/sethbacon/terraform-suite-identity/identity/platformadmin"
 
@@ -44,6 +45,13 @@ type UserHandlers struct {
 	// transaction; migration 000052's constraint trigger refuses the commit
 	// without one.
 	outbox *auditoutbox.Outbox
+	// scmTokens destroys the deleted principal's SCM OAuth tokens. Migration
+	// 000056 drops the ON DELETE CASCADE that used to do this (issue #883):
+	// scm_oauth_tokens lives on the registry's own connection while users may
+	// live in another schema or another database, so no foreign key can span
+	// them. Deliberately a REGISTRY-connection repository, unlike every other
+	// field here -- see WithUserSCMTokens. May be nil in tests.
+	scmTokens *repositories.SCMRepository
 }
 
 // UserHandlersOption configures optional UserHandlers dependencies.
@@ -86,6 +94,20 @@ func WithUserCredentialSweeper(s *credlifecycle.Sweeper) UserHandlersOption {
 	return func(h *UserHandlers) { h.creds = s }
 }
 
+// WithUserSCMTokens wires the repository that destroys a deleted principal's
+// SCM OAuth tokens (issue #883).
+//
+// The argument MUST be built on the registry's own connection, not the identity
+// one every other dependency of these handlers uses. scm_oauth_tokens is a
+// registry feature table; it does not move to the identity schema at cutover,
+// and reading it through the identity pool would resolve a table that is not
+// there. This is the deliberate exception to the wiring rule that
+// internal/api/identity_db_wiring_test.go enforces -- SCMRepository is not an
+// identity repository constructor, so the guard does not claim it.
+func WithUserSCMTokens(r *repositories.SCMRepository) UserHandlersOption {
+	return func(h *UserHandlers) { h.scmTokens = r }
+}
+
 // WithUserAdminFloor wires the never-zero administrator guard, the
 // platform-admin carrier, and the audit outbox that carrier writes through
 // (issue #766).
@@ -122,6 +144,43 @@ func NewUserHandlers(cfg *config.Config, db *sql.DB, opts ...UserHandlersOption)
 // rather than an omission: the floor ran in the delete handler, under its lock,
 // against the state this cleanup follows.
 func noFloorTheDeleteAlreadyCleared(context.Context, []platformadmin.Grant) error { return nil }
+
+// deleteSCMTokens destroys a principal's SCM OAuth tokens before the principal
+// itself is deleted, and reports whether the caller may proceed. It writes its
+// own error response when it returns false.
+//
+// Nil repository means the dependency was not wired (tests, and any caller that
+// predates issue #883); that is a no-op rather than a refusal, matching how
+// h.creds and h.carrier behave.
+func (h *UserHandlers) deleteSCMTokens(c *gin.Context, userID string) bool {
+	if h.scmTokens == nil {
+		return true
+	}
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		// Not reachable through the routes -- the id was already used to load
+		// the user -- but a non-UUID here would silently sweep nothing, so it
+		// fails rather than passing.
+		slog.Error("cannot sweep SCM tokens for a non-UUID user id", "user_id", userID, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to revoke the user's SCM credentials; user was not deleted",
+		})
+		return false
+	}
+	n, err := h.scmTokens.DeleteAllUserTokens(c.Request.Context(), uid)
+	if err != nil {
+		slog.Error("failed to delete a principal's SCM OAuth tokens; refusing to delete the principal",
+			"user_id", userID, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to revoke the user's SCM credentials; user was not deleted",
+		})
+		return false
+	}
+	if n > 0 {
+		slog.Info("deleted a principal's SCM OAuth tokens", "user_id", userID, "tokens_deleted", n)
+	}
+	return true
+}
 
 // revokePlatformAdminCarrier removes a destroyed principal's platform_admins
 // row (issue #766).
@@ -546,6 +605,18 @@ func (h *UserHandlers) DeleteUserHandler() gin.HandlerFunc {
 				})
 				return
 			}
+		}
+
+		// Same sweep, second credential family. Runs here rather than after the
+		// delete for the same fail-closed reason as the block above, and it is a
+		// separate call because the rows live on a different connection: the
+		// sweeper above holds identity repositories, scm_oauth_tokens is the
+		// registry's own table. Failure aborts the delete -- these are live SCM
+		// credentials, and a principal that keeps its account keeps them
+		// legitimately, whereas a principal that loses its account and keeps
+		// them is exactly the orphan #732/#736 were about.
+		if !h.deleteSCMTokens(c, userID) {
+			return
 		}
 
 		// Delete user (cascading deletes will handle related records).
