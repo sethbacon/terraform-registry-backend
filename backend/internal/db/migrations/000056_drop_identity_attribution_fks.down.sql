@@ -1,0 +1,61 @@
+-- 000056_drop_identity_attribution_fks (down)
+--
+-- Deliberate no-op. This is a decision, not an omission; the reasoning is here
+-- so it is not re-litigated by whoever runs the rollback at 3am.
+--
+-- WHY NOT RE-ADD THE CONSTRAINTS
+--
+-- ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY validates the whole existing
+-- table. Every row written since the up migration was applied is a row the
+-- constraint previously rejected -- that is the entire point of #883 -- so on
+-- any deployment where this fix DID something, re-adding fails:
+--
+--   ERROR: insert or update on table "namespace_claims" violates foreign key
+--          constraint "namespace_claims_organization_id_fkey"
+--
+-- golang-migrate marks the version dirty on a failed step, so the rollback
+-- would not merely refuse: it would leave the schema in a state that blocks
+-- every subsequent `migrate up` and `migrate down` until an operator clears
+-- `dirty` by hand. A down migration that fails exactly on the databases that
+-- needed the up migration is worse than no down migration at all.
+--
+-- WHY NOT `NOT VALID`
+--
+-- ADD CONSTRAINT ... NOT VALID skips the scan, so it would appear to succeed
+-- everywhere. It would also resume enforcing the constraint on every NEW row --
+-- which is precisely the broken behaviour, restored, on a deployment that just
+-- asked to roll back. It reinstates the outage while reporting success. That is
+-- not a rollback.
+--
+-- WHY A NO-OP IS SAFE
+--
+-- Nothing in the binary reads pg_constraint, so rolling the application back
+-- does not require these constraints back. The invariants that mattered are
+-- enforced above the database -- OrganizationHandlers.DeleteOrganizationHandler
+-- refuses organization deletion with 409 while namespace claims or artifacts
+-- exist -- and that code is present in the versions being rolled back to as
+-- well. The separate-identity-database topology (TFR_IDENTITY_DATABASE_*) has
+-- never had these constraints and is the proof they are not load-bearing.
+--
+-- Precedent: 000050_quarantine_orphaned_api_keys is a no-op down for the same
+-- shape of reason -- reversing it would restore the very condition it removed.
+--
+-- IF YOU REALLY WANT THEM BACK
+--
+-- On a standalone deployment whose identity data has never left `public`, the
+-- constraints can be restored by hand once the rows are known to be consistent.
+-- One example; the other 23 follow the same form, and the full original list is
+-- in 000038_feature_fk_to_identity.up.sql and 000045_namespace_org_claims.up.sql:
+--
+--   ALTER TABLE public.namespace_claims
+--     ADD CONSTRAINT namespace_claims_organization_id_fkey
+--     FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE RESTRICT;
+--
+-- Find the rows that would block it first:
+--
+--   SELECT nc.organization_id FROM namespace_claims nc
+--    WHERE NOT EXISTS (SELECT 1 FROM public.organizations o WHERE o.id = nc.organization_id);
+--
+-- Do not do this on a deployment where the `identity` schema exists: that
+-- rebuilds #883.
+SELECT 1;

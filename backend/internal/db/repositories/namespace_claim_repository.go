@@ -143,9 +143,13 @@ func (r *NamespaceClaimRepository) ArtifactOrganizations(ctx context.Context, na
 }
 
 // CountByOrganization returns how many namespaces an organization currently
-// owns a claim to. Used to block organization deletion while claims exist:
-// the claims FK is ON DELETE RESTRICT, but that surfaces as an opaque 500 —
-// this backs a clear, actionable 409 instead. Deleting an org out from under
+// owns a claim to. Used to block organization deletion while claims exist.
+//
+// It was written to back a clear, actionable 409 in front of an ON DELETE
+// RESTRICT foreign key that would otherwise surface as an opaque 500. Migration
+// 000056 dropped that constraint (issue #883) — it could not be expressed once
+// organizations may live in another schema or another database — so this is now
+// the only enforcement, not the friendly face of it. Deleting an org out from under
 // its claims would silently fall back namespace ownership to whichever
 // (unrelated) organization the mistagged artifact rows point at, defeating
 // the object-level authorization this table exists to enforce.
@@ -164,14 +168,16 @@ func (r *NamespaceClaimRepository) CountByOrganization(ctx context.Context, orga
 // whose artifacts already span more than one organization is deliberately
 // left UNCLAIMED (ambiguous ownership, restricted to admins at runtime —
 // see resolveOwnerOrg), so CountByOrganization alone would return 0 for it
-// even though this organization still owns rows there. modules/providers'
-// organization_id FK is still ON DELETE CASCADE (unrelated to the
-// namespace_claims RESTRICT added alongside this method): deleting this
-// organization would silently remove its rows from that ambiguous namespace,
+// even though this organization still owns rows there. Deleting this
+// organization would leave its rows in that ambiguous namespace unowned,
 // collapsing it from admin-only "ambiguous" to unchecked sole ownership by
 // whichever organization's rows survive — the same "artifact-row fallback
 // re-attributes ownership after an org disappears" defect this table exists
 // to close, reached via a shared/ambiguous namespace instead of via a claim.
+//
+// modules/providers.organization_id carried ON DELETE CASCADE until migration
+// 000056 (issue #883). This check made that cascade unreachable through the
+// API while it existed, and is what stands in its place now that it is gone.
 func (r *NamespaceClaimRepository) OwnsArtifacts(ctx context.Context, organizationID string) (bool, error) {
 	query := `
 		SELECT EXISTS(

@@ -2,6 +2,7 @@ package repositories
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -905,5 +906,46 @@ func TestSCMMarkWebhookForRetry_DBError(t *testing.T) {
 	nextRetry := time.Now().Add(10 * time.Minute)
 	if err := repo.MarkWebhookForRetry(context.Background(), uuid.New(), nextRetry); err == nil {
 		t.Error("expected error, got nil")
+	}
+}
+
+// DeleteAllUserTokens is the code half of an invariant that used to be
+// scm_oauth_tokens.user_id ON DELETE CASCADE, dropped by migration 000056
+// (issue #883). One set-based DELETE across every provider, not a
+// list-then-delete-each loop: the principal is being destroyed, so a token left
+// under any provider outlives its owner.
+func TestDeleteAllUserTokens_RemovesEveryProvidersToken(t *testing.T) {
+	repo, mock := newSCMRepo(t)
+	userID := uuid.New()
+
+	mock.ExpectExec(`DELETE FROM scm_oauth_tokens WHERE user_id = \$1`).
+		WithArgs(userID).
+		WillReturnResult(sqlmock.NewResult(0, 3))
+
+	n, err := repo.DeleteAllUserTokens(context.Background(), userID)
+	if err != nil {
+		t.Fatalf("DeleteAllUserTokens: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("removed %d tokens, want 3 — the caller logs this count as evidence the sweep ran", n)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unexpected statements: %v", err)
+	}
+}
+
+// A driver that cannot report RowsAffected must not turn a committed delete
+// into a reported failure: the caller refuses the user deletion on error, so a
+// false error would make every deletion fail on such a driver.
+func TestDeleteAllUserTokens_SurvivesAnUncountableResult(t *testing.T) {
+	repo, mock := newSCMRepo(t)
+	userID := uuid.New()
+
+	mock.ExpectExec(`DELETE FROM scm_oauth_tokens WHERE user_id = \$1`).
+		WithArgs(userID).
+		WillReturnResult(sqlmock.NewErrorResult(errors.New("RowsAffected unsupported")))
+
+	if _, err := repo.DeleteAllUserTokens(context.Background(), userID); err != nil {
+		t.Fatalf("an uncountable but successful delete was reported as a failure: %v", err)
 	}
 }

@@ -731,7 +731,10 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// fall back to public via the identity connection's search_path.
 	apiKeyHandlers := admin.NewAPIKeyHandlers(cfg, identityDB)
 	userHandlers := admin.NewUserHandlers(cfg, identityDB, admin.WithUserCredentialSweeper(credSweeper),
-		admin.WithUserAdminFloor(adminFloor, platformAdminCarrier, auditOutbox))
+		admin.WithUserAdminFloor(adminFloor, platformAdminCarrier, auditOutbox),
+		// scmRepo, deliberately: it is built on the registry connection above,
+		// and scm_oauth_tokens stays in the registry's schema at cutover.
+		admin.WithUserSCMTokens(scmRepo))
 	orgHandlers := admin.NewOrganizationHandlers(cfg, identityDB, nsClaimRepo, userTokenRevocationRepo).
 		WithAdminFloor(adminFloor)
 	statsHandlers := admin.NewStatsHandler(identitySqlxDB, &cfg.Scanning).WithOrgRepo(orgRepo)
