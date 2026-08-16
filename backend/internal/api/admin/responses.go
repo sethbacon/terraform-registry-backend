@@ -115,11 +115,30 @@ type ListBranchesResponse struct {
 	Branches interface{} `json:"branches"`
 }
 
-// PaginationMeta carries page / per_page / total counts used in paginated list responses.
+// PaginationMeta carries the page window and, crucially, whether the page is
+// the end of the list.
+//
+// HasMore is the field that makes the difference between "this deployment has
+// 20 organizations" and "this page shows 20 organizations" (issue #893). Total
+// alone did not: it left every consumer to re-derive `page*per_page < total` by
+// hand, and the consumers that forgot — the organization pickers in the sibling
+// frontend — rendered a truncated list with nothing to say it was truncated.
+// HasMore is false if and only if there is nothing after this page, on every
+// endpoint that emits this shape, whether or not that endpoint can count.
+//
+// Total is a POINTER, and never omitempty, so that "not counted" (null) stays
+// distinguishable from "a total of zero". The two search axes have no counting
+// query on the identity store and send null; under the previous
+// `int64,omitempty` an uncounted list and an empty one were byte-identical,
+// which is the same class of silence this struct exists to end.
 type PaginationMeta struct {
-	Page    int   `json:"page"`
-	PerPage int   `json:"per_page"`
-	Total   int64 `json:"total,omitempty"`
+	Page    int  `json:"page"`
+	PerPage int  `json:"per_page"`
+	// HasMore reports whether any rows follow this page.
+	HasMore bool `json:"has_more"`
+	// Total is the number of matching rows across all pages, or null when the
+	// endpoint does not count.
+	Total *int64 `json:"total"`
 }
 
 // UserItem is the shape of a user in list/get/create/update responses.

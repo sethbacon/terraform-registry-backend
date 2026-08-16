@@ -591,7 +591,7 @@
                         }
                     },
                     {
-                        "description": "Items per page, max 200 (default 25)",
+                        "description": "Items per page, max 200 (default 25). A larger value is served as 200.",
                         "name": "per_page",
                         "in": "query",
                         "schema": {
@@ -6951,7 +6951,7 @@
                         }
                     },
                     {
-                        "description": "Max results (default 100, max 500)",
+                        "description": "Max results (default 100, max 500). A larger value is served as 500.",
                         "name": "limit",
                         "in": "query",
                         "schema": {
@@ -8520,7 +8520,7 @@
                         }
                     },
                     {
-                        "description": "Maximum results to return (default 20, max 100)",
+                        "description": "Maximum results to return (default 20, max 100). A larger value is served as 100.",
                         "name": "limit",
                         "in": "query",
                         "schema": {
@@ -9581,7 +9581,7 @@
                         }
                     },
                     {
-                        "description": "Items per page, max 100 (default 20)",
+                        "description": "Items per page, max 100 (default 20). A larger value is served as 100.",
                         "name": "per_page",
                         "in": "query",
                         "schema": {
@@ -9735,7 +9735,7 @@
                         }
                     },
                     {
-                        "description": "Items per page, max 100 (default 20)",
+                        "description": "Items per page, max 100 (default 20). A larger value is served as 100.",
                         "name": "per_page",
                         "in": "query",
                         "schema": {
@@ -10575,7 +10575,7 @@
                         }
                     },
                     {
-                        "description": "Maximum results to return (default 20, max 100)",
+                        "description": "Maximum results to return (default 20, max 100). A larger value is served as 100.",
                         "name": "limit",
                         "in": "query",
                         "schema": {
@@ -14100,7 +14100,7 @@
                         }
                     },
                     {
-                        "description": "Items per page, max 100 (default 20)",
+                        "description": "Items per page, max 100 (default 20). A larger value is served as 100.",
                         "name": "per_page",
                         "in": "query",
                         "schema": {
@@ -14302,7 +14302,7 @@
                         }
                     },
                     {
-                        "description": "Items per page, max 100 (default 20)",
+                        "description": "Items per page, max 100 (default 20). A larger value is served as 100.",
                         "name": "per_page",
                         "in": "query",
                         "schema": {
@@ -14846,7 +14846,7 @@
                         }
                     },
                     {
-                        "description": "Page size (max 200)",
+                        "description": "Page size, max 200. A larger value is served as 200.",
                         "name": "count",
                         "in": "query",
                         "schema": {
@@ -17833,6 +17833,10 @@
             "admin.PaginationMeta": {
                 "type": "object",
                 "properties": {
+                    "has_more": {
+                        "description": "HasMore reports whether any rows follow this page.",
+                        "type": "boolean"
+                    },
                     "page": {
                         "type": "integer"
                     },
@@ -17840,6 +17844,7 @@
                         "type": "integer"
                     },
                     "total": {
+                        "description": "Total is the number of matching rows across all pages, or null when the\nendpoint does not count.",
                         "type": "integer"
                     }
                 }

@@ -10,6 +10,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/identityerr"
+	"github.com/terraform-registry/terraform-registry/internal/pagination"
 )
 
 // validProviderSortFields defines the allowed values for the sort query parameter.
@@ -30,7 +31,7 @@ var validProviderSortFields = map[string]bool{
 // @Param        namespace  query  string  false  "Filter by namespace"
 // @Param        sort       query  string  false  "Sort field: relevance, name, downloads, created, updated"
 // @Param        order      query  string  false  "Sort order: asc or desc (default desc)"
-// @Param        limit      query  int     false  "Maximum results to return (default 20, max 100)"
+// @Param        limit      query  int     false  "Maximum results to return (default 20, max 100). A larger value is served as 100."
 // @Param        offset     query  int     false  "Offset for pagination (default 0)"
 // @Success      200  {object}  providers.ProviderSearchResponse
 // @Failure      400  {object}  map[string]interface{}  "Invalid sort parameter"
@@ -58,16 +59,15 @@ func SearchHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 			return
 		}
 
-		// Pagination parameters
-		limitStr := c.DefaultQuery("limit", "20")
-		offsetStr := c.DefaultQuery("offset", "0")
+		// GUARD per-page-clamps-to-max (issue #893). The module search axis's
+		// clamp, verbatim: an over-large limit fell back to the DEFAULT of 20
+		// instead of the documented maximum of 100. ClampPerPage absorbs the
+		// unparseable case too: Atoi returns 0 on failure, and 0 takes the
+		// default.
+		limit, _ := strconv.Atoi(c.Query("limit"))
+		limit = pagination.ClampPerPage(limit, 20, 100)
 
-		limit, err := strconv.Atoi(limitStr)
-		if err != nil || limit < 1 || limit > 100 {
-			limit = 20 // Default to 20, max 100
-		}
-
-		offset, err := strconv.Atoi(offsetStr)
+		offset, err := strconv.Atoi(c.DefaultQuery("offset", "0"))
 		if err != nil || offset < 0 {
 			offset = 0
 		}

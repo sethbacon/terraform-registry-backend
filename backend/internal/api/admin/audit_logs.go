@@ -4,7 +4,6 @@ package admin
 import (
 	"database/sql"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -12,6 +11,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/identityerr"
+	"github.com/terraform-registry/terraform-registry/internal/pagination"
 )
 
 // AuditLogHandlers handles audit log read endpoints
@@ -39,7 +39,7 @@ func NewAuditLogHandlers(db *sql.DB) *AuditLogHandlers {
 // @Accept       json
 // @Produce      json
 // @Param        page           query  int     false  "Page number (default 1)"
-// @Param        per_page       query  int     false  "Items per page, max 200 (default 25)"
+// @Param        per_page       query  int     false  "Items per page, max 200 (default 25). A larger value is served as 200."
 // @Param        action         query  string  false  "Filter by action string (exact match)"
 // @Param        resource_type  query  string  false  "Filter by resource type (module, provider, user, mirror, api_key, organization)"
 // @Param        user_id        query  string  false  "Filter by actor user ID (exact match)"
@@ -56,16 +56,12 @@ func NewAuditLogHandlers(db *sql.DB) *AuditLogHandlers {
 // GET /api/v1/admin/audit-logs
 func (h *AuditLogHandlers) ListAuditLogsHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Pagination
-		page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-		perPage, _ := strconv.Atoi(c.DefaultQuery("per_page", "25"))
-		if page < 1 {
-			page = 1
-		}
-		if perPage < 1 || perPage > 200 {
-			perPage = 25
-		}
-		offset := (page - 1) * perPage
+		// GUARD per-page-clamps-to-max (issue #893). Same clamp, same defect:
+		// an operator exporting a wide audit window with `?per_page=500` was
+		// served 25 rows, having asked for twenty times the default.
+		page := pagination.ClampPage(queryInt(c, "page"))
+		perPage := pagination.ClampPerPage(queryInt(c, "per_page"), auditPerPageDefault, auditPerPageMax)
+		offset := pagination.Offset(page, perPage)
 
 		// Build filters
 		filters := repositories.AuditFilters{}
@@ -150,12 +146,8 @@ func (h *AuditLogHandlers) ListAuditLogsHandler() gin.HandlerFunc {
 		}
 
 		c.JSON(http.StatusOK, AuditLogListResponse{
-			Logs: items,
-			Pagination: PaginationMeta{
-				Page:    page,
-				PerPage: perPage,
-				Total:   int64(total),
-			},
+			Logs:       items,
+			Pagination: countedPage(page, perPage, offset, len(items), total),
 		})
 	}
 }

@@ -199,6 +199,28 @@ List endpoints accept `page` (1-based) and `per_page` (default 20, max 100) quer
 GET /api/v1/modules?page=2&per_page=50
 ```
 
+A `per_page` **above** the endpoint's maximum is served **as that maximum**; only a
+value below 1 (or an unparseable one) falls back to the default. Each endpoint's
+own default and maximum are on its entry in the OpenAPI spec — `/admin/audit-logs`
+is 25/200, the SCIM `count` parameter is 100/200, and `/admin/version-approvals`
+is 100/500.
+
+Admin list responses carry a `pagination` object:
+
+```json
+{
+  "pagination": { "page": 1, "per_page": 100, "has_more": true, "total": 137 }
+}
+```
+
+- **`has_more`** is the completeness signal: `false` means this page is the end of
+  the list. Read it rather than comparing `page * per_page` against `total` — it is
+  present on every paginated admin response, including the search endpoints that
+  cannot report a total.
+- **`total`** is the number of matching rows across all pages, or `null` on the
+  endpoints that have no counting query (`/organizations/search`, `/users/search`).
+  `null` means "not counted"; `0` means "none matched".
+
 ### Error Responses
 
 All errors return JSON with a `status` field matching the HTTP status code and a `message` field:

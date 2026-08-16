@@ -21,6 +21,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/identityerr"
+	"github.com/terraform-registry/terraform-registry/internal/pagination"
 )
 
 // SCIM Schema URIs
@@ -30,6 +31,13 @@ const (
 	SchemaListResp = "urn:ietf:params:scim:api:messages:2.0:ListResponse"
 	SchemaError    = "urn:ietf:params:scim:api:messages:2.0:Error"
 	SchemaPatchOp  = "urn:ietf:params:scim:api:messages:2.0:PatchOp"
+)
+
+// SCIM page-size limits for the `count` parameter, as the swagger annotation
+// on ListUsers advertises them.
+const (
+	scimCountDefault = 100
+	scimCountMax     = 200
 )
 
 // Handlers provides SCIM 2.0 REST endpoints.
@@ -202,7 +210,7 @@ type SCIMOperation struct {
 // @Security     Bearer
 // @Produce      json
 // @Param        startIndex  query  int     false  "1-based start index"  default(1)
-// @Param        count       query  int     false  "Page size (max 200)"  default(100)
+// @Param        count       query  int     false  "Page size, max 200. A larger value is served as 200."  default(100)
 // @Param        filter      query  string  false  "SCIM filter expression"
 // @Success      200  {object}  scim.SCIMListResponse  "SCIM list response"
 // @Failure      401  {object}  scim.SCIMError  "Unauthorized"
@@ -211,14 +219,17 @@ type SCIMOperation struct {
 // ListUsers handles GET /scim/v2/Users
 func (h *Handlers) ListUsers() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// GUARD per-page-clamps-to-max (issue #893). An over-large `count` fell
+		// back to the DEFAULT of 100 rather than to the advertised maximum of
+		// 200, so an IdP syncing with `?count=1000` was served 100 —
+		// indistinguishable, to the provisioning client, from a directory that
+		// simply has 100 users, and RFC 7644 gives it no way to notice.
+		// totalResults is what lets a SCIM client page correctly, and it is
+		// still reported below.
 		startIndex, _ := strconv.Atoi(c.DefaultQuery("startIndex", "1"))
-		count, _ := strconv.Atoi(c.DefaultQuery("count", "100"))
-		if startIndex < 1 {
-			startIndex = 1
-		}
-		if count < 1 || count > 200 {
-			count = 100
-		}
+		count, _ := strconv.Atoi(c.Query("count"))
+		startIndex = pagination.ClampPage(startIndex)
+		count = pagination.ClampPerPage(count, scimCountDefault, scimCountMax)
 		filter := c.Query("filter")
 		offset := startIndex - 1
 		ctx := c.Request.Context()

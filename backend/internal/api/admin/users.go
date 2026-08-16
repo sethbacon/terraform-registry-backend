@@ -7,7 +7,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/sethbacon/terraform-suite-identity/identity/auditoutbox"
@@ -20,6 +19,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/identityerr"
+	"github.com/terraform-registry/terraform-registry/internal/pagination"
 )
 
 // UserHandlers handles user management endpoints
@@ -191,7 +191,7 @@ func (h *UserHandlers) revokePlatformAdminCarrier(c *gin.Context, userID string)
 // @Accept       json
 // @Produce      json
 // @Param        page      query  int  false  "Page number (default 1)"
-// @Param        per_page  query  int  false  "Items per page, max 100 (default 20)"
+// @Param        per_page  query  int  false  "Items per page, max 100 (default 20). A larger value is served as 100."
 // @Success      200  {object}  admin.ListUsersResponse
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
@@ -200,18 +200,11 @@ func (h *UserHandlers) revokePlatformAdminCarrier(c *gin.Context, userID string)
 // GET /api/v1/users?page=1&per_page=20
 func (h *UserHandlers) ListUsersHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Parse pagination parameters
-		page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-		perPage, _ := strconv.Atoi(c.DefaultQuery("per_page", "20"))
-
-		if page < 1 {
-			page = 1
-		}
-		if perPage < 1 || perPage > 100 {
-			perPage = 20
-		}
-
-		offset := (page - 1) * perPage
+		// GUARD per-page-clamps-to-max (issue #893). The organization list's
+		// clamp, copy-pasted: `?per_page=200` served 20 users.
+		page := pagination.ClampPage(queryInt(c, "page"))
+		perPage := pagination.ClampPerPage(queryInt(c, "per_page"), userPerPageDefault, userPerPageMax)
+		offset := pagination.Offset(page, perPage)
 
 		scope, ok := userAxisScope(c, h.orgRepo, auth.ScopeUsersRead)
 		if !ok {
@@ -228,12 +221,8 @@ func (h *UserHandlers) ListUsersHandler() gin.HandlerFunc {
 		}
 
 		c.JSON(http.StatusOK, gin.H{
-			"users": users,
-			"pagination": gin.H{
-				"page":     page,
-				"per_page": perPage,
-				"total":    total,
-			},
+			"users":      users,
+			"pagination": countedPage(page, perPage, offset, len(users), total),
 		})
 	}
 }
@@ -619,7 +608,7 @@ func (h *UserHandlers) DeleteUserHandler() gin.HandlerFunc {
 // @Produce      json
 // @Param        q         query  string  true   "Search query"
 // @Param        page      query  int     false  "Page number (default 1)"
-// @Param        per_page  query  int     false  "Items per page, max 100 (default 20)"
+// @Param        per_page  query  int     false  "Items per page, max 100 (default 20). A larger value is served as 100."
 // @Success      200  {object}  admin.ListUsersResponse
 // @Failure      400  {object}  map[string]interface{}  "Search query is required"
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
@@ -637,18 +626,10 @@ func (h *UserHandlers) SearchUsersHandler() gin.HandlerFunc {
 			return
 		}
 
-		// Parse pagination
-		page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-		perPage, _ := strconv.Atoi(c.DefaultQuery("per_page", "20"))
-
-		if page < 1 {
-			page = 1
-		}
-		if perPage < 1 || perPage > 100 {
-			perPage = 20
-		}
-
-		offset := (page - 1) * perPage
+		// GUARD per-page-clamps-to-max (issue #893), the user list's sibling.
+		page := pagination.ClampPage(queryInt(c, "page"))
+		perPage := pagination.ClampPerPage(queryInt(c, "per_page"), userPerPageDefault, userPerPageMax)
+		offset := pagination.Offset(page, perPage)
 
 		// Search users with memberships
 		scope, ok := userAxisScope(c, h.orgRepo, auth.ScopeUsersRead)
@@ -656,20 +637,21 @@ func (h *UserHandlers) SearchUsersHandler() gin.HandlerFunc {
 			return
 		}
 
-		users, err := h.userRepo.SearchWithMemberships(c.Request.Context(), query, perPage, offset, scope)
+		// Probe one row past the page: this axis has no counting query either,
+		// so it emitted `{page, per_page}` and left a consumer no way to tell a
+		// last page from a truncated one (issue #893).
+		users, err := h.userRepo.SearchWithMemberships(c.Request.Context(), query, pagination.Probe(perPage), offset, scope)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to search users",
 			})
 			return
 		}
+		users, hasMore := pagination.Trim(users, perPage)
 
 		c.JSON(http.StatusOK, gin.H{
-			"users": users,
-			"pagination": gin.H{
-				"page":     page,
-				"per_page": perPage,
-			},
+			"users":      users,
+			"pagination": probedPage(page, perPage, hasMore),
 		})
 	}
 }
