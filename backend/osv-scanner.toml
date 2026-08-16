@@ -1,0 +1,80 @@
+# OSV-Scanner configuration for the backend Go module.
+#
+# osv-scanner v2 discovers this file next to go.mod and applies it to the scan
+# that .github/workflows/weekly-security.yml runs as `--recursive ./backend`.
+#
+# Entries here suppress a finding. Every entry must state WHY, in enough detail
+# that it can be RE-CHECKED rather than re-litigated, and must name the
+# condition that should make someone delete it. Suppress by advisory ID only —
+# never a whole package or ecosystem — so both scanners stay live for
+# everything else.
+#
+# Why suppressing at all, rather than leaving the finding visible: the scan step
+# runs under `continue-on-error: true`, so a single permanent, unfixable finding
+# makes `steps.osv.outcome == 'failure'` the normal weekly result forever. A
+# detector that is red every week is exactly as uninformative as one that is
+# green every week — a genuine scanner breakage becomes indistinguishable from
+# business as usual. Suppressing the one advisory nobody can ever act on
+# restores exit 0 as this repo's normal state, so a future non-zero exit means
+# something again.
+#
+# Reachability is NOT decided here. The `govulncheck` job in
+# .github/workflows/weekly-security.yml is this repo's reachability oracle: it
+# resolves its toolchain from backend/go.mod (via .github/actions/setup-backend),
+# so it always matches the module and can actually build a call graph.
+# OSV-Scanner does the flat known-vulnerability sweep of go.mod/go.sum, which
+# needs no toolchain at all.
+
+[[IgnoredVulns]]
+id = "GO-2026-5932"
+reason = """
+golang.org/x/crypto/openpgp — never linked into anything this repo ships, and
+unfixable by construction.
+
+1. No fix exists, and none ever will. The advisory's single affected entry has
+   one range event, `introduced: 0`, and NO `fixed` event — so no version of
+   golang.org/x/crypto resolves it and no dependency bump can ever clear this
+   finding. govulncheck prints "Fixed in: N/A". The advisory is a blanket
+   deprecation notice for an unmaintained package ("unsafe by design"), not a
+   specific defect with a patch. Waiting for an upgrade is waiting forever.
+
+2. It is not in anything we build. The advisory covers the import paths
+   golang.org/x/crypto/openpgp{,/packet,/armor,/clearsign,/errors,/elgamal,/s2k}.
+   None of them appear in `go list -deps ./...` — the packages that actually
+   link into the server, the CLI helpers, and the container image. The only
+   golang.org/x/crypto package this repo imports in its own source is
+   golang.org/x/crypto/bcrypt (cmd/hash, cmd/server, internal/middleware/setup.go,
+   scripts/generate-key.go).
+
+3. It IS in the test-only graph, and that is the whole of its presence here.
+   `go list -deps -test ./...` does resolve golang.org/x/crypto/openpgp and five
+   of its subpackages, through exactly one edge:
+
+       internal/mirror.test  (internal/mirror/attestation_test.go)
+         -> github.com/sigstore/sigstore-go/pkg/testing/ca
+         -> github.com/sigstore/rekor/pkg/pki
+         -> github.com/sigstore/rekor/pkg/pki/pgp
+         -> golang.org/x/crypto/openpgp
+
+   sigstore-go's `pkg/testing/ca` is a test fixture helper (a virtual Sigstore
+   CA); rekor's pki registry enumerates every PGP format it can verify. That
+   code compiles into `go test` binaries only. It is not reachable from any
+   production entry point, and it is not shipped.
+
+   govulncheck agrees on the classification: it reports GO-2026-5932 under
+   "Module Results" — required in the module graph, never imported or called by
+   the analysed packages — and exits 0.
+
+4. Do not be misled by a grep for "openpgp". This tree genuinely does contain
+   openpgp packages in its SHIPPING dependency graph — seventeen of them — but
+   they are all github.com/ProtonMail/go-crypto/openpgp/*, the maintained fork
+   that exists precisely to replace the deprecated x/crypto package. Different
+   module, not covered by this advisory. A grep is how this entry gets wrongly
+   reopened; `go list -deps ./... | grep '^golang.org/x/crypto/openpgp'` is the
+   check that actually answers the question, and it returns nothing.
+
+Delete this entry if either becomes true:
+  * OSV publishes a `fixed` event for GO-2026-5932 (then bump and drop this), or
+  * `go list -deps ./... | grep '^golang.org/x/crypto/openpgp'` returns anything
+    (then it is in a shipped binary and must be fixed properly, not suppressed).
+"""

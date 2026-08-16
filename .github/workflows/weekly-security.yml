@@ -77,9 +77,37 @@ jobs:
           # JSON (not table) so the triage step below can tell an advisory
           # with a published fix from one without; the triage step prints a
           # human-readable summary in its place.
+          #
+          # --no-call-analysis=go is deliberate, and is required for this job to
+          # be able to report success at all. The scanner image ships its own Go
+          # toolchain (1.26.2 in v2.3.8) and invokes it with GOTOOLCHAIN=local,
+          # so it cannot build a module whose `go` directive names a newer
+          # release — backend/go.mod is well past it. Its internal call-analysis
+          # pass then aborts with
+          #   "go.mod requires go >= 1.26.6 (running go 1.26.2; GOTOOLCHAIN=local)"
+          # and osv-scanner exits 127 — its ERROR code, distinct from the exit 1
+          # that means "vulnerabilities found".
+          #
+          # That abort has been happening on every run, masked: exit 1 wins
+          # whenever any finding exists, and this repo always had one
+          # (GO-2026-5932). Now that backend/osv-scanner.toml suppresses it, the
+          # abort would have surfaced as a permanent exit 127 — swapping a
+          # detector that is red for a known reason for one that is red for a
+          # hidden reason. Verified in the pinned v2.3.8 image with these exact
+          # arguments: suppression alone gives 127; suppression plus this flag
+          # gives 0.
+          #
+          # Nothing is lost. Reachability is the `govulncheck` job's
+          # responsibility below, and that job resolves its toolchain from
+          # backend/go.mod, so it always matches the module. This step keeps
+          # doing the flat known-vulnerability sweep of go.mod/go.sum, which
+          # needs no toolchain at all. osv_triage.py never read the analysis
+          # field, so no reporting here loses information — unlike the sibling
+          # repos, this job never claimed reachability it had not computed.
           scan-args: |-
             --recursive
             ./backend
+            --no-call-analysis=go
             --format=json
             --output=osv-results.json
 
