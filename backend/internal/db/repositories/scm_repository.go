@@ -199,8 +199,8 @@ func (r *SCMRepository) DeleteUserToken(ctx context.Context, userID, providerID 
 	return err
 }
 
-// DeleteAllUserTokens destroys every SCM OAuth token a principal holds, across
-// all providers, and reports how many rows it removed.
+// DeleteAllUserTokens destroys every SCM OAuth token a principal holds, under
+// every SCM connection, and reports how many rows it removed.
 //
 // This is the code half of an invariant that used to be a foreign key.
 // scm_oauth_tokens.user_id was declared ON DELETE CASCADE, so deleting a user
