@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -17,6 +16,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/identityerr"
+	"github.com/terraform-registry/terraform-registry/internal/pagination"
 	"github.com/terraform-registry/terraform-registry/internal/validation"
 )
 
@@ -319,7 +319,7 @@ func (h *OrganizationHandlers) GetNamespaceOwnershipHandler() gin.HandlerFunc {
 // @Security     Bearer
 // @Produce      json
 // @Param        page      query  int  false  "Page number (default 1)"
-// @Param        per_page  query  int  false  "Items per page, max 100 (default 20)"
+// @Param        per_page  query  int  false  "Items per page, max 100 (default 20). A larger value is served as 100."
 // @Success      200  {object}  admin.ListOrganizationsResponse
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
@@ -328,18 +328,15 @@ func (h *OrganizationHandlers) GetNamespaceOwnershipHandler() gin.HandlerFunc {
 // GET /api/v1/organizations?page=1&per_page=20
 func (h *OrganizationHandlers) ListOrganizationsHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Parse pagination parameters
-		page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-		perPage, _ := strconv.Atoi(c.DefaultQuery("per_page", "20"))
-
-		if page < 1 {
-			page = 1
-		}
-		if perPage < 1 || perPage > 100 {
-			perPage = 20
-		}
-
-		offset := (page - 1) * perPage
+		// GUARD per-page-clamps-to-max (issue #893). This clamp used to reset
+		// an over-large per_page to the DEFAULT of 20, so `?per_page=200`
+		// returned 20 rows — fewer than `?per_page=50` — against a swagger
+		// annotation that said "max 100". The sibling frontend's OIDC group
+		// mapping asks for 200 precisely to get every organization and has been
+		// silently served 20 ever since.
+		page := pagination.ClampPage(queryInt(c, "page"))
+		perPage := pagination.ClampPerPage(queryInt(c, "per_page"), orgPerPageDefault, orgPerPageMax)
+		offset := pagination.Offset(page, perPage)
 
 		// GUARD organization-list-scope (issue #719). This is the batch's own
 		// sibling-asymmetry test failing: every /organizations/:id route carries
@@ -377,13 +374,13 @@ func (h *OrganizationHandlers) ListOrganizationsHandler() gin.HandlerFunc {
 			})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{
-			"organizations": orgs,
-			"pagination": gin.H{
-				"page":     page,
-				"per_page": perPage,
-				"total":    total,
-			},
+		c.JSON(http.StatusOK, ListOrganizationsResponse{
+			Organizations: orgs,
+			// countedPage, not a hand-built gin.H: the meta this endpoint
+			// already emitted carried `total` and nothing that said whether the
+			// page was the end of the list, so every consumer had to re-derive
+			// it — and the sibling frontend's pickers did not (issue #893).
+			Pagination: countedPage(page, perPage, offset, len(orgs), total),
 		})
 	}
 }
@@ -1300,7 +1297,7 @@ func stringPtrEqual(a, b *string) bool {
 // @Produce      json
 // @Param        q         query  string  true   "Search query"
 // @Param        page      query  int     false  "Page number (default 1)"
-// @Param        per_page  query  int     false  "Items per page, max 100 (default 20)"
+// @Param        per_page  query  int     false  "Items per page, max 100 (default 20). A larger value is served as 100."
 // @Success      200  {object}  admin.ListOrganizationsResponse
 // @Failure      400  {object}  map[string]interface{}  "Search query is required"
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
@@ -1318,18 +1315,12 @@ func (h *OrganizationHandlers) SearchOrganizationsHandler() gin.HandlerFunc {
 			return
 		}
 
-		// Parse pagination
-		page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-		perPage, _ := strconv.Atoi(c.DefaultQuery("per_page", "20"))
-
-		if page < 1 {
-			page = 1
-		}
-		if perPage < 1 || perPage > 100 {
-			perPage = 20
-		}
-
-		offset := (page - 1) * perPage
+		// GUARD per-page-clamps-to-max (issue #893), the list axis's sibling:
+		// the same clamp, verbatim, with the same "asking for more gets you
+		// less" behaviour.
+		page := pagination.ClampPage(queryInt(c, "page"))
+		perPage := pagination.ClampPerPage(queryInt(c, "per_page"), orgPerPageDefault, orgPerPageMax)
+		offset := pagination.Offset(page, perPage)
 
 		// GUARD organization-search-scope (issue #719): the same asymmetry as
 		// the list axis, and strictly worse — search turns the census into a
@@ -1346,19 +1337,23 @@ func (h *OrganizationHandlers) SearchOrganizationsHandler() gin.HandlerFunc {
 		// which is what the second, in-memory matcher that used to live here was
 		// guarding against by hand, against the same two fields, with its own
 		// case-folding rules.
-		orgs, err := h.orgRepo.Search(c.Request.Context(), query, perPage, offset, scope.OrgScope())
+		//
+		// pagination.Probe asks for ONE row more than the caller wants. The
+		// identity store has no search-counting query, so this axis emitted
+		// `{page, per_page}` and nothing else — a consumer could not tell a
+		// last page from a truncated one at all (issue #893). The probe row is
+		// trimmed off below and never served; its presence is has_more.
+		orgs, err := h.orgRepo.Search(c.Request.Context(), query, pagination.Probe(perPage), offset, scope.OrgScope())
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to search organizations",
 			})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{
-			"organizations": orgs,
-			"pagination": gin.H{
-				"page":     page,
-				"per_page": perPage,
-			},
+		orgs, hasMore := pagination.Trim(orgs, perPage)
+		c.JSON(http.StatusOK, ListOrganizationsResponse{
+			Organizations: orgs,
+			Pagination:    probedPage(page, perPage, hasMore),
 		})
 	}
 }

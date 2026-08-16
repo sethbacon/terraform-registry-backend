@@ -18,6 +18,7 @@ import (
 	"github.com/jmoiron/sqlx"
 
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
+	"github.com/terraform-registry/terraform-registry/internal/pagination"
 )
 
 // VersionApprovalRepository handles version approval queries and mutations.
@@ -172,10 +173,13 @@ func (r *VersionApprovalRepository) List(ctx context.Context, f VersionApprovalF
 		return nil, 0, fmt.Errorf("failed to count version approvals: %w", err)
 	}
 
-	limit := f.Limit
-	if limit <= 0 || limit > 500 {
-		limit = 100
-	}
+	// GUARD per-page-clamps-to-max (issue #893). f.Limit is the `limit` query
+	// parameter of GET /api/v1/admin/version-approvals, whose swagger says
+	// "max 500" — but an over-large value used to fall back to the DEFAULT of
+	// 100, so an operator draining a large approval queue with `?limit=1000`
+	// was served 100 rows and had no way to tell that was a clamp rather than
+	// the end of the queue.
+	limit := pagination.ClampPerPage(f.Limit, 100, 500)
 	offset := f.Offset
 	if offset < 0 {
 		offset = 0

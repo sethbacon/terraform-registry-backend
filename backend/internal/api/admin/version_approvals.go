@@ -89,7 +89,7 @@ func currentUserID(c *gin.Context) *uuid.UUID {
 // @Param        status     query  string  false  "Filter by status (pending_approval, approved, rejected)"
 // @Param        type       query  string  false  "Filter by type (provider, terraform)"
 // @Param        config_id  query  string  false  "Filter by mirror config UUID"
-// @Param        limit      query  int     false  "Max results (default 100, max 500)"
+// @Param        limit      query  int     false  "Max results (default 100, max 500). A larger value is served as 500."
 // @Param        offset     query  int     false  "Offset for pagination"
 // @Success      200  {object}  models.VersionApprovalListResponse
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
