@@ -94,8 +94,10 @@ def triage(raw: str) -> tuple[list[dict], list[dict], list[dict]]:
     fixable = [e for e in called.values() if e["fixed"]]
     unfixable = [e for e in called.values() if not e["fixed"]]
     key = lambda e: e["id"]  # noqa: E731
-    return sorted(fixable, key=key), sorted(unfixable, key=key), sorted(
-        uncalled.values(), key=key
+    return (
+        sorted(fixable, key=key),
+        sorted(unfixable, key=key),
+        sorted(uncalled.values(), key=key),
     )
 
 
@@ -109,7 +111,10 @@ def _describe(entry: dict) -> str:
 def render(fixable: list[dict], unfixable: list[dict], not_called: list[dict]) -> str:
     lines = ["## govulncheck triage", ""]
     if fixable:
-        lines += [f"### ❌ Reachable and fixable ({len(fixable)}) — upgrade required", ""]
+        lines += [
+            f"### ❌ Reachable and fixable ({len(fixable)}) — upgrade required",
+            "",
+        ]
         lines += [f"- {_describe(e)}" for e in fixable] + [""]
     if unfixable:
         lines += [
