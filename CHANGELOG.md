@@ -7,6 +7,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.7.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.6.0...v4.7.0) (2026-08-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* **identity:** a deployment whose identity lives in a SEPARATE DATABASE (TFR_IDENTITY_DATABASE_* with TFR_IDENTITY_SCHEMA_ENABLED=true) now refuses to start when registry's own role tables are not reachable from the connection it resolves identity reads through. Before the cutover that was logged and survivable because nothing read those tables; it is not survivable now, because booting would resolve every principal to no role -- a total authorization outage presenting as a permissions problem. Create `registry_role_templates` and `organization_member_roles` where that connection can resolve them, or run identity in the registry database. No other topology is affected.
+
+### Features
+
+* **identity:** registry's own role tables, backfilled and dual-written ([#887](https://github.com/sethbacon/terraform-registry-backend/issues/887)) ([8675980](https://github.com/sethbacon/terraform-registry-backend/commit/8675980942bd35664086382ccbbd298fe72e8169))
+* **identity:** resolve registry's authorization from registry's own tables ([#890](https://github.com/sethbacon/terraform-registry-backend/issues/890)) ([85c81fa](https://github.com/sethbacon/terraform-registry-backend/commit/85c81fa9b592eb5ac7d9a138cfd730572f425f7f))
+
+
+### Bug Fixes
+
+* **api:** clamp per_page to the maximum instead of the default ([#896](https://github.com/sethbacon/terraform-registry-backend/issues/896)) ([2f3f833](https://github.com/sethbacon/terraform-registry-backend/commit/2f3f833b3ce868030cdac1c9ab47f083eb68d6ea)), closes [#893](https://github.com/sethbacon/terraform-registry-backend/issues/893)
+* **db:** drop the registry's feature-table foreign keys into the identity schema ([#897](https://github.com/sethbacon/terraform-registry-backend/issues/897)) ([60e6d2c](https://github.com/sethbacon/terraform-registry-backend/commit/60e6d2c65b631033761dbaeb455301a9352f080c))
+
 ## [4.6.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.5.0...v4.6.0) (2026-08-14)
 
 
