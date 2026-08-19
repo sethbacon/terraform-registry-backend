@@ -7,6 +7,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.8.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.7.0...v4.8.0) (2026-08-19)
+
+
+### ⚠ BREAKING CHANGES
+
+* **rbac:** the `devops` and `auditor` role templates now confer `scanning:read`. On deployments running the identity-schema cutover with TFR_SUITE_ROLE_SEED_OWNER naming this application, their holders gain read access to scan results, scan statistics and scanner-version endpoints on the next boot -- which is what migration 000018 granted them in the default topology and what the seed has been taking back on every restart since. Default-topology deployments are unaffected. docs/upgrade-guide.md carries the note.
+* **api:** DELETE /api/v1/organizations/:id now answers 409 while the organization still owns SCM providers or mirror configurations. Delete them first, via DELETE /api/v1/admin/scm/providers/:id and DELETE /api/v1/admin/mirrors/:id. The deletion previously succeeded and left those rows behind, where the unauthenticated SCM webhook endpoint kept honouring the provider's webhook secret and the mirror sync job kept running the mirror.
+
+### Bug Fixes
+
+* **api:** refuse organization deletion while SCM providers or mirrors remain ([#912](https://github.com/sethbacon/terraform-registry-backend/issues/912)) ([e5c4645](https://github.com/sethbacon/terraform-registry-backend/commit/e5c46453173d920f696bf1daf12c003c9da8194f)), closes [#899](https://github.com/sethbacon/terraform-registry-backend/issues/899)
+* **rbac:** carry scanning:read on devops and auditor, and derive the guard from the migrations ([#911](https://github.com/sethbacon/terraform-registry-backend/issues/911)) ([36e3c7c](https://github.com/sethbacon/terraform-registry-backend/commit/36e3c7ca05e9f24ba511008d11d35667d715892e)), closes [#891](https://github.com/sethbacon/terraform-registry-backend/issues/891)
+
+
+### Dependencies
+
+* migrate off lib/pq to jackc/pgx ([#910](https://github.com/sethbacon/terraform-registry-backend/issues/910)) ([da469ef](https://github.com/sethbacon/terraform-registry-backend/commit/da469ef33dce6c97b22b5e46a8eca319bc835c11))
+
+
+### Security
+
+* triage govulncheck findings instead of gating on unfixable ones ([#904](https://github.com/sethbacon/terraform-registry-backend/issues/904)) ([6964a88](https://github.com/sethbacon/terraform-registry-backend/commit/6964a88ae2c6b4c02dc93506573d176d222272a0))
+
 ## [4.7.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.6.0...v4.7.0) (2026-08-16)
 
 
