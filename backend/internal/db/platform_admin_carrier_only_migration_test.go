@@ -17,6 +17,7 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/lib/pq"
 )
 
 // Issue #766, migration 000054 — the breaking migration, applied, refused,
@@ -287,20 +288,43 @@ var backfillBlock = regexp.MustCompile(`(?s)WITH granted AS \(.*?FROM granted g;
 // test passed with the transition guard replaced by `IF FALSE`. Matching the
 // SQLSTATE and the raised message on the driver error is what makes the
 // assertion about the refusal instead of about the source code.
+// TWO DRIVER ERROR TYPES, deliberately. The application migrated off lib/pq to
+// jackc/pgx (#905, landed as #910), and this file's assertion moved to
+// *pgconn.PgError with it -- but golang-migrate's own postgres driver still
+// uses lib/pq internally, so the error arriving here is a *pq.Error. The
+// assertion silently stopped matching, and a CORRECT refusal carrying the
+// CORRECT SQLSTATE 23514 was reported as "a different failure".
+//
+// Nothing caught it, because no workflow set TFR_TEST_DATABASE_URL and this
+// test has never run in CI (issue #886). It is the first thing the new
+// postgres-tests job found. Handling both types is not defensive clutter: the
+// two drivers genuinely coexist here, one in the application and one inside
+// golang-migrate, and which one surfaces is not this test's choice.
+func driverErrorFields(err error) (code, message string, ok bool) {
+	var pgxErr *pgconn.PgError
+	if errors.As(err, &pgxErr) {
+		return string(pgxErr.Code), pgxErr.Message, true
+	}
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) {
+		return string(pqErr.Code), pqErr.Message, true
+	}
+	return "", "", false
+}
+
 func raisedRefusal(err error) (bool, string) {
-	var pqErr *pgconn.PgError
-	if !errors.As(err, &pqErr) {
+	code, message, ok := driverErrorFields(err)
+	if !ok {
 		var dbErr database.Error
-		if errors.As(err, &dbErr) {
-			if !errors.As(dbErr.OrigErr, &pqErr) {
-				return false, fmt.Sprintf("%v", dbErr.OrigErr)
-			}
-		} else {
+		if !errors.As(err, &dbErr) {
 			return false, err.Error()
 		}
+		if code, message, ok = driverErrorFields(dbErr.OrigErr); !ok {
+			return false, fmt.Sprintf("%v", dbErr.OrigErr)
+		}
 	}
-	detail := string(pqErr.Code) + ": " + pqErr.Message
-	return pqErr.Code == "23514" && strings.Contains(pqErr.Message, "migration 000054 REFUSED"), detail
+	detail := code + ": " + message
+	return code == "23514" && strings.Contains(message, "migration 000054 REFUSED"), detail
 }
 
 // TestMigration000054_RefusesWhenTheBackfillDidNotRun is property 1's

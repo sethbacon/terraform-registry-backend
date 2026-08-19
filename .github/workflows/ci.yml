@@ -210,6 +210,82 @@ jobs:
           message: ${{ steps.badge.outputs.percent }}%
           color: ${{ steps.badge.outputs.color }}
 
+  # ── Postgres-backed tests (issue #886) ────────────────
+  # Twelve test files in backend/ read TFR_TEST_DATABASE_URL and t.Skip when it
+  # is unset. Until this job existed NO workflow set it, so every guarantee they
+  # prove -- the platform-admin carrier, the audit outbox's deferred constraint
+  # trigger, migration round-trips, the member-role equivalence proof that gated
+  # a BREAKING authorization change -- was verified only on developer machines.
+  # Several of them say so in their own header comments.
+  #
+  # This job carries its own anti-false-green check, because the failure mode it
+  # is fixing is precisely a green result that proved nothing: if the DSN were
+  # wrong or the service unreachable, every one of these tests would SKIP and
+  # the job would pass. `go test` exits 0 on a suite that skipped everything.
+  postgres-tests:
+    name: Postgres-backed tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        # Without a health check the job races the container and the tests skip
+        # on an unreachable DSN -- green, and meaningless.
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go toolchain
+        uses: ./.github/actions/setup-backend
+
+      - name: Run the Postgres-backed tests
+        working-directory: backend
+        env:
+          # This repo has NO build tags; the gate is this variable plus t.Skip.
+          TFR_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+        # Deliberately NO -run filter. A name filter that matches nothing exits
+        # 0 and reports "ok" per package, which is the same false green this
+        # job exists to remove -- and it is easy to get wrong, since the twelve
+        # files share no naming convention. Running the whole set costs a few
+        # minutes and cannot silently select zero tests.
+        run: go test ./internal/... -v 2>&1 | tee /tmp/pg-tests.log
+
+      - name: Fail if the Postgres tests skipped
+        run: |
+          # The guard on the guard. A skipped suite and a passing suite are the
+          # same exit code, so assert on the transcript instead: no test may
+          # skip citing the DSN, and at least one must actually have run.
+          if grep -q 'TFR_TEST_DATABASE_URL not set' /tmp/pg-tests.log; then
+            echo "::error::Postgres tests SKIPPED on an unset DSN -- this job proved nothing."
+            grep -n 'TFR_TEST_DATABASE_URL not set' /tmp/pg-tests.log | head -5
+            exit 1
+          fi
+          if grep -qE 'TFR_TEST_DATABASE_URL is not reachable|not reachable' /tmp/pg-tests.log; then
+            echo "::error::Postgres tests SKIPPED on an unreachable DSN -- this job proved nothing."
+            exit 1
+          fi
+          passed=$(grep -c '^--- PASS' /tmp/pg-tests.log || true)
+          echo "Postgres-backed tests passed: $passed"
+          if [ "$passed" -lt 1 ]; then
+            echo "::error::No Postgres-backed test ran. An empty universe is not a clean one."
+            exit 1
+          fi
+
   swagger-docs-sync:
     name: Sync generated Swagger/OpenAPI docs
     runs-on: ubuntu-latest
