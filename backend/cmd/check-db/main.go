@@ -21,7 +21,7 @@ import (
 	"log"
 	"os"
 
-	_ "github.com/lib/pq"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 func env(key, fallback string) string {
@@ -44,7 +44,7 @@ func main() {
 		host, port, user, password, dbname, sslmode,
 	)
 
-	db, err := sql.Open("postgres", connStr)
+	db, err := sql.Open("pgx", connStr)
 	if err != nil {
 		log.Fatalf("Failed to open connection: %v", err)
 	}

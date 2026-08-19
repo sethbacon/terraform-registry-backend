@@ -16,7 +16,7 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/google/uuid"
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Issue #766, migration 000054 — the breaking migration, applied, refused,
@@ -154,7 +154,7 @@ func TestMigration000054_BackfillsTheCarrierBeforeRemovingTheAdminScope(t *testi
 	if err := m.Migrate(53); err != nil && err != migrate.ErrNoChange {
 		t.Fatalf("applying migrations through 000053: %v", err)
 	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -285,10 +285,10 @@ var backfillBlock = regexp.MustCompile(`(?s)WITH granted AS \(.*?FROM granted g;
 // literal text of the RAISE EXCEPTION message — so `strings.Contains(err.Error(),
 // "migration 000054 REFUSED")` is true for a SYNTAX error in this file, and this
 // test passed with the transition guard replaced by `IF FALSE`. Matching the
-// SQLSTATE and the raised message on the pq error is what makes the assertion
-// about the refusal instead of about the source code.
+// SQLSTATE and the raised message on the driver error is what makes the
+// assertion about the refusal instead of about the source code.
 func raisedRefusal(err error) (bool, string) {
-	var pqErr *pq.Error
+	var pqErr *pgconn.PgError
 	if !errors.As(err, &pqErr) {
 		var dbErr database.Error
 		if errors.As(err, &dbErr) {
@@ -363,7 +363,7 @@ func TestMigration000054_RefusesWhenTheBackfillDidNotRun(t *testing.T) {
 		t.Fatalf("applying migrations through 000053: %v", err)
 	}
 
-	db, err := sql.Open("postgres", dsn)
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -402,7 +402,7 @@ func TestMigration000054_RollsBackAndReApplies(t *testing.T) {
 	if err := m.Migrate(53); err != nil && err != migrate.ErrNoChange {
 		t.Fatalf("applying migrations through 000053: %v", err)
 	}
-	db, err := sql.Open("postgres", dsn)
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

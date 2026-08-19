@@ -73,7 +73,7 @@ func newOrgRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 // described in issue #559 finding [9].
 func newOrgRouterWithRevocation(t *testing.T, withRevocation bool) (sqlmock.Sqlmock, *gin.Engine) {
 	t.Helper()
-	db, mock, err := sqlmock.New()
+	db, mock, err := newSQLMock()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
@@ -371,7 +371,7 @@ func TestCreateOrganization_Success(t *testing.T) {
 // (issue #648), which newOrgRouter's unauthenticated requests never reach.
 func newCreateOrgRouterWithUser(t *testing.T, userID string) (sqlmock.Sqlmock, *gin.Engine) {
 	t.Helper()
-	db, mock, err := sqlmock.New()
+	db, mock, err := newSQLMock()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
@@ -1646,7 +1646,7 @@ func TestCreateOrganization_ExistenceCheckError(t *testing.T) {
 // took effect when it only half did.
 func TestUpdateMemberHandler_SweepFails_ReportsRevocationIncomplete(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	db, mock, err := sqlmock.New()
+	db, mock, err := newSQLMock()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}

@@ -9,7 +9,7 @@ import (
 	"os"
 	"time"
 
-	_ "github.com/lib/pq"
+	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 )
@@ -54,7 +54,7 @@ func RunUpgradePreflight(configPath string, verbose bool) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	db, err := sql.Open("postgres", dsn)
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		results = append(results, PreflightResult{"Database", "fail", fmt.Sprintf("Connection failed: %v", err)})
 		printResults(results, verbose)

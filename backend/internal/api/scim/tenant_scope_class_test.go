@@ -150,7 +150,7 @@ func scimDeprovisionPaths() []scimDeprovisionPath {
 func scimRouter(t *testing.T) (*gin.Engine, sqlmock.Sqlmock) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
-	db, mock, err := sqlmock.New()
+	db, mock, err := newSQLMock()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}

@@ -127,7 +127,7 @@ func newRBACRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 // described in issue #559 finding [9].
 func newRBACRouterWithRevocation(t *testing.T, withRevocation bool) (sqlmock.Sqlmock, *gin.Engine) {
 	t.Helper()
-	db, mock, err := sqlmock.New()
+	db, mock, err := newSQLMock()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
@@ -1319,7 +1319,7 @@ func TestRBACReviewApproval_GetDBError(t *testing.T) {
 
 func newRBACRouterWithOrg(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	t.Helper()
-	db, mock, err := sqlmock.New()
+	db, mock, err := newSQLMock()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
@@ -1750,7 +1750,7 @@ func TestRBACEvaluatePolicy_WithValidOrgID(t *testing.T) {
 
 func newRBACRouterNoUser(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	t.Helper()
-	db, mock, err := sqlmock.New()
+	db, mock, err := newSQLMock()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}

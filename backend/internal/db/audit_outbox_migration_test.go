@@ -13,7 +13,7 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/google/uuid"
-	_ "github.com/lib/pq"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 // Issue #766, migration 000052 — the migration itself, applied, rolled back and
@@ -46,7 +46,7 @@ func migrationScratchDB(t *testing.T) (dsn string) {
 		t.Skipf("TFR_TEST_DATABASE_URL is not a postgres:// URL (%q)", raw)
 	}
 
-	admin, err := sql.Open("postgres", raw)
+	admin, err := sql.Open("pgx", raw)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -62,7 +62,7 @@ func migrationScratchDB(t *testing.T) (dsn string) {
 		t.Skipf("cannot create a scratch database (needs CREATEDB): %v", err)
 	}
 	t.Cleanup(func() {
-		drop, err := sql.Open("postgres", raw)
+		drop, err := sql.Open("pgx", raw)
 		if err != nil {
 			return
 		}
@@ -136,7 +136,7 @@ func TestMigration000052_AppliesRollsBackAndReApplies(t *testing.T) {
 		t.Fatalf("migrated to version %d, want 52 — this test is not exercising 000052", version)
 	}
 
-	db, err := sql.Open("postgres", dsn)
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

@@ -8,7 +8,7 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
-	_ "github.com/lib/pq"
+	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/sethbacon/terraform-suite-identity/identity"
 )
@@ -54,7 +54,7 @@ func registryWithIdentitySchema(t *testing.T, targetVersion uint) *sql.DB {
 	t.Helper()
 	dsn := migrationScratchDB(t)
 
-	conn, err := sql.Open("postgres", dsn)
+	conn, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestMigration000056_RepairsFeatureWritesWhereTheIdentitySchemaExists(t *tes
 // defect restated.
 func TestMigration000056_ConvergesTheStandaloneTopology(t *testing.T) {
 	dsn := migrationScratchDB(t)
-	conn, err := sql.Open("postgres", dsn)
+	conn, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

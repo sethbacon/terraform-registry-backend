@@ -41,7 +41,7 @@ import (
 // mock database the organization repository will resolve memberships against.
 func userScopeCtx(t *testing.T, scopes []string, userID string) (*gin.Context, sqlmock.Sqlmock, *sql.DB) {
 	t.Helper()
-	db, mock, err := sqlmock.New()
+	db, mock, err := newSQLMock()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestUserAxisScope_ScopedCallerIsNotPlatformWide(t *testing.T) {
 // principal holding that scope in alpha only.
 func scopedUserRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	t.Helper()
-	db, mock, err := sqlmock.New()
+	db, mock, err := newSQLMock()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}

@@ -32,7 +32,7 @@ func keyRow(id, userID, orgID string, scopes string) *sqlmock.Rows {
 // sweeper's own logic only the statement sequence matters.
 func newSweeperWithMock(t *testing.T) (*Sweeper, sqlmock.Sqlmock, *sql.DB) {
 	t.Helper()
-	db, mock, err := sqlmock.New()
+	db, mock, err := newSQLMock()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestNilSweeper_AllMethodsAreNoOps(t *testing.T) {
 }
 
 func TestSweeper_KeysOnlyHalfWired_SkipsJWTFamily(t *testing.T) {
-	db, mock, err := sqlmock.New()
+	db, mock, err := newSQLMock()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
@@ -534,7 +534,7 @@ func TestUserDeprovisioned_ZeroRowsIsNotIncomplete(t *testing.T) {
 }
 
 func TestUserDeprovisioned_NoKeyRepository_StillMovesWatermark(t *testing.T) {
-	db, mock, err := sqlmock.New()
+	db, mock, err := newSQLMock()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}

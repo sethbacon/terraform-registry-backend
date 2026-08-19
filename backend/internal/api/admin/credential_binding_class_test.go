@@ -93,7 +93,7 @@ var credBindingPrincipals = []credBindingPrincipal{
 // AuthMiddleware would have produced for p.
 func newCredBindingRouter(t *testing.T, p credBindingPrincipal) (sqlmock.Sqlmock, *gin.Engine) {
 	t.Helper()
-	db, mock, err := sqlmock.New()
+	db, mock, err := newSQLMock()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
@@ -308,7 +308,7 @@ func TestCredentialBindingClass_RoleAssignment(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			db, mock, err := sqlmock.New()
+			db, mock, err := newSQLMock()
 			if err != nil {
 				t.Fatalf("sqlmock.New: %v", err)
 			}
@@ -385,7 +385,7 @@ func TestCredentialBindingClass_RefreshRejectsMachineCredential(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			db, mock, err := sqlmock.New()
+			db, mock, err := newSQLMock()
 			if err != nil {
 				t.Fatalf("sqlmock.New: %v", err)
 			}

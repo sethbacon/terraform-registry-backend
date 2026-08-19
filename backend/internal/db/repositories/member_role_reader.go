@@ -32,7 +32,6 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
-	"github.com/lib/pq"
 
 	identitystore "github.com/sethbacon/terraform-suite-identity/identity/store"
 
@@ -224,7 +223,7 @@ func (r *MemberRoleReader) RolesForUsers(ctx context.Context, userIDs []string) 
 	}
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT omr.user_id, omr.organization_id, `+mirroredRoleColumns+mirroredRoleFrom+`
-		 WHERE omr.user_id = ANY($1)`, pq.Array(userIDs))
+		 WHERE omr.user_id = ANY($1)`, userIDs)
 	if err != nil {
 		return nil, fmt.Errorf("read registry roles for %d user(s): %w", len(userIDs), err)
 	}

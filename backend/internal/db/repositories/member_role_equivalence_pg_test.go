@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	_ "github.com/lib/pq"
+	_ "github.com/jackc/pgx/v5/stdlib"
 
 	identityauth "github.com/sethbacon/terraform-suite-identity/identity/auth"
 	identitystore "github.com/sethbacon/terraform-suite-identity/identity/store"

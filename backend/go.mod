@@ -25,13 +25,13 @@ require (
 	github.com/hashicorp/go-version v1.9.0
 	github.com/hashicorp/terraform-config-inspect v0.0.0-20260224005459-813a97530220
 	github.com/in-toto/attestation v1.2.0
+	github.com/jackc/pgx/v5 v5.10.0
 	github.com/jmoiron/sqlx v1.4.0
-	github.com/lib/pq v1.12.3
 	github.com/open-policy-agent/opa v1.19.0
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.2
 	github.com/redis/go-redis/v9 v9.22.0
-	github.com/sethbacon/terraform-suite-identity v0.28.0
+	github.com/sethbacon/terraform-suite-identity v0.30.0
 	github.com/sigstore/sigstore-go v1.3.0
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.12.0
@@ -139,6 +139,9 @@ require (
 	github.com/hashicorp/hcl/v2 v2.24.0 // indirect
 	github.com/in-toto/in-toto-golang v0.11.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jedisct1/go-minisign v0.0.0-20211028175153-1c139d1cc84b // indirect
 	github.com/jonboulle/clockwork v0.5.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
@@ -153,6 +156,7 @@ require (
 	github.com/lestrrat-go/jwx/v3 v3.1.1 // indirect
 	github.com/lestrrat-go/option/v2 v2.0.0 // indirect
 	github.com/letsencrypt/boulder v0.20260309.0 // indirect
+	github.com/lib/pq v1.12.3 // indirect
 	github.com/mattermost/xml-roundtrip-validator v0.1.0 // indirect
 	github.com/mattn/go-isatty v0.0.22 // indirect
 	github.com/mitchellh/go-wordwrap v1.0.1 // indirect

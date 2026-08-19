@@ -74,7 +74,7 @@ func newPlatformAdminMemberRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 
 func newMemberRouterAs(t *testing.T, userID string, scopes []string) (sqlmock.Sqlmock, *gin.Engine) {
 	t.Helper()
-	db, mock, err := sqlmock.New()
+	db, mock, err := newSQLMock()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
