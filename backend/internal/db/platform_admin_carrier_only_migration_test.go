@@ -16,8 +16,6 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/lib/pq"
 )
 
 // Issue #766, migration 000054 — the breaking migration, applied, refused,
@@ -300,16 +298,32 @@ var backfillBlock = regexp.MustCompile(`(?s)WITH granted AS \(.*?FROM granted g;
 // postgres-tests job found. Handling both types is not defensive clutter: the
 // two drivers genuinely coexist here, one in the application and one inside
 // golang-migrate, and which one surfaces is not this test's choice.
+// Matched on the INTERFACE both drivers implement rather than on either
+// concrete type. jackc/pgx's *pgconn.PgError and lib/pq's *pq.Error both have
+// SQLState() string, so this needs no import of either -- which matters: this
+// module has just migrated OFF lib/pq, and importing it here to satisfy a test
+// assertion would promote it from `// indirect` back to a direct dependency of
+// the repository that removed it.
+//
+// It is also the more durable shape. Naming a concrete driver type is exactly
+// what broke: the assertion was correct for the driver the application uses
+// and wrong for the one golang-migrate uses internally, and a third driver
+// would break it again.
+type sqlStateError interface {
+	SQLState() string
+	Error() string
+}
+
 func driverErrorFields(err error) (code, message string, ok bool) {
-	var pgxErr *pgconn.PgError
-	if errors.As(err, &pgxErr) {
-		return string(pgxErr.Code), pgxErr.Message, true
+	var se sqlStateError
+	if !errors.As(err, &se) {
+		return "", "", false
 	}
-	var pqErr *pq.Error
-	if errors.As(err, &pqErr) {
-		return string(pqErr.Code), pqErr.Message, true
-	}
-	return "", "", false
+	// se.Error() is the DRIVER's rendering -- the PostgreSQL message alone.
+	// Only golang-migrate's database.Error wrapper appends the migration SQL,
+	// and that wrapper is unwrapped past before we get here, so the caller's
+	// substring check still cannot be satisfied by a syntax error in the file.
+	return se.SQLState(), se.Error(), true
 }
 
 func raisedRefusal(err error) (bool, string) {
