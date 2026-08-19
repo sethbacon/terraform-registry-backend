@@ -94,7 +94,9 @@ If issues are found after upgrade:
 > `⚠ BREAKING CHANGES` heading.
 >
 > Concretely, across every release from `0.10.1` to `3.5.0` there are exactly **two**
-> breaking changes, both captured below. Absence of a note for your specific version
+> breaking changes, both captured below. `5.0.0` carries two further ones, each with its
+> own note: the platform-admin carrier move (#766) and the `devops`/`auditor` role-template
+> scope correction (#891). Absence of a note for your specific version
 > pair means there was nothing version-specific to do beyond the standard procedure
 > above — not that the note is missing.
 
@@ -129,6 +131,66 @@ user deletion now destroys the principal's SCM OAuth tokens explicitly.
 validates the whole table and would fail on exactly the deployments the up migration
 repaired, leaving the migration version dirty; `NOT VALID` would silently restore the
 outage for new writes. The `.down.sql` carries the reasoning and by-hand restore SQL.
+
+### 4.x → 5.0.0 — the `devops` and `auditor` role templates gain `scanning:read`
+
+**Breaking, and it bites one topology only.** Issue #891. Independent of the
+platform-admin carrier change below, which is the other breaking change in this
+major; both touch role templates and neither depends on the other.
+
+**Applies to:** deployments running the identity-schema cutover
+(`TFR_IDENTITY_SCHEMA_ENABLED=true`) with `TFR_SUITE_ROLE_SEED_OWNER` naming this
+application. **Default-topology deployments are unaffected** — their role templates have
+carried `scanning:read` since migration `000018`, and neither role-template seed runs
+there.
+
+#### What was wrong
+
+Registry states its role → scope policy twice: as SQL, in the migrations, and as Go, in
+`models.PredefinedRoleTemplates()`. Migration `000018` granted `scanning:read` to `devops`
+and `auditor`; the Go list never followed. Both seeds upsert that list with
+`scopes = EXCLUDED.scopes`, so on a cutover deployment **every boot removed the scope from
+both templates**, in both tables:
+
+- `registry_role_templates` — what this application authorizes against since the phase-3b
+  read cutover.
+- `role_templates` — what the state manager adopts `devops` and `auditor` from (it defines
+  neither name itself), and what a rollback to a pre-3b registry image authorizes against.
+
+It presented as "the scanning pages are empty for our auditors", never as an error, because
+it removed authority rather than granting it.
+
+#### What changes on upgrade
+
+On the first boot of this release, principals holding `devops` or `auditor` in an affected
+deployment gain `scanning:read`: the per-version scan result, `GET
+/api/v1/admin/scanning/stats`, `GET /api/v1/admin/scanning/scans/{id}`, and the
+scanner-version endpoints. That is what migration `000018` granted them and what the seed
+has been taking back on every restart since.
+
+Scan records are tenant-scoped (issue #783), so this is read access within the organizations
+a principal already belongs to, not across the deployment.
+
+The same seed also writes the shared `role_templates`, so the state manager's copies of
+`devops` and `auditor` gain the scope too. It confers nothing there — `scanning:read` is not
+in that application's scope vocabulary — but it will appear in its role-template listings.
+
+#### If you do not want it
+
+Move the affected members to a role template of your own that omits `scanning:read`. Editing
+the **system** template instead does not hold: the seed overwrites system templates by name
+on the next boot, which is the whole mechanism this note is about.
+
+#### Migrations, rollback, and the guard
+
+- **Migrations:** none. Migration `000018` already made this change in SQL; this release
+  makes the Go list agree with it.
+- **Rollback:** deploy the previous image. Its seed removes the scope again on its first
+  boot, which is the pre-upgrade behaviour.
+- **Guard:** `internal/db/rolepolicy` derives the role → scope policy back out of the
+  migration files, and a test diffs it against the Go list in both directions. A migration
+  that grants a scope the list omits, and a list that grants a scope no migration granted,
+  both turn a PR red.
 
 ### 4.x → 5.0.0 — platform-admin authority moves to the `platform_admins` carrier
 

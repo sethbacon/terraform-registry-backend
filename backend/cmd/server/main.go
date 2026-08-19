@@ -540,10 +540,25 @@ func serve(cfg *config.Config) error {
 		// REGISTRY NO LONGER READS THIS TABLE (terraform-suite-identity#206,
 		// phase 3b): authorization comes from registry's own
 		// `registry_role_templates`, seeded in internal/api/router.go after the
-		// reconcile. This call stays because the STATE MANAGER still reads the
-		// shared table, and because it is the surface a rollback to the previous
-		// image reads -- both of which need it current. It is the one call
-		// suite.role_seed_owner still gates.
+		// reconcile. This call stays because what it writes still reaches other
+		// readers, and both of them need it current:
+		//
+		//   * THE STATE MANAGER. It has since done its own phase 3b, so it no
+		//     longer authorizes from this table directly -- but its boot adopts
+		//     from it every role name its own list does not define, and `devops`
+		//     and `auditor` are two such names. Whatever this seed leaves here is
+		//     what those templates mean over there. Its rollback lever
+		//     (TSM_AUTHZ_ROLE_SOURCE=identity) puts every one of its
+		//     authorization decisions back on this table outright.
+		//   * A ROLLBACK OF THIS APPLICATION. The previous image reads it.
+		//
+		// It is the one call suite.role_seed_owner still gates.
+		//
+		// It writes models.PredefinedRoleTemplates(), the same list router.go
+		// seeds registry's own table with, and that is load-bearing rather than
+		// incidental: two lists would mean two policies, one per table, and a
+		// correction to either would silently leave the other stating the old one
+		// (issue #891).
 		if cfg.Suite.ShouldSeedRoles("registry") {
 			if err := repositories.SeedSharedIdentityRoleTemplates(
 				context.Background(), identityDB, models.PredefinedRoleTemplates(),

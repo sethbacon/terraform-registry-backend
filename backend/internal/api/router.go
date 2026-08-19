@@ -280,18 +280,18 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// was ever for. It exists because the shared identity module seeds role
 	// templates with identity-core scopes only, so registry layers its own
 	// domain scopes on top. In the DEFAULT topology the templates are seeded by
-	// registry's own migrations and have been amended by them since -- migration
-	// 000018 added `scanning:read` to `devops` and `auditor`, which
-	// models.PredefinedRoleTemplates() does not carry -- so running the seed
-	// there would strip that scope from both roles on every boot. The migrations
-	// are the more current statement of registry's policy in that topology, and
-	// the reconcile above has already copied them.
+	// registry's own migrations and have been amended by them since, and the
+	// reconcile above has already copied that result into this table.
 	//
-	// (That mismatch is a PRE-EXISTING defect in the cutover topology, where
-	// this list has always been what gets seeded. It is not made better or worse
-	// here, and it is not this change's to fix: correcting the list changes what
-	// two role templates confer, which a read cutover gated on equivalence must
-	// not do quietly.)
+	// THE GO LIST AND THE MIGRATIONS MUST AGREE, and until issue #891 they did
+	// not: migration 000018 granted `scanning:read` to `devops` and `auditor`,
+	// models.PredefinedRoleTemplates() never carried it, and because the upsert
+	// below sets `scopes = EXCLUDED.scopes` this seed REMOVED the scope from
+	// both roles on every boot of a cutover deployment. The list now carries it,
+	// and internal/db/rolepolicy derives the policy back out of the migration
+	// files so a test can require the two to keep agreeing -- in both
+	// directions, since the drift that adds a scope no migration granted widens
+	// authority instead of narrowing it and does not fail safe.
 	//
 	// identityDB != db is the cutover test. NewRouter is handed the same handle
 	// twice when identity data lives in the app's own schema, and a distinct one
