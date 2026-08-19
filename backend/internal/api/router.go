@@ -736,7 +736,13 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		// and scm_oauth_tokens stays in the registry's schema at cutover.
 		admin.WithUserSCMTokens(scmRepo))
 	orgHandlers := admin.NewOrganizationHandlers(cfg, identityDB, nsClaimRepo, userTokenRevocationRepo).
-		WithAdminFloor(adminFloor)
+		WithAdminFloor(adminFloor).
+		// scmRepo and mirrorRepo, deliberately: both are built on the REGISTRY
+		// connection above, and scm_providers / mirror_configurations stay in
+		// the registry's schema at the identity cutover. Organization deletion
+		// refuses while either still holds a row for the organization -- the
+		// invariant migration 000056 could not keep in SQL (issues #883, #899).
+		WithOrgIntegrationGuards(scmRepo, mirrorRepo)
 	statsHandlers := admin.NewStatsHandler(identitySqlxDB, &cfg.Scanning).WithOrgRepo(orgRepo)
 	mirrorHandlers := admin.NewMirrorHandler(mirrorRepo, orgRepo, providerRepo)
 	mirrorHandlers.SetSyncJob(mirrorSyncJob) // Connect sync job for manual triggers
@@ -886,7 +892,13 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	policyAdminHandler := admin.NewPolicyHandler(policyEngine, cfg.Policy)
 
 	// Initialize SCM webhook handler
-	scmWebhookHandler := webhooks.NewSCMWebhookHandler(scmRepo, scmPublisher, tokenCipher)
+	// orgRepo, deliberately on the IDENTITY connection: the webhook route is
+	// unauthenticated and acts on scm_providers.webhook_secret on the row's own
+	// authority, so it has to be able to ask whether the row's organization is
+	// still there. Migration 000056 dropped the foreign key that used to make
+	// the question unaskable (issues #883, #899).
+	scmWebhookHandler := webhooks.NewSCMWebhookHandler(scmRepo, scmPublisher, tokenCipher).
+		WithOrganizationExistence(orgRepo)
 	approvalWebhookHandler := webhooks.NewApprovalHandler(rbacRepo)
 
 	// Build per-principal override rate limiters (if configured)

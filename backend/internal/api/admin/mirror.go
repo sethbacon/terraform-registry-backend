@@ -132,14 +132,10 @@ func (h *MirrorHandler) CreateMirrorConfig(c *gin.Context) {
 		return
 	}
 
-	// Get user ID from context (set by auth middleware)
-	userID, _ := c.Get("user_id")
-	var createdBy *uuid.UUID
-	if userID != nil {
-		if uid, ok := userID.(uuid.UUID); ok {
-			createdBy = &uid
-		}
-	}
+	// Get user ID from context (set by auth middleware). The middleware stores
+	// a string; this site asserted uuid.UUID, so mirror_configurations
+	// .created_by was written NULL on every create (issue #899).
+	createdBy := currentUserID(c)
 
 	// Set defaults
 	enabled := true

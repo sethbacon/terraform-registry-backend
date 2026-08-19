@@ -10016,7 +10016,7 @@
                         }
                     },
                     "409": {
-                        "description": "Organization still owns namespace claims, or deleting it would leave the deployment with no platform administrator",
+                        "description": "Organization still owns namespace claims, modules/providers, SCM providers or mirror configurations, or deleting it would leave the deployment with no platform administrator",
                         "content": {
                             "application/json": {
                                 "schema": {

@@ -63,24 +63,6 @@ func (h *VersionApprovalHandler) tenantFilter(c *gin.Context) (repositories.Vers
 	return repositories.VersionApprovalFilter{Scope: scope.OrgScope()}, true
 }
 
-// currentUserID extracts the authenticated user's UUID from the gin context,
-// or nil when absent/unparsable (e.g. API-key auth without a user binding).
-func currentUserID(c *gin.Context) *uuid.UUID {
-	v, ok := c.Get("user_id")
-	if !ok {
-		return nil
-	}
-	s, ok := v.(string)
-	if !ok || s == "" {
-		return nil
-	}
-	id, err := uuid.Parse(s)
-	if err != nil {
-		return nil
-	}
-	return &id
-}
-
 // @Summary      List version approvals
 // @Description  Lists mirrored provider and terraform versions that are subject to the approval gate, filtered by status, type, and mirror config.
 // @Tags         Version Approvals

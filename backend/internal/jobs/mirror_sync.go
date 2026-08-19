@@ -19,6 +19,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
+	"github.com/terraform-registry/terraform-registry/internal/identityerr"
 	"github.com/terraform-registry/terraform-registry/internal/mirror"
 	"github.com/terraform-registry/terraform-registry/internal/safego"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
@@ -223,6 +224,33 @@ func (j *MirrorSyncJob) runScheduledSyncs(ctx context.Context) {
 	log.Printf("Found %d mirrors needing sync", len(mirrors))
 
 	for _, mirror := range mirrors {
+		// GUARD mirror-owner-org-exists (issue #899). Skip a mirror whose
+		// owning organization is gone.
+		//
+		// GetMirrorsNeedingSync applies no tenancy filter and no
+		// organization-existence filter, and until migration 000056 it did not
+		// need one: mirror_configurations.organization_id was ON DELETE CASCADE,
+		// so an orphaned mirror could not exist. Issue #883 dropped that
+		// constraint because no foreign key can span the identity topologies,
+		// and an orphan then keeps running forever -- syncMirror stamps every
+		// provider it creates with the dead organization id, while
+		// tenantscope.Permits hides the row from every non-platform
+		// administrator who might have stopped it.
+		//
+		// DeleteOrganizationHandler now refuses to create such a mirror
+		// (GUARD org-owns-integrations), so this is the fail-safe for the ones
+		// that already exist and for the organizations this service never sees
+		// deleted -- identity may be a separate database with its own
+		// lifecycle.
+		//
+		// In Go rather than in the query, deliberately: organizations may live
+		// in another schema or another database, so the existence test cannot
+		// be a join. j.orgRepo is the identity-connection repository the sync
+		// already consults for the default organization.
+		if !j.ownerOrganizationLives(ctx, mirror) {
+			continue
+		}
+
 		// Check if this mirror is already syncing
 		j.activeSyncsMutex.Lock()
 		if j.activeSyncs[mirror.ID] {
@@ -237,6 +265,41 @@ func (j *MirrorSyncJob) runScheduledSyncs(ctx context.Context) {
 		mirrorCopy := mirror
 		safego.Go(func() { j.syncMirror(ctx, mirrorCopy) })
 	}
+}
+
+// ownerOrganizationLives reports whether a mirror configuration's owning
+// organization still exists, and therefore whether the mirror may run
+// (issue #899).
+//
+// Three cases return true:
+//
+//   - a NULL organization_id, which is the deliberate "global mirror" the
+//     column documents; it is owned by nobody and has nothing to outlive;
+//   - an unwired orgRepo, which is only the tests -- NewMirrorSyncJob takes it
+//     as a required positional argument, so a deployment cannot omit it;
+//   - a FAILED lookup. Fail-open is the right direction for this one guard: a
+//     transient identity-database error would otherwise silently stop every
+//     org-bound mirror in the deployment, which is a much larger outage than
+//     one extra sync cycle of a mirror that is probably fine. The
+//     security-relevant fail-closed decision is on the webhook path, where a
+//     credential is being honoured; here the worst case is a provider row
+//     mirrored one interval late in being stopped.
+func (j *MirrorSyncJob) ownerOrganizationLives(ctx context.Context, config models.MirrorConfiguration) bool {
+	if config.OrganizationID == nil || j.orgRepo == nil {
+		return true
+	}
+	orgID := config.OrganizationID.String()
+	org, err := j.orgRepo.GetByID(ctx, orgID, repositories.OrgScopeAllOrganizations())
+	if identityerr.Missing(org, err) {
+		log.Printf("Skipping mirror %s (ID: %s): its organization %s no longer exists",
+			config.Name, config.ID, orgID)
+		return false
+	}
+	if err != nil {
+		log.Printf("Warning: could not verify organization %s for mirror %s; syncing anyway: %v",
+			orgID, config.Name, err)
+	}
+	return true
 }
 
 // syncMirror performs the actual synchronization of a mirror.
