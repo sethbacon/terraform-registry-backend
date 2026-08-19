@@ -75,6 +75,16 @@ updates:
       - docker
     commit-message:
       prefix: "chore(deps)"
+    # Go tags release candidates as `1.27rc2`, with no separator before `rc`.
+    # Dependabot's Docker prerelease detection is a heuristic that expects the
+    # `-rc1` form, so an RC reads as an ordinary minor bump and gets proposed.
+    # Go only ever publishes RCs for a new minor, never for a patch, so
+    # declining minor and major here declines every RC while leaving the 1.26.x
+    # patch releases -- which is where the security fixes land -- to update on
+    # their own. Taking a new Go minor stays a deliberate change.
+    ignore:
+      - dependency-name: "golang"
+        update-types: [ "version-update:semver-minor", "version-update:semver-major" ]
     cooldown:
       default-days: 7
 
