@@ -111,8 +111,26 @@ def render(fixable: list[dict], unfixable: list[dict]) -> str:
 
 
 def main() -> int:
+    # The report uses non-ASCII (— ❌ ⚠️). CI runners are UTF-8, but a redirected
+    # stdout on a cp1252 console is not, and the crash exits 1 — which looks
+    # exactly like "fixable findings" and silently changes the gate's answer.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
+
     args = sys.argv[1:]
     issue_body_path = None
+    # OSV-Scanner's documented exit codes: 0 = packages scanned, nothing found;
+    # 1 = packages scanned, findings; 127 = general error; 128 = no packages
+    # found. The GitHub action surfaces none of that -- continue-on-error
+    # collapses every non-zero into outcome == 'failure' -- so a scan that never
+    # reached the OSV API still writes a syntactically valid `{"results": []}`
+    # and would read here as a clean result. Callers that only run this script
+    # because the scanner reported failure pass --scanner-failed, which makes
+    # "failed but found nothing" the contradiction it actually is.
+    scanner_failed = "--scanner-failed" in args
+    if scanner_failed:
+        args.remove("--scanner-failed")
     if "--issue-body" in args:
         i = args.index("--issue-body")
         if i + 1 >= len(args):
@@ -122,7 +140,8 @@ def main() -> int:
         del args[i : i + 2]
     if len(args) != 1:
         print(
-            "usage: osv_triage.py <osv-results.json> [--issue-body <path>]",
+            "usage: osv_triage.py <osv-results.json> [--issue-body <path>] "
+            "[--scanner-failed]",
             file=sys.stderr,
         )
         return 2
@@ -159,6 +178,13 @@ def main() -> int:
         return _bail(f"OSV results file is not valid JSON: {exc}")
 
     fixable, unfixable = triage(data)
+
+    if scanner_failed and not fixable and not unfixable:
+        return _bail(
+            "OSV-Scanner reported failure but the results contain no findings — "
+            "exit 1 always carries at least one, so this was a scanner error "
+            "(127/128), not a clean scan"
+        )
 
     for entry in unfixable:
         print(f"::warning::{_describe(entry)}")

@@ -124,7 +124,7 @@ jobs:
         id: osv_triage_weekly
         if: steps.osv.outcome == 'failure' && github.event_name == 'schedule'
         continue-on-error: true
-        run: python3 backend/scripts/osv_triage.py osv-results.json --issue-body osv-report.md
+        run: python3 backend/scripts/osv_triage.py osv-results.json --scanner-failed --issue-body osv-report.md
 
       - name: Create issue on new vulnerabilities
         # Only when something is actually actionable — osv_triage.py exits
@@ -167,7 +167,7 @@ jobs:
         # surfaced as warnings + job summary instead (and the govulncheck job
         # covers whether they're actually reachable).
         if: steps.osv.outcome == 'failure' && github.event_name != 'schedule'
-        run: python3 backend/scripts/osv_triage.py osv-results.json
+        run: python3 backend/scripts/osv_triage.py osv-results.json --scanner-failed
 
   # ── govulncheck (reachability-aware scan) ─────────────
   # OSV-Scanner flags every known-vulnerable version in go.sum regardless of whether
