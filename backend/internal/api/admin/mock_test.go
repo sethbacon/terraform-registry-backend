@@ -5,7 +5,7 @@ import (
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 
-	"github.com/terraform-registry/terraform-registry/internal/pgxparam"
+	"github.com/sethbacon/terraform-suite-identity/identity/pgxparam"
 )
 
 // newSQLMock builds a mock that models the driver this module actually runs on.
