@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/terraform-registry/terraform-registry/internal/adminfloor"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
@@ -48,6 +49,47 @@ type OrganizationHandlers struct {
 	// WithAdminFloor, and admin_floor_class_test.go for the check that stops
 	// the router from quietly leaving it unset.
 	floor *adminfloor.Guard
+
+	// scmProviders and mirrors hold the two invariants migration 000056 took
+	// away and nothing replaced (issue #899). Both tables carried
+	// organization_id ON DELETE CASCADE into organizations until #883 dropped
+	// it, and both outlive their organization now that it is gone:
+	//
+	//	scm_providers      -- client_secret_encrypted + webhook_secret, and the
+	//	                      SCM webhook endpoint is UNAUTHENTICATED and does
+	//	                      no organization check, so an orphan keeps
+	//	                      publishing into a tenant that no longer exists.
+	//	mirror_configurations -- MirrorSyncJob keeps running it on schedule and
+	//	                      stamps every provider it creates with the dead
+	//	                      organization id, while tenantscope.Permits hides
+	//	                      the row from every non-platform administrator who
+	//	                      might have stopped it.
+	//
+	// DELIBERATELY ON THE REGISTRY CONNECTION, unlike every other field here.
+	// Both are registry feature tables that stay in the registry's schema at
+	// the identity cutover; reading them through identityDB would resolve
+	// tables that are not there in the separate-identity-database topology.
+	// Same deliberate exception WithUserSCMTokens makes on the /users family.
+	//
+	// May be nil in tests, on the "wired as a unit" convention above; the
+	// checks are then skipped. org_delete_guard_wiring_test.go is what stops
+	// the router from leaving them unset.
+	scmProviders *repositories.SCMRepository
+	mirrors      *repositories.MirrorRepository
+}
+
+// WithOrgIntegrationGuards injects the registry-connection repositories that
+// DeleteOrganizationHandler consults before it will delete an organization
+// (issue #899).
+//
+// One option rather than two: the two refusals are one rule -- an organization
+// is not deletable while it still owns an outbound integration -- and a
+// deployment that wired one without the other would enforce half of it while
+// reporting the same 200.
+func (h *OrganizationHandlers) WithOrgIntegrationGuards(scmProviders *repositories.SCMRepository, mirrors *repositories.MirrorRepository) *OrganizationHandlers {
+	h.scmProviders = scmProviders
+	h.mirrors = mirrors
+	return h
 }
 
 // WithAdminFloor injects the never-zero administrator guard (issue #766).
@@ -743,6 +785,115 @@ func (h *OrganizationHandlers) UpdateOrganizationHandler() gin.HandlerFunc {
 	}
 }
 
+// refuseIfOwnsIntegrations refuses an organization deletion while the
+// organization still owns an SCM provider or a mirror configuration, and
+// reports whether the caller must stop. It writes its own response when it
+// returns true.
+//
+// REFUSE RATHER THAN SWEEP (issue #899), and the argument is the same for both
+// resources even though their hazards differ.
+//
+// Both columns were ON DELETE CASCADE until migration 000056 (issue #883), so
+// restoring the cascade in application code -- delete the rows, then delete the
+// organization -- is the obvious port, and it is what DeleteUserHandler does
+// for scm_oauth_tokens. It is the wrong shape here:
+//
+//  1. NOT ATOMIC, AND THE FAILURE DESTROYS DATA. organizations may live in a
+//     different SCHEMA or a different DATABASE from these two registry tables
+//     -- that is precisely why 000056 could not keep the foreign keys -- so a
+//     sweep and the delete cannot share a transaction. Sweeping first and then
+//     failing the delete leaves a LIVE organization stripped of its SCM
+//     connection and its mirrors, and client_secret_encrypted is not
+//     recoverable from the registry once the row is gone. Refusing has no such
+//     failure mode: it is a read, and a read that fails 500s without deleting
+//     anything.
+//  2. THE INVARIANT BECOMES STRUCTURAL. A refusal makes it impossible to reach
+//     orgRepo.Delete while either row exists, so this path cannot produce an
+//     orphan at all. A best-effort sweep can only promise that it usually does
+//     not.
+//  3. IT MATCHES THE TWO REFUSALS ABOVE. This handler's established answer to
+//     "the organization still owns something substantive" is 409 with an
+//     actionable message, not a silent cascade.
+//  4. IT IS ACTIONABLE. Both resources have first-class delete endpoints --
+//     DELETE /admin/scm/providers/:id and DELETE /admin/mirrors/:id -- so the
+//     operator can do exactly what the message asks, and deleting them THERE
+//     cascades their dependents (scm_oauth_tokens, scm_provider_tokens,
+//     module_scm_repos; mirror_sync_history, mirrored_providers) through
+//     foreign keys that still exist because they stay inside the registry's own
+//     schema.
+//
+// Why this differs from the scm_oauth_tokens sweep DeleteUserHandler does: a
+// user's OAuth token is a per-user credential whose only meaning is the
+// principal being destroyed, it is re-obtainable by re-running the OAuth flow
+// at no operator cost, and there is no endpoint an admin could be told to call
+// first -- nobody can delete another user's tokens. An SCM provider and a
+// mirror configuration are organization-level configuration objects with their
+// own CRUD, carrying secrets and schedules an operator should decommission
+// deliberately. A 409 is a usable instruction there; it would not have been on
+// the user path.
+//
+// A nil repository means the dependency was not wired (tests, and any caller
+// predating this issue), which skips the check rather than refusing -- the same
+// convention creds, floor and h.scmTokens follow. The router is held to wiring
+// it by org_delete_guard_wiring_test.go.
+func (h *OrganizationHandlers) refuseIfOwnsIntegrations(c *gin.Context, orgID string) bool {
+	if h.scmProviders == nil && h.mirrors == nil {
+		return false
+	}
+
+	// Both repositories key on a uuid.UUID. A non-UUID organization id is not
+	// reachable through the routes -- the id was just used to load the
+	// organization -- but it would silently count zero of everything, so it
+	// fails rather than passing.
+	oid, err := uuid.Parse(orgID)
+	if err != nil {
+		slog.Error("cannot check an organization's integrations for a non-UUID organization id",
+			"organization_id", orgID, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to check organization integrations",
+		})
+		return true
+	}
+
+	if h.scmProviders != nil {
+		n, countErr := h.scmProviders.CountProvidersByOrganization(c.Request.Context(), oid)
+		if countErr != nil {
+			slog.Error("failed to count an organization's SCM providers; refusing to delete the organization",
+				"organization_id", orgID, "error", countErr)
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to check organization SCM providers",
+			})
+			return true
+		}
+		if n > 0 {
+			c.JSON(http.StatusConflict, gin.H{
+				"error": "Organization still owns SCM providers; delete them before deleting it",
+			})
+			return true
+		}
+	}
+
+	if h.mirrors != nil {
+		n, countErr := h.mirrors.CountByOrganization(c.Request.Context(), oid)
+		if countErr != nil {
+			slog.Error("failed to count an organization's mirror configurations; refusing to delete the organization",
+				"organization_id", orgID, "error", countErr)
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to check organization mirror configurations",
+			})
+			return true
+		}
+		if n > 0 {
+			c.JSON(http.StatusConflict, gin.H{
+				"error": "Organization still owns mirror configurations; delete them before deleting it",
+			})
+			return true
+		}
+	}
+
+	return false
+}
+
 // @Summary      Delete organization
 // @Description  Remove an organization and its associated records.
 // @Tags         Organizations
@@ -752,7 +903,7 @@ func (h *OrganizationHandlers) UpdateOrganizationHandler() gin.HandlerFunc {
 // @Success      200  {object}  admin.MessageResponse
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
 // @Failure      404  {object}  map[string]interface{}  "Organization not found"
-// @Failure      409  {object}  map[string]interface{}  "Organization still owns namespace claims, or deleting it would leave the deployment with no platform administrator"
+// @Failure      409  {object}  map[string]interface{}  "Organization still owns namespace claims, modules/providers, SCM providers or mirror configurations, or deleting it would leave the deployment with no platform administrator"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/organizations/{id} [delete]
 // DeleteOrganizationHandler deletes an organization
@@ -831,6 +982,14 @@ func (h *OrganizationHandlers) DeleteOrganizationHandler() gin.HandlerFunc {
 			c.JSON(http.StatusConflict, gin.H{
 				"error": "Organization still owns modules or providers; remove or reassign them before deleting it",
 			})
+			return
+		}
+
+		// GUARD org-owns-integrations (issue #899). Third and fourth refusals,
+		// for the two constraints migration 000056 dropped that were the sole
+		// mechanism holding their invariant. See refuseIfOwnsIntegrations for
+		// why these REFUSE rather than sweep.
+		if h.refuseIfOwnsIntegrations(c, orgID) {
 			return
 		}
 

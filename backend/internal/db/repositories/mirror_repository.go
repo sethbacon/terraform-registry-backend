@@ -183,6 +183,30 @@ func (r *MirrorRepository) Update(ctx context.Context, config *models.MirrorConf
 	return nil
 }
 
+// CountByOrganization counts the mirror configurations an organization owns.
+//
+// mirror_configurations.organization_id used to carry ON DELETE CASCADE into
+// organizations; migration 000056 dropped it (issue #883) because no foreign
+// key can span the identity topologies. Nothing then stopped a mirror from
+// outliving its organization -- and an orphaned mirror keeps syncing on
+// schedule, stamping every provider it creates with the dead organization id,
+// while tenantscope.Permits hides it from every non-platform administrator who
+// might have stopped it. DeleteOrganizationHandler calls this to refuse that
+// deletion instead (issue #899).
+//
+// A NULL organization_id is the deliberate "global mirror" (see the column's
+// comment in 000001_initial_schema) and is owned by nobody, so `= $1` is the
+// correct comparison: it never matches, and a global mirror is never counted
+// against any organization's deletion.
+func (r *MirrorRepository) CountByOrganization(ctx context.Context, orgID uuid.UUID) (int, error) {
+	var count int
+	query := `SELECT COUNT(*) FROM mirror_configurations WHERE organization_id = $1`
+	if err := r.db.GetContext(ctx, &count, query, orgID); err != nil {
+		return 0, fmt.Errorf("failed to count mirror configurations for organization: %w", err)
+	}
+	return count, nil
+}
+
 // Delete deletes a mirror configuration
 func (r *MirrorRepository) Delete(ctx context.Context, id uuid.UUID) error {
 	query := `DELETE FROM mirror_configurations WHERE id = $1`

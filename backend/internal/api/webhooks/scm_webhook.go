@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/identityerr"
 	"github.com/terraform-registry/terraform-registry/internal/safego"
 	"github.com/terraform-registry/terraform-registry/internal/scm"
 	"github.com/terraform-registry/terraform-registry/internal/services"
@@ -28,6 +29,26 @@ type SCMWebhookHandler struct {
 	publisher   *services.SCMPublisher
 	connectors  map[scm.ProviderType]scm.Connector
 	tokenCipher *crypto.TokenCipher
+
+	// orgExists reports whether an SCM provider's owning organization still
+	// resolves in the identity store (issue #899).
+	//
+	// This route is the only UNAUTHENTICATED one that acts on a credential, and
+	// until migration 000056 (issue #883) scm_providers.organization_id was
+	// ON DELETE CASCADE, so an SCM provider could not outlive its organization
+	// and the question never arose. It can now, in every topology, and nothing
+	// else on this path asks it: the provider is loaded by id from the payload
+	// URL and its webhook_secret is honoured on its own authority.
+	//
+	// A function rather than a repository: organizations live on the IDENTITY
+	// connection, which may be another schema or another database, while
+	// everything else this handler touches is the registry's. Closing over the
+	// lookup keeps that seam at the wiring site (WithOrganizationExistence)
+	// instead of putting a second connection inside the handler.
+	//
+	// nil means unwired, which skips the check -- the same convention the
+	// admin handlers' optional dependencies follow.
+	orgExists func(ctx context.Context, orgID string) (bool, error)
 }
 
 // NewSCMWebhookHandler creates a new webhook handler
@@ -38,6 +59,34 @@ func NewSCMWebhookHandler(scmRepo *repositories.SCMRepository, publisher *servic
 		connectors:  make(map[scm.ProviderType]scm.Connector),
 		tokenCipher: tokenCipher,
 	}
+}
+
+// WithOrganizationExistence wires the identity-connection lookup that decides
+// whether an SCM provider's organization is still there (issue #899).
+//
+// The repository MUST be built on the identity connection, unlike scmRepo:
+// organizations move to the identity schema at cutover and may live in a
+// separate database entirely, which is the whole reason no foreign key can
+// hold this invariant any more.
+//
+// OrgScopeAllOrganizations is deliberate and is not an authorization decision.
+// The caller here is an SCM server with no principal at all; the question being
+// asked is "does this row's owner still exist", which is a platform fact.
+func (h *SCMWebhookHandler) WithOrganizationExistence(orgRepo *repositories.OrganizationRepository) *SCMWebhookHandler {
+	if orgRepo == nil {
+		return h
+	}
+	h.orgExists = func(ctx context.Context, orgID string) (bool, error) {
+		org, err := orgRepo.GetByID(ctx, orgID, repositories.OrgScopeAllOrganizations())
+		if identityerr.Missing(org, err) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	return h
 }
 
 // @Summary      Receive SCM webhook
@@ -144,6 +193,43 @@ func (h *SCMWebhookHandler) HandleWebhook(c *gin.Context) {
 	if provider == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "SCM provider not found"})
 		return
+	}
+
+	// GUARD webhook-provider-org-exists (issue #899). Refuse to act on an SCM
+	// provider whose organization has been deleted.
+	//
+	// DeleteOrganizationHandler now refuses that deletion, so no NEW orphan can
+	// be created through the API -- but this check is what covers the ones that
+	// already exist (any deployment that deleted an organization while
+	// migration 000056 was in place and this guard was not) and the ones no
+	// registry handler is involved in at all, since organizations may live in
+	// another database where they can be removed without this service ever
+	// seeing the verb.
+	//
+	// Placed here, after the URL-embedded secret has been verified and before
+	// the client secret is decrypted: the caller has already proved it holds
+	// the link's secret, so this leaks nothing new, and an orphaned provider's
+	// ciphertext is never opened.
+	//
+	// A zero organization_id is the single-tenant deployment (the column is
+	// nullable and google/uuid scans NULL to uuid.Nil), which is owned by no
+	// organization and has nothing to check.
+	if h.orgExists != nil && provider.OrganizationID != uuid.Nil {
+		exists, orgErr := h.orgExists(c.Request.Context(), provider.OrganizationID.String())
+		if orgErr != nil {
+			// Fail CLOSED. The alternative -- treating a lookup failure as
+			// "probably still there" -- publishes into a tenant on the strength
+			// of a database error, on an unauthenticated route.
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to verify SCM provider organization"})
+			return
+		}
+		if !exists {
+			// Same answer as a missing provider, deliberately: an orphaned
+			// provider is indistinguishable from one that was deleted properly,
+			// so this adds no new signal for an anonymous caller.
+			c.JSON(http.StatusNotFound, gin.H{"error": "SCM provider not found"})
+			return
+		}
 	}
 
 	// Build connector for this provider

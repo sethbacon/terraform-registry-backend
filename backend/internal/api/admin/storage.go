@@ -192,14 +192,10 @@ func (h *StorageHandlers) CreateStorageConfig(c *gin.Context) {
 		return
 	}
 
-	// Get user ID from context (set by auth middleware)
-	userID, exists := c.Get("user_id")
-	var userUUID uuid.NullUUID
-	if exists {
-		if uid, ok := userID.(uuid.UUID); ok {
-			userUUID = uuid.NullUUID{UUID: uid, Valid: true}
-		}
-	}
+	// Get user ID from context (set by auth middleware). Shared spelling: the
+	// middleware stores a string, and this site asserted uuid.UUID, so
+	// storage_config.created_by was written NULL on every create (issue #899).
+	userUUID := currentUserNullUUID(c)
 
 	// Check if this is the first storage configuration (initial setup)
 	configured, err := h.storageConfigRepo.IsStorageConfigured(ctx)
@@ -303,14 +299,9 @@ func (h *StorageHandlers) UpdateStorageConfig(c *gin.Context) {
 		return
 	}
 
-	// Get user ID from context
-	userID, exists := c.Get("user_id")
-	var userUUID uuid.NullUUID
-	if exists {
-		if uid, ok := userID.(uuid.UUID); ok {
-			userUUID = uuid.NullUUID{UUID: uid, Valid: true}
-		}
-	}
+	// Get user ID from context. Same defect and same fix as the create path:
+	// storage_config.updated_by was written NULL on every update (issue #899).
+	userUUID := currentUserNullUUID(c)
 
 	// Update the config
 	if err := h.updateStorageConfigFromInput(existing, &input, userUUID); err != nil {
@@ -410,18 +401,11 @@ func (h *StorageHandlers) ActivateStorageConfig(c *gin.Context) {
 		return
 	}
 
-	// Get user ID from context. User.ID is stored as a string by the auth
-	// middleware, so we must handle both string and uuid.UUID types.
-	userIDVal, _ := c.Get("user_id")
-	var userUUID uuid.NullUUID
-	switch v := userIDVal.(type) {
-	case string:
-		if parsed, parseErr := uuid.Parse(v); parseErr == nil {
-			userUUID = uuid.NullUUID{UUID: parsed, Valid: true}
-		}
-	case uuid.UUID:
-		userUUID = uuid.NullUUID{UUID: v, Valid: true}
-	}
+	// Get user ID from context. This site always had it right -- User.ID is
+	// stored as a string by the auth middleware, so both types must be handled
+	// -- and currentUserNullUUID is now that same switch, in one place, shared
+	// with the two sites nine lines above that did not (issue #899).
+	userUUID := currentUserNullUUID(c)
 
 	if err := h.storageConfigRepo.ActivateStorageConfig(ctx, id, userUUID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to activate storage configuration"})

@@ -91,6 +91,25 @@ func (r *SCMRepository) ListProviders(ctx context.Context, orgID uuid.UUID) ([]*
 	return providers, err
 }
 
+// CountProvidersByOrganization counts the SCM providers an organization owns.
+//
+// Reads scm_providers on the REGISTRY connection. Its organization_id used to
+// carry ON DELETE CASCADE into organizations; migration 000056 dropped it
+// (issue #883) because no foreign key can span the identity topologies, and
+// with it went the only mechanism that stopped a provider row -- holding
+// client_secret_encrypted and webhook_secret, and honoured by the
+// UNAUTHENTICATED webhook endpoint -- from outliving its organization.
+// DeleteOrganizationHandler calls this to refuse that deletion instead
+// (issue #899).
+func (r *SCMRepository) CountProvidersByOrganization(ctx context.Context, orgID uuid.UUID) (int, error) {
+	var count int
+	query := `SELECT COUNT(*) FROM scm_providers WHERE organization_id = $1`
+	if err := r.db.GetContext(ctx, &count, query, orgID); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 // UpdateProvider updates an SCM provider configuration
 func (r *SCMRepository) UpdateProvider(ctx context.Context, provider *scm.SCMProviderRecord) error {
 	authMode := provider.AuthMode

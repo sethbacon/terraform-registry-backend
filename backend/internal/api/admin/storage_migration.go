@@ -86,12 +86,10 @@ func (h *StorageMigrationHandler) StartMigration(c *gin.Context) {
 		return
 	}
 
-	var userID string
-	if uid, exists := c.Get("user_id"); exists {
-		if u, ok := uid.(uuid.UUID); ok {
-			userID = u.String()
-		}
-	}
+	// The auth middleware stores the principal as a string; this site asserted
+	// uuid.UUID, so storage_migrations.created_by was written NULL on every
+	// migration ever started (issue #899).
+	userID := currentUserIDString(c)
 
 	migration, err := h.service.StartMigration(c.Request.Context(), req.SourceConfigID, req.TargetConfigID, userID)
 	if err != nil {
