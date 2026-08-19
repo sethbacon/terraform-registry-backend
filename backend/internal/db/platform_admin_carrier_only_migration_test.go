@@ -16,7 +16,6 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Issue #766, migration 000054 — the breaking migration, applied, refused,
@@ -287,20 +286,59 @@ var backfillBlock = regexp.MustCompile(`(?s)WITH granted AS \(.*?FROM granted g;
 // test passed with the transition guard replaced by `IF FALSE`. Matching the
 // SQLSTATE and the raised message on the driver error is what makes the
 // assertion about the refusal instead of about the source code.
+// TWO DRIVER ERROR TYPES, deliberately. The application migrated off lib/pq to
+// jackc/pgx (#905, landed as #910), and this file's assertion moved to
+// *pgconn.PgError with it -- but golang-migrate's own postgres driver still
+// uses lib/pq internally, so the error arriving here is a *pq.Error. The
+// assertion silently stopped matching, and a CORRECT refusal carrying the
+// CORRECT SQLSTATE 23514 was reported as "a different failure".
+//
+// Nothing caught it, because no workflow set TFR_TEST_DATABASE_URL and this
+// test has never run in CI (issue #886). It is the first thing the new
+// postgres-tests job found. Handling both types is not defensive clutter: the
+// two drivers genuinely coexist here, one in the application and one inside
+// golang-migrate, and which one surfaces is not this test's choice.
+// Matched on the INTERFACE both drivers implement rather than on either
+// concrete type. jackc/pgx's *pgconn.PgError and lib/pq's *pq.Error both have
+// SQLState() string, so this needs no import of either -- which matters: this
+// module has just migrated OFF lib/pq, and importing it here to satisfy a test
+// assertion would promote it from `// indirect` back to a direct dependency of
+// the repository that removed it.
+//
+// It is also the more durable shape. Naming a concrete driver type is exactly
+// what broke: the assertion was correct for the driver the application uses
+// and wrong for the one golang-migrate uses internally, and a third driver
+// would break it again.
+type sqlStateError interface {
+	SQLState() string
+	Error() string
+}
+
+func driverErrorFields(err error) (code, message string, ok bool) {
+	var se sqlStateError
+	if !errors.As(err, &se) {
+		return "", "", false
+	}
+	// se.Error() is the DRIVER's rendering -- the PostgreSQL message alone.
+	// Only golang-migrate's database.Error wrapper appends the migration SQL,
+	// and that wrapper is unwrapped past before we get here, so the caller's
+	// substring check still cannot be satisfied by a syntax error in the file.
+	return se.SQLState(), se.Error(), true
+}
+
 func raisedRefusal(err error) (bool, string) {
-	var pqErr *pgconn.PgError
-	if !errors.As(err, &pqErr) {
+	code, message, ok := driverErrorFields(err)
+	if !ok {
 		var dbErr database.Error
-		if errors.As(err, &dbErr) {
-			if !errors.As(dbErr.OrigErr, &pqErr) {
-				return false, fmt.Sprintf("%v", dbErr.OrigErr)
-			}
-		} else {
+		if !errors.As(err, &dbErr) {
 			return false, err.Error()
 		}
+		if code, message, ok = driverErrorFields(dbErr.OrigErr); !ok {
+			return false, fmt.Sprintf("%v", dbErr.OrigErr)
+		}
 	}
-	detail := string(pqErr.Code) + ": " + pqErr.Message
-	return pqErr.Code == "23514" && strings.Contains(pqErr.Message, "migration 000054 REFUSED"), detail
+	detail := code + ": " + message
+	return code == "23514" && strings.Contains(message, "migration 000054 REFUSED"), detail
 }
 
 // TestMigration000054_RefusesWhenTheBackfillDidNotRun is property 1's
