@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/lib/pq"
+	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/sethbacon/terraform-suite-identity/identity/platformadmin"
 )
@@ -64,7 +64,7 @@ func postgresPool(t *testing.T) *sql.DB {
 	// Bootstrap on the caller's own search_path to create the schema, then
 	// reopen pinned to it. Done in two steps because `options=-c search_path=X`
 	// makes every connection in the pool fail until X exists.
-	bootstrap, err := sql.Open("postgres", dsn)
+	bootstrap, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -88,13 +88,13 @@ func postgresPool(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatalf("build scoped dsn: %v", err)
 	}
-	pool, err := sql.Open("postgres", scoped)
+	pool, err := sql.Open("pgx", scoped)
 	if err != nil {
 		t.Fatalf("sql.Open (scoped): %v", err)
 	}
 	t.Cleanup(func() {
 		pool.Close()
-		cleanup, err := sql.Open("postgres", dsn)
+		cleanup, err := sql.Open("pgx", dsn)
 		if err != nil {
 			return
 		}

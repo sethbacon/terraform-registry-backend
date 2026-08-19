@@ -14,7 +14,7 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/google/uuid"
-	_ "github.com/lib/pq"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 // The backfill for registry's own authorization tables, against real
@@ -53,7 +53,7 @@ func reconcileScratchDB(t *testing.T, version uint) (*sql.DB, string) {
 		t.Skipf("TFR_TEST_DATABASE_URL is not a postgres:// URL (%q)", raw)
 	}
 
-	admin, err := sql.Open("postgres", raw)
+	admin, err := sql.Open("pgx", raw)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -69,7 +69,7 @@ func reconcileScratchDB(t *testing.T, version uint) (*sql.DB, string) {
 		t.Skipf("cannot create a scratch database (needs CREATEDB): %v", err)
 	}
 	t.Cleanup(func() {
-		drop, dropErr := sql.Open("postgres", raw)
+		drop, dropErr := sql.Open("pgx", raw)
 		if dropErr != nil {
 			return
 		}
@@ -91,7 +91,7 @@ func reconcileScratchDB(t *testing.T, version uint) (*sql.DB, string) {
 	}
 	_, _ = m.Close()
 
-	db, err := sql.Open("postgres", dsn)
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open scratch: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestReconcile_UsesTheEffectiveSourceUnderTheSchemaCutover(t *testing.T) {
 	} else {
 		identityDSN += "?search_path=identity,public"
 	}
-	identityDB, err := sql.Open("postgres", identityDSN)
+	identityDB, err := sql.Open("pgx", identityDSN)
 	if err != nil {
 		t.Fatalf("open identity pool: %v", err)
 	}
@@ -490,7 +490,7 @@ func TestReconcile_RefusesWhenTheSourceDoesNotResolve(t *testing.T) {
 	} else {
 		blindDSN += "?search_path=empty_identity"
 	}
-	identityDB, err := sql.Open("postgres", blindDSN)
+	identityDB, err := sql.Open("pgx", blindDSN)
 	if err != nil {
 		t.Fatalf("open blind identity pool: %v", err)
 	}

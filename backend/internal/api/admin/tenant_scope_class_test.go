@@ -129,7 +129,7 @@ func classSQLMock(t *testing.T) (sqlmock.Sqlmock, *sqlx.DB, *gin.Engine) {
 // exercise a principal kind other than the default non-admin JWT caller.
 func classSQLMockAs(t *testing.T, principal gin.HandlerFunc) (sqlmock.Sqlmock, *sqlx.DB, *gin.Engine) {
 	t.Helper()
-	db, mock, err := sqlmock.New()
+	db, mock, err := newSQLMock()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}

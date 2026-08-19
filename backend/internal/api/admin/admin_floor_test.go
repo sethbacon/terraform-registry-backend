@@ -37,12 +37,12 @@ const (
 // the lock on the registry connection, the membership tables on identity's.
 func newFlooredOrgRouter(t *testing.T) (registry, identity sqlmock.Sqlmock, r *gin.Engine) {
 	t.Helper()
-	rdb, rmock, err := sqlmock.New()
+	rdb, rmock, err := newSQLMock()
 	if err != nil {
 		t.Fatalf("sqlmock.New (registry): %v", err)
 	}
 	t.Cleanup(func() { rdb.Close() })
-	idb, imock, err := sqlmock.New()
+	idb, imock, err := newSQLMock()
 	if err != nil {
 		t.Fatalf("sqlmock.New (identity): %v", err)
 	}
@@ -361,12 +361,12 @@ func TestRespondAdminFloor(t *testing.T) {
 // administrator": a refusal disguised as an absent resource, which a caller
 // reconciles by giving up rather than by appointing somebody else.
 func TestEraseUserHandler_RefusesStrandingTheDeployment(t *testing.T) {
-	rdb, registry, err := sqlmock.New()
+	rdb, registry, err := newSQLMock()
 	if err != nil {
 		t.Fatalf("sqlmock.New (registry): %v", err)
 	}
 	defer rdb.Close()
-	idb, identity, err := sqlmock.New()
+	idb, identity, err := newSQLMock()
 	if err != nil {
 		t.Fatalf("sqlmock.New (identity): %v", err)
 	}

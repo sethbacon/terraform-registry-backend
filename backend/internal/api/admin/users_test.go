@@ -63,7 +63,7 @@ func emptyMembershipRows() *sqlmock.Rows {
 // newUserRouter creates a gin router with all UserHandlers routes registered.
 func newUserRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	t.Helper()
-	db, mock, err := sqlmock.New()
+	db, mock, err := newSQLMock()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
@@ -502,7 +502,7 @@ func TestGetCurrentUserMembershipsHandler_Success(t *testing.T) {
 	})
 
 	// Direct approach: set up a router with middleware
-	db2, mock2, _ := sqlmock.New()
+	db2, mock2, _ := newSQLMock()
 	defer db2.Close()
 	mock2.ExpectQuery("SELECT").WithArgs("user-1").
 		WillReturnRows(emptyMembershipRows())
@@ -708,7 +708,7 @@ func TestGetUserHandler_OrgsDBError(t *testing.T) {
 
 // GetCurrentUserMembershipsHandler — invalid user_id type
 func TestGetCurrentUserMembershipsHandler_InvalidUserIDType(t *testing.T) {
-	db, _, _ := sqlmock.New()
+	db, _, _ := newSQLMock()
 	defer db.Close()
 
 	h := NewUserHandlers(&config.Config{}, db)
@@ -729,7 +729,7 @@ func TestGetCurrentUserMembershipsHandler_InvalidUserIDType(t *testing.T) {
 
 // GetCurrentUserMembershipsHandler — DB error on GetUserMemberships
 func TestGetCurrentUserMembershipsHandler_DBError(t *testing.T) {
-	db, mock, _ := sqlmock.New()
+	db, mock, _ := newSQLMock()
 	defer db.Close()
 
 	mock.ExpectQuery("SELECT").WithArgs("user-1").

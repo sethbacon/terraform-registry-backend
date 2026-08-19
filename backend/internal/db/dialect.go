@@ -97,7 +97,7 @@ func (d *PostgresDialect) MigrationsPath() string {
 }
 
 func (d *PostgresDialect) Open(dsn string) (*sql.DB, error) {
-	return sql.Open("postgres", dsn)
+	return sql.Open("pgx", dsn)
 }
 
 // MysqlDialect implements Dialect for MySQL.

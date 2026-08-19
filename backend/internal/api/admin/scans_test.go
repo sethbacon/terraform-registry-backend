@@ -36,7 +36,7 @@ var modVersionGetColsScan = []string{
 
 func newScanAdminRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	t.Helper()
-	db, mock, err := sqlmock.New()
+	db, mock, err := newSQLMock()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestGetModuleScan_Success(t *testing.T) {
 		WillReturnRows(sampleVersionRowScan())
 	mock.ExpectQuery("(?s)FROM module_version_scans.*JOIN modules.*WHERE s.module_version_id").
 		// Two args now: the version id, plus the organization list the scope
-		// binds. AnyArg for the second because it travels as a pq.Array.
+		// binds. AnyArg for the second because it travels as a bare []string.
 		WithArgs("ver-1", sqlmock.AnyArg()).
 		WillReturnRows(sampleScanResultRow())
 
@@ -220,7 +220,7 @@ func TestGetModuleScan_ScanNotFound(t *testing.T) {
 
 func newScanByIDRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	t.Helper()
-	db, mock, err := sqlmock.New()
+	db, mock, err := newSQLMock()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}

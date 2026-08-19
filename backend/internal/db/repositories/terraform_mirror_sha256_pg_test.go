@@ -13,8 +13,8 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/google/uuid"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/jmoiron/sqlx"
-	_ "github.com/lib/pq"
 
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 )
@@ -49,7 +49,7 @@ func mirrorScratchDB(t *testing.T) *sqlx.DB {
 		t.Skipf("TFR_TEST_DATABASE_URL is not a postgres:// URL (%q)", raw)
 	}
 
-	admin, err := sql.Open("postgres", raw)
+	admin, err := sql.Open("pgx", raw)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -65,7 +65,7 @@ func mirrorScratchDB(t *testing.T) *sqlx.DB {
 		t.Skipf("cannot create a scratch database (needs CREATEDB): %v", err)
 	}
 	t.Cleanup(func() {
-		drop, dropErr := sql.Open("postgres", raw)
+		drop, dropErr := sql.Open("pgx", raw)
 		if dropErr != nil {
 			return
 		}

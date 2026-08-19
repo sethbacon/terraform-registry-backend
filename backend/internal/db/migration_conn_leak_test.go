@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/lib/pq"
+	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/terraform-registry/terraform-registry/internal/db"
 )
@@ -94,7 +94,7 @@ func TestGetMigrationVersion_ReturnsItsConnectionToThePool(t *testing.T) {
 		t.Skip("TFR_TEST_DATABASE_URL not set — needs a reachable Postgres")
 	}
 
-	pool, err := sql.Open("postgres", dsn)
+	pool, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

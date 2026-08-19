@@ -211,7 +211,7 @@ func (b boundOrgScope) Match(v driver.Value) bool {
 // handler issues a membership delete, a watermark write, or any key statement.
 func TestSCIMPutUser_OmittedActive_DoesNotDeprovision(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	db, mock, err := sqlmock.New()
+	db, mock, err := newSQLMock()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestSCIMPutUser_OmittedActive_DoesNotDeprovision(t *testing.T) {
 // negative/positive control for the pointer semantics.)
 func TestSCIMPutUser_ExplicitActiveFalse_StillDeprovisions(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	db, mock, err := sqlmock.New()
+	db, mock, err := newSQLMock()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
@@ -968,7 +968,7 @@ func TestCredentialLifecycleClass_AuthorityReductionInvalidatesAllCredentialFami
 
 	for _, tc := range cases {
 		t.Run(tc.site, func(t *testing.T) {
-			db, mock, err := sqlmock.New()
+			db, mock, err := newSQLMock()
 			if err != nil {
 				t.Fatalf("sqlmock.New: %v", err)
 			}

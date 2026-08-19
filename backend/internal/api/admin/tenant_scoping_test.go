@@ -39,7 +39,7 @@ var membershipCols = []string{
 
 func newNonAdminSCMRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	t.Helper()
-	db, mock, err := sqlmock.New()
+	db, mock, err := newSQLMock()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestSCMList_NonAdmin_Unfiltered_ScopedToOwnOrgs(t *testing.T) {
 
 func newNonAdminAuditRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	t.Helper()
-	db, mock, err := sqlmock.New()
+	db, mock, err := newSQLMock()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}

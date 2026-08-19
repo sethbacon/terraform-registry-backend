@@ -285,7 +285,7 @@ func TestNotFoundClass_GetAuditLog_MissingIs404(t *testing.T) {
 // and a SECOND managed organization still needs reconciling. The loop must
 // reach it and the login must succeed.
 func TestNotFoundClass_Reconcile_AlreadyRevokedDoesNotAbortLoop(t *testing.T) {
-	db, mock, _ := sqlmock.New()
+	db, mock, _ := newSQLMock()
 	defer db.Close()
 
 	cfg := &config.Config{}
@@ -320,7 +320,7 @@ func TestNotFoundClass_Reconcile_AlreadyRevokedDoesNotAbortLoop(t *testing.T) {
 // must still abort and surface. Without it, "ignore every RemoveMember error"
 // would pass.
 func TestNotFoundClass_Reconcile_RealRevokeFailureStillAborts(t *testing.T) {
-	db, mock, _ := sqlmock.New()
+	db, mock, _ := newSQLMock()
 	defer db.Close()
 
 	cfg := &config.Config{}

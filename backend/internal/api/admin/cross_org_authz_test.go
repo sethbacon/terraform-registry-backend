@@ -39,7 +39,7 @@ import (
 
 func newPolicyEvaluateRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	t.Helper()
-	db, mock, err := sqlmock.New()
+	db, mock, err := newSQLMock()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestEvaluatePolicy_NoOrgParam_NeedsNoMembership(t *testing.T) {
 // even join to a table that has the column.
 
 func TestScanningStats_NonAdmin_EveryQueryCarriesTheTenantPredicate(t *testing.T) {
-	db, mock, err := sqlmock.New()
+	db, mock, err := newSQLMock()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestScanningStats_NonAdmin_EveryQueryCarriesTheTenantPredicate(t *testing.T
 // anywhere read the default org's findings.
 
 func TestModuleScanByVersion_CallerOutsideDefaultOrg_NotFound(t *testing.T) {
-	db, mock, err := sqlmock.New()
+	db, mock, err := newSQLMock()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
@@ -271,7 +271,7 @@ var (
 // mirrors:read and a single membership in alpha.
 func dashboardRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	t.Helper()
-	db, mock, err := sqlmock.New()
+	db, mock, err := newSQLMock()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
@@ -380,7 +380,7 @@ func TestDashboardStats_NoMemberships_SelectsNothing(t *testing.T) {
 // renders as TRUE and binds no arguments — and reaches no membership query at
 // all, which is why none is queued here.
 func TestDashboardStats_PlatformAdmin_SeesEveryTenant(t *testing.T) {
-	db, mock, err := sqlmock.New()
+	db, mock, err := newSQLMock()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}

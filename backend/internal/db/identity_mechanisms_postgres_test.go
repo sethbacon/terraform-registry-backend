@@ -12,7 +12,7 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/google/uuid"
-	_ "github.com/lib/pq"
+	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/sethbacon/terraform-suite-identity/identity/auditoutbox"
 	"github.com/sethbacon/terraform-suite-identity/identity/platformadmin"
@@ -46,7 +46,7 @@ func migratedRegistry(t *testing.T) *sql.DB {
 		t.Fatalf("migrate up: %v", err)
 	}
 
-	db, err := sql.Open("postgres", dsn)
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

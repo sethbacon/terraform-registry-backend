@@ -17,7 +17,7 @@ import (
 
 func newVersionApprovalRepo(t *testing.T) (*VersionApprovalRepository, sqlmock.Sqlmock) {
 	t.Helper()
-	db, mock, err := sqlmock.New()
+	db, mock, err := newSQLMock()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
