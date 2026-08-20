@@ -1,21 +1,21 @@
 ---
+# Delegates to the shared definition in 4cloudguru/shared-workflows.
+#
+# This was a local 77-line copy. There were SIX copies across the estate, all
+# byte-identical except one word in a comment -- and the odd one was correct:
+# it named cloud-suite-ui, the repo that exists, while five named
+# terraform-suite-ui, which does not. A stale name propagating by copy was the
+# entire variation.
+#
+# Triggers and concurrency stay HERE deliberately: they read
+# `github.event_name` and `github.head_ref`, and keeping them visible is what
+# makes it obvious this lint actually runs in this repository.
+#
+# PINNED BY SHA. Repos sitting on different pins is the same drift wearing a
+# new hat, and harder to see than divergent files -- every repo looks like it
+# is using "the shared one". The pin-parity signature is what enforces that.
 name: Workflow Security
 
-# zizmor lints the workflows themselves -- credential persistence, template
-# injection, over-broad permissions, unpinned actions. terraform-suite-ui has
-# run it for a while and reports ZERO findings; every other repo in the suite
-# was between 8 and 43 when it was first pointed at them. That gap is the whole
-# argument for this file.
-#
-# It also caught something real on its first run here: eight actions/checkout
-# calls in signature-replay.yml were persisting a cross-repo PAT into
-# .git/config inside a job that uploads an artifact.
-#
-# The backlog is now ZERO. `.github/zizmor.yml` records the accepted findings
-# with reasons; everything else was fixed rather than suppressed. Promoting this
-# to a required status check is the remaining step, and it is safe to do because
-# the check is green -- a required check that is red on day one is one everybody
-# learns to scroll past.
 "on":
   pull_request:
     branches: [main]
@@ -31,47 +31,5 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  zizmor:
-    name: Zizmor (workflow security lint)
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
-        with:
-          # SARIF upload to code scanning needs security-events: write, which
-          # this job deliberately does not hold. Findings surface as annotations
-          # on the diff instead, which is where the person who can fix them is.
-          advanced-security: false
-          annotations: true
-
-  # ── Workflow schema (actionlint) ───────────────────────
-  # zizmor lints workflows for SECURITY; it does not check that they are valid
-  # GitHub Actions files. That gap shipped a real outage: removing a key left an
-  # empty `with:` behind, which is a schema error, and five workflows across
-  # three repositories failed at STARTUP -- zero jobs, no logs, and a run listed
-  # by file path instead of name because GitHub could not parse far enough to
-  # read it. Both yaml.safe_load and zizmor accepted the file.
-  #
-  # A startup failure runs no jobs, so it cannot fail a required check either.
-  # Nothing in the pipeline was in a position to notice.
-  actionlint:
-    name: Workflow schema (actionlint)
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: actionlint
-        run: |
-          set -euo pipefail
-          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
-          # shellcheck/pyflakes are separate concerns and not installed here; the
-          # schema check is the part that prevents a startup failure.
-          ./actionlint -shellcheck= -pyflakes= -color
+  workflow-security:
+    uses: 4cloudguru/shared-workflows/.github/workflows/workflow-security.yml@a48c17cbc894e241e3d02bd229a8ab970f5a834f
