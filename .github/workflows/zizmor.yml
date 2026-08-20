@@ -32,4 +32,4 @@ concurrency:
 
 jobs:
   workflow-security:
-    uses: 4cloudguru/shared-workflows/.github/workflows/workflow-security.yml@a48c17cbc894e241e3d02bd229a8ab970f5a834f
+    uses: 4cloudguru/shared-workflows/.github/workflows/workflow-security.yml@2279e55c6318846f60f0c8ffcbadbeb9317e5fb5 # v1.0.0
