@@ -100,6 +100,21 @@ jobs:
   # concatenates them back. One merged commit can announce exactly one breaking
   # change. Either open one PR per breaking change, or combine them into a
   # single footer and write each up in the upgrade guide.
+  #
+  # MUTATION-PROVED by backend/internal/ci/breaking_change_footers_test.go,
+  # which runs in the required "Backend Tests & Quality" job as part of
+  # `go test ./internal/...`. It EXTRACTS the `run:` block below out of this
+  # file -- a copy would drift from the thing it claims to prove -- and runs it
+  # against fixture commit histories with `gh` stubbed. The script is bash
+  # inside YAML: actionlint checks its syntax, zizmor checks the workflow
+  # around it, and nothing else ever executes it.
+  #
+  # That includes the `set -euo pipefail` on its first line, which is not
+  # decoration. Without it a failed `gh api` still creates an empty
+  # commits.ndjson through the redirect, the loop counts nothing, and this job
+  # prints "Breaking-change declarations in this PR: 0" and goes green -- a
+  # check that has stopped looking, indistinguishable from a clean PR. Delete
+  # the line and the test's fail-closed case is the one that goes red.
   breaking-change-footers:
     name: Breaking-change footers survive the squash
     runs-on: ubuntu-latest
