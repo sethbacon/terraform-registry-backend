@@ -13,10 +13,19 @@ jobs:
   conventional-title:
     name: Conventional PR Title
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       pull-requests: read
     steps:
+      # hardening-exception: egress-audit — this job calls the GitHub API;
+      #   harden-runner has never run in this repository, so no endpoint baseline
+      #   exists and a block policy written without one fails closed on its first run;
+      #   audit is what produces that list
+      - name: Harden the runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
       - name: Check PR title follows Conventional Commits
         uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
         env:
@@ -48,10 +57,19 @@ jobs:
   dependency-review:
     name: Dependency review
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       pull-requests: write
     steps:
+      # hardening-exception: egress-audit — this job queries the GitHub advisory API
+      #   and clones this repository; harden-runner has never run in this repository,
+      #   so no endpoint baseline exists and a block policy written without one fails
+      #   closed on its first run; audit is what produces that list
+      - name: Harden the runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -85,10 +103,19 @@ jobs:
   breaking-change-footers:
     name: Breaking-change footers survive the squash
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       pull-requests: read
     steps:
+      # hardening-exception: egress-audit — this job calls the GitHub API;
+      #   harden-runner has never run in this repository, so no endpoint baseline
+      #   exists and a block policy written without one fails closed on its first run;
+      #   audit is what produces that list
+      - name: Harden the runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
       - name: Count breaking-change declarations across this PR's commits
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -185,10 +212,20 @@ jobs:
   release-please-can-read-the-commit:
     name: release-please can read the merged commit
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       pull-requests: read
     steps:
+      # hardening-exception: egress-audit — this job installs from the npm registry,
+      #   calls the GitHub API, and clones this repository; harden-runner has never
+      #   run in this repository, so no endpoint baseline exists and a block policy
+      #   written without one fails closed on its first run; audit is what produces
+      #   that list
+      - name: Harden the runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -196,7 +233,10 @@ jobs:
 
       - name: Install the parser release-please uses
         working-directory: .github/commit-message-check
-        run: npm ci
+        # --ignore-scripts: the only dependency is @conventional-commits/parser,
+        # which declares no install hooks, so nothing is lost by refusing to run
+        # dependency scripts.
+        run: npm ci --ignore-scripts
 
       - name: Parse the commit this PR would squash into main
         env:

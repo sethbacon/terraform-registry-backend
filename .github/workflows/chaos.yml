@@ -38,6 +38,15 @@ jobs:
           --health-retries 5
 
     steps:
+      # hardening-exception: egress-audit — this job downloads Go modules and tools
+      #   from the module proxy, transfers artifacts through the Actions API, and
+      #   clones this repository; harden-runner has never run in this repository, so
+      #   no endpoint baseline exists and a block policy written without one fails
+      #   closed on its first run; audit is what produces that list
+      - name: Harden the runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

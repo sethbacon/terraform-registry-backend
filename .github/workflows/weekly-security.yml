@@ -60,10 +60,20 @@ jobs:
   osv-scan:
     name: OSV Vulnerability Scan
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
       issues: write
     steps:
+      # hardening-exception: egress-audit — this job queries the OSV vulnerability
+      #   database, calls the GitHub API, and clones this repository; harden-runner
+      #   has never run in this repository, so no endpoint baseline exists and a block
+      #   policy written without one fails closed on its first run; audit is what
+      #   produces that list
+      - name: Harden the runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -180,10 +190,20 @@ jobs:
   govulncheck:
     name: govulncheck (reachability scan)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
       issues: write
     steps:
+      # hardening-exception: egress-audit — this job downloads the Go vulnerability
+      #   database and the govulncheck tool, downloads Go modules and tools from the
+      #   module proxy, and calls the GitHub API; harden-runner has never run in this
+      #   repository, so no endpoint baseline exists and a block policy written
+      #   without one fails closed on its first run; audit is what produces that list
+      - name: Harden the runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -193,7 +213,9 @@ jobs:
         uses: ./.github/actions/setup-backend
 
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+        uses: 4cloudguru/shared-workflows/.github/actions/go-install@bc0eaaec5d6f5cf632ef862ff7475da928e32466 # v1.2.0
+        with:
+          package: golang.org/x/vuln/cmd/govulncheck@v1.1.4
 
       - name: Run govulncheck
         id: govulncheck
@@ -257,6 +279,7 @@ jobs:
   codeql:
     name: CodeQL Analysis (Go)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     # Schedule/dispatch only — ci.yml already runs CodeQL on every push/PR,
     # and GitHub code scanning rejects concurrent analyses for the same
     # ref/category, so this stays the weekly defense-in-depth backstop.
@@ -265,6 +288,15 @@ jobs:
       contents: read
       security-events: write
     steps:
+      # hardening-exception: egress-audit — this job downloads the CodeQL bundle and
+      #   its query packs, downloads Go modules and tools from the module proxy, and
+      #   clones this repository; harden-runner has never run in this repository, so
+      #   no endpoint baseline exists and a block policy written without one fails
+      #   closed on its first run; audit is what produces that list
+      - name: Harden the runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -290,12 +322,21 @@ jobs:
   stale-dependabot:
     name: Flag stale Dependabot PRs
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     # Schedule/dispatch only — "stale" is a weekly-cadence concept, not
     # something to re-evaluate on every push/PR.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     permissions:
       pull-requests: write
     steps:
+      # hardening-exception: egress-audit — this job calls the GitHub API;
+      #   harden-runner has never run in this repository, so no endpoint baseline
+      #   exists and a block policy written without one fails closed on its first run;
+      #   audit is what produces that list
+      - name: Harden the runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
       - name: Label PRs open > 14 days
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -313,11 +354,21 @@ jobs:
   notify-on-failure:
     name: Create issue on failure
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: [ci, osv-scan, govulncheck, codeql, stale-dependabot]
     if: failure() && github.event_name == 'schedule'
     permissions:
       issues: write
     steps:
+      # hardening-exception: egress-audit — this job downloads the Go vulnerability
+      #   database and the govulncheck tool and calls the GitHub API; harden-runner
+      #   has never run in this repository, so no endpoint baseline exists and a block
+      #   policy written without one fails closed on its first run; audit is what
+      #   produces that list
+      - name: Harden the runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
       - name: Create failure issue
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:

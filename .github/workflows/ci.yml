@@ -22,6 +22,7 @@ jobs:
   backend-test:
     name: Backend Tests & Quality
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     # contents:read only — this job installs untrusted third-party packages
     # (golangci-lint via `go install`, swag, npm ci for swagger2openapi) and
     # must never hold a write-capable token while doing so (#656). Committing
@@ -30,6 +31,15 @@ jobs:
     permissions:
       contents: read
     steps:
+      # hardening-exception: egress-audit — this job installs from the npm registry,
+      #   downloads Go modules and tools from the module proxy, and transfers
+      #   artifacts through the Actions API; harden-runner has never run in this
+      #   repository, so no endpoint baseline exists and a block policy written
+      #   without one fails closed on its first run; audit is what produces that list
+      - name: Harden the runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -55,18 +65,31 @@ jobs:
         working-directory: backend
         run: go vet ./...
 
+      # Installs split out from the steps that use them so they can be retried:
+      # `go install` reaches the module proxy for the tool AND its whole
+      # dependency tree on every run, uncovered by the module cache keyed on this
+      # repo's go.sum. One transient read took a required check red in
+      # terraform-state-manager-backend on a PR with no Go changes.
+      - name: Install golangci-lint
+        uses: 4cloudguru/shared-workflows/.github/actions/go-install@bc0eaaec5d6f5cf632ef862ff7475da928e32466 # v1.2.0
+        with:
+          package: github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+
       - name: Lint
         run: |
           cd backend
-          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
           golangci-lint run ./...
 
+      # The bespoke GOBIN + GITHUB_PATH dance is gone with this: the action
+      # installs to $(go env GOPATH)/bin, which actions/setup-go already places
+      # on PATH -- the govulncheck step in weekly-security.yml has relied on
+      # exactly that in this repository for as long as it has existed. Dropping
+      # it also removes a write to an environment file, which is a code-execution
+      # vector zizmor flags on principle.
       - name: Install swag
-        run: |
-          mkdir -p $GITHUB_WORKSPACE/bin
-          export GOBIN="$GITHUB_WORKSPACE/bin"
-          go install github.com/swaggo/swag/cmd/swag@v1.16.6
-          echo "$GITHUB_WORKSPACE/bin" >> $GITHUB_PATH
+        uses: 4cloudguru/shared-workflows/.github/actions/go-install@bc0eaaec5d6f5cf632ef862ff7475da928e32466 # v1.2.0
+        with:
+          package: github.com/swaggo/swag/cmd/swag@v1.16.6
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -74,7 +97,12 @@ jobs:
           node-version: "24"
 
       - name: Install docs tooling (swagger2openapi)
-        run: npm ci
+        # --ignore-scripts: npm runs dependency preinstall/install/postinstall
+        # hooks by default, which is arbitrary code from the dependency tree
+        # executing in a job this file's own header calls out as installing
+        # untrusted third-party packages. Verified rather than assumed: nothing
+        # in the tree declares an install script, and swagger2openapi still runs.
+        run: npm ci --ignore-scripts
 
       - name: Swagger generation
         # Regenerates docs/swagger.json and docs/openapi3.json so drift against
@@ -225,6 +253,7 @@ jobs:
   postgres-tests:
     name: Postgres-backed tests
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     services:
@@ -245,6 +274,15 @@ jobs:
           --health-retries 10
 
     steps:
+      # hardening-exception: egress-audit — this job downloads Go modules and tools
+      #   from the module proxy and clones this repository; harden-runner has never
+      #   run in this repository, so no endpoint baseline exists and a block policy
+      #   written without one fails closed on its first run; audit is what produces
+      #   that list
+      - name: Harden the runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -289,6 +327,7 @@ jobs:
   swagger-docs-sync:
     name: Sync generated Swagger/OpenAPI docs
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: backend-test
     if: github.ref_type != 'tag'
     # Isolated from backend-test's build/lint/npm steps so the token needed
@@ -300,6 +339,14 @@ jobs:
       contents: write
       pull-requests: write # only used for the bot-PR path below (#657)
     steps:
+      # hardening-exception: egress-audit — this job transfers artifacts through the
+      #   Actions API and clones this repository; harden-runner has never run in this
+      #   repository, so no endpoint baseline exists and a block policy written
+      #   without one fails closed on its first run; audit is what produces that list
+      - name: Harden the runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # zizmor: ignore[artipacked] -- pushes regenerated swagger docs to the PR head branch
 
@@ -392,6 +439,7 @@ jobs:
   security-tooling-tests:
     name: Security tooling unit tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # backend/scripts/ holds the two programs that decide whether a security
     # finding blocks a merge: gosec_compare.py (new-vs-baseline) and
     # osv_triage.py (fixable-vs-unfixable). Both shipped with unit tests that
@@ -400,6 +448,14 @@ jobs:
     permissions:
       contents: read
     steps:
+      # hardening-exception: egress-audit — this job clones this repository;
+      #   harden-runner has never run in this repository, so no endpoint baseline
+      #   exists and a block policy written without one fails closed on its first run;
+      #   audit is what produces that list
+      - name: Harden the runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -427,12 +483,22 @@ jobs:
   gosec:
     name: Security Scan (gosec)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # Run in parallel with backend-test — no dependency needed.
     # Needs issues:write to open a GitHub issue when new findings are detected.
     permissions:
       contents: read
       issues: write
     steps:
+      # hardening-exception: egress-audit — this job transfers artifacts through the
+      #   Actions API, calls the GitHub API, and clones this repository; harden-runner
+      #   has never run in this repository, so no endpoint baseline exists and a block
+      #   policy written without one fails closed on its first run; audit is what
+      #   produces that list
+      - name: Harden the runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -508,9 +574,19 @@ jobs:
   docker-build:
     name: Docker Build Smoke Test
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
+      # hardening-exception: egress-audit — this job pulls base images and pushes
+      #   layers to a container registry and clones this repository; harden-runner has
+      #   never run in this repository, so no endpoint baseline exists and a block
+      #   policy written without one fails closed on its first run; audit is what
+      #   produces that list
+      - name: Harden the runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -555,9 +631,18 @@ jobs:
   deployment-validate:
     name: Deployment Config Validation
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
+      # hardening-exception: egress-audit — this job fetches charts and schemas from
+      #   remote sources and clones this repository; harden-runner has never run in
+      #   this repository, so no endpoint baseline exists and a block policy written
+      #   without one fails closed on its first run; audit is what produces that list
+      - name: Harden the runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -626,10 +711,20 @@ jobs:
   codeql:
     name: CodeQL Analysis (Go)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       security-events: write
     steps:
+      # hardening-exception: egress-audit — this job downloads the CodeQL bundle and
+      #   its query packs, downloads Go modules and tools from the module proxy, and
+      #   clones this repository; harden-runner has never run in this repository, so
+      #   no endpoint baseline exists and a block policy written without one fails
+      #   closed on its first run; audit is what produces that list
+      - name: Harden the runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

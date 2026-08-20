@@ -48,9 +48,18 @@ jobs:
   guard:
     name: Verify tag is on main
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
+      # hardening-exception: egress-audit — this job clones this repository;
+      #   harden-runner has never run in this repository, so no endpoint baseline
+      #   exists and a block policy written without one fails closed on its first run;
+      #   audit is what produces that list
+      - name: Harden the runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0 # need full history to walk ancestry
@@ -92,6 +101,7 @@ jobs:
   goreleaser:
     name: GoReleaser — binaries + GitHub Release
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: ci
     permissions:
       contents: write # required to create releases and upload assets
@@ -99,6 +109,16 @@ jobs:
       attestations: write # required for GitHub build provenance attestation
 
     steps:
+      # hardening-exception: egress-audit — this job resolves build dependencies and
+      #   uploads release artifacts, downloads Go modules and tools from the module
+      #   proxy, and transfers artifacts through the Actions API; harden-runner has
+      #   never run in this repository, so no endpoint baseline exists and a block
+      #   policy written without one fails closed on its first run; audit is what
+      #   produces that list
+      - name: Harden the runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # zizmor: ignore[artipacked] -- goreleaser reads tags and publishes release artifacts
         with:
           fetch-depth: 0 # GoReleaser needs full history to resolve previous tag
@@ -176,6 +196,7 @@ jobs:
   docker:
     name: Publish Docker image
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     environment: release
     needs: ci
     permissions:
@@ -185,6 +206,15 @@ jobs:
       attestations: write # required for GitHub build provenance attestation
 
     steps:
+      # hardening-exception: egress-audit — this job pulls base images and pushes
+      #   layers to a container registry, transfers artifacts through the Actions API,
+      #   and calls the GitHub API; harden-runner has never run in this repository, so
+      #   no endpoint baseline exists and a block policy written without one fails
+      #   closed on its first run; audit is what produces that list
+      - name: Harden the runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -297,6 +327,7 @@ jobs:
   docker-fips:
     name: Publish FIPS Docker image
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     environment: release
     needs: ci
     permissions:
@@ -306,6 +337,15 @@ jobs:
       attestations: write # required for GitHub build provenance attestation
 
     steps:
+      # hardening-exception: egress-audit — this job pulls base images and pushes
+      #   layers to a container registry, transfers artifacts through the Actions API,
+      #   and calls the GitHub API; harden-runner has never run in this repository, so
+      #   no endpoint baseline exists and a block policy written without one fails
+      #   closed on its first run; audit is what produces that list
+      - name: Harden the runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -424,10 +464,20 @@ jobs:
   publish-release:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: [goreleaser, docker, docker-fips]
     permissions:
       contents: write
     steps:
+      # hardening-exception: egress-audit — this job resolves build dependencies and
+      #   uploads release artifacts, transfers artifacts through the Actions API, and
+      #   calls the GitHub API; harden-runner has never run in this repository, so no
+      #   endpoint baseline exists and a block policy written without one fails closed
+      #   on its first run; audit is what produces that list
+      - name: Harden the runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # zizmor: ignore[artipacked] -- publishes the GitHub Release
         with:
           sparse-checkout: CHANGELOG.md
