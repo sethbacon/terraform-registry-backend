@@ -1,3 +1,23 @@
+---
+# Delegates to the shared definition in 4cloudguru/shared-workflows.
+#
+# This file used to be a local copy. There were TWELVE copies of it across two
+# owners and seven distinct versions -- all with the same config-file,
+# manifest-file, App id variable and App key secret. The only substantive
+# difference was the permission model, and this repo had the looser one:
+# contents: write for the whole workflow, where seven other repos already
+# elevated on the token step alone. Nobody decided that; somebody tightened it
+# in one family and this repo never heard.
+#
+# Calling the shared workflow adopts the least-privilege model as a consequence
+# rather than as a separate change to remember.
+#
+# PINNED BY SHA, not by a tag or @main. A shared workflow is itself something
+# that drifts, and repos on different pins is HARDER to see than divergent
+# files -- every repo looks like it is using "the shared one".
+#
+# `vars` resolves against THIS repository, so RELEASE_DISPATCH_APP_ID is
+# unchanged and nothing about the App installation moves.
 name: Release Please
 
 on:
@@ -6,24 +26,9 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
   release-please:
-    name: Release Please
-    runs-on: ubuntu-latest
-    steps:
-      - name: Get GitHub App token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        id: token
-        with:
-          client-id: ${{ vars.RELEASE_DISPATCH_APP_ID }}
-          private-key: ${{ secrets.RELEASE_DISPATCH_APP_KEY }}
-
-      - name: Run release-please
-        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
-        with:
-          token: ${{ steps.token.outputs.token }}
-          config-file: .release-please-config.json
-          manifest-file: .release-please-manifest.json
+    uses: 4cloudguru/shared-workflows/.github/workflows/release-please.yml@e6b8910c879d79817a93035d4d982b3850cbe252
+    secrets: inherit
