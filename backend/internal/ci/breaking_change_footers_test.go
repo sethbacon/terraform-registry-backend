@@ -267,6 +267,71 @@ func (r footerGuardResult) mustSummarise(t *testing.T, label string, phrases ...
 	}
 }
 
+// footerGuardAbacdb5Body is the verbatim body of
+// sethbacon/azure-pipelines-terraform@abacdb5 -- the commit that ADDED that
+// repository's copy of this guard. One sentence in it NAMES the hyphenated
+// spelling of the token, mid-line, as prose describing what the guard detects.
+// release-please read that as a real declaration, took the remainder of the line
+// as the description, and proposed 2.0.0 over a 1.14.4 release whose honest
+// successor was 1.14.5 -- with a changelog entry reading "` spelling". The guard,
+// counting only line-anchored matches, said 0 and let it through.
+//
+// It is load bearing that this is the WHOLE body and not just that sentence: the
+// body ALSO names the SPACED spelling mid-line, which release-please does not
+// read. The only count that is right for it is 1.
+var footerGuardAbacdb5Body = strings.Join([]string{
+	"ci: count breaking-change declarations across the commits being squashed (#974)",
+	"",
+	"This repo squash-merges with `squash_merge_commit_message=COMMIT_MESSAGES`",
+	"(re-verified on the live repo), so every commit body in a PR is concatenated",
+	"into ONE merge commit -- and release-please keeps only the FIRST",
+	"`BREAKING CHANGE:` footer of that commit, reading a `!` marker only from its",
+	"header. A second declaration anywhere in the PR is dropped in silence: no",
+	"changelog entry, no upgrade note, and nothing failing to say so.",
+	"terraform-registry-backend v4.0.0 shipped two undocumented breaking changes",
+	"exactly this way, and it reaches further from here: this extension publishes to",
+	"the VS Marketplace, where the release notes are a pipeline author's only signal",
+	"that a task changed incompatibly, and ADO agents cache tasks by Major.Minor.",
+	"",
+	"Five other suite repos carry this guard; the two ADO extensions did not. The",
+	"only `BREAKING` matches here were prose inside",
+	"`.github/commit-message-check/verify.mjs`, which parses the SINGLE message this",
+	"PR would squash and asks whether release-please can read it at all -- it never",
+	"counts declarations across the set being concatenated. The two are the halves of",
+	"one pair and neither subsumes the other: a perfectly parseable squash can still",
+	"swallow a second footer, and a single-footer PR can still be unparseable.",
+	"",
+	"Ported from `azure-pipelines-release-docs`, which took it from",
+	"`terraform-registry-backend` and added the self-test. The self-test EXTRACTS the",
+	"bash out of pr-checks.yml rather than copying it -- a copy drifts from the thing",
+	"it claims to prove, which is the same defect one level up -- and runs it against",
+	"fixture commit histories with `gh` stubbed. It runs in the already-required",
+	"`Lint GitHub Actions` job, so the proof blocks a merge from the day it lands.",
+	"",
+	"Mutation-proved against the committed workflow, each rejection asserted by name:",
+	"two footers, two `!` headers, three footers and the `BREAKING-CHANGE:` spelling",
+	"are rejected; the single-declaration, no-declaration, many-clean-commits,",
+	"prose-mention and footer-plus-`!`-in-one-commit shapes pass untouched. Five",
+	"mutations of the guard were each seen failing the test: dropping the hyphen",
+	"spelling, making the footer and `!` additive, raising the threshold to 2,",
+	"renaming the job (the vacuity contract), and dropping `set -euo pipefail`.",
+	"",
+	"That last one is a case the source implementation could not see, so this port",
+	"adds it: without `set -euo pipefail` a failed `gh api` leaves an empty commit",
+	"list behind and the job reports \"declarations in this PR: 0\" and goes green. The",
+	"new `gh-unavailable` case stubs a failing `gh` and requires the guard to fail",
+	"closed.",
+	"",
+	"No task.json touched, and no existing job renamed or split.",
+	"",
+	"BRANCH PROTECTION: this adds one NEW context, `Breaking-change footers survive",
+	"the squash`, which has to be added to main's required checks by hand. Until then",
+	"the job reports on every PR without blocking one -- the same state as",
+	"`release-please can read the merged commit`, the other half of the pair.",
+	"",
+	"Closes #966",
+}, "\n")
+
 const footerGuardFooter = "BREAKING CHANGE: the module upload response shape changed"
 
 func TestBreakingChangeFooterGuard(t *testing.T) {
@@ -278,7 +343,15 @@ func TestBreakingChangeFooterGuard(t *testing.T) {
 		if lines := strings.Count(script, "\n"); lines < 20 {
 			t.Fatalf("extracted only %d lines; that is not the guard", lines+1)
 		}
-		for _, want := range []string{`BREAKING[ -]CHANGE:`, "gh api --paginate", "GITHUB_STEP_SUMMARY"} {
+		// Both halves of the rule, because they are DIFFERENT rules: the spaced
+		// spelling counts only at the start of a line, the hyphenated one anywhere
+		// in the body. A script matching one but not the other proves nothing.
+		for _, want := range []string{
+			"grep -cE '^BREAKING CHANGE:'",
+			"grep -oF 'BREAKING-CHANGE:'",
+			"gh api --paginate",
+			"GITHUB_STEP_SUMMARY",
+		} {
 			if !strings.Contains(script, want) {
 				t.Errorf("the extracted script does not contain %q, so the cases below prove nothing", want)
 			}
@@ -322,11 +395,35 @@ func TestBreakingChangeFooterGuard(t *testing.T) {
 			}
 		})
 
-		t.Run("a mid-line mention is prose, not a footer", func(t *testing.T) {
-			r := h.run(t, h.workingGH, "docs: explain that a BREAKING CHANGE: footer is kept only once")
+		// CORRECTED. This case used to assert that ANY mid-line mention is prose,
+		// and it pinned a model release-please does not implement. Only the SPACED
+		// spelling is ignored mid-line; the hyphenated one is matched anywhere, and
+		// asserting otherwise is exactly what let abacdb5 through -- that body is
+		// rejected below. What survives here is the half that is TRUE, and it has
+		// to survive: a guard that failed a sentence release-please reads as prose
+		// would be routed around and then deleted.
+		//
+		// The mention is in the BODY. The old fixture was a single-line message, so
+		// it never exercised the body at all.
+		t.Run("a mid-line mention of the SPACED spelling is prose, as release-please reads it", func(t *testing.T) {
+			r := h.run(t, h.workingGH, "docs: explain the footer rule\n\n"+
+				"A line that merely says BREAKING CHANGE: in the middle of a\n"+
+				"sentence is prose, and release-please never reads it as a footer.")
 			r.mustSay(t, "prose-mention", footerGuardZeroCount)
 			if r.exitCode != 0 {
 				t.Errorf("prose-mention: exited %d on a pull request it must accept\n%s", r.exitCode, r.output)
+			}
+		})
+
+		// The hyphenated spelling written as a REAL footer is a real declaration,
+		// and one of them is what the squash can carry. Rejecting it would be the
+		// over-count mirror of the bug this change fixes, and an over-counting
+		// guard gets bypassed and then deleted just as surely as a blind one.
+		t.Run("a single hyphenated footer is a legitimate declaration", func(t *testing.T) {
+			r := h.run(t, h.workingGH, "feat: rework the module upload response\n\nBREAKING-CHANGE: the input is no longer optional")
+			r.mustSay(t, "hyphenated-footer-alone", "declarations in this PR: 1")
+			if r.exitCode != 0 {
+				t.Errorf("hyphenated-footer-alone: exited %d on a pull request it must accept\n%s", r.exitCode, r.output)
 			}
 		})
 	})
@@ -382,6 +479,37 @@ func TestBreakingChangeFooterGuard(t *testing.T) {
 			}
 			r.mustSay(t, "three-footers", "declares 3 breaking changes")
 			r.mustSummarise(t, "three-footers", "The other 2 would ship with no changelog entry")
+		})
+		// THE regression, and the reason this file changed. abacdb5 is the commit
+		// that ADDED this guard in azure-pipelines-terraform; a sentence in its
+		// body naming the hyphenated spelling was read by release-please as a
+		// declaration, which proposed 2.0.0 over 1.14.4 with a changelog entry
+		// reading "` spelling". The guard counted it 0 and passed it.
+		//
+		// The count asserted here is 1, and that number is load bearing in BOTH
+		// directions: 0 is the under-count that shipped, and 2 is what merely
+		// un-anchoring the old expression would give, because this body also names
+		// the spaced spelling mid-line and release-please does not read that.
+		t.Run("abacdb5, the accidental declaration that got through", func(t *testing.T) {
+			r := h.run(t, h.workingGH, footerGuardAbacdb5Body)
+			if r.exitCode == 0 {
+				t.Errorf("abacdb5-accidental-declaration: exited 0 on a body release-please reads as breaking\n%s", r.output)
+			}
+			r.mustSay(t, "abacdb5-accidental-declaration", "declarations in this PR: 1", "off the start of a line")
+			r.mustSummarise(t, "abacdb5-accidental-declaration", "A breaking change nobody declared")
+		})
+
+		// Two of them in one PR: two notes, and the squash keeps one. This is the
+		// shape the old prose-mention assertion declared acceptable.
+		t.Run("two mid-line mentions are two declarations", func(t *testing.T) {
+			r := h.run(t, h.workingGH,
+				"docs: describe the footer rule\n\nprose naming BREAKING-CHANGE: once",
+				"docs: describe it again\n\nmore prose naming BREAKING-CHANGE: twice",
+			)
+			if r.exitCode == 0 {
+				t.Errorf("two-mid-line-mentions: exited 0 on a pull request that would lose a breaking change\n%s", r.output)
+			}
+			r.mustSay(t, "two-mid-line-mentions", "declarations in this PR: 2", "off the start of a line")
 		})
 	})
 
