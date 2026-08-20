@@ -30,5 +30,10 @@ permissions:
 
 jobs:
   release-please:
-    uses: 4cloudguru/shared-workflows/.github/workflows/release-please.yml@e6b8910c879d79817a93035d4d982b3850cbe252
-    secrets: inherit
+    uses: 4cloudguru/shared-workflows/.github/workflows/release-please.yml@d1ccad25f0aa386d582af09966c1cb1df1303b4a
+    # Exactly one secret, named. NOT `secrets: inherit` -- that forwards EVERY
+    # secret in this repository to a workflow in another owner's repository,
+    # which zizmor flags (secrets-inherit) and which would have been an
+    # over-grant introduced by a change whose whole point is least privilege.
+    secrets:
+      RELEASE_DISPATCH_APP_KEY: ${{ secrets.RELEASE_DISPATCH_APP_KEY }}
