@@ -33,3 +33,18 @@ concurrency:
 jobs:
   workflow-security:
     uses: 4cloudguru/shared-workflows/.github/workflows/workflow-security.yml@2279e55c6318846f60f0c8ffcbadbeb9317e5fb5 # v1.0.0
+
+  # Second gate, same family: zizmor audits workflow SECURITY, this audits
+  # workflow HARDENING -- pins labelled, jobs bounded by a timeout,
+  # harden-runner first, npm installs refusing dependency scripts.
+  #
+  # It lived in exactly ONE of the fourteen repos until now, and caught a real
+  # defect the moment a shared-workflow pin reached it.
+  #
+  # script-ref MUST equal the pin above it: the checker is taken from
+  # shared-workflows at that commit, so this repo cannot weaken its own gate by
+  # editing a local copy -- there is no local copy.
+  workflow-hardening:
+    uses: 4cloudguru/shared-workflows/.github/workflows/workflow-hardening.yml@bc0eaaec5d6f5cf632ef862ff7475da928e32466 # v1.2.0
+    with:
+      script-ref: bc0eaaec5d6f5cf632ef862ff7475da928e32466

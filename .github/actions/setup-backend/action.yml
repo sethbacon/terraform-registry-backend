@@ -19,5 +19,6 @@ runs:
 
     - name: Install gosec
       if: inputs.install-gosec == 'true'
-      shell: bash
-      run: go install github.com/securego/gosec/v2/cmd/gosec@v2.26.1
+      uses: 4cloudguru/shared-workflows/.github/actions/go-install@bc0eaaec5d6f5cf632ef862ff7475da928e32466 # v1.2.0
+      with:
+        package: github.com/securego/gosec/v2/cmd/gosec@v2.26.1
