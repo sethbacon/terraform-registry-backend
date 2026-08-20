@@ -1,13 +1,22 @@
 ---
 # Delegates to the shared definition in 4cloudguru/shared-workflows.
 #
-# This file used to be a local copy. There were TWELVE copies of it across two
-# owners and seven distinct versions -- all with the same config-file,
-# manifest-file, App id variable and App key secret. The only substantive
-# difference was the permission model, and this repo had the looser one:
-# contents: write for the whole workflow, where seven other repos already
-# elevated on the token step alone. Nobody decided that; somebody tightened it
-# in one family and this repo never heard.
+# This file used to be a local copy. THIRTEEN repos across two owners carry a
+# release-please workflow, in seven distinct versions -- all with the same
+# config-file, manifest-file, App id variable and App key secret. Nine now call
+# the shared definition; the four still holding local copies are
+# azure-pipelines-{terraform,packer,release-docs} and hcp-terraform-pwsh.
+#
+# The differences were never decided, they accumulated. This repo was one of
+# the THREE with the loosest permission model -- contents: write and
+# pull-requests: write for the whole workflow, where the others already
+# elevated on the token step alone. Somebody tightened it in one family and
+# these three never heard.
+#
+# The 4cloudguru repos had drifted the OTHER way and were stricter than this
+# one: harden-runner, a job timeout, a non-cancelling concurrency group and a
+# credential preflight, none of which this repo has ever run. Those were folded
+# into the shared definition rather than dropped, so this file picks them up.
 #
 # Calling the shared workflow adopts the least-privilege model as a consequence
 # rather than as a separate change to remember.
@@ -30,7 +39,7 @@ permissions:
 
 jobs:
   release-please:
-    uses: 4cloudguru/shared-workflows/.github/workflows/release-please.yml@d1ccad25f0aa386d582af09966c1cb1df1303b4a
+    uses: 4cloudguru/shared-workflows/.github/workflows/release-please.yml@2279e55c6318846f60f0c8ffcbadbeb9317e5fb5
     # Exactly one secret, named. NOT `secrets: inherit` -- that forwards EVERY
     # secret in this repository to a workflow in another owner's repository,
     # which zizmor flags (secrets-inherit) and which would have been an
