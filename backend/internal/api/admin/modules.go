@@ -14,7 +14,6 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
-	"github.com/terraform-registry/terraform-registry/internal/identityerr"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 	"github.com/terraform-registry/terraform-registry/internal/validation"
 )
@@ -168,19 +167,9 @@ func (h *ModuleAdminHandlers) GetModule(c *gin.Context) {
 	// Letting the sentinel reach the 500 would turn every admin module/provider
 	// route into a hard failure on such a deployment, which is a behaviour
 	// change this change is not entitled to make.
-	org, err := h.orgRepo.GetDefaultOrganization(c.Request.Context())
-	if err != nil && !identityerr.Missing(org, err) {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get organization context"})
-		return
-	}
-
-	var orgID string
-	if org != nil {
-		orgID = org.ID
-	}
 
 	// Get module
-	module, err := h.moduleRepo.GetModule(c.Request.Context(), orgID, namespace, name, system)
+	module, _, err := h.moduleRepo.GetModuleByNamespace(c.Request.Context(), namespace, name, system)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get module"})
 		return
@@ -277,18 +266,8 @@ func (h *ModuleAdminHandlers) GetModuleVersion(c *gin.Context) {
 	// Letting the sentinel reach the 500 would turn every admin module/provider
 	// route into a hard failure on such a deployment, which is a behaviour
 	// change this change is not entitled to make.
-	org, err := h.orgRepo.GetDefaultOrganization(c.Request.Context())
-	if err != nil && !identityerr.Missing(org, err) {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get organization context"})
-		return
-	}
 
-	var orgID string
-	if org != nil {
-		orgID = org.ID
-	}
-
-	module, err := h.moduleRepo.GetModule(c.Request.Context(), orgID, namespace, name, system)
+	module, _, err := h.moduleRepo.GetModuleByNamespace(c.Request.Context(), namespace, name, system)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get module"})
 		return
@@ -339,19 +318,9 @@ func (h *ModuleAdminHandlers) DeleteModule(c *gin.Context) {
 	// Letting the sentinel reach the 500 would turn every admin module/provider
 	// route into a hard failure on such a deployment, which is a behaviour
 	// change this change is not entitled to make.
-	org, err := h.orgRepo.GetDefaultOrganization(c.Request.Context())
-	if err != nil && !identityerr.Missing(org, err) {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get organization context"})
-		return
-	}
-
-	var orgID string
-	if org != nil {
-		orgID = org.ID
-	}
 
 	// Get module
-	module, err := h.moduleRepo.GetModule(c.Request.Context(), orgID, namespace, name, system)
+	module, _, err := h.moduleRepo.GetModuleByNamespace(c.Request.Context(), namespace, name, system)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get module"})
 		return
@@ -421,19 +390,9 @@ func (h *ModuleAdminHandlers) DeleteVersion(c *gin.Context) {
 	// Letting the sentinel reach the 500 would turn every admin module/provider
 	// route into a hard failure on such a deployment, which is a behaviour
 	// change this change is not entitled to make.
-	org, err := h.orgRepo.GetDefaultOrganization(c.Request.Context())
-	if err != nil && !identityerr.Missing(org, err) {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get organization context"})
-		return
-	}
-
-	var orgID string
-	if org != nil {
-		orgID = org.ID
-	}
 
 	// Get module
-	module, err := h.moduleRepo.GetModule(c.Request.Context(), orgID, namespace, name, system)
+	module, _, err := h.moduleRepo.GetModuleByNamespace(c.Request.Context(), namespace, name, system)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get module"})
 		return
@@ -521,19 +480,9 @@ func (h *ModuleAdminHandlers) DeprecateVersion(c *gin.Context) {
 	// Letting the sentinel reach the 500 would turn every admin module/provider
 	// route into a hard failure on such a deployment, which is a behaviour
 	// change this change is not entitled to make.
-	org, err := h.orgRepo.GetDefaultOrganization(c.Request.Context())
-	if err != nil && !identityerr.Missing(org, err) {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get organization context"})
-		return
-	}
-
-	var orgID string
-	if org != nil {
-		orgID = org.ID
-	}
 
 	// Get module
-	module, err := h.moduleRepo.GetModule(c.Request.Context(), orgID, namespace, name, system)
+	module, _, err := h.moduleRepo.GetModuleByNamespace(c.Request.Context(), namespace, name, system)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get module"})
 		return
@@ -606,19 +555,9 @@ func (h *ModuleAdminHandlers) UndeprecateVersion(c *gin.Context) {
 	// Letting the sentinel reach the 500 would turn every admin module/provider
 	// route into a hard failure on such a deployment, which is a behaviour
 	// change this change is not entitled to make.
-	org, err := h.orgRepo.GetDefaultOrganization(c.Request.Context())
-	if err != nil && !identityerr.Missing(org, err) {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get organization context"})
-		return
-	}
-
-	var orgID string
-	if org != nil {
-		orgID = org.ID
-	}
 
 	// Get module
-	module, err := h.moduleRepo.GetModule(c.Request.Context(), orgID, namespace, name, system)
+	module, _, err := h.moduleRepo.GetModuleByNamespace(c.Request.Context(), namespace, name, system)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get module"})
 		return
@@ -803,19 +742,9 @@ func (h *ModuleAdminHandlers) DeprecateModule(c *gin.Context) {
 	// Letting the sentinel reach the 500 would turn every admin module/provider
 	// route into a hard failure on such a deployment, which is a behaviour
 	// change this change is not entitled to make.
-	org, err := h.orgRepo.GetDefaultOrganization(c.Request.Context())
-	if err != nil && !identityerr.Missing(org, err) {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get organization context"})
-		return
-	}
-
-	var orgID string
-	if org != nil {
-		orgID = org.ID
-	}
 
 	// Get module
-	module, err := h.moduleRepo.GetModule(c.Request.Context(), orgID, namespace, name, system)
+	module, _, err := h.moduleRepo.GetModuleByNamespace(c.Request.Context(), namespace, name, system)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get module"})
 		return
@@ -873,19 +802,9 @@ func (h *ModuleAdminHandlers) UndeprecateModule(c *gin.Context) {
 	// Letting the sentinel reach the 500 would turn every admin module/provider
 	// route into a hard failure on such a deployment, which is a behaviour
 	// change this change is not entitled to make.
-	org, err := h.orgRepo.GetDefaultOrganization(c.Request.Context())
-	if err != nil && !identityerr.Missing(org, err) {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get organization context"})
-		return
-	}
-
-	var orgID string
-	if org != nil {
-		orgID = org.ID
-	}
 
 	// Get module
-	module, err := h.moduleRepo.GetModule(c.Request.Context(), orgID, namespace, name, system)
+	module, _, err := h.moduleRepo.GetModuleByNamespace(c.Request.Context(), namespace, name, system)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get module"})
 		return
@@ -938,19 +857,9 @@ func (h *ModuleAdminHandlers) ReanalyzeVersion(c *gin.Context) {
 	// Letting the sentinel reach the 500 would turn every admin module/provider
 	// route into a hard failure on such a deployment, which is a behaviour
 	// change this change is not entitled to make.
-	org, err := h.orgRepo.GetDefaultOrganization(c.Request.Context())
-	if err != nil && !identityerr.Missing(org, err) {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get organization context"})
-		return
-	}
-
-	var orgID string
-	if org != nil {
-		orgID = org.ID
-	}
 
 	// Get module
-	module, err := h.moduleRepo.GetModule(c.Request.Context(), orgID, namespace, name, system)
+	module, _, err := h.moduleRepo.GetModuleByNamespace(c.Request.Context(), namespace, name, system)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get module"})
 		return

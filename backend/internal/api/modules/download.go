@@ -16,7 +16,6 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
-	"github.com/terraform-registry/terraform-registry/internal/identityerr"
 	"github.com/terraform-registry/terraform-registry/internal/middleware"
 	"github.com/terraform-registry/terraform-registry/internal/safego"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
@@ -42,7 +41,6 @@ import (
 // Returns 204 No Content with X-Terraform-Get header pointing to download URL
 func DownloadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Config, auditRepo *repositories.AuditRepository) gin.HandlerFunc {
 	moduleRepo := repositories.NewModuleRepository(db)
-	orgRepo := repositories.NewOrganizationRepository(db)
 
 	return func(c *gin.Context) {
 		namespace := c.Param("namespace")
@@ -58,23 +56,12 @@ func DownloadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Con
 			return
 		}
 
-		// Get organization context
-		org, err := orgRepo.GetDefaultOrganization(c.Request.Context())
-		if identityerr.Missing(org, err) {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"errors": []string{"Default organization not found - please run migrations"},
-			})
-			return
-		}
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"errors": []string{"Failed to get organization context"},
-			})
-			return
-		}
-
 		// Get module
-		module, err := moduleRepo.GetModule(c.Request.Context(), org.ID, namespace, name, system)
+		// Resolved by namespace, with no organization: the protocol grammar is
+		// host/namespace/name/system and carries no organization segment, so this
+		// route is public and a filter here could only ever be a guess. Ownership
+		// lives on the namespace claim and governs publishing, not reading.
+		module, _, err := moduleRepo.GetModuleByNamespace(c.Request.Context(), namespace, name, system)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"errors": []string{"Failed to query module"},

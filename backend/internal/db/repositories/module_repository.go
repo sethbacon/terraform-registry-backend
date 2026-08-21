@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
@@ -116,6 +117,96 @@ func (r *ModuleRepository) GetModule(ctx context.Context, orgID, namespace, name
 	}
 
 	return module, nil
+}
+
+// moduleSelectColumns is the projection GetModule and GetModuleByNamespace
+// share, so the two cannot drift into returning different shapes of the same
+// row.
+const moduleSelectColumns = `m.id, m.organization_id, m.namespace, m.name, m.system, m.description, m.source,
+		       m.created_by, m.created_at, m.updated_at, u.name as created_by_name,
+		       m.deprecated, m.deprecated_at, m.deprecation_message, m.successor_module_id`
+
+// GetModuleByNamespace resolves a module the way the Terraform protocol
+// addresses it: by namespace, name and system, with NO organization.
+//
+// # Why there is no organization argument
+//
+// A module source is `host/namespace/name/system`. The grammar has three
+// identifier segments and no slot for an organization, so a Terraform client
+// cannot supply one and no amount of authentication produces one — the protocol
+// routes are public by design. Resolving against a particular organization
+// therefore cannot be a narrowing of what the caller asked for; it is a guess,
+// and until now it guessed the organization literally named "default", which is
+// why a module owned by any other organization was a 404 to every client.
+//
+// The tenancy that DOES apply is namespace_claims: its namespace column is a
+// PRIMARY KEY, so a namespace belongs to exactly one organization, globally. The
+// organization is therefore a property of the namespace rather than a thing the
+// reader has to know, and every mutation is already gated on it
+// (middleware.NamespaceAuthorizer). Reads are public; writes are owned.
+//
+// # The second return value is not a convenience
+//
+// `others` reports how many additional rows share these coordinates. It should
+// always be zero: namespace_claims permits one owner per namespace, and the
+// modules table is migrating to UNIQUE (namespace, name, system) to make that
+// true by construction rather than by convention.
+//
+// Until that index exists the duplicate is REACHABLE, and it is not a
+// resolution nicety — module storage keys carry no organization segment
+// (modules/{namespace}/{name}/{system}/{version}.tar.gz) while the
+// duplicate-version guard is scoped to a module id, so two rows sharing these
+// coordinates write the SAME object and the second silently overwrites the
+// first. A caller that ignores `others` cannot tell it is serving an archive
+// that belongs to somebody else.
+//
+// The ordering is deterministic for the same reason: an arbitrary winner would
+// make WHICH archive is served depend on planner whim, and change between two
+// requests that asked the same question.
+func (r *ModuleRepository) GetModuleByNamespace(ctx context.Context, namespace, name, system string) (module *models.Module, others int, err error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT `+moduleSelectColumns+`
+		FROM modules m
+		LEFT JOIN users u ON m.created_by = u.id
+		WHERE m.namespace = $1 AND m.name = $2 AND m.system = $3
+		ORDER BY m.created_at ASC, m.id ASC`, namespace, name, system)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to get module by namespace: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		m := &models.Module{}
+		if scanErr := rows.Scan(
+			&m.ID, &m.OrganizationID, &m.Namespace, &m.Name, &m.System, &m.Description,
+			&m.Source, &m.CreatedBy, &m.CreatedAt, &m.UpdatedAt, &m.CreatedByName,
+			&m.Deprecated, &m.DeprecatedAt, &m.DeprecationMessage, &m.SuccessorModuleID,
+		); scanErr != nil {
+			return nil, 0, fmt.Errorf("failed to scan module: %w", scanErr)
+		}
+		if module == nil {
+			module = m
+			continue
+		}
+		others++
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("failed to read modules: %w", err)
+	}
+	if others > 0 {
+		// Logged HERE rather than left to each caller, because this is a fact
+		// about the data and not about the request: every reader of these
+		// coordinates is affected, and a signal that depends on somebody
+		// remembering to check a return value is one that goes quiet exactly
+		// when a new call site is added. The count is still returned, so a
+		// caller that wants to refuse rather than serve can.
+		slog.Error("module namespace collision: these coordinates resolve to more than one row, "+
+			"and module storage keys carry no organization segment — the archives may already "+
+			"have overwritten one another",
+			"namespace", namespace, "name", name, "system", system,
+			"rows", others+1, "serving_module_id", module.ID, "serving_organization_id", module.OrganizationID)
+	}
+	return module, others, nil
 }
 
 // GetModuleByID retrieves a module by its UUID

@@ -216,7 +216,6 @@ func doGET(r *gin.Engine, path string) *httptest.ResponseRecorder {
 func TestListVersionsHandler_Success(t *testing.T) {
 	mock, r := newVersionsRouter(t)
 
-	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow2())
 	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(sampleModuleRow2())
 	mock.ExpectQuery("SELECT COUNT.*FROM module_versions WHERE module_id").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE mv.module_id").WillReturnRows(sampleModuleVersionsRows())
@@ -227,34 +226,9 @@ func TestListVersionsHandler_Success(t *testing.T) {
 	}
 }
 
-func TestListVersionsHandler_OrgError(t *testing.T) {
-	mock, r := newVersionsRouter(t)
-
-	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnError(errDB2)
-
-	w := doGET(r, "/v1/modules/hashicorp/consul/aws/versions")
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("status = %d, want 500", w.Code)
-	}
-	assertErrorsArrayBody(t, w)
-}
-
-func TestListVersionsHandler_OrgNotFound(t *testing.T) {
-	mock, r := newVersionsRouter(t)
-
-	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sqlmock.NewRows(orgCols2))
-
-	w := doGET(r, "/v1/modules/hashicorp/consul/aws/versions")
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("status = %d, want 500", w.Code)
-	}
-	assertErrorsArrayBody(t, w)
-}
-
 func TestListVersionsHandler_ModuleError(t *testing.T) {
 	mock, r := newVersionsRouter(t)
 
-	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow2())
 	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnError(errDB2)
 
 	w := doGET(r, "/v1/modules/hashicorp/consul/aws/versions")
@@ -267,7 +241,6 @@ func TestListVersionsHandler_ModuleError(t *testing.T) {
 func TestListVersionsHandler_ModuleNotFound(t *testing.T) {
 	mock, r := newVersionsRouter(t)
 
-	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow2())
 	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(sqlmock.NewRows(moduleCols2))
 
 	w := doGET(r, "/v1/modules/hashicorp/consul/aws/versions")
@@ -279,7 +252,6 @@ func TestListVersionsHandler_ModuleNotFound(t *testing.T) {
 func TestListVersionsHandler_VersionsError(t *testing.T) {
 	mock, r := newVersionsRouter(t)
 
-	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow2())
 	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(sampleModuleRow2())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").WillReturnError(errDB2)
 
@@ -301,7 +273,6 @@ func TestListVersionsHandler_DeprecationBlock(t *testing.T) {
 			1024, "abc123", nil, nil, nil, int64(5), true, &depTime, &depMsg, &replacement, time.Now(),
 			nil, nil, nil, false)
 
-	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow2())
 	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(sampleModuleRow2())
 	mock.ExpectQuery("SELECT COUNT.*FROM module_versions WHERE module_id").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE mv.module_id").WillReturnRows(deprecatedVersionRow)
@@ -341,7 +312,6 @@ func TestListVersionsHandler_DeprecationBlock_NoReplacement(t *testing.T) {
 			1024, "abc123", nil, nil, nil, int64(5), true, &depTime, &depMsg, nil, time.Now(),
 			nil, nil, nil, false)
 
-	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow2())
 	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(sampleModuleRow2())
 	mock.ExpectQuery("SELECT COUNT.*FROM module_versions WHERE module_id").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE mv.module_id").WillReturnRows(deprecatedVersionRow)
@@ -367,7 +337,6 @@ func TestListVersionsHandler_DeprecationBlock_NoReplacement(t *testing.T) {
 func TestListVersionsHandler_NotDeprecated_NoDeprecationBlock(t *testing.T) {
 	mock, r := newVersionsRouter(t)
 
-	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow2())
 	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(sampleModuleRow2())
 	mock.ExpectQuery("SELECT COUNT.*FROM module_versions WHERE module_id").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE mv.module_id").WillReturnRows(sampleModuleVersionsRows())
@@ -454,22 +423,9 @@ func TestDownloadHandler_InvalidVersion(t *testing.T) {
 	}
 }
 
-func TestDownloadHandler_OrgError(t *testing.T) {
-	mock, r := newDownloadRouter(t, &mockStore{})
-
-	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnError(errDB2)
-
-	w := doGET(r, "/v1/modules/hashicorp/consul/aws/1.0.0/download")
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("status = %d, want 500", w.Code)
-	}
-	assertErrorsArrayBody(t, w)
-}
-
 func TestDownloadHandler_ModuleNotFound(t *testing.T) {
 	mock, r := newDownloadRouter(t, &mockStore{})
 
-	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow2())
 	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(sqlmock.NewRows(moduleCols2))
 
 	w := doGET(r, "/v1/modules/hashicorp/consul/aws/1.0.0/download")
@@ -481,7 +437,6 @@ func TestDownloadHandler_ModuleNotFound(t *testing.T) {
 func TestDownloadHandler_VersionNotFound(t *testing.T) {
 	mock, r := newDownloadRouter(t, &mockStore{})
 
-	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow2())
 	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(sampleModuleRow2())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id.*AND version").WillReturnRows(sqlmock.NewRows(moduleVersionGetCols2))
 
@@ -495,7 +450,6 @@ func TestDownloadHandler_Success(t *testing.T) {
 	store := &mockStore{getURLResult: "https://example.com/module.tgz"}
 	mock, r := newDownloadRouter(t, store)
 
-	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow2())
 	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(sampleModuleRow2())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id.*AND version").WillReturnRows(sampleModuleVersionGetRow())
 
@@ -512,7 +466,6 @@ func TestDownloadHandler_StorageError(t *testing.T) {
 	store := &mockStore{getURLErr: errors.New("storage error")}
 	mock, r := newDownloadRouter(t, store)
 
-	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow2())
 	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(sampleModuleRow2())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id.*AND version").WillReturnRows(sampleModuleVersionGetRow())
 
@@ -934,24 +887,9 @@ func TestUploadHandler_Success_ExistingModule(t *testing.T) {
 // DownloadHandler — additional uncovered branches
 // ---------------------------------------------------------------------------
 
-func TestDownloadHandler_OrgNotFound(t *testing.T) {
-	mock, r := newDownloadRouter(t, &mockStore{})
-
-	// GetDefaultOrganization returns no rows → org == nil → 500
-	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
-		WillReturnRows(sqlmock.NewRows(orgCols2))
-
-	w := doGET(r, "/v1/modules/hashicorp/consul/aws/1.0.0/download")
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("status = %d, want 500", w.Code)
-	}
-	assertErrorsArrayBody(t, w)
-}
-
 func TestDownloadHandler_ModuleError(t *testing.T) {
 	mock, r := newDownloadRouter(t, &mockStore{})
 
-	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow2())
 	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnError(errDB2)
 
 	w := doGET(r, "/v1/modules/hashicorp/consul/aws/1.0.0/download")
@@ -964,7 +902,6 @@ func TestDownloadHandler_ModuleError(t *testing.T) {
 func TestDownloadHandler_VersionError(t *testing.T) {
 	mock, r := newDownloadRouter(t, &mockStore{})
 
-	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow2())
 	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(sampleModuleRow2())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id.*AND version").WillReturnError(errDB2)
 
@@ -991,7 +928,6 @@ func TestDownloadHandler_SuccessWithAuditContext(t *testing.T) {
 	r.GET("/v1/modules/:namespace/:name/:system/:version/download",
 		DownloadHandler(db, store, &config.Config{}, auditRepo))
 
-	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow2())
 	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(sampleModuleRow2())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id.*AND version").WillReturnRows(sampleModuleVersionGetRow())
 
@@ -1010,7 +946,6 @@ func TestDownloadHandler_SuccessNilAuditRepo(t *testing.T) {
 	store := &mockStore{getURLResult: "https://example.com/module.tgz"}
 	mock, r := newDownloadRouter(t, store)
 
-	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow2())
 	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(sampleModuleRow2())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id.*AND version").WillReturnRows(sampleModuleVersionGetRow())
 

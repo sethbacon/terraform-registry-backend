@@ -160,12 +160,8 @@ func TestGetManifest_NotFound(t *testing.T) {
 	}
 	defer db.Close()
 
-	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WithArgs("default").
-		WillReturnRows(orgRow("org-id", "default"))
-
 	mock.ExpectQuery("SELECT.*FROM modules").
-		WithArgs("org-id", "hashicorp", "consul", "aws").
+		WithArgs("hashicorp", "consul", "aws").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 
 	h := NewHandler(db, nil)
@@ -190,96 +186,6 @@ func TestGetManifest_NotFound(t *testing.T) {
 // OCI "UNKNOWN" code, not the "does not exist" MANIFEST_UNKNOWN code, so OCI
 // clients don't mistake a retryable server fault for permanent absence.
 
-func TestGetManifest_InternalError(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock: %v", err)
-	}
-	defer db.Close()
-
-	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WithArgs("default").
-		WillReturnError(errors.New("db down"))
-
-	h := NewHandler(db, nil)
-	r := gin.New()
-	r.GET("/v2/:namespace/:name/:system/manifests/:reference", h.GetManifest)
-
-	w := httptest.NewRecorder()
-	req, _ := http.NewRequest(http.MethodGet, "/v2/hashicorp/consul/aws/manifests/1.0.0", nil)
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d: body=%s", w.Code, w.Body.String())
-	}
-	if strings.Contains(w.Body.String(), "MANIFEST_UNKNOWN") {
-		t.Errorf("500 response must not reuse MANIFEST_UNKNOWN, got: %s", w.Body.String())
-	}
-	if !strings.Contains(w.Body.String(), "UNKNOWN") {
-		t.Errorf("expected generic UNKNOWN error code, got: %s", w.Body.String())
-	}
-}
-
-func TestHeadManifest_InternalError(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock: %v", err)
-	}
-	defer db.Close()
-
-	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WithArgs("default").
-		WillReturnError(errors.New("db down"))
-
-	h := NewHandler(db, nil)
-	r := gin.New()
-	r.HEAD("/v2/:namespace/:name/:system/manifests/:reference", h.HeadManifest)
-
-	w := httptest.NewRecorder()
-	req, _ := http.NewRequest(http.MethodHead, "/v2/hashicorp/consul/aws/manifests/1.0.0", nil)
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d: body=%s", w.Code, w.Body.String())
-	}
-	if strings.Contains(w.Body.String(), "MANIFEST_UNKNOWN") {
-		t.Errorf("500 response must not reuse MANIFEST_UNKNOWN, got: %s", w.Body.String())
-	}
-}
-
-func TestGetBlob_InternalError(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock: %v", err)
-	}
-	defer db.Close()
-
-	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WithArgs("default").
-		WillReturnError(errors.New("db down"))
-
-	h := NewHandler(db, nil)
-	r := gin.New()
-	r.GET("/v2/:namespace/:name/:system/blobs/:digest", h.GetBlob)
-
-	w := httptest.NewRecorder()
-	req, _ := http.NewRequest(http.MethodGet, "/v2/hashicorp/consul/aws/blobs/sha256:abc123", nil)
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d: body=%s", w.Code, w.Body.String())
-	}
-	if strings.Contains(w.Body.String(), "BLOB_UNKNOWN") {
-		t.Errorf("500 response must not reuse BLOB_UNKNOWN, got: %s", w.Body.String())
-	}
-	if !strings.Contains(w.Body.String(), "UNKNOWN") {
-		t.Errorf("expected generic UNKNOWN error code, got: %s", w.Body.String())
-	}
-}
-
 // TestGetBlob_StorageDownloadError — module version resolves fine but the
 // storage backend fails; this is also a transient 500 and must not reuse
 // BLOB_UNKNOWN.
@@ -293,11 +199,8 @@ func TestGetBlob_StorageDownloadError(t *testing.T) {
 
 	const checksum = "abc123def456"
 
-	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WithArgs("default").
-		WillReturnRows(orgRow("org-id", "default"))
 	mock.ExpectQuery("SELECT.*FROM modules").
-		WithArgs("org-id", "hashicorp", "consul", "aws").
+		WithArgs("hashicorp", "consul", "aws").
 		WillReturnRows(moduleRow("mod-id", "org-id", "hashicorp", "consul", "aws"))
 	mock.ExpectQuery("SELECT.*FROM module_versions").
 		WithArgs("mod-id", checksum).
@@ -329,12 +232,8 @@ func TestGetManifest_VersionNotFound(t *testing.T) {
 	}
 	defer db.Close()
 
-	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WithArgs("default").
-		WillReturnRows(orgRow("org-id", "default"))
-
 	mock.ExpectQuery("SELECT.*FROM modules").
-		WithArgs("org-id", "hashicorp", "consul", "aws").
+		WithArgs("hashicorp", "consul", "aws").
 		WillReturnRows(moduleRow("mod-id", "org-id", "hashicorp", "consul", "aws"))
 
 	mock.ExpectQuery("SELECT.*FROM module_versions").
@@ -370,12 +269,8 @@ func TestGetManifest_OK(t *testing.T) {
 	const checksum = "abc123def456"
 	const size = int64(1024)
 
-	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WithArgs("default").
-		WillReturnRows(orgRow("org-id", "default"))
-
 	mock.ExpectQuery("SELECT.*FROM modules").
-		WithArgs("org-id", "hashicorp", "consul", "aws").
+		WithArgs("hashicorp", "consul", "aws").
 		WillReturnRows(moduleRow("mod-id", "org-id", "hashicorp", "consul", "aws"))
 
 	mock.ExpectQuery("SELECT.*FROM module_versions").
@@ -431,12 +326,8 @@ func TestHeadManifest_OK(t *testing.T) {
 	}
 	defer db.Close()
 
-	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WithArgs("default").
-		WillReturnRows(orgRow("org-id", "default"))
-
 	mock.ExpectQuery("SELECT.*FROM modules").
-		WithArgs("org-id", "hashicorp", "consul", "aws").
+		WithArgs("hashicorp", "consul", "aws").
 		WillReturnRows(moduleRow("mod-id", "org-id", "hashicorp", "consul", "aws"))
 
 	mock.ExpectQuery("SELECT.*FROM module_versions").
@@ -470,36 +361,6 @@ func TestHeadManifest_OK(t *testing.T) {
 // HeadBlob shares lookupVersionByDigest + ociErrorCode with GetBlob (already
 // covered by TestGetBlob_InternalError); this is HeadBlob's own regression
 // coverage for the same #682 fix.
-func TestHeadBlob_InternalError(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock: %v", err)
-	}
-	defer db.Close()
-
-	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WithArgs("default").
-		WillReturnError(errors.New("db down"))
-
-	h := NewHandler(db, nil)
-	r := gin.New()
-	r.HEAD("/v2/:namespace/:name/:system/blobs/:digest", h.HeadBlob)
-
-	w := httptest.NewRecorder()
-	req, _ := http.NewRequest(http.MethodHead, "/v2/hashicorp/consul/aws/blobs/sha256:abc123", nil)
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d: body=%s", w.Code, w.Body.String())
-	}
-	if strings.Contains(w.Body.String(), "BLOB_UNKNOWN") {
-		t.Errorf("500 response must not reuse BLOB_UNKNOWN, got: %s", w.Body.String())
-	}
-	if !strings.Contains(w.Body.String(), "UNKNOWN") {
-		t.Errorf("expected generic UNKNOWN error code, got: %s", w.Body.String())
-	}
-}
 
 // TestHeadBlob_InvalidDigest and TestGetBlob_InvalidDigest — no sha256: prefix → 400
 func TestHeadBlob_InvalidDigest(t *testing.T) {
@@ -556,11 +417,8 @@ func TestHeadBlob_OK(t *testing.T) {
 	const checksum = "abc123def456ff00"
 	const size = int64(512)
 
-	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WithArgs("default").
-		WillReturnRows(orgRow("org-id", "default"))
 	mock.ExpectQuery("SELECT.*FROM modules").
-		WithArgs("org-id", "hashicorp", "consul", "aws").
+		WithArgs("hashicorp", "consul", "aws").
 		WillReturnRows(moduleRow("mod-id", "org-id", "hashicorp", "consul", "aws"))
 	mock.ExpectQuery("SELECT.*FROM module_versions").
 		WithArgs("mod-id", checksum).

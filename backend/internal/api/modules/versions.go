@@ -10,7 +10,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
-	"github.com/terraform-registry/terraform-registry/internal/identityerr"
 )
 
 // @Summary      List module versions
@@ -30,7 +29,6 @@ import (
 // Implements: GET /v1/modules/:namespace/:name/:system/versions
 func ListVersionsHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 	moduleRepo := repositories.NewModuleRepository(db)
-	orgRepo := repositories.NewOrganizationRepository(db)
 
 	return func(c *gin.Context) {
 		namespace := c.Param("namespace")
@@ -49,23 +47,18 @@ func ListVersionsHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 			offset = 0
 		}
 
-		// Get organization context (default org for single-tenant mode)
-		org, err := orgRepo.GetDefaultOrganization(c.Request.Context())
-		if identityerr.Missing(org, err) {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"errors": []string{"Default organization not found - please run migrations"},
-			})
-			return
-		}
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"errors": []string{"Failed to get organization context"},
-			})
-			return
-		}
-
-		// Get module
-		module, err := moduleRepo.GetModule(c.Request.Context(), org.ID, namespace, name, system)
+		// RESOLVED BY NAMESPACE, WITH NO ORGANIZATION. A module source is
+		// host/namespace/name/system: three identifier segments and no slot for
+		// an organization, so a Terraform client cannot supply one and this
+		// route is public by design. Filtering by an organization here was
+		// therefore never a narrowing of what the caller asked for — it guessed
+		// the organization literally named "default", and every module owned by
+		// any other organization was a 404 to every client.
+		//
+		// The tenancy that applies is namespace_claims, whose namespace column
+		// is a PRIMARY KEY: the organization is a property of the NAMESPACE, and
+		// it governs who may publish, not who may read.
+		module, _, err := moduleRepo.GetModuleByNamespace(c.Request.Context(), namespace, name, system)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"errors": []string{"Failed to query module"},
