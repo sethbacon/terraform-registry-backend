@@ -7,6 +7,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.8.0...v4.9.0) (2026-08-22)
+
+
+### Bug Fixes
+
+* **ci:** refuse to run signature-replay when Dependabot edited the workflow ([#917](https://github.com/sethbacon/terraform-registry-backend/issues/917)) ([2e8352d](https://github.com/sethbacon/terraform-registry-backend/commit/2e8352dde4ddfdc90c7bef859b32c5c067b27dba))
+* **modules:** resolve a module by namespace, not by the default organization ([#933](https://github.com/sethbacon/terraform-registry-backend/issues/933)) ([32c3a80](https://github.com/sethbacon/terraform-registry-backend/commit/32c3a801eaca542403380225640fc76f8fe0c78b))
+
+
+### Documentation
+
+* **security:** record the shared-workflow trust relationship, and fix what it invalidated ([#928](https://github.com/sethbacon/terraform-registry-backend/issues/928)) ([8c0b6de](https://github.com/sethbacon/terraform-registry-backend/commit/8c0b6deefd7739cea07a342ef0309a9ee8c38f4f))
+
 ## [4.8.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.7.0...v4.8.0) (2026-08-19)
 
 
