@@ -55,7 +55,6 @@ func newDocsAPIRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 func TestGetModuleDocs_Success(t *testing.T) {
 	mock, r := newDocsAPIRouter(t)
 
-	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow2())
 	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(sampleModuleRow2())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").
 		WithArgs("mod-1", "1.0.0").
@@ -70,30 +69,8 @@ func TestGetModuleDocs_Success(t *testing.T) {
 	}
 }
 
-func TestGetModuleDocs_OrgError(t *testing.T) {
-	mock, r := newDocsAPIRouter(t)
-	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnError(errDB2)
-
-	w := doGET(r, "/api/v1/modules/hashicorp/consul/aws/versions/1.0.0/docs")
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("status = %d, want 500", w.Code)
-	}
-}
-
-func TestGetModuleDocs_OrgNotFound(t *testing.T) {
-	mock, r := newDocsAPIRouter(t)
-	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
-		WillReturnRows(sqlmock.NewRows(orgCols2))
-
-	w := doGET(r, "/api/v1/modules/hashicorp/consul/aws/versions/1.0.0/docs")
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("status = %d, want 500", w.Code)
-	}
-}
-
 func TestGetModuleDocs_ModuleNotFound(t *testing.T) {
 	mock, r := newDocsAPIRouter(t)
-	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow2())
 	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").
 		WillReturnRows(sqlmock.NewRows(moduleCols2))
 
@@ -105,7 +82,6 @@ func TestGetModuleDocs_ModuleNotFound(t *testing.T) {
 
 func TestGetModuleDocs_ModuleDBError(t *testing.T) {
 	mock, r := newDocsAPIRouter(t)
-	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow2())
 	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnError(errDB2)
 
 	w := doGET(r, "/api/v1/modules/hashicorp/consul/aws/versions/1.0.0/docs")
@@ -116,7 +92,6 @@ func TestGetModuleDocs_ModuleDBError(t *testing.T) {
 
 func TestGetModuleDocs_VersionNotFound(t *testing.T) {
 	mock, r := newDocsAPIRouter(t)
-	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow2())
 	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(sampleModuleRow2())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").
 		WithArgs("mod-1", "9.9.9").
@@ -130,7 +105,6 @@ func TestGetModuleDocs_VersionNotFound(t *testing.T) {
 
 func TestGetModuleDocs_VersionDBError(t *testing.T) {
 	mock, r := newDocsAPIRouter(t)
-	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow2())
 	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(sampleModuleRow2())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").
 		WithArgs("mod-1", "1.0.0").
@@ -144,7 +118,6 @@ func TestGetModuleDocs_VersionDBError(t *testing.T) {
 
 func TestGetModuleDocs_DocsNotFound(t *testing.T) {
 	mock, r := newDocsAPIRouter(t)
-	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow2())
 	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(sampleModuleRow2())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").
 		WithArgs("mod-1", "1.0.0").
@@ -160,7 +133,6 @@ func TestGetModuleDocs_DocsNotFound(t *testing.T) {
 
 func TestGetModuleDocs_DocsDBError(t *testing.T) {
 	mock, r := newDocsAPIRouter(t)
-	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow2())
 	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(sampleModuleRow2())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").
 		WithArgs("mod-1", "1.0.0").

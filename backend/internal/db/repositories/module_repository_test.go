@@ -1039,3 +1039,84 @@ func TestGetVersionByID_DBError(t *testing.T) {
 		t.Error("expected error, got nil")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// GetModuleByNamespace — the protocol resolver
+// ---------------------------------------------------------------------------
+
+// TestGetModuleByNamespace_ResolvesWithoutAnOrganization is the point of the
+// method. A module source is host/namespace/name/system, so a Terraform client
+// has no way to name an organization; resolving against one could only ever be a
+// guess, and the guess made every module outside a single organization a 404.
+func TestGetModuleByNamespace_ResolvesWithoutAnOrganization(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+	// The expectation is deliberately strict about the SQL TEXT, not just that
+	// some query ran. sqlmock matches by regex and returns whatever rows the test
+	// hands it, so it cannot see an extra predicate or a dropped ORDER BY — a
+	// mutation adding "AND m.organization_id IS NOT NULL", or removing the
+	// ordering entirely, passed every behavioural assertion here. Pinning the
+	// text is what closes that, and it is the whole of what this method changes.
+	mock.ExpectQuery(`WHERE m\.namespace = \$1 AND m\.name = \$2 AND m\.system = \$3\s+ORDER BY m\.created_at ASC, m\.id ASC`).
+		WithArgs("hashicorp", "vpc", "aws").
+		WillReturnRows(sampleModuleRow())
+
+	m, others, err := repo.GetModuleByNamespace(context.Background(), "hashicorp", "vpc", "aws")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m == nil {
+		t.Fatal("no module returned")
+	}
+	if others != 0 {
+		t.Errorf("others = %d, want 0 for a single row", others)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unexpected queries — an organization lookup may have crept back in: %v", err)
+	}
+}
+
+func TestGetModuleByNamespace_NotFound(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(emptyModuleRow())
+
+	m, others, err := repo.GetModuleByNamespace(context.Background(), "hashicorp", "vpc", "aws")
+	if err != nil || m != nil || others != 0 {
+		t.Fatalf("got (%v, %d, %v), want (nil, 0, nil)", m, others, err)
+	}
+}
+
+// TestGetModuleByNamespace_ReportsACollision covers the condition this method
+// exists to make visible.
+//
+// Module storage keys carry NO organization segment —
+// modules/{namespace}/{name}/{system}/{version}.tar.gz — while the
+// duplicate-version guard is scoped to a module id. So two rows sharing these
+// coordinates write the SAME object, and the second silently overwrites the
+// first: the loser's module_versions row then points at the winner's bytes under
+// its own recorded checksum, and the module protocol sends no checksum to the
+// client that would catch it.
+//
+// A caller that ignores `others` is therefore not merely picking arbitrarily; it
+// may be serving an archive that belongs to somebody else. The count is returned
+// so a caller can refuse, and logged by the repository so that a caller which
+// forgets to look still cannot make it silent.
+func TestGetModuleByNamespace_ReportsACollision(t *testing.T) {
+	repo, mock := newModuleRepo(t)
+	rows := sqlmock.NewRows(moduleCols).
+		AddRow("mod-1", "org-1", "hashicorp", "vpc", "aws", nil, nil, nil, time.Now(), time.Now(), nil, false, nil, nil, nil).
+		AddRow("mod-2", "org-2", "hashicorp", "vpc", "aws", nil, nil, nil, time.Now(), time.Now(), nil, false, nil, nil, nil)
+	mock.ExpectQuery("SELECT.*FROM modules.*WHERE").WillReturnRows(rows)
+
+	m, others, err := repo.GetModuleByNamespace(context.Background(), "hashicorp", "vpc", "aws")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if others != 1 {
+		t.Errorf("others = %d, want 1 — a caller cannot refuse a collision it is not told about", others)
+	}
+	// Deterministic, not arbitrary: an unordered winner would make WHICH archive
+	// is served depend on planner whim and change between identical requests.
+	if m == nil || m.ID != "mod-1" {
+		t.Errorf("winner = %v, want the first by (created_at, id)", m)
+	}
+}

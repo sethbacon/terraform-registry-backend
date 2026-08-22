@@ -242,12 +242,12 @@ func (h *Handler) buildManifestJSON(c *gin.Context) ([]byte, int, error) {
 	system := c.Param("system")
 	ref := c.Param("reference")
 
-	org, err := h.orgRepo.GetDefaultOrganization(c.Request.Context())
-	if err != nil || org == nil {
-		return nil, http.StatusInternalServerError, fmt.Errorf("cannot resolve organization")
-	}
-
-	module, err := h.moduleRepo.GetModule(c.Request.Context(), org.ID, namespace, name, system)
+	// Resolved by namespace, with no organization. The OCI path is
+	// /v2/:namespace/:name/:system/... — three identifier segments, the same
+	// grammar as the Terraform protocol, with nowhere for a client to name an
+	// organization. Ownership lives on the namespace claim and governs pushing,
+	// not pulling.
+	module, _, err := h.moduleRepo.GetModuleByNamespace(c.Request.Context(), namespace, name, system)
 	if err != nil {
 		return nil, http.StatusInternalServerError, fmt.Errorf("internal error")
 	}
@@ -365,12 +365,12 @@ func (h *Handler) lookupVersionByDigest(c *gin.Context) (*versionBlob, int, erro
 	}
 	checksum := digestParam[len(prefix):]
 
-	org, err := h.orgRepo.GetDefaultOrganization(c.Request.Context())
-	if err != nil || org == nil {
-		return nil, http.StatusInternalServerError, fmt.Errorf("cannot resolve organization")
-	}
-
-	module, err := h.moduleRepo.GetModule(c.Request.Context(), org.ID, namespace, name, system)
+	// Resolved by namespace, with no organization. The OCI path is
+	// /v2/:namespace/:name/:system/... — three identifier segments, the same
+	// grammar as the Terraform protocol, with nowhere for a client to name an
+	// organization. Ownership lives on the namespace claim and governs pushing,
+	// not pulling.
+	module, _, err := h.moduleRepo.GetModuleByNamespace(c.Request.Context(), namespace, name, system)
 	if err != nil || module == nil {
 		return nil, http.StatusNotFound, fmt.Errorf("module not found")
 	}

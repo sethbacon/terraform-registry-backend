@@ -23,7 +23,6 @@ import (
 // @Router       /api/v1/modules/{namespace}/{name}/{system}/versions/{version}/docs [get]
 func GetModuleDocsHandler(db *sql.DB) gin.HandlerFunc {
 	moduleRepo := repositories.NewModuleRepository(db)
-	orgRepo := repositories.NewOrganizationRepository(db)
 	docsRepo := repositories.NewModuleDocsRepository(db)
 
 	return func(c *gin.Context) {
@@ -32,13 +31,11 @@ func GetModuleDocsHandler(db *sql.DB) gin.HandlerFunc {
 		system := c.Param("system")
 		version := c.Param("version")
 
-		org, err := orgRepo.GetDefaultOrganization(c.Request.Context())
-		if err != nil || org == nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get organization context"})
-			return
-		}
-
-		module, err := moduleRepo.GetModule(c.Request.Context(), org.ID, namespace, name, system)
+		// Resolved by namespace, with no organization — the same reason as the
+		// protocol handlers: this serves documentation for a module addressed as
+		// namespace/name/system, and ownership governs publishing rather than
+		// reading.
+		module, _, err := moduleRepo.GetModuleByNamespace(c.Request.Context(), namespace, name, system)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query module"})
 			return

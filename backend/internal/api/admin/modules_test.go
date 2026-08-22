@@ -231,25 +231,42 @@ func TestCreateModuleRecord_CreateError(t *testing.T) {
 // GetModule tests
 // ---------------------------------------------------------------------------
 
-func TestGetModule_OrgDBError(t *testing.T) {
+// TestGetModule_ResolvesAModuleInAnyOrganization replaces TestGetModule_OrgDBError,
+// whose premise no longer exists: this handler resolved the organization named
+// "default" and filtered on it, so a failure of that lookup was a 500.
+//
+// It now resolves by namespace, name and system alone — which is the point. A
+// module addressed as namespace/name/system has no organization segment for a
+// caller to supply, so the handler cannot narrow by one; it can only guess, and
+// the guess made every module outside one organization a 404 on a page that had
+// just listed it in search results.
+//
+// The row this test returns carries organization org-1, and the handler must
+// serve it without ever asking which organization that is — no organizations
+// query is expected, and ExpectationsWereMet fails if one appears.
+func TestGetModule_ResolvesAModuleInAnyOrganization(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	mock.ExpectQuery("SELECT.*FROM organizations").
-		WithArgs("default").
-		WillReturnError(errDB)
+	mock.ExpectQuery("SELECT.*FROM modules").
+		WithArgs("hashicorp", "vpc", "aws").
+		WillReturnRows(sampleModuleRow())
+	mock.ExpectQuery("SELECT.*FROM module_versions").WillReturnRows(emptyModVersionListRows())
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("GET", "/modules/hashicorp/vpc/aws", nil))
 
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("status = %d, want 500", w.Code)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s). The lookup must not be scoped to an "+
+			"organization: nothing in the address names one.", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet or unexpected queries — an organization lookup may have crept back in: %v", err)
 	}
 }
 
 func TestGetModule_NotFound(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(emptyModuleRow())
 
@@ -264,7 +281,6 @@ func TestGetModule_NotFound(t *testing.T) {
 func TestGetModule_ModuleDBError(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnError(errDB)
 
@@ -279,7 +295,6 @@ func TestGetModule_ModuleDBError(t *testing.T) {
 func TestGetModule_Success_NoVersions(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(sampleModuleRow())
 	mock.ExpectQuery("SELECT.*FROM module_versions").
@@ -300,7 +315,6 @@ func TestGetModule_Success_NoVersions(t *testing.T) {
 func TestGetModule_Success_WithVersions(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(sampleModuleRow())
 	mock.ExpectQuery("SELECT.*FROM module_versions").
@@ -336,7 +350,6 @@ func TestGetModuleVersion_OrgDBError(t *testing.T) {
 func TestGetModuleVersion_ModuleNotFound(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(emptyModuleRow())
 
@@ -351,7 +364,6 @@ func TestGetModuleVersion_ModuleNotFound(t *testing.T) {
 func TestGetModuleVersion_ModuleDBError(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnError(errDB)
 
@@ -366,7 +378,6 @@ func TestGetModuleVersion_ModuleDBError(t *testing.T) {
 func TestGetModuleVersion_VersionNotFound(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(sampleModuleRow())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").
@@ -383,7 +394,6 @@ func TestGetModuleVersion_VersionNotFound(t *testing.T) {
 func TestGetModuleVersion_VersionDBError(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(sampleModuleRow())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").
@@ -400,7 +410,6 @@ func TestGetModuleVersion_VersionDBError(t *testing.T) {
 func TestGetModuleVersion_Success(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(sampleModuleRow())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").
@@ -445,7 +454,6 @@ func TestDeleteModule_OrgDBError(t *testing.T) {
 func TestDeleteModule_ModuleDBError(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnError(errDB)
 
@@ -460,7 +468,6 @@ func TestDeleteModule_ModuleDBError(t *testing.T) {
 func TestDeleteModule_ListVersionsDBError(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(sampleModuleRow())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*module_id").
@@ -477,7 +484,6 @@ func TestDeleteModule_ListVersionsDBError(t *testing.T) {
 func TestDeleteModule_DeleteDBError(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(sampleModuleRow())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*module_id").
@@ -496,7 +502,6 @@ func TestDeleteModule_DeleteDBError(t *testing.T) {
 func TestDeleteModule_NotFound(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(emptyModuleRow())
 
@@ -511,7 +516,6 @@ func TestDeleteModule_NotFound(t *testing.T) {
 func TestDeleteModule_Success_NoVersions(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(sampleModuleRow())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*module_id").
@@ -530,7 +534,6 @@ func TestDeleteModule_Success_NoVersions(t *testing.T) {
 func TestDeleteModule_Success_WithVersions(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(sampleModuleRow())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*module_id").
@@ -568,7 +571,6 @@ func TestDeleteModuleVersion_OrgDBError(t *testing.T) {
 func TestDeleteModuleVersion_ModuleDBError(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnError(errDB)
 
@@ -583,7 +585,6 @@ func TestDeleteModuleVersion_ModuleDBError(t *testing.T) {
 func TestDeleteModuleVersion_GetVersionDBError(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(sampleModuleRow())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").
@@ -600,7 +601,6 @@ func TestDeleteModuleVersion_GetVersionDBError(t *testing.T) {
 func TestDeleteModuleVersion_DeleteDBError(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(sampleModuleRow())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").
@@ -619,7 +619,6 @@ func TestDeleteModuleVersion_DeleteDBError(t *testing.T) {
 func TestDeleteModuleVersion_ModuleNotFound(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(emptyModuleRow())
 
@@ -634,7 +633,6 @@ func TestDeleteModuleVersion_ModuleNotFound(t *testing.T) {
 func TestDeleteModuleVersion_VersionNotFound(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(sampleModuleRow())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").
@@ -651,7 +649,6 @@ func TestDeleteModuleVersion_VersionNotFound(t *testing.T) {
 func TestDeleteModuleVersion_Success(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(sampleModuleRow())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").
@@ -690,7 +687,6 @@ func TestDeprecateModuleVersion_OrgDBError(t *testing.T) {
 func TestDeprecateModuleVersion_ModuleDBError(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnError(errDB)
 
@@ -706,7 +702,6 @@ func TestDeprecateModuleVersion_ModuleDBError(t *testing.T) {
 func TestDeprecateModuleVersion_GetVersionDBError(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(sampleModuleRow())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").
@@ -723,7 +718,6 @@ func TestDeprecateModuleVersion_GetVersionDBError(t *testing.T) {
 func TestDeprecateModuleVersion_DeprecateDBError(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(sampleModuleRow())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").
@@ -743,7 +737,6 @@ func TestDeprecateModuleVersion_DeprecateDBError(t *testing.T) {
 func TestDeprecateModuleVersion_ModuleNotFound(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(emptyModuleRow())
 
@@ -759,7 +752,6 @@ func TestDeprecateModuleVersion_ModuleNotFound(t *testing.T) {
 func TestDeprecateModuleVersion_VersionNotFound(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(sampleModuleRow())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").
@@ -776,7 +768,6 @@ func TestDeprecateModuleVersion_VersionNotFound(t *testing.T) {
 func TestDeprecateModuleVersion_Success(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(sampleModuleRow())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").
@@ -796,7 +787,6 @@ func TestDeprecateModuleVersion_Success(t *testing.T) {
 func TestDeprecateModuleVersion_WithReplacementSource(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(sampleModuleRow())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").
@@ -838,7 +828,6 @@ func TestUndeprecateModuleVersion_OrgDBError(t *testing.T) {
 func TestUndeprecateModuleVersion_ModuleDBError(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnError(errDB)
 
@@ -853,7 +842,6 @@ func TestUndeprecateModuleVersion_ModuleDBError(t *testing.T) {
 func TestUndeprecateModuleVersion_ModuleNotFound(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(emptyModuleRow())
 
@@ -868,7 +856,6 @@ func TestUndeprecateModuleVersion_ModuleNotFound(t *testing.T) {
 func TestUndeprecateModuleVersion_GetVersionDBError(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(sampleModuleRow())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").
@@ -885,7 +872,6 @@ func TestUndeprecateModuleVersion_GetVersionDBError(t *testing.T) {
 func TestUndeprecateModuleVersion_UndeprecateDBError(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(sampleModuleRow())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").
@@ -904,7 +890,6 @@ func TestUndeprecateModuleVersion_UndeprecateDBError(t *testing.T) {
 func TestUndeprecateModuleVersion_VersionNotFound(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(sampleModuleRow())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").
@@ -921,7 +906,6 @@ func TestUndeprecateModuleVersion_VersionNotFound(t *testing.T) {
 func TestUndeprecateModuleVersion_Success(t *testing.T) {
 	mock, r := newModuleRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(sampleModuleRow())
 	mock.ExpectQuery("SELECT.*FROM module_versions.*WHERE module_id").
@@ -1089,7 +1073,6 @@ func TestDeprecateModule_OrgDBError(t *testing.T) {
 
 func TestDeprecateModule_ModuleNotFound(t *testing.T) {
 	mock, r := newModuleRouter(t)
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(emptyModuleRow())
 
@@ -1104,7 +1087,6 @@ func TestDeprecateModule_ModuleNotFound(t *testing.T) {
 
 func TestDeprecateModule_Success(t *testing.T) {
 	mock, r := newModuleRouter(t)
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(sampleModuleRow())
 	mock.ExpectExec("UPDATE modules SET deprecated").
@@ -1121,7 +1103,6 @@ func TestDeprecateModule_Success(t *testing.T) {
 
 func TestDeprecateModule_EmptyBody(t *testing.T) {
 	mock, r := newModuleRouter(t)
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(sampleModuleRow())
 	mock.ExpectExec("UPDATE modules SET deprecated").
@@ -1137,7 +1118,6 @@ func TestDeprecateModule_EmptyBody(t *testing.T) {
 
 func TestDeprecateModule_DBError(t *testing.T) {
 	mock, r := newModuleRouter(t)
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(sampleModuleRow())
 	mock.ExpectExec("UPDATE modules SET deprecated").
@@ -1172,7 +1152,6 @@ func TestUndeprecateModule_OrgDBError(t *testing.T) {
 
 func TestUndeprecateModule_ModuleNotFound(t *testing.T) {
 	mock, r := newModuleRouter(t)
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(emptyModuleRow())
 
@@ -1186,7 +1165,6 @@ func TestUndeprecateModule_ModuleNotFound(t *testing.T) {
 
 func TestUndeprecateModule_Success(t *testing.T) {
 	mock, r := newModuleRouter(t)
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(sampleModuleRow())
 	mock.ExpectExec("UPDATE modules SET deprecated").
@@ -1202,7 +1180,6 @@ func TestUndeprecateModule_Success(t *testing.T) {
 
 func TestUndeprecateModule_DBError(t *testing.T) {
 	mock, r := newModuleRouter(t)
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM modules").
 		WillReturnRows(sampleModuleRow())
 	mock.ExpectExec("UPDATE modules SET deprecated").

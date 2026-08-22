@@ -76,10 +76,8 @@ func TestGetManifest_ByDigest(t *testing.T) {
 
 	digest := expectedManifestDigest(t)
 
-	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WithArgs("default").WillReturnRows(orgRow("org-id", "default"))
 	mock.ExpectQuery("SELECT.*FROM modules").
-		WithArgs("org-id", "hashicorp", "consul", "aws").
+		WithArgs("hashicorp", "consul", "aws").
 		WillReturnRows(moduleRow("mod-id", "org-id", "hashicorp", "consul", "aws"))
 	// A digest reference lists the module's versions and recomputes; it must NOT
 	// query by version string, which is what always 404'd.
@@ -115,10 +113,8 @@ func TestGetManifest_ByUnknownDigestIs404(t *testing.T) {
 	}
 	defer db.Close()
 
-	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WithArgs("default").WillReturnRows(orgRow("org-id", "default"))
 	mock.ExpectQuery("SELECT.*FROM modules").
-		WithArgs("org-id", "hashicorp", "consul", "aws").
+		WithArgs("hashicorp", "consul", "aws").
 		WillReturnRows(moduleRow("mod-id", "org-id", "hashicorp", "consul", "aws"))
 	mock.ExpectQuery("SELECT.*FROM module_versions").
 		WithArgs("mod-id").
@@ -148,10 +144,8 @@ func TestGetManifest_ByTagStillWorks(t *testing.T) {
 	}
 	defer db.Close()
 
-	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WithArgs("default").WillReturnRows(orgRow("org-id", "default"))
 	mock.ExpectQuery("SELECT.*FROM modules").
-		WithArgs("org-id", "hashicorp", "consul", "aws").
+		WithArgs("hashicorp", "consul", "aws").
 		WillReturnRows(moduleRow("mod-id", "org-id", "hashicorp", "consul", "aws"))
 	// By TAG: an exact-version query, not a list.
 	mock.ExpectQuery("SELECT.*FROM module_versions.*version = ").
