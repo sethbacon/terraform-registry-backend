@@ -54,12 +54,6 @@ var _ = newOCIRouter
 
 // ─── shared row builders ──────────────────────────────────────────────────────
 
-func orgRow(id, name string) *sqlmock.Rows {
-	now := time.Now()
-	return sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}).
-		AddRow(id, name, "Org "+name, nil, nil, now, now)
-}
-
 func moduleRow(id, orgID, ns, name, system string) *sqlmock.Rows {
 	now := time.Now()
 	return sqlmock.NewRows([]string{
