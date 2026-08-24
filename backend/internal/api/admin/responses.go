@@ -23,24 +23,52 @@ type MeUserInfo struct {
 	UpdatedAt time.Time `json:"updated_at"`
 } // @name User
 
+// MeRoleTemplate is a membership's role template, nested. The four fields used
+// to be spliced FLAT into MeMembershipEntry as role_template_id, _name,
+// _display_name and _scopes -- which is not what the handler has ever emitted
+// (#892). The wire format is the nested object; the struct was the thing that
+// was wrong.
+type MeRoleTemplate struct {
+	ID          *string  `json:"id"`
+	Name        *string  `json:"name"`
+	DisplayName *string  `json:"display_name"`
+	Scopes      []string `json:"scopes"`
+}
+
+// MeRoleTemplateSummary is the TOP-LEVEL role_template, kept for backward
+// compatibility: the first membership's template, with only two of its fields.
+// Deliberately a different type from MeRoleTemplate -- they carry different
+// fields, and one struct with omitempty everywhere would let either shape pass.
+type MeRoleTemplateSummary struct {
+	Name        *string `json:"name"`
+	DisplayName *string `json:"display_name"`
+}
+
 // MeMembershipEntry describes one organisation membership in the /me response.
 type MeMembershipEntry struct {
-	OrganizationID          string    `json:"organization_id"`
-	OrganizationName        string    `json:"organization_name"`
-	RoleTemplateID          *string   `json:"role_template_id"`
-	RoleTemplateName        *string   `json:"role_template_name"`
-	RoleTemplateDisplayName *string   `json:"role_template_display_name"`
-	RoleTemplateScopes      []string  `json:"role_template_scopes"`
-	CreatedAt               time.Time `json:"created_at"`
+	OrganizationID   string    `json:"organization_id"`
+	OrganizationName string    `json:"organization_name"`
+	CreatedAt        time.Time `json:"created_at"`
+	// NO omitempty, deliberately: a membership with no role template emits
+	// `"role_template": null`. The key is always present.
+	RoleTemplate *MeRoleTemplate `json:"role_template"`
 }
 
 // MeResponse is returned by GET /api/v1/auth/me.
 type MeResponse struct {
-	User             MeUserInfo          `json:"user"`
-	Memberships      []MeMembershipEntry `json:"memberships"`
-	AllowedScopes    []string            `json:"allowed_scopes"`
-	RoleTemplate     interface{}         `json:"role_template"`
-	SessionExpiresAt *time.Time          `json:"session_expires_at,omitempty"`
+	User          MeUserInfo          `json:"user"`
+	Memberships   []MeMembershipEntry `json:"memberships"`
+	AllowedScopes []string            `json:"allowed_scopes"`
+	// NO omitempty, matching the membership field above and matching the
+	// handler, which has an else-branch setting this to nil rather than leaving
+	// the key out. `omitempty` here would DROP `"role_template": null` from every
+	// response that currently carries it -- a silent wire-format change dressed
+	// up as a typing fix, which is the failure mode this whole issue is about.
+	//
+	// SessionExpiresAt is the one field that genuinely is omitted: the handler
+	// sets it only when JWT claims carry an expiry, and never for API-key auth.
+	RoleTemplate     *MeRoleTemplateSummary `json:"role_template"`
+	SessionExpiresAt *time.Time             `json:"session_expires_at,omitempty"`
 }
 
 // APIKeyItem represents a single API key in list/get responses.
@@ -132,8 +160,8 @@ type ListBranchesResponse struct {
 // `int64,omitempty` an uncounted list and an empty one were byte-identical,
 // which is the same class of silence this struct exists to end.
 type PaginationMeta struct {
-	Page    int  `json:"page"`
-	PerPage int  `json:"per_page"`
+	Page    int `json:"page"`
+	PerPage int `json:"per_page"`
 	// HasMore reports whether any rows follow this page.
 	HasMore bool `json:"has_more"`
 	// Total is the number of matching rows across all pages, or null when the

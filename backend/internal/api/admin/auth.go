@@ -927,39 +927,6 @@ func (h *AuthHandlers) MeHandler() gin.HandlerFunc {
 			return
 		}
 
-		// Build response with user info and per-org role templates
-		response := gin.H{
-			"user": gin.H{
-				"id":         userWithRoles.ID,
-				"email":      userWithRoles.Email,
-				"name":       userWithRoles.Name,
-				"created_at": userWithRoles.CreatedAt,
-				"updated_at": userWithRoles.UpdatedAt,
-			},
-		}
-
-		// Build per-org memberships with role templates
-		memberships := make([]gin.H, 0, len(userWithRoles.Memberships))
-		for _, m := range userWithRoles.Memberships {
-			membership := gin.H{
-				"organization_id":   m.OrganizationID,
-				"organization_name": m.OrganizationName,
-				"created_at":        m.CreatedAt,
-			}
-			if m.RoleTemplateID != nil {
-				membership["role_template"] = gin.H{
-					"id":           m.RoleTemplateID,
-					"name":         m.RoleTemplateName,
-					"display_name": m.RoleTemplateDisplayName,
-					"scopes":       m.RoleTemplateScopes,
-				}
-			} else {
-				membership["role_template"] = nil
-			}
-			memberships = append(memberships, membership)
-		}
-		response["memberships"] = memberships
-
 		// Calculate combined allowed scopes across all organizations
 		// and provide a "primary" role template (highest privilege) for backward compatibility
 		allowedScopes := userWithRoles.GetAllowedScopes() //nolint:staticcheck // SA1019: deliberate suite-wide combined view for this admin display endpoint; narrow legitimate use per the deprecation notice
@@ -999,28 +966,25 @@ func (h *AuthHandlers) MeHandler() gin.HandlerFunc {
 		if auth.HasScope(effective, auth.ScopeAdmin) {
 			allowedScopes = append(allowedScopes, string(auth.ScopeAdmin))
 		}
-		response["allowed_scopes"] = allowedScopes
 
-		// Include session expiry from JWT claims so the frontend can schedule the
-		// pre-expiry warning dialog for cookie-based sessions. Absent for API-key auth.
+		// Session expiry from JWT claims, so the frontend can schedule the
+		// pre-expiry warning for cookie sessions. Absent for API-key auth.
+		var sessionExpiresAt *time.Time
 		if claimsVal, ok := c.Get("jwt_claims"); ok {
 			if claims, ok := claimsVal.(*auth.Claims); ok && claims.ExpiresAt != nil {
 				t := claims.ExpiresAt.Time
-				response["session_expires_at"] = t
+				sessionExpiresAt = &t
 			}
 		}
 
-		// For backward compatibility, provide the first membership's role template as primary
-		// In a multi-org setup, the frontend should use per-org memberships
-		if len(userWithRoles.Memberships) > 0 && userWithRoles.Memberships[0].RoleTemplateID != nil {
-			m := userWithRoles.Memberships[0]
-			response["role_template"] = gin.H{
-				"name":         m.RoleTemplateName,
-				"display_name": m.RoleTemplateDisplayName,
-			}
-		} else {
-			response["role_template"] = nil
-		}
+		// Constructed, not assembled ad hoc: see buildMeResponse on why the
+		// swagger annotation below is only true because this is a MeResponse.
+		response := buildMeResponse(
+			&userWithRoles.User,
+			userWithRoles.Memberships,
+			allowedScopes,
+			sessionExpiresAt,
+		)
 
 		c.JSON(http.StatusOK, response)
 	}
