@@ -184,7 +184,24 @@ jobs:
         with:
           name: release-artifacts
           path: release/
-          retention-days: 1
+          # 7, not 1, because THIS is the artifact the publish job downloads.
+          #
+          # `publish-release` needs release-artifacts to attach the binaries,
+          # checksums and signatures to the GitHub Release. At retention-days: 1
+          # a release whose publish step failed became unrecoverable by re-run
+          # after 24 hours: `gh run rerun --failed` re-runs only the failed jobs,
+          # so goreleaser stays cached as success and never regenerates the
+          # bundle, and the download then fails with "Artifact not found".
+          #
+          # That is exactly what happened to v4.9.0. The publish job failed on a
+          # transient cosign install, the re-run two days later cleared it, and
+          # the release still could not publish because the bundle had expired.
+          # It took a full workflow_dispatch against the tag to recover.
+          #
+          # A week is enough to notice a failed release and re-run it, and short
+          # enough that a 160MB bundle is not kept around. The container SBOMs in
+          # this same workflow already use 90.
+          retention-days: 7
           if-no-files-found: error
 
       - name: Attest build provenance (binaries)
