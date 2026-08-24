@@ -27,7 +27,7 @@ require (
 	github.com/in-toto/attestation v1.2.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/jmoiron/sqlx v1.4.0
-	github.com/open-policy-agent/opa v1.19.0
+	github.com/open-policy-agent/opa v1.19.1
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.2
 	github.com/redis/go-redis/v9 v9.22.0
