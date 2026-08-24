@@ -52,7 +52,7 @@ func TestAuthenticate_ByCN(t *testing.T) {
 		Subject: pkix.Name{CommonName: "terraform-ci"},
 	}
 
-	subject, scopes, err := p.Authenticate(cert)
+	subject, scopes, _, err := p.Authenticate(cert)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestAuthenticate_CaseInsensitive(t *testing.T) {
 		Subject: pkix.Name{CommonName: "terraform-ci"},
 	}
 
-	_, scopes, err := p.Authenticate(cert)
+	_, scopes, _, err := p.Authenticate(cert)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestAuthenticate_NoMatch(t *testing.T) {
 		Subject: pkix.Name{CommonName: "unknown-client"},
 	}
 
-	_, _, err := p.Authenticate(cert)
+	_, _, _, err := p.Authenticate(cert)
 	if err == nil {
 		t.Error("expected error for unmatched subject")
 	}
@@ -112,7 +112,7 @@ func TestAuthenticate_NilCert(t *testing.T) {
 		Mappings:     []config.MTLSSubjectMapping{},
 	})
 
-	_, _, err := p.Authenticate(nil)
+	_, _, _, err := p.Authenticate(nil)
 	if err == nil {
 		t.Error("expected error for nil certificate")
 	}

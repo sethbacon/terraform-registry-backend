@@ -49,7 +49,7 @@ func requestWithVerifiedChains(leaf *x509.Certificate) *http.Request {
 
 func TestAuthMiddleware_NilProvider_PassesThrough(t *testing.T) {
 	r := gin.New()
-	r.Use(AuthMiddleware(nil))
+	r.Use(AuthMiddleware(nil, nil))
 	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	w := httptest.NewRecorder()
@@ -63,7 +63,7 @@ func TestAuthMiddleware_NilProvider_PassesThrough(t *testing.T) {
 func TestAuthMiddleware_NoTLS_PassesThroughUnauthenticated(t *testing.T) {
 	p := newMTLSTestProvider(t)
 	r := gin.New()
-	r.Use(AuthMiddleware(p))
+	r.Use(AuthMiddleware(p, nil))
 	var authMethodSet bool
 	r.GET("/", func(c *gin.Context) {
 		_, authMethodSet = c.Get("auth_method")
@@ -84,7 +84,7 @@ func TestAuthMiddleware_NoTLS_PassesThroughUnauthenticated(t *testing.T) {
 func TestAuthMiddleware_NoVerifiedChains_PassesThroughUnauthenticated(t *testing.T) {
 	p := newMTLSTestProvider(t)
 	r := gin.New()
-	r.Use(AuthMiddleware(p))
+	r.Use(AuthMiddleware(p, nil))
 	var authMethodSet bool
 	r.GET("/", func(c *gin.Context) {
 		_, authMethodSet = c.Get("auth_method")
@@ -107,7 +107,7 @@ func TestAuthMiddleware_NoVerifiedChains_PassesThroughUnauthenticated(t *testing
 func TestAuthMiddleware_VerifiedCert_MatchedMapping_SetsContext(t *testing.T) {
 	p := newMTLSTestProvider(t)
 	r := gin.New()
-	r.Use(AuthMiddleware(p))
+	r.Use(AuthMiddleware(p, nil))
 
 	var gotAuthMethod, gotSubject string
 	var gotScopes []string
@@ -141,7 +141,7 @@ func TestAuthMiddleware_VerifiedCert_MatchedMapping_SetsContext(t *testing.T) {
 func TestAuthMiddleware_VerifiedCert_NoMapping_PassesThroughUnauthenticated(t *testing.T) {
 	p := newMTLSTestProvider(t)
 	r := gin.New()
-	r.Use(AuthMiddleware(p))
+	r.Use(AuthMiddleware(p, nil))
 	var authMethodSet bool
 	r.GET("/", func(c *gin.Context) {
 		_, authMethodSet = c.Get("auth_method")
