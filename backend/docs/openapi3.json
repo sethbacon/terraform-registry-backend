@@ -17452,20 +17452,13 @@
                     "organization_name": {
                         "type": "string"
                     },
-                    "role_template_display_name": {
-                        "type": "string"
-                    },
-                    "role_template_id": {
-                        "type": "string"
-                    },
-                    "role_template_name": {
-                        "type": "string"
-                    },
-                    "role_template_scopes": {
-                        "type": "array",
-                        "items": {
-                            "type": "string"
-                        }
+                    "role_template": {
+                        "description": "NO omitempty, deliberately: a membership with no role template emits\n`\"role_template\": null`. The key is always present.",
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/admin.MeRoleTemplate"
+                            }
+                        ]
                     }
                 }
             },
@@ -17484,12 +17477,50 @@
                             "$ref": "#/components/schemas/admin.MeMembershipEntry"
                         }
                     },
-                    "role_template": {},
+                    "role_template": {
+                        "description": "NO omitempty, matching the membership field above and matching the\nhandler, which has an else-branch setting this to nil rather than leaving\nthe key out. `omitempty` here would DROP `\"role_template\": null` from every\nresponse that currently carries it -- a silent wire-format change dressed\nup as a typing fix, which is the failure mode this whole issue is about.\n\nSessionExpiresAt is the one field that genuinely is omitted: the handler\nsets it only when JWT claims carry an expiry, and never for API-key auth.",
+                        "allOf": [
+                            {
+                                "$ref": "#/components/schemas/admin.MeRoleTemplateSummary"
+                            }
+                        ]
+                    },
                     "session_expires_at": {
                         "type": "string"
                     },
                     "user": {
                         "$ref": "#/components/schemas/User"
+                    }
+                }
+            },
+            "admin.MeRoleTemplate": {
+                "type": "object",
+                "properties": {
+                    "display_name": {
+                        "type": "string"
+                    },
+                    "id": {
+                        "type": "string"
+                    },
+                    "name": {
+                        "type": "string"
+                    },
+                    "scopes": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    }
+                }
+            },
+            "admin.MeRoleTemplateSummary": {
+                "type": "object",
+                "properties": {
+                    "display_name": {
+                        "type": "string"
+                    },
+                    "name": {
+                        "type": "string"
                     }
                 }
             },
