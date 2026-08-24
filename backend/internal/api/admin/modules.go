@@ -203,6 +203,22 @@ func (h *ModuleAdminHandlers) GetModule(c *gin.Context) {
 			"published_by_name": v.PublishedByName,
 			"created_at":        v.CreatedAt,
 		}
+		// SCM provenance. Selected and scanned by ListVersions since the
+		// columns were added, but never emitted, so an automated publisher had
+		// no way to ask "which version is this commit?" and had to match on
+		// the version string it had just constructed (issue #879,
+		// terraform-module-publish#23).
+		//
+		// Conditional, like the deprecation fields below and like the model's
+		// own `omitempty` tags: a version uploaded by hand has no commit to
+		// report, and an explicit null would claim the publish was tracked and
+		// the SHA lost.
+		if v.CommitSHA != nil {
+			versionData["commit_sha"] = v.CommitSHA
+		}
+		if v.TagName != nil {
+			versionData["tag_name"] = v.TagName
+		}
 		if v.DeprecatedAt != nil {
 			versionData["deprecated_at"] = v.DeprecatedAt
 		}
