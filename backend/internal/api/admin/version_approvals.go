@@ -15,7 +15,9 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+
 	"github.com/google/uuid"
+	"github.com/terraform-registry/terraform-registry/internal/pagination"
 
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
@@ -77,7 +79,11 @@ func (h *VersionApprovalHandler) tenantFilter(c *gin.Context) (repositories.Vers
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/admin/version-approvals [get]
 func (h *VersionApprovalHandler) List(c *gin.Context) {
+	// GUARD page-size-has-a-maximum (issue #900). Its siblings in
+	// endpoint's own @Param already promised "max 500, a larger value is
+	// served as 500" — the contract was written, never implemented.
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
+	limit = pagination.ClampPerPage(limit, 100, 500)
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 
 	filter, ok := h.tenantFilter(c)

@@ -24,7 +24,9 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/storage"
 
 	"github.com/gin-gonic/gin"
+
 	"github.com/google/uuid"
+	"github.com/terraform-registry/terraform-registry/internal/pagination"
 )
 
 // TerraformMirrorSyncJobInterface is the subset of TerraformMirrorSyncJob required by the handler.
@@ -742,7 +744,7 @@ func (h *TerraformMirrorHandler) UndeprecateVersion(c *gin.Context) {
 // @Security     Bearer
 // @Produce      json
 // @Param        id     path   string  true   "Mirror config UUID"
-// @Param        limit  query  int     false  "Maximum number of history rows to return (default: 50)"
+// @Param        limit  query  int     false  "Maximum number of history rows to return (default 50, max 1000). A larger value is served as 1000."
 // @Success      200  {object}  models.TerraformSyncHistoryListResponse
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
 // @Failure      404  {object}  map[string]interface{}  "Not found"
@@ -758,12 +760,11 @@ func (h *TerraformMirrorHandler) GetSyncHistory(c *gin.Context) {
 		return
 	}
 
-	limit := 50
-	if limitStr := c.Query("limit"); limitStr != "" {
-		if n, err := strconv.Atoi(limitStr); err == nil && n > 0 {
-			limit = n
-		}
-	}
+	// GUARD page-size-has-a-maximum (issue #900). Unbounded, exactly as in
+	// ListMigrations — the same defect, in a sibling handler the issue did
+	// not name.
+	limit, _ := strconv.Atoi(c.Query("limit"))
+	limit = pagination.ClampPerPage(limit, 50, 1000)
 
 	history, err := h.repo.ListSyncHistory(c.Request.Context(), id, limit)
 	if err != nil {

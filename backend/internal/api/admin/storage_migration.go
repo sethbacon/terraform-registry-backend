@@ -8,7 +8,9 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+
 	"github.com/google/uuid"
+	"github.com/terraform-registry/terraform-registry/internal/pagination"
 	"github.com/terraform-registry/terraform-registry/internal/services"
 )
 
@@ -105,7 +107,7 @@ func (h *StorageMigrationHandler) StartMigration(c *gin.Context) {
 // @Tags         Storage Migration
 // @Security     Bearer
 // @Produce      json
-// @Param        limit   query  int  false  "Max results (default 20)"
+// @Param        limit   query  int  false  "Max results (default 20, max 1000). A larger value is served as 1000."
 // @Param        offset  query  int  false  "Offset for pagination (default 0)"
 // @Success      200  {object}  map[string]interface{}  "migrations array and pagination"
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
@@ -114,13 +116,13 @@ func (h *StorageMigrationHandler) StartMigration(c *gin.Context) {
 // ListMigrations returns all migration jobs, newest first.
 // coverage:skip:requires-infrastructure
 func (h *StorageMigrationHandler) ListMigrations(c *gin.Context) {
-	limit := 20
+	// GUARD page-size-has-a-maximum (issue #900). This read had no upper
+	// bound at all: ?limit=1000000 was passed straight to the query, so one
+	// request could ask the database for every migration job ever recorded.
+	limit, _ := strconv.Atoi(c.Query("limit"))
+	limit = pagination.ClampPerPage(limit, 20, 1000)
+
 	offset := 0
-	if l := c.Query("limit"); l != "" {
-		if v, err := strconv.Atoi(l); err == nil && v > 0 {
-			limit = v
-		}
-	}
 	if o := c.Query("offset"); o != "" {
 		if v, err := strconv.Atoi(o); err == nil && v >= 0 {
 			offset = v
