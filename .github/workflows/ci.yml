@@ -516,6 +516,21 @@ jobs:
         # gosec exits non-zero when findings exist; we capture that via the compare step.
         run: gosec -fmt json -out gosec-results.json ./... || true
 
+      # The comparator is the only thing standing between a gosec run and a green
+
+      # required check, and its own regression tests were committed but never
+
+      # executed by anything -- CI ran no python tests at all. A test nothing
+
+      # runs is indistinguishable from a test that passes.
+
+      - name: The gosec comparator's own tests
+
+        working-directory: backend
+
+        run: python3 scripts/gosec_compare_test.py
+
+
       - name: Compare against baseline
         id: compare
         working-directory: backend

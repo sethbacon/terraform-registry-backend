@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Regression test for gosec-compare.py's fingerprinting (#655).
+Regression tests for gosec-compare.py: fingerprinting (#655) and the
+vacuous-scan guard.
 
 Run with:
     python3 backend/scripts/gosec_compare_test.py
@@ -9,7 +10,10 @@ Standard library only (unittest) — no extra dependencies required.
 """
 
 import importlib.util
+import json
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -85,6 +89,107 @@ class FingerprintCollisionTest(unittest.TestCase):
         self.assertEqual(
             gosec_compare.fingerprint(original, self.BASE_DIR),
             gosec_compare.fingerprint(shifted, self.BASE_DIR),
+        )
+
+
+class VacuousScanTest(unittest.TestCase):
+    """A scan that analysed nothing must not read as a scan that found nothing.
+
+    `gosec ... || true` discards gosec's exit code, so a run that failed to
+    analyse anything reaches the comparator looking exactly like a clean repo:
+    `"Issues": []`. Every step after that behaves correctly on an empty universe
+    and the required check goes green having verified nothing.
+    """
+
+    def _write(self, payload: dict) -> str:
+        path = Path(tempfile.mkdtemp()) / "gosec-results.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return str(path)
+
+    def test_zero_files_scanned_is_not_clean(self):
+        path = self._write({"Issues": [], "Stats": {"files": 0, "lines": 0}})
+        problems = gosec_compare.scan_integrity_problems(path)
+        self.assertTrue(problems, "a scan of 0 files must be reported as unusable")
+        self.assertIn("files scanned", problems[0])
+
+    def test_missing_stats_is_not_clean(self):
+        path = self._write({"Issues": []})
+        self.assertTrue(
+            gosec_compare.scan_integrity_problems(path),
+            "results with no Stats at all must be reported as unusable",
+        )
+
+    def test_go_compile_errors_make_the_finding_set_incomplete(self):
+        path = self._write(
+            {
+                "Issues": [],
+                "Stats": {"files": 248, "lines": 65750},
+                "Golang errors": {
+                    "internal/mirror": [{"error": "undefined: Foo"}],
+                },
+            }
+        )
+        problems = gosec_compare.scan_integrity_problems(path)
+        self.assertTrue(problems, "packages that did not compile were not analysed")
+        self.assertIn("internal/mirror", problems[0])
+
+    def test_a_real_scan_is_not_flagged(self):
+        path = self._write(
+            {
+                "Issues": [],
+                "Stats": {"files": 248, "lines": 65750, "nosec": 173},
+                "Golang errors": {},
+            }
+        )
+        self.assertEqual(
+            gosec_compare.scan_integrity_problems(path),
+            [],
+            "a genuine clean scan must still pass",
+        )
+
+
+class VacuousScanIsRejectedEndToEndTest(unittest.TestCase):
+    """Run the script the way CI runs it.
+
+    The unit tests above cover scan_integrity_problems() but not its CALL SITE:
+    deleting the call from main() leaves every one of them green while the guard
+    protects nothing. A tested function that nothing invokes is the same defect
+    as an untested one, so this drives the actual entry point and asserts on the
+    exit code CI branches on.
+    """
+
+    def _run(self, results: dict) -> subprocess.CompletedProcess:
+        tmp = Path(tempfile.mkdtemp())
+        (tmp / "results.json").write_text(json.dumps(results), encoding="utf-8")
+        (tmp / "baseline.json").write_text(
+            json.dumps({"Issues": [], "Stats": {"files": 248, "lines": 65750}}),
+            encoding="utf-8",
+        )
+        return subprocess.run(
+            [
+                sys.executable, str(_MODULE_PATH),
+                "--results", str(tmp / "results.json"),
+                "--baseline", str(tmp / "baseline.json"),
+                "--base-dir", str(tmp),
+            ],
+            capture_output=True, text=True,
+        )
+
+    def test_a_scan_of_nothing_exits_nonzero(self):
+        proc = self._run({"Issues": [], "Stats": {"files": 0, "lines": 0}})
+        self.assertNotEqual(
+            proc.returncode, 0,
+            "a gosec run that analysed 0 files must not exit 0:\n" + proc.stdout,
+        )
+        self.assertIn("did not produce a usable scan", proc.stdout)
+
+    def test_a_real_clean_scan_still_exits_zero(self):
+        proc = self._run(
+            {"Issues": [], "Stats": {"files": 248, "lines": 65750}, "Golang errors": {}}
+        )
+        self.assertEqual(
+            proc.returncode, 0,
+            "a genuine clean scan must still pass:\n" + proc.stdout + proc.stderr,
         )
 
 
