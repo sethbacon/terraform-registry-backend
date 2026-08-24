@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	idstore "github.com/sethbacon/terraform-suite-identity/identity/store"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/telemetry"
@@ -18,14 +19,26 @@ type AuditCleanupJob struct {
 	cfg       *config.AuditRetentionConfig
 	auditRepo *repositories.AuditRepository
 	stopChan  chan struct{}
+
+	// sweepOpts carry the legal-hold exemption (#872). Empty means this
+	// deployment sweeps without one — which router.go only allows when there
+	// is no holds table to consult, because it refuses to construct this job
+	// at all when a table exists but cannot be read on the sweep's connection.
+	sweepOpts []idstore.AuditSweepOption
 }
 
 // NewAuditCleanupJob constructs an AuditCleanupJob.
-func NewAuditCleanupJob(cfg *config.AuditRetentionConfig, auditRepo *repositories.AuditRepository) *AuditCleanupJob {
+//
+// Pass idstore.WithLegalHolds(table) to exempt held rows from deletion. The
+// option is variadic rather than a parameter so a deployment with no holds
+// table keeps emitting the statement it always has — a NOT EXISTS against a
+// table that does not exist is a parse-time error, not an empty set.
+func NewAuditCleanupJob(cfg *config.AuditRetentionConfig, auditRepo *repositories.AuditRepository, sweepOpts ...idstore.AuditSweepOption) *AuditCleanupJob {
 	return &AuditCleanupJob{
 		cfg:       cfg,
 		auditRepo: auditRepo,
 		stopChan:  make(chan struct{}),
+		sweepOpts: sweepOpts,
 	}
 }
 
@@ -40,7 +53,10 @@ func (j *AuditCleanupJob) Start(ctx context.Context) error {
 		return nil
 	}
 
-	slog.Info("audit cleanup: started", "retention_days", j.cfg.RetentionDays, "batch_size", j.cfg.CleanupBatchSize)
+	slog.Info("audit cleanup: started",
+		"retention_days", j.cfg.RetentionDays,
+		"batch_size", j.cfg.CleanupBatchSize,
+		"legal_holds_honoured", len(j.sweepOpts) > 0)
 
 	// Run one immediate cycle before entering the ticker loop.
 	j.runCleanupCycle(ctx)
@@ -82,7 +98,7 @@ func (j *AuditCleanupJob) runCleanupCycle(ctx context.Context) {
 
 	var totalDeleted int64
 	for {
-		deleted, err := j.auditRepo.DeleteAuditLogsBefore(ctx, cutoff, batchSize)
+		deleted, err := j.auditRepo.DeleteAuditLogsBefore(ctx, cutoff, batchSize, j.sweepOpts...)
 		if err != nil {
 			slog.Error("audit cleanup: batch delete failed", "error", err)
 			break

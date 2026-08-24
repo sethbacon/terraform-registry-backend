@@ -912,3 +912,50 @@ func scanCreateTableSQL(t *testing.T, root string) []string {
 	}
 	return out
 }
+
+// TestNoTableIsCreatedByApplicationCode closes boundary 4 rather than tolerating
+// it (issues #864, #871, #872).
+//
+// creditRuntimeDDL exists because some tables were created by CREATE TABLE IF
+// NOT EXISTS in Go rather than by a numbered migration. The guard credited them
+// so its write-checking would not report false violations, and logged the credit
+// because a credit is an admission: the model is trusting that a string literal
+// somewhere is executed, on the right connection, before anything reads the
+// table. It cannot verify any of those.
+//
+// legal_holds was the last one, and #872 moved it into migration 000057 — so
+// the credited set is now EMPTY, and an empty set can be asserted where a
+// non-empty one could only be logged. From here a new runtime-created table
+// fails this test instead of quietly joining a list nobody re-reads.
+//
+// This is not a ban on CREATE TABLE in Go. It is a requirement that adding one
+// is a decision someone writes down: put the table in a migration, or add it
+// here with the reason its schema cannot be known at migration time.
+func TestNoTableIsCreatedByApplicationCode(t *testing.T) {
+	cfg := readDefaultConfig(t)
+	idDir := identityModuleDir(t)
+
+	m := newSchemaModel()
+	if cfg.AppApplied {
+		if err := m.replay(migrationStream{Name: "app", Dir: appMigrationsDir, DefaultSchema: "public"}); err != nil {
+			t.Fatalf("%v", err)
+		}
+	}
+	if cfg.IdentityApplied {
+		dir := filepath.Join(idDir, "identity", "migrations")
+		if err := m.replay(migrationStream{Name: "identity", Dir: dir, DefaultSchema: "identity"}); err != nil {
+			t.Fatalf("%v", err)
+		}
+	}
+
+	credited := creditRuntimeDDL(t, m, runtimeDDLRoots)
+	if len(credited) != 0 {
+		t.Errorf("these tables are created by application code rather than by a migration: %v\n"+
+			"A table outside the migration chain is invisible to everything that reasons about the "+
+			"schema from it, and this guard cannot verify that the code creating it runs, runs first, "+
+			"or runs on the connection that reads the table \u2014 legal_holds was created at startup for "+
+			"months while the sweep that needed it ran on a different connection (#872).\n"+
+			"Add a numbered migration, or list the table here with the reason its schema is not "+
+			"knowable at migration time.", credited)
+	}
+}

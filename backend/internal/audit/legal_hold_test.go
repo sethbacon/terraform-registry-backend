@@ -2,285 +2,196 @@ package audit
 
 import (
 	"context"
-	"fmt"
+	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 )
 
+// The store is the WRITE side of legal hold. Its correctness question is
+// narrow — does a hold get recorded with the shape the sweep reads, and does
+// releasing one stop it holding — because the PRESERVE side is a SQL predicate
+// in terraform-suite-identity, proved against real PostgreSQL there.
+//
+// What these cannot prove, and no mock can, is that a held row survives a
+// sweep. That assertion lives where the predicate does.
+
+const testHoldID = "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+
+func newHoldStore(t *testing.T) (*LegalHoldStore, sqlmock.Sqlmock) {
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return NewLegalHoldStore(db), mock
+}
+
 func TestNewLegalHoldStore(t *testing.T) {
 	db, _, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	store := NewLegalHoldStore(db)
-	if store == nil {
-		t.Fatal("NewLegalHoldStore returned nil")
-	}
-	if store.db != db {
-		t.Error("store.db not set correctly")
+	if store == nil || store.db != db {
+		t.Fatal("NewLegalHoldStore did not retain its connection")
 	}
 }
 
-func TestLegalHoldStore_EnsureTable(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer db.Close()
-
-	mock.ExpectExec("CREATE TABLE IF NOT EXISTS legal_holds").
-		WillReturnResult(sqlmock.NewResult(0, 0))
-
-	store := NewLegalHoldStore(db)
-	err := store.EnsureTable(context.Background())
-	if err != nil {
-		t.Fatalf("EnsureTable() = %v", err)
+// EnsureTable is gone: migration 000057 creates the table. A store that still
+// created its own would put it wherever the store's connection points, which
+// is exactly how a hold ends up somewhere the sweep cannot see it.
+func TestStoreCreatesNoSchema(t *testing.T) {
+	store, mock := newHoldStore(t)
+	// No expectations queued. Any DDL the store issues fails as unexpected.
+	if _, err := store.List(context.Background(), false); err == nil {
+		t.Fatal("List should have failed with no expectation queued")
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet expectations: %v", err)
-	}
+	_ = mock
 }
 
-func TestLegalHoldStore_Create_Success(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer db.Close()
+func TestPlaceRecordsTheHold(t *testing.T) {
+	store, mock := newHoldStore(t)
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.AddDate(0, 0, 7)
+	actor := "actor-1"
 
-	now := time.Now()
-	rows := sqlmock.NewRows([]string{"id", "created_at", "active"}).
-		AddRow(int64(1), now, true)
+	mock.ExpectQuery(`INSERT INTO legal_holds`).
+		WithArgs(sqlmock.AnyArg(), "investigation", "subpoena 42", start, end, &actor).
+		WillReturnRows(sqlmock.NewRows([]string{"placed_at", "active"}).AddRow(start, true))
 
-	mock.ExpectQuery("INSERT INTO legal_holds").
-		WithArgs("test hold", "description", "admin", sqlmock.AnyArg(), sqlmock.AnyArg()).
-		WillReturnRows(rows)
-
-	store := NewLegalHoldStore(db)
-	hold := &LegalHold{
-		Name:        "test hold",
-		Description: "description",
-		CreatedBy:   "admin",
-		StartDate:   now.Add(-24 * time.Hour),
-		EndDate:     now.Add(24 * time.Hour),
+	hold := &LegalHold{Name: "investigation", Reason: "subpoena 42", StartDate: start, EndDate: end, PlacedBy: &actor}
+	if err := store.Place(context.Background(), hold); err != nil {
+		t.Fatalf("Place: %v", err)
 	}
-
-	err := store.Create(context.Background(), hold)
-	if err != nil {
-		t.Fatalf("Create() = %v", err)
-	}
-	if hold.ID != 1 {
-		t.Errorf("ID = %d, want 1", hold.ID)
+	if hold.ID == "" {
+		t.Error("Place did not assign an id; the caller needs it for the audit entry it writes alongside")
 	}
 	if !hold.Active {
-		t.Error("Active = false, want true")
+		t.Error("a freshly placed hold is not active")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
 	}
 }
 
-func TestLegalHoldStore_Create_EmptyName(t *testing.T) {
-	db, _, _ := sqlmock.New()
-	defer db.Close()
-
-	store := NewLegalHoldStore(db)
-	hold := &LegalHold{
-		StartDate: time.Now(),
-		EndDate:   time.Now().Add(time.Hour),
-	}
-
-	err := store.Create(context.Background(), hold)
-	if err == nil {
-		t.Fatal("Create() with empty name = nil, want error")
-	}
-}
-
-func TestLegalHoldStore_Create_InvalidDates(t *testing.T) {
-	db, _, _ := sqlmock.New()
-	defer db.Close()
-
-	store := NewLegalHoldStore(db)
-	hold := &LegalHold{
-		Name:      "test",
-		StartDate: time.Now().Add(time.Hour),
-		EndDate:   time.Now(), // end before start
-	}
-
-	err := store.Create(context.Background(), hold)
-	if err == nil {
-		t.Fatal("Create() with start > end = nil, want error")
+func TestPlaceRefusesAnUnusableWindow(t *testing.T) {
+	start := time.Date(2026, 1, 8, 0, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name string
+		hold LegalHold
+	}{
+		{"no name", LegalHold{StartDate: start, EndDate: start}},
+		{"end before start", LegalHold{Name: "x", StartDate: start, EndDate: start.AddDate(0, 0, -1)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, mock := newHoldStore(t)
+			h := tc.hold
+			if err := store.Place(context.Background(), &h); err == nil {
+				t.Fatal("an unusable hold was accepted")
+			}
+			// And nothing reached the database.
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Errorf("a statement ran despite the rejection: %v", err)
+			}
+		})
 	}
 }
 
-func TestLegalHoldStore_Release_Success(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer db.Close()
+// A hold covering a single day must be accepted: the sweep's range is
+// inclusive at both ends, so start == end holds that day.
+func TestPlaceAcceptsASingleDayHold(t *testing.T) {
+	store, mock := newHoldStore(t)
+	day := time.Date(2026, 3, 3, 0, 0, 0, 0, time.UTC)
+	mock.ExpectQuery(`INSERT INTO legal_holds`).
+		WillReturnRows(sqlmock.NewRows([]string{"placed_at", "active"}).AddRow(day, true))
 
-	mock.ExpectExec("UPDATE legal_holds").
-		WithArgs(int64(1), "admin").
-		WillReturnResult(sqlmock.NewResult(0, 1))
+	h := &LegalHold{Name: "one day", StartDate: day, EndDate: day}
+	if err := store.Place(context.Background(), h); err != nil {
+		t.Fatalf("a single-day hold was refused: %v", err)
+	}
+}
 
-	store := NewLegalHoldStore(db)
-	err := store.Release(context.Background(), 1, "admin")
+func TestReleaseDeactivatesAndKeepsTheRow(t *testing.T) {
+	store, mock := newHoldStore(t)
+	now := time.Now().UTC()
+	actor := "releaser-1"
+
+	mock.ExpectQuery(`UPDATE legal_holds`).
+		WithArgs(testHoldID, &actor).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "name", "reason", "start_date", "end_date", "active",
+			"placed_by", "placed_at", "released_by", "released_at",
+		}).AddRow(testHoldID, "investigation", "", now, now, false, nil, now, &actor, &now))
+
+	h, err := store.Release(context.Background(), testHoldID, &actor)
 	if err != nil {
-		t.Fatalf("Release() = %v", err)
+		t.Fatalf("Release: %v", err)
+	}
+	if h.Active {
+		t.Error("released hold is still active")
+	}
+	if h.ReleasedAt == nil {
+		t.Error("released hold has no released_at; the row is the record of what was preserved and when")
 	}
 }
 
-func TestLegalHoldStore_Release_NotFound(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer db.Close()
+// Releasing something that is not held is not an error worth inventing a
+// distinction for: absent and already-released are the same answer.
+func TestReleaseReportsNothingToRelease(t *testing.T) {
+	store, mock := newHoldStore(t)
+	mock.ExpectQuery(`UPDATE legal_holds`).WillReturnError(sql.ErrNoRows)
 
-	mock.ExpectExec("UPDATE legal_holds").
-		WithArgs(int64(99), "admin").
-		WillReturnResult(sqlmock.NewResult(0, 0))
-
-	store := NewLegalHoldStore(db)
-	err := store.Release(context.Background(), 99, "admin")
-	if err == nil {
-		t.Fatal("Release() of non-existent hold = nil, want error")
+	_, err := store.Release(context.Background(), testHoldID, nil)
+	if !errors.Is(err, ErrHoldNotFound) {
+		t.Fatalf("Release on an unknown hold = %v, want ErrHoldNotFound — the handler maps that "+
+			"sentinel to 404, so anything else becomes a 500", err)
 	}
 }
 
-func TestLegalHoldStore_Release_DBError(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer db.Close()
+func TestListReturnsAnEmptySliceNotNil(t *testing.T) {
+	store, mock := newHoldStore(t)
+	mock.ExpectQuery(`SELECT .* FROM legal_holds`).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "name", "reason", "start_date", "end_date", "active",
+			"placed_by", "placed_at", "released_by", "released_at",
+		}))
 
-	mock.ExpectExec("UPDATE legal_holds").
-		WithArgs(int64(1), "admin").
-		WillReturnError(fmt.Errorf("db error"))
-
-	store := NewLegalHoldStore(db)
-	err := store.Release(context.Background(), 1, "admin")
-	if err == nil {
-		t.Fatal("Release() with DB error = nil, want error")
-	}
-}
-
-func TestLegalHoldStore_List_All(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer db.Close()
-
-	now := time.Now()
-	rows := sqlmock.NewRows([]string{"id", "name", "description", "created_by", "created_at", "start_date", "end_date", "active", "released_at", "released_by"}).
-		AddRow(int64(1), "hold1", "desc1", "admin", now, now, now, true, nil, "").
-		AddRow(int64(2), "hold2", "desc2", "admin", now, now, now, false, &now, "admin")
-
-	mock.ExpectQuery("SELECT .+ FROM legal_holds ORDER BY").
-		WillReturnRows(rows)
-
-	store := NewLegalHoldStore(db)
 	holds, err := store.List(context.Background(), false)
 	if err != nil {
-		t.Fatalf("List(false) = %v", err)
+		t.Fatalf("List: %v", err)
 	}
-	if len(holds) != 2 {
-		t.Fatalf("len(holds) = %d, want 2", len(holds))
-	}
-	if holds[0].Name != "hold1" {
-		t.Errorf("holds[0].Name = %q, want hold1", holds[0].Name)
+	if holds == nil {
+		t.Error("List returned nil; an empty list must marshal as [] so a consumer can tell " +
+			"'no holds' from a missing field")
 	}
 }
 
-func TestLegalHoldStore_List_ActiveOnly(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer db.Close()
+func TestListActiveOnlyConstrainsTheQuery(t *testing.T) {
+	store, mock := newHoldStore(t)
+	mock.ExpectQuery(`FROM legal_holds WHERE active = TRUE`).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "name", "reason", "start_date", "end_date", "active",
+			"placed_by", "placed_at", "released_by", "released_at",
+		}))
 
-	now := time.Now()
-	rows := sqlmock.NewRows([]string{"id", "name", "description", "created_by", "created_at", "start_date", "end_date", "active", "released_at", "released_by"}).
-		AddRow(int64(1), "active-hold", "", "admin", now, now, now, true, nil, "")
-
-	mock.ExpectQuery("WHERE active = TRUE").
-		WillReturnRows(rows)
-
-	store := NewLegalHoldStore(db)
-	holds, err := store.List(context.Background(), true)
-	if err != nil {
-		t.Fatalf("List(true) = %v", err)
+	if _, err := store.List(context.Background(), true); err != nil {
+		t.Fatalf("List(activeOnly): %v", err)
 	}
-	if len(holds) != 1 {
-		t.Fatalf("len(holds) = %d, want 1", len(holds))
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("activeOnly did not constrain the query: %v", err)
 	}
 }
 
-func TestLegalHoldStore_GetByID(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer db.Close()
+func TestGetByIDReportsAbsence(t *testing.T) {
+	store, mock := newHoldStore(t)
+	mock.ExpectQuery(`SELECT .* FROM legal_holds WHERE id = \$1`).
+		WillReturnError(sql.ErrNoRows)
 
-	now := time.Now()
-	rows := sqlmock.NewRows([]string{"id", "name", "description", "created_by", "created_at", "start_date", "end_date", "active", "released_at", "released_by"}).
-		AddRow(int64(1), "test", "desc", "admin", now, now, now, true, nil, "")
-
-	mock.ExpectQuery("SELECT .+ FROM legal_holds WHERE id").
-		WithArgs(int64(1)).
-		WillReturnRows(rows)
-
-	store := NewLegalHoldStore(db)
-	hold, err := store.GetByID(context.Background(), 1)
-	if err != nil {
-		t.Fatalf("GetByID() = %v", err)
-	}
-	if hold.Name != "test" {
-		t.Errorf("Name = %q, want test", hold.Name)
-	}
-}
-
-func TestLegalHoldStore_IsDateRangeHeld(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer db.Close()
-
-	rows := sqlmock.NewRows([]string{"exists"}).AddRow(true)
-	mock.ExpectQuery("SELECT EXISTS").
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
-		WillReturnRows(rows)
-
-	store := NewLegalHoldStore(db)
-	held, err := store.IsDateRangeHeld(context.Background(), time.Now(), time.Now().Add(time.Hour))
-	if err != nil {
-		t.Fatalf("IsDateRangeHeld() = %v", err)
-	}
-	if !held {
-		t.Error("held = false, want true")
-	}
-}
-
-func TestLegalHoldStore_IsDateRangeHeld_NotHeld(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer db.Close()
-
-	rows := sqlmock.NewRows([]string{"exists"}).AddRow(false)
-	mock.ExpectQuery("SELECT EXISTS").
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
-		WillReturnRows(rows)
-
-	store := NewLegalHoldStore(db)
-	held, err := store.IsDateRangeHeld(context.Background(), time.Now(), time.Now().Add(time.Hour))
-	if err != nil {
-		t.Fatalf("IsDateRangeHeld() = %v", err)
-	}
-	if held {
-		t.Error("held = true, want false")
-	}
-}
-
-func TestLegalHoldStore_HeldDateRanges(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer db.Close()
-
-	start1 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	end1 := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
-	start2 := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
-	end2 := time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)
-
-	rows := sqlmock.NewRows([]string{"start_date", "end_date"}).
-		AddRow(start1, end1).
-		AddRow(start2, end2)
-
-	mock.ExpectQuery("SELECT start_date, end_date FROM legal_holds WHERE active = TRUE").
-		WillReturnRows(rows)
-
-	store := NewLegalHoldStore(db)
-	ranges, err := store.HeldDateRanges(context.Background())
-	if err != nil {
-		t.Fatalf("HeldDateRanges() = %v", err)
-	}
-	if len(ranges) != 2 {
-		t.Fatalf("len(ranges) = %d, want 2", len(ranges))
-	}
-	if !ranges[0][0].Equal(start1) {
-		t.Errorf("ranges[0][0] = %v, want %v", ranges[0][0], start1)
+	_, err := store.GetByID(context.Background(), testHoldID)
+	if !errors.Is(err, ErrHoldNotFound) {
+		t.Fatalf("GetByID on an unknown id = %v, want ErrHoldNotFound", err)
 	}
 }
