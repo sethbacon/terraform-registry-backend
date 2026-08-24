@@ -156,3 +156,8 @@ updates:
       commit-message-check:
         patterns:
           - "*"
+    # zizmor dependabot-cooldown: the implicit default is 3 days and the audit
+    # requires 7. Security updates are exempt from cooldown, so this delays
+    # feature bumps and not fixes.
+    cooldown:
+      default-days: 7
