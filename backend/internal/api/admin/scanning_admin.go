@@ -8,10 +8,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
 	"github.com/jmoiron/sqlx"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/pagination"
 	"github.com/terraform-registry/terraform-registry/internal/scanner"
 )
 
@@ -157,12 +159,12 @@ func GetScanningStatsHandler(db *sqlx.DB, orgRepo *repositories.OrganizationRepo
 			return
 		}
 
-		limit := 20
-		if l := c.Query("limit"); l != "" {
-			if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 100 {
-				limit = parsed
-			}
-		}
+		// GUARD per-page-clamps-to-max (issue #893). Written as an accept-guard
+		// rather than an if/reassign, so the sweep in internal/pagination could
+		// not see it: `?limit=200` failed the `<= 100` test and left limit at
+		// the DEFAULT of 20, so asking for more returned less.
+		limit, _ := strconv.Atoi(c.Query("limit"))
+		limit = pagination.ClampPerPage(limit, 20, 100)
 
 		offset := 0
 		if o := c.Query("offset"); o != "" {

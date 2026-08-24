@@ -4176,7 +4176,7 @@
                 "parameters": [
                     {
                         "type": "integer",
-                        "description": "Max results (default 20)",
+                        "description": "Max results (default 20, max 1000). A larger value is served as 1000.",
                         "name": "limit",
                         "in": "query"
                     },
@@ -4816,7 +4816,7 @@
                     },
                     {
                         "type": "integer",
-                        "description": "Maximum number of history rows to return (default: 50)",
+                        "description": "Maximum number of history rows to return (default 50, max 1000). A larger value is served as 1000.",
                         "name": "limit",
                         "in": "query"
                     }
