@@ -73,12 +73,29 @@ func (s *LocalStorage) safeJoin(path string) (string, error) {
 	// This was previously `full := filepath.Join(...)` with the containment test
 	// applied to `filepath.Clean(full)` while plain `full` was returned.
 	// Functionally identical -- filepath.Join already cleans -- but the test then
-	// referred to a different expression than the one that escapes the function,
-	// which is why CodeQL's go/path-injection could not recognise safeJoin as a
-	// sanitiser and kept flagging Delete's os.Remove calls as HIGH.
+	// referred to a different expression than the one that escapes the function.
 	//
-	// Checking exactly what you return is the clearer contract regardless of the
-	// scanner.
+	// CORRECTION (2026-08-24). This comment used to claim that difference was
+	// "why CodeQL's go/path-injection could not recognise safeJoin as a sanitiser
+	// and kept flagging Delete's os.Remove calls as HIGH" -- i.e. that #826 fixed
+	// the alerts. IT DID NOT. Alerts 57 and 60 were still open after it, and the
+	// commit they were last analysed on has #826 as an ancestor, so the scanner
+	// re-ran with this shape in place and reported anyway. They are now dismissed
+	// as false positives on the merits, not resolved by this refactor.
+	//
+	// The claim mattered because it was load-bearing in the wrong direction:
+	// anyone finding those alerts open would read this comment and conclude they
+	// predated the fix and could be ignored.
+	//
+	// Checking exactly what you return is still the clearer contract, which is
+	// the reason to keep it -- independent of any scanner.
+	//
+	// NOT COVERED HERE: symlinks. This resolves lexically and does not call
+	// filepath.EvalSymlinks, so a symlink INSIDE basePath pointing outside it is
+	// followed by the callers' os.Remove / os.Open. That needs an attacker who
+	// can already create symlinks under the storage root, which is why it is
+	// noted rather than fixed here -- but it is the one path in this file that is
+	// not proven safe.
 	full := filepath.Clean(filepath.Join(s.basePath, filepath.FromSlash(path)))
 	base := filepath.Clean(s.basePath) + string(os.PathSeparator)
 	if !strings.HasPrefix(full+string(os.PathSeparator), base) {
