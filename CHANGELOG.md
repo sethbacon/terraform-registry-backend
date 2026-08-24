@@ -7,6 +7,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.10.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.9.0...v4.10.0) (2026-08-24)
+
+
+### Features
+
+* **api:** emit SCM provenance on admin module versions ([#879](https://github.com/sethbacon/terraform-registry-backend/issues/879)) ([#948](https://github.com/sethbacon/terraform-registry-backend/issues/948)) ([b4da7cb](https://github.com/sethbacon/terraform-registry-backend/commit/b4da7cb73ae93d6530126ca8fd0a3a1af213b289))
+* **audit:** connect legal hold to the retention sweep ([#872](https://github.com/sethbacon/terraform-registry-backend/issues/872)) ([#955](https://github.com/sethbacon/terraform-registry-backend/issues/955)) ([0b1e193](https://github.com/sethbacon/terraform-registry-backend/commit/0b1e1934cd27800722e120a9bb91f891acb100be))
+
+
+### Bug Fixes
+
+* **api:** bound every page-size parameter, and see the ones that aren't ([#900](https://github.com/sethbacon/terraform-registry-backend/issues/900)) ([#946](https://github.com/sethbacon/terraform-registry-backend/issues/946)) ([81ddfeb](https://github.com/sethbacon/terraform-registry-backend/commit/81ddfeb1db04865b5b79087cd4252bb31e3957e6))
+* **api:** describe /auth/me's real response shape ([#892](https://github.com/sethbacon/terraform-registry-backend/issues/892)) ([#945](https://github.com/sethbacon/terraform-registry-backend/issues/945)) ([ab7fdb5](https://github.com/sethbacon/terraform-registry-backend/commit/ab7fdb5ac11687464b659caca267cd3396783362))
+* **ci:** refuse a gosec scan that analysed nothing, and run the comparator's tests ([#942](https://github.com/sethbacon/terraform-registry-backend/issues/942)) ([10b0a92](https://github.com/sethbacon/terraform-registry-backend/commit/10b0a92ae4496ad68967a0689a05946c1de6eaf4))
+* **mtls:** resolve certificate mappings through the platform-admin carrier ([#876](https://github.com/sethbacon/terraform-registry-backend/issues/876)) ([#950](https://github.com/sethbacon/terraform-registry-backend/issues/950)) ([eb48499](https://github.com/sethbacon/terraform-registry-backend/commit/eb4849944a94cdf5fa4b4cb8b9f8dd8775075b5c))
+* **release:** keep release-artifacts for 7 days, not 1 ([#940](https://github.com/sethbacon/terraform-registry-backend/issues/940)) ([da08f4a](https://github.com/sethbacon/terraform-registry-backend/commit/da08f4a4d5fe2b85722386c7dbf0fb166a78d41c))
+
+
+### Documentation
+
+* **storage:** correct safeJoin's claim that [#826](https://github.com/sethbacon/terraform-registry-backend/issues/826) cleared the CodeQL alerts ([#943](https://github.com/sethbacon/terraform-registry-backend/issues/943)) ([e283a8f](https://github.com/sethbacon/terraform-registry-backend/commit/e283a8f378e35ea6cc8dbc659647ba0bdb8f43ec))
+* **upgrade:** record [#876](https://github.com/sethbacon/terraform-registry-backend/issues/876)'s startup refusal as a breaking change ([#953](https://github.com/sethbacon/terraform-registry-backend/issues/953)) ([ae723e9](https://github.com/sethbacon/terraform-registry-backend/commit/ae723e95b22dd44407d6839f205025f3b8d227c0))
+
 ## [4.9.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.8.0...v4.9.0) (2026-08-22)
 
 
