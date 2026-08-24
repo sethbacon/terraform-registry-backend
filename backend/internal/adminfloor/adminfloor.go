@@ -20,11 +20,23 @@
 // # What "administrator" means, derived rather than invented
 //
 // PLATFORM administrator is what the middleware treats as platform-admin
-// authority today: the platform_admins carrier (migration 000051) OR an
-// admin-bearing role template held through any membership (the org-less scope
-// union, #652). Effective admin is `carrier OR union`, so the floor counts the
-// union of both — refusing a demotion because the carrier is empty when four
-// union administrators remain would be a refusal with no hazard behind it.
+// authority today: a row in the platform_admins carrier (migration 000051).
+// Nothing else, since migration 000054.
+//
+// It used to be `carrier OR union` — the carrier OR an admin-bearing role
+// template held through any membership (the org-less scope union, #652) — and
+// this paragraph went on saying so for a while after it stopped being true.
+// #874 made authority carrier-only and rewrote checkPlatformFloor to match; the
+// description here was not updated with it, so the package doc and the function
+// 280 lines below disagreed about who counts. Corrected while closing #876,
+// which was the other half of the same drift: mTLS was still publishing `admin`
+// from a config file, so the carrier was not in fact the only source the
+// sentence above claimed it was.
+//
+// The union half is gone deliberately, not by omission: the auth middleware
+// strips `admin` from the session union, so an admin-bearing membership
+// administers nothing, and counting one would report "an administrator remains"
+// while the deployment's last real one was being deleted.
 //
 // ORGANIZATION administrator is a member whose role template carries `admin`
 // or `organizations:write`. That is not a new definition: it is exactly what

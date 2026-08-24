@@ -582,7 +582,11 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		if mtlsErr != nil {
 			log.Fatalf("failed to initialize mTLS provider: %v", mtlsErr)
 		}
-		router.Use(mtls.AuthMiddleware(mtlsProvider))
+		// The carrier goes in so an mTLS mapping's `admin` is resolved per
+		// request against platform_admins rather than trusted from config
+		// (#876). Constructed above at the platformAdminCarrier assignment,
+		// which is why this registration sits after it.
+		router.Use(mtls.AuthMiddleware(mtlsProvider, platformAdminCarrier))
 	}
 
 	// Rate limiters are constructed HERE, ahead of route registration, because

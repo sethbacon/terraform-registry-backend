@@ -218,11 +218,23 @@ security:
   mtls:
     enabled: false
     client_ca_file: /etc/certs/client-ca.crt
+    #
+    # A mapping's scopes are a claim, not a grant. `admin` is a grant-all
+    # wildcard held in the platform_admins carrier, which is keyed on a user —
+    # so a mapping carrying `admin` MUST name the user the certificate acts as,
+    # and the server refuses to start otherwise. That user's carrier row is
+    # then consulted on every request, so revoking it disarms the certificate
+    # immediately rather than at the next restart (issue #876).
+    #
+    # user_id is optional for ordinary machine credentials, which need no user.
     # mappings:
     #   - subject: "CN=terraform-ci"
     #     scopes: ["modules:read", "providers:read"]
     #   - subject: "CN=release-pipeline"
     #     scopes: ["modules:write", "providers:write"]
+    #   - subject: "CN=break-glass"
+    #     scopes: ["admin"]
+    #     user_id: "00000000-0000-0000-0000-000000000000"  # grant via POST /api/v1/admin/platform-admins
 
 logging:
   level: info  # Options: debug, info, warn, error

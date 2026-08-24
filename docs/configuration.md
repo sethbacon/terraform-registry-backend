@@ -1236,7 +1236,33 @@ security:
     mappings:
       - subject: "CN=ci-runner"
         scopes: ["modules:read", "providers:read"]
+      - subject: "CN=break-glass"
+        scopes: ["admin"]
+        user_id: "3f1c9a02-6d4e-4a1b-9f77-2b8e5c0d1a44"
 ```
+
+### `admin` in a mapping needs a user, and the carrier still decides
+
+A subject mapping is configuration, so the scopes in it are a claim about
+authority rather than a grant of it. `admin` is a grant-all wildcard — it
+satisfies every scope check and lets the caller cross organization boundaries —
+and it is held in the `platform_admins` carrier, which is keyed on a user.
+
+So a mapping that carries `admin` must set `user_id` to the UUID of the user the
+certificate acts as. **The server refuses to start otherwise**, with an error
+naming the subject. `user_id` is optional for ordinary machine credentials,
+which need no user behind them.
+
+Naming a user does not by itself grant anything. On every request the carrier is
+consulted for that user, exactly as it is for a browser session: `admin` holds
+only while they hold a carrier row, and revoking it through
+`DELETE /api/v1/admin/platform-admins/{id}` disarms the certificate on the next
+request rather than at the next restart. The grant is recorded with
+`granted_by`, `granted_at` and a note, like every other one.
+
+A repeated `subject` is also refused: it used to take the last one silently,
+which would now bind a certificate to a different principal than the line you are
+reading.
 
 ---
 

@@ -681,6 +681,22 @@ type MTLSConfig struct {
 type MTLSSubjectMapping struct {
 	Subject string   `mapstructure:"subject"`
 	Scopes  []string `mapstructure:"scopes"`
+
+	// UserID names the registry user this certificate acts as, and is what
+	// makes an `admin` mapping resolvable (issue #876).
+	//
+	// Optional for ordinary mappings: a certificate that only needs
+	// `modules:read` is a machine credential and needs no user behind it.
+	// REQUIRED when the mapping carries `admin`, because platform-admin
+	// authority is held in the platform_admins carrier, the carrier is keyed
+	// on user_id, and a subject with no user resolves to nothing to look up.
+	// mtls.NewProvider refuses such a mapping at startup.
+	//
+	// A UUID rather than an email or a username: it is what the carrier is
+	// keyed on and what POST /api/v1/admin/platform-admins already takes, and
+	// it does not change when a user is renamed. A mapping that named a mutable
+	// attribute could silently start pointing at a different person.
+	UserID string `mapstructure:"user_id"`
 }
 
 // RateLimitingConfig holds rate limiting configuration

@@ -17,6 +17,16 @@ change that would break either one.
 **Platform administrator** — a principal holding a row in `platform_admins`
 (the carrier, migration `000051`). Nothing else, as of migration `000054`.
 
+That sentence was not true for mTLS until #876. A client-certificate subject
+mapping published its configured scopes verbatim, so `scopes: ["admin"]` in a
+config file produced a platform administrator holding no carrier row — with no
+`granted_by`, no audit entry, no revocation short of a restart, and invisible to
+everything on this page including the floor, which counts database rows and
+cannot see a YAML file. A mapping carrying `admin` must now name the user the
+certificate acts as, and that user's carrier row is resolved on every request.
+An mTLS caller is therefore counted like any other principal, because it *is*
+one of the rows being counted.
+
 An organization membership whose role template carries the `admin` scope used to
 count too, through the org-less scope union (#652). It does not any more: the
 auth middleware strips `admin` from the session union, so such a membership
