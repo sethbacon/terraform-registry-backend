@@ -192,6 +192,77 @@ on the next boot, which is the whole mechanism this note is about.
   that grants a scope the list omits, and a list that grants a scope no migration granted,
   both turn a PR red.
 
+### 4.x → the release carrying #876 — an mTLS mapping granting `admin` must name a user, or the server will not start
+
+**Breaking for one narrow class of deployment, and it fails at startup rather
+than at request time.** It affects you only if `security.mtls.enabled: true`
+AND one of your `security.mtls.mappings` lists `admin` among its scopes.
+
+#### What changes
+
+An mTLS subject mapping used to publish its configured scopes verbatim, so
+`scopes: ["admin"]` made the certificate holder a platform administrator
+directly from the config file — with no `platform_admins` row, no `granted_by`,
+no audit entry, and no revocation short of editing configuration and
+restarting. Every other credential class had already moved to the carrier in
+`5.0.0` (sessions resolved through it, API keys stripped of `admin`), so this
+was the last path that answered "who is a platform administrator?" from
+somewhere else. The floor could not see it either: it counts database rows, and
+this administrator lived in a YAML file.
+
+A mapping carrying `admin` now has to name the user the certificate acts as:
+
+```yaml
+security:
+  mtls:
+    mappings:
+      - subject: "CN=break-glass"
+        scopes: ["admin"]
+        user_id: "3f1c9a02-6d4e-4a1b-9f77-2b8e5c0d1a44"   # NEW, and required for `admin`
+```
+
+`user_id` is optional for every other mapping — an ordinary machine credential
+needs no user behind it — and nothing changes for those.
+
+Naming a user does not by itself grant anything. The carrier is consulted on
+**every request** for that user, exactly as it is for a browser session, so
+`admin` holds only while they hold a carrier row and revoking it disarms the
+certificate on the next request rather than at the next restart.
+
+A repeated `subject` is now refused too. It previously took the last mapping in
+the file silently, which was untidy when a mapping was only a scope list and
+unacceptable once one can name a principal.
+
+#### What you will see if you are affected
+
+The server refuses to start, naming the subject:
+
+```
+failed to initialize mTLS provider: mtls.mappings: subject "CN=ci" carries the
+`admin` scope with no user_id. Platform administration is held in the
+platform_admins carrier, which is keyed on a user; set user_id to the UUID of
+the user this certificate acts as (and grant them platform administration
+through POST /api/v1/admin/platform-admins), or remove `admin` from the mapping
+```
+
+#### Before you deploy
+
+1. Search your config for `mtls`. If `enabled` is `false` or absent, stop —
+   nothing here applies.
+2. If any mapping lists `admin`, decide who that certificate acts as, and
+   confirm they hold a carrier row:
+
+   ```bash
+   curl -s -H "Authorization: Bearer $TOKEN" \
+     "$REGISTRY/api/v1/admin/platform-admins" | jq '.platform_admins[].user_id'
+   ```
+
+   Grant it with `POST /api/v1/admin/platform-admins` if not.
+3. Add `user_id` to the mapping, then deploy.
+
+Removing `admin` from the mapping entirely is also a complete answer if the
+certificate did not need platform-wide reach.
+
 ### 4.x → 5.0.0 — platform-admin authority moves to the `platform_admins` carrier
 
 **Breaking, and the action is required BEFORE the deploy on one class of
