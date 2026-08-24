@@ -26,9 +26,9 @@ updates:
     # Ignore major-version bumps for infrastructure libs that require manual review.
     ignore:
       - dependency-name: "github.com/gin-gonic/gin"
-        update-types: [ "version-update:semver-major" ]
+        update-types: ["version-update:semver-major"]
       - dependency-name: "github.com/golang-migrate/migrate/v4"
-        update-types: [ "version-update:semver-major" ]
+        update-types: ["version-update:semver-major"]
     cooldown:
       default-days: 7
 
@@ -84,7 +84,7 @@ updates:
     # their own. Taking a new Go minor stays a deliberate change.
     ignore:
       - dependency-name: "golang"
-        update-types: [ "version-update:semver-minor", "version-update:semver-major" ]
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
     cooldown:
       default-days: 7
 
@@ -92,6 +92,10 @@ updates:
   # npm (repo root) — pinned doc-generation tooling only (swagger2openapi),
   # not a runtime/shipped dependency. See docs/development.md.
   # ---------------------------------------------------------------------------
+    groups:
+      docker-dependencies:
+        patterns:
+          - '*'
   - package-ecosystem: npm
     directory: /
     schedule:
@@ -112,6 +116,10 @@ updates:
   # ---------------------------------------------------------------------------
   # GitHub Actions
   # ---------------------------------------------------------------------------
+    groups:
+      npm-dependencies:
+        patterns:
+          - '*'
   - package-ecosystem: github-actions
     directory: /
     schedule:
@@ -125,7 +133,7 @@ updates:
       - dependencies
       - github-actions
     commit-message:
-      prefix: "chore(ci)"
+      prefix: "chore(deps)"
     groups:
       github-actions-dependencies:
         patterns:
@@ -151,7 +159,7 @@ updates:
       - dependencies
       - github-actions
     commit-message:
-      prefix: "chore(ci)"
+      prefix: "chore(deps)"
     groups:
       commit-message-check:
         patterns:
