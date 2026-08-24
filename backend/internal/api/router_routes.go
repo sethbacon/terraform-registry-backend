@@ -408,7 +408,11 @@ type apiV1RouteDeps struct {
 	rbacHandlers                *admin.RBACHandlers
 	// platformAdminHandlers serves the management surface for the
 	// platform-admin carrier (issue #766).
-	platformAdminHandlers  *admin.PlatformAdminHandlers
+	platformAdminHandlers *admin.PlatformAdminHandlers
+	// legalHoldHandlers serves the legal-hold surface (issue #872). Always
+	// non-nil: when the holds table did not resolve on the identity connection
+	// it is the unavailable variant, which answers 503 with the reason.
+	legalHoldHandlers      *admin.LegalHoldHandlers
 	versionApprovalHandler *admin.VersionApprovalHandler
 	storageHandlers        *admin.StorageHandlers
 	storageConfigRepo      *repositories.StorageConfigRepository
@@ -490,6 +494,7 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 	releasesGPGKeysAdminHandler := d.releasesGPGKeysAdminHandler
 	rbacHandlers := d.rbacHandlers
 	platformAdminHandlers := d.platformAdminHandlers
+	legalHoldHandlers := d.legalHoldHandlers
 	versionApprovalHandler := d.versionApprovalHandler
 	storageHandlers := d.storageHandlers
 	storageConfigRepo := d.storageConfigRepo
@@ -1107,6 +1112,23 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 			// tenantGuardExemptRoutes entry: they are authorized by a scope no
 			// per-organization role template grants, which is the same standing
 			// the other eleven admin surfaces have.
+			// Legal hold (issue #872). Registered unconditionally: a
+			// deployment that cannot honour holds answers 503 with the reason
+			// rather than 404, which would read as "no such feature" when the
+			// truth is "misconfigured in a way that would destroy the evidence
+			// you are trying to preserve". It also keeps the router's shape
+			// independent of a runtime probe, which the route-class guard
+			// rightly insists on.
+			legalHoldsGroup := authenticatedGroup.Group("/admin/legal-holds")
+			{
+				legalHoldsGroup.GET("", middleware.RequireScope(auth.ScopeAdmin), legalHoldHandlers.ListLegalHolds)
+				legalHoldsGroup.POST("", middleware.RequireScope(auth.ScopeAdmin), legalHoldHandlers.PlaceLegalHold)
+				// POST .../release rather than DELETE: the row is evidence and
+				// survives release, so DELETE would name the wrong thing.
+				// Mirrors PUT /:id/approve on version approvals.
+				legalHoldsGroup.POST("/:id/release", middleware.RequireScope(auth.ScopeAdmin), legalHoldHandlers.ReleaseLegalHold)
+			}
+
 			platformAdminsGroup := authenticatedGroup.Group("/admin/platform-admins")
 			{
 				platformAdminsGroup.GET("", middleware.RequireScope(auth.ScopeAdmin), platformAdminHandlers.ListPlatformAdmins)

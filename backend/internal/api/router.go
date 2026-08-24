@@ -31,6 +31,7 @@ import (
 	identitymailer "github.com/sethbacon/terraform-suite-identity/identity/mailer"
 	identitynotify "github.com/sethbacon/terraform-suite-identity/identity/notify"
 	"github.com/sethbacon/terraform-suite-identity/identity/platformadmin"
+	idstore "github.com/sethbacon/terraform-suite-identity/identity/store"
 
 	"github.com/terraform-registry/terraform-registry/internal/adminfloor"
 	"github.com/terraform-registry/terraform-registry/internal/api/admin"
@@ -468,9 +469,43 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	scannerUpdateJob.SetEgressGuard(egressGuard)
 	jobRegistry.Register(scannerUpdateJob)
 
-	// Initialize the audit log cleanup job (no-op when retention_days=0)
-	auditCleanupJob := jobs.NewAuditCleanupJob(&cfg.AuditRetention, auditRepo)
-	jobRegistry.Register(auditCleanupJob)
+	// Initialize the audit log cleanup job (no-op when retention_days=0).
+	//
+	// THE HOLD TABLE IS VERIFIED ON THE SWEEP'S OWN CONNECTION (#872).
+	//
+	// auditRepo is built on identityDB, so that is where the DELETE runs and
+	// where its NOT EXISTS has to resolve legal_holds. Migration 000057 creates
+	// the table in the APP database. Those are the same database in every
+	// default deployment and different ones under TFR_IDENTITY_DATABASE_*, and
+	// the difference is invisible from either side on its own — which is
+	// exactly how a hold gets placed, confirmed in a UI, and swept anyway.
+	//
+	// So the job is only constructed when the table resolves HERE. If it does
+	// not, the sweep does not run at all. Not deleting expired audit rows is
+	// untidy and reversible; deleting rows an investigation asked to be
+	// preserved is neither, and a compliance control that is documented and
+	// absent is worse than one that is absent and known.
+	legalHoldTable := "legal_holds"
+	var legalHoldHandlers *admin.LegalHoldHandlers
+	if err := idstore.VerifyLegalHoldTable(context.Background(), identityDB, legalHoldTable); err != nil {
+		slog.Error("audit retention DISABLED: the legal-hold table is not readable on the identity "+
+			"connection, so a sweep could not honour holds and will not run",
+			"table", legalHoldTable, "error", err,
+			"remedy", "run migration 000057 against the database that holds audit_logs; if identity "+
+				"lives in a separate database (TFR_IDENTITY_DATABASE_*), the table must be created there")
+		legalHoldHandlers = admin.NewUnavailableLegalHoldHandlers(
+			"the legal_holds table is not readable on the connection the audit retention sweep runs on")
+	} else {
+		auditCleanupJob := jobs.NewAuditCleanupJob(&cfg.AuditRetention, auditRepo,
+			idstore.WithLegalHolds(legalHoldTable))
+		jobRegistry.Register(auditCleanupJob)
+
+		// The API is wired by the SAME condition that wires the sweep, so the
+		// two cannot disagree. A deployment where holds are placeable but not
+		// honoured is the exact state #872 was filed about: the operator sees a
+		// confirmation, the evidence is deleted anyway.
+		legalHoldHandlers = admin.NewLegalHoldHandlers(audit.NewLegalHoldStore(identityDB), auditRepo)
+	}
 
 	// The transactional audit outbox (issue #766, migration 000052).
 	//
@@ -964,6 +999,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		releasesGPGKeysAdminHandler: releasesGPGKeysAdminHandler,
 		rbacHandlers:                rbacHandlers,
 		platformAdminHandlers:       platformAdminHandlers,
+		legalHoldHandlers:           legalHoldHandlers,
 		versionApprovalHandler:      versionApprovalHandler,
 		storageHandlers:             storageHandlers,
 		storageConfigRepo:           storageConfigRepo,

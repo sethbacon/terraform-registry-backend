@@ -747,6 +747,157 @@
                 }
             }
         },
+        "/api/v1/admin/legal-holds": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin"
+                ],
+                "summary": "List legal holds",
+                "parameters": [
+                    {
+                        "type": "boolean",
+                        "description": "Only holds still in force",
+                        "name": "active",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/admin.LegalHoldsResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "503": {
+                        "description": "Legal hold unavailable in this deployment",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Audit entries whose created_at falls inside the hold's inclusive date range are exempted from the retention sweep until the hold is released.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Place a legal hold on a window of audit history",
+                "parameters": [
+                    {
+                        "description": "Hold to place",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/admin.PlaceLegalHoldRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/audit.LegalHold"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "503": {
+                        "description": "Legal hold unavailable in this deployment",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/admin/legal-holds/{id}/release": {
+            "post": {
+                "description": "Deactivates the hold. The row is kept as the record of what was preserved and when; the entries it covered become deletable on the next retention sweep.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Release a legal hold",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Legal hold id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/audit.LegalHold"
+                        }
+                    },
+                    "404": {
+                        "description": "Not found or already released",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "503": {
+                        "description": "Legal hold unavailable in this deployment",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/admin/mirrors": {
             "get": {
                 "security": [
@@ -14091,6 +14242,17 @@
                 }
             }
         },
+        "admin.LegalHoldsResponse": {
+            "type": "object",
+            "properties": {
+                "legal_holds": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/audit.LegalHold"
+                    }
+                }
+            }
+        },
         "admin.ListAPIKeysResponse": {
             "type": "object",
             "properties": {
@@ -14619,6 +14781,28 @@
                 "total": {
                     "description": "Total is the number of matching rows across all pages, or null when the\nendpoint does not count.",
                     "type": "integer"
+                }
+            }
+        },
+        "admin.PlaceLegalHoldRequest": {
+            "type": "object",
+            "required": [
+                "end_date",
+                "name",
+                "start_date"
+            ],
+            "properties": {
+                "end_date": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "start_date": {
+                    "type": "string"
                 }
             }
         },
@@ -15538,6 +15722,42 @@
                     "$ref": "#/definitions/api.ProtocolVersions"
                 },
                 "version": {
+                    "type": "string"
+                }
+            }
+        },
+        "audit.LegalHold": {
+            "type": "object",
+            "properties": {
+                "active": {
+                    "type": "boolean"
+                },
+                "end_date": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "placed_at": {
+                    "type": "string"
+                },
+                "placed_by": {
+                    "description": "PlacedBy and ReleasedBy are user ids, nullable because a hold may be\nplaced by a principal with no user row behind it.",
+                    "type": "string"
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "released_at": {
+                    "type": "string"
+                },
+                "released_by": {
+                    "type": "string"
+                },
+                "start_date": {
                     "type": "string"
                 }
             }
