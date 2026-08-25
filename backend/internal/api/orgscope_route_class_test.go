@@ -112,9 +112,6 @@ var tenantGuardExemptRoutes = map[string]string{
 	"POST /api/v1/organizations": "creates the organization; there is no membership to check against a row that does not exist yet. The auto-grant of org_owner it performs is the named bootstrapExemption in platform_admin_grant_class_test.go",
 	"POST /api/v1/users":         "the users table carries no organization_id; gated on users:write",
 
-	// --- Proxy, no local table --------------------------------------------
-	"GET /api/v1/suite/modules/:namespace/:name/:system/consumers": "server-side proxy to a sibling suite application (2s timeout, [] on any failure); reads no table in this database",
-
 	// --- SCIM: the IdP-driven platform provisioning surface ----------------
 	// SCIM is how an external identity provider administers the whole
 	// deployment's users and groups; it passes OrgScopeAllOrganizations

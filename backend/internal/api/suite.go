@@ -14,9 +14,12 @@ import (
 	identityhttpsafe "github.com/sethbacon/terraform-suite-identity/identity/httpsafe"
 	"github.com/sethbacon/terraform-suite-identity/identity/suite"
 
+	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/safego"
+	"github.com/terraform-registry/terraform-registry/internal/tenantscope"
 )
 
 // maxConsumersResponseBytes bounds the sibling's "/consumers" JSON response
@@ -133,7 +136,7 @@ func startSuiteDiscovery(cfg *config.Config) *suite.DiscoveryClient {
 // @Success      200  {object}  map[string]interface{}  "Consuming states (rows forwarded opaquely from the sibling) and total count"
 // @Failure      401  {object}  map[string]interface{}  "Authentication required"
 // @Router       /api/v1/suite/modules/{namespace}/{name}/{system}/consumers [get]
-func moduleConsumersHandler(getClient func() *suite.DiscoveryClient, cfg *config.Config, egressGuard *httpsafe.Guard) gin.HandlerFunc {
+func moduleConsumersHandler(getClient func() *suite.DiscoveryClient, cfg *config.Config, egressGuard *httpsafe.Guard, orgRepo *repositories.OrganizationRepository) gin.HandlerFunc {
 	// hosts is THIS registry's set of canonical host identities the sibling
 	// matches "consumed by" on: its public host, its base/discovery host, and any
 	// operator-configured aliases (TFR_SERVER_HOST_ALIASES) for vanity-CNAME or
@@ -178,6 +181,25 @@ func moduleConsumersHandler(getClient func() *suite.DiscoveryClient, cfg *config
 
 		moduleAddr := c.Param("namespace") + "/" + c.Param("name") + "/" + c.Param("system")
 
+		// Resolve which organizations this caller may read modules in. The
+		// route sits in the authenticated group with no RequireScope, so this
+		// is the only place the caller's tenancy is established.
+		scope, err := tenantscope.Resolve(c, orgRepo, auth.ScopeModulesRead)
+		if err != nil {
+			slog.Warn("suite consumers: could not resolve caller organization scope",
+				"error", err)
+			c.JSON(http.StatusOK, empty)
+			return
+		}
+		// A caller who holds no organizations and is not a platform admin can
+		// legitimately see no consumers at all. Answer empty WITHOUT asking the
+		// sibling: doing so closes this half of the disclosure now, rather than
+		// waiting for the sibling to start enforcing the parameter below.
+		if !scope.PlatformAdmin && len(scope.OrgIDs) == 0 {
+			c.JSON(http.StatusOK, empty)
+			return
+		}
+
 		// Build the outbound URL structurally from the trusted sibling origin
 		// (siblingURL, parsed from the discovery-advertised PublicURL). The
 		// user-provided module address and the registry's own host set are
@@ -195,6 +217,23 @@ func moduleConsumersHandler(getClient func() *suite.DiscoveryClient, cfg *config
 		q.Set("module", moduleAddr)
 		for _, h := range hosts {
 			q.Add("host", h)
+		}
+		// NAME THE CALLER'S ORGANIZATIONS (#439).
+		//
+		// The sibling's /consumers has no principal of its own -- it is
+		// authenticated only by the shared suite service token -- so it cannot
+		// work out who is asking. Today it ignores this parameter and answers
+		// fleet-wide, which is why a registry user in one organization can see
+		// another's source names and state keys through this proxy. Sending the
+		// scope is what lets the sibling start enforcing it; until it does, this
+		// is inert on the wire and changes nothing.
+		//
+		// A platform admin deliberately sends none: that scope crosses
+		// organization boundaries here exactly as it does everywhere else, and
+		// the absence of the parameter is what the sibling will read as
+		// "fleet-wide", gated on its own operator opt-in.
+		for _, orgID := range scope.OrgIDs {
+			q.Add("organization", orgID)
 		}
 		target.RawQuery = q.Encode()
 
