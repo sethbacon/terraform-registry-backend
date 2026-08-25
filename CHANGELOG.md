@@ -7,6 +7,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.11.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.10.1...v4.11.0) (2026-08-25)
+
+
+### Features
+
+* **suite:** name the caller's organizations when proxying module consumers ([#968](https://github.com/sethbacon/terraform-registry-backend/issues/968)) ([4f9faa9](https://github.com/sethbacon/terraform-registry-backend/commit/4f9faa91a30986156ff55383334c2b0161b702ca)), closes [#439](https://github.com/sethbacon/terraform-registry-backend/issues/439)
+
+
+### Bug Fixes
+
+* **auth:** skip the group-mapping reassignment when the role is unchanged ([#967](https://github.com/sethbacon/terraform-registry-backend/issues/967)) ([e3862ea](https://github.com/sethbacon/terraform-registry-backend/commit/e3862ea20406ba2642aa47f3c4cc77993fce5969)), closes [#962](https://github.com/sethbacon/terraform-registry-backend/issues/962)
+* **credlifecycle:** record every API key the credential sweep destroys ([#966](https://github.com/sethbacon/terraform-registry-backend/issues/966)) ([0a6c7c6](https://github.com/sethbacon/terraform-registry-backend/commit/0a6c7c6196afbd542d7c51d59d099aea3b190cd7)), closes [#961](https://github.com/sethbacon/terraform-registry-backend/issues/961)
+* **organizations:** refuse a rename that would move another organization's artifacts ([#964](https://github.com/sethbacon/terraform-registry-backend/issues/964)) ([672d829](https://github.com/sethbacon/terraform-registry-backend/commit/672d8296c0167f9031c778f05a732e83b5084bf6)), closes [#934](https://github.com/sethbacon/terraform-registry-backend/issues/934)
+
 ## [4.10.1](https://github.com/sethbacon/terraform-registry-backend/compare/v4.10.0...v4.10.1) (2026-08-25)
 
 
