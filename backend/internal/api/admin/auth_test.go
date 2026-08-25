@@ -906,11 +906,26 @@ var authMemberCols = []string{"organization_id", "user_id", "role_template_id", 
 // expectRoleScopesLookup queues the guardProvisionableRole scopes lookup that
 // now runs before every "wanted" (add/update) branch of reconcileGroupMemberships.
 // scopes is marshaled to the JSON array the real `scopes` column holds.
+// roleTemplateIDFor mirrors the `rt-<name>` convention the membership fixtures
+// in this package already use, so a test staging a member holding `rt-editor`
+// and a mapping resolving to `editor` describes a member whose role is
+// UNCHANGED -- which is exactly the no-op the reassignment branch must skip
+// (#962). Tests needing the held and mapped ids to DIFFER call
+// expectRoleScopesLookupWithID directly.
+func roleTemplateIDFor(roleName string) string { return "rt-" + roleName }
+
 func expectRoleScopesLookup(mock sqlmock.Sqlmock, roleName string, scopes []string) {
+	expectRoleScopesLookupWithID(mock, roleName, roleTemplateIDFor(roleName), scopes)
+}
+
+// expectRoleScopesLookupWithID stages the guard's lookup, which since #962 returns
+// the template's id alongside its scopes: the scopes are the credential sweep's
+// retention filter, the id is the no-op comparator.
+func expectRoleScopesLookupWithID(mock sqlmock.Sqlmock, roleName, roleID string, scopes []string) {
 	scopesJSON, _ := json.Marshal(scopes)
-	mock.ExpectQuery("SELECT scopes FROM registry_role_templates WHERE name").
+	mock.ExpectQuery("SELECT id, scopes FROM registry_role_templates WHERE name").
 		WithArgs(roleName).
-		WillReturnRows(sqlmock.NewRows([]string{"scopes"}).AddRow(scopesJSON))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "scopes"}).AddRow(roleID, scopesJSON))
 }
 
 func TestApplyGroupMappings_MatchingGroup_AddMember(t *testing.T) {
@@ -1795,21 +1810,127 @@ func TestReconcile_GroupChanges_UpdatesRole(t *testing.T) {
 	}
 }
 
-// User keeps the group → membership preserved with the correct role (UPDATE to same role).
-func TestReconcile_KeepsGroup_PreservesMembership(t *testing.T) {
+// User keeps the group and the role they already hold → NOTHING happens (#962).
+//
+// This test previously staged an UPDATE to the same role and asserted it was
+// issued, which is the defect written down as intended behaviour. Reaching that
+// branch on an unchanged role is not free: it takes a DEPLOYMENT-WIDE
+// pg_advisory_xact_lock through the admin floor, on the login path, plus the
+// carrier read, the member/admin enumeration, the UPDATE, the mirror
+// read-back-and-upsert, and the sweep's api_keys SELECT -- once per login per
+// managed organization, for a change that changes nothing.
+//
+// Staging nothing after the guard lookup IS the assertion: sqlmock rejects any
+// statement it was not told to expect, so a re-introduced write fails here.
+func TestReconcile_KeepsGroup_SameRole_IsANoOp(t *testing.T) {
 	db, mock, _ := sqlmock.New()
 	defer db.Close()
 
 	cfg := &config.Config{}
-	// Role is a non-admin role template deliberately: this test is about
-	// preserving membership across logins, not the ScopeAdmin guard.
+	// Role is a non-admin role template deliberately: this test is about the
+	// unchanged-role skip, not the ScopeAdmin guard.
 	cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
 		{Group: "admins", Organization: "acme", Role: "editor"},
 	}
 	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
 
 	expectOrgByName(mock, "acme", "org-acme")
+	// The member already holds rt-editor...
 	expectIsMember(mock, "org-acme", "user-1", "rt-editor")
+	// ...and the mapping resolves to the very same template. The guard lookup
+	// still runs -- it is what supplies the id being compared -- and everything
+	// after it must not.
+	expectRoleScopesLookup(mock, "editor", []string{"modules:read", "modules:write"})
+
+	err := h.applyGroupMappings(context.Background(), "user-1", []string{"admins"})
+	if err != nil {
+		t.Fatalf("applyGroupMappings: unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// The same branch, with the role ACTUALLY changing, must still write and sweep.
+// Without this, making the skip unconditional would pass every other test here.
+func TestReconcile_KeepsGroup_DifferentRole_StillUpdates(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
+		{Group: "admins", Organization: "acme", Role: "editor"},
+	}
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
+
+	expectOrgByName(mock, "acme", "org-acme")
+	// Holds rt-viewer, mapping resolves to editor -> a genuine reassignment.
+	expectIsMember(mock, "org-acme", "user-1", "rt-viewer")
+	expectUpdateMember(mock, "editor", "rt-editor")
+
+	err := h.applyGroupMappings(context.Background(), "user-1", []string{"admins"})
+	if err != nil {
+		t.Fatalf("applyGroupMappings: unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// A mapping naming a role template that does NOT resolve is not a no-op either.
+// guardProvisionableRole returns an EMPTY id for an unknown name, and an empty
+// id must never be read as "matches the held role" -- doing so would silently
+// skip a write for every mapping pointing at a typo'd or deleted template,
+// leaving the member on their old role with no signal at all.
+func TestReconcile_UnknownRoleTemplate_ForExistingMember_IsNotANoOp(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
+		{Group: "admins", Organization: "acme", Role: "ghost-role"},
+	}
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
+
+	expectOrgByName(mock, "acme", "org-acme")
+	expectIsMember(mock, "org-acme", "user-1", "rt-editor")
+	// Unknown template: no id, no scopes.
+	mock.ExpectQuery("SELECT id, scopes FROM registry_role_templates WHERE name").
+		WithArgs("ghost-role").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "scopes"}))
+	// The write must still be attempted, and reach the real role_templates
+	// lookup that reports the unknown name properly.
+	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
+		WithArgs("ghost-role").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+
+	err := h.applyGroupMappings(context.Background(), "user-1", []string{"admins"})
+	if err == nil {
+		t.Fatal("expected the unresolvable role template to surface an error, got nil")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// A member holding NO mirrored role is not a no-op: currentRoleID is nil, the
+// write must still run to establish one. Skipping here would leave a membership
+// permanently without a role.
+func TestReconcile_MemberHoldsNoRole_IsNotANoOp(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer db.Close()
+
+	cfg := &config.Config{}
+	cfg.Auth.OIDC.GroupMappings = []config.OIDCGroupMapping{
+		{Group: "admins", Organization: "acme", Role: "editor"},
+	}
+	h, _ := NewAuthHandlers(cfg, db, nil, nil, auth.NewMemoryStateStore(time.Hour))
+
+	expectOrgByName(mock, "acme", "org-acme")
+	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
+		WillReturnRows(sqlmock.NewRows(authMemberCols).
+			AddRow("org-acme", "user-1", nil, time.Now()))
+	expectRegistryRoleFor(mock, registryRole{})
 	expectUpdateMember(mock, "editor", "rt-editor")
 
 	err := h.applyGroupMappings(context.Background(), "user-1", []string{"admins"})
@@ -2144,10 +2265,12 @@ func TestReconcile_GuardProvisionableRole_UnknownRoleTemplate_DefersToRealLookup
 
 	expectOrgByName(mock, "acme", "org-acme")
 	expectNotMember(mock)
-	// guardProvisionableRole's own scopes lookup finds no such role template.
-	mock.ExpectQuery("SELECT scopes FROM registry_role_templates WHERE name").
+	// guardProvisionableRole's own lookup finds no such role template, so it
+	// yields neither an id nor scopes -- and an EMPTY id must not be read as
+	// matching an absent held role (#962).
+	mock.ExpectQuery("SELECT id, scopes FROM registry_role_templates WHERE name").
 		WithArgs("ghost-role").
-		WillReturnRows(sqlmock.NewRows([]string{"scopes"}))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "scopes"}))
 	// AddMemberWithParams's lookup is reached and fails with its own clear error.
 	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
 		WithArgs("ghost-role").
