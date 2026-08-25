@@ -409,6 +409,29 @@ func TestModuleConsumers_PlatformAdminSendsNoOrganization(t *testing.T) {
 	if orgs := q["organization"]; len(orgs) != 0 {
 		t.Errorf("organization = %v, want none for a platform admin", orgs)
 	}
+	// The EXPLICIT signal, which is what lets the sibling refuse a request
+	// carrying neither. Absence would be indistinguishable from a caller that
+	// simply did not send one.
+	if q.Get("fleet") != "1" {
+		t.Errorf("fleet = %q, want \"1\": a platform admin must say so explicitly, not by omission", q.Get("fleet"))
+	}
+}
+
+// The converse, and the one that keeps the signal meaningful: a caller scoped
+// to organizations must NOT carry the fleet marker. If it leaked onto scoped
+// requests the sibling would serve them the whole estate.
+func TestModuleConsumers_ScopedCallerDoesNotClaimFleetWide(t *testing.T) {
+	q := capturedQuery(t, func(c *gin.Context) {
+		c.Set("scopes", []string{string(auth.ScopeModulesRead)})
+		c.Set("api_key", &models.APIKey{OrganizationID: "org-acme"})
+	})
+
+	if q.Get("fleet") != "" {
+		t.Errorf("fleet = %q, want empty for an organization-scoped caller", q.Get("fleet"))
+	}
+	if orgs := q["organization"]; len(orgs) != 1 || orgs[0] != "org-acme" {
+		t.Errorf("organization = %v, want [org-acme]", orgs)
+	}
 }
 
 // A caller who holds no organizations can legitimately see no consumers, and

@@ -228,12 +228,22 @@ func moduleConsumersHandler(getClient func() *suite.DiscoveryClient, cfg *config
 		// scope is what lets the sibling start enforcing it; until it does, this
 		// is inert on the wire and changes nothing.
 		//
-		// A platform admin deliberately sends none: that scope crosses
-		// organization boundaries here exactly as it does everywhere else, and
-		// the absence of the parameter is what the sibling will read as
-		// "fleet-wide", gated on its own operator opt-in.
+		// A platform admin sends fleet=1 INSTEAD of an organization list: that
+		// scope crosses organization boundaries here exactly as it does
+		// everywhere else.
+		//
+		// It is an EXPLICIT signal rather than the absence of a parameter, and
+		// that distinction is the whole point. Absence cannot be told apart from
+		// a client that simply did not send one -- an older registry, a
+		// misconfiguration, a future caller -- so a sibling reading absence as
+		// "fleet-wide" would hand every organization's state topology to anyone
+		// who omitted the parameter. With an explicit signal the sibling can
+		// require one of the two and refuse anything else.
 		for _, orgID := range scope.OrgIDs {
 			q.Add("organization", orgID)
+		}
+		if scope.PlatformAdmin {
+			q.Set("fleet", "1")
 		}
 		target.RawQuery = q.Encode()
 
