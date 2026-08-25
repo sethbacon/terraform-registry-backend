@@ -1134,7 +1134,11 @@ func (h *AuthHandlers) reconcileGroupMemberships(ctx context.Context, userID str
 		}
 		managedOrgIDs[org.ID] = struct{}{}
 
-		isMember, _, err := h.orgRepo.CheckMembership(ctx, org.ID, userID, repositories.OrgScopeAllOrganizations())
+		// currentRoleID is REGISTRY's organization_member_roles.role_template_id
+		// for this membership (CheckMembership -> GetMember -> MirroredRole.id()).
+		// It is nil when there is no mirrored row, or when the mirrored row holds
+		// no role -- migration 000055 keeps those two states distinct.
+		isMember, currentRoleID, err := h.orgRepo.CheckMembership(ctx, org.ID, userID, repositories.OrgScopeAllOrganizations())
 		if err != nil {
 			return fmt.Errorf("check membership org=%s user=%s: %w", org.ID, userID, err)
 		}
@@ -1151,20 +1155,60 @@ func (h *AuthHandlers) reconcileGroupMemberships(ctx context.Context, userID str
 		// On acceptance it also yields the mapped template's scopes, which are
 		// what the member will hold in this org once the write commits — the
 		// retention filter the reassignment branch's sweep needs, obtained from
-		// the lookup the guard was already making.
-		resolveProvisionableRole := func() ([]string, bool) {
-			scopes, guardErr := h.guardProvisionableRole(ctx, role)
+		// the lookup the guard was already making — and that template's ID,
+		// which is how the reassignment branch tells a real role change from a
+		// re-application of the role already held (#962).
+		resolveProvisionableRole := func() (string, []string, bool) {
+			roleID, scopes, guardErr := h.guardProvisionableRole(ctx, role)
 			if guardErr != nil {
 				slog.Warn(provider+" group mapping rejected: resolved role is not automatically provisionable by an IdP-driven mapping; a human admin must grant it explicitly",
 					"user_id", userID, "org", orgName, "role", role, "error", guardErr)
-				return nil, false
+				return "", nil, false
 			}
-			return scopes, true
+			return roleID, scopes, true
 		}
 		switch {
 		case wanted && isMember:
-			retained, ok := resolveProvisionableRole()
+			mappedRoleID, retained, ok := resolveProvisionableRole()
 			if !ok {
+				continue
+			}
+			// A reassignment to the role already held changes nothing, so do
+			// nothing (#962). Reached on every login once a mapping matches, for
+			// every managed organization.
+			//
+			// WHAT THIS SKIPS, per login per managed org, for a change that
+			// changes nothing: idpReduce -> adminfloor.Guard.Protect ->
+			// Guard.Serialize, which takes a DEPLOYMENT-WIDE
+			// pg_advisory_xact_lock, plus the carrier read, the per-org member
+			// and admin enumeration, the UPDATE, the mirror read-back-and-upsert,
+			// and the sweep's api_keys SELECT. That lock sits on the login path,
+			// so the cost is paid by every concurrent sign-in.
+			//
+			// WHY THE COMPARISON IS SOUND: currentRoleID is registry's
+			// organization_member_roles.role_template_id and mappedRoleID is
+			// registry_role_templates.id, which migration 000055 declares that
+			// column REFERENCES. Same table, same connection, same driver.
+			//
+			// BOTH ids must be KNOWN. A nil currentRoleID means the member holds
+			// no mirrored role and the write must still run to establish one --
+			// that one is load-bearing and pinned by
+			// TestReconcile_MemberHoldsNoRole_IsNotANoOp.
+			//
+			// The `mappedRoleID != ""` clause is DEFENCE IN DEPTH, not a live
+			// path: guardProvisionableRole yields "" for a name that does not
+			// resolve, and today an unresolved name simply fails the equality
+			// against a real held id anyway (pinned by
+			// TestReconcile_UnknownRoleTemplate_ForExistingMember_IsNotANoOp).
+			// It would only bite if a held id were ever a non-nil EMPTY string,
+			// which organization_member_roles.role_template_id being a UUID
+			// forbids. Kept because an id comparison that can silently skip a
+			// privilege write should not rely on a column type to be safe --
+			// but it is deliberately not claimed as mutation-verified, because
+			// no reachable state exercises it.
+			if currentRoleID != nil && mappedRoleID != "" && *currentRoleID == mappedRoleID {
+				slog.Debug(provider+" group mapping unchanged, skipping reassignment",
+					"user_id", userID, "org", orgName, "role", role)
 				continue
 			}
 			// isMember was read earlier in this reconciliation; the membership
@@ -1221,7 +1265,10 @@ func (h *AuthHandlers) reconcileGroupMemberships(ctx context.Context, userID str
 			// The scopes are not needed on this branch: adding a membership is
 			// an authority INCREASE, and no credential of this user in this org
 			// can be a snapshot of an authority they did not have.
-			if _, ok := resolveProvisionableRole(); !ok {
+			// The id is not needed either: there is no held role to compare
+			// against on an ADD, which is why the no-op skip lives only on the
+			// reassignment branch above.
+			if _, _, ok := resolveProvisionableRole(); !ok {
 				continue
 			}
 			if err := h.orgRepo.AddMemberWithParams(ctx, org.ID, userID, role, repositories.OrgScopeAllOrganizations()); err != nil {
@@ -1311,7 +1358,7 @@ func (h *AuthHandlers) reconcileGroupMemberships(ctx context.Context, userID str
 			// The scopes are not needed here: adding a membership is an
 			// authority increase, so no existing credential of this user in
 			// this org can be a snapshot of an authority they did not have.
-			if _, guardErr := h.guardProvisionableRole(ctx, defaultRole); guardErr != nil {
+			if _, _, guardErr := h.guardProvisionableRole(ctx, defaultRole); guardErr != nil {
 				slog.Warn(provider+" default_role rejected: it is not automatically provisionable by an IdP-driven mapping; a human admin must grant it explicitly",
 					"user_id", userID, "role", defaultRole, "error", guardErr)
 				return nil

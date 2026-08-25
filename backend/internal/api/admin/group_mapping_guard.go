@@ -45,28 +45,40 @@ import (
 // set this returns. Any other lookup/parse failure is returned (fails closed)
 // — a transient DB error here should not silently let an unverified role's
 // scopes through.
-func (h *AuthHandlers) guardProvisionableRole(ctx context.Context, roleTemplateName string) ([]string, error) {
+// Returns the template's ID as well as its scopes. Both come from the one row
+// this already fetches: the scopes are the sweep's retention filter, and the id
+// is what lets the caller tell a genuine reassignment from a re-application of
+// the role the member already holds (#962). The id is registry's own
+// `registry_role_templates.id`, which is exactly what
+// `organization_member_roles.role_template_id` references (migration 000055), so
+// the two are directly comparable.
+func (h *AuthHandlers) guardProvisionableRole(ctx context.Context, roleTemplateName string) (string, []string, error) {
 	// REGISTRY's own table (terraform-suite-identity#206, phase 3b), for the same
 	// reason as role_ceiling.go: the returned scopes are what the member WILL
 	// hold once the write commits, and since the read cutover that is decided by
 	// `registry_role_templates`. They are also the retention filter for the
 	// credential sweep, so reading the shared table would retain credentials
 	// against an authority the product no longer confers.
+	var roleTemplateID string
 	var scopesJSON []byte
 	err := h.db.QueryRowContext(ctx,
-		`SELECT scopes FROM registry_role_templates WHERE name = $1`, roleTemplateName).Scan(&scopesJSON)
+		`SELECT id, scopes FROM registry_role_templates WHERE name = $1`, roleTemplateName).Scan(&roleTemplateID, &scopesJSON)
 	if err == sql.ErrNoRows {
-		return nil, nil
+		// Unchanged semantics: an unresolvable name is not an error, it simply
+		// yields no scopes. It now also yields no id, which the caller must
+		// treat as "unknown" rather than as a match -- an empty id equal to an
+		// empty held id would skip a write that should happen.
+		return "", nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("look up role template %q scopes: %w", roleTemplateName, err)
+		return "", nil, fmt.Errorf("look up role template %q scopes: %w", roleTemplateName, err)
 	}
 	var scopes []string
 	if err := json.Unmarshal(scopesJSON, &scopes); err != nil {
-		return nil, fmt.Errorf("parse role template %q scopes: %w", roleTemplateName, err)
+		return "", nil, fmt.Errorf("parse role template %q scopes: %w", roleTemplateName, err)
 	}
 	if err := auth.ValidateProvisionableScopes(scopes); err != nil {
-		return nil, err
+		return "", nil, err
 	}
-	return scopes, nil
+	return roleTemplateID, scopes, nil
 }
