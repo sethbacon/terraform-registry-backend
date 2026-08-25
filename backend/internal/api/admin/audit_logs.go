@@ -3,6 +3,7 @@ package admin
 
 import (
 	"database/sql"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -123,6 +124,25 @@ func (h *AuditLogHandlers) ListAuditLogsHandler() gin.HandlerFunc {
 
 		logs, total, err := h.auditRepo.ListAuditLogs(c.Request.Context(), filters, auditScope, perPage, offset)
 		if err != nil {
+			// LOGGED, because the response deliberately says nothing.
+			//
+			// "Failed to retrieve audit logs" is the right thing to send a
+			// browser — an audit query's error text can carry column names,
+			// filter values and the shape of the scope predicate — but it was
+			// also the only thing anyone got. The error was discarded here, so
+			// a 500 on this route was undiagnosable from the deployment: no
+			// SQLSTATE, no statement, nothing to distinguish a missing column
+			// from a dead connection.
+			//
+			// Every other 500 in this package logs (62 call sites); these two
+			// were the exception.
+			slog.Error("failed to list audit logs",
+				"error", err,
+				"per_page", perPage,
+				"offset", offset,
+				"all_organizations", auditScope.IsAllOrganizations(),
+				"scope", auditScope.String(),
+				"organization_filter", filters.OrganizationID != nil)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve audit logs"})
 			return
 		}
@@ -201,6 +221,7 @@ func (h *AuditLogHandlers) GetAuditLogHandler() gin.HandlerFunc {
 			return
 		}
 		if err != nil {
+			slog.Error("failed to get audit log entry", "error", err, "log_id", logID)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve audit log entry"})
 			return
 		}
