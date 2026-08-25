@@ -4,6 +4,7 @@ package admin
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -642,7 +643,7 @@ type UpdateOrganizationRequest struct {
 }
 
 // @Summary      Update organization
-// @Description  Update an existing organization's name, display name, and optional IdP binding. Supplying a new `name` triggers a cascade rename: the organization row, all module namespace columns, and all provider namespace columns are updated atomically in a single transaction. User memberships reference the organization by UUID and are therefore unaffected. Set idp_type to "oidc", "saml", or "ldap" to restrict login; set to empty string to clear.
+// @Description  Update an existing organization's name, display name, and optional IdP binding. Supplying a new `name` triggers a cascade rename. The rename is refused with 409 unless this organization owns both the old and the new namespace, so a rename can never move another organization's modules or providers. The organization row is renamed first, then the module and provider namespace columns are cascaded in a separate transaction on the registry's own connection; these are NOT one atomic transaction, and a failed cascade is compensated by renaming the organization back. User memberships reference the organization by UUID and are therefore unaffected. Set idp_type to "oidc", "saml", or "ldap" to restrict login; set to empty string to clear.
 // @Tags         Organizations
 // @Security     Bearer
 // @Accept       json
@@ -653,7 +654,7 @@ type UpdateOrganizationRequest struct {
 // @Failure      400  {object}  map[string]interface{}  "Invalid request body or name format"
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
 // @Failure      404  {object}  map[string]interface{}  "Organization not found"
-// @Failure      409  {object}  map[string]interface{}  "Organization name already taken"
+// @Failure      409  {object}  map[string]interface{}  "Organization name already taken, or its namespace is owned by another organization"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /api/v1/organizations/{id} [put]
 // UpdateOrganizationHandler updates an organization
@@ -711,6 +712,28 @@ func (h *OrganizationHandlers) UpdateOrganizationHandler() gin.HandlerFunc {
 				})
 				return
 			}
+			// Refuse a namespace-crossing rename BEFORE the identity-side write.
+			// That write commits on a different connection and the cascade below
+			// cannot roll it back, so discovering the conflict later would leave
+			// the organization renamed with its artifacts un-cascaded. The
+			// cascade re-runs this same rule under row locks.
+			if err := repositories.CheckOrganizationRenameConflicts(
+				c.Request.Context(), h.db, orgID, org.Name, newName,
+			); err != nil {
+				if errors.Is(err, repositories.ErrNamespaceRenameConflict) {
+					c.JSON(http.StatusConflict, gin.H{
+						"error": "Namespace is owned by another organization. Transfer or release the namespace before renaming.",
+					})
+					return
+				}
+				slog.Error("organization rename: namespace ownership pre-flight failed",
+					"organization_id", orgID, "old_name", org.Name, "new_name", newName, "error", err)
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"error": "Failed to check namespace ownership",
+				})
+				return
+			}
+
 			// ErrNotFound here means the organization was deleted between the
 			// GetByID above and this write. Answer 404 — the same status that
 			// pre-check gives for the same condition — rather than the 200 the
@@ -731,6 +754,21 @@ func (h *OrganizationHandlers) UpdateOrganizationHandler() gin.HandlerFunc {
 			// Cascade the new name to the registry's denormalized module/provider
 			// namespaces on the domain connection (identity rename is done above).
 			if err := repositories.CascadeOrganizationRename(c.Request.Context(), h.db, orgID, org.Name, newName); err != nil {
+				// The identity-side rename above already committed on another
+				// connection, so a failed cascade leaves the organization renamed
+				// with its artifacts still under the old namespace. Put it back.
+				// If the compensation ALSO fails the split is real and an operator
+				// has to repair it by hand, so log both outcomes with the names.
+				compErr := h.orgRepo.Rename(c.Request.Context(), orgID, org.Name, repositories.OrgScopeOrganizations(orgID))
+				slog.Error("organization rename: namespace cascade failed",
+					"organization_id", orgID, "old_name", org.Name, "new_name", newName,
+					"error", err, "compensated", compErr == nil, "compensation_error", compErr)
+				if errors.Is(err, repositories.ErrNamespaceRenameConflict) {
+					c.JSON(http.StatusConflict, gin.H{
+						"error": "Namespace is owned by another organization. Transfer or release the namespace before renaming.",
+					})
+					return
+				}
 				c.JSON(http.StatusInternalServerError, gin.H{
 					"error": "Failed to rename organization",
 				})

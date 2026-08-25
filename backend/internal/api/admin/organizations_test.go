@@ -483,6 +483,21 @@ func TestUpdateOrganization_Success(t *testing.T) {
 // Rename tests
 // ---------------------------------------------------------------------------
 
+// expectOrgRenamePreflight stages the #934 namespace-ownership proof for a
+// rename where neither namespace is owned by another organization. It is run
+// twice per rename: once in the handler before the identity write, and again
+// inside the cascade transaction under row locks.
+func expectOrgRenamePreflight(mock sqlmock.Sqlmock, oldName, newName string) {
+	for _, ns := range []string{oldName, newName} {
+		mock.ExpectQuery("SELECT organization_id FROM namespace_claims").
+			WithArgs(ns).
+			WillReturnRows(sqlmock.NewRows([]string{"organization_id"}))
+		mock.ExpectQuery("SELECT DISTINCT organization_id FROM").
+			WithArgs(ns).
+			WillReturnRows(sqlmock.NewRows([]string{"organization_id"}))
+	}
+}
+
 func TestUpdateOrganization_RenameSuccess(t *testing.T) {
 	mock, r := newOrgRouter(t)
 
@@ -492,18 +507,30 @@ func TestUpdateOrganization_RenameSuccess(t *testing.T) {
 	// 2. GetByName uniqueness check — new name is available
 	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
 		WillReturnRows(emptyOrgRow())
-	// 3. Rename (identity) — single UPDATE, no transaction
+	// 3. Namespace-ownership pre-flight (#934), OUTSIDE any transaction and
+	//    BEFORE the identity rename: neither namespace is owned by anyone else.
+	expectOrgRenamePreflight(mock, "default", "new-org-name")
+	// 4. Rename (identity) — single UPDATE, no transaction
 	mock.ExpectExec("UPDATE organizations SET name").
 		WillReturnResult(sqlmock.NewResult(1, 1))
-	// 4. Cascade to denormalized module/provider namespaces and namespace
-	//    ownership claims (domain) — own transaction
+	// 5. Cascade to denormalized module/provider namespaces and namespace
+	//    ownership claims (domain) — own transaction, which re-runs the same
+	//    ownership rule under row locks before rewriting anything.
 	mock.ExpectBegin()
+	expectOrgRenamePreflight(mock, "default", "new-org-name")
 	mock.ExpectExec("UPDATE modules SET namespace").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("UPDATE providers SET namespace").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("UPDATE namespace_claims SET namespace").
 		WillReturnResult(sqlmock.NewResult(0, 0))
+	// pre-commit re-read of the target claim
+	mock.ExpectQuery("SELECT organization_id FROM namespace_claims").
+		WithArgs("new-org-name").
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}))
+	mock.ExpectQuery("SELECT DISTINCT organization_id FROM").
+		WithArgs("new-org-name").
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}))
 	mock.ExpectCommit()
 	// 5. Regular Update for remaining fields (display_name / idp_type)
 	mock.ExpectExec("UPDATE organizations SET display_name").
@@ -1692,5 +1719,44 @@ func TestUpdateMemberHandler_SweepFails_ReportsRevocationIncomplete(t *testing.T
 	}
 	if !body.RevocationIncomplete {
 		t.Errorf("expected revocation_incomplete=true after a failed sweep, got body=%s", w.Body.String())
+	}
+}
+
+// #934: a rename into a namespace another organization owns must be refused
+// with 409, and it must be refused BEFORE the identity-side rename runs. That
+// write commits on a different connection and the cascade cannot roll it back,
+// so a late refusal would leave the organization renamed but un-cascaded.
+//
+// Staging no UPDATE expectations is the assertion: sqlmock fails the test if the
+// handler reaches the identity rename at all.
+func TestUpdateOrganization_RenameRefusedWhenNamespaceOwnedByAnotherOrg(t *testing.T) {
+	mock, r := newOrgRouter(t)
+
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE id").
+		WillReturnRows(sampleOrgRow())
+	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").
+		WillReturnRows(emptyOrgRow())
+	// Source namespace is ours...
+	mock.ExpectQuery("SELECT organization_id FROM namespace_claims").
+		WithArgs("default").
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}))
+	mock.ExpectQuery("SELECT DISTINCT organization_id FROM").
+		WithArgs("default").
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}))
+	// ...but the target namespace belongs to someone else.
+	mock.ExpectQuery("SELECT organization_id FROM namespace_claims").
+		WithArgs("new-org-name").
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}).AddRow("org-2"))
+
+	newName := "new-org-name"
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("PUT", "/organizations/org-1",
+		jsonBody(map[string]interface{}{"name": &newName})))
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations (the identity rename must not have run): %v", err)
 	}
 }

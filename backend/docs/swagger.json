@@ -8126,7 +8126,7 @@
                         "Bearer": []
                     }
                 ],
-                "description": "Update an existing organization's name, display name, and optional IdP binding. Supplying a new `name` triggers a cascade rename: the organization row, all module namespace columns, and all provider namespace columns are updated atomically in a single transaction. User memberships reference the organization by UUID and are therefore unaffected. Set idp_type to \"oidc\", \"saml\", or \"ldap\" to restrict login; set to empty string to clear.",
+                "description": "Update an existing organization's name, display name, and optional IdP binding. Supplying a new `name` triggers a cascade rename. The rename is refused with 409 unless this organization owns both the old and the new namespace, so a rename can never move another organization's modules or providers. The organization row is renamed first, then the module and provider namespace columns are cascaded in a separate transaction on the registry's own connection; these are NOT one atomic transaction, and a failed cascade is compensated by renaming the organization back. User memberships reference the organization by UUID and are therefore unaffected. Set idp_type to \"oidc\", \"saml\", or \"ldap\" to restrict login; set to empty string to clear.",
                 "consumes": [
                     "application/json"
                 ],
@@ -8184,7 +8184,7 @@
                         }
                     },
                     "409": {
-                        "description": "Organization name already taken",
+                        "description": "Organization name already taken, or its namespace is owned by another organization",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
