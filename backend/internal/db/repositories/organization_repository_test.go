@@ -114,6 +114,34 @@ func newOrgRepo(t *testing.T) (*OrganizationRepository, sqlmock.Sqlmock) {
 	return NewOrganizationRepository(db), mock
 }
 
+// expectRenameOwnershipPreflight stages the namespace-ownership proof that
+// CascadeOrganizationRename now runs BEFORE it rewrites anything (#934): this
+// organization must own both the namespace it is renaming out of and the one it
+// is renaming into. The default shape here is the ordinary case -- the old
+// namespace is claimed by the renaming organization, the new one is unowned.
+func expectRenameOwnershipPreflight(mock sqlmock.Sqlmock, orgID, oldName, newName string) {
+	mock.ExpectQuery("SELECT organization_id FROM namespace_claims").
+		WithArgs(oldName).
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}).AddRow(orgID))
+	mock.ExpectQuery("SELECT organization_id FROM namespace_claims").
+		WithArgs(newName).
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}))
+	mock.ExpectQuery("SELECT DISTINCT organization_id FROM").
+		WithArgs(newName).
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}))
+}
+
+// expectRenameTargetRecheck stages the pre-commit re-read of the target claim,
+// which catches a namespace claimed concurrently after the pre-flight passed.
+func expectRenameTargetRecheck(mock sqlmock.Sqlmock, newName string) {
+	mock.ExpectQuery("SELECT organization_id FROM namespace_claims").
+		WithArgs(newName).
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}))
+	mock.ExpectQuery("SELECT DISTINCT organization_id FROM").
+		WithArgs(newName).
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}))
+}
+
 func TestCascadeOrganizationRename_Success(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -122,12 +150,14 @@ func TestCascadeOrganizationRename_Success(t *testing.T) {
 	defer db.Close()
 
 	mock.ExpectBegin()
+	expectRenameOwnershipPreflight(mock, "org-1", "old", "new")
 	mock.ExpectExec("UPDATE modules SET namespace").
 		WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectExec("UPDATE providers SET namespace").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("UPDATE namespace_claims SET namespace").
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	expectRenameTargetRecheck(mock, "new")
 	mock.ExpectCommit()
 
 	if err := CascadeOrganizationRename(context.Background(), db, "org-1", "old", "new"); err != nil {
@@ -155,6 +185,7 @@ func TestCascadeOrganizationRename_MatchesArtifactsByNamespaceOnly(t *testing.T)
 	defer db.Close()
 
 	mock.ExpectBegin()
+	expectRenameOwnershipPreflight(mock, "org-1", "old", "new")
 	mock.ExpectExec("UPDATE modules SET namespace").
 		WithArgs("new", "old").
 		WillReturnResult(sqlmock.NewResult(0, 3))
@@ -164,6 +195,7 @@ func TestCascadeOrganizationRename_MatchesArtifactsByNamespaceOnly(t *testing.T)
 	mock.ExpectExec("UPDATE namespace_claims SET namespace").
 		WithArgs("new", "org-1", "old").
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	expectRenameTargetRecheck(mock, "new")
 	mock.ExpectCommit()
 
 	if err := CascadeOrganizationRename(context.Background(), db, "org-1", "old", "new"); err != nil {
@@ -182,6 +214,7 @@ func TestCascadeOrganizationRename_ModulesError(t *testing.T) {
 	defer db.Close()
 
 	mock.ExpectBegin()
+	expectRenameOwnershipPreflight(mock, "org-1", "old", "new")
 	mock.ExpectExec("UPDATE modules SET namespace").
 		WillReturnError(context.DeadlineExceeded)
 	mock.ExpectRollback()
@@ -202,6 +235,7 @@ func TestCascadeOrganizationRename_ProvidersError(t *testing.T) {
 	defer db.Close()
 
 	mock.ExpectBegin()
+	expectRenameOwnershipPreflight(mock, "org-1", "old", "new")
 	mock.ExpectExec("UPDATE modules SET namespace").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("UPDATE providers SET namespace").
@@ -224,6 +258,7 @@ func TestCascadeOrganizationRename_ClaimsError(t *testing.T) {
 	defer db.Close()
 
 	mock.ExpectBegin()
+	expectRenameOwnershipPreflight(mock, "org-1", "old", "new")
 	mock.ExpectExec("UPDATE modules SET namespace").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("UPDATE providers SET namespace").
@@ -931,5 +966,155 @@ func TestGetDefaultOrganization_CacheHit(t *testing.T) {
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations (extra DB query occurred): %v", err)
+	}
+}
+
+// --- #934: an organization rename must not move another organization's artifacts ---
+//
+// The cascade rewrites module and provider rows by namespace alone, which is
+// correct ONLY once ownership has been proven. These tests pin both directions.
+// The target-side case is the more severe one and is the direction the issue
+// title understated: renaming INTO a namespace another organization holds is a
+// cross-tenant takeover, not merely an eviction.
+
+func TestCascadeOrganizationRename_RefusesWhenSourceNamespaceBelongsToAnotherOrg(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectBegin()
+	// "old" is claimed by org-2, not by the renaming org-1.
+	mock.ExpectQuery("SELECT organization_id FROM namespace_claims").
+		WithArgs("old").
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}).AddRow("org-2"))
+	mock.ExpectRollback()
+
+	err = CascadeOrganizationRename(context.Background(), db, "org-1", "old", "new")
+	if !errors.Is(err, ErrNamespaceRenameConflict) {
+		t.Fatalf("want ErrNamespaceRenameConflict, got %v", err)
+	}
+	// The UPDATEs must never run: staging none above means sqlmock fails the
+	// test if the cascade reached them.
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+func TestCascadeOrganizationRename_RefusesTakeoverOfClaimedTargetNamespace(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT organization_id FROM namespace_claims").
+		WithArgs("old").
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}).AddRow("org-1"))
+	// "new" is already owned by org-2: renaming into it would move org-1's rows
+	// under org-2's namespace and shadow org-2's artifacts on the read path.
+	mock.ExpectQuery("SELECT organization_id FROM namespace_claims").
+		WithArgs("new").
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}).AddRow("org-2"))
+	mock.ExpectRollback()
+
+	err = CascadeOrganizationRename(context.Background(), db, "org-1", "old", "new")
+	if !errors.Is(err, ErrNamespaceRenameConflict) {
+		t.Fatalf("want ErrNamespaceRenameConflict, got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+func TestCascadeOrganizationRename_RefusesAmbiguousUnclaimedNamespace(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectBegin()
+	// No claim on "old", and artifacts there belong to two organizations. There
+	// is no answer that is safe to guess, so the rename must refuse.
+	mock.ExpectQuery("SELECT organization_id FROM namespace_claims").
+		WithArgs("old").
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}))
+	mock.ExpectQuery("SELECT DISTINCT organization_id FROM").
+		WithArgs("old").
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}).AddRow("org-2").AddRow("org-3"))
+	mock.ExpectRollback()
+
+	err = CascadeOrganizationRename(context.Background(), db, "org-1", "old", "new")
+	if !errors.Is(err, ErrNamespaceRenameConflict) {
+		t.Fatalf("want ErrNamespaceRenameConflict, got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// An organization that never published owns no namespace. There is nothing to
+// move and nothing to collide with, so the rename must still succeed -- a check
+// that refused this would break the ordinary case.
+func TestCascadeOrganizationRename_AllowsUnownedNamespaces(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectBegin()
+	for _, ns := range []string{"old", "new"} {
+		mock.ExpectQuery("SELECT organization_id FROM namespace_claims").
+			WithArgs(ns).
+			WillReturnRows(sqlmock.NewRows([]string{"organization_id"}))
+		mock.ExpectQuery("SELECT DISTINCT organization_id FROM").
+			WithArgs(ns).
+			WillReturnRows(sqlmock.NewRows([]string{"organization_id"}))
+	}
+	mock.ExpectExec("UPDATE modules SET namespace").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("UPDATE providers SET namespace").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("UPDATE namespace_claims SET namespace").WillReturnResult(sqlmock.NewResult(0, 0))
+	expectRenameTargetRecheck(mock, "new")
+	mock.ExpectCommit()
+
+	if err := CascadeOrganizationRename(context.Background(), db, "org-1", "old", "new"); err != nil {
+		t.Fatalf("CascadeOrganizationRename: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// FOR UPDATE cannot lock a claim row that does not exist yet, so a concurrent
+// first-publish can claim the target namespace after the pre-flight passed. The
+// pre-commit re-read must catch it and refuse rather than commit a takeover.
+func TestCascadeOrganizationRename_RefusesTargetClaimedConcurrently(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectBegin()
+	expectRenameOwnershipPreflight(mock, "org-1", "old", "new")
+	mock.ExpectExec("UPDATE modules SET namespace").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE providers SET namespace").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("UPDATE namespace_claims SET namespace").WillReturnResult(sqlmock.NewResult(0, 1))
+	// Between the pre-flight and here, org-2 claimed "new".
+	mock.ExpectQuery("SELECT organization_id FROM namespace_claims").
+		WithArgs("new").
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}).AddRow("org-2"))
+	mock.ExpectRollback()
+
+	err = CascadeOrganizationRename(context.Background(), db, "org-1", "old", "new")
+	if !errors.Is(err, ErrNamespaceRenameConflict) {
+		t.Fatalf("want ErrNamespaceRenameConflict, got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
 	}
 }

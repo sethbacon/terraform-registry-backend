@@ -442,6 +442,127 @@ func (r *OrganizationRepository) RemoveAllMembershipsForUser(ctx context.Context
 	return removed, nil
 }
 
+// ErrNamespaceRenameConflict reports that an organization rename would move a
+// namespace that another organization owns, in either direction: renaming AWAY
+// from a namespace whose content belongs to someone else, or renaming INTO a
+// namespace someone else already owns. The second direction is a takeover, and
+// it is the more dangerous of the two.
+var ErrNamespaceRenameConflict = errors.New("namespace is owned by another organization")
+
+// namespaceQuerier is the read surface the ownership pre-flight needs. Both
+// *sql.DB and *sql.Tx satisfy it, so the SAME rule runs standalone in the
+// handler (to refuse before the identity-side rename commits) and again inside
+// the cascade transaction (where it can hold row locks).
+type namespaceQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// resolveNamespaceOwner mirrors middleware.NamespaceAuthorizer.resolveOwnerOrg
+// exactly, deliberately: a claim wins; without one, the single organization
+// owning artifact rows in the namespace is authoritative; a namespace with
+// neither is unowned and returns "". Two or more artifact organizations and no
+// claim is ambiguous, and ambiguous ownership must never authorize a bulk move.
+//
+// Kept as raw SQL here rather than reusing NamespaceClaimRepository because
+// those methods are bound to their own *sql.DB and cannot participate in the
+// cascade's transaction.
+//
+// lockClaim takes FOR UPDATE on the claim row so a concurrent transfer cannot
+// land between this check and the UPDATEs it authorizes. It is only applied to
+// the claims read: Postgres rejects FOR UPDATE on the UNION/DISTINCT fallback.
+func resolveNamespaceOwner(ctx context.Context, q namespaceQuerier, namespace string, lockClaim bool) (string, error) {
+	claimQuery := `SELECT organization_id FROM namespace_claims WHERE namespace = $1`
+	if lockClaim {
+		claimQuery += ` FOR UPDATE`
+	}
+	var owner string
+	switch err := q.QueryRowContext(ctx, claimQuery, namespace).Scan(&owner); {
+	case err == nil:
+		return owner, nil
+	case !errors.Is(err, sql.ErrNoRows):
+		return "", fmt.Errorf("read namespace claim %q: %w", namespace, err)
+	}
+
+	rows, err := q.QueryContext(ctx, `
+		SELECT DISTINCT organization_id FROM (
+			SELECT organization_id FROM modules   WHERE namespace = $1 AND organization_id IS NOT NULL
+			UNION
+			SELECT organization_id FROM providers WHERE namespace = $1 AND organization_id IS NOT NULL
+		) artifact_orgs`, namespace)
+	if err != nil {
+		return "", fmt.Errorf("read namespace artifact organizations %q: %w", namespace, err)
+	}
+	defer rows.Close()
+
+	var owners []string
+	for rows.Next() {
+		var orgID string
+		if err := rows.Scan(&orgID); err != nil {
+			return "", fmt.Errorf("scan namespace artifact organization %q: %w", namespace, err)
+		}
+		owners = append(owners, orgID)
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("iterate namespace artifact organizations %q: %w", namespace, err)
+	}
+
+	switch len(owners) {
+	case 0:
+		return "", nil
+	case 1:
+		return owners[0], nil
+	default:
+		// Ambiguous. Refuse rather than guess: a wrong guess here rewrites
+		// another tenant's rows, which is the whole defect this check exists for.
+		return "", fmt.Errorf("%w: namespace %q has artifacts owned by %d organizations and no claim",
+			ErrNamespaceRenameConflict, namespace, len(owners))
+	}
+}
+
+// checkRenameNamespaceConflicts proves that renaming orgID from oldName to
+// newName moves only namespaces this organization owns.
+//
+// BOTH directions are checked, and the target side is the one the issue title
+// understated. Source side: the cascade rewrites every row in the old namespace,
+// so this organization must own it. Target side: the cascade rewrites those rows
+// INTO the new namespace, so if another organization owns that namespace the
+// rename is a cross-tenant takeover -- the renaming organization's content lands
+// under a namespace someone else holds the claim to, and the protocol read path
+// (which resolves by namespace alone) then serves whichever row is older.
+//
+// An unowned namespace on either side is fine: nothing to move, or nothing to
+// collide with. This is the common case for an organization that never published.
+func checkRenameNamespaceConflicts(ctx context.Context, q namespaceQuerier, orgID, oldName, newName string) error {
+	for _, side := range []struct {
+		namespace string
+		direction string
+	}{
+		{oldName, "rename would move artifacts out of"},
+		{newName, "rename would move artifacts into"},
+	} {
+		owner, err := resolveNamespaceOwner(ctx, q, side.namespace, true)
+		if err != nil {
+			return err
+		}
+		if owner != "" && owner != orgID {
+			return fmt.Errorf("%w: %s namespace %q, which belongs to organization %s",
+				ErrNamespaceRenameConflict, side.direction, side.namespace, owner)
+		}
+	}
+	return nil
+}
+
+// CheckOrganizationRenameConflicts runs the namespace-ownership pre-flight
+// outside a transaction so a caller can refuse a rename BEFORE any write
+// happens. The cascade re-runs the same rule under row locks; this exists so the
+// identity-side rename -- which commits on a different connection and cannot be
+// rolled back by the cascade -- is never performed for a rename that the cascade
+// will then refuse.
+func CheckOrganizationRenameConflicts(ctx context.Context, db *sql.DB, orgID, oldName, newName string) error {
+	return checkRenameNamespaceConflicts(ctx, db, orgID, oldName, newName)
+}
+
 // CascadeOrganizationRename propagates a renamed organization's new name to the
 // registry's denormalized module and provider namespace columns and to the
 // organization's namespace-ownership claims, in a single transaction on the
@@ -458,19 +579,34 @@ func CascadeOrganizationRename(ctx context.Context, db *sql.DB, orgID, oldName, 
 		}
 	}()
 
+	// Prove this organization owns BOTH namespaces before rewriting either.
+	// Holds FOR UPDATE on the claim rows for the rest of the transaction, so a
+	// concurrent transfer cannot land between the check and the UPDATEs it
+	// authorizes.
+	if err = checkRenameNamespaceConflicts(ctx, tx, orgID, oldName, newName); err != nil {
+		return err
+	}
+
 	// Match module/provider rows by namespace alone, NOT by organization_id.
-	// Artifact rows are stamped with the DEFAULT organization at publish time,
-	// not the namespace's true owner (issue #555), so an `organization_id = orgID`
-	// predicate matches nothing whenever a NON-default organization is renamed --
-	// silently leaving that organization's artifacts pinned to the old namespace
-	// while the organization row and its namespace_claims move to the new name,
-	// orphaning them from the unauthenticated protocol read path (which resolves
-	// modules/providers by namespace). A namespace is a globally-unique ownership
-	// identity (namespace_claims.namespace is the PRIMARY KEY) and this cascade is
-	// triggered precisely by renaming the organization that owns it, so matching
-	// on the old namespace string alone is both correct and complete. The
-	// namespace_claims row below is matched by organization_id because claims —
-	// unlike artifact rows — do carry the true owning organization.
+	// The organization_id predicate is deliberately ABSENT, and that is now safe
+	// because checkRenameNamespaceConflicts above has PROVEN this organization
+	// owns the namespace. Do not add `AND organization_id = $orgID` here.
+	//
+	// Why the predicate must stay absent (issue #555): rows published before
+	// #778 can still carry the DEFAULT organization rather than the namespace's
+	// true owner, so an organization_id predicate would match nothing whenever a
+	// NON-default organization is renamed -- silently leaving that organization's
+	// artifacts pinned to the old namespace while the organization row and its
+	// namespace_claims move, orphaning them from the unauthenticated protocol
+	// read path (which resolves modules/providers by namespace alone).
+	//
+	// #778 made new uploads stamp the true owning organization, which makes the
+	// ORIGINAL justification for this comment stale -- but not its conclusion.
+	// Legacy rows still exist, so namespace-wide matching stays. What changed is
+	// that the authority to rewrite a whole namespace now comes from the proven
+	// ownership check, not from an assumption that the namespace must be ours.
+	// The namespace_claims row below is matched by organization_id because
+	// claims -- unlike artifact rows -- always carry the true owning organization.
 	if _, err = tx.ExecContext(ctx,
 		`UPDATE modules SET namespace = $1, updated_at = NOW() WHERE namespace = $2`,
 		newName, oldName,
@@ -490,6 +626,18 @@ func CascadeOrganizationRename(ctx context.Context, db *sql.DB, orgID, oldName, 
 		newName, orgID, oldName,
 	); err != nil {
 		return fmt.Errorf("cascade rename to namespace claims: %w", err)
+	}
+
+	// Re-read the target claim before committing. FOR UPDATE cannot lock a row
+	// that does not exist yet, so under READ COMMITTED a concurrent first-publish
+	// can claim the target namespace after the pre-flight passed. A committed
+	// insert IS visible to this re-read, so it converts that race into a clean
+	// refusal instead of a silent takeover.
+	if owner, err := resolveNamespaceOwner(ctx, tx, newName, false); err != nil {
+		return err
+	} else if owner != "" && owner != orgID {
+		return fmt.Errorf("%w: namespace %q was claimed by organization %s during the rename",
+			ErrNamespaceRenameConflict, newName, owner)
 	}
 
 	return tx.Commit()
