@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -14,7 +15,9 @@ import (
 	identityhttpsafe "github.com/sethbacon/terraform-suite-identity/identity/httpsafe"
 	"github.com/sethbacon/terraform-suite-identity/identity/suite"
 
+	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 )
 
@@ -25,10 +28,26 @@ import (
 // internal target.
 var loopbackGuard = httpsafe.MustGuard("127.0.0.1", "::1")
 
+// mountConsumers mounts the proxy for a PLATFORM ADMIN caller.
+//
+// That scope crosses organization boundaries here as it does everywhere else,
+// so it is the caller for which this proxy's behaviour is unchanged by #439 --
+// which is what keeps every pre-existing test below meaningful. Callers with a
+// narrower scope are covered by the #439 tests at the end of this file.
 func mountConsumers(cfg *config.Config, dc *suite.DiscoveryClient, guard *httpsafe.Guard) *gin.Engine {
+	return mountConsumersAsCaller(cfg, dc, guard, func(c *gin.Context) {
+		c.Set("scopes", []string{string(auth.ScopeAdmin)})
+	})
+}
+
+// mountConsumersAsCaller mounts the proxy behind a middleware that establishes
+// whatever principal a test needs, standing in for the authenticated group the
+// route really sits in.
+func mountConsumersAsCaller(cfg *config.Config, dc *suite.DiscoveryClient, guard *httpsafe.Guard, principal gin.HandlerFunc) *gin.Engine {
 	r := gin.New()
 	r.GET("/api/v1/suite/modules/:namespace/:name/:system/consumers",
-		moduleConsumersHandler(func() *suite.DiscoveryClient { return dc }, cfg, guard))
+		principal,
+		moduleConsumersHandler(func() *suite.DiscoveryClient { return dc }, cfg, guard, nil))
 	return r
 }
 
@@ -299,5 +318,124 @@ func TestModuleConsumers_BlocksNonAllowlistedSiblingURL(t *testing.T) {
 	}
 	if consumersHit {
 		t.Error("the sibling's /consumers endpoint must never be reached when its advertised PublicURL is not egress-allowlisted")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// #439 — the sibling's /consumers has no principal, so this proxy must name the
+// caller's organizations on its behalf.
+//
+// The sibling is authenticated only by a shared suite service token and cannot
+// work out who is asking, so today it answers fleet-wide and a registry user in
+// one organization sees another's source names and state keys through here.
+// Sending the scope is what lets the sibling begin enforcing it.
+// ---------------------------------------------------------------------------
+
+// consumersSibling starts a sibling that records the /consumers query it was
+// asked, answers it, and serves discovery polls. onConsumers reports whether
+// the endpoint was reached at all.
+func consumersSibling(t *testing.T, body string, seen *url.Values, reached *bool) (*config.Config, *suite.DiscoveryClient) {
+	t.Helper()
+	manifest := suite.Manifest{SchemaVersion: suite.SchemaVersionV1, App: "terraform-state-manager"}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/v1/consumers") {
+			if reached != nil {
+				*reached = true
+			}
+			if seen != nil {
+				*seen = r.URL.Query()
+			}
+			_, _ = w.Write([]byte(body))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(manifest)
+	}))
+	t.Cleanup(srv.Close)
+	manifest.PublicURL = suite.UntrustedURL(srv.URL)
+
+	cfg := &config.Config{}
+	cfg.Server.PublicURL = "https://registry.example.com"
+	cfg.Suite.SiblingToken = "s3cr3t"
+	return cfg, activeClient(t, srv.URL)
+}
+
+// capturedQuery runs one request through the proxy and returns the query the
+// sibling was asked.
+func capturedQuery(t *testing.T, principal gin.HandlerFunc) url.Values {
+	t.Helper()
+	var got url.Values
+	cfg, dc := consumersSibling(t, `{"consumers":[],"total":0}`, &got, nil)
+	code, _ := getConsumers(mountConsumersAsCaller(cfg, dc, loopbackGuard, principal))
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	return got
+}
+
+func TestModuleConsumers_NamesTheCallersOrganizations(t *testing.T) {
+	q := capturedQuery(t, func(c *gin.Context) {
+		c.Set("scopes", []string{string(auth.ScopeModulesRead)})
+		c.Set("api_key", &models.APIKey{OrganizationID: "org-acme"})
+	})
+
+	orgs := q["organization"]
+	if len(orgs) != 1 || orgs[0] != "org-acme" {
+		t.Errorf("organization = %v, want [org-acme]", orgs)
+	}
+	// The pre-existing parameters must survive unchanged.
+	if q.Get("module") != "acme/vpc/aws" {
+		t.Errorf("module = %q, want acme/vpc/aws", q.Get("module"))
+	}
+	if len(q["host"]) == 0 {
+		t.Error("host set must still be sent")
+	}
+}
+
+// A platform admin deliberately sends NO organization parameter: that scope
+// crosses organization boundaries here exactly as it does elsewhere, and its
+// absence is what the sibling will read as fleet-wide, gated on its own
+// operator opt-in. Pinning this stops a later change from quietly narrowing an
+// admin's view, or from inventing a magic wildcard value.
+func TestModuleConsumers_PlatformAdminSendsNoOrganization(t *testing.T) {
+	q := capturedQuery(t, func(c *gin.Context) {
+		c.Set("scopes", []string{string(auth.ScopeAdmin)})
+	})
+	// Assert the sibling was ACTUALLY queried first. Without this, "sent no
+	// organization" and "never asked at all" are the same observation, and a
+	// short-circuit that wrongly caught platform admins would pass here.
+	if q.Get("module") != "acme/vpc/aws" {
+		t.Fatalf("the sibling was not queried for a platform admin (module=%q)", q.Get("module"))
+	}
+	if orgs := q["organization"]; len(orgs) != 0 {
+		t.Errorf("organization = %v, want none for a platform admin", orgs)
+	}
+}
+
+// A caller who holds no organizations can legitimately see no consumers, and
+// this is answered WITHOUT asking the sibling -- which closes this half of the
+// disclosure now rather than waiting for the sibling to enforce the parameter.
+//
+// The sibling here fails the test if it is contacted at all: that is the
+// assertion, not the empty body, because an un-enforcing sibling would answer
+// fleet-wide and the body alone could not tell the two apart.
+func TestModuleConsumers_CallerWithNoOrganizationsNeverReachesTheSibling(t *testing.T) {
+	var reached bool
+	cfg, dc := consumersSibling(t,
+		`{"consumers":[{"state_key":"other-org/prod"}],"total":1}`, nil, &reached)
+
+	r := mountConsumersAsCaller(cfg, dc, loopbackGuard, func(c *gin.Context) {
+		c.Set("scopes", []string{string(auth.ScopeModulesRead)})
+		// authenticated, but belongs to no organization
+	})
+	code, body := getConsumers(r)
+
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", code)
+	}
+	if reached {
+		t.Error("the sibling was queried for a caller with no organizations; it answers fleet-wide, so this leaks another organization's state keys")
+	}
+	if total, _ := body["total"].(float64); total != 0 {
+		t.Errorf("total = %v, want 0", total)
 	}
 }

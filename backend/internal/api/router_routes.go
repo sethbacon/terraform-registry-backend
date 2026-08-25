@@ -635,7 +635,7 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 			// auth-required so internal state/source names aren't exposed anonymously.
 			// Namespaced under /suite to avoid the /modules/:version wildcard.
 			authenticatedGroup.GET("/suite/modules/:namespace/:name/:system/consumers",
-				moduleConsumersHandler(func() *suite.DiscoveryClient { return suiteClient }, cfg, egressGuard))
+				moduleConsumersHandler(func() *suite.DiscoveryClient { return suiteClient }, cfg, egressGuard, orgRepo))
 
 			// Stats endpoints (require auth)
 			authenticatedGroup.GET("/admin/stats/dashboard", statsHandlers.GetDashboardStats)
