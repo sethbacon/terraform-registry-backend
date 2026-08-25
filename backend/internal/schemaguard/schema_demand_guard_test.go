@@ -141,22 +141,23 @@ type knownGap struct {
 	Why    string
 }
 
-var knownGaps = []knownGap{
-	{
-		Table:  "audit_logs",
-		Column: "actor_email",
-		Issue:  "#864",
-		Why: "the defect this guard was written for, at identity/store/audit_repository.go. The " +
-			"shared identity store writes actor_email into an unqualified audit_logs; under the " +
-			"default configuration that resolves to public.audit_logs, which this repository's " +
-			"own migration chain never gave the column. Removing the migrations gate does NOT " +
-			"clear this — see the topology note at the top of the file. What clears it: a " +
-			"registry migration adding actor_email to public.audit_logs, or making the " +
-			"identity-schema cutover the default, or a probed write in the library " +
-			"(terraform-suite-identity#203), which becomes a probedWrites entry rather than a " +
-			"knownGap. DELETE THIS ENTRY when it lands.",
-	},
-}
+// knownGaps is EMPTY, and #864 is why it can be.
+//
+// It held exactly one entry — audit_logs.actor_email — recording that the
+// shared identity store wrote and read a column this repository's own chain
+// never gave public.audit_logs, so every audited request and every read of
+// /api/v1/admin/audit-logs answered 42703 in the DEFAULT configuration. The
+// entry named three ways out and said to delete it when one landed.
+//
+// Migration 000058 is that landing: it adds the column here, additively, so a
+// deployment that later completes the identity-schema cutover finds it already
+// present on identity.audit_logs and this one goes inert.
+//
+// An entry here is a column the default configuration cannot supply — a 500
+// waiting for the first request that reaches it. Empty is the finish line, and
+// the set is empty; a new entry needs the same standard of proof the last one
+// had, including which remedy will remove it.
+var knownGaps = []knownGap{}
 
 func (g knownGap) matches(v violation) bool {
 	return strings.EqualFold(g.Table, v.Table) && strings.EqualFold(g.Column, v.Column)
