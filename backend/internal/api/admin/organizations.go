@@ -131,6 +131,14 @@ func NewOrganizationHandlers(cfg *config.Config, db *sql.DB, claimRepo *reposito
 	return h
 }
 
+// WithCredentialAudit gives the credential sweep somewhere to record the keys
+// it destroys (#961). Optional and nil-safe: a construction without a sweeper
+// stays without one. Returns the handler for chaining.
+func (h *OrganizationHandlers) WithCredentialAudit(audit *repositories.AuditRepository) *OrganizationHandlers {
+	h.creds = h.creds.WithAuditLog(audit)
+	return h
+}
+
 // revokeOrgCredentials invalidates every credential family carrying a snapshot
 // of the authority userID derived from orgID: the JWT revoke-all watermark and
 // the user's org-bound API keys.
