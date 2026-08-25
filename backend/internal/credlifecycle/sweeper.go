@@ -38,6 +38,7 @@ import (
 	"log/slog"
 
 	"github.com/terraform-registry/terraform-registry/internal/auth"
+	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/identityerr"
 )
@@ -81,6 +82,10 @@ type Sweeper struct {
 	userRevocations *repositories.UserTokenRevocationRepository
 	// apiKeys deletes API-key rows. Lives on the identity connection.
 	apiKeys *repositories.APIKeyRepository
+	// audit records what was destroyed. Optional: nil means no audit rows are
+	// written and behaviour is byte-identical to before #961, which is what
+	// keeps every existing construction and its tests valid.
+	audit *repositories.AuditRepository
 }
 
 // NewSweeper builds a Sweeper. Either repository may be nil, in which case
@@ -91,6 +96,22 @@ func NewSweeper(userRevocations *repositories.UserTokenRevocationRepository, api
 		return nil
 	}
 	return &Sweeper{userRevocations: userRevocations, apiKeys: apiKeys}
+}
+
+// WithAuditLog attaches the audit repository that records each destroyed key.
+// Chainable and nil-safe on both sides so a construction that has no audit
+// repository -- or no Sweeper at all -- keeps working unchanged.
+//
+// This is deliberately NOT a NewSweeper parameter: every existing call site
+// would have to be edited, and the ones that were missed would be silently
+// un-audited rather than failing to compile. Making it an explicit opt-in keeps
+// the wiring greppable.
+func (s *Sweeper) WithAuditLog(audit *repositories.AuditRepository) *Sweeper {
+	if s == nil {
+		return nil
+	}
+	s.audit = audit
+	return s
 }
 
 // Outcome reports what a sweep actually managed to invalidate. Every sweep is
@@ -106,6 +127,14 @@ type Outcome struct {
 	// scope they carry is still granted by the principal's remaining authority.
 	KeysRetained int
 	Incomplete   bool
+	// AuditIncomplete reports that the sweep destroyed credentials it could not
+	// fully record. Kept SEPARATE from Incomplete on purpose: callers such as
+	// users.go and user_service.go treat Incomplete as "the enclosing
+	// destructive operation did not fully land" and surface it to the client,
+	// whereas a missing audit row means the destruction DID land and the trail
+	// is short. Folding the two together would either hide a real sweep failure
+	// or make a logging problem look like a failed deletion.
+	AuditIncomplete bool
 }
 
 // OrgAuthorityReduced invalidates the credentials a user derives from ONE
@@ -204,6 +233,25 @@ func (s *Sweeper) UserDeprovisioned(ctx context.Context, userID string, scope re
 	// race that must not read as an incomplete sweep — and that whole branch is
 	// gone with the second round trip: a set-based delete reports how many rows
 	// it removed, and removing zero is an ordinary answer, not a miss.
+	// Snapshot BEFORE the delete. The set-based DELETE reports only a count, and
+	// once it runs the names and scopes exist nowhere -- so the pre-image is the
+	// only chance to record what was destroyed. Read only when an audit sink is
+	// attached, so an un-audited deployment issues no extra query.
+	var snapshot []*models.APIKey
+	if s.audit != nil {
+		var listErr error
+		snapshot, listErr = s.apiKeys.ListAPIKeysByUser(ctx, userID, scope)
+		if listErr != nil {
+			// Do NOT abort. The authority reduction has already committed, and
+			// refusing to delete here would strand exactly the credentials this
+			// sweep exists to remove (#732/#736). Proceed and report the gap.
+			slog.Error("credlifecycle: could not snapshot API keys before revoking them",
+				"user_id", userID, "reason", reason, "error", listErr,
+				"impact", "the keys are still deleted below, but the audit trail will not name them")
+			out.AuditIncomplete = true
+			snapshot = nil
+		}
+	}
 	n, err := s.apiKeys.RevokeAPIKeysForUser(ctx, userID, scope)
 	if err != nil {
 		slog.Error("credlifecycle: failed to revoke user API keys",
@@ -214,7 +262,88 @@ func (s *Sweeper) UserDeprovisioned(ctx context.Context, userID string, scope re
 	out.KeysRevoked = int(n)
 	slog.Info("credlifecycle: API keys revoked", "user_id", userID,
 		"api_keys_revoked", n, "scope", scope.String(), "reason", reason)
+	for _, k := range snapshot {
+		if !s.recordKeyDestroyed(ctx, k, reason) {
+			out.AuditIncomplete = true
+		}
+	}
+	// A snapshot that disagrees with the delete count means rows arrived or
+	// vanished between the two statements, so the trail is not a faithful
+	// account of what this sweep destroyed. Say so rather than letting the
+	// mismatch pass silently.
+	if s.audit != nil && len(snapshot) != int(n) {
+		slog.Warn("credlifecycle: audit snapshot does not match the number of keys deleted",
+			"user_id", userID, "snapshotted", len(snapshot), "deleted", n, "reason", reason)
+		out.AuditIncomplete = true
+	}
 	return out
+}
+
+// SweepActor is the actor_email recorded for a sweep-initiated destruction.
+//
+// These writes have no HTTP actor reachable from here. Four of the five call
+// sites DO run inside an authenticated request, but the Sweeper receives only a
+// context and never the caller's identity, so attributing the row to a person
+// would require threading a principal through every path -- and guessing wrong
+// is worse than being explicit that the system did it. audit_logs.actor_email
+// (migration 000058) is NOT NULL-safe but a null actor is unreadable in the
+// admin surface, so a sentinel is used instead.
+const SweepActor = "system:credlifecycle"
+
+// recordKeyDestroyed writes the audit row for one destroyed key. It reports
+// whether the record was written.
+//
+// The row must make the destruction RECONSTRUCTABLE: the api_keys row is
+// hard-deleted (identity models revocation as deletion and deliberately dropped
+// is_active in its migration 000004), so name, scopes and prefix exist nowhere
+// else once this returns. Scopes matter most -- they are what tells the owner
+// what the key could do and therefore what to recreate.
+func (s *Sweeper) recordKeyDestroyed(ctx context.Context, k *models.APIKey, reason string) bool {
+	if s == nil || s.audit == nil || k == nil {
+		return true
+	}
+	resourceType := "api_key"
+	resourceID := k.ID
+	orgID := k.OrganizationID
+	actor := SweepActor
+
+	metadata := map[string]interface{}{
+		"name":       k.Name,
+		"scopes":     k.Scopes,
+		"key_prefix": k.KeyPrefix,
+		"reason":     reason,
+		"created_at": k.CreatedAt,
+	}
+	if k.UserID != nil {
+		metadata["owner_user_id"] = *k.UserID
+	}
+	if k.Description != nil {
+		metadata["description"] = *k.Description
+	}
+	if k.ExpiresAt != nil {
+		metadata["expires_at"] = *k.ExpiresAt
+	}
+	if k.LastUsedAt != nil {
+		metadata["last_used_at"] = *k.LastUsedAt
+	}
+
+	entry := &models.AuditLog{
+		// UserID stays nil: the row records a SYSTEM action, and the audit
+		// repository resolves actor_email from user_id when ActorEmail is unset.
+		OrganizationID: &orgID,
+		Action:         "api_key.revoked_by_sweep",
+		ResourceType:   &resourceType,
+		ResourceID:     &resourceID,
+		Metadata:       metadata,
+		ActorEmail:     &actor,
+	}
+	if err := s.audit.CreateAuditLog(ctx, entry); err != nil {
+		slog.Error("credlifecycle: destroyed an API key but could not record it in the audit log",
+			"api_key_id", k.ID, "organization_id", k.OrganizationID, "reason", reason, "error", err,
+			"impact", "the key is gone and its name and scopes are not recoverable from the audit trail")
+		return false
+	}
+	return true
 }
 
 func (s *Sweeper) revokeTokens(ctx context.Context, userID, reason string) Outcome {
@@ -280,6 +409,13 @@ func (s *Sweeper) revokeOrgKeys(ctx context.Context, userID, orgID string, retai
 		out.KeysRevoked++
 		slog.Info("credlifecycle: API key revoked",
 			"api_key_id", k.ID, "user_id", userID, "organization_id", orgID, "reason", reason)
+		// Recorded AFTER the delete, deliberately. Auditing first would
+		// manufacture a record of a destruction that might then not happen, and
+		// a phantom entry corrupts the trail in a way a missing one does not --
+		// a miss is loud in the error log and sets AuditIncomplete.
+		if !s.recordKeyDestroyed(ctx, k, reason) {
+			out.AuditIncomplete = true
+		}
 	}
 	return out
 }

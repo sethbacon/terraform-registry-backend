@@ -3,6 +3,8 @@ package credlifecycle
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -547,6 +549,205 @@ func TestUserDeprovisioned_NoKeyRepository_StillMovesWatermark(t *testing.T) {
 		repositories.OrgScopeAllOrganizations(), "test")
 	if !out.TokensRevoked || out.Incomplete {
 		t.Errorf("Outcome = %+v, want TokensRevoked=true Incomplete=false", out)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// #961 — a destroyed credential must leave a reconstructable record.
+//
+// api_keys is HARD-deleted (identity models revocation as deletion and dropped
+// is_active in its migration 000004), so once a sweep runs the key's name and
+// scopes exist nowhere else. An audit row that merely says "a key was revoked"
+// is not enough to tell the owner what to recreate, which is precisely what
+// happened on the deployment that produced this issue.
+// ---------------------------------------------------------------------------
+
+// auditMetadataNaming matches the metadata JSONB argument of an audit INSERT and
+// asserts the destroyed key is RECONSTRUCTABLE from it.
+//
+// This is the assertion that makes the test non-vacuous. Expecting only that an
+// INSERT happened would pass against an audit row with empty metadata -- which
+// records that something was destroyed while still losing the one thing worth
+// keeping. Verified by mutation: hollowing out the metadata map must turn this
+// red, and with a statement-only expectation it does not.
+type auditMetadataNaming struct {
+	name   string
+	scopes []string
+}
+
+func (a auditMetadataNaming) Match(v driver.Value) bool {
+	raw, ok := v.([]byte)
+	if !ok {
+		return false
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return false
+	}
+	if m["name"] != a.name {
+		return false
+	}
+	got, ok := m["scopes"].([]interface{})
+	if !ok || len(got) != len(a.scopes) {
+		return false
+	}
+	for i, want := range a.scopes {
+		if got[i] != want {
+			return false
+		}
+	}
+	return true
+}
+
+func expectKeyDestroyedAudit(mock sqlmock.Sqlmock, keyID, name string, scopes []string) {
+	mock.ExpectQuery("INSERT INTO audit_logs").
+		WithArgs(
+			sqlmock.AnyArg(), // id
+			nil,              // user_id — a SYSTEM action has no acting user
+			sqlmock.AnyArg(), // organization_id
+			"api_key.revoked_by_sweep",
+			"api_key",
+			keyID,
+			auditMetadataNaming{name: name, scopes: scopes},
+			nil,              // ip_address
+			sqlmock.AnyArg(), // created_at
+			SweepActor,
+		).
+		WillReturnRows(sqlmock.NewRows([]string{"actor_email"}).AddRow(SweepActor))
+}
+
+func TestOrgKeysOnly_WritesAnAuditRowNamingTheDestroyedKey(t *testing.T) {
+	s, mock, db := newSweeperWithMock(t)
+	s = s.WithAuditLog(repositories.NewAuditRepository(db))
+
+	mock.ExpectQuery("(?s)FROM api_keys ak.*ak.organization_id").
+		WithArgs("user-1", "org-1", sqlmock.AnyArg()).
+		WillReturnRows(keyRow("key-1", "user-1", "org-1", `["modules:write","scanning:read"]`))
+	mock.ExpectExec("DELETE FROM api_keys WHERE id").
+		WithArgs("key-1", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	expectKeyDestroyedAudit(mock, "key-1", "CI Key", []string{"modules:write", "scanning:read"})
+
+	out := s.OrgKeysOnly(context.Background(), "user-1", "org-1", nil, "idp group mapping role reassigned")
+
+	if out.KeysRevoked != 1 {
+		t.Fatalf("KeysRevoked = %d, want 1", out.KeysRevoked)
+	}
+	if out.AuditIncomplete {
+		t.Error("AuditIncomplete set although the audit write succeeded")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// A key the sweep RETAINS must not be audited as destroyed: a phantom entry
+// corrupts the trail worse than a missing one.
+func TestOrgKeysOnly_RetainedKeyIsNotAudited(t *testing.T) {
+	s, mock, db := newSweeperWithMock(t)
+	s = s.WithAuditLog(repositories.NewAuditRepository(db))
+
+	mock.ExpectQuery("(?s)FROM api_keys ak.*ak.organization_id").
+		WithArgs("user-1", "org-1", sqlmock.AnyArg()).
+		WillReturnRows(keyRow("key-1", "user-1", "org-1", `["modules:read"]`))
+	// No DELETE and no INSERT staged: the key is still covered by the retained
+	// authority, so nothing may be destroyed and nothing may be recorded.
+
+	out := s.OrgKeysOnly(context.Background(), "user-1", "org-1", []string{"modules:read"}, "no-op")
+
+	if out.KeysRevoked != 0 || out.KeysRetained != 1 {
+		t.Fatalf("KeysRevoked=%d KeysRetained=%d, want 0 and 1", out.KeysRevoked, out.KeysRetained)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// The bulk path deletes with ONE statement that reports only a count, so the
+// pre-image is the only chance to learn what was destroyed.
+func TestUserDeprovisioned_SnapshotsKeysBeforeTheBulkDelete(t *testing.T) {
+	s, mock, db := newSweeperWithMock(t)
+	s = s.WithAuditLog(repositories.NewAuditRepository(db))
+
+	expectWatermark(mock, "user-1")
+	// The snapshot read must come BEFORE the delete; sqlmock is ordered, so
+	// staging it first is itself the assertion.
+	// OrgScopeAllOrganizations renders as `AND TRUE` and binds no parameter, so
+	// both statements take exactly one argument.
+	mock.ExpectQuery("(?s)FROM api_keys").
+		WithArgs("user-1").
+		WillReturnRows(keyRow("key-1", "user-1", "org-1", `["modules:write"]`))
+	mock.ExpectExec("DELETE FROM api_keys WHERE user_id").
+		WithArgs("user-1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	expectKeyDestroyedAudit(mock, "key-1", "CI Key", []string{"modules:write"})
+
+	out := s.UserDeprovisioned(context.Background(), "user-1", repositories.OrgScopeAllOrganizations(), "user deleted")
+
+	if out.KeysRevoked != 1 {
+		t.Fatalf("KeysRevoked = %d, want 1", out.KeysRevoked)
+	}
+	if out.AuditIncomplete {
+		t.Error("AuditIncomplete set although the snapshot and audit write both succeeded")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// A failed audit write must NOT abort the sweep: the authority reduction has
+// already committed, and refusing to delete would strand the credentials the
+// sweep exists to remove. It must be reported instead -- and reported through
+// AuditIncomplete, not Incomplete, because callers treat Incomplete as "the
+// destructive operation did not land".
+func TestOrgKeysOnly_AuditFailureIsReportedButDoesNotStopTheSweep(t *testing.T) {
+	s, mock, db := newSweeperWithMock(t)
+	s = s.WithAuditLog(repositories.NewAuditRepository(db))
+
+	mock.ExpectQuery("(?s)FROM api_keys ak.*ak.organization_id").
+		WithArgs("user-1", "org-1", sqlmock.AnyArg()).
+		WillReturnRows(keyRow("key-1", "user-1", "org-1", `["modules:write"]`))
+	mock.ExpectExec("DELETE FROM api_keys WHERE id").
+		WithArgs("key-1", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery("INSERT INTO audit_logs").
+		WillReturnError(errors.New("audit_logs unavailable"))
+
+	out := s.OrgKeysOnly(context.Background(), "user-1", "org-1", nil, "idp deprovision")
+
+	if out.KeysRevoked != 1 {
+		t.Fatalf("KeysRevoked = %d, want 1 (the deletion must still happen)", out.KeysRevoked)
+	}
+	if !out.AuditIncomplete {
+		t.Error("AuditIncomplete must be set when the audit write fails")
+	}
+	if out.Incomplete {
+		t.Error("Incomplete must NOT be set: the sweep itself succeeded, only its record did not")
+	}
+}
+
+// With no audit sink attached the sweeper must issue no extra statement at all,
+// so every existing construction and its tests stay valid.
+func TestSweeperWithoutAuditSinkIssuesNoAuditStatement(t *testing.T) {
+	s, mock, _ := newSweeperWithMock(t)
+
+	mock.ExpectQuery("(?s)FROM api_keys ak.*ak.organization_id").
+		WithArgs("user-1", "org-1", sqlmock.AnyArg()).
+		WillReturnRows(keyRow("key-1", "user-1", "org-1", `["modules:write"]`))
+	mock.ExpectExec("DELETE FROM api_keys WHERE id").
+		WithArgs("key-1", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	out := s.OrgKeysOnly(context.Background(), "user-1", "org-1", nil, "idp deprovision")
+
+	if out.KeysRevoked != 1 {
+		t.Fatalf("KeysRevoked = %d, want 1", out.KeysRevoked)
+	}
+	if out.AuditIncomplete {
+		t.Error("AuditIncomplete must stay false when no audit sink is attached")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
