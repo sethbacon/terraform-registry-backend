@@ -72,6 +72,15 @@ func NewRBACHandlers(rbacRepo *repositories.RBACRepository, userRevocations *rep
 	return &RBACHandlers{rbacRepo: rbacRepo, creds: credlifecycle.NewSweeper(userRevocations, apiKeys)}
 }
 
+// WithCredentialAudit gives the credential sweep somewhere to record the keys
+// it destroys (#961). Optional: without it the sweep still runs and still
+// deletes, it just leaves no audit row -- which is the behaviour this exists to
+// end, so production wiring must set it. Returns the handler for chaining.
+func (h *RBACHandlers) WithCredentialAudit(audit *repositories.AuditRepository) *RBACHandlers {
+	h.creds = h.creds.WithAuditLog(audit)
+	return h
+}
+
 // WithOrgRepo wires in the organization repository so the mirror-policy and
 // approval-request LIST routes can be scoped to the caller's organizations.
 // Returns the handler for chaining.

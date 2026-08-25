@@ -749,7 +749,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// apiKeyRepo on the identity connection, so the two halves cannot be
 	// constructed from a single handle -- it is built once here and injected
 	// wherever an authority-reducing handler lives (issues #732, #736).
-	credSweeper := credlifecycle.NewSweeper(userTokenRevocationRepo, apiKeyRepo)
+	credSweeper := credlifecycle.NewSweeper(userTokenRevocationRepo, apiKeyRepo).WithAuditLog(auditRepo)
 
 	var authHandlers *admin.AuthHandlers
 	authHandlers, err = admin.NewAuthHandlers(cfg, identityDB, oidcConfigRepo, tokenRepo, oidcStateStore,
@@ -775,6 +775,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		// and scm_oauth_tokens stays in the registry's schema at cutover.
 		admin.WithUserSCMTokens(scmRepo))
 	orgHandlers := admin.NewOrganizationHandlers(cfg, identityDB, nsClaimRepo, userTokenRevocationRepo).
+		WithCredentialAudit(auditRepo).
 		WithAdminFloor(adminFloor).
 		// scmRepo and mirrorRepo, deliberately: both are built on the REGISTRY
 		// connection above, and scm_providers / mirror_configurations stay in
@@ -809,6 +810,7 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// Role-template CRUD follows the identity schema; mirror methods stay public.
 	rbacRepo := repositories.NewRBACRepositoryWithIdentity(sqlxDB, identitySqlxDB)
 	rbacHandlers := admin.NewRBACHandlers(rbacRepo, userTokenRevocationRepo, apiKeyRepo).
+		WithCredentialAudit(auditRepo).
 		WithNotifications(&cfg.Notifications, &cfg.CVE).
 		WithOrgRepo(orgRepo).
 		WithMirrorRepo(mirrorRepo)
