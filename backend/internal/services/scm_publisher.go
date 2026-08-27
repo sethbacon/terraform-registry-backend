@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -413,11 +414,116 @@ func (p *SCMPublisher) extractVersionFromTag(tag, glob string) string {
 	return version
 }
 
+// SyncRef narrows a manual sync to one ref, and optionally asserts which commit
+// that ref must point at (#879).
+//
+// WHY THIS EXISTS. Without it a sync imports whatever the configured tag
+// pattern resolves to AT SYNC TIME, so between a workflow's checkout and the
+// registry's fetch there is a window in which a force-moved tag changes what
+// gets published while the publisher still reports success. A caller had no way
+// to say which ref it meant.
+//
+// The zero value means "every matching tag", which is what a sync triggered
+// from the UI wants and what every existing caller gets.
+type SyncRef struct {
+	// TagName narrows the sync to this tag. Empty means all matching tags.
+	TagName string
+	// CommitSHA, when set alongside TagName, asserts the tag still points at
+	// this commit. A mismatch is a FORCE-MOVED TAG and is refused rather than
+	// published, because publishing it would silently substitute different
+	// content for what the caller asked for.
+	CommitSHA string
+}
+
+// admits decides whether a fetched tag is the one this ref names.
+//
+// A method rather than an inline condition so the narrowing is testable without
+// a live SCM connector -- TriggerManualSyncRef is integration-only, and a
+// mutation that deleted the filter entirely went undetected until this existed.
+//
+// Returns an error rather than false for a MOVED tag, because the two mean
+// opposite things: a non-matching tag is simply not the one asked for and the
+// loop should carry on, while a matching tag pointing at the wrong commit is
+// the force-moved case the whole feature exists to refuse. Publishing it would
+// silently substitute different content for what the caller asked for.
+func (ref SyncRef) admits(tag *scm.GitTag) (bool, error) {
+	if ref.TagName == "" {
+		return true, nil // unpinned: every tag the pattern matches
+	}
+	if tag == nil || tag.TagName != ref.TagName {
+		return false, nil
+	}
+	if ref.CommitSHA != "" && !sameCommit(tag.TargetCommit, ref.CommitSHA) {
+		return false, fmt.Errorf("%w: %s points at %s, not %s",
+			ErrRefMoved, ref.TagName, tag.TargetCommit, ref.CommitSHA)
+	}
+	return true, nil
+}
+
+// ErrRefNotFound means the named tag does not exist in the repository.
+var ErrRefNotFound = errors.New("scm: named ref not found in repository")
+
+// ErrRefMoved means the tag exists but points at a different commit than the
+// caller asserted.
+var ErrRefMoved = errors.New("scm: named ref no longer points at the asserted commit")
+
+// ResolveRef checks that a ref exists and still points where the caller says.
+//
+// SEPARATE FROM THE SYNC, and called synchronously by the handler before it
+// dispatches. The sync itself runs detached and answers 202, so a failure
+// discovered inside it reaches nobody -- which would make "fail if it no longer
+// resolves" a promise the API could not keep. Resolving first turns a moved tag
+// into a status code the caller actually sees.
+func (p *SCMPublisher) ResolveRef(ctx context.Context, moduleSourceRepo *scm.ModuleSourceRepoRecord, connector scm.Connector, token *scm.OAuthToken, ref SyncRef) (*scm.GitTag, error) {
+	if ref.TagName == "" {
+		return nil, nil
+	}
+	tags, err := connector.FetchTags(ctx, token, moduleSourceRepo.RepositoryOwner, moduleSourceRepo.RepositoryName, scm.DefaultPagination())
+	if err != nil {
+		return nil, fmt.Errorf("failed to list tags: %w", err)
+	}
+	for _, tag := range tags {
+		if tag.TagName != ref.TagName {
+			continue
+		}
+		if ref.CommitSHA != "" && !sameCommit(tag.TargetCommit, ref.CommitSHA) {
+			return nil, fmt.Errorf("%w: %s points at %s, not %s",
+				ErrRefMoved, ref.TagName, tag.TargetCommit, ref.CommitSHA)
+		}
+		return tag, nil
+	}
+	return nil, fmt.Errorf("%w: %s", ErrRefNotFound, ref.TagName)
+}
+
+// sameCommit compares two commit ids, tolerating an abbreviated one.
+//
+// A caller frequently has a short SHA (a workflow that ran `git rev-parse
+// --short HEAD`), and refusing it would push everyone toward omitting the
+// assertion entirely -- which defeats the point. Comparison is on the shorter
+// length, case-insensitively, and an abbreviation shorter than 7 is refused as
+// too weak to identify a commit.
+func sameCommit(actual, asserted string) bool {
+	a := strings.ToLower(strings.TrimSpace(actual))
+	b := strings.ToLower(strings.TrimSpace(asserted))
+	if len(b) < 7 || len(a) < 7 {
+		return false
+	}
+	if len(b) < len(a) {
+		return strings.HasPrefix(a, b)
+	}
+	return strings.HasPrefix(b, a)
+}
+
 // TriggerManualSync scans a repository for tags and publishes any matching versions
 // TriggerManualSync manually syncs all tags for a module source repo.
 // coverage:skip:integration-only — requires live SCM connector and DB
 // This is called when a user manually triggers a sync from the UI
 func (p *SCMPublisher) TriggerManualSync(ctx context.Context, moduleSourceRepo *scm.ModuleSourceRepoRecord, connector scm.Connector, token *scm.OAuthToken) error {
+	return p.TriggerManualSyncRef(ctx, moduleSourceRepo, connector, token, SyncRef{})
+}
+
+// TriggerManualSyncRef is TriggerManualSync narrowed to one ref.
+func (p *SCMPublisher) TriggerManualSyncRef(ctx context.Context, moduleSourceRepo *scm.ModuleSourceRepoRecord, connector scm.Connector, token *scm.OAuthToken, ref SyncRef) error {
 	slog.Debug("starting manual sync", "module_id", moduleSourceRepo.ModuleID, "owner", moduleSourceRepo.RepositoryOwner, "repo", moduleSourceRepo.RepositoryName)
 
 	// List all tags from the repository
@@ -437,6 +543,18 @@ func (p *SCMPublisher) TriggerManualSync(ctx context.Context, moduleSourceRepo *
 
 	matchingTags := 0
 	for _, tag := range tags {
+		// A named ref narrows the sync to exactly that tag, and asserts the
+		// commit if one was given. Checked here as well as in ResolveRef
+		// because the two run at different times: the handler resolves before
+		// dispatching, and the tag could move in between. Publishing the wrong
+		// commit is worse than publishing nothing.
+		include, refErr := ref.admits(tag)
+		if refErr != nil {
+			return refErr
+		}
+		if !include {
+			continue
+		}
 		slog.Debug("checking tag", "tag", tag.TagName)
 
 		// Check if tag matches pattern
@@ -478,6 +596,13 @@ func (p *SCMPublisher) TriggerManualSync(ctx context.Context, moduleSourceRepo *
 
 	slog.Debug("manual sync tag matching complete", "matching_tags", matchingTags, "total_tags", len(tags))
 
+	// A named ref that matched nothing is an error, never a quiet success. The
+	// caller asked for one specific thing; reporting 202 for a tag that does
+	// not exist is the failure mode this whole change exists to remove.
+	if ref.TagName != "" && !sawNamedRef(tags, ref.TagName) {
+		return fmt.Errorf("%w: %s", ErrRefNotFound, ref.TagName)
+	}
+
 	// Update last sync time
 	now := time.Now()
 	moduleSourceRepo.LastSyncAt = &now
@@ -486,6 +611,16 @@ func (p *SCMPublisher) TriggerManualSync(ctx context.Context, moduleSourceRepo *
 	}
 
 	return nil
+}
+
+// sawNamedRef reports whether the fetched tag list contains name.
+func sawNamedRef(tags []*scm.GitTag, name string) bool {
+	for _, t := range tags {
+		if t != nil && t.TagName == name {
+			return true
+		}
+	}
+	return false
 }
 
 // processTagForManualSync processes a single tag during manual sync (no webhook logging)

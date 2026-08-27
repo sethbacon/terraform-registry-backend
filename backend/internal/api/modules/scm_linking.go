@@ -3,9 +3,11 @@ package modules
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -496,12 +498,21 @@ func (h *SCMLinkingHandler) GetModuleSCMInfo(c *gin.Context) {
 // @Tags         SCM Linking
 // @Security     Bearer
 // @Produce      json
-// @Param        id  path  string  true  "Module ID (UUID)"
+// @Description
+// @Description  Optionally pinned to one ref. `tag` narrows the sync to that tag alone; `commit_sha`
+// @Description  additionally asserts the tag still points at that commit, and the request is refused
+// @Description  with 409 if it has moved. Both are validated before the sync is dispatched, so a bad
+// @Description  ref is reported to the caller rather than discovered inside the background job.
+// @Param        id          path   string  true   "Module ID (UUID)"
+// @Param        tag         query  string  false  "Sync only this tag (default: every tag matching the configured pattern)"
+// @Param        commit_sha  query  string  false  "Assert the tag points at this commit; requires tag. Abbreviations of 7+ characters are accepted"
 // @Success      202  {object}  admin.MessageResponse
-// @Failure      400  {object}  map[string]interface{}  "Invalid module ID"
+// @Failure      400  {object}  map[string]interface{}  "Invalid module ID, or commit_sha given without tag"
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized or no OAuth token for this SCM provider"
-// @Failure      404  {object}  map[string]interface{}  "Module is not linked to a repository"
+// @Failure      404  {object}  map[string]interface{}  "Module is not linked to a repository, or the named tag does not exist"
+// @Failure      409  {object}  map[string]interface{}  "The named tag no longer points at the asserted commit"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error (connector build, token decryption, etc.)"
+// @Failure      502  {object}  map[string]interface{}  "Could not reach the SCM provider to resolve the ref"
 // @Router       /api/v1/admin/modules/{id}/scm/sync [post]
 // TriggerManualSync manually triggers a repository sync
 // POST /api/v1/admin/modules/:id/scm/sync
@@ -535,18 +546,21 @@ func (h *SCMLinkingHandler) TriggerManualSync(c *gin.Context) {
 
 	// App-mode providers use the shared, admin-managed credential — no per-user
 	// connection is required to trigger a sync.
+	ref, ok := parseSyncRef(c)
+	if !ok {
+		return
+	}
+
 	if provider.AuthMode == scm.AuthModeEntraApp || provider.AuthMode == scm.AuthModeGitHubApp {
 		connector, token, connErr := h.connectorAndToken(c.Request.Context(), provider, uuid.Nil)
 		if connErr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": connErr.Error()})
 			return
 		}
-		safego.Go(func() {
-			if syncErr := h.publisher.TriggerManualSync(context.Background(), link, connector, token); syncErr != nil {
-				slog.Warn("manual sync failed", "module_id", moduleID, "error", syncErr)
-			}
-		})
-		c.JSON(http.StatusAccepted, gin.H{"message": "sync triggered"})
+		if !h.resolveSyncRef(c, link, connector, token, ref) {
+			return
+		}
+		h.dispatchSync(c, moduleID, link, connector, token, ref)
 		return
 	}
 
@@ -646,20 +660,114 @@ func (h *SCMLinkingHandler) TriggerManualSync(c *gin.Context) {
 		}
 	}
 
-	// Trigger async sync in background using a new context
-	// (c.Request.Context() would be canceled when the HTTP response is sent)
-	slog.Debug("starting async sync", "module_id", moduleID, "owner", link.RepositoryOwner, "repo", link.RepositoryName)
+	if !h.resolveSyncRef(c, link, connector, token, ref) {
+		return
+	}
+	h.dispatchSync(c, moduleID, link, connector, token, ref)
+}
+
+// parseSyncRef reads the optional ref from the request (#879).
+//
+// Query parameters, not a body: this is a POST with no body today and every
+// existing caller sends none, so a required body would break them and an
+// optional one is two ways to say the same thing. Callers are CI workflows
+// building a URL.
+//
+// Returns false when it has already answered the request.
+func parseSyncRef(c *gin.Context) (services.SyncRef, bool) {
+	ref := services.SyncRef{
+		TagName:   strings.TrimSpace(c.Query("tag")),
+		CommitSHA: strings.TrimSpace(c.Query("commit_sha")),
+	}
+	// A commit without a tag cannot be resolved: the sync walks tags, and a
+	// bare SHA names no tag to import. Refusing is better than ignoring it,
+	// which would let a caller believe it had pinned something.
+	if ref.CommitSHA != "" && ref.TagName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "commit_sha requires tag: a sync imports tags, so a commit alone names nothing to publish",
+		})
+		return services.SyncRef{}, false
+	}
+	return ref, true
+}
+
+// resolveSyncRef checks the named ref BEFORE dispatching, and answers the
+// request itself when it does not hold.
+//
+// SYNCHRONOUS ON PURPOSE. The sync runs detached and the handler answers 202,
+// so a failure discovered inside it reaches nobody -- which would make "fail if
+// the ref no longer resolves" a promise this API could not keep. Resolving
+// first turns a moved or missing tag into a status code the caller sees.
+//
+// Returns false when it has already answered.
+func (h *SCMLinkingHandler) resolveSyncRef(c *gin.Context, link *scm.ModuleSourceRepoRecord, connector scm.Connector, token *scm.OAuthToken, ref services.SyncRef) bool {
+	if ref.TagName == "" {
+		return true
+	}
+	tag, err := h.publisher.ResolveRef(c.Request.Context(), link, connector, token, ref)
+	if err != nil {
+		status, msg := statusForRefError(err)
+		c.JSON(status, gin.H{"error": msg})
+		return false
+	}
+	if tag != nil {
+		slog.Debug("resolved sync ref", "tag", tag.TagName, "commit", tag.TargetCommit)
+	}
+	return true
+}
+
+// statusForRefError maps a ref-resolution failure to a status.
+//
+// A pure function so the mapping is testable without a live SCM connector --
+// and it is the part a publisher actually depends on. The distinctions matter:
+//
+//   - 404: the tag does not exist. The caller named something wrong, or the
+//     push has not landed yet.
+//   - 409: the tag exists and points somewhere else. THE REQUEST WAS FINE and
+//     the repository changed underneath it -- which is the force-moved-tag case
+//     this whole feature exists to refuse. Reporting it as 400 would tell a
+//     publisher it had sent nonsense.
+//   - 502: the registry could not reach the SCM provider. Nothing about the
+//     caller's request is wrong, and it is worth retrying; the other two are
+//     not.
+//
+// The upstream message is passed through for the first two because it names the
+// tag and both commits, which is what a human debugging a failed publish needs.
+// The 502 message is generic: an SCM client error can carry an instance URL or
+// a token fragment.
+func statusForRefError(err error) (int, string) {
+	switch {
+	case errors.Is(err, services.ErrRefNotFound):
+		return http.StatusNotFound, err.Error()
+	case errors.Is(err, services.ErrRefMoved):
+		return http.StatusConflict, err.Error()
+	default:
+		return http.StatusBadGateway, "failed to resolve ref against the repository"
+	}
+}
+
+// dispatchSync starts the sync in the background and answers 202.
+func (h *SCMLinkingHandler) dispatchSync(c *gin.Context, moduleID uuid.UUID, link *scm.ModuleSourceRepoRecord, connector scm.Connector, token *scm.OAuthToken, ref services.SyncRef) {
+	// A new context: c.Request.Context() is canceled when the response is sent.
+	slog.Debug("starting async sync", "module_id", moduleID, "owner", link.RepositoryOwner, "repo", link.RepositoryName, "tag", ref.TagName)
 	safego.Go(func() {
-		slog.Debug("running sync in goroutine", "module_id", moduleID)
-		if err := h.publisher.TriggerManualSync(context.Background(), link, connector, token); err != nil {
-			// Log error but don't fail the request
-			slog.Warn("manual sync failed", "module_id", moduleID, "error", err)
+		if err := h.publisher.TriggerManualSyncRef(context.Background(), link, connector, token, ref); err != nil {
+			slog.Warn("manual sync failed", "module_id", moduleID, "tag", ref.TagName, "error", err)
 		} else {
 			slog.Debug("manual sync completed successfully", "module_id", moduleID)
 		}
 	})
 
-	c.JSON(http.StatusAccepted, gin.H{"message": "sync triggered"})
+	body := gin.H{"message": "sync triggered"}
+	if ref.TagName != "" {
+		// Echo what was pinned, so a caller can confirm the server understood
+		// the ref rather than having silently ignored an unknown parameter.
+		body["tag"] = ref.TagName
+		if ref.CommitSHA != "" {
+			body["commit_sha"] = ref.CommitSHA
+		}
+	}
+	c.JSON(http.StatusAccepted, body)
 }
 
 // @Summary      Get webhook event history
