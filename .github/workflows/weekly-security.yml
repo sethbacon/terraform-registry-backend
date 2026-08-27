@@ -89,23 +89,40 @@ jobs:
           # human-readable summary in its place.
           #
           # --no-call-analysis=go is deliberate, and is required for this job to
-          # be able to report success at all. The scanner image ships its own Go
-          # toolchain (1.26.2 in v2.3.8) and invokes it with GOTOOLCHAIN=local,
-          # so it cannot build a module whose `go` directive names a newer
-          # release — backend/go.mod is well past it. Its internal call-analysis
-          # pass then aborts with
-          #   "go.mod requires go >= 1.26.6 (running go 1.26.2; GOTOOLCHAIN=local)"
-          # and osv-scanner exits 127 — its ERROR code, distinct from the exit 1
-          # that means "vulnerabilities found".
+          # be able to report success at all.
+          #
+          # The scanner image is built FROM a golang base, so it carries exactly
+          # one Go toolchain, and the official golang images set
+          # GOTOOLCHAIN=local — which forbids downloading or switching to
+          # another. It therefore cannot build a module whose `go` directive
+          # names a newer release, and backend/go.mod is one. Its internal
+          # call-analysis pass then aborts and osv-scanner exits 127 — its ERROR
+          # code, distinct from the exit 1 that means "vulnerabilities found".
+          #
+          # RE-MEASURED 2026-08-27 at the pin above, v2.5.1, the newest release,
+          # by pulling ghcr.io/google/osv-scanner-action:v2.5.1 and running the
+          # real scanner: the image reports go1.26.5 while this module declares
+          # go 1.26.6, and the pass aborts with
+          #   "go.mod requires go >= 1.26.6 (running go 1.26.5; GOTOOLCHAIN=local)"
+          # exiting 127 with an EMPTY results array. The same invocation with
+          # this flag exits 0 and prints no abort. The previous note here said
+          # go1.26.2 in v2.3.8; that was true of a pin no longer in use, and the
+          # numbers moved without the conclusion changing.
+          #
+          # A NEWER PIN DOES NOT FIX THIS AND CANNOT: the image will always trail
+          # the toolchain this module builds on. A GOTOOLCHAIN=auto override was
+          # also measured and does work, and is deliberately not adopted — it
+          # duplicates the govulncheck job below at an older govulncheck, makes a
+          # hermetic scan depend on fetching and executing a toolchain at scan
+          # time inside a root container, and returns to exit 127 with an empty
+          # report whenever that fetch fails.
           #
           # That abort has been happening on every run, masked: exit 1 wins
-          # whenever any finding exists, and this repo always had one
-          # (GO-2026-5932). Now that backend/osv-scanner.toml suppresses it, the
+          # whenever any finding exists, and this repo always had one, namely
+          # GO-2026-5932. Now that backend/osv-scanner.toml suppresses it, the
           # abort would have surfaced as a permanent exit 127 — swapping a
           # detector that is red for a known reason for one that is red for a
-          # hidden reason. Verified in the pinned v2.3.8 image with these exact
-          # arguments: suppression alone gives 127; suppression plus this flag
-          # gives 0.
+          # hidden reason.
           #
           # Nothing is lost. Reachability is the `govulncheck` job's
           # responsibility below, and that job resolves its toolchain from
@@ -114,6 +131,13 @@ jobs:
           # needs no toolchain at all. osv_triage.py never read the analysis
           # field, so no reporting here loses information — unlike the sibling
           # repos, this job never claimed reachability it had not computed.
+          #
+          # THE PAIRING IS NOW GATED, not merely described. The replay signature
+          # `osv-reachability-delegation` asserts, on every push and pull request
+          # and daily, that this flag stays paired with a govulncheck job that
+          # covers backend/go.mod, reads its toolchain from backend/go.mod, and
+          # has its result consumed rather than swallowed. Removing either half
+          # fails the signature-replay check.
           scan-args: |-
             --recursive
             ./backend
