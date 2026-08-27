@@ -9,42 +9,41 @@ swag:
 	cd backend && $(SWAG) init -g cmd/server/main.go --outputTypes json
 	@$(MAKE) openapi3
 
-# openapi3 converts the swag-generated Swagger 2.0 spec to OpenAPI 3.0 and
-# post-processes it so strict validators (oapi-codegen) accept the result:
-#   - Promotes operation-level path parameters to path level for every
-#     templated path (swag only emits per-operation params; OpenAPI 3 tools
-#     such as oapi-codegen require them at path level).
-# Downstream consumers (frontend codegen, terraform-provider-registry oapi-codegen)
-# require OpenAPI 3 — emitting it from this repo means each consumer doesn't
-# have to run its own conversion step.
+# openapi3 converts the swag-generated Swagger 2.0 spec to OpenAPI 3.0.
+#
+# This must stay byte-identical to CI's "Swagger generation" step, because the
+# swagger-docs-sync job regenerates the spec and commits ITS output to the PR
+# branch -- so any transformation here that CI does not also perform is
+# reverted, and a contributor who follows the documented workflow gets a large
+# diff that CI then throws away. That is what #947 was: they disagreed for
+# months and the artifact CI produced always won.
+#
+# NO PATH-PARAMETER HOISTING (#947). This target used to promote
+# operation-level path parameters to path level, on the stated grounds that
+# "OpenAPI 3 tools such as oapi-codegen require them at path level" and that
+# the downstream consumers needed it. Neither consumer did:
+#
+#   - terraform-provider-registry generates MODELS ONLY
+#     (internal/client/spec/oapi-codegen.yaml sets `client: false`), and
+#     oapi-codegen reads path parameters only when generating a client or a
+#     server. Its committed spec snapshot has 76 templated paths and ZERO
+#     path-level parameters, and its codegen has always worked.
+#   - terraform-registry-frontend has no typegen from openapi3.json at all.
+#     Its one spec consumer, frontend/scripts/contract-check.ts, reads
+#     swagger.json (OpenAPI 2) and parses the path templates itself.
+#
+# So the published spec never met a requirement that nothing had. The hoisting
+# was removed rather than adopted into CI because adding it would mean a large
+# one-time diff to satisfy no consumer.
+#
+# IF YOU ARE ADDING A CONSUMER THAT GENERATES A CLIENT OR SERVER from this
+# spec, it WILL need path-level parameters -- restore the hoisting here and add
+# it to CI's step in the same change, or the two will diverge again.
+# swagger_ci_parity_test.go fails if only one of them grows a post-process.
 openapi3:
 	@echo "Converting Swagger 2.0 -> OpenAPI 3.0..."
 	@test -x node_modules/.bin/swagger2openapi || (echo "swagger2openapi not installed — run 'npm install' first" && exit 1)
 	@node_modules/.bin/swagger2openapi backend/docs/swagger.json -o backend/docs/openapi3.json -p
-	@echo "Hoisting operation-level path parameters to path level..."
-	@node -e " \
-	  const fs = require('fs'); \
-	  const spec = JSON.parse(fs.readFileSync('backend/docs/openapi3.json', 'utf8')); \
-	  const methods = ['get','post','put','patch','delete','head','options','trace']; \
-	  for (const [path, item] of Object.entries(spec.paths || {})) { \
-	    if (!path.includes('{') || item.parameters) continue; \
-	    const byName = {}; \
-	    const names = [...path.matchAll(/\{([^}]+)\}/g)].map(m => m[1]); \
-	    for (const m of methods) { \
-	      const op = item[m]; \
-	      if (!op) continue; \
-	      for (const p of (op.parameters || [])) { \
-	        if (p.in === 'path' && names.includes(p.name)) byName[p.name] = p; \
-	      } \
-	    } \
-	    for (const n of names) { \
-	      if (!byName[n]) byName[n] = {name:n,in:'path',required:true,schema:{type:'string'}}; \
-	    } \
-	    item.parameters = Object.keys(byName).sort().map(n => byName[n]); \
-	  } \
-	  fs.writeFileSync('backend/docs/openapi3.json', JSON.stringify(spec, null, 2) + '\n'); \
-	  console.log('  done.'); \
-	"
 
 backend-test:
 	@echo "Running Go unit tests..."
