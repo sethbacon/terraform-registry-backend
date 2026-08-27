@@ -585,8 +585,34 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 			authGroup.POST("/ldap/login", authHandlers.LDAPLoginHandler())
 		}
 
-		// Public search endpoints (no auth required, but rate limited)
-		// These allow public discovery of modules and providers without authentication
+		// PUBLIC SEARCH IS A DECISION, NOT AN ACCIDENT (#974).
+		//
+		// /modules/search and /providers/search are reachable without
+		// authentication, and with the shipped configuration the query applies
+		// no organization predicate -- so an anonymous caller can enumerate
+		// namespace, name, system, description, source, latest version,
+		// download count and publisher for every module and provider in the
+		// deployment, across every organization.
+		//
+		// That is INTENTIONAL under the shared-registry model this was built
+		// for: one hosting organization, everything internally discoverable,
+		// organizations dividing editorial rights rather than visibility.
+		// internal/api/admin/stats.go already depends on it, declining to scope
+		// module and provider counts because they "are already enumerable
+		// anonymously through" these endpoints.
+		//
+		// It was previously only an emergent property of which group these
+		// routes were registered on, which nothing declared and no test
+		// asserted. public_surface_class_test.go now requires every
+		// unauthenticated route here to carry a written reason, and marks the
+		// ones returning registry content -- so a new public route lands
+		// undeclared exactly once, and the host-scoping work list is derived
+		// from the route table rather than transcribed.
+		//
+		// UNDER HOST-SCOPED CONTENT THIS MUST CHANGE. Names are precisely what
+		// isolation forbids leaking. These routes will need to filter by host,
+		// and a caller with no resolvable host must receive NOTHING rather than
+		// everything -- the fail-open default is the dangerous one here.
 		var suiteClient *suite.DiscoveryClient
 		publicGroup := apiV1.Group("")
 		publicGroup.Use(middleware.RateLimitMiddleware(generalRateLimiter))
