@@ -9,6 +9,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	identitymodels "github.com/sethbacon/terraform-suite-identity/identity/models"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -1093,10 +1094,6 @@ func (h *AuthHandlers) reconcileGroupMemberships(ctx context.Context, userID str
 	}
 
 	// Set of the user's current groups for O(1) lookup.
-	groupSet := make(map[string]struct{}, len(groups))
-	for _, g := range groups {
-		groupSet[g] = struct{}{}
-	}
 
 	// Compute the desired role per managed org from current groups, and the full
 	// set of managed orgs. A "managed org" is any org named in a mapping; it is
@@ -1108,17 +1105,42 @@ func (h *AuthHandlers) reconcileGroupMemberships(ctx context.Context, userID str
 	seenManaged := make(map[string]struct{}, len(mappings))
 	desiredRole := make(map[string]string, len(mappings)) // org name -> role
 
+	// THE PRECEDENCE RULE LIVES IN THE SHARED MODULE NOW (#268, identity#269).
+	//
+	// This app resolved competing mappings first-match-wins and state-manager
+	// resolved them last-match-wins, off the same shared type -- so one stored
+	// mapping list granted different roles depending on which app read it.
+	// Neither was wrong against the contract, because the contract was silent.
+	// First-wins was chosen as canonical, which makes this call a refactor here
+	// and a behaviour change plus a data migration there.
+	// groupMapping is this package's own shape (the three fields, no JSON tags),
+	// so it is converted at the boundary rather than the shared type being
+	// threaded through every caller.
+	shared := make([]identitymodels.OIDCGroupMapping, 0, len(mappings))
 	for _, m := range mappings {
+		shared = append(shared, identitymodels.OIDCGroupMapping{
+			Group: m.Group, Organization: m.Organization, Role: m.Role,
+		})
+	}
+	resolution := identitymodels.ResolveGroupMappings(groups, shared)
+	for org, role := range resolution.DesiredRole {
+		desiredRole[org] = role
+	}
+
+	// The ORDER is still computed here, deliberately. The resolver returns
+	// Managed as a set, and Go randomises map iteration; this loop reconciles
+	// each organization in turn, taking a deployment-wide advisory lock and
+	// writing, so a randomised order would make which organization is reconciled
+	// first -- and therefore what a partial failure leaves behind -- vary between
+	// runs. Config order was never the part that diverged. (Worth lifting into
+	// the module as an ordered Managed list; both consumers want determinism.)
+	for _, m := range mappings {
+		if !resolution.IsManaged(m.Organization) {
+			continue
+		}
 		if _, ok := seenManaged[m.Organization]; !ok {
 			seenManaged[m.Organization] = struct{}{}
 			managedOrgs = append(managedOrgs, m.Organization)
-		}
-		if _, hasGroup := groupSet[m.Group]; !hasGroup {
-			continue
-		}
-		// First matching mapping (config order) sets the desired role for the org.
-		if _, already := desiredRole[m.Organization]; !already {
-			desiredRole[m.Organization] = m.Role
 		}
 	}
 
