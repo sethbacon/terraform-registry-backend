@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.13.1](https://github.com/sethbacon/terraform-registry-backend/compare/v4.13.0...v4.13.1) (2026-08-27)
+
+
+### Documentation
+
+* **ci:** re-measure the OSV toolchain abort at the pin actually in use ([#992](https://github.com/sethbacon/terraform-registry-backend/issues/992)) ([079d8f9](https://github.com/sethbacon/terraform-registry-backend/commit/079d8f90aacd10516c54c68ca9f2eafbc77272c6)), closes [#894](https://github.com/sethbacon/terraform-registry-backend/issues/894)
+
 ## [4.13.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.12.0...v4.13.0) (2026-08-27)
 
 
