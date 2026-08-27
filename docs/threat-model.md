@@ -174,7 +174,27 @@ Terraform modules and providers. It comprises:
 | RR-2 | Compromised IdP pushes malicious group claims            | Low        | High     | Group→scope mapping limits blast radius; audit logging detects anomalies                       |
 | RR-3 | Insider threat — admin with full access                  | Medium     | High     | Audit logging; require MFA for admin accounts (IdP-enforced); break-glass procedure documented |
 | RR-4 | Object storage misconfiguration exposes archives         | Low        | Critical | Deployment docs mandate private buckets; health check verifies bucket ACL                      |
-| RR-5 | Scanner bypass via crafted archive that evades detection | Medium     | Medium   | Defense in depth — upload approvals, policy engine (planned), multiple scanner support         |
+| RR-5 | Scanner bypass via crafted archive that evades detection | Medium     | Medium   | Defense in depth — multiple scanner support; policy engine (planned). **Not** upload approvals: see note below |
+
+> **RR-5 correction.** This row previously cited "upload approvals" as a live
+> mitigation. There is no such control. The version-approval gate covers
+> **upstream** content only — mirrored provider versions, mirrored
+> Terraform/OpenTofu binaries, and scanner binaries. Locally uploaded provider
+> versions are ungated by design, and modules have no approval concept anywhere
+> in the schema (#975). A published module or an uploaded provider version
+> reaches clients as soon as its scan completes, with no human decision in the
+> path.
+>
+> That is a defensible position — the gate exists to vet what arrives from
+> outside, and an upload came from a principal that already held publish rights
+> under a claimed namespace — but it is not the control this row was claiming.
+> A threat model that lists a mitigation which does not exist is worse than one
+> that leaves the risk unmitigated, because it stops anyone looking.
+>
+> The reach of the gate is now pinned by
+> `internal/db/repositories/version_approval_coverage_test.go`, which fails if
+> an artifact table gains an approval column nothing enforces, or loses one it
+> was claimed to have.
 
 ## 8. Review Schedule
 

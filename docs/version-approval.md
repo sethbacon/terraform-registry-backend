@@ -40,6 +40,42 @@ infrastructure code.
 | `approved`         | Reviewed and accepted                         | Yes                |
 | `rejected`         | Reviewed and rejected (permanent)             | No                 |
 
+### What the gate does not cover
+
+The gate vets content that arrives from **outside** this registry. It does not
+apply to:
+
+| Not gated | Why |
+| --- | --- |
+| Modules | No approval concept exists for modules anywhere in the schema. A module published here came from a principal that already held publish rights under a claimed namespace. |
+| Locally uploaded provider versions | Only the mirrored tracking row carries a verdict; a version with no mirrored row is treated as visible. |
+
+Whether modules should have an approval concept at all is an open question
+(#975). Until it is answered, do not describe this gate as the control over
+what may be consumed — it is the control over what may be **mirrored in**.
+
+### One verdict per artifact, shared by every organization
+
+`approval_status` lives on a single row per artifact, and every enforcement
+point reads that one row. The admin **queue** is correctly scoped per
+organization — it sources the organization from the mirror configuration and
+fails closed on an empty scope — but the **decision** is not.
+
+So two organizations mirroring the same upstream provider through separate
+mirror configurations cannot hold different verdicts on it. **The first to
+approve decides for everyone; the first to reject does too.** A second
+organization's administrator sees the artifact leave their queue without having
+acted on it.
+
+This is a known limitation, not a subtlety of the design. Under the
+[estate tenancy model](https://github.com/sethbacon/terraform-suite-identity/blob/main/docs/tenancy-model.md),
+version approval and mirror configuration gate which providers a **host**
+offers, so the fix is a re-key of the verdict to per-(host, artifact) — which is
+part of the host work rather than a change that can be made independently of it.
+
+Until then: if two organizations need independent verdicts on the same upstream
+provider, they need separate deployments.
+
 ### Backward compatibility
 
 - Existing versions keep `approval_status = NULL` and remain visible.
