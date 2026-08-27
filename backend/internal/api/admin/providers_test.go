@@ -161,25 +161,9 @@ func expectOrgFound(mock sqlmock.Sqlmock) {
 // GetProvider tests
 // ---------------------------------------------------------------------------
 
-func TestGetProvider_OrgDBError(t *testing.T) {
-	mock, r := newProviderRouter(t)
-
-	mock.ExpectQuery("SELECT.*FROM organizations").
-		WithArgs("default").
-		WillReturnError(errDB)
-
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("GET", "/providers/hashicorp/aws", nil))
-
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("status = %d, want 500", w.Code)
-	}
-}
-
 func TestGetProvider_ProviderNotFound(t *testing.T) {
 	mock, r := newProviderRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM providers").
 		WillReturnRows(emptyProviderRow())
 
@@ -194,7 +178,6 @@ func TestGetProvider_ProviderNotFound(t *testing.T) {
 func TestGetProvider_Success_NoVersions(t *testing.T) {
 	mock, r := newProviderRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM providers").
 		WillReturnRows(sampleProviderRow())
 	// ListVersions returns empty
@@ -216,7 +199,6 @@ func TestGetProvider_Success_NoVersions(t *testing.T) {
 func TestGetProvider_ProviderDBError(t *testing.T) {
 	mock, r := newProviderRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM providers").
 		WillReturnError(errDB)
 
@@ -231,7 +213,6 @@ func TestGetProvider_ProviderDBError(t *testing.T) {
 func TestGetProvider_ListVersionsDBError(t *testing.T) {
 	mock, r := newProviderRouter(t)
 
-	expectNoDefaultOrg(mock)
 	mock.ExpectQuery("SELECT.*FROM providers").
 		WillReturnRows(sampleProviderRow())
 	mock.ExpectQuery("SELECT.*FROM provider_versions").
@@ -684,13 +665,18 @@ func TestUndeprecateVersion_UndeprecateDBError(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // GetProvider — additional uncovered branches
+//
+// The "OrgFound" in these names is historical. GetProvider used to resolve the
+// default organization and filter the lookup by it, which made a provider owned
+// by any other organization a 404 (#972); the org-found and no-default-org
+// cases were therefore different code paths worth separating. The handler now
+// resolves by namespace alone and queries organizations not at all, so the
+// distinction no longer exists and these are simply more GetProvider cases.
 // ---------------------------------------------------------------------------
 
 func TestGetProvider_OrgFound_Success_WithVersionsAndPlatforms(t *testing.T) {
 	mock, r := newProviderRouter(t)
 
-	// Org found (non-nil org)
-	expectOrgFound(mock)
 	mock.ExpectQuery("SELECT.*FROM providers").
 		WillReturnRows(sampleProviderRow())
 	// ListVersions returns one version with deprecated fields set
@@ -734,7 +720,6 @@ func TestGetProvider_OrgFound_Success_WithVersionsAndPlatforms(t *testing.T) {
 func TestGetProvider_OrgFound_Success_SurfacesSignedVersion(t *testing.T) {
 	mock, r := newProviderRouter(t)
 
-	expectOrgFound(mock)
 	mock.ExpectQuery("SELECT.*FROM providers").
 		WillReturnRows(sampleProviderRow())
 	protocols := []byte(`["6.0"]`)
@@ -762,7 +747,6 @@ func TestGetProvider_OrgFound_Success_SurfacesSignedVersion(t *testing.T) {
 func TestGetProvider_OrgFound_ProviderNotFound(t *testing.T) {
 	mock, r := newProviderRouter(t)
 
-	expectOrgFound(mock)
 	mock.ExpectQuery("SELECT.*FROM providers").
 		WillReturnRows(emptyProviderRow())
 

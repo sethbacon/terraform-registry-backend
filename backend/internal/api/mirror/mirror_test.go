@@ -134,7 +134,7 @@ func TestIndex_ProviderDBError(t *testing.T) {
 	mock, r := newMirrorAPIRouter(t)
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
 		WillReturnRows(sampleMirrorAPIOrg())
-	mock.ExpectQuery("SELECT.*FROM providers.*WHERE.*organization_id").
+	mock.ExpectQuery("SELECT.*FROM providers.*WHERE p.namespace").
 		WillReturnError(mirrorErrDB)
 
 	w := httptest.NewRecorder()
@@ -150,7 +150,7 @@ func TestIndex_ProviderNotFound(t *testing.T) {
 	mock, r := newMirrorAPIRouter(t)
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
 		WillReturnRows(sampleMirrorAPIOrg())
-	mock.ExpectQuery("SELECT.*FROM providers.*WHERE.*organization_id").
+	mock.ExpectQuery("SELECT.*FROM providers.*WHERE p.namespace").
 		WillReturnRows(sqlmock.NewRows(mirrorProvCols))
 
 	w := httptest.NewRecorder()
@@ -165,7 +165,7 @@ func TestIndex_ListVersionsDBError(t *testing.T) {
 	mock, r := newMirrorAPIRouter(t)
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
 		WillReturnRows(sampleMirrorAPIOrg())
-	mock.ExpectQuery("SELECT.*FROM providers.*WHERE.*organization_id").
+	mock.ExpectQuery("SELECT.*FROM providers.*WHERE p.namespace").
 		WillReturnRows(sampleMirrorAPIProvider())
 	// ListVersions fails
 	mock.ExpectQuery("SELECT.*FROM provider_versions.*WHERE pv.provider_id").
@@ -184,7 +184,7 @@ func TestIndex_Success_NoVersions(t *testing.T) {
 	mock, r := newMirrorAPIRouter(t)
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
 		WillReturnRows(sampleMirrorAPIOrg())
-	mock.ExpectQuery("SELECT.*FROM providers.*WHERE.*organization_id").
+	mock.ExpectQuery("SELECT.*FROM providers.*WHERE p.namespace").
 		WillReturnRows(sampleMirrorAPIProvider())
 	// ListVersions returns empty
 	mock.ExpectQuery("SELECT.*FROM provider_versions.*WHERE pv.provider_id").
@@ -245,7 +245,7 @@ func TestPlatformIndex_ProviderNotFound(t *testing.T) {
 	mock, r := newMirrorAPIRouter(t)
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
 		WillReturnRows(sampleMirrorAPIOrg())
-	mock.ExpectQuery("SELECT.*FROM providers.*WHERE.*organization_id").
+	mock.ExpectQuery("SELECT.*FROM providers.*WHERE p.namespace").
 		WillReturnRows(sqlmock.NewRows(mirrorProvCols))
 
 	w := httptest.NewRecorder()
@@ -260,7 +260,7 @@ func TestPlatformIndex_VersionNotFound(t *testing.T) {
 	mock, r := newMirrorAPIRouter(t)
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
 		WillReturnRows(sampleMirrorAPIOrg())
-	mock.ExpectQuery("SELECT.*FROM providers.*WHERE.*organization_id").
+	mock.ExpectQuery("SELECT.*FROM providers.*WHERE p.namespace").
 		WillReturnRows(sampleMirrorAPIProvider())
 	// GetVersion returns no rows
 	mock.ExpectQuery("SELECT.*FROM provider_versions WHERE provider_id").
@@ -340,7 +340,7 @@ func TestPlatformIndex_ProviderDBError(t *testing.T) {
 	mock, r := newMirrorAPIRouter(t)
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
 		WillReturnRows(sampleMirrorAPIOrg())
-	mock.ExpectQuery("SELECT.*FROM providers.*WHERE.*organization_id").
+	mock.ExpectQuery("SELECT.*FROM providers.*WHERE p.namespace").
 		WillReturnError(mirrorErrDB)
 
 	w := httptest.NewRecorder()
@@ -356,7 +356,7 @@ func TestPlatformIndex_GetVersionDBError(t *testing.T) {
 	mock, r := newMirrorAPIRouter(t)
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
 		WillReturnRows(sampleMirrorAPIOrg())
-	mock.ExpectQuery("SELECT.*FROM providers.*WHERE.*organization_id").
+	mock.ExpectQuery("SELECT.*FROM providers.*WHERE p.namespace").
 		WillReturnRows(sampleMirrorAPIProvider())
 	mock.ExpectQuery("SELECT.*FROM provider_versions WHERE provider_id").
 		WillReturnError(mirrorErrDB)
@@ -377,7 +377,7 @@ func TestPlatformIndex_ApprovalStatusDBError(t *testing.T) {
 	mock, r := newMirrorAPIRouter(t)
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
 		WillReturnRows(sampleMirrorAPIOrg())
-	mock.ExpectQuery("SELECT.*FROM providers.*WHERE.*organization_id").
+	mock.ExpectQuery("SELECT.*FROM providers.*WHERE p.namespace").
 		WillReturnRows(sampleMirrorAPIProvider())
 	mock.ExpectQuery("SELECT.*FROM provider_versions WHERE provider_id").
 		WillReturnRows(sampleMirrorVersionGetRow())
@@ -397,7 +397,7 @@ func TestPlatformIndex_ListPlatformsDBError(t *testing.T) {
 	mock, r := newMirrorAPIRouter(t)
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
 		WillReturnRows(sampleMirrorAPIOrg())
-	mock.ExpectQuery("SELECT.*FROM providers.*WHERE.*organization_id").
+	mock.ExpectQuery("SELECT.*FROM providers.*WHERE p.namespace").
 		WillReturnRows(sampleMirrorAPIProvider())
 	mock.ExpectQuery("SELECT.*FROM provider_versions WHERE provider_id").
 		WillReturnRows(sampleMirrorVersionGetRow())
@@ -431,7 +431,7 @@ func TestPlatformIndex_StorageInitError(t *testing.T) {
 
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
 		WillReturnRows(sampleMirrorAPIOrg())
-	mock.ExpectQuery("SELECT.*FROM providers.*WHERE.*organization_id").
+	mock.ExpectQuery("SELECT.*FROM providers.*WHERE p.namespace").
 		WillReturnRows(sampleMirrorAPIProvider())
 	mock.ExpectQuery("SELECT.*FROM provider_versions WHERE provider_id").
 		WillReturnRows(sampleMirrorVersionGetRow())
@@ -467,7 +467,7 @@ func TestPlatformIndex_Success_EmptyPlatforms(t *testing.T) {
 
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
 		WillReturnRows(sampleMirrorAPIOrg())
-	mock.ExpectQuery("SELECT.*FROM providers.*WHERE.*organization_id").
+	mock.ExpectQuery("SELECT.*FROM providers.*WHERE p.namespace").
 		WillReturnRows(sampleMirrorAPIProvider())
 	mock.ExpectQuery("SELECT.*FROM provider_versions WHERE provider_id").
 		WillReturnRows(sampleMirrorVersionGetRow())
@@ -520,7 +520,7 @@ func TestPlatformIndex_Success_WithPlatforms(t *testing.T) {
 
 	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
 		WillReturnRows(sampleMirrorAPIOrg())
-	mock.ExpectQuery("SELECT.*FROM providers.*WHERE.*organization_id").
+	mock.ExpectQuery("SELECT.*FROM providers.*WHERE p.namespace").
 		WillReturnRows(sampleMirrorAPIProvider())
 	mock.ExpectQuery("SELECT.*FROM provider_versions WHERE provider_id").
 		WillReturnRows(sampleMirrorVersionGetRow())

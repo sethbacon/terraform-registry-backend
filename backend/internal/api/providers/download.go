@@ -16,7 +16,6 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
-	"github.com/terraform-registry/terraform-registry/internal/identityerr"
 	"github.com/terraform-registry/terraform-registry/internal/middleware"
 	"github.com/terraform-registry/terraform-registry/internal/safego"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
@@ -43,7 +42,6 @@ import (
 // Returns JSON with download URL, checksums, and signing keys
 func DownloadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Config, auditRepo *repositories.AuditRepository) gin.HandlerFunc {
 	providerRepo := repositories.NewProviderRepository(db)
-	orgRepo := repositories.NewOrganizationRepository(db)
 
 	return func(c *gin.Context) {
 		namespace := c.Param("namespace")
@@ -68,23 +66,19 @@ func DownloadHandler(db *sql.DB, storageBackend storage.Storage, cfg *config.Con
 			return
 		}
 
-		// Get organization context
-		org, err := orgRepo.GetDefaultOrganization(c.Request.Context())
-		if identityerr.Missing(org, err) {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"errors": []string{"Default organization not found - please run migrations"},
-			})
-			return
-		}
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"errors": []string{"Failed to get organization context"},
-			})
-			return
-		}
-
-		// Get provider
-		provider, err := providerRepo.GetProvider(c.Request.Context(), org.ID, namespace, providerType)
+		// RESOLVED BY NAMESPACE, WITH NO ORGANIZATION (#972). A provider source
+		// is host/namespace/type: two identifier segments and no slot for an
+		// organization, so a Terraform client cannot supply one. Filtering by
+		// one here was never a narrowing of what the caller asked for -- it
+		// guessed the organization literally named "default", and every
+		// provider owned by any other organization was a permanent 404 to every
+		// client, with no error to say why.
+		//
+		// This is what the module half of the same protocol already does; the
+		// provider half was never brought along, so a deployment that renamed
+		// or deleted its default organization served its modules correctly and
+		// its providers to nobody.
+		provider, _, err := providerRepo.GetProviderByNamespace(c.Request.Context(), namespace, providerType)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"errors": []string{"Failed to query provider"},

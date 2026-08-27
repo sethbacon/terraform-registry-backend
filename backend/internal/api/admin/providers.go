@@ -48,27 +48,15 @@ func (h *ProviderAdminHandlers) GetProvider(c *gin.Context) {
 	namespace := c.Param("namespace")
 	providerType := c.Param("type")
 
-	// Get organization context (default org for single-tenant mode)
-	// A deployment with no default organization degrades to an EMPTY orgID
-	// here rather than failing the request — the `if org != nil` guard below is
-	// the original author's handling of the (nil, nil) miss, and identityerr
-	// .Missing preserves it now that the miss arrives as store.ErrNotFound.
-	// Letting the sentinel reach the 500 would turn every admin module/provider
-	// route into a hard failure on such a deployment, which is a behaviour
-	// change this change is not entitled to make.
-	org, err := h.orgRepo.GetDefaultOrganization(c.Request.Context())
-	if err != nil && !identityerr.Missing(org, err) {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get organization context"})
-		return
-	}
-
-	var orgID string
-	if org != nil {
-		orgID = org.ID
-	}
-
-	// Get provider
-	provider, err := h.providerRepo.GetProvider(c.Request.Context(), orgID, namespace, providerType)
+	// RESOLVED BY NAMESPACE, WITH NO ORGANIZATION (#972). This handler is
+	// mounted on the PUBLIC detail group and addressed by the same two protocol
+	// coordinates as the Terraform routes, so it had the same defect: a
+	// provider owned by any organization other than the one literally named
+	// "default" was a 404 here too.
+	//
+	// Its module counterpart, ModuleAdminHandlers.GetModule, already calls
+	// GetModuleByNamespace. This brings the provider half into line.
+	provider, _, err := h.providerRepo.GetProviderByNamespace(c.Request.Context(), namespace, providerType)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get provider"})
 		return
