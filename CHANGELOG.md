@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.13.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.12.0...v4.13.0) (2026-08-27)
+
+
+### Features
+
+* **scm:** pin a manual sync to a ref, and refuse one that has moved ([#990](https://github.com/sethbacon/terraform-registry-backend/issues/990)) ([709b9da](https://github.com/sethbacon/terraform-registry-backend/commit/709b9dac06dfeb2689115e07516338e3a09321b0)), closes [#879](https://github.com/sethbacon/terraform-registry-backend/issues/879)
+
 ## [4.12.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.11.1...v4.12.0) (2026-08-27)
 
 
