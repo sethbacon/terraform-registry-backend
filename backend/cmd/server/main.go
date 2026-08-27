@@ -1121,5 +1121,32 @@ func runRekeySecrets(cfg *config.Config, verify bool) error {
 	for name, res := range results {
 		slog.Info("rekey-secrets column complete", "mode", mode, "column", name, "result", res.String())
 	}
+
+	// SAY WHAT THIS GATE DOES NOT CERTIFY (#878).
+	//
+	// verify answers one question -- may ENCRYPTION_KEY_PREVIOUS be dropped? --
+	// and used to answer it while silent about the columns no sweep touches. An
+	// operator could follow the runbook exactly, see it exit zero, drop the
+	// previous key, and leave unrefreshed user SCM links unreadable.
+	//
+	// Printed in BOTH modes, deliberately. The re-encrypt run is where an
+	// operator forms the belief that everything has been converted, so that is
+	// exactly where the exclusion needs saying.
+	for _, u := range maintenance.ReportUncovered(context.Background(), database) {
+		if u.CountFailed != nil {
+			slog.Warn("rekey-secrets: could not count an uncovered column",
+				"column", u.Column, "error", u.CountFailed,
+				"impact", "this column is NOT covered by the gate and its population is unknown")
+			continue
+		}
+		if u.Rows == 0 {
+			slog.Info("rekey-secrets: uncovered column is empty",
+				"column", u.Column, "rows", 0)
+			continue
+		}
+		slog.Warn("rekey-secrets: rows NOT covered by this gate",
+			"column", u.Column, "rows", u.Rows, "reason", u.Reason,
+			"impact", "a green verify does not certify these rows; dropping ENCRYPTION_KEY_PREVIOUS may make them unreadable")
+	}
 	return err
 }

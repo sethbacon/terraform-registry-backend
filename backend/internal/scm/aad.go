@@ -41,6 +41,15 @@ func ProviderTokenContext(scmProviderID uuid.UUID) []byte {
 // UserTokenContext binds a user's OAuth access token to its row in
 // scm_user_tokens.
 //
+// DO NOT "FIX" THE TABLE NAME IN THESE LITERALS. There is no scm_user_tokens
+// table and there never has been -- the rows live in scm_oauth_tokens. The
+// string is not a reference to a table, it is an opaque domain separator that is
+// already baked into every ciphertext in production. Changing it to the real
+// table name changes the AAD, and every existing token then fails to open: not
+// at deploy time where it would be noticed, but the next time each individual
+// user's SCM link is used. Every affected user must re-link. The misleading name
+// is cheaper than the migration to correct it.
+//
 // The row is keyed by BOTH the user and the provider, so both are in the
 // context: binding to one axis alone would let a token be replayed across the
 // other. Every SCMUserTokenRecord carries both fields, so read sites derive this
