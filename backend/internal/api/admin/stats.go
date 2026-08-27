@@ -159,6 +159,14 @@ func (h *StatsHandler) GetDashboardStats(c *gin.Context) {
 	// already enumerable anonymously through GET /api/v1/modules/search and
 	// /providers/search. Narrowing them would change what the dashboard means
 	// without closing a disclosure.
+	//
+	// THIS RATIONALE HAS A DEPENDENCY (#974). It holds only while those two
+	// routes really are public, which is now a declared decision rather than an
+	// emergent one -- see declaredPublicRoutes in
+	// internal/api/public_surface_class_test.go. If search ever gains a host or
+	// organization filter, "already enumerable anonymously" stops being true
+	// and this paragraph becomes the justification for a disclosure rather than
+	// against one. Revisit it there, not here.
 	scope, ok := resolveTenantScope(c, h.orgRepo, auth.ScopeMirrorsRead)
 	if !ok {
 		return
