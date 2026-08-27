@@ -50,9 +50,14 @@ apply to:
 | Modules | No approval concept exists for modules anywhere in the schema. A module published here came from a principal that already held publish rights under a claimed namespace. |
 | Locally uploaded provider versions | Only the mirrored tracking row carries a verdict; a version with no mirrored row is treated as visible. |
 
-Whether modules should have an approval concept at all is an open question
-(#975). Until it is answered, do not describe this gate as the control over
-what may be consumed — it is the control over what may be **mirrored in**.
+**Modules are deliberately ungated** (decided 2026-08-27, #975). A module
+published here came from a principal that already held publish rights under a
+claimed namespace, enforced on every mutation by `NamespaceAuthorizer` — so this
+gate's question, *should this upstream artifact be trusted*, does not arise for
+it.
+
+Do not describe this gate as the control over what may be consumed. It is the
+control over what may be **mirrored in**.
 
 ### One verdict per artifact, shared by every organization
 
@@ -67,11 +72,14 @@ approve decides for everyone; the first to reject does too.** A second
 organization's administrator sees the artifact leave their queue without having
 acted on it.
 
-This is a known limitation, not a subtlety of the design. Under the
+This is a known and accepted limitation, not a subtlety of the design. Under the
 [estate tenancy model](https://github.com/sethbacon/terraform-suite-identity/blob/main/docs/tenancy-model.md),
 version approval and mirror configuration gate which providers a **host**
 offers, so the fix is a re-key of the verdict to per-(host, artifact) — which is
 part of the host work rather than a change that can be made independently of it.
+Re-keying it per-organization first was considered and rejected (2026-08-27):
+the host work would re-key the same column again, and running two migrations
+over one authorization verdict is how one of them ends up half-applied.
 
 Until then: if two organizations need independent verdicts on the same upstream
 provider, they need separate deployments.

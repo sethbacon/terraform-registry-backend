@@ -60,11 +60,14 @@ var unionBranch = map[string]string{
 // distinguished from an oversight. Naming them turns "modules are not gated"
 // into a statement someone decided rather than one nobody noticed.
 var ungatedArtifactTables = map[string]string{
-	"modules": "no approval concept exists for modules anywhere in the schema. A module published " +
-		"here came from a principal that already held publish rights under a claimed namespace, " +
-		"so the gate's question -- should this UPSTREAM artifact be trusted -- does not arise. " +
-		"Whether modules should have an approval concept at all is an open product question (#975).",
-	"module_versions": "as above; the approval concept, if one is ever added, would live here.",
+	"modules": "DECIDED 2026-08-27: modules stay ungated (#975). No approval concept exists for " +
+		"them anywhere in the schema, and that is the intended shape rather than a gap. This gate " +
+		"answers 'should this UPSTREAM artifact be trusted'; a module published here came from a " +
+		"principal that already held publish rights under a claimed namespace, enforced on every " +
+		"mutation by middleware.NamespaceAuthorizer, so the question does not arise. The gate is " +
+		"the control over what may be mirrored IN, not over what may be consumed.",
+	"module_versions": "as above, decided ungated (#975). If that is ever revisited, the approval " +
+		"concept would live here.",
 	"provider_versions": "locally UPLOADED provider versions are ungated by design: " +
 		"GetVersionApprovalStatus returns nil when no mirrored row exists, and callers treat nil " +
 		"as visible. Only the mirrored tracking row carries a verdict.",
