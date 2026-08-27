@@ -185,9 +185,10 @@ Terraform modules and providers. It comprises:
 > reaches clients as soon as its scan completes, with no human decision in the
 > path.
 >
-> That is a defensible position — the gate exists to vet what arrives from
-> outside, and an upload came from a principal that already held publish rights
-> under a claimed namespace — but it is not the control this row was claiming.
+> That is the intended shape, confirmed as a decision on 2026-08-27 — the gate
+> exists to vet what arrives from outside, and an upload came from a principal
+> that already held publish rights under a claimed namespace — but it is not the
+> control this row was claiming.
 > A threat model that lists a mitigation which does not exist is worse than one
 > that leaves the risk unmitigated, because it stops anyone looking.
 >
