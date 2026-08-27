@@ -109,10 +109,6 @@ auth:
     #    role: admin
     default_role: ""
 
-multi_tenancy:
-  enabled: false # Set to true for multi-organization support
-  default_organization: default
-  allow_public_signup: false # Allow users to create organizations
 
 security:
   cors:

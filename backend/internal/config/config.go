@@ -13,8 +13,10 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -37,7 +39,6 @@ type Config struct {
 	Auth             AuthConfig     `mapstructure:"auth"`
 	// ApiDocs holds OpenAPI/Swagger metadata that can be overridden at deploy-time
 	ApiDocs         ApiDocsConfig         `mapstructure:"api_docs"`
-	MultiTenancy    MultiTenancyConfig    `mapstructure:"multi_tenancy"`
 	Security        SecurityConfig        `mapstructure:"security"`
 	Logging         LoggingConfig         `mapstructure:"logging"`
 	Telemetry       TelemetryConfig       `mapstructure:"telemetry"`
@@ -610,13 +611,6 @@ type LDAPConfig struct {
 	DefaultRole     string             `mapstructure:"default_role"`
 }
 
-// MultiTenancyConfig holds multi-tenancy configuration
-type MultiTenancyConfig struct {
-	Enabled             bool   `mapstructure:"enabled"`
-	DefaultOrganization string `mapstructure:"default_organization"`
-	AllowPublicSignup   bool   `mapstructure:"allow_public_signup"`
-}
-
 // SecurityConfig holds security-related configuration
 type SecurityConfig struct {
 	CORS         CORSConfig         `mapstructure:"cors"`
@@ -967,11 +961,6 @@ func bindEnvVars(v *viper.Viper) error {
 		"auth.azure_ad.client_secret",
 		"auth.azure_ad.redirect_url",
 
-		// Multi-tenancy
-		"multi_tenancy.enabled",
-		"multi_tenancy.default_organization",
-		"multi_tenancy.allow_public_signup",
-
 		// Security
 		"security.cors.allowed_origins",
 		"security.cors.allowed_methods",
@@ -1068,6 +1057,37 @@ func bindEnvVars(v *viper.Viper) error {
 }
 
 // Load loads configuration from file and environment variables
+// removedMultiTenancyKeys are the keys #976 deleted, with what each actually did.
+//
+// Kept as a list rather than one blanket "multi_tenancy is gone" message because
+// the three did different things and only one of them was dangerous.
+var removedMultiTenancyKeys = map[string]string{
+	"multi_tenancy.enabled": "had NO correct position. false applied no organization predicate to " +
+		"search; true filtered to the organization literally named \"default\" -- never the " +
+		"caller's -- so every real tenant saw an empty registry while the default organization's " +
+		"inventory stayed visible to everyone. Search is public by decision; isolation is carried " +
+		"by the host",
+	"multi_tenancy.default_organization": "was never read by anything. The organization name is " +
+		"hardcoded in the identity module",
+	"multi_tenancy.allow_public_signup": "was never read by anything",
+}
+
+// warnOnRemovedMultiTenancyKeys logs, once per supplied key, at WARN.
+func warnOnRemovedMultiTenancyKeys(v *viper.Viper) {
+	keys := make([]string, 0, len(removedMultiTenancyKeys))
+	for k := range removedMultiTenancyKeys {
+		if v.IsSet(k) {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		slog.Warn("this configuration key has been removed and is being ignored",
+			"key", k, "removed_in", "#976", "why", removedMultiTenancyKeys[k],
+			"action", "delete it from your configuration")
+	}
+}
+
 func Load(configPath string) (*Config, error) {
 	v := viper.New()
 
@@ -1093,6 +1113,20 @@ func Load(configPath string) (*Config, error) {
 		}
 		// Config file not found; use defaults and environment variables
 	}
+
+	// Tell an operator who still sets multi_tenancy.* that it is gone (#976).
+	//
+	// Silently ignoring a removed key is the wrong treatment here, because the
+	// deployment most likely to carry it is the one that set enabled=true and
+	// has been serving an EMPTY REGISTRY to every real tenant. That
+	// deployment's behaviour changes the moment this version boots, and the
+	// operator needs to know why their content reappeared -- otherwise the
+	// change looks like a regression in isolation rather than the removal of a
+	// setting that never provided any.
+	//
+	// Read before defaults are consulted for these keys, which they no longer
+	// are: IsSet is therefore true only if the operator actually supplied it.
+	warnOnRemovedMultiTenancyKeys(v)
 
 	// Enable environment variable support
 	v.SetEnvPrefix("TFR")
@@ -1197,9 +1231,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.azure_ad.enabled", false)
 
 	// Multi-tenancy defaults
-	v.SetDefault("multi_tenancy.enabled", false)
-	v.SetDefault("multi_tenancy.default_organization", "default")
-	v.SetDefault("multi_tenancy.allow_public_signup", false)
 
 	// Security defaults
 	// allowed_origins defaults to deny-by-default (no origins allowed) rather than a

@@ -661,7 +661,6 @@ func serve(cfg *config.Config) error {
 		log.Printf("Starting server on %s", cfg.Server.GetAddress())  // #nosec G706 -- config values from trusted config file/env, not user input
 		log.Printf("Base URL: %s", cfg.Server.BaseURL)                // #nosec G706 -- config values from trusted config file/env, not user input
 		log.Printf("Storage backend: %s", cfg.Storage.DefaultBackend) // #nosec G706 -- config values from trusted config file/env, not user input
-		log.Printf("Multi-tenancy: %v", cfg.MultiTenancy.Enabled)     // #nosec G706 -- config values from trusted config file/env, not user input
 		log.Println("Server is ready to accept connections")
 
 		var err error

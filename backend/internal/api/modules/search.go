@@ -9,7 +9,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
-	"github.com/terraform-registry/terraform-registry/internal/identityerr"
 	"github.com/terraform-registry/terraform-registry/internal/pagination"
 )
 
@@ -42,7 +41,6 @@ var validModuleSortFields = map[string]bool{
 // Implements: GET /api/v1/modules/search?q=<query>&namespace=<namespace>&system=<system>&sort=<sort>&order=<order>&limit=<limit>&offset=<offset>
 func SearchHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 	moduleRepo := repositories.NewModuleRepository(db)
-	orgRepo := repositories.NewOrganizationRepository(db)
 
 	return func(c *gin.Context) {
 		// Get query parameters
@@ -74,24 +72,21 @@ func SearchHandler(db *sql.DB, cfg *config.Config) gin.HandlerFunc {
 			offset = 0
 		}
 
-		// Get organization context
+		// NO ORGANIZATION PREDICATE (#976). Search is public by decision -- see
+		// declaredPublicRoutes in internal/api/public_surface_class_test.go and
+		// the note above these routes in router_routes.go.
+		//
+		// This used to be conditional on multi_tenancy.enabled, a flag whose
+		// BOTH positions were wrong. False (the shipped default) applied no
+		// predicate, which is this behaviour. True resolved the organization
+		// literally named "default" -- never the caller's -- so every real
+		// tenant saw an EMPTY registry while the default organization's
+		// inventory stayed visible to everyone. It looked like the
+		// multi-tenancy switch and was the first thing anyone moving toward
+		// isolation would reach for; turning it on was an outage plus a
+		// continuing leak. Removed rather than repaired: isolation is carried
+		// by the host, not by a search filter.
 		var orgID string
-		if cfg.MultiTenancy.Enabled {
-			org, err := orgRepo.GetDefaultOrganization(c.Request.Context())
-			if identityerr.Missing(org, err) {
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"error": "Default organization not found",
-				})
-				return
-			}
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"error": "Failed to get organization context",
-				})
-				return
-			}
-			orgID = org.ID
-		}
 
 		// Search modules with aggregated version stats in a single query
 		modules, total, err := moduleRepo.SearchModulesWithStats(
