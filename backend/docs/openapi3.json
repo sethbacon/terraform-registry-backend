@@ -2494,7 +2494,7 @@
                         "Bearer": []
                     }
                 ],
-                "description": "Manually trigger an asynchronous repository scan that imports matching tag-based versions from the\nlinked SCM repository. The endpoint returns 202 immediately; the sync runs in the background.\nTags are matched against the configured pattern (default: v*) and the semantic version is extracted.\nVersions that already exist in the registry are silently skipped. The caller's OAuth token is used\nfor SCM API access and is proactively refreshed if it is expired or within 5 minutes of expiry.",
+                "description": "Manually trigger an asynchronous repository scan that imports matching tag-based versions from the\nlinked SCM repository. The endpoint returns 202 immediately; the sync runs in the background.\nTags are matched against the configured pattern (default: v*) and the semantic version is extracted.\nVersions that already exist in the registry are silently skipped. The caller's OAuth token is used\nfor SCM API access and is proactively refreshed if it is expired or within 5 minutes of expiry.\n\nOptionally pinned to one ref. `tag` narrows the sync to that tag alone; `commit_sha`\nadditionally asserts the tag still points at that commit, and the request is refused\nwith 409 if it has moved. Both are validated before the sync is dispatched, so a bad\nref is reported to the caller rather than discovered inside the background job.",
                 "tags": [
                     "SCM Linking"
                 ],
@@ -2505,6 +2505,22 @@
                         "name": "id",
                         "in": "path",
                         "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Sync only this tag (default: every tag matching the configured pattern)",
+                        "name": "tag",
+                        "in": "query",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Assert the tag points at this commit; requires tag. Abbreviations of 7+ characters are accepted",
+                        "name": "commit_sha",
+                        "in": "query",
                         "schema": {
                             "type": "string"
                         }
@@ -2522,7 +2538,7 @@
                         }
                     },
                     "400": {
-                        "description": "Invalid module ID",
+                        "description": "Invalid module ID, or commit_sha given without tag",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -2544,7 +2560,18 @@
                         }
                     },
                     "404": {
-                        "description": "Module is not linked to a repository",
+                        "description": "Module is not linked to a repository, or the named tag does not exist",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "The named tag no longer points at the asserted commit",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -2556,6 +2583,17 @@
                     },
                     "500": {
                         "description": "Internal server error (connector build, token decryption, etc.)",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": true
+                                }
+                            }
+                        }
+                    },
+                    "502": {
+                        "description": "Could not reach the SCM provider to resolve the ref",
                         "content": {
                             "application/json": {
                                 "schema": {
