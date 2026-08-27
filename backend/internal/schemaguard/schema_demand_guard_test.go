@@ -84,9 +84,16 @@ import (
 //     projections means resolving aliases, joins, subqueries and CTEs. Out of
 //     scope. #864's write happened to also RETURNING the same column.
 //
-//  2. TYPES, NULLABILITY, CONSTRAINTS AND DEFAULTS. Presence of a column is
-//     all that is checked. A write of the wrong type, or omitting a NOT NULL
-//     column with no default, passes here and fails at runtime.
+//  2. TYPES, NULLABILITY AND DEFAULTS. For the guards in THIS file, presence of
+//     a column is all that is checked: a write of the wrong type, or omitting a
+//     NOT NULL column with no default, passes here and fails at runtime.
+//
+//     CONSTRAINTS ARE NO LONGER ENTIRELY OUTSIDE THE MODEL. schema_constraint_test.go
+//     records each foreign key's possible target schemas and fails when they
+//     span more than one, because that is a constraint chosen by the
+//     deployment's topology rather than by the migration (#883, #898). It is a
+//     narrow widening -- foreign-key TARGETS only, not types, not NOT NULL, not
+//     CHECK -- and it deliberately does not extend the write checking here.
 //
 //  3. SQL NOT PRESENT AS A CONTIGUOUS GO STRING LITERAL. Statements assembled
 //     from fmt.Sprintf, a query builder, or a string variable contribute only
@@ -106,6 +113,25 @@ import (
 //     cutover configurations documented in docs/identity-schema.md are not
 //     modelled, on the ground that a broken default is what ships to everyone
 //     who does not read the guide.
+//
+//     THAT GROUND DID NOT HOLD FOR #883, and the exception is worth stating
+//     rather than leaving as a known-wrong generalisation. The topology that
+//     broke was reached by FOLLOWING the guide -- enable identity migrations,
+//     copy the data, cut over later -- which parks a deployment in it for as
+//     long as the copy takes. It was a documented rollout step, not an exotic
+//     configuration reached by ignoring the docs.
+//
+//     schema_constraint_test.go answers that without modelling a second
+//     configuration at all: it asks whether a constraint's target is DECIDED BY
+//     the configuration, which is a property of the migration alone. A second
+//     universe was considered and declined -- replaying app+identity with
+//     search_path=[public] grows the model but yields no new violations,
+//     because a presence-only model cannot see a constraint defect in any
+//     universe. Making one informative would require tracking which *sql.DB
+//     handle each query executes against, since the app and identity pools
+//     carry different search_paths. That is a different program, and the
+//     trigger for writing it is identitySchemaEnabled() in cmd/server/main.go
+//     flipping to default-on.
 //
 //  6. OTHER CONSUMERS OF THE SHARED LIBRARY. terraform-state-manager-backend
 //     runs identity.RunMigrations unconditionally while this repository gates
@@ -857,7 +883,9 @@ func creditRuntimeDDL(t *testing.T, m *schemaModel, roots []string) []string {
 			for _, stmt := range splitStatements(stripComments(sql)) {
 				s := normalize(stmt)
 				if reCreateTable.MatchString(s) {
-					m.applyCreateTable(s, "public")
+					// origin is empty: this is creditRuntimeDDL, which models
+					// tables the APPLICATION creates at runtime, not migrations.
+					m.applyCreateTable(s, "public", "")
 				}
 			}
 		}

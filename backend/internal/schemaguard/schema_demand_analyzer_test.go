@@ -59,10 +59,58 @@ type tableKey struct {
 
 func (k tableKey) String() string { return k.Schema + "." + k.Table }
 
+// fkKey identifies a foreign key by the table and columns it constrains.
+//
+// Keyed on the CONSTRAINED side rather than on the constraint name, because the
+// defect this exists to catch is one constraint being pointed at two different
+// schemas in two topologies -- and in the migration that does it, the arms
+// carry different names.
+type fkKey struct {
+	Table   tableKey
+	Columns string // unquoted, sorted, comma-joined
+}
+
+func (k fkKey) String() string { return k.Table.String() + "(" + k.Columns + ")" }
+
+// fkTarget is one possible referent of a foreign key.
+//
+// POSSIBLE, not actual. A migration that chooses its target inside a DO block
+// contributes one target per arm, and this analyzer deliberately does not
+// evaluate the branch -- see the fifth arm of applySQL. Unresolved marks a
+// target this analyzer could not parse at all, which is a stronger signal than
+// a competing pair: a migration computing its target at runtime cannot be
+// checked by anything static.
+type fkTarget struct {
+	Schema     string
+	Table      string
+	Unresolved bool
+	Certain    bool
+	Origin     string // migration file, for the report
+}
+
+// migrationSearchPath is the schema an unqualified name in a MIGRATION resolves
+// to, and it is "public" in every topology.
+//
+// Migrations always run on GetMigrationDSN(), which emits no search_path
+// option, while the APPLICATION may resolve identity names at "identity". That
+// split is the mechanical root of this whole defect class: a constraint written
+// by a migration and a row written by the application can disagree about which
+// schema they mean, and every column involved still exists.
+const migrationSearchPath = "public"
+
 // schemaModel is the state of the world after replaying a set of migrations.
 type schemaModel struct {
 	// columns holds the column set of every table whose shape is known.
 	columns map[tableKey]map[string]bool
+	// fks records, per constrained (table, columns), every target the
+	// migration stream could have pointed it at. A singleton is the healthy
+	// case; more than one distinct target SCHEMA is the #883 defect.
+	fks map[fkKey][]fkTarget
+	// fkNames maps a key to every constraint name it has been created under,
+	// so a later DROP CONSTRAINT can find it. A key can carry several names
+	// because the conditional arms of one DO block name their constraints
+	// differently.
+	fkNames map[fkKey]map[string]bool
 	// opaque holds relations that exist but whose column set this analyzer
 	// declines to model — views, CREATE TABLE AS SELECT. Writes to these are
 	// checked for existence only. Modelling a view's columns would mean
@@ -75,6 +123,8 @@ func newSchemaModel() *schemaModel {
 	return &schemaModel{
 		columns: map[tableKey]map[string]bool{},
 		opaque:  map[tableKey]bool{},
+		fks:     map[fkKey][]fkTarget{},
+		fkNames: map[fkKey]map[string]bool{},
 	}
 }
 
@@ -266,7 +316,39 @@ var (
 	reCreateTableAnywhere = regexp.MustCompile(`(?i)\bCREATE\s+(?:UNLOGGED\s+|TEMP\s+|TEMPORARY\s+)?TABLE\b`)
 	reCreateView          = regexp.MustCompile(`(?i)^CREATE\s+(?:OR\s+REPLACE\s+)?(?:MATERIALIZED\s+)?VIEW\s+(?:IF\s+NOT\s+EXISTS\s+)?([\w".]+)`)
 	reDropTable           = regexp.MustCompile(`(?i)^DROP\s+(?:MATERIALIZED\s+)?(?:TABLE|VIEW)\s+(?:IF\s+EXISTS\s+)?(.+?)(?:\s+CASCADE|\s+RESTRICT)?$`)
-	reAlterTable          = regexp.MustCompile(`(?i)^ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?([\w".]+)\s+(.*)$`)
+	// reDoOpen matches the opening of a dollar-quoted DO block.
+	//
+	// Only the OPENING. Go's regexp is RE2 and has NO BACKREFERENCES, so the
+	// natural `(\$[A-Za-z_]*\$)(.*)\1` does not compile -- it panics at
+	// MustCompile. The closing tag is found by string search instead, which is
+	// what a dollar-quote is anyway.
+	reDoOpen = regexp.MustCompile(`(?is)^DO\s+(\$[A-Za-z_]*\$)`)
+	// reAddConstraintFK matches ADD CONSTRAINT <name> FOREIGN KEY (<cols>)
+	// TARGET-AGNOSTICALLY: the REFERENCES clause is parsed separately so a
+	// target this analyzer cannot read becomes Unresolved rather than being
+	// dropped on the floor. A migration that computes its FK target is the same
+	// defect wearing a different hat, and silently skipping it would hide
+	// exactly that.
+	reAddConstraintFK = regexp.MustCompile(`(?is)^ADD\s+CONSTRAINT\s+([\w".]+)\s+FOREIGN\s+KEY\s*\(([^)]*)\)\s*(.*)$`)
+	reReferences      = regexp.MustCompile(`(?is)\bREFERENCES\s+([\w".]+)\s*(?:\(|$|\s)`)
+	reDropConstraint  = regexp.MustCompile(`(?is)^DROP\s+CONSTRAINT\s+(?:IF\s+EXISTS\s+)?([\w".]+)`)
+	// reDDLLeader finds where the DDL actually starts inside a PL/pgSQL
+	// statement.
+	//
+	// WHY THIS IS NEEDED, and it is not cosmetic. splitStatements splits on
+	// ";", and PL/pgSQL control flow carries no semicolon of its own -- so the
+	// FIRST statement after THEN or ELSE arrives glued to its prefix:
+	//
+	//	"BEGIN IF EXISTS (...) THEN ALTER TABLE ... ADD CONSTRAINT ..."
+	//	"ELSE ALTER TABLE ... ADD CONSTRAINT ..."
+	//
+	// Neither matches ^ALTER TABLE, so the first constraint in each arm was
+	// invisible while every subsequent one was seen. Against the real migration
+	// stream that lost exactly namespace_claims(organization_id) -- the
+	// constraint issue #883 is ABOUT -- while still reporting 23 others, which
+	// is the most dangerous possible failure: a guard that looks like it works.
+	reDDLLeader  = regexp.MustCompile(`(?is)\b(ALTER\s+TABLE|CREATE\s+TABLE|DROP\s+TABLE)\b`)
+	reAlterTable = regexp.MustCompile(`(?i)^ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?([\w".]+)\s+(.*)$`)
 
 	reRenameColumn = regexp.MustCompile(`(?i)^RENAME\s+COLUMN\s+([\w"]+)\s+TO\s+([\w"]+)`)
 	reRenameTable  = regexp.MustCompile(`(?i)^RENAME\s+TO\s+([\w"]+)`)
@@ -316,21 +398,63 @@ func (m *schemaModel) replay(stream migrationStream) error {
 		if rErr != nil {
 			return fmt.Errorf("schemaguard: read %s: %w", name, rErr)
 		}
-		m.applySQL(string(b), stream.DefaultSchema)
+		m.applyStatements(splitStatements(stripComments(string(b))), stream.DefaultSchema, true, name)
 	}
 	return nil
 }
 
 // applySQL replays the DDL in one SQL blob.
 func (m *schemaModel) applySQL(sql, defaultSchema string) {
-	for _, raw := range splitStatements(stripComments(sql)) {
+	m.applyStatements(splitStatements(stripComments(sql)), defaultSchema, true, "")
+}
+
+// applyStatements replays statements, tracking whether their effects are
+// CERTAIN (top level) or merely POSSIBLE (inside a conditional DO block).
+//
+// THE EXISTENCE MODEL ONLY ACCEPTS CERTAIN EFFECTS. Crediting a conditional
+// CREATE TABLE into m.columns could only ever HIDE a write violation -- the
+// same reasoning as creditRuntimeDDL's creations-only rule. The FK ledger is
+// the opposite: it wants every possible target, because a target that exists in
+// only one topology is precisely what it is looking for.
+func (m *schemaModel) applyStatements(stmts []string, defaultSchema string, certain bool, origin string) {
+	for _, raw := range stmts {
 		stmt := normalize(raw)
 		if stmt == "" {
 			continue
 		}
+		// A DO block: descend, marking everything inside as possible.
+		//
+		// NO ARM TRACKING, deliberately. Every statement in the body is
+		// "possible", which over-approximates -- and that is both cheaper and
+		// strictly more robust than splitting IF/ELSIF/ELSE: it covers the
+		// EXCEPTION-handler shape and the CASE shape for free, and it produces
+		// no false positives, because a block that points one constraint at one
+		// schema still yields a singleton set.
+		if mm := reDoOpen.FindStringSubmatch(stmt); mm != nil {
+			tag := mm[1]
+			rest := stmt[len(mm[0]):]
+			if end := strings.LastIndex(rest, tag); end >= 0 {
+				m.applyStatements(splitStatements(rest[:end]), defaultSchema, false, origin)
+			}
+			continue
+		}
+		if !certain {
+			// Inside a conditional: the ledger still wants ALTER TABLE effects,
+			// but nothing may touch the existence model.
+			//
+			// Re-anchored past the PL/pgSQL control-flow prefix first -- see
+			// reDDLLeader for why the first statement in each arm arrives
+			// carrying its BEGIN/IF/ELSE.
+			body := reAnchorDDL(stmt)
+			if reAlterTable.MatchString(body) {
+				am := reAlterTable.FindStringSubmatch(body)
+				m.applyAlterTableFKs(parseName(am[1], defaultSchema), am[2], false, origin)
+			}
+			continue
+		}
 		switch {
 		case reCreateTable.MatchString(stmt):
-			m.applyCreateTable(stmt, defaultSchema)
+			m.applyCreateTable(stmt, defaultSchema, origin)
 		case reCreateView.MatchString(stmt):
 			key := parseName(reCreateView.FindStringSubmatch(stmt)[1], defaultSchema)
 			delete(m.columns, key)
@@ -343,12 +467,14 @@ func (m *schemaModel) applySQL(sql, defaultSchema string) {
 			}
 		case reAlterTable.MatchString(stmt):
 			mm := reAlterTable.FindStringSubmatch(stmt)
-			m.applyAlterTable(parseName(mm[1], defaultSchema), mm[2])
+			key := parseName(mm[1], defaultSchema)
+			m.applyAlterTable(key, mm[2])
+			m.applyAlterTableFKs(key, mm[2], true, origin)
 		}
 	}
 }
 
-func (m *schemaModel) applyCreateTable(stmt, defaultSchema string) {
+func (m *schemaModel) applyCreateTable(stmt, defaultSchema, origin string) {
 	key := parseName(reCreateTable.FindStringSubmatch(stmt)[1], defaultSchema)
 	body, ok := parenBody(stmt)
 	if !ok {
@@ -364,12 +490,164 @@ func (m *schemaModel) applyCreateTable(stmt, defaultSchema string) {
 		}
 		first := strings.ToLower(strings.Trim(strings.Fields(item)[0], `"`))
 		if tableConstraintLeaders[first] {
+			// A table-level constraint. Not a column -- but it may be a
+			// FOREIGN KEY, which the ledger wants. This arm used to discard
+			// the item entirely.
+			m.recordCreateTableFK(key, item, origin)
 			continue
 		}
-		cols[unquoteIdent(strings.Fields(item)[0])] = true
+		name := unquoteIdent(strings.Fields(item)[0])
+		cols[name] = true
+		// An inline column REFERENCES is a single-column foreign key. It
+		// carries no explicit name, so the implicit one PostgreSQL would
+		// generate is synthesized -- that is what a later DROP CONSTRAINT
+		// names, and 000056 drops several of these.
+		if reReferences.MatchString(item) {
+			fk := fkKey{Table: key, Columns: name}
+			m.recordFK(fk, key.Table+"_"+name+"_fkey", parseFKTarget(item, origin, true), true)
+		}
 	}
 	delete(m.opaque, key)
 	m.columns[key] = cols
+}
+
+// applyAlterTableFKs records foreign-key effects into the ledger.
+//
+// Separate from applyAlterTable because the two answer different questions and
+// obey opposite rules about certainty: the existence model takes only certain
+// effects, the ledger wants every possible one.
+// reAnchorDDL returns stmt from its first DDL leader onward, or stmt unchanged
+// when it contains none.
+//
+// Only used on statements from inside a DO body: at top level a statement
+// already starts with its own verb, and re-anchoring there would let a stray
+// "ALTER TABLE" in some other construct be read as one.
+func reAnchorDDL(stmt string) string {
+	if loc := reDDLLeader.FindStringIndex(stmt); loc != nil {
+		return stmt[loc[0]:]
+	}
+	return stmt
+}
+
+// recordCreateTableFK captures a table-level FOREIGN KEY inside CREATE TABLE.
+//
+// Named constraints ("CONSTRAINT x FOREIGN KEY (...)") and unnamed ones
+// ("FOREIGN KEY (...)") both land here; the unnamed form gets the implicit name
+// PostgreSQL would generate, so a later DROP CONSTRAINT can find it.
+func (m *schemaModel) recordCreateTableFK(key tableKey, item, origin string) {
+	fields := strings.Fields(item)
+	lower := strings.ToLower(item)
+	if !strings.Contains(lower, "foreign key") {
+		return
+	}
+	name := ""
+	if strings.EqualFold(fields[0], "constraint") && len(fields) > 1 {
+		name = unquoteIdent(fields[1])
+	}
+	cols, ok := parenBody(item)
+	if !ok {
+		return
+	}
+	fk := fkKey{Table: key, Columns: normalizeFKColumns(cols)}
+	if name == "" {
+		name = key.Table + "_" + strings.ReplaceAll(fk.Columns, ",", "_") + "_fkey"
+	}
+	// The REFERENCES clause is whatever follows the constrained column list.
+	rest := item
+	if i := strings.Index(lower, "references"); i >= 0 {
+		rest = item[i:]
+	}
+	m.recordFK(fk, name, parseFKTarget(rest, origin, true), true)
+}
+
+func (m *schemaModel) applyAlterTableFKs(key tableKey, actions string, certain bool, origin string) {
+	for _, action := range splitTopLevel(actions) {
+		action = strings.TrimSpace(action)
+		switch {
+		case reAddConstraintFK.MatchString(action):
+			mm := reAddConstraintFK.FindStringSubmatch(action)
+			name := unquoteIdent(mm[1])
+			fk := fkKey{Table: key, Columns: normalizeFKColumns(mm[2])}
+			m.recordFK(fk, name, parseFKTarget(mm[3], origin, certain), certain)
+
+		case reDropConstraint.MatchString(action):
+			// A POSSIBLE drop is a NO-OP, and this is the rule that makes the
+			// whole ledger work.
+			//
+			// Dropping a constraint in one arm of a conditional leaves it alive
+			// in the complementary arm, so the target it pointed at is still
+			// possible. Treating a possible drop as a real one would let a
+			// migration that repoints a constraint under a condition look like
+			// a migration that simply moved it -- which is exactly the shape of
+			// 000038, and exactly the defect being hunted.
+			if !certain {
+				continue
+			}
+			m.dropFKByName(unquoteIdent(reDropConstraint.FindStringSubmatch(action)[1]))
+		}
+	}
+}
+
+// recordFK adds a target. A CERTAIN add replaces the possibility set: the
+// migration has stated, unconditionally, what this constraint now points at. A
+// POSSIBLE add appends, because it is one of several worlds.
+func (m *schemaModel) recordFK(fk fkKey, name string, tgt fkTarget, certain bool) {
+	if certain {
+		m.fks[fk] = []fkTarget{tgt}
+	} else {
+		m.fks[fk] = append(m.fks[fk], tgt)
+	}
+	if m.fkNames[fk] == nil {
+		m.fkNames[fk] = map[string]bool{}
+	}
+	if name != "" {
+		m.fkNames[fk][name] = true
+	}
+}
+
+// dropFKByName removes every ledger entry created under this constraint name.
+func (m *schemaModel) dropFKByName(name string) {
+	for fk, names := range m.fkNames {
+		if names[name] {
+			delete(m.fks, fk)
+			delete(m.fkNames, fk)
+		}
+	}
+}
+
+// normalizeFKColumns folds a column list to a canonical form so the same
+// constraint written two ways lands on one key.
+func normalizeFKColumns(list string) string {
+	var out []string
+	for _, c := range splitTopLevel(list) {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			continue
+		}
+		out = append(out, unquoteIdent(strings.Fields(c)[0]))
+	}
+	sort.Strings(out)
+	return strings.Join(out, ",")
+}
+
+// parseFKTarget reads the REFERENCES clause.
+//
+// A clause this cannot parse yields Unresolved rather than nothing. A migration
+// that builds its FK target with format('%I', …) or string concatenation is
+// making the same runtime decision the ledger exists to catch, and dropping the
+// statement would make the loudest case the silent one.
+func parseFKTarget(clause, origin string, certain bool) fkTarget {
+	mm := reReferences.FindStringSubmatch(clause)
+	if mm == nil {
+		return fkTarget{Unresolved: true, Certain: certain, Origin: origin}
+	}
+	name := strings.TrimSpace(mm[1])
+	// A target assembled at runtime does not look like an identifier.
+	if strings.ContainsAny(name, "|'()") {
+		return fkTarget{Unresolved: true, Certain: certain, Origin: origin}
+	}
+	k := parseName(name, migrationSearchPath)
+	return fkTarget{Schema: k.Schema, Table: k.Table, Certain: certain, Origin: origin}
 }
 
 func (m *schemaModel) applyAlterTable(key tableKey, actions string) {
