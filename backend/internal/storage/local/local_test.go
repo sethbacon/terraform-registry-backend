@@ -3,8 +3,10 @@ package local
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/terraform-registry/terraform-registry/internal/config"
+	"github.com/terraform-registry/terraform-registry/internal/storage/urlsign"
 )
 
 // newTestStorage creates a LocalStorage backed by a temporary directory.
@@ -239,13 +242,140 @@ func TestGetURL_ServeDirectly(t *testing.T) {
 		t.Fatal("Upload:", err)
 	}
 
-	url, err := s.GetURL(ctx, "providers/foo/1.0.0.zip", time.Hour)
+	raw, err := s.GetURL(ctx, "providers/foo/1.0.0.zip", time.Hour)
 	if err != nil {
 		t.Fatalf("GetURL() error: %v", err)
 	}
-	want := "http://registry.example.com/v1/files/providers/foo/1.0.0.zip"
-	if url != want {
-		t.Errorf("GetURL() = %q, want %q", url, want)
+
+	u, err := neturl.Parse(raw)
+	if err != nil {
+		t.Fatalf("GetURL() returned an unparseable URL %q: %v", raw, err)
+	}
+	if got, want := u.Scheme+"://"+u.Host+u.Path, "http://registry.example.com/v1/files/providers/foo/1.0.0.zip"; got != want {
+		t.Errorf("GetURL() path = %q, want %q", got, want)
+	}
+
+	// SIGNED (#973). GET /v1/files/*filepath carries no authentication
+	// middleware, so an unsigned URL here is an anonymously fetchable archive.
+	// This asserts the parameters are present AND that they verify -- present
+	// but wrong would satisfy a existence check while serving nothing.
+	if err := urlsign.Verify(
+		"providers/foo/1.0.0.zip",
+		u.Query().Get(urlsign.ParamExpires),
+		u.Query().Get(urlsign.ParamSignature),
+		time.Now(),
+	); err != nil {
+		t.Errorf("GetURL() produced a URL that does not verify: %v (url %q)", err, raw)
+	}
+}
+
+// TestGetURL_SignatureIsBoundToTheKey — #973.
+//
+// A signature that authorises ANY path is not a signature. The route serves
+// whatever key it is handed, so if the MAC did not cover the path, one legitimate
+// download URL would unlock every artifact in storage.
+func TestGetURL_SignatureIsBoundToTheKey(t *testing.T) {
+	s := newTestStorage(t, true, "http://registry.example.com")
+	ctx := context.Background()
+
+	for _, p := range []string{"providers/foo/1.0.0.zip", "modules/acme/vpc/aws/2.0.0.tar.gz"} {
+		if _, err := s.Upload(ctx, p, strings.NewReader("data"), 4); err != nil {
+			t.Fatal("Upload:", err)
+		}
+	}
+
+	raw, err := s.GetURL(ctx, "providers/foo/1.0.0.zip", time.Hour)
+	if err != nil {
+		t.Fatalf("GetURL() error: %v", err)
+	}
+	u, err := neturl.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	// The same expires+sig, replayed against a different object.
+	if err := urlsign.Verify(
+		"modules/acme/vpc/aws/2.0.0.tar.gz",
+		u.Query().Get(urlsign.ParamExpires),
+		u.Query().Get(urlsign.ParamSignature),
+		time.Now(),
+	); err == nil {
+		t.Error("a signature minted for providers/foo/1.0.0.zip also authorised " +
+			"modules/acme/vpc/aws/2.0.0.tar.gz -- the MAC does not cover the path, so one " +
+			"download URL unlocks all of storage")
+	}
+}
+
+// TestGetURL_TTLIsHonoured — #973.
+//
+// The ttl argument was accepted and ignored before signing existed. Every caller
+// passes one, so a URL that never expires is a permanent anonymous credential
+// handed out on every download.
+func TestGetURL_TTLIsHonoured(t *testing.T) {
+	s := newTestStorage(t, true, "http://registry.example.com")
+	ctx := context.Background()
+	const key = "providers/foo/1.0.0.zip"
+
+	if _, err := s.Upload(ctx, key, strings.NewReader("data"), 4); err != nil {
+		t.Fatal("Upload:", err)
+	}
+	raw, err := s.GetURL(ctx, key, time.Minute)
+	if err != nil {
+		t.Fatalf("GetURL() error: %v", err)
+	}
+	u, err := neturl.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	exp, sig := u.Query().Get(urlsign.ParamExpires), u.Query().Get(urlsign.ParamSignature)
+
+	if err := urlsign.Verify(key, exp, sig, time.Now()); err != nil {
+		t.Fatalf("valid now, but rejected: %v", err)
+	}
+	if err := urlsign.Verify(key, exp, sig, time.Now().Add(2*time.Minute)); !errors.Is(err, urlsign.ErrExpired) {
+		t.Errorf("two minutes past a one-minute TTL: got %v, want ErrExpired", err)
+	}
+}
+
+// TestGetURL_SurvivesVersionMetadataInTheKey — #973.
+//
+// Real keys carry '+' from build metadata (hashicorp/go-version accepts
+// 1.0.0+build.5) and '~' from version strings. '+' means SPACE in a query
+// string and is literal in a path, so an escaping mismatch between the signer
+// and the verifier breaks exactly these artifacts and no others -- the shape of
+// bug that ships green and fails on one customer's module.
+func TestGetURL_SurvivesVersionMetadataInTheKey(t *testing.T) {
+	s := newTestStorage(t, true, "http://registry.example.com")
+	ctx := context.Background()
+
+	for _, key := range []string{
+		"modules/acme/vpc/aws/1.0.0+build.5.tar.gz",
+		"modules/acme/vpc/aws/1.0.0~rc1.tar.gz",
+		"providers/Acme/Foo/1.0.0/linux/amd64/terraform-provider-foo.zip",
+	} {
+		t.Run(key, func(t *testing.T) {
+			if _, err := s.Upload(ctx, key, strings.NewReader("data"), 4); err != nil {
+				t.Fatal("Upload:", err)
+			}
+			raw, err := s.GetURL(ctx, key, time.Hour)
+			if err != nil {
+				t.Fatalf("GetURL() error: %v", err)
+			}
+			u, err := neturl.Parse(raw)
+			if err != nil {
+				t.Fatalf("parse %q: %v", raw, err)
+			}
+			// What the handler sees: Gin decodes the path parameter, so the
+			// verifier is handed the unescaped storage key. u.Path is the
+			// decoded form, which models that exactly.
+			decoded := strings.TrimPrefix(u.Path, "/v1/files/")
+			if decoded != key {
+				t.Fatalf("path did not round-trip: encoded %q decoded to %q, want %q", u.EscapedPath(), decoded, key)
+			}
+			if err := urlsign.Verify(decoded, u.Query().Get(urlsign.ParamExpires), u.Query().Get(urlsign.ParamSignature), time.Now()); err != nil {
+				t.Errorf("signature does not verify against the decoded path: %v", err)
+			}
+		})
 	}
 }
 
@@ -465,5 +595,33 @@ func TestNew_NewDirectory(t *testing.T) {
 	}
 	if s == nil {
 		t.Fatal("New() returned nil")
+	}
+}
+
+// TestGetURL_FailsClosedWhenSigningFails — #973.
+//
+// The dangerous fallback here is not an error, it is a SUCCESS: returning the
+// old unsigned URL when signing fails would reinstate the anonymous-fetch hole
+// at exactly the moment something is already wrong, and every caller would
+// carry on as though nothing happened. Nothing else reaches this branch, so
+// without this test it is deletable with the suite still green.
+func TestGetURL_FailsClosedWhenSigningFails(t *testing.T) {
+	s := newTestStorage(t, true, "http://registry.example.com")
+	ctx := context.Background()
+	const key = "providers/foo/1.0.0.zip"
+
+	if _, err := s.Upload(ctx, key, strings.NewReader("data"), 4); err != nil {
+		t.Fatal("Upload:", err)
+	}
+
+	urlsign.SetSecretSourceForTest(t, func() (string, error) { return "", errors.New("no signing key") })
+
+	got, err := s.GetURL(ctx, key, time.Hour)
+	if err == nil {
+		t.Fatalf("GetURL succeeded with no signing key and returned %q; "+
+			"an unsigned URL is anonymously fetchable by anyone who can reach the deployment", got)
+	}
+	if got != "" {
+		t.Errorf("GetURL returned %q alongside its error; a caller ignoring the error would serve an unsigned URL", got)
 	}
 }

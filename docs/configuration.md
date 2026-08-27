@@ -251,12 +251,65 @@ and was not fetchable by a remote Terraform client in any case. The API path wor
 local and same-host clients alike. Setting it to `false` logs a warning at startup.
 
 
+### Local download URLs are signed
+
+`/v1/files/...` URLs carry `expires` and `sig` query parameters, and the route rejects
+anything unsigned, forged or past its expiry with `403`. This is the local backend's
+equivalent of an S3 presign, a GCS signature or an Azure SAS — the other three backends
+have always returned a credential here, and the local one returned a bare, unexpiring,
+guessable path on a route with **no authentication middleware at all**. Storage keys are
+structural (`modules/{namespace}/{name}/{system}/{version}.tar.gz`,
+`terraform-binaries/{version}/{os}/{arch}/{file}`), so before this anyone who could reach
+the deployment could enumerate and download every artifact anonymously.
+
+Nothing to configure. The signing key is derived from `TFR_JWT_SECRET`, which the server
+already requires to start.
+
+Two consequences worth knowing before you debug a failed download:
+
+- **A reverse proxy or CDN in front of the registry must preserve the query string** on
+  `/v1/files/...`. Stripping it turns every download into a `403`. Caching these URLs is
+  also pointless — the signature changes per request.
+- **Rotating `TFR_JWT_SECRET` invalidates URLs already handed out.** They live 15 minutes
+  (an hour for provider mirror URLs) and Terraform fetches them within seconds, so a
+  rotation at worst fails an in-flight download that succeeds on retry.
+
+The reason is logged, at `WARN`, with the client IP; the response body is deliberately the
+same for every failure, so a caller cannot use it to learn which artifacts exist.
+
 **`TFR_STORAGE_LOCAL_BASE_PATH`** — Directory where modules and provider binaries are stored.
 The backend process must have read/write access. Use an absolute path in production.
 
 **`TFR_STORAGE_LOCAL_SERVE_DIRECTLY`** — When `true`, file contents are streamed through
 the backend. When `false`, the backend generates a redirect URL (requires an external
 file server). `true` is recommended unless you have a separate file server.
+
+### The bucket or container must not be publicly readable
+
+Every backend hands Terraform a **time-limited signed URL**: an Azure SAS, an S3 presign, a
+GCS signature, or — since the change above — a signed `/v1/files/...` path for local
+storage. All four are load-bearing only if the underlying store refuses anonymous reads.
+
+A publicly readable bucket makes the signature theatre: object keys are structural
+(`modules/{namespace}/{name}/{system}/{version}.tar.gz`), so anyone who can guess a key
+reads the object directly and never touches the registry — the download is unauthorised
+*and* invisible, since it is never counted or audited.
+
+Check it explicitly; the defaults are not uniformly safe across providers:
+
+```bash
+# S3: expect all four to be true
+aws s3api get-public-access-block --bucket "$BUCKET"
+
+# GCS: expect NO allUsers / allAuthenticatedUsers binding
+gsutil iam get "gs://$BUCKET"
+
+# Azure: expect "publicAccess": null on the container
+az storage container show-permission --name "$CONTAINER" --account-name "$ACCOUNT"
+```
+
+For local storage, the equivalent check is that `base_path` is not also exported by a
+web server or a file share.
 
 ### Azure Blob Storage
 
