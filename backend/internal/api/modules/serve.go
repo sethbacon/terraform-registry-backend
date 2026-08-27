@@ -16,17 +16,21 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/middleware"
 	"github.com/terraform-registry/terraform-registry/internal/safego"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
+	"github.com/terraform-registry/terraform-registry/internal/storage/urlsign"
 	"github.com/terraform-registry/terraform-registry/internal/telemetry"
 )
 
 // ServeFileHandler serves a module or provider archive file directly from local storage.
 // @Summary      Serve archive file from local storage
-// @Description  Streams a stored archive file. Only registered when the local storage backend has ServeDirectly enabled. Path traversal sequences are rejected.
+// @Description  Streams a stored archive file. Requires the `expires` and `sig` query parameters produced by the local storage backend's signed download URL; unsigned, forged or expired requests are rejected with 403. Path traversal sequences are rejected.
 // @Tags         Files
-// @Param        filepath   path  string  true  "Storage-relative file path"
+// @Param        filepath   path   string  true  "Storage-relative file path"
+// @Param        expires    query  string  true  "Signature expiry, unix seconds"
+// @Param        sig        query  string  true  "URL signature"
 // @Produce      application/octet-stream
 // @Success      200
 // @Failure      400  {object}  map[string]interface{}  "Invalid file path"
+// @Failure      403  {object}  map[string]interface{}  "Invalid or expired download URL"
 // @Failure      404  {object}  map[string]interface{}  "File not found"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
 // @Router       /v1/files/{filepath} [get]
@@ -62,6 +66,40 @@ func ServeFileHandler(storageBackend storage.Storage, cfg *config.Config, db *sq
 		if strings.Contains(filePath, "..") || strings.Contains(filePath, "//") {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"errors": []string{"Invalid file path"},
+			})
+			return
+		}
+
+		// AUTHORIZE THE FETCH (#973).
+		//
+		// This route has no authentication middleware -- not requireAuth, not
+		// OptionalAuth -- and it streams whatever storage key it is handed.
+		// Keys are structural and guessable, so before this check anyone who
+		// could reach the deployment could enumerate every module archive and
+		// terraform binary anonymously, and the fetch appeared nowhere as an
+		// authorised download.
+		//
+		// The signature comes from LocalStorage.GetURL, which is the only thing
+		// that produces these URLs. Verified BEFORE the approval gate and before
+		// any storage call, so an unsigned request cannot use this handler to
+		// probe which keys exist.
+		//
+		// filePath here is post-decode and post-leading-slash-strip -- the same
+		// canonical storage key GetURL signed.
+		if err := urlsign.Verify(
+			filePath,
+			c.Query(urlsign.ParamExpires),
+			c.Query(urlsign.ParamSignature),
+			time.Now(),
+		); err != nil {
+			// One response for every failure mode. Distinguishing "expired"
+			// from "wrong signature" from "no such file" hands an anonymous
+			// caller an oracle for which keys exist; the specific reason goes
+			// to the log, where the operator can see it and the caller cannot.
+			slog.Warn("rejected unsigned or invalid file request",
+				"path", filePath, "reason", err.Error(), "remote", c.ClientIP())
+			c.JSON(http.StatusForbidden, gin.H{
+				"errors": []string{"Invalid or expired download URL"},
 			})
 			return
 		}

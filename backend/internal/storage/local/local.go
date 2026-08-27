@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
+	"github.com/terraform-registry/terraform-registry/internal/storage/urlsign"
 )
 
 func init() {
@@ -263,7 +265,49 @@ func (s *LocalStorage) GetURL(ctx context.Context, path string, ttl time.Duratio
 		return "", fmt.Errorf("file not found: %s", path)
 	}
 
-	return fmt.Sprintf("%s/v1/files/%s", s.baseURL, path), nil
+	// SIGNED, because GET /v1/files/*filepath has no authentication middleware
+	// on it and storage keys are structural and guessable (#973). The other
+	// three backends all return a credential here -- an S3 presign, a GCS
+	// signature, an Azure SAS -- and returning a bare path made the local
+	// backend the one configuration where every module archive and terraform
+	// binary was anonymously fetchable by anyone who could reach the port.
+	//
+	// The ttl argument was accepted and ignored before this. Every caller
+	// already passes one (15 minutes, or an hour for the mirror), so the
+	// bound is now real rather than documentary.
+	expires, sig, err := urlsign.Sign(path, ttl, time.Now())
+	if err != nil {
+		// Fail closed. Returning the unsigned URL on a signing failure would
+		// reinstate exactly the anonymous-fetch hole this closes, at the moment
+		// something is already wrong.
+		return "", fmt.Errorf("failed to sign download URL: %w", err)
+	}
+
+	// The path is escaped segment-wise; the SIGNATURE is over the unescaped
+	// storage key. Gin decodes the path parameter before the handler sees it,
+	// so the handler verifies against the same unescaped string this signed --
+	// which matters because real keys carry '+' and '~' from version strings
+	// such as 1.0.0+build.5.
+	return fmt.Sprintf("%s/v1/files/%s?%s=%s&%s=%s",
+		s.baseURL, escapePathSegments(path),
+		urlsign.ParamExpires, url.QueryEscape(expires),
+		urlsign.ParamSignature, url.QueryEscape(sig),
+	), nil
+}
+
+// escapePathSegments percent-encodes each segment while leaving the separators
+// alone.
+//
+// url.PathEscape on the whole key would encode the slashes too and collapse the
+// key into one segment; leaving it raw would break on any key byte that is not
+// URL-safe. Segment-wise is the only form that round-trips to the same storage
+// key Gin hands the handler.
+func escapePathSegments(p string) string {
+	segs := strings.Split(p, "/")
+	for i, seg := range segs {
+		segs[i] = url.PathEscape(seg)
+	}
+	return strings.Join(segs, "/")
 }
 
 // Exists checks if a file exists at the specified path

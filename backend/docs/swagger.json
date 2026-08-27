@@ -12867,7 +12867,7 @@
         },
         "/v1/files/{filepath}": {
             "get": {
-                "description": "Streams a stored archive file. Only registered when the local storage backend has ServeDirectly enabled. Path traversal sequences are rejected.",
+                "description": "Streams a stored archive file. Requires the `expires` and `sig` query parameters produced by the local storage backend's signed download URL; unsigned, forged or expired requests are rejected with 403. Path traversal sequences are rejected.",
                 "produces": [
                     "application/octet-stream"
                 ],
@@ -12882,6 +12882,20 @@
                         "name": "filepath",
                         "in": "path",
                         "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Signature expiry, unix seconds",
+                        "name": "expires",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "URL signature",
+                        "name": "sig",
+                        "in": "query",
+                        "required": true
                     }
                 ],
                 "responses": {
@@ -12890,6 +12904,13 @@
                     },
                     "400": {
                         "description": "Invalid file path",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Invalid or expired download URL",
                         "schema": {
                             "type": "object",
                             "additionalProperties": true

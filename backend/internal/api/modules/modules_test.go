@@ -11,6 +11,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	neturl "net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +22,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
+	"github.com/terraform-registry/terraform-registry/internal/storage/urlsign"
 )
 
 // assertErrorsArrayBody fails the test unless the response body is shaped
@@ -56,6 +59,11 @@ type mockStore struct {
 	existsErr    error
 	metadataErr  error
 	downloadErr  error
+	// existsCalls records storage reachability. #973 turns on the handler
+	// refusing an unsigned caller BEFORE touching storage -- asserting only the
+	// status code would pass just as well if the check ran after Exists, which
+	// would still leak which keys are present through timing and error shape.
+	existsCalls int
 }
 
 func (m *mockStore) Upload(_ context.Context, _ string, _ io.Reader, _ int64) (*storage.UploadResult, error) {
@@ -72,6 +80,7 @@ func (m *mockStore) GetURL(_ context.Context, _ string, _ time.Duration) (string
 	return m.getURLResult, m.getURLErr
 }
 func (m *mockStore) Exists(_ context.Context, _ string) (bool, error) {
+	m.existsCalls++
 	return m.existsResult, m.existsErr
 }
 func (m *mockStore) GetMetadata(_ context.Context, _ string) (*storage.FileMetadata, error) {
@@ -207,6 +216,22 @@ func doGET(r *gin.Engine, path string) *httptest.ResponseRecorder {
 	req, _ := http.NewRequest(http.MethodGet, path, nil)
 	r.ServeHTTP(w, req)
 	return w
+}
+
+// doSignedGET fetches a /v1/files path with a valid signature attached (#973).
+//
+// The route has no authentication middleware and now requires a signature from
+// LocalStorage.GetURL, so every positive test has to present one. Signed here
+// rather than hard-coded, because a fixture signature would silently stop
+// exercising the verifier the first time the scheme changed.
+func doSignedGET(t *testing.T, r *gin.Engine, storageKey string) *httptest.ResponseRecorder {
+	t.Helper()
+	expires, sig, err := urlsign.Sign(storageKey, 15*time.Minute, time.Now())
+	if err != nil {
+		t.Fatalf("sign %q: %v", storageKey, err)
+	}
+	q := neturl.Values{urlsign.ParamExpires: {expires}, urlsign.ParamSignature: {sig}}
+	return doGET(r, "/v1/files/"+storageKey+"?"+q.Encode())
 }
 
 // ---------------------------------------------------------------------------
@@ -480,23 +505,108 @@ func TestDownloadHandler_StorageError(t *testing.T) {
 // ServeFileHandler tests
 // ---------------------------------------------------------------------------
 
+// TestServeFileHandler_SlashOnlyPath — now 403, not 404.
+//
+// gin's *filepath wildcard sets filepath="/" here, which strips to the empty
+// string. It used to reach Exists("") and 404. Since #973 the signature check
+// runs first, so an unsigned request is refused before any storage call -- which
+// is the point: the handler must not answer "does this key exist?" for a caller
+// who cannot sign for it.
 func TestServeFileHandler_SlashOnlyPath(t *testing.T) {
-	// gin wildcard *filepath with path "/v1/files/" sets filepath="/"; after stripping leading slash
-	// becomes empty string → Exists("") returns false → 404
 	store := &mockStore{existsResult: false}
 	r := newServeRouter(t, store)
 	w := doGET(r, "/v1/files/")
-	if w.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want 404", w.Code)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", w.Code)
+	}
+	if store.existsCalls != 0 {
+		t.Errorf("storage was consulted %d times for an unsigned request; "+
+			"an unauthenticated caller must not be able to probe which keys exist", store.existsCalls)
 	}
 	assertErrorsArrayBody(t, w)
+}
+
+// TestServeFileHandler_RejectsUnsignedAndForged is the #973 regression.
+//
+// GET /v1/files/*filepath has no authentication middleware of any kind, and
+// storage keys are structural -- modules/{ns}/{name}/{system}/{version}.tar.gz,
+// terraform-binaries/{version}/{os}/{arch}/{file}. Before this, anyone who could
+// reach the port could enumerate and download every module archive and terraform
+// binary anonymously, with the fetch recorded nowhere as an authorised download.
+//
+// Table-driven over the whole class rather than the one reported shape: no
+// signature at all, a truncated one, one minted for a DIFFERENT object, and one
+// that has expired. The cross-object case is the one that matters most -- if the
+// MAC did not cover the path, a single legitimate download URL would unlock all
+// of storage.
+func TestServeFileHandler_RejectsUnsignedAndForged(t *testing.T) {
+	const target = "modules/acme/vpc/aws/1.0.0.tar.gz"
+
+	validExpires, validSig, err := urlsign.Sign(target, 15*time.Minute, time.Now())
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	otherExpires, otherSig, err := urlsign.Sign("modules/acme/other/aws/1.0.0.tar.gz", 15*time.Minute, time.Now())
+	if err != nil {
+		t.Fatalf("sign other: %v", err)
+	}
+	staleExpires, staleSig, err := urlsign.Sign(target, -1*time.Minute, time.Now())
+	if err != nil {
+		t.Fatalf("sign stale: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		query string
+	}{
+		{"no signature at all", ""},
+		{"expires but no sig", "?" + urlsign.ParamExpires + "=" + validExpires},
+		{"sig but no expires", "?" + urlsign.ParamSignature + "=" + validSig},
+		{"truncated signature", "?" + urlsign.ParamExpires + "=" + validExpires + "&" + urlsign.ParamSignature + "=" + validSig[:len(validSig)-1]},
+		{"signature for a different object", "?" + urlsign.ParamExpires + "=" + otherExpires + "&" + urlsign.ParamSignature + "=" + otherSig},
+		{"expired signature", "?" + urlsign.ParamExpires + "=" + staleExpires + "&" + urlsign.ParamSignature + "=" + staleSig},
+		{"expiry extended, signature kept", "?" + urlsign.ParamExpires + "=" + strconv.FormatInt(time.Now().Add(99*time.Hour).Unix(), 10) + "&" + urlsign.ParamSignature + "=" + validSig},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &mockStore{existsResult: true}
+			r := newServeRouter(t, store)
+
+			w := doGET(r, "/v1/files/"+target+tc.query)
+			if w.Code != http.StatusForbidden {
+				t.Errorf("status = %d, want 403; body: %s", w.Code, w.Body.String())
+			}
+			// The refusal must be indistinguishable from every other refusal.
+			// A caller who can tell "expired" from "wrong key" from "no such
+			// file" has an oracle for which artifacts exist.
+			if body := w.Body.String(); !strings.Contains(body, "Invalid or expired download URL") {
+				t.Errorf("body %q leaks which check failed", body)
+			}
+			if store.existsCalls != 0 {
+				t.Errorf("storage consulted %d times before authorising; "+
+					"the handler must not confirm a key exists to a caller who cannot sign for it",
+					store.existsCalls)
+			}
+		})
+	}
+}
+
+// TestServeFileHandler_AcceptsAValidSignature is the other half: the guard must
+// let the real thing through, or it is just a broken endpoint.
+func TestServeFileHandler_AcceptsAValidSignature(t *testing.T) {
+	store := &mockStore{existsResult: true}
+	r := newServeRouter(t, store)
+
+	w := doSignedGET(t, r, "modules/acme/vpc/aws/1.0.0.tar.gz")
+	if w.Code != http.StatusOK {
+		t.Fatalf("a correctly signed request was refused: status %d, body %s", w.Code, w.Body.String())
+	}
 }
 
 func TestServeFileHandler_NotFound(t *testing.T) {
 	store := &mockStore{existsResult: false}
 	r := newServeRouter(t, store)
 
-	w := doGET(r, "/v1/files/path/to/file.tgz")
+	w := doSignedGET(t, r, "path/to/file.tgz")
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", w.Code)
 	}
@@ -507,7 +617,7 @@ func TestServeFileHandler_ExistsError(t *testing.T) {
 	store := &mockStore{existsErr: errors.New("storage error")}
 	r := newServeRouter(t, store)
 
-	w := doGET(r, "/v1/files/path/to/file.tgz")
+	w := doSignedGET(t, r, "path/to/file.tgz")
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
@@ -518,7 +628,7 @@ func TestServeFileHandler_MetadataError(t *testing.T) {
 	store := &mockStore{existsResult: true, metadataErr: errors.New("metadata error")}
 	r := newServeRouter(t, store)
 
-	w := doGET(r, "/v1/files/path/to/file.tgz")
+	w := doSignedGET(t, r, "path/to/file.tgz")
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
@@ -529,7 +639,7 @@ func TestServeFileHandler_Success(t *testing.T) {
 	store := &mockStore{existsResult: true}
 	r := newServeRouter(t, store)
 
-	w := doGET(r, "/v1/files/path/to/file.tgz")
+	w := doSignedGET(t, r, "path/to/file.tgz")
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200; body: %s", w.Code, w.Body.String())
 	}
@@ -541,7 +651,7 @@ func TestServeFileHandler_ProviderContentType(t *testing.T) {
 	store := &mockStore{existsResult: true}
 	r := newServeRouter(t, store)
 
-	w := doGET(r, "/v1/files/providers/hashicorp/aws/1.0.0/linux/amd64/terraform-provider-aws.zip")
+	w := doSignedGET(t, r, "providers/hashicorp/aws/1.0.0/linux/amd64/terraform-provider-aws.zip")
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
 	}
@@ -555,7 +665,7 @@ func TestServeFileHandler_ModuleContentType(t *testing.T) {
 	store := &mockStore{existsResult: true}
 	r := newServeRouter(t, store)
 
-	w := doGET(r, "/v1/files/modules/hashicorp/consul/aws/1.0.0.tar.gz")
+	w := doSignedGET(t, r, "modules/hashicorp/consul/aws/1.0.0.tar.gz")
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
 	}
@@ -570,7 +680,7 @@ func TestServeFileHandler_PathTraversal(t *testing.T) {
 	store := &mockStore{existsResult: true}
 	r := newServeRouter(t, store)
 
-	w := doGET(r, "/v1/files/../../etc/passwd")
+	w := doSignedGET(t, r, "../../etc/passwd")
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400; body: %s", w.Code, w.Body.String())
 	}
@@ -581,7 +691,7 @@ func TestServeFileHandler_DoubleSlashTraversal(t *testing.T) {
 	store := &mockStore{existsResult: true}
 	r := newServeRouter(t, store)
 
-	w := doGET(r, "/v1/files/a//b")
+	w := doSignedGET(t, r, "a//b")
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400; body: %s", w.Code, w.Body.String())
 	}
