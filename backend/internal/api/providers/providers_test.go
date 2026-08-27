@@ -138,14 +138,6 @@ var platformCols = []string{
 	"storage_path", "storage_backend", "size_bytes", "shasum", "h1_hash", "download_count",
 }
 
-// SearchProvidersWithStats result: id, org_id, namespace, type, description, source,
-// created_by, created_by_name, created_at, updated_at, latest_version, total_downloads
-var providerSearchCols = []string{
-	"id", "organization_id", "namespace", "type", "description", "source",
-	"created_by", "created_by_name", "created_at", "updated_at",
-	"latest_version", "total_downloads",
-}
-
 // providerSearchColsFTS adds the rank column for FTS queries (searchQuery >= 3 chars).
 var providerSearchColsFTS = []string{
 	"id", "organization_id", "namespace", "type", "description", "source",
@@ -318,21 +310,6 @@ func TestSearchHandler_Success_SingleTenant(t *testing.T) {
 	}
 }
 
-func TestSearchHandler_Success_MultiTenant(t *testing.T) {
-	cfg := &config.Config{}
-	cfg.MultiTenancy.Enabled = true
-	mock, r := newSearchRouter(t, cfg)
-
-	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow())
-	mock.ExpectQuery("SELECT COUNT.*FROM providers").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
-	mock.ExpectQuery("SELECT.*FROM providers.*ORDER BY").WillReturnRows(sqlmock.NewRows(providerSearchCols))
-
-	w := doGET(r, "/v1/providers/search")
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want 200; body: %s", w.Code, w.Body.String())
-	}
-}
-
 func TestSearchHandler_SearchError(t *testing.T) {
 	mock, r := newSearchRouter(t, &config.Config{})
 
@@ -343,23 +320,6 @@ func TestSearchHandler_SearchError(t *testing.T) {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
 }
-
-func TestSearchHandler_MultiTenant_OrgNotFound(t *testing.T) {
-	cfg := &config.Config{}
-	cfg.MultiTenancy.Enabled = true
-	mock, r := newSearchRouter(t, cfg)
-
-	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sqlmock.NewRows(orgCols))
-
-	w := doGET(r, "/v1/providers/search")
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("status = %d, want 500", w.Code)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// DownloadHandler tests
-// ---------------------------------------------------------------------------
 
 func TestDownloadHandler_InvalidVersion(t *testing.T) {
 	_, r := newDownloadRouter(t, &mockStore{})

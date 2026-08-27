@@ -86,16 +86,19 @@ var domainDBIsCorrect = map[string]string{
 	"admin.NewProviderAdminHandlers": "provider administration over domain tables",
 	"mirror.IndexHandler":            "mirror index over domain tables",
 	"mirror.PlatformIndexHandler":    "mirror index over domain tables",
-	"modules.SearchHandler":          "namespace -> org resolution joined to modules",
 	"modules.UploadHandler":          "namespace -> org resolution joined to modules",
 	"oci.NewHandler":                 "OCI blobs joined to modules",
+	// The two SearchHandlers used to be here too. They resolved the default
+	// organization only when multi_tenancy.enabled was set -- a flag whose
+	// every position was wrong and which #976 removed, so they now build no
+	// identity repository at all.
+	//
 	// modules.ServeFileHandler, providers.DownloadHandler and
 	// providers.ListVersionsHandler used to be here. Each resolved the default
 	// organization to filter a provider lookup, which made every provider owned
 	// by another organization a 404 -- and in ServeFileHandler's case silently
 	// skipped the mirrored-version approval gate entirely (#972). All three now
 	// resolve by namespace alone and build no identity repository at all.
-	"providers.SearchHandler": "namespace -> org resolution joined to providers",
 	"providers.UploadHandler": "namespace -> org resolution joined to providers",
 	"..NewRouter":             "the router itself; it receives both connections",
 }

@@ -726,20 +726,35 @@ security:
 
 ## Multi-Tenancy
 
-```yaml
-multi_tenancy:
-  enabled: false                    # false = single-tenant (one organization)
-  default_organization: default     # slug of the default organization
-  allow_public_signup: false        # whether unauthenticated users can create orgs
-```
+**The `multi_tenancy` settings have been removed** (#976). If your configuration
+still has them, the server logs a `WARN` naming each one at startup and ignores
+it. Delete the block.
 
-**Single-tenant mode** (`enabled: false`): All modules and providers belong to one
-organization. Namespaces in Terraform addresses are not organization-isolated.
-Suitable for teams that don't need separate permission boundaries.
+They never did what their name said. This section used to promise that
+`enabled: true` gave each organization "isolated modules, providers, and member
+lists". It did not:
 
-**Multi-tenant mode** (`enabled: true`): Each organization has isolated modules,
-providers, and member lists. Users must be added to an organization to access its resources.
-Use this when hosting the registry for multiple independent teams or customers.
+| Setting | What it actually did |
+| --- | --- |
+| `enabled: false` (the shipped default) | applied no organization predicate to search — every module and provider in the deployment, to anyone |
+| `enabled: true` | filtered search to the organization literally named `default`, never the caller's — so **every real tenant saw an empty registry**, while the default organization's inventory stayed visible to everyone |
+| `default_organization` | never read by anything; the name is hardcoded in the identity module |
+| `allow_public_signup` | never read by anything |
+
+Neither position of `enabled` resolved the *caller's* organization, so neither
+was a tenancy control. It was the first thing anyone moving toward isolation
+would reach for, and turning it on was an outage plus a continuing leak.
+
+**Where isolation actually lives.** Per the
+[estate tenancy model](https://github.com/sethbacon/terraform-suite-identity/blob/main/docs/tenancy-model.md),
+the **host** is the content tenant: modules, providers and binaries belong to a
+host, and organizations divide editorial rights within one. Search being public
+is a separate, deliberate decision — see the note above the route registrations
+in `internal/api/router_routes.go`.
+
+Organizations, memberships and role templates are unaffected by this removal;
+they are configured through the identity settings above and the admin UI, and
+they were never governed by this flag.
 
 ---
 

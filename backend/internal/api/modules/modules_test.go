@@ -118,15 +118,6 @@ var moduleVersionGetCols2 = []string{
 	"commit_sha", "tag_name", "scm_repo_id",
 }
 
-// SearchModulesWithStats result: id, org_id, namespace, name, system, description, source,
-// created_by, created_by_name, created_at, updated_at, deprecated, deprecated_at, deprecation_message, successor_module_id, latest_version, total_downloads
-var moduleSearchCols = []string{
-	"id", "organization_id", "namespace", "name", "system", "description", "source",
-	"created_by", "created_by_name", "created_at", "updated_at",
-	"deprecated", "deprecated_at", "deprecation_message", "successor_module_id",
-	"latest_version", "total_downloads",
-}
-
 // moduleSearchColsFTS adds the rank column for FTS queries (searchQuery >= 3 chars).
 var moduleSearchColsFTS = []string{
 	"id", "organization_id", "namespace", "name", "system", "description", "source",
@@ -396,21 +387,6 @@ func TestSearchHandler_Success_SingleTenant(t *testing.T) {
 	}
 }
 
-func TestSearchHandler_Success_MultiTenant(t *testing.T) {
-	cfg := &config.Config{}
-	cfg.MultiTenancy.Enabled = true
-	mock, r := newSearchRouter(t, cfg)
-
-	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnRows(sampleOrgRow2())
-	mock.ExpectQuery("SELECT COUNT.*FROM modules").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
-	mock.ExpectQuery("SELECT.*FROM modules.*ORDER BY").WillReturnRows(sqlmock.NewRows(moduleSearchCols))
-
-	w := doGET(r, "/v1/modules/search")
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want 200; body: %s", w.Code, w.Body.String())
-	}
-}
-
 func TestSearchHandler_SearchError(t *testing.T) {
 	mock, r := newSearchRouter(t, &config.Config{})
 
@@ -421,23 +397,6 @@ func TestSearchHandler_SearchError(t *testing.T) {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
 }
-
-func TestSearchHandler_MultiTenant_OrgError(t *testing.T) {
-	cfg := &config.Config{}
-	cfg.MultiTenancy.Enabled = true
-	mock, r := newSearchRouter(t, cfg)
-
-	mock.ExpectQuery("SELECT.*FROM organizations.*WHERE name").WillReturnError(errDB2)
-
-	w := doGET(r, "/v1/modules/search")
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("status = %d, want 500", w.Code)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// DownloadHandler tests
-// ---------------------------------------------------------------------------
 
 func TestDownloadHandler_InvalidVersion(t *testing.T) {
 	_, r := newDownloadRouter(t, &mockStore{})
