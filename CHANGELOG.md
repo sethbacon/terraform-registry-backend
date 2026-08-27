@@ -7,6 +7,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.12.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.11.1...v4.12.0) (2026-08-27)
+
+
+### Features
+
+* **schemaguard:** fail when a foreign key's target schema is chosen by the topology ([#989](https://github.com/sethbacon/terraform-registry-backend/issues/989)) ([0a47050](https://github.com/sethbacon/terraform-registry-backend/commit/0a47050c5e838d7c0269ade3780a414e874e32c9)), closes [#898](https://github.com/sethbacon/terraform-registry-backend/issues/898)
+
+
+### Bug Fixes
+
+* **api:** declare the unauthenticated surface instead of inheriting it ([#982](https://github.com/sethbacon/terraform-registry-backend/issues/982)) ([81e5436](https://github.com/sethbacon/terraform-registry-backend/commit/81e54369b5811a323d716b50985d6da3c6eac8ea)), closes [#974](https://github.com/sethbacon/terraform-registry-backend/issues/974)
+* **build:** make swag and CI produce the same openapi3.json ([#988](https://github.com/sethbacon/terraform-registry-backend/issues/988)) ([b5c258a](https://github.com/sethbacon/terraform-registry-backend/commit/b5c258a630912d4b9fb18b790efb139c1500afaa)), closes [#947](https://github.com/sethbacon/terraform-registry-backend/issues/947)
+* **config:** remove multi_tenancy, which was wrong in both positions ([#986](https://github.com/sethbacon/terraform-registry-backend/issues/986)) ([1e12f25](https://github.com/sethbacon/terraform-registry-backend/commit/1e12f256969a751f0d2eb473169f15adc8554525)), closes [#976](https://github.com/sethbacon/terraform-registry-backend/issues/976)
+* **maintenance:** rekey-secrets reports the columns it does not certify ([#980](https://github.com/sethbacon/terraform-registry-backend/issues/980)) ([3df9f4b](https://github.com/sethbacon/terraform-registry-backend/commit/3df9f4b0cc20b79975d48db16309c61b9f1444dc)), closes [#878](https://github.com/sethbacon/terraform-registry-backend/issues/878)
+* **providers:** resolve providers by namespace, not by the default organization ([#983](https://github.com/sethbacon/terraform-registry-backend/issues/983)) ([1082341](https://github.com/sethbacon/terraform-registry-backend/commit/1082341a01ca7d7e31062171db160fd8de486fb1)), closes [#972](https://github.com/sethbacon/terraform-registry-backend/issues/972)
+* **storage:** sign local download URLs, and verify them before serving ([#981](https://github.com/sethbacon/terraform-registry-backend/issues/981)) ([2ddb6b7](https://github.com/sethbacon/terraform-registry-backend/commit/2ddb6b7878eb1fe9f6dbf65975b8d23d8985f079)), closes [#973](https://github.com/sethbacon/terraform-registry-backend/issues/973)
+
+
+### Documentation
+
+* **approval:** record the two [#975](https://github.com/sethbacon/terraform-registry-backend/issues/975) decisions as settled ([#985](https://github.com/sethbacon/terraform-registry-backend/issues/985)) ([4922bd8](https://github.com/sethbacon/terraform-registry-backend/commit/4922bd8ebe06c1df9c18294c4ec692307dfd56fd))
+* **approval:** state what the version gate covers, and pin it ([#984](https://github.com/sethbacon/terraform-registry-backend/issues/984)) ([863bafb](https://github.com/sethbacon/terraform-registry-backend/commit/863bafb8d8907444dfc298ec377b3c7153f4af90)), closes [#975](https://github.com/sethbacon/terraform-registry-backend/issues/975)
+* point at the estate tenancy model ([#971](https://github.com/sethbacon/terraform-registry-backend/issues/971)) ([1c4e9c2](https://github.com/sethbacon/terraform-registry-backend/commit/1c4e9c245f21a200924849a96e8ebd1cd0b2e8fa))
+
+
+### Refactor
+
+* **auth:** resolve group mappings through the shared module ([#977](https://github.com/sethbacon/terraform-registry-backend/issues/977)) ([ad89305](https://github.com/sethbacon/terraform-registry-backend/commit/ad8930520127c86ca0c58210a35b903c27a3ba07)), closes [#963](https://github.com/sethbacon/terraform-registry-backend/issues/963)
+
 ## [4.11.1](https://github.com/sethbacon/terraform-registry-backend/compare/v4.11.0...v4.11.1) (2026-08-25)
 
 
