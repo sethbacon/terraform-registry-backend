@@ -97,8 +97,24 @@ func PlatformIndexHandler(db *sql.DB, cfg *config.Config, auditRepo *repositorie
 			return
 		}
 
-		// Get provider
-		provider, err := providerRepo.GetProvider(c.Request.Context(), org.ID, namespace, providerType)
+		// RESOLVED BY NAMESPACE, WITH NO ORGANIZATION (#972). A provider source
+		// is host/namespace/type: two identifier segments and no slot for an
+		// organization, so a Terraform client cannot supply one. Filtering by
+		// one here was never a narrowing of what the caller asked for -- it
+		// guessed the organization literally named "default", and every
+		// provider owned by any other organization was a permanent 404 to every
+		// client, with no error to say why.
+		//
+		// This is what the module half of the same protocol already does; the
+		// provider half was never brought along, so a deployment that renamed
+		// or deleted its default organization served its modules correctly and
+		// its providers to nobody.
+		//
+		// The organization resolved above is still used, for the PULL-THROUGH
+		// mirror configuration below -- that really is owned by an
+		// organization. Only the lookup of an already-published provider is
+		// org-blind.
+		provider, _, err := providerRepo.GetProviderByNamespace(c.Request.Context(), namespace, providerType)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"errors": []string{"Failed to query provider"},
@@ -119,7 +135,7 @@ func PlatformIndexHandler(db *sql.DB, cfg *config.Config, auditRepo *repositorie
 					c.Data(http.StatusBadGateway, "application/json", []byte(`{"errors":["upstream fetch failed"]}`))
 					return
 				}
-				provider, err = providerRepo.GetProvider(c.Request.Context(), org.ID, namespace, providerType)
+				provider, _, err = providerRepo.GetProviderByNamespace(c.Request.Context(), namespace, providerType)
 				if err != nil || provider == nil {
 					c.Data(http.StatusNotFound, "application/json", []byte(`{"errors":["provider not found after pull-through"]}`))
 					return

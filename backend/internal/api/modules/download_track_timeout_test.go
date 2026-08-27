@@ -37,17 +37,20 @@ func TestTrackProviderDownload_ReturnsWhenTheDatabaseStalls(t *testing.T) {
 	// The first query the function makes stalls far longer than the deadline.
 	// WillDelayFor honours the context, so a bounded context aborts the wait and
 	// an unbounded one blocks for the full delay.
-	mock.ExpectQuery("(?s)SELECT.*organizations").
+	//
+	// That first query is the PROVIDER lookup. It used to be an organizations
+	// lookup, resolving the default org to filter the provider by -- which made
+	// a provider owned by any other organization uncountable (#972).
+	mock.ExpectQuery("(?s)SELECT.*FROM providers").
 		WillDelayFor(60 * time.Second).
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("org-1"))
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("prov-1"))
 
 	providerRepo := repositories.NewProviderRepository(db)
-	orgRepo := repositories.NewOrganizationRepository(db)
 
 	done := make(chan time.Duration, 1)
 	go func() {
 		start := time.Now()
-		trackProviderDownload(providerRepo, orgRepo, "hashicorp", "aws", "5.31.0", "linux", "amd64")
+		trackProviderDownload(providerRepo, "hashicorp", "aws", "5.31.0", "linux", "amd64")
 		done <- time.Since(start)
 	}()
 

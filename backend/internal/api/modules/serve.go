@@ -39,10 +39,8 @@ import (
 // Only used when local storage has ServeDirectly: true
 func ServeFileHandler(storageBackend storage.Storage, cfg *config.Config, db *sql.DB, auditRepo *repositories.AuditRepository) gin.HandlerFunc {
 	var providerRepo *repositories.ProviderRepository
-	var orgRepo *repositories.OrganizationRepository
 	if db != nil {
 		providerRepo = repositories.NewProviderRepository(db)
-		orgRepo = repositories.NewOrganizationRepository(db)
 	}
 
 	return func(c *gin.Context) {
@@ -113,18 +111,24 @@ func ServeFileHandler(storageBackend storage.Storage, cfg *config.Config, db *sq
 		// workflow entirely. Return the same "File not found" response as a
 		// genuinely missing file so the gate does not reveal that a hidden version
 		// exists.
+		//
+		// RESOLVED BY NAMESPACE (#972). This lookup used to resolve the default
+		// organization first and filter by it, which meant the gate SILENTLY
+		// DID NOT RUN for a provider owned by any other organization: the
+		// lookup missed, the nested conditions fell through, and the archive
+		// was served. An approval gate that skips itself on the deployments it
+		// was least tested against is worse than none, because it reports
+		// coverage it does not have.
 		if providerRepo != nil {
 			if ns, pt, ver, _, _, ok := parseProviderFilePath(filePath); ok {
-				if org, err := orgRepo.GetDefaultOrganization(c.Request.Context()); err == nil && org != nil {
-					if provider, err := providerRepo.GetProvider(c.Request.Context(), org.ID, ns, pt); err == nil && provider != nil {
-						if pv, err := providerRepo.GetVersion(c.Request.Context(), provider.ID, ver); err == nil && pv != nil {
-							status, err := providerRepo.GetVersionApprovalStatus(c.Request.Context(), pv.ID)
-							if err == nil && status != nil && *status != models.VersionApprovalStatusApproved {
-								c.JSON(http.StatusNotFound, gin.H{
-									"errors": []string{"File not found"},
-								})
-								return
-							}
+				if provider, _, err := providerRepo.GetProviderByNamespace(c.Request.Context(), ns, pt); err == nil && provider != nil {
+					if pv, err := providerRepo.GetVersion(c.Request.Context(), provider.ID, ver); err == nil && pv != nil {
+						status, err := providerRepo.GetVersionApprovalStatus(c.Request.Context(), pv.ID)
+						if err == nil && status != nil && *status != models.VersionApprovalStatusApproved {
+							c.JSON(http.StatusNotFound, gin.H{
+								"errors": []string{"File not found"},
+							})
+							return
 						}
 					}
 				}
@@ -168,7 +172,7 @@ func ServeFileHandler(storageBackend storage.Storage, cfg *config.Config, db *sq
 		// Track provider downloads: path is providers/{namespace}/{type}/{version}/{os}/{arch}/{file}
 		if providerRepo != nil {
 			if ns, pt, ver, osName, arch, ok := parseProviderFilePath(filePath); ok {
-				safego.Go(func() { trackProviderDownload(providerRepo, orgRepo, ns, pt, ver, osName, arch) })
+				safego.Go(func() { trackProviderDownload(providerRepo, ns, pt, ver, osName, arch) })
 				telemetry.ProviderDownloadsTotal.WithLabelValues(ns, pt, osName, arch).Inc()
 			}
 		}
@@ -229,7 +233,7 @@ func parseProviderFilePath(path string) (namespace, providerType, version, os, a
 }
 
 // trackProviderDownload looks up the provider platform and increments its download count.
-func trackProviderDownload(providerRepo *repositories.ProviderRepository, orgRepo *repositories.OrganizationRepository, namespace, providerType, version, osName, arch string) {
+func trackProviderDownload(providerRepo *repositories.ProviderRepository, namespace, providerType, version, osName, arch string) {
 	// One budget for the whole operation, matching the audit goroutine 30 lines
 	// above (issue #758). This runs fire-and-forget after the response is
 	// served and makes FOUR sequential queries; with a bare context.Background()
@@ -241,11 +245,11 @@ func trackProviderDownload(providerRepo *repositories.ProviderRepository, orgRep
 	// is precisely when these pile up.
 	ctx, cancel := context.WithTimeout(context.Background(), downloadTrackTimeout)
 	defer cancel()
-	org, err := orgRepo.GetDefaultOrganization(ctx)
-	if err != nil || org == nil {
-		return
-	}
-	provider, err := providerRepo.GetProvider(ctx, org.ID, namespace, providerType)
+	// RESOLVED BY NAMESPACE (#972). Same defect as the approval gate above: a
+	// provider owned by any organization other than "default" resolved to
+	// nothing here, so its downloads were never counted -- silently, since this
+	// runs detached and returns on every miss.
+	provider, _, err := providerRepo.GetProviderByNamespace(ctx, namespace, providerType)
 	if err != nil || provider == nil {
 		return
 	}

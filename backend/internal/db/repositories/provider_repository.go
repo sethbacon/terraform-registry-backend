@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
@@ -136,6 +137,84 @@ func (r *ProviderRepository) GetProvider(ctx context.Context, orgID, namespace, 
 	}
 
 	return provider, nil
+}
+
+// providerSelectColumns is the projection GetProvider and GetProviderByNamespace
+// share, so the two cannot drift into scanning different shapes.
+const providerSelectColumns = `p.id, p.organization_id, p.namespace, p.type, p.description, p.source,
+	       p.created_by, p.created_at, p.updated_at, u.name as created_by_name`
+
+// GetProviderByNamespace resolves a provider from the protocol coordinates
+// alone, with NO organization predicate (#972).
+//
+// WHY THERE IS NO ORGANIZATION ARGUMENT. A provider source is
+// host/namespace/type: two identifier segments and no slot for an organization,
+// so a Terraform client cannot supply one. Every public provider route
+// previously resolved the organization literally named "default" and passed it
+// as a filter, which made a provider owned by any OTHER organization a
+// permanent 404 to every client -- with no error, so it read as "that provider
+// does not exist" rather than as a misconfiguration.
+//
+// This is the same treatment GetModuleByNamespace already gives modules, and
+// bringing the provider half along is the whole point: the two halves of one
+// protocol disagreed, and a deployment that renamed or deleted its default
+// organization served its modules correctly and its providers to nobody.
+//
+// The organization still governs who may PUBLISH under a namespace. It never
+// governed who may read, because the protocol has nowhere to put it.
+//
+// Returns (nil, 0, nil) when nothing matches. `others` is the number of
+// ADDITIONAL rows sharing these coordinates.
+func (r *ProviderRepository) GetProviderByNamespace(ctx context.Context, namespace, providerType string) (provider *models.Provider, others int, err error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT `+providerSelectColumns+`
+		FROM providers p
+		LEFT JOIN users u ON p.created_by = u.id
+		WHERE p.namespace = $1 AND p.type = $2
+		ORDER BY p.created_at ASC, p.id ASC`, namespace, providerType)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to get provider by namespace: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		p := &models.Provider{}
+		var scannedOrgID sql.NullString
+		if scanErr := rows.Scan(
+			&p.ID, &scannedOrgID, &p.Namespace, &p.Type, &p.Description,
+			&p.Source, &p.CreatedBy, &p.CreatedAt, &p.UpdatedAt, &p.CreatedByName,
+		); scanErr != nil {
+			return nil, 0, fmt.Errorf("failed to scan provider: %w", scanErr)
+		}
+		// organization_id is nullable: mirrored and single-tenant providers
+		// carry NULL, and this query includes them because it filters on
+		// nothing else. Scanned through a NullString so a NULL is an empty
+		// string rather than a scan error.
+		if scannedOrgID.Valid {
+			p.OrganizationID = scannedOrgID.String
+		}
+		if provider == nil {
+			provider = p
+			continue
+		}
+		others++
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("failed to read providers: %w", err)
+	}
+	if others > 0 {
+		// Logged HERE rather than left to each caller, for the same reason
+		// GetModuleByNamespace does it: this is a fact about the data, not
+		// about the request, so every reader of these coordinates is affected
+		// and a signal that depends on somebody checking a return value goes
+		// quiet exactly when a new call site is added.
+		slog.Error("provider namespace collision: these coordinates resolve to more than one row, "+
+			"and provider storage keys carry no organization segment — the archives may already "+
+			"have overwritten one another",
+			"namespace", namespace, "type", providerType,
+			"rows", others+1, "serving_provider_id", provider.ID, "serving_organization_id", provider.OrganizationID)
+	}
+	return provider, others, nil
 }
 
 // GetProviderByNamespaceType retrieves a provider by namespace and type only (for single-tenant mode)
