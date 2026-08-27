@@ -187,6 +187,30 @@ The encryption key protects SCM OAuth tokens stored in the database. The backend
    A non-zero exit means at least one row still requires the previous key, or could not be
    read at all. Both hold the gate shut, and both are logged per column with a row id.
 
+   **The gate is narrower than "every secret", and it now tells you so.** Two tables are
+   deliberately not swept, so a zero exit says nothing about them:
+
+   | Column | Rows not covered |
+   |---|---|
+   | `scm_oauth_tokens.access_token_encrypted` | each user's SCM link |
+   | `scm_oauth_tokens.refresh_token_encrypted` | each user's SCM link |
+   | `scm_provider_tokens.access_token_encrypted` | cached app tokens (re-minted automatically) |
+
+   Both `verify` and the re-encrypt run print a count for each of these before exiting, at
+   `WARN` when the count is non-zero:
+
+   ```
+   WARN rekey-secrets: rows NOT covered by this gate column=scm_oauth_tokens.access_token_encrypted rows=214
+   ```
+
+   That number is what to weigh. These rows are sealed under whichever key was current when
+   each user last linked, so some may still need `ENCRYPTION_KEY_PREVIOUS` even when the
+   gate is green. Dropping it does not corrupt them and no administrator has to re-enter
+   anything — but every affected user's SCM link stops working until they **re-link**, and
+   they find out by hitting a failure, not at deploy time. With a non-zero count, either
+   accept that or have those users re-link first; the count going to zero on its own is
+   also fine to wait for on the `scm_provider_tokens` row, which re-mints itself.
+
    Removing `ENCRYPTION_KEY_PREVIOUS` while any row is still encrypted under it makes that
    secret **permanently unreadable**, by the service and by these commands alike, and it
    has to be re-entered by an administrator. There is no undo. When the gate is red, keep
@@ -208,6 +232,7 @@ The encryption key protects SCM OAuth tokens stored in the database. The backend
 | Rolling restart                                  | Day 0                               |
 | `rekey-secrets` (re-encrypt everything)         | Day 0 - Day 7                       |
 | `rekey-secrets verify` returns zero             | Before removing the previous key    |
+| Weigh the uncovered-row counts it prints        | Before removing the previous key    |
 | Remove previous key                             | Day 7+ (only after the gate is green) |
 
 ### Completing a Rotation: `rekey-secrets`

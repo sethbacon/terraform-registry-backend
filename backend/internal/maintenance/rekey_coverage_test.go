@@ -56,17 +56,35 @@ var sweptAADContexts = map[string]string{
 // re-enter — but it is not "nothing", and docs/secrets-rotation.md says so
 // rather than letting the gate imply a coverage it does not have.
 //
-// They are also not reachable from the registry as it stands: column.context
-// takes one row-id string, and both scm_oauth_tokens contexts are derived from
-// a user id AND a provider id (see internal/scm/aad.go). Widening the registry
-// to carry composite keys is a change to the binding sweep as much as to this
-// one, and belongs to its own issue rather than being smuggled in behind a
-// rotation fix.
+// WHY THEY ARE NOT SWEPT -- and it is NOT that the registry cannot address them.
+// An earlier revision of this comment said the single-row-id registry "cannot
+// express" a key derived from a user id AND a provider id. That is mechanically
+// false: sealedRow.id is an opaque string the column's own rows() supplies, and
+// systemSettingsID already passes a non-row-id through it. Anyone who read that
+// and set out to "just widen the registry" would find nothing in the way, which
+// is the dangerous shape for a wrong reason to have.
+//
+// The real obstacle is that a wrong AAD derivation here is NOT fail-closed.
+// TokenCipher's OpenWithContextOrLegacy discards the supplied AAD on its legacy
+// fallback, so a sweep that derives the AAD wrongly still opens every unbound
+// row, re-seals it under the wrong AAD, satisfies its own round-trip proof, and
+// reports green -- on this run and on every verify afterwards. The gate cannot
+// catch it, because the gate and the sweep derive the AAD from the same
+// col.context. The damage is silent, permanent, and indistinguishable from
+// success.
+//
+// So the exemption stands, and #878 closed the harm the other way: verify now
+// COUNTS these rows and says out loud that it does not certify them (see
+// uncovered.go). An operator gets a number instead of silence before they drop
+// ENCRYPTION_KEY_PREVIOUS. Sweeping them needs a differential probe that reads
+// under the bound AAD and the legacy path separately -- design it before
+// writing it.
 var unsweptAADContexts = map[string]string{
 	"ProviderTokenContext": "scm_provider_tokens.access_token_encrypted is a cache with an expiry; " +
 		"entries are re-minted from the identity provider, so the table converts itself",
-	"UserTokenContext": "scm_oauth_tokens.access_token_encrypted is keyed by user AND provider, " +
-		"which the single-row-id registry cannot express; a lost token is restored by the user re-linking",
+	"UserTokenContext": "scm_oauth_tokens.access_token_encrypted is keyed by user AND provider, and a " +
+		"wrong AAD derivation would convert it silently rather than failing; a lost token is restored " +
+		"by the user re-linking",
 	"UserRefreshTokenContext": "scm_oauth_tokens.refresh_token_encrypted, as above",
 }
 
