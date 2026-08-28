@@ -310,7 +310,12 @@ jobs:
           # skip citing the DSN, and at least one must actually have run.
           if grep -q 'TFR_TEST_DATABASE_URL not set' /tmp/pg-tests.log; then
             echo "::error::Postgres tests SKIPPED on an unset DSN -- this job proved nothing."
-            grep -n 'TFR_TEST_DATABASE_URL not set' /tmp/pg-tests.log | head -5
+            # grep -m 5, not `| head -5`: under the `set -o pipefail` above, head closing
+            # the pipe SIGPIPEs grep once its output exceeds the pipe buffer, and the 141
+            # aborts this step BEFORE the sample prints -- losing exactly the diagnostic
+            # naming which tests skipped, in the run where they did. -m 5 stops grep, so
+            # there is no pipe at all.
+            grep -n -m 5 'TFR_TEST_DATABASE_URL not set' /tmp/pg-tests.log
             exit 1
           fi
           if grep -qE 'TFR_TEST_DATABASE_URL is not reachable|not reachable' /tmp/pg-tests.log; then
