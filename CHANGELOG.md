@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.14.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.13.2...v4.14.0) (2026-08-29)
+
+
+### Features
+
+* **identity:** dual-write OIDC group mappings into registry's own group_mappings table ([#996](https://github.com/sethbacon/terraform-registry-backend/issues/996)) ([4f48757](https://github.com/sethbacon/terraform-registry-backend/commit/4f487574878abad26fb8e77dd50a35d9cb64ea7a))
+
 ## [4.13.2](https://github.com/sethbacon/terraform-registry-backend/compare/v4.13.1...v4.13.2) (2026-08-28)
 
 
