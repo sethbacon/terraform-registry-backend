@@ -22,6 +22,14 @@ import (
 type OIDCConfigRepository struct {
 	db   *sqlx.DB
 	oidc *identitystore.OIDCConfigRepository
+	// groupMappings dual-writes the group-mapping list carried in
+	// oidc_config.extra_config into registry's OWN group_mappings table
+	// (terraform-suite-identity#206 phase 2, migration 000059). It writes on
+	// the REGISTRY domain connection -- the one the migration created the
+	// table on -- which under the identity cutover is NOT the connection the
+	// authoritative extra_config write goes to. Nothing reads the mirrored
+	// rows yet.
+	groupMappings *GroupMappingMirror
 }
 
 // NewOIDCConfigRepository creates a new OIDC configuration repository whose
@@ -37,8 +45,9 @@ func NewOIDCConfigRepository(db *sqlx.DB) *OIDCConfigRepository {
 // identityDB backs OIDC-config CRUD (the shared identity store).
 func NewOIDCConfigRepositoryWithIdentity(db, identityDB *sqlx.DB) *OIDCConfigRepository {
 	return &OIDCConfigRepository{
-		db:   db,
-		oidc: identitystore.NewOIDCConfigRepository(identityDB.DB),
+		db:            db,
+		oidc:          identitystore.NewOIDCConfigRepository(identityDB.DB),
+		groupMappings: NewGroupMappingMirror(db.DB),
 	}
 }
 
@@ -328,8 +337,22 @@ func (r *OIDCConfigRepository) SetAuthMethod(ctx context.Context, method string)
 // === OIDC Configuration CRUD (delegated to the shared identity store) ===
 
 // CreateOIDCConfig creates a new OIDC configuration.
+//
+// The created config's extra_config may already carry a group-mapping list
+// (the setup wizard passes ExtraConfig through wholesale), so the mirror half
+// runs here too, not only on the group-mapping update endpoint. It runs AFTER
+// the authoritative write has succeeded, and a failure is absorbed and logged
+// rather than returned -- see groupMappingMirrorFailed for the safety
+// argument; the boot reconcile repairs it on the next start.
 func (r *OIDCConfigRepository) CreateOIDCConfig(ctx context.Context, config *models.OIDCConfig) error {
-	return r.oidc.CreateOIDCConfig(ctx, config)
+	if err := r.oidc.CreateOIDCConfig(ctx, config); err != nil {
+		return err
+	}
+	if err := r.groupMappings.ReplaceForConfig(ctx, config.ID,
+		groupMappingsFromExtraConfig(config.ExtraConfig)); err != nil {
+		groupMappingMirrorFailed(ctx, "CreateOIDCConfig", err, "oidc_config_id", config.ID.String())
+	}
+	return nil
 }
 
 // GetActiveOIDCConfig retrieves the currently active OIDC configuration.
@@ -348,13 +371,38 @@ func (r *OIDCConfigRepository) ListOIDCConfigs(ctx context.Context) ([]*models.O
 }
 
 // DeleteOIDCConfig deletes an OIDC configuration.
+//
+// Deleting the config deletes its group-mapping list with it, so the mirror
+// rows go too -- a delete that landed in one copy and not the other would
+// leave mapping policy behind in exactly the table the read cutover switches
+// onto. Mirror failure is absorbed and logged; the boot reconcile prunes it.
 func (r *OIDCConfigRepository) DeleteOIDCConfig(ctx context.Context, id uuid.UUID) error {
-	return r.oidc.DeleteOIDCConfig(ctx, id)
+	if err := r.oidc.DeleteOIDCConfig(ctx, id); err != nil {
+		return err
+	}
+	if err := r.groupMappings.ClearConfig(ctx, id); err != nil {
+		groupMappingMirrorFailed(ctx, "DeleteOIDCConfig", err, "oidc_config_id", id.String())
+	}
+	return nil
 }
 
 // UpdateOIDCConfigExtraConfig updates only the extra_config column (used for group mapping settings).
+//
+// This is THE group-mapping write path (PUT /admin/oidc/group-mapping lands
+// here), so the mirror half of the phase-2 dual-write runs on success:
+// registry's own group_mappings table is made equal to the list now stored in
+// extra_config. Mirror failure is absorbed and logged -- the authoritative
+// write has committed and reads still come from extra_config -- and the boot
+// reconcile repairs it on the next start.
 func (r *OIDCConfigRepository) UpdateOIDCConfigExtraConfig(ctx context.Context, id uuid.UUID, extraConfig []byte) error {
-	return r.oidc.UpdateOIDCConfigExtraConfig(ctx, id, extraConfig)
+	if err := r.oidc.UpdateOIDCConfigExtraConfig(ctx, id, extraConfig); err != nil {
+		return err
+	}
+	if err := r.groupMappings.ReplaceForConfig(ctx, id,
+		groupMappingsFromExtraConfig(extraConfig)); err != nil {
+		groupMappingMirrorFailed(ctx, "UpdateOIDCConfigExtraConfig", err, "oidc_config_id", id.String())
+	}
+	return nil
 }
 
 // DeactivateAllOIDCConfigs sets is_active=false for all configurations and

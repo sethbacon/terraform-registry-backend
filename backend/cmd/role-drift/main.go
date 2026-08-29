@@ -85,22 +85,44 @@ func run() int {
 		return exitIndetermina
 	}
 
-	if report.Clean() {
+	// The group-mapping half (terraform-suite-identity#206 phase 2, migration
+	// 000059) rides the same verb: it compares the same two connections, it
+	// gates the same program's next step, and a deployment that would run one
+	// check and not the other is exactly how half a dual-write ships.
+	groupReport, err := repositories.CheckGroupMappingDrift(ctx, identityDB, registryDB)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "role-drift: could not compare the group-mapping copies: %v\n", err)
+		return exitIndetermina
+	}
+
+	if report.Clean() && groupReport.Clean() {
 		if *verbose {
 			printScope(report)
+			printGroupScope(groupReport)
 		}
-		fmt.Printf("role-drift: no drift (%d membership(s), %d role template(s) compared)\n",
-			report.SourceMemberships, report.SourceRoleTemplates)
+		fmt.Printf("role-drift: no drift (%d membership(s), %d role template(s), %d group mapping(s) compared)\n",
+			report.SourceMemberships, report.SourceRoleTemplates, groupReport.SourceMappings)
 		return exitClean
 	}
 
-	fmt.Fprintf(os.Stderr, "role-drift: %d disagreement(s) between registry's own authorization tables "+
-		"and the identity tables they mirror\n\n", len(report.Rows))
-	for _, row := range report.Rows {
-		fmt.Fprintln(os.Stderr, "  "+row.String())
+	if !report.Clean() {
+		fmt.Fprintf(os.Stderr, "role-drift: %d disagreement(s) between registry's own authorization tables "+
+			"and the identity tables they mirror\n\n", len(report.Rows))
+		for _, row := range report.Rows {
+			fmt.Fprintln(os.Stderr, "  "+row.String())
+		}
+		fmt.Fprintln(os.Stderr)
 	}
-	fmt.Fprintln(os.Stderr)
+	if !groupReport.Clean() {
+		fmt.Fprintf(os.Stderr, "role-drift: %d disagreement(s) between registry's own group_mappings table "+
+			"and the oidc_config.extra_config lists it mirrors\n\n", len(groupReport.Rows))
+		for _, row := range groupReport.Rows {
+			fmt.Fprintln(os.Stderr, "  "+row.String())
+		}
+		fmt.Fprintln(os.Stderr)
+	}
 	printScope(report)
+	printGroupScope(groupReport)
 	fmt.Fprintln(os.Stderr, "\nRestarting the backend re-derives registry's tables from the identity source and "+
 		"repairs anything a transient write failure left behind; re-run this afterwards. Rows that persist are "+
 		"described in docs/identity-schema.md, which also says which ones an operator must decide rather than repair.")
@@ -114,6 +136,14 @@ func printScope(report repositories.DriftReport) {
 	fmt.Fprintf(os.Stderr, "compared: %d source membership(s) vs %d mirrored, %d source role template(s) vs %d mirrored\n",
 		report.SourceMemberships, report.MirroredMemberships,
 		report.SourceRoleTemplates, report.MirroredRoleTemplates)
+}
+
+// printGroupScope states what the group-mapping comparison looked at, for the
+// same reason printScope exists.
+func printGroupScope(report repositories.GroupMappingDriftReport) {
+	fmt.Fprintf(os.Stderr, "compared: %d source group mapping(s) across %d oidc config(s) vs %d mirrored"+
+		" (%d config(s) with unparseable extra_config)\n",
+		report.SourceMappings, report.SourceConfigs, report.MirroredMappings, report.UnparseableExtraConfigs)
 }
 
 // connectIdentity opens the connection the application resolves identity reads

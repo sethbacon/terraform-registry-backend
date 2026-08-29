@@ -1,0 +1,11 @@
+-- Drops registry's per-app group-mapping table (terraform-suite-identity#206).
+--
+-- Safe while nothing reads it. Every row is DERIVED -- either dual-written
+-- alongside the authoritative write to `oidc_config.extra_config`, or
+-- reconciled from it at startup -- so dropping the table removes no authority
+-- and changes no login-time group resolution.
+--
+-- That stops being true the moment the read cutover ships: from then on this
+-- IS where group mappings come from and this file destroys them. Roll the
+-- binary back first.
+DROP TABLE IF EXISTS group_mappings;
