@@ -305,6 +305,25 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 				"the reconcile derived from the identity tables", "error", sErr)
 		}
 	}
+	// 4. RECONCILE registry's own group_mappings table from the effective
+	//    oidc_config.extra_config lists (terraform-suite-identity#206 phase 2,
+	//    migration 000059) -- AFTER steps 2 and 3, because each mirrored row's
+	//    role_template_id is resolved against registry_role_templates, which
+	//    those steps have just brought current. Same standing-reconcile
+	//    reasoning as step 2: 000059 ships no SQL backfill (a migration cannot
+	//    see which schema or database holds the live oidc_config rows), a
+	//    re-derivation is a no-op when nothing changed, and it repairs whatever
+	//    a transient dual-write failure left behind. NOTHING READS THE TABLE
+	//    YET, so a failure here is logged, not fatal: requests are unaffected,
+	//    only the backfill for the eventual read cutover is stale.
+	if report, gErr := repositories.ReconcileGroupMappings(context.Background(), identityDB, db); gErr != nil {
+		slog.Error("could not reconcile registry's own group_mappings from oidc_config.extra_config; "+
+			"nothing reads the table yet, so requests are unaffected, but the phase-2 backfill is stale "+
+			"and mapping changes made while the live dual-write was failing are NOT repaired. Run `role-drift`",
+			"error", gErr)
+	} else {
+		slog.Info("registry group mappings reconciled", "report", report)
+	}
 	// userTokenRevocationRepo lives on the registry's own domain connection
 	// (not identityDB) since it has no FK dependency on the identity schema and
 	// must work unchanged whether identity data is in the app's public schema,

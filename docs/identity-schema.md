@@ -159,6 +159,7 @@ Migration `000055` adds two tables that belong to **registry**, not to identity:
 | --- | --- |
 | `registry_role_templates` | registry's own role → scope definitions |
 | `organization_member_roles` | `(organization_id, user_id) → role_template_id` — the role a member holds **in registry** |
+| `group_mappings` (migration `000059`) | IdP group → **registry's** role template, one ordered row per mapping in `oidc_config.extra_config` |
 
 They exist because identity is shared across the suite while authorization is
 per-application (design: `sethbacon/terraform-suite-identity#206`). Eventually
@@ -181,6 +182,19 @@ drift check reports it now.
 exists; it takes the unprefixed name when that duplicate is dropped. Neither table has a
 foreign key into identity — identity may be another schema or another database, where
 such a key cannot be expressed at all (same reasoning as `000046` and `000051`).
+
+`group_mappings` is the phase-2 dual-write for the third per-app table (#206 names it
+`<app>.group_mappings`; unprefixed because, unlike `role_templates`, no legacy table of
+that name exists anywhere). **Nothing reads it yet.** The authoritative store is still
+the `group_mappings` JSON list inside `oidc_config.extra_config` on the identity
+connection — every login-time resolution and every admin read keeps coming from there —
+and the application mirrors that list on every write (`repositories.OIDCConfigRepository`)
+and re-derives it on every boot (`ReconcileGroupMappings`). Rows keep the source's
+order, because the shared library resolves competing mappings first-match-wins in
+configuration order. `role_template_id` is the one real FK — to
+`registry_role_templates`, registry's own table — and is NULL while the mapped role
+name resolves to no template; `oidc_config_id` and `organization_name` point across the
+identity boundary and carry no FK.
 
 ### `role-drift` — the gate, and the standing check
 
@@ -217,6 +231,22 @@ What it reports:
 | `unparseable_row` | a source row whose `organization_id` or `user_id` is not a UUID. It can never be mirrored, so it is permanently unreconciled. |
 
 The last four are cases the pre-3b SQL query could not see at all.
+
+Since migration `000059` the same run also compares `group_mappings` against the
+`oidc_config.extra_config` lists, and exits non-zero on:
+
+| Kind | Meaning |
+| --- | --- |
+| `group_mapping_mirror_orphaned` | registry holds mapping rows the stored config does not — the direction that **grants** memberships once the cutover lands. |
+| `group_mapping_fields_differ` | both sides have a mapping at this position and disagree on group, organization or role. |
+| `group_mapping_not_mirrored` | a stored mapping registry has no row for. |
+| `group_mapping_role_ref_stale` | the mirrored `role_template_id` is not what the mapped role name currently resolves to in `registry_role_templates`. |
+
+The repair is the same restart: the boot reconcile re-derives the whole table and
+converges every one of these classes (proven per class in
+`group_mapping_equivalence_pg_test.go`). A config whose `extra_config` is not a JSON
+object is reported in the scope line, not as drift — the library's decoder reads "no
+mappings" out of it on both sides.
 
 ### What an operator does about a non-empty result
 
