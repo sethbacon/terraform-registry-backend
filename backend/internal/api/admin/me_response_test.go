@@ -83,6 +83,12 @@ func TestBuildMeResponse_WireFormat(t *testing.T) {
 		{
 			// session_expires_at is the one field that IS omitted when absent —
 			// contrast every role_template above.
+			//
+			// session_expires_in is absent here for a REASON worth stating, because
+			// this is an exact-wire-format assertion: meFixedTime is in the past, so
+			// the remaining lifetime is non-positive and the builder omits it. Move
+			// this fixture into the future and this case must gain the field —
+			// TestBuildMeResponse_SessionExpiresIn below covers that direction.
 			name:        "with a session expiry",
 			memberships: nil,
 			expires:     &meFixedTime,
@@ -123,4 +129,57 @@ func TestMeResponse_RoundTripsIntoItsOwnStruct(t *testing.T) {
 	if *back.Memberships[0].RoleTemplate.Name != "owner" {
 		t.Errorf("role_template.name = %q, want \"owner\"", *back.Memberships[0].RoleTemplate.Name)
 	}
+}
+
+// The remaining-lifetime field, which exists because session_expires_at alone is
+// unusable against a browser clock that disagrees with ours: the client would be
+// comparing our instant to its own Date.now(), wrong by exactly the skew. A
+// duration we measure and it applies shares no clock (4cloudguru/cloud-suite-ui#181).
+func TestBuildMeResponse_SessionExpiresIn(t *testing.T) {
+	t.Run("a live expiry carries both the instant and the remaining seconds", func(t *testing.T) {
+		exp := time.Now().Add(90 * time.Minute)
+		got := buildMeResponse(meUser(), nil, []string{"admin"}, &exp)
+		if got.SessionExpiresAt == nil {
+			t.Fatal("SessionExpiresAt nil for a live expiry")
+		}
+		if got.SessionExpiresIn == nil {
+			t.Fatal("SessionExpiresIn nil for a live expiry")
+		}
+		// Truncation toward zero costs at most a second; the builder does no I/O.
+		if *got.SessionExpiresIn < 5390 || *got.SessionExpiresIn > 5400 {
+			t.Errorf("SessionExpiresIn = %d, want ~5400 (90m)", *got.SessionExpiresIn)
+		}
+	})
+
+	t.Run("a lapsed expiry omits the duration but keeps the instant", func(t *testing.T) {
+		// A non-positive duration reads to the client as a real expiry and fails the
+		// session closed, so it must never appear on a response we are answering 200.
+		exp := time.Now().Add(-time.Minute)
+		got := buildMeResponse(meUser(), nil, []string{"admin"}, &exp)
+		if got.SessionExpiresAt == nil {
+			t.Error("SessionExpiresAt dropped for a lapsed expiry; only the duration should be")
+		}
+		if got.SessionExpiresIn != nil {
+			t.Errorf("SessionExpiresIn = %d for a lapsed expiry, want omitted", *got.SessionExpiresIn)
+		}
+	})
+
+	t.Run("no expiry means neither field", func(t *testing.T) {
+		got := buildMeResponse(meUser(), nil, []string{"admin"}, nil)
+		if got.SessionExpiresAt != nil || got.SessionExpiresIn != nil {
+			t.Errorf("expiry fields set without a claim: at=%v in=%v", got.SessionExpiresAt, got.SessionExpiresIn)
+		}
+	})
+
+	t.Run("the emitted body still round-trips into MeResponse", func(t *testing.T) {
+		exp := time.Now().Add(time.Hour)
+		built := buildMeResponse(meUser(), nil, []string{"admin"}, &exp)
+		var back MeResponse
+		if err := json.Unmarshal([]byte(mustJSON(t, built)), &back); err != nil {
+			t.Fatalf("emitted body does not unmarshal into MeResponse: %v", err)
+		}
+		if back.SessionExpiresIn == nil || *back.SessionExpiresIn != *built.SessionExpiresIn {
+			t.Errorf("SessionExpiresIn lost in round-trip: %v", back.SessionExpiresIn)
+		}
+	})
 }

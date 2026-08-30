@@ -69,6 +69,16 @@ type MeResponse struct {
 	// sets it only when JWT claims carry an expiry, and never for API-key auth.
 	RoleTemplate     *MeRoleTemplateSummary `json:"role_template"`
 	SessionExpiresAt *time.Time             `json:"session_expires_at,omitempty"`
+	// SessionExpiresIn is the remaining session lifetime in SECONDS, measured as
+	// this response is built. Omitted on exactly the same conditions as
+	// SessionExpiresAt, plus one more: never emitted non-positive.
+	//
+	// It exists because SessionExpiresAt alone is unusable when the browser's
+	// clock disagrees with ours -- the client would compare our instant against
+	// its own Date.now(), which is wrong by exactly the skew. A duration we
+	// measure and it applies shares no clock at all, so skew cannot enter
+	// (4cloudguru/cloud-suite-ui#181). The client prefers this when present.
+	SessionExpiresIn *int64 `json:"session_expires_in,omitempty"`
 }
 
 // APIKeyItem represents a single API key in list/get responses.

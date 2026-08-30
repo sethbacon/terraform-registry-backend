@@ -17757,6 +17757,10 @@
                     "session_expires_at": {
                         "type": "string"
                     },
+                    "session_expires_in": {
+                        "description": "SessionExpiresIn is the remaining session lifetime in SECONDS, measured as\nthis response is built. Omitted on exactly the same conditions as\nSessionExpiresAt, plus one more: never emitted non-positive.\n\nIt exists because SessionExpiresAt alone is unusable when the browser's\nclock disagrees with ours -- the client would compare our instant against\nits own Date.now(), which is wrong by exactly the skew. A duration we\nmeasure and it applies shares no clock at all, so skew cannot enter\n(4cloudguru/cloud-suite-ui#181). The client prefers this when present.",
+                        "type": "integer"
+                    },
                     "user": {
                         "$ref": "#/components/schemas/User"
                     }
