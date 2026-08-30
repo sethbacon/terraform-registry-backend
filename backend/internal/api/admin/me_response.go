@@ -40,6 +40,26 @@ func buildMeResponse(
 		SessionExpiresAt: sessionExpiresAt,
 	}
 
+	// Derived here rather than passed in, so the duration and the instant cannot
+	// disagree: one argument, one source, computed at the moment the body is
+	// assembled.
+	//
+	// Truncated toward zero rather than rounded -- erring a fraction of a second
+	// short only makes the client schedule marginally early, where rounding up
+	// would let it hold a session past the instant we start rejecting it.
+	//
+	// Omitted rather than emitted non-positive: the client reads a non-positive
+	// duration as a real expiry and fails closed, so asserting that about a
+	// request we are answering 200 would be a lie. Auth rejects an expired token
+	// long before this, making it unreachable in practice; the guard is here so
+	// the response cannot contradict itself if that ever stops being true.
+	if sessionExpiresAt != nil {
+		if remaining := time.Until(*sessionExpiresAt); remaining > 0 {
+			secs := int64(remaining.Seconds())
+			resp.SessionExpiresIn = &secs
+		}
+	}
+
 	for i := range memberships {
 		m := memberships[i]
 		entry := MeMembershipEntry{
