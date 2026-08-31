@@ -7,6 +7,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.16.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.15.0...v4.16.0) (2026-08-31)
+
+
+### Features
+
+* **ci:** adopt the release-PR closing-keyword guard ([377e70f](https://github.com/sethbacon/terraform-registry-backend/commit/377e70fe2e2e55d9d0d09280d7d04d3b3de352e6))
+
+
+### Bug Fixes
+
+* **ci:** a non-empty, non-ref-shaped comment satisfies both pin gates ([52dc93c](https://github.com/sethbacon/terraform-registry-backend/commit/52dc93cd8ebc11e3c04552f3726e1ae0bc41af82))
+* **ci:** correct the pin comment to name the commit actually referenced ([09152e8](https://github.com/sethbacon/terraform-registry-backend/commit/09152e81d7b47b97404e1ef1a290ba27a1ced1cc))
+* **ci:** drop the unresolvable pin comment zizmor's ref-version-mismatch flagged ([2987a21](https://github.com/sethbacon/terraform-registry-backend/commit/2987a21c1b637db662ccfd339a2a0509f0ba8c4d))
+* **ci:** re-pin the release-close guard to the fixed shared-workflows commit ([e94abc4](https://github.com/sethbacon/terraform-registry-backend/commit/e94abc472d3069c9b7085a18d1d7bf90cbb048cf))
+
 ## [4.15.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.14.0...v4.15.0) (2026-08-30)
 
 
