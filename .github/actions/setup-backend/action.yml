@@ -19,6 +19,6 @@ runs:
 
     - name: Install gosec
       if: inputs.install-gosec == 'true'
-      uses: 4cloudguru/shared-workflows/.github/actions/go-install@9ed6d3c988fb075f1023680d92eb4cf5a8e55056 # v1.14.0
+      uses: 4cloudguru/shared-workflows/.github/actions/go-install@3dac549c7e4fe4a0dc54aaf9ed187b6da2c6eab9 # v1.15.0
       with:
         package: github.com/securego/gosec/v2/cmd/gosec@v2.26.1
