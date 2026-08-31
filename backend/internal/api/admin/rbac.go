@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	identitystore "github.com/sethbacon/terraform-suite-identity/identity/store"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/credlifecycle"
@@ -62,6 +64,17 @@ type RBACHandlers struct {
 	// requester. Set via WithMirrorRepo; nil fails the create axis closed
 	// (issue #719).
 	mirrorRepo *repositories.MirrorRepository
+
+	// identityDB backs PreviewRoleTemplateReconciliation, the read-only impact
+	// count from identity/store (issue #282). It is a raw *sql.DB, not a
+	// repository, because that is what the shared library's
+	// PreviewRoleTemplateReconciliation takes directly -- there is no
+	// registry-side repository wrapping it, by design: the preview is
+	// intentionally a thin passthrough to the shared predicate rather than a
+	// second place that statement could be transcribed and drift from the
+	// library. Set via WithIdentityDB; nil answers every preview request with
+	// 501 rather than a nil-pointer panic (see PreviewRoleTemplateReconciliation).
+	identityDB *sql.DB
 }
 
 // NewRBACHandlers creates a new RBAC handlers instance. apiKeys backs the
@@ -94,6 +107,14 @@ func (h *RBACHandlers) WithOrgRepo(orgRepo *repositories.OrganizationRepository)
 // request body. Returns the handler for chaining.
 func (h *RBACHandlers) WithMirrorRepo(mirrorRepo *repositories.MirrorRepository) *RBACHandlers {
 	h.mirrorRepo = mirrorRepo
+	return h
+}
+
+// WithIdentityDB wires in the identity connection that
+// PreviewRoleTemplateReconciliation reads through. Returns the handler for
+// chaining.
+func (h *RBACHandlers) WithIdentityDB(identityDB *sql.DB) *RBACHandlers {
+	h.identityDB = identityDB
 	return h
 }
 
@@ -599,6 +620,123 @@ func (h *RBACHandlers) DeleteRoleTemplate(c *gin.Context) {
 		response["revocation_incomplete"] = true
 	}
 	c.JSON(http.StatusOK, response)
+}
+
+// PreviewRoleTemplateReconciliationRequest is the body
+// PreviewRoleTemplateReconciliation accepts: the scopes a caller is ABOUT to
+// save. Omitted (or explicitly `[]`) previews what DELETING the template
+// would sweep instead -- identitystore.PreviewRoleTemplateReconciliation
+// documents why nil and empty compute the same impact (an empty `retained`
+// set retains nothing either way, so a narrow-to-nothing edit and a deletion
+// have the same effect on every existing api_keys row).
+type PreviewRoleTemplateReconciliationRequest struct {
+	Scopes []string `json:"scopes"`
+}
+
+// RoleTemplateReconciliationImpact is the JSON shape of a preview response: a
+// snake_case wrapper over identitystore.TemplateReconcileImpact, which carries
+// no json tags of its own (its default encoding would emit
+// "Scanned"/"Principals"/"Keys", not this API's casing convention).
+type RoleTemplateReconciliationImpact struct {
+	// Scanned is how many (organization, user) pairs currently hold the
+	// template, regardless of whether they carry any api_keys at all.
+	Scanned int `json:"scanned"`
+	// Principals is how many of those hold at least one api_key the proposed
+	// scopes would no longer retain.
+	Principals int `json:"principals"`
+	// Keys is exactly how many api_keys rows a reconciliation against the same
+	// template and proposed scopes would delete right now.
+	Keys int `json:"keys"`
+}
+
+// @Summary      Preview a role template reconciliation
+// @Description  Reports, without writing anything, how many principals and API keys a proposed scope change (or a deletion, when `scopes` is omitted) would sweep. Read-only: this endpoint runs no sweep and changes nothing. Requires admin scope.
+// @Tags         RBAC
+// @Security     Bearer
+// @Accept       json
+// @Produce      json
+// @Param        id    path  string                                     true   "Role template ID (UUID)"
+// @Param        body  body  PreviewRoleTemplateReconciliationRequest    false  "Proposed scopes; omit to preview a deletion"
+// @Success      200  {object}  RoleTemplateReconciliationImpact
+// @Failure      400  {object}  map[string]interface{}  "Invalid role template ID"
+// @Failure      401  {object}  map[string]interface{}  "Unauthorized"
+// @Failure      404  {object}  map[string]interface{}  "Role template not found"
+// @Failure      500  {object}  map[string]interface{}  "Internal server error"
+// @Failure      503  {object}  map[string]interface{}  "Preview not available on this deployment"
+// @Router       /api/v1/admin/role-templates/{id}/reconcile-preview [post]
+//
+// PreviewRoleTemplateReconciliation reports what saving the given scopes (an
+// update) or deleting the template (scopes omitted) WOULD sweep, without
+// writing anything. It calls identitystore.PreviewRoleTemplateReconciliation
+// directly -- the same library function issue #282 exports, and the same one
+// a future sweep would have to call -- rather than a hand-rolled count, so
+// this number cannot itself drift from whatever eventually computes it.
+//
+// This endpoint is deliberately the ONLY place issue #282's new primitive is
+// wired in this PR. identitystore.ReconcileRoleTemplate (the function that
+// actually deletes rows) is not called anywhere in this codebase: whether and
+// how an admin confirms an irreversible, fleet-wide credential sweep is a
+// product decision the issue itself says should be visible and bounded, not
+// a side effect of this PR. UpdateRoleTemplate/DeleteRoleTemplate above keep
+// their own existing, already-shipped synchronous sweep (issue #732,
+// credlifecycle.Sweeper) exactly as it was -- this handler changes nothing
+// about it.
+//
+// CAVEAT, worth reading before trusting this number in an incident: the
+// library's query resolves membership through identity's own
+// `organization_members.role_template_id`. Since
+// terraform-suite-identity#206 phase 3b, THIS repository's own sweep
+// (ListRoleTemplateMemberships, the one UpdateRoleTemplate/DeleteRoleTemplate
+// actually run) deliberately reads registry's per-app mirror
+// (`organization_member_roles`) instead, precisely because the two tables can
+// disagree -- see the comment on ListRoleTemplateMemberships. In steady state
+// they stay in sync (every registry-side role assignment dual-writes both,
+// and ReconcileMemberRoles heals drift at every boot), so this preview and
+// the real sweep should normally report the same counts. But this endpoint
+// is read-only and reports exactly what the shared library's query says;
+// treat a materially different number from what UpdateRoleTemplate/
+// DeleteRoleTemplate actually revoke (surfaced via their own
+// revocation_incomplete field) as a drift signal worth investigating, not as
+// a bug in one side or the other.
+func (h *RBACHandlers) PreviewRoleTemplateReconciliation(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid role template ID"})
+		return
+	}
+
+	existing, err := h.rbacRepo.GetRoleTemplate(c.Request.Context(), id)
+	if identityerr.Missing(existing, err) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Role template not found"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get role template"})
+		return
+	}
+
+	if h.identityDB == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Role template reconciliation preview is not enabled on this deployment"})
+		return
+	}
+
+	var req PreviewRoleTemplateReconciliationRequest
+	_ = c.ShouldBindJSON(&req) // body is optional -- omitted means "about to be deleted"
+
+	impact, err := identitystore.PreviewRoleTemplateReconciliation(
+		c.Request.Context(), h.identityDB, id.String(), req.Scopes, auth.ReadWritePairs(),
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to preview role template reconciliation"})
+		return
+	}
+
+	c.JSON(http.StatusOK, RoleTemplateReconciliationImpact{
+		Scanned:    impact.Scanned,
+		Principals: impact.Principals,
+		Keys:       impact.Keys,
+	})
 }
 
 // ============================================================================

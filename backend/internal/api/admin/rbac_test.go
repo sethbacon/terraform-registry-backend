@@ -149,7 +149,12 @@ func newRBACRouterWithRevocation(t *testing.T, withRevocation bool) (sqlmock.Sql
 		// CreateApprovalRequest resolves the owning organization of the mirror
 		// configuration named in the body before writing the row (issue #719),
 		// so the handler needs the mirror repository wired here too.
-		WithMirrorRepo(repositories.NewMirrorRepository(sqlxDB))
+		WithMirrorRepo(repositories.NewMirrorRepository(sqlxDB)).
+		// Matches production topology (router.go), which always wires the
+		// identity connection: PreviewRoleTemplateReconciliation's own
+		// "not wired" 503 path is covered separately, by a router built
+		// without this call.
+		WithIdentityDB(db)
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
@@ -168,6 +173,7 @@ func newRBACRouterWithRevocation(t *testing.T, withRevocation bool) (sqlmock.Sql
 	r.POST("/role-templates", h.CreateRoleTemplate)
 	r.PUT("/role-templates/:id", h.UpdateRoleTemplate)
 	r.DELETE("/role-templates/:id", h.DeleteRoleTemplate)
+	r.POST("/role-templates/:id/reconcile-preview", h.PreviewRoleTemplateReconciliation)
 
 	r.GET("/approvals", h.ListApprovalRequests)
 	r.GET("/approvals/:id", h.GetApprovalRequest)
@@ -712,6 +718,212 @@ func TestRBACDeleteRoleTemplate_MemberLookupDBError_StillDeletes(t *testing.T) {
 	}
 	if !body.RevocationIncomplete {
 		t.Errorf("expected revocation_incomplete=true in the response, got body=%s", w.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PreviewRoleTemplateReconciliation (issue #282)
+// ---------------------------------------------------------------------------
+
+// previewJoinCols matches identitystore's templateAffectedWithKeysQuery
+// column list: organization_id, user_id, then the LEFT JOINed api_keys id and
+// scopes (NULL on both when the principal holds no key at all).
+var previewJoinCols = []string{"organization_id", "user_id", "id", "scopes"}
+
+func TestRBACPreviewRoleTemplateReconciliation_InvalidID(t *testing.T) {
+	_, r := newRBACRouterWithRevocation(t, false)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/role-templates/not-a-uuid/reconcile-preview", nil))
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestRBACPreviewRoleTemplateReconciliation_NotFound(t *testing.T) {
+	mock, r := newRBACRouterWithRevocation(t, false)
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
+		WillReturnRows(emptyRTRows())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/role-templates/"+knownUUID+"/reconcile-preview",
+		jsonBody(map[string]interface{}{"scopes": []string{"modules:read"}})))
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+// GUARD preview-not-wired-is-503-not-panic. A deployment (or a test) that
+// constructs RBACHandlers without WithIdentityDB must refuse cleanly rather
+// than dereference a nil *sql.DB.
+func TestRBACPreviewRoleTemplateReconciliation_IdentityDBNotWired(t *testing.T) {
+	db, mock, err := newSQLMock()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	sqlxDB := sqlx.NewDb(db, "sqlmock")
+	rbacRepo := repositories.NewRBACRepository(sqlxDB)
+	h := NewRBACHandlers(rbacRepo, nil, nil) // deliberately no WithIdentityDB
+
+	r := gin.New()
+	r.POST("/role-templates/:id/reconcile-preview", h.PreviewRoleTemplateReconciliation)
+
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
+		WillReturnRows(sampleRTRow())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/role-templates/"+knownUUID+"/reconcile-preview", nil))
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503: body=%s", w.Code, w.Body.String())
+	}
+}
+
+// GUARD preview-computes-scanned-principals-keys. Four principals hold the
+// template: one whose key is a SUBSET of the narrowed scopes (retained), one
+// whose key EXCEEDS them (swept), one with NO api_keys row at all (counted in
+// Scanned, not in Principals/Keys), and one in a SECOND organization whose key
+// also exceeds them (swept) -- proving the join is not accidentally scoped to
+// one organization or blind to keyless holders.
+func TestRBACPreviewRoleTemplateReconciliation_ComputesImpact(t *testing.T) {
+	mock, r := newRBACRouterWithRevocation(t, false)
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
+		WillReturnRows(sampleRTRow())
+	mock.ExpectQuery(`(?s)FROM organization_members om.*LEFT JOIN api_keys ak.*WHERE om\.role_template_id`).
+		WithArgs(knownUUID).
+		WillReturnRows(sqlmock.NewRows(previewJoinCols).
+			AddRow("org-1", "user-subset", "key-subset", []byte(`["modules:read"]`)).
+			AddRow("org-1", "user-over", "key-over", []byte(`["providers:write"]`)).
+			AddRow("org-1", "user-keyless", nil, nil).
+			AddRow("org-2", "user-over-b", "key-over-b", []byte(`["providers:write"]`)))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/role-templates/"+knownUUID+"/reconcile-preview",
+		jsonBody(map[string]interface{}{"scopes": []string{"modules:read"}})))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	var impact RoleTemplateReconciliationImpact
+	if err := json.Unmarshal(w.Body.Bytes(), &impact); err != nil {
+		t.Fatalf("decode: %v: body=%s", err, w.Body.String())
+	}
+	if impact.Scanned != 4 {
+		t.Errorf("Scanned = %d, want 4 (every holder, keyed or not)", impact.Scanned)
+	}
+	if impact.Principals != 2 {
+		t.Errorf("Principals = %d, want 2 (user-over, user-over-b)", impact.Principals)
+	}
+	if impact.Keys != 2 {
+		t.Errorf("Keys = %d, want 2 (key-over, key-over-b -- key-subset survives, user-keyless has none)", impact.Keys)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// GUARD preview-omitted-scopes-means-deletion. No body at all previews what
+// DELETING the template would sweep: proposedScopes is nil, so nothing is
+// retained and every existing key is swept -- matching how
+// PreviewRoleTemplateReconciliationRequest's own doc comment says nil/empty
+// scopes must be read.
+func TestRBACPreviewRoleTemplateReconciliation_OmittedScopesPreviewsADeletion(t *testing.T) {
+	mock, r := newRBACRouterWithRevocation(t, false)
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
+		WillReturnRows(sampleRTRow())
+	mock.ExpectQuery(`(?s)FROM organization_members om.*LEFT JOIN api_keys ak`).
+		WithArgs(knownUUID).
+		WillReturnRows(sqlmock.NewRows(previewJoinCols).
+			AddRow("org-1", "user-any", "key-any", []byte(`["modules:read"]`)))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/role-templates/"+knownUUID+"/reconcile-preview", nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: body=%s", w.Code, w.Body.String())
+	}
+	var impact RoleTemplateReconciliationImpact
+	if err := json.Unmarshal(w.Body.Bytes(), &impact); err != nil {
+		t.Fatalf("decode: %v: body=%s", err, w.Body.String())
+	}
+	if impact.Keys != 1 || impact.Principals != 1 {
+		t.Errorf("got Principals=%d Keys=%d, want 1/1 (empty proposed scopes retains nothing)", impact.Principals, impact.Keys)
+	}
+}
+
+// GUARD preview-agrees-with-the-real-sweep. The central promise this endpoint
+// makes: for the SAME template, the SAME proposed scopes, and a consistent
+// fixture (identity's organization_members and registry's
+// organization_member_roles mirror agreeing -- the steady state both tables
+// are dual-written to maintain, see the caveat on
+// PreviewRoleTemplateReconciliation), the preview's Keys count matches
+// exactly how many api_keys rows the REAL PUT deletes, driven through the
+// real HTTP handlers exactly as an admin UI would call them: preview, then
+// save.
+func TestRBACPreviewRoleTemplateReconciliation_AgreesWithRealSweep(t *testing.T) {
+	mock, r := newRBACRouterWithRevocation(t, true)
+
+	// --- Step 1: preview narrowing the template to ["modules:read"] ---
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
+		WillReturnRows(sampleRTRow()) // current scopes = ["modules:read","providers:write"]
+	mock.ExpectQuery(`(?s)FROM organization_members om.*LEFT JOIN api_keys ak.*WHERE om\.role_template_id`).
+		WithArgs(knownUUID).
+		WillReturnRows(sqlmock.NewRows(previewJoinCols).
+			AddRow("org-1", "member-1", "key-m1", []byte(`["providers:write"]`)).
+			AddRow("org-2", "member-2", "key-m2", []byte(`["modules:read"]`)))
+
+	previewW := httptest.NewRecorder()
+	r.ServeHTTP(previewW, httptest.NewRequest("POST", "/role-templates/"+knownUUID+"/reconcile-preview",
+		jsonBody(map[string]interface{}{"scopes": []string{"modules:read"}})))
+	if previewW.Code != http.StatusOK {
+		t.Fatalf("preview status = %d, want 200: body=%s", previewW.Code, previewW.Body.String())
+	}
+	var impact RoleTemplateReconciliationImpact
+	if err := json.Unmarshal(previewW.Body.Bytes(), &impact); err != nil {
+		t.Fatalf("decode preview: %v", err)
+	}
+	if impact.Keys != 1 {
+		t.Fatalf("preview Keys = %d, want 1 (member-1's key-m1 only)", impact.Keys)
+	}
+
+	// --- Step 2: the same change, actually saved through the real PUT --
+	// the same (org, user) pairs, this time read from registry's own mirror,
+	// which is what UpdateRoleTemplate's existing sweep actually runs through.
+	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
+		WillReturnRows(sampleRTRow())
+	mock.ExpectExec("UPDATE role_templates.*SET display_name").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_member_roles WHERE role_template_id").
+		WillReturnRows(sqlmock.NewRows([]string{"user_id", "organization_id"}).
+			AddRow("member-1", "org-1").
+			AddRow("member-2", "org-2"))
+	mock.ExpectExec("INSERT INTO user_token_revocations").
+		WithArgs("member-1").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	expectOrgKeySweepScoped(mock, "member-1", "org-1", "key-m1", []byte(`["providers:write"]`))
+	mock.ExpectExec("INSERT INTO user_token_revocations").
+		WithArgs("member-2").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	expectOrgKeyList(mock, "member-2", "org-2", "key-m2", []byte(`["modules:read"]`))
+
+	putW := httptest.NewRecorder()
+	r.ServeHTTP(putW, httptest.NewRequest("PUT", "/role-templates/"+knownUUID,
+		jsonBody(map[string]interface{}{
+			"name":         "reader",
+			"display_name": "Reader Updated",
+			"scopes":       []string{"modules:read"},
+		})))
+	if putW.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, want 200: body=%s", putW.Code, putW.Body.String())
+	}
+	// ExpectationsWereMet proves exactly one DELETE FROM api_keys ran
+	// (registered once, by expectOrgKeySweepScoped for member-1) and none for
+	// member-2 -- the same single-key count the preview promised in step 1.
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("real sweep did not match what the preview promised: %v", err)
 	}
 }
 

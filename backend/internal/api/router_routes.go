@@ -1122,6 +1122,10 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 				roleTemplatesGroup.POST("", middleware.RequireScope(auth.ScopeAdmin), rbacHandlers.CreateRoleTemplate)
 				roleTemplatesGroup.PUT("/:id", middleware.RequireScope(auth.ScopeAdmin), rbacHandlers.UpdateRoleTemplate)
 				roleTemplatesGroup.DELETE("/:id", middleware.RequireScope(auth.ScopeAdmin), rbacHandlers.DeleteRoleTemplate)
+				// Read-only impact preview (issue #282) -- POST because the
+				// proposed scopes ride in the body, same as the PUT this
+				// previews; it writes nothing.
+				roleTemplatesGroup.POST("/:id/reconcile-preview", middleware.RequireScope(auth.ScopeAdmin), rbacHandlers.PreviewRoleTemplateReconciliation)
 			}
 
 			// Platform administrators (issue #766) — the carrier for
