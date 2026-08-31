@@ -7,6 +7,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.17.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.16.0...v4.17.0) (2026-08-31)
+
+
+### Features
+
+* **ci:** adopt the shared Dependabot CI-health check ([#1009](https://github.com/sethbacon/terraform-registry-backend/issues/1009)) ([88fb0f3](https://github.com/sethbacon/terraform-registry-backend/commit/88fb0f33a6342d6d801c9b5af740009ff0a1d4ce))
+* **rbac:** preview a role-template reconciliation's impact before saving ([0c34902](https://github.com/sethbacon/terraform-registry-backend/commit/0c3490271127d220a3153613bc0f93843736d346))
+
+
+### Bug Fixes
+
+* **jobs:** dedup ScannerUpdateJob notifications across replicas ([15fec1e](https://github.com/sethbacon/terraform-registry-backend/commit/15fec1ee909a60665bfbbfcc381e6d907ee0cd9d))
+
 ## [4.16.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.15.0...v4.16.0) (2026-08-31)
 
 
