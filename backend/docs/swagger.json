@@ -3937,6 +3937,86 @@
                 }
             }
         },
+        "/api/v1/admin/role-templates/{id}/reconcile-preview": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Reports, without writing anything, how many principals and API keys a proposed scope change (or a deletion, when `scopes` is omitted) would sweep. Read-only: this endpoint runs no sweep and changes nothing. Requires admin scope.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "RBAC"
+                ],
+                "summary": "Preview a role template reconciliation",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Role template ID (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Proposed scopes; omit to preview a deletion",
+                        "name": "body",
+                        "in": "body",
+                        "schema": {
+                            "$ref": "#/definitions/admin.PreviewRoleTemplateReconciliationRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/admin.RoleTemplateReconciliationImpact"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid role template ID",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Role template not found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "503": {
+                        "description": "Preview not available on this deployment",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/admin/scanning/auto-update": {
             "put": {
                 "security": [
@@ -14895,6 +14975,17 @@
                 }
             }
         },
+        "admin.PreviewRoleTemplateReconciliationRequest": {
+            "type": "object",
+            "properties": {
+                "scopes": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
         "admin.ProviderDetailResponse": {
             "type": "object",
             "properties": {
@@ -15169,6 +15260,23 @@
                 "status": {
                     "description": "\"approved\" or \"rejected\"",
                     "type": "string"
+                }
+            }
+        },
+        "admin.RoleTemplateReconciliationImpact": {
+            "type": "object",
+            "properties": {
+                "keys": {
+                    "description": "Keys is exactly how many api_keys rows a reconciliation against the same\ntemplate and proposed scopes would delete right now.",
+                    "type": "integer"
+                },
+                "principals": {
+                    "description": "Principals is how many of those hold at least one api_key the proposed\nscopes would no longer retain.",
+                    "type": "integer"
+                },
+                "scanned": {
+                    "description": "Scanned is how many (organization, user) pairs currently hold the\ntemplate, regardless of whether they carry any api_keys at all.",
+                    "type": "integer"
                 }
             }
         },

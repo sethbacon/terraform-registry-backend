@@ -832,7 +832,10 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		WithCredentialAudit(auditRepo).
 		WithNotifications(&cfg.Notifications, &cfg.CVE).
 		WithOrgRepo(orgRepo).
-		WithMirrorRepo(mirrorRepo)
+		WithMirrorRepo(mirrorRepo).
+		// Backs PreviewRoleTemplateReconciliation (issue #282) -- the raw
+		// identity connection the shared library's preview reads through.
+		WithIdentityDB(identityDB)
 
 	// Initialize audit log handlers
 	auditLogHandlers := admin.NewAuditLogHandlers(identityDB)
