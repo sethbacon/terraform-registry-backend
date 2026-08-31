@@ -47,4 +47,4 @@ jobs:
   workflow-hardening:
     uses: 4cloudguru/shared-workflows/.github/workflows/workflow-hardening.yml@3dac549c7e4fe4a0dc54aaf9ed187b6da2c6eab9 # v1.15.0
     with:
-      script-ref: 9ed6d3c988fb075f1023680d92eb4cf5a8e55056
+      script-ref: 3dac549c7e4fe4a0dc54aaf9ed187b6da2c6eab9
