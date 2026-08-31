@@ -60,7 +60,7 @@ jobs:
       # `github.action_path`, and it reads the pull request through the API
       # rather than from the event payload, so it needs nothing from your tree.
       - name: Grade the release pull request
-        uses: 4cloudguru/shared-workflows/.github/actions/release-pr-closing-keywords@99b20a4fb1a9b68301b09116e18ee1b93ae30f3c # post-v1.16.0, adds release-pr-closing-keywords (#34)
+        uses: 4cloudguru/shared-workflows/.github/actions/release-pr-closing-keywords@99b20a4fb1a9b68301b09116e18ee1b93ae30f3c # 4cloudguru/shared-workflows#35
         with:
           mode: pull-request
           gh-token: ${{ secrets.GITHUB_TOKEN }}
@@ -92,7 +92,7 @@ jobs:
           egress-policy: audit
 
       - name: Re-grade every open pull request and republish the verdict
-        uses: 4cloudguru/shared-workflows/.github/actions/release-pr-closing-keywords@99b20a4fb1a9b68301b09116e18ee1b93ae30f3c # post-v1.16.0, adds release-pr-closing-keywords (#34)
+        uses: 4cloudguru/shared-workflows/.github/actions/release-pr-closing-keywords@99b20a4fb1a9b68301b09116e18ee1b93ae30f3c # 4cloudguru/shared-workflows#35
         with:
           mode: link-regrade
           gh-token: ${{ secrets.GITHUB_TOKEN }}
@@ -122,7 +122,7 @@ jobs:
           egress-policy: audit
 
       - name: Grade the merge and reopen anything it closed by mistake
-        uses: 4cloudguru/shared-workflows/.github/actions/release-pr-closing-keywords@99b20a4fb1a9b68301b09116e18ee1b93ae30f3c # post-v1.16.0, adds release-pr-closing-keywords (#34)
+        uses: 4cloudguru/shared-workflows/.github/actions/release-pr-closing-keywords@99b20a4fb1a9b68301b09116e18ee1b93ae30f3c # 4cloudguru/shared-workflows#35
         with:
           mode: merge-backstop
           gh-token: ${{ secrets.GITHUB_TOKEN }}
