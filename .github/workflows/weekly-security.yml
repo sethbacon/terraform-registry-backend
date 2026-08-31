@@ -237,7 +237,7 @@ jobs:
         uses: ./.github/actions/setup-backend
 
       - name: Install govulncheck
-        uses: 4cloudguru/shared-workflows/.github/actions/go-install@9ed6d3c988fb075f1023680d92eb4cf5a8e55056 # v1.14.0
+        uses: 4cloudguru/shared-workflows/.github/actions/go-install@3dac549c7e4fe4a0dc54aaf9ed187b6da2c6eab9 # v1.15.0
         with:
           package: golang.org/x/vuln/cmd/govulncheck@v1.1.4
 
@@ -330,7 +330,7 @@ jobs:
         uses: ./.github/actions/setup-backend
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        uses: github/codeql-action/init@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4.37.8
         with:
           languages: go
 
@@ -339,7 +339,7 @@ jobs:
         run: go build ./...
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        uses: github/codeql-action/analyze@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4.37.8
         with:
           category: /language:go
 
