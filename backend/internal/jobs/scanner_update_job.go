@@ -478,7 +478,26 @@ func (j *ScannerUpdateJob) notify(ctx context.Context, v *models.ScannerBinaryVe
 	if !approved {
 		eventType = notify.EventApprovalPending
 	}
-	j.notifier.Notify(ctx, notify.Event{Type: eventType, Title: subject, Message: body.String()})
+
+	// DedupKey/DedupTTL (identity/notify#157): this job runs unconditionally
+	// on every replica with no leader election, and its ticker fires
+	// immediately on process start — so replicas that boot together (any
+	// normal rolling deploy) race runCheck on the same tick and each
+	// independently discovers the same tool+version. Without a dedup key
+	// every one of them would notify every configured channel once. The key
+	// is the discovered occurrence itself (not the approval outcome, which
+	// is the same underlying fact either way), and the TTL matches this
+	// job's own poll interval so the claim window tracks whatever a
+	// deployment configured rather than a value that could drift from it.
+	intervalHours := j.scanCfg.AutoUpdate.IntervalHours
+	if intervalHours <= 0 {
+		intervalHours = 24
+	}
+	dedupKey := fmt.Sprintf("scanner-update:%s:%s", v.Tool, v.Version)
+	j.notifier.Notify(ctx, notify.Event{
+		Type: eventType, Title: subject, Message: body.String(),
+		DedupKey: dedupKey, DedupTTL: time.Duration(intervalHours) * time.Hour,
+	})
 
 	if j.notifCfg == nil || !j.notifCfg.Enabled || j.notifCfg.SMTP.Host == "" {
 		return
