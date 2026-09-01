@@ -7,9 +7,11 @@ package admin
 import (
 	"database/sql"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	idtenantscope "github.com/sethbacon/terraform-suite-identity/identity/tenantscope"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/credscope"
@@ -58,7 +60,7 @@ func NewAPIKeyHandlers(cfg *config.Config, db *sql.DB) *APIKeyHandlers {
 // CreateAPIKeyRequest represents the request to create a new API key
 type CreateAPIKeyRequest struct {
 	Name           string   `json:"name" binding:"required"`
-	OrganizationID string   `json:"organization_id" binding:"required"`
+	OrganizationID string   `json:"organization_id"`
 	Description    *string  `json:"description"`
 	Scopes         []string `json:"scopes" binding:"required"`
 	ExpiresAt      *string  `json:"expires_at"` // RFC3339 format
@@ -243,6 +245,7 @@ func (h *APIKeyHandlers) ListAPIKeysHandler() gin.HandlerFunc {
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized - user not authenticated"
 // @Failure      403  {object}  map[string]interface{}  "Forbidden - no role or scopes exceed permissions"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
+// @Param        X-Organization-Id  header  string  false  "Organization to act in, as sent by the suite organization picker. Verified against the caller's memberships; an explicit organization_id in the body wins. Optional when the body names organization_id or the caller holds the required scope in exactly one organization."
 // @Router       /api/v1/apikeys [post]
 // CreateAPIKeyHandler creates a new API key
 // POST /api/v1/apikeys
@@ -281,8 +284,17 @@ func (h *APIKeyHandlers) CreateAPIKeyHandler() gin.HandlerFunc {
 			return
 		}
 
-		// Resolve organization ID - if 'default', get the actual default org ID
-		orgID := req.OrganizationID
+		// Resolve the organization the key is bound to. An explicit
+		// organization_id wins; a body that names none takes the
+		// X-Organization-Id header the suite's organization picker sends
+		// (identity/tenantscope.ActingOrganizationHeader, issue #1011). Either
+		// way the membership check below is what authorizes the binding — the
+		// header is a transport for the caller's choice, never an authority.
+		// The literal "default" keeps its historical meaning.
+		orgID := strings.TrimSpace(req.OrganizationID)
+		if orgID == "" {
+			orgID = strings.TrimSpace(c.GetHeader(idtenantscope.ActingOrganizationHeader))
+		}
 		if orgID == "default" || orgID == "" {
 			// A deployment with no default organization is a misconfiguration,
 			// not a client error, so BOTH branches stay 500 — only the message

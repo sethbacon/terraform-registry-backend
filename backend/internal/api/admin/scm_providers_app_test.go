@@ -9,7 +9,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
@@ -54,8 +53,10 @@ func newSCMProviderAppRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	// Platform administrator: these routes sit behind AuthMiddleware +
 	// RequireScope in production, and since #719 the create axis resolves a
 	// tenant scope before choosing a target organization (GUARD
-	// scm-create-target-org). Admin is the principal that guard exempts, so the
-	// default-organization fallback these tests exercise still applies.
+	// scm-create-target-org). A platform admin's scope spans every
+	// organization, so these tests name the target through the organization
+	// picker's X-Organization-Id header (#1011) and prime the existence check
+	// the handler makes on an admin's choice.
 	r.Use(func(c *gin.Context) {
 		c.Set("scopes", []string{string(auth.ScopeAdmin)})
 		c.Set("user_id", "test-admin")
@@ -65,10 +66,11 @@ func newSCMProviderAppRouter(t *testing.T) (sqlmock.Sqlmock, *gin.Engine) {
 	return mock, r
 }
 
-func expectDefaultOrgAndNoDuplicate(mock sqlmock.Sqlmock) {
-	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}).
-			AddRow(knownUUID, "default", "Default", nil, nil, time.Now(), time.Now()))
+// expectActingOrgAndNoDuplicate primes the platform admin's organization
+// existence check (the request names knownUUID through the picker's header)
+// followed by the duplicate-name lookup in that organization.
+func expectActingOrgAndNoDuplicate(mock sqlmock.Sqlmock) {
+	expectOrganizationByID(mock, knownUUID)
 	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE organization_id").
 		WillReturnRows(sqlmock.NewRows(scmProvCols))
 }
@@ -79,13 +81,13 @@ func expectDefaultOrgAndNoDuplicate(mock sqlmock.Sqlmock) {
 
 func TestSCMCreate_GitHubApp_Success(t *testing.T) {
 	mock, r := newSCMProviderAppRouter(t)
-	expectDefaultOrgAndNoDuplicate(mock)
+	expectActingOrgAndNoDuplicate(mock)
 	mock.ExpectExec("INSERT INTO scm_providers").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	keyPEM := testRSAKeyPEM(t)
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("POST", "/scm-providers",
+	r.ServeHTTP(w, withActingOrg(httptest.NewRequest("POST", "/scm-providers",
 		jsonBody(map[string]interface{}{
 			"provider_type":          "github",
 			"name":                   "gh-app",
@@ -93,7 +95,7 @@ func TestSCMCreate_GitHubApp_Success(t *testing.T) {
 			"github_app_id":          "12345",
 			"github_installation_id": "67890",
 			"app_private_key":        keyPEM,
-		})))
+		})), knownUUID))
 
 	if w.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201: body=%s", w.Code, w.Body.String())
@@ -151,12 +153,12 @@ func TestSCMCreate_GitHubApp_WrongProviderType(t *testing.T) {
 
 func TestSCMCreate_EntraApp_Success(t *testing.T) {
 	mock, r := newSCMProviderAppRouter(t)
-	expectDefaultOrgAndNoDuplicate(mock)
+	expectActingOrgAndNoDuplicate(mock)
 	mock.ExpectExec("INSERT INTO scm_providers").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("POST", "/scm-providers",
+	r.ServeHTTP(w, withActingOrg(httptest.NewRequest("POST", "/scm-providers",
 		jsonBody(map[string]interface{}{
 			"provider_type": "azuredevops",
 			"name":          "ado-app",
@@ -164,7 +166,7 @@ func TestSCMCreate_EntraApp_Success(t *testing.T) {
 			"tenant_id":     "tenant-1",
 			"client_id":     "client-1",
 			"client_secret": "super-secret",
-		})))
+		})), knownUUID))
 
 	if w.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201: body=%s", w.Code, w.Body.String())

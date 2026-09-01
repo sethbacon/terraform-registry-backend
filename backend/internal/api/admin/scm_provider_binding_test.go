@@ -144,7 +144,7 @@ func TestCreateSCMProvider_BindsSecretsToTheNewRow(t *testing.T) {
 		t.Run(tc2.name, func(t *testing.T) {
 			mock, r := newSCMProviderRouter(t)
 			tc := testTokenCipher(t)
-			expectDefaultOrgAndNoDuplicate(mock)
+			expectActingOrgAndNoDuplicate(mock)
 
 			stored, matchers := recordAll(scmProviderInsertArgs)
 			mock.ExpectExec("INSERT INTO scm_providers").
@@ -152,7 +152,7 @@ func TestCreateSCMProvider_BindsSecretsToTheNewRow(t *testing.T) {
 				WillReturnResult(sqlmock.NewResult(1, 1))
 
 			w := httptest.NewRecorder()
-			r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/scm-providers", jsonBody(tc2.body)))
+			r.ServeHTTP(w, withActingOrg(httptest.NewRequest(http.MethodPost, "/scm-providers", jsonBody(tc2.body)), knownUUID))
 			if w.Code != http.StatusCreated {
 				t.Fatalf("status = %d, want 201: body=%s", w.Code, w.Body.String())
 			}

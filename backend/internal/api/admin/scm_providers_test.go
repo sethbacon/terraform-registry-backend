@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -152,10 +153,7 @@ func TestSCMCreate_MissingClientSecret(t *testing.T) {
 
 func TestSCMCreate_Success(t *testing.T) {
 	mock, r := newSCMProviderRouter(t)
-	// GetDefaultOrganization lookup (required — CreateProvider returns 400 if org not found)
-	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}).
-			AddRow(knownUUID, "default", "Default", nil, nil, time.Now(), time.Now()))
+	expectOrganizationByID(mock, knownUUID)
 	// GetProviderByOrgAndName — no existing provider
 	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE organization_id").
 		WillReturnRows(sqlmock.NewRows(scmProvCols))
@@ -163,13 +161,13 @@ func TestSCMCreate_Success(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("POST", "/scm-providers",
+	r.ServeHTTP(w, withActingOrg(httptest.NewRequest("POST", "/scm-providers",
 		jsonBody(map[string]interface{}{
 			"provider_type": "github",
 			"name":          "test-github",
 			"client_id":     "client-id",
 			"client_secret": "client-secret",
-		})))
+		})), knownUUID))
 
 	if w.Code != http.StatusCreated {
 		t.Errorf("status = %d, want 201: body=%s", w.Code, w.Body.String())
@@ -178,22 +176,19 @@ func TestSCMCreate_Success(t *testing.T) {
 
 func TestSCMCreate_DBError(t *testing.T) {
 	mock, r := newSCMProviderRouter(t)
-	// GetDefaultOrganization lookup
-	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}).
-			AddRow(knownUUID, "default", "Default", nil, nil, time.Now(), time.Now()))
+	expectOrganizationByID(mock, knownUUID)
 	// GetProviderByOrgAndName — DB error
 	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE organization_id").
 		WillReturnError(errDB)
 
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("POST", "/scm-providers",
+	r.ServeHTTP(w, withActingOrg(httptest.NewRequest("POST", "/scm-providers",
 		jsonBody(map[string]interface{}{
 			"provider_type": "github",
 			"name":          "test-github",
 			"client_id":     "client-id",
 			"client_secret": "client-secret",
-		})))
+		})), knownUUID))
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
@@ -202,22 +197,19 @@ func TestSCMCreate_DBError(t *testing.T) {
 
 func TestSCMCreate_DuplicateConflict(t *testing.T) {
 	mock, r := newSCMProviderRouter(t)
-	// GetDefaultOrganization lookup
-	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}).
-			AddRow(knownUUID, "default", "Default", nil, nil, time.Now(), time.Now()))
+	expectOrganizationByID(mock, knownUUID)
 	// GetProviderByOrgAndName — returns existing provider
 	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE organization_id").
 		WillReturnRows(sampleSCMProviderRow())
 
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("POST", "/scm-providers",
+	r.ServeHTTP(w, withActingOrg(httptest.NewRequest("POST", "/scm-providers",
 		jsonBody(map[string]interface{}{
 			"provider_type": "github",
 			"name":          "test-github",
 			"client_id":     "client-id",
 			"client_secret": "client-secret",
-		})))
+		})), knownUUID))
 
 	if w.Code != http.StatusConflict {
 		t.Errorf("status = %d, want 409: body=%s", w.Code, w.Body.String())
@@ -266,10 +258,7 @@ func TestSCMCreate_PATBased_EmptyBaseURL(t *testing.T) {
 
 func TestSCMCreate_PATBased_Success(t *testing.T) {
 	mock, r := newSCMProviderRouter(t)
-	// Default org lookup
-	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}).
-			AddRow(knownUUID, "default", "Default", nil, nil, time.Now(), time.Now()))
+	expectOrganizationByID(mock, knownUUID)
 	// GetProviderByOrgAndName — no existing provider
 	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE organization_id").
 		WillReturnRows(sqlmock.NewRows(scmProvCols))
@@ -277,12 +266,12 @@ func TestSCMCreate_PATBased_Success(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("POST", "/scm-providers",
+	r.ServeHTTP(w, withActingOrg(httptest.NewRequest("POST", "/scm-providers",
 		jsonBody(map[string]interface{}{
 			"provider_type": "bitbucket_dc",
 			"name":          "test-bdc",
 			"base_url":      "https://bitbucket.example.com",
-		})))
+		})), knownUUID))
 
 	if w.Code != http.StatusCreated {
 		t.Errorf("status = %d, want 201: body=%s", w.Code, w.Body.String())
@@ -358,40 +347,40 @@ func TestSCMCreate_AllowlistedBaseURLSucceeds(t *testing.T) {
 	// Platform administrator: these routes sit behind AuthMiddleware +
 	// RequireScope in production, and since #719 the create axis resolves a
 	// tenant scope before choosing a target organization (GUARD
-	// scm-create-target-org). Admin is the principal that guard exempts, so the
-	// default-organization fallback these tests exercise still applies.
+	// scm-create-target-org). A platform admin's scope spans every
+	// organization, so these tests name the target through the organization
+	// picker's X-Organization-Id header (#1011) and prime the existence check
+	// the handler makes on an admin's choice.
 	r.Use(func(c *gin.Context) {
 		c.Set("scopes", []string{string(auth.ScopeAdmin)})
 		c.Set("user_id", "test-admin")
 	})
 	r.POST("/scm-providers", h.CreateProvider)
 
-	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}).
-			AddRow(knownUUID, "default", "Default", nil, nil, time.Now(), time.Now()))
+	expectOrganizationByID(mock, knownUUID)
 	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE organization_id").
 		WillReturnRows(sqlmock.NewRows(scmProvCols))
 	mock.ExpectExec("INSERT INTO scm_providers").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("POST", "/scm-providers",
+	r.ServeHTTP(w, withActingOrg(httptest.NewRequest("POST", "/scm-providers",
 		jsonBody(map[string]interface{}{
 			"provider_type": "bitbucket_dc",
 			"name":          "internal-bdc",
 			"base_url":      "https://10.5.1.1/",
-		})))
+		})), knownUUID))
 
 	if w.Code != http.StatusCreated {
 		t.Errorf("status = %d, want 201: body=%s", w.Code, w.Body.String())
 	}
 }
 
-func TestSCMCreate_NoDefaultOrg(t *testing.T) {
+// A platform admin's scope spans every organization, so a create that names
+// none is refused as ambiguous — the default-organization fallback that used
+// to answer this request is gone (#1011). No statement is issued.
+func TestSCMCreate_AdminMustNameOrganization(t *testing.T) {
 	mock, r := newSCMProviderRouter(t)
-	// Default org lookup returns no rows
-	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}))
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/scm-providers",
@@ -403,53 +392,62 @@ func TestSCMCreate_NoDefaultOrg(t *testing.T) {
 		})))
 
 	if w.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+		t.Fatalf("status = %d, want 400: body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "X-Organization-Id") {
+		t.Errorf("the refusal must tell the caller how to name the organization: body=%s", w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("no statement may be issued for a refused create: %v", err)
 	}
 }
 
-func TestSCMCreate_DefaultOrgDBError(t *testing.T) {
+func TestSCMCreate_OrganizationLookupDBError(t *testing.T) {
 	mock, r := newSCMProviderRouter(t)
-	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
+	mock.ExpectQuery("SELECT.*FROM organizations WHERE id").
 		WillReturnError(errDB)
 
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("POST", "/scm-providers",
+	r.ServeHTTP(w, withActingOrg(httptest.NewRequest("POST", "/scm-providers",
 		jsonBody(map[string]interface{}{
 			"provider_type": "github",
 			"name":          "test-github",
 			"client_id":     "cid",
 			"client_secret": "csec",
-		})))
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400: body=%s", w.Code, w.Body.String())
-	}
-}
-
-func TestSCMCreate_DefaultOrgInvalidUUID(t *testing.T) {
-	mock, r := newSCMProviderRouter(t)
-	// Default org returns a row with an unparseable UUID
-	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}).
-			AddRow("not-a-uuid", "default", "Default", nil, nil, time.Now(), time.Now()))
-
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("POST", "/scm-providers",
-		jsonBody(map[string]interface{}{
-			"provider_type": "github",
-			"name":          "test-github",
-			"client_id":     "cid",
-			"client_secret": "csec",
-		})))
+		})), knownUUID))
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500: body=%s", w.Code, w.Body.String())
 	}
 }
 
+// A platform admin naming an organization that does not exist gets the
+// non-member's 403, so the response cannot be used to probe organization ids.
+func TestSCMCreate_AdminUnknownOrganizationRefused(t *testing.T) {
+	mock, r := newSCMProviderRouter(t)
+	expectOrganizationByIDMissing(mock, knownUUID)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, withActingOrg(httptest.NewRequest("POST", "/scm-providers",
+		jsonBody(map[string]interface{}{
+			"provider_type": "github",
+			"name":          "test-github",
+			"client_id":     "cid",
+			"client_secret": "csec",
+		})), knownUUID))
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403: body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
 func TestSCMCreate_WithExplicitOrgID(t *testing.T) {
 	mock, r := newSCMProviderRouter(t)
-	// Explicit org ID skips default org lookup
+	// Explicit organization_id: a platform admin's choice is verified to exist.
+	expectOrganizationByID(mock, knownUUID)
 	// GetProviderByOrgAndName — no existing provider
 	mock.ExpectQuery("SELECT.*FROM scm_providers WHERE organization_id").
 		WillReturnRows(sqlmock.NewRows(scmProvCols))

@@ -63,6 +63,7 @@ func (h *ModuleAdminHandlers) WithScanQueue(repo *repositories.ModuleScanReposit
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
 // @Failure      403  {object}  map[string]interface{}  "Caller holds modules:write in no organization"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
+// @Param        X-Organization-Id  header  string  false  "Organization to act in, as sent by the suite organization picker. Verified against the caller's memberships; an explicit organization_id in the body wins. Optional when the body names organization_id or the caller holds the required scope in exactly one organization."
 // @Router       /api/v1/admin/modules/create [post]
 // CreateModuleRecord creates a module record without a version file.
 // This is used by the SCM publishing flow to register a module before linking it to a repository.

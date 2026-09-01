@@ -100,6 +100,43 @@ If issues are found after upgrade:
 > pair means there was nothing version-specific to do beyond the standard procedure
 > above — not that the note is missing.
 
+### Any version → the release carrying #1011 (suite: state-manager#437) — a create names its organization through the suite picker; the platform-admin default-organization fallback is gone
+
+**What changed.** The registry now takes the organization a request is *acting
+in* from the same place the state manager does: the shared
+`terraform-suite-identity` rule over the `X-Organization-Id` header, which the
+suite's organization picker (`@4cloudguru/cloud-suite-ui`) sends on every
+request. On every route that creates an organization-owned row — mirrors,
+SCM providers, provider and module records, first publish into a new
+namespace, API keys — the organization is resolved in this order:
+
+1. an explicit `organization_id` in the body or form, which still wins;
+2. otherwise the `X-Organization-Id` header;
+3. otherwise the caller's single in-scope organization, if they have exactly one.
+
+Whichever source named the organization is verified against the caller's
+memberships exactly as `organization_id` always was: the header is a transport
+for the caller's choice, never an authority. A platform admin's choice is
+additionally checked to **exist**, and an unknown id gets the same `403` a
+non-member gets, so the response discloses nothing about which ids exist.
+
+**Breaking for platform admins.** A platform admin who names no organization
+on a create used to land the row in the *default* organization. That fallback
+is removed: the admin's scope spans every organization, so a create that names
+none is refused as ambiguous (`400`, and the message names the header). The
+suite frontend sends the header once an organization is picked, so
+interactive use is unaffected; automation that runs as a platform admin and
+relied on the default organization must now send `organization_id` or the
+header.
+
+**Also.** `POST /api/v1/apikeys` no longer requires `organization_id` in the
+body; a body that omits it takes the header, and the literal `"default"` keeps
+its historical meaning.
+
+*Action:* platform-admin automation that creates mirrors, SCM providers,
+mirror policies, API keys, or publishes into brand-new namespaces without
+naming an organization must start naming one.
+
 ### Any version → the release carrying migration `000056` — feature-table foreign keys into identity are dropped
 
 **Not breaking, and nothing to do.** Listed here because it repairs an outage some
@@ -818,7 +855,8 @@ the default organization when `organization_id` was omitted, with no membership
 check — so a non-member wrote into the default organization by leaving the field
 out. Now:
 
-- A **platform admin** keeps the default-organization fallback.
+- A **platform admin** keeps the default-organization fallback. *(Removed in the
+  release carrying #1011 — see the note above; admins must now name the organization.)*
 - A caller with the required scope in exactly **one** organization gets that one.
 - A caller with the scope in **more than one** organization receives `400` and
   must name `organization_id` explicitly.

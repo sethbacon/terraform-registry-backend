@@ -90,8 +90,10 @@ func newMirrorRouterWithJob(t *testing.T, syncJob MirrorSyncJobInterface) (sqlmo
 
 	r := gin.New()
 	// These tests cover mirror CRUD mechanics, not tenancy, so they run as a
-	// platform admin — the principal every #719 tenant-scope guard deliberately
-	// exempts. Cross-tenant behaviour is owned by tenant_scope_class_test.go.
+	// platform admin acting through the organization picker's header (#1011):
+	// the admin's scope spans every organization, so the one the row lands in
+	// must be named. Cross-tenant behaviour is owned by
+	// tenant_scope_class_test.go and acting_organization_test.go.
 	r.Use(func(c *gin.Context) {
 		c.Set("scopes", []string{string(auth.ScopeAdmin)})
 		c.Set("user_id", "admin-user")
@@ -161,19 +163,17 @@ func TestMirrorCreate_Success(t *testing.T) {
 	// GetByName returns no rows (name available)
 	mock.ExpectQuery("SELECT.*FROM mirror_configurations WHERE name").
 		WillReturnRows(sqlmock.NewRows(mirrorCfgCols))
-	// GetDefaultOrganization (soft-fail lookup; return no rows = nil org, code continues)
-	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}))
+	expectOrganizationByID(mock, knownUUID)
 	// INSERT
 	mock.ExpectExec("INSERT INTO mirror_configurations").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("POST", "/mirrors",
+	r.ServeHTTP(w, withActingOrg(httptest.NewRequest("POST", "/mirrors",
 		jsonBody(map[string]interface{}{
 			"name":                  "new-mirror",
 			"upstream_registry_url": "https://registry.terraform.io",
-		})))
+		})), knownUUID))
 
 	if w.Code != http.StatusCreated {
 		t.Errorf("status = %d, want 201: body=%s", w.Code, w.Body.String())
@@ -184,18 +184,17 @@ func TestMirrorCreate_RequiresApprovalPersisted(t *testing.T) {
 	mock, r := newMirrorRouter(t)
 	mock.ExpectQuery("SELECT.*FROM mirror_configurations WHERE name").
 		WillReturnRows(sqlmock.NewRows(mirrorCfgCols))
-	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}))
+	expectOrganizationByID(mock, knownUUID)
 	mock.ExpectExec("INSERT INTO mirror_configurations").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("POST", "/mirrors",
+	r.ServeHTTP(w, withActingOrg(httptest.NewRequest("POST", "/mirrors",
 		jsonBody(map[string]interface{}{
 			"name":                  "gated-mirror",
 			"upstream_registry_url": "https://registry.terraform.io",
 			"requires_approval":     true,
-		})))
+		})), knownUUID))
 
 	if w.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201: body=%s", w.Code, w.Body.String())
@@ -209,18 +208,16 @@ func TestMirrorCreate_InsertDBError(t *testing.T) {
 	mock, r := newMirrorRouter(t)
 	mock.ExpectQuery("SELECT.*FROM mirror_configurations WHERE name").
 		WillReturnRows(sqlmock.NewRows(mirrorCfgCols))
-	// GetDefaultOrganization (soft-fail lookup)
-	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}))
+	expectOrganizationByID(mock, knownUUID)
 	mock.ExpectExec("INSERT INTO mirror_configurations").
 		WillReturnError(errDB)
 
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("POST", "/mirrors",
+	r.ServeHTTP(w, withActingOrg(httptest.NewRequest("POST", "/mirrors",
 		jsonBody(map[string]interface{}{
 			"name":                  "new-mirror",
 			"upstream_registry_url": "https://registry.terraform.io",
-		})))
+		})), knownUUID))
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
@@ -692,8 +689,10 @@ func TestMirrorCreate_AllowlistedPrivateURLSucceeds(t *testing.T) {
 
 	r := gin.New()
 	// These tests cover mirror CRUD mechanics, not tenancy, so they run as a
-	// platform admin — the principal every #719 tenant-scope guard deliberately
-	// exempts. Cross-tenant behaviour is owned by tenant_scope_class_test.go.
+	// platform admin acting through the organization picker's header (#1011):
+	// the admin's scope spans every organization, so the one the row lands in
+	// must be named. Cross-tenant behaviour is owned by
+	// tenant_scope_class_test.go and acting_organization_test.go.
 	r.Use(func(c *gin.Context) {
 		c.Set("scopes", []string{string(auth.ScopeAdmin)})
 		c.Set("user_id", "admin-user")
@@ -702,15 +701,16 @@ func TestMirrorCreate_AllowlistedPrivateURLSucceeds(t *testing.T) {
 
 	mock.ExpectQuery("SELECT.*FROM mirror_configurations WHERE name").
 		WillReturnRows(sqlmock.NewRows(mirrorCfgCols))
+	expectOrganizationByID(mock, knownUUID)
 	mock.ExpectExec("INSERT INTO mirror_configurations").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("POST", "/mirrors",
+	r.ServeHTTP(w, withActingOrg(httptest.NewRequest("POST", "/mirrors",
 		jsonBody(map[string]interface{}{
 			"name":                  "allowlisted-internal-mirror",
 			"upstream_registry_url": "https://10.0.5.5/",
-		})))
+		})), knownUUID))
 
 	if w.Code != http.StatusCreated {
 		t.Errorf("status = %d, want 201: body=%s", w.Code, w.Body.String())
@@ -740,13 +740,14 @@ func TestMirrorCreate_WithFiltersAndCustomInterval(t *testing.T) {
 	mock, r := newMirrorRouter(t)
 	mock.ExpectQuery("SELECT.*FROM mirror_configurations WHERE name").
 		WillReturnRows(sqlmock.NewRows(mirrorCfgCols))
+	expectOrganizationByID(mock, knownUUID)
 	mock.ExpectExec("INSERT INTO mirror_configurations").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	interval := 6
 	enabled := false
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("POST", "/mirrors",
+	r.ServeHTTP(w, withActingOrg(httptest.NewRequest("POST", "/mirrors",
 		jsonBody(map[string]interface{}{
 			"name":                  "filtered-mirror",
 			"upstream_registry_url": "https://registry.terraform.io",
@@ -755,7 +756,7 @@ func TestMirrorCreate_WithFiltersAndCustomInterval(t *testing.T) {
 			"platform_filter":       []string{"linux_amd64"},
 			"sync_interval_hours":   interval,
 			"enabled":               enabled,
-		})))
+		})), knownUUID))
 
 	if w.Code != http.StatusCreated {
 		t.Errorf("status = %d, want 201: body=%s", w.Code, w.Body.String())
@@ -766,6 +767,7 @@ func TestMirrorCreate_WithValidOrgID(t *testing.T) {
 	mock, r := newMirrorRouter(t)
 	mock.ExpectQuery("SELECT.*FROM mirror_configurations WHERE name").
 		WillReturnRows(sqlmock.NewRows(mirrorCfgCols))
+	expectOrganizationByID(mock, knownUUID)
 	mock.ExpectExec("INSERT INTO mirror_configurations").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -829,18 +831,16 @@ func TestMirrorCreate_WithUserIDContext(t *testing.T) {
 
 	mock.ExpectQuery("SELECT.*FROM mirror_configurations WHERE name").
 		WillReturnRows(sqlmock.NewRows(mirrorCfgCols))
-	// GetDefaultOrganization (soft-fail lookup)
-	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "display_name", "idp_type", "idp_name", "created_at", "updated_at"}))
+	expectOrganizationByID(mock, knownUUID)
 	mock.ExpectExec("INSERT INTO mirror_configurations").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("POST", "/mirrors",
+	r.ServeHTTP(w, withActingOrg(httptest.NewRequest("POST", "/mirrors",
 		jsonBody(map[string]interface{}{
 			"name":                  "user-mirror",
 			"upstream_registry_url": "https://registry.terraform.io",
-		})))
+		})), knownUUID))
 
 	if w.Code != http.StatusCreated {
 		t.Errorf("status = %d, want 201: body=%s", w.Code, w.Body.String())
@@ -901,6 +901,7 @@ func TestMirrorUpdate_SetOrganizationID(t *testing.T) {
 	mock, r := newMirrorRouter(t)
 	mock.ExpectQuery("SELECT.*FROM mirror_configurations WHERE id").
 		WillReturnRows(sampleMirrorCfgRow())
+	expectOrganizationByID(mock, knownUUID)
 	mock.ExpectExec("UPDATE mirror_configurations SET name").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 

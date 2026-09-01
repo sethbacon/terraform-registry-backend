@@ -43,9 +43,8 @@ const (
 	// createOrgOther is an organization the caller has nothing to do with.
 	createOrgOther = "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb"
 	// createOrgDefault is the DEFAULT organization: the answer the defect
-	// produced, and therefore the answer that must never appear except on the
-	// one path that legitimately asks for it (a platform admin with no
-	// namespace owner resolved).
+	// produced. Since #1011 no path asks for it at all — the platform-admin
+	// fallback that did is gone — so it must never appear.
 	createOrgDefault = "cccccccc-3333-4333-8333-cccccccccccc"
 
 	createUserID = "dddddddd-4444-4444-8444-dddddddddddd"
@@ -73,8 +72,8 @@ func createAxisCaller(scopes ...string) gin.HandlerFunc {
 	}
 }
 
-// createAxisAdmin installs a platform admin, the only principal for which the
-// default-organization fallback survives.
+// createAxisAdmin installs a platform admin, whose scope spans every
+// organization and who must therefore name the one a create lands in.
 func createAxisAdmin() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Set("scopes", []string{string(auth.ScopeAdmin)})
@@ -135,9 +134,16 @@ type createAxisCase struct {
 	memberships *createAxisMembershipFixture
 	// membershipsErr makes the membership lookup fail.
 	membershipsErr error
-	// wantDefaultOrgLookup primes GetDefaultOrganization, which only the
-	// platform-admin fallback may reach.
-	wantDefaultOrgLookup bool
+	// headerOrgID is the X-Organization-Id header the suite's organization
+	// picker sends (#1011): a transport for the caller's choice, verified
+	// exactly as a body organization_id is.
+	headerOrgID string
+	// wantOrgLookup primes the existence check resolveTargetOrganization makes
+	// on a platform admin's choice — the one check the shared module cannot
+	// make for a scope that spans every organization.
+	wantOrgLookup string
+	// wantOrgLookupMissing primes that lookup to find no such organization.
+	wantOrgLookupMissing bool
 	// bodyOrgID is the organization_id the caller puts in the request body.
 	bodyOrgID string
 
@@ -277,15 +283,76 @@ func createAxisCases() []createAxisCase {
 			module:      createAxisWant{status: http.StatusForbidden},
 		},
 		{
-			// The one path on which the default organization is still the right
-			// answer: a platform admin acting as a registry operator with no
-			// namespace owner resolved. Preserved deliberately — narrowing it is
-			// a separate decision from binding the row to the guard's answer.
-			name:                 "no owner published, platform admin falls back to the default organization",
+			// THE #1011 ROW. No owner published (a platform admin passing
+			// through the ambiguous-ownership branch) and nothing named: this
+			// used to be the one path that reached for the DEFAULT
+			// organization. There is no such fallback any more — the admin's
+			// scope spans every organization, so a create that names none is
+			// refused as ambiguous on both paths, with no statement issued.
+			name:      "no owner published, platform admin names nothing",
+			principal: createAxisAdmin(),
+			provider:  createAxisWant{status: http.StatusBadRequest},
+			module:    createAxisWant{status: http.StatusBadRequest},
+		},
+		{
+			// The picker's header is how a platform admin names the
+			// organization on the module path, whose body has no
+			// organization_id field at all. The choice is verified to exist
+			// and the row lands in it.
+			name:          "no owner published, platform admin acts through the picker header",
+			principal:     createAxisAdmin(),
+			headerOrgID:   createOrgOther,
+			wantOrgLookup: createOrgOther,
+			provider:      createAxisWant{status: http.StatusCreated, org: createOrgOther},
+			module:        createAxisWant{status: http.StatusCreated, org: createOrgOther},
+		},
+		{
+			// A platform admin naming an organization that does not exist is
+			// refused with the non-member's 403, so the response discloses
+			// nothing about which ids exist.
+			name:                 "no owner published, platform admin's header names an unknown organization",
 			principal:            createAxisAdmin(),
-			wantDefaultOrgLookup: true,
-			provider:             createAxisWant{status: http.StatusCreated, org: createOrgDefault},
-			module:               createAxisWant{status: http.StatusCreated, org: createOrgDefault},
+			headerOrgID:          createOrgOther,
+			wantOrgLookup:        createOrgOther,
+			wantOrgLookupMissing: true,
+			provider:             createAxisWant{status: http.StatusForbidden},
+			module:               createAxisWant{status: http.StatusForbidden},
+		},
+		{
+			// A member of two organizations picks one through the header. Same
+			// verification as a body organization_id: it must be an
+			// organization they hold the scope in.
+			name:        "no owner published, multi-organization member picks through the header",
+			principal:   createAxisCaller(callerScopes...),
+			memberships: createAxisMemberships(writeScopes, createOrgOwner, createOrgOther),
+			headerOrgID: createOrgOther,
+			provider:    createAxisWant{status: http.StatusCreated, org: createOrgOther},
+			module:      createAxisWant{status: http.StatusCreated, org: createOrgOther},
+		},
+		{
+			// The body field is the more specific statement, so it wins over
+			// the picker's standing selection — and it is verified, not
+			// trusted. The module body has no organization_id field, so there
+			// the header is the only statement and the row follows it.
+			name:        "no owner published, body organization_id wins over the header",
+			principal:   createAxisCaller(callerScopes...),
+			memberships: createAxisMemberships(writeScopes, createOrgOwner, createOrgOther),
+			headerOrgID: createOrgOther,
+			bodyOrgID:   createOrgOwner,
+			provider:    createAxisWant{status: http.StatusCreated, org: createOrgOwner},
+			module:      createAxisWant{status: http.StatusCreated, org: createOrgOther},
+		},
+		{
+			// A body naming an organization outside the caller's scope is
+			// refused even though the header alone would have passed: the
+			// body wins, and what wins is verified.
+			name:        "no owner published, body organization_id outside the scope is refused despite a valid header",
+			principal:   createAxisCaller(callerScopes...),
+			memberships: createAxisMemberships(writeScopes, createOrgOwner),
+			headerOrgID: createOrgOwner,
+			bodyOrgID:   createOrgOther,
+			provider:    createAxisWant{status: http.StatusForbidden},
+			module:      createAxisWant{status: http.StatusCreated, org: createOrgOwner},
 		},
 		{
 			// A membership lookup that fails must not degrade into "no
@@ -316,11 +383,12 @@ func primeResolution(mock sqlmock.Sqlmock, tc createAxisCase) {
 			expectRegistryRolesForUser(mock, tc.memberships.roles...)
 		}
 	}
-	if tc.wantDefaultOrgLookup {
-		mock.ExpectQuery("SELECT.*FROM organizations").
-			WithArgs("default").
-			WillReturnRows(sqlmock.NewRows(orgCols).
-				AddRow(createOrgDefault, "default", "Default Org", nil, nil, time.Now(), time.Now()))
+	if tc.wantOrgLookup != "" {
+		if tc.wantOrgLookupMissing {
+			expectOrganizationByIDMissing(mock, tc.wantOrgLookup)
+		} else {
+			expectOrganizationByID(mock, tc.wantOrgLookup)
+		}
 	}
 }
 
@@ -332,10 +400,13 @@ func createAxisBody(extra map[string]string) *strings.Reader {
 	return strings.NewReader("{" + strings.Join(pairs, ",") + "}")
 }
 
-func createAxisRequest(t *testing.T, r *gin.Engine, path string, body *strings.Reader) *httptest.ResponseRecorder {
+func createAxisRequest(t *testing.T, r *gin.Engine, path string, body *strings.Reader, headerOrgID string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, path, body)
 	req.Header.Set("Content-Type", "application/json")
+	if headerOrgID != "" {
+		req = withActingOrg(req, headerOrgID)
+	}
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	return w
@@ -354,7 +425,7 @@ func assertCreateAxis(t *testing.T, w *httptest.ResponseRecorder, mock sqlmock.S
 			t.Errorf("created row is not owned by the authorized organization %s: body=%s",
 				want.org, w.Body.String())
 		}
-		if want.org != createOrgDefault && strings.Contains(w.Body.String(), createOrgDefault) {
+		if strings.Contains(w.Body.String(), createOrgDefault) {
 			t.Errorf("created row leaked into the default organization: body=%s", w.Body.String())
 		}
 	}
@@ -407,7 +478,7 @@ func TestCreateProviderRecord_BindsRowToAuthorizedOrganization(t *testing.T) {
 			if tc.bodyOrgID != "" {
 				body["organization_id"] = tc.bodyOrgID
 			}
-			w := createAxisRequest(t, r, "/admin/providers", createAxisBody(body))
+			w := createAxisRequest(t, r, "/admin/providers", createAxisBody(body), tc.headerOrgID)
 			assertCreateAxis(t, w, mock, tc.provider)
 		})
 	}
@@ -458,7 +529,7 @@ func TestCreateModuleRecord_BindsRowToAuthorizedOrganization(t *testing.T) {
 			if tc.bodyOrgID != "" {
 				body["organization_id"] = tc.bodyOrgID
 			}
-			w := createAxisRequest(t, r, "/admin/modules/create", createAxisBody(body))
+			w := createAxisRequest(t, r, "/admin/modules/create", createAxisBody(body), tc.headerOrgID)
 			// The existing-module path answers 200 with the row it found, so the
 			// organization assertion for it is the lookup predicate plus the
 			// body, not a 201.

@@ -9,13 +9,17 @@
 package admin
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 
+	idtenantscope "github.com/sethbacon/terraform-suite-identity/identity/tenantscope"
+
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/identityerr"
 	"github.com/terraform-registry/terraform-registry/internal/tenantscope"
 )
 
@@ -66,16 +70,21 @@ func resolveTenantScope(c *gin.Context, orgRepo *repositories.OrganizationReposi
 //	                   default org's UUID.
 //
 // The omitted case is resolved from the CALLER's own tenancy, never from a
-// server-side default the caller may not belong to: a single in-scope
-// organization is used automatically, anything ambiguous is refused. That is
-// the same fail-closed rule middleware.resolveCallerOrg already applies to a
-// first namespace publish, and it is applied here so the two create paths
-// cannot disagree.
+// server-side default the caller may not belong to. The rule is the shared
+// module's (tenantscope.ActingOrganization, issue #1011): the X-Organization-Id
+// header the suite's organization picker sends is consulted next, then a single
+// in-scope organization is used automatically, and anything ambiguous is
+// refused — a platform admin included. The historical fallback that handed a
+// platform admin the DEFAULT organization is gone: it was the one remaining
+// place a row could land in a tenant nobody named, and it made this path
+// disagree with the state manager's answer to the same question.
 //
-// Returns (orgID, true) on success, where an empty orgID means the caller is a
-// platform admin and no default organization exists — the caller's own
-// pre-existing fallback then applies. On failure the response has already been
-// written.
+// A platform admin's scope is "all organizations", so the module cannot check
+// that the organization they named EXISTS; this function does, and answers a
+// miss with the same 403 a non-member gets, so it discloses nothing.
+//
+// Returns (orgID, true) on success — orgID is never empty. On failure the
+// response has already been written.
 //
 // GUARD tenant-scope-target-org (issue #719).
 func resolveTargetOrganization(
@@ -89,44 +98,51 @@ func resolveTargetOrganization(
 		return "", false
 	}
 
-	if requestedOrgID != "" {
-		if !scope.Permits(requestedOrgID) {
-			c.JSON(http.StatusForbidden, gin.H{"error": "Not a member of the requested organization"})
-			return "", false
-		}
-		return requestedOrgID, true
-	}
-
-	// No organization named. A platform admin is acting as a registry operator
-	// and keeps the historical default-organization fallback; everyone else is
-	// bound to their own tenancy.
-	if scope.PlatformAdmin {
-		if orgRepo == nil {
-			return "", true
-		}
-		defaultOrg, err := orgRepo.GetDefaultOrganization(c.Request.Context())
-		if err != nil || defaultOrg == nil {
-			return "", true
-		}
-		return defaultOrg.ID, true
-	}
-
-	switch len(scope.OrgIDs) {
-	case 0:
+	orgID, err := tenantscope.ActingOrganization(c, scope, requestedOrgID)
+	switch {
+	case err == nil:
+	case errors.Is(err, idtenantscope.ErrActingOrganizationNotPermitted):
+		c.JSON(http.StatusForbidden, gin.H{"error": "Not a member of the requested organization"})
+		return "", false
+	case errors.Is(err, idtenantscope.ErrNoActingOrganization):
 		c.JSON(http.StatusForbidden, gin.H{
 			"error": "No organization context: you do not hold the required scope in any organization",
 		})
 		return "", false
-	case 1:
-		return scope.OrgIDs[0], true
-	default:
+	case errors.Is(err, idtenantscope.ErrAmbiguousActingOrganization):
 		// Fail closed rather than guess. Guessing is how the default
 		// organization became a dumping ground for other tenants' rows.
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Ambiguous organization: specify organization_id — you hold the required scope in more than one organization",
+			"error": "Ambiguous organization: specify organization_id or send the " +
+				idtenantscope.ActingOrganizationHeader +
+				" header — you hold the required scope in more than one organization",
 		})
 		return "", false
+	default:
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to resolve acting organization"})
+		return "", false
 	}
+
+	if scope.PlatformAdmin {
+		// The module verified nothing for a platform admin (every organization
+		// is in scope); the one thing left to verify is that the named
+		// organization exists. Answer a miss exactly as a non-member is
+		// answered, so the response cannot be used to probe organization ids.
+		if orgRepo == nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to resolve acting organization"})
+			return "", false
+		}
+		org, err := orgRepo.GetByID(c.Request.Context(), orgID, repositories.OrgScopeAllOrganizations())
+		if identityerr.Missing(org, err) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Not a member of the requested organization"})
+			return "", false
+		}
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to resolve acting organization"})
+			return "", false
+		}
+	}
+	return orgID, true
 }
 
 // resolveNamespaceCreateOrganization decides which organization a NAMESPACED
@@ -154,12 +170,12 @@ func resolveTargetOrganization(
 // rather than the primary. On this axis it is the weaker answer, because it
 // resolves from the CALLER's memberships instead of from the namespace: a
 // caller holding the scope in two organizations would be refused as "ambiguous"
-// for a namespace whose owner is not ambiguous at all, and a platform admin
-// would be handed the default organization again — which is the defect itself,
-// merely reached by a different route. It is still the right fallback for the
-// one path where the guard legitimately publishes no owner (a platform admin
-// passing through the ambiguous-ownership branch), because it fails closed for
-// every other principal instead of reaching for the default organization.
+// for a namespace whose owner is not ambiguous at all. It is still the right
+// fallback for the one path where the guard legitimately publishes no owner (a
+// platform admin passing through the ambiguous-ownership branch), because it
+// fails closed for every principal — the admin must name the organization, in
+// the body or through the picker's header — instead of reaching for the
+// default organization.
 //
 // A body that names an organization other than the authorized owner is REFUSED
 // rather than silently overridden. The middleware already refuses that for
