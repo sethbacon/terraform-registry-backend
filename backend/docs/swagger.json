@@ -970,6 +970,12 @@
                         "schema": {
                             "$ref": "#/definitions/models.CreateMirrorConfigRequest"
                         }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Organization to act in, as sent by the suite organization picker. Verified against the caller's memberships; an explicit organization_id in the body wins. Optional when the body names organization_id or the caller holds the required scope in exactly one organization.",
+                        "name": "X-Organization-Id",
+                        "in": "header"
                     }
                 ],
                 "responses": {
@@ -1447,6 +1453,12 @@
                         "schema": {
                             "type": "object"
                         }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Organization to act in, as sent by the suite organization picker. Verified against the caller's memberships; an explicit organization_id in the body wins. Optional when the body names organization_id or the caller holds the required scope in exactly one organization.",
+                        "name": "X-Organization-Id",
+                        "in": "header"
                     }
                 ],
                 "responses": {
@@ -3393,6 +3405,12 @@
                         "schema": {
                             "$ref": "#/definitions/admin.CreateProviderRecordRequest"
                         }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Organization to act in, as sent by the suite organization picker. Verified against the caller's memberships; an explicit organization_id in the body wins. Optional when the body names organization_id or the caller holds the required scope in exactly one organization.",
+                        "name": "X-Organization-Id",
+                        "in": "header"
                     }
                 ],
                 "responses": {
@@ -6280,6 +6298,12 @@
                         "schema": {
                             "$ref": "#/definitions/admin.CreateAPIKeyRequest"
                         }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Organization to act in, as sent by the suite organization picker. Verified against the caller's memberships; an explicit organization_id in the body wins. Optional when the body names organization_id or the caller holds the required scope in exactly one organization.",
+                        "name": "X-Organization-Id",
+                        "in": "header"
                     }
                 ],
                 "responses": {
@@ -7083,6 +7107,12 @@
                         "name": "file",
                         "in": "formData",
                         "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Organization to own a brand-new namespace, as sent by the suite organization picker. Verified against the caller's memberships; an explicit organization_id form field wins. Ignored for namespaces that already have an owner.",
+                        "name": "X-Organization-Id",
+                        "in": "header"
                     }
                 ],
                 "responses": {
@@ -8744,6 +8774,12 @@
                         "description": "Detached GPG signature of SHA256SUMS (max 64KB). Requires shasums_file AND gpg_public_key; verified before persistence.",
                         "name": "shasums_signature_file",
                         "in": "formData"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Organization to own a brand-new namespace, as sent by the suite organization picker. Verified against the caller's memberships; an explicit organization_id form field wins. Ignored for namespaces that already have an owner.",
+                        "name": "X-Organization-Id",
+                        "in": "header"
                     }
                 ],
                 "responses": {
@@ -9420,6 +9456,12 @@
                         "schema": {
                             "$ref": "#/definitions/admin.CreateSCMProviderRequest"
                         }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Organization to act in, as sent by the suite organization picker. Verified against the caller's memberships; an explicit organization_id in the body wins. Optional when the body names organization_id or the caller holds the required scope in exactly one organization.",
+                        "name": "X-Organization-Id",
+                        "in": "header"
                     }
                 ],
                 "responses": {
@@ -13970,7 +14012,6 @@
             "type": "object",
             "required": [
                 "name",
-                "organization_id",
                 "scopes"
             ],
             "properties": {

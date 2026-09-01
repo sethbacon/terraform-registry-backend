@@ -72,6 +72,7 @@ func (h *MirrorHandler) SetEgressGuard(g *httpsafe.Guard) *MirrorHandler {
 // @Failure      401  {object}  map[string]interface{}  "Unauthorized"
 // @Failure      409  {object}  map[string]interface{}  "Mirror with this name already exists"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
+// @Param        X-Organization-Id  header  string  false  "Organization to act in, as sent by the suite organization picker. Verified against the caller's memberships; an explicit organization_id in the body wins. Optional when the body names organization_id or the caller holds the required scope in exactly one organization."
 // @Router       /api/v1/admin/mirrors [post]
 // CreateMirrorConfig creates a new mirror configuration
 // POST /api/v1/admin/mirrors

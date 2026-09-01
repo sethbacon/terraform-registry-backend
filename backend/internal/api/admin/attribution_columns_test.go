@@ -92,19 +92,18 @@ func newAttributionMirrorRouter(t *testing.T, userID any) (sqlmock.Sqlmock, *gin
 func createMirror(mock sqlmock.Sqlmock, r *gin.Engine, createdBy driver.Value) *httptest.ResponseRecorder {
 	mock.ExpectQuery("SELECT.*FROM mirror_configurations WHERE name").
 		WillReturnRows(sqlmock.NewRows(mirrorCfgCols))
-	mock.ExpectQuery("SELECT.*FROM organizations WHERE name").
-		WillReturnRows(sqlmock.NewRows(orgCols))
+	expectOrganizationByID(mock, knownUUID)
 	// created_by is the last of the insert's eighteen arguments.
 	mock.ExpectExec("INSERT INTO mirror_configurations").
 		WithArgs(argsWithAttribution(18, 17, createdBy)...).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("POST", "/mirrors",
+	r.ServeHTTP(w, withActingOrg(httptest.NewRequest("POST", "/mirrors",
 		jsonBody(map[string]interface{}{
 			"name":                  "attributed-mirror",
 			"upstream_registry_url": "https://registry.terraform.io",
-		})))
+		})), knownUUID))
 	return w
 }
 

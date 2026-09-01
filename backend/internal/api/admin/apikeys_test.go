@@ -971,3 +971,80 @@ func TestUpdateAPIKey_ScopeChange_NullRole_FailsClosed(t *testing.T) {
 		t.Errorf("unmet expectations: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// CreateAPIKey — the organization picker's header (issue #1011)
+// ---------------------------------------------------------------------------
+
+// A body that names no organization takes the X-Organization-Id header; the
+// membership check is what authorizes the binding, and it is made against the
+// header's organization.
+func TestCreateAPIKey_HeaderNamesTheOrganization(t *testing.T) {
+	mock, r := newAPIKeyRouter(t, "user-1", nil)
+	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE").
+		WithArgs("org-1", "user-1").
+		WillReturnRows(sampleMemberRoleRow())
+	expectSampleMemberRegistryRoleAK(mock)
+	mock.ExpectExec("INSERT INTO api_keys").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, withActingOrg(httptest.NewRequest("POST", "/apikeys",
+		jsonBody(map[string]interface{}{
+			"name":   "My Key",
+			"scopes": []string{"modules:read"},
+		})), "org-1"))
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("membership must be checked in the header's organization: %v", err)
+	}
+}
+
+// An explicit organization_id wins over the header.
+func TestCreateAPIKey_BodyOrganizationWinsOverHeader(t *testing.T) {
+	mock, r := newAPIKeyRouter(t, "user-1", nil)
+	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE").
+		WithArgs("org-1", "user-1").
+		WillReturnRows(sampleMemberRoleRow())
+	expectSampleMemberRegistryRoleAK(mock)
+	mock.ExpectExec("INSERT INTO api_keys").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, withActingOrg(httptest.NewRequest("POST", "/apikeys",
+		jsonBody(map[string]interface{}{
+			"name":            "My Key",
+			"organization_id": "org-1",
+			"scopes":          []string{"modules:read"},
+		})), "org-2"))
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201: body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("membership must be checked in the body's organization: %v", err)
+	}
+}
+
+// A header naming an organization the caller does not belong to is refused —
+// the header is a transport for the caller's choice, never an authority.
+func TestCreateAPIKey_HeaderOrganization_NotMember(t *testing.T) {
+	mock, r := newAPIKeyRouter(t, "user-1", nil)
+	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE").
+		WithArgs("org-9", "user-1").
+		WillReturnRows(sqlmock.NewRows(memberRoleCols))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, withActingOrg(httptest.NewRequest("POST", "/apikeys",
+		jsonBody(map[string]interface{}{
+			"name":   "My Key",
+			"scopes": []string{"modules:read"},
+		})), "org-9"))
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403: body=%s", w.Code, w.Body.String())
+	}
+}

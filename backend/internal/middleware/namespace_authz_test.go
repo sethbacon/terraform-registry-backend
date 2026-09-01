@@ -735,8 +735,10 @@ func TestRequirePublishAccessFromForm_AdminExplicitOrg_Claims(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(claimCols)) // unclaimed
 	mock.ExpectQuery("SELECT DISTINCT organization_id FROM").
 		WillReturnRows(sqlmock.NewRows(artifactOrgCols)) // no artifacts
-	// Admin + explicit org: resolveCallerOrg returns the requested org WITHOUT a
-	// membership lookup; the claim is inserted for exactly that org.
+	// Admin + explicit org: resolveCallerOrg verifies only that the organization
+	// EXISTS (#1011) — no membership lookup — and the claim is inserted for
+	// exactly that org.
+	expectOrganizationExists(mock, nsOrgB)
 	mock.ExpectExec("INSERT INTO namespace_claims").
 		WithArgs("newteam", nsOrgB, sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))

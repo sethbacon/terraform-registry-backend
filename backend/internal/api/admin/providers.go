@@ -481,6 +481,7 @@ type CreateProviderRecordRequest struct {
 // @Failure      403  {object}  map[string]interface{}  "organization_id does not match the organization the namespace guard authorized, or the caller holds providers:write in no organization"
 // @Failure      409  {object}  map[string]interface{}  "Provider already exists"
 // @Failure      500  {object}  map[string]interface{}  "Internal server error"
+// @Param        X-Organization-Id  header  string  false  "Organization to act in, as sent by the suite organization picker. Verified against the caller's memberships; an explicit organization_id in the body wins. Optional when the body names organization_id or the caller holds the required scope in exactly one organization."
 // @Router       /api/v1/admin/providers [post]
 // CreateProviderRecord creates a new provider record
 // POST /api/v1/admin/providers

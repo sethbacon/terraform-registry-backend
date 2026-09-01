@@ -1883,6 +1883,7 @@ func TestRBACGetMirrorPolicy_Found(t *testing.T) {
 
 func TestRBACCreateMirrorPolicy_WithValidOrgID(t *testing.T) {
 	mock, r := newRBACRouter(t)
+	expectOrganizationByID(mock, knownUUID)
 	mock.ExpectExec("INSERT INTO mirror_policies").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -1940,6 +1941,7 @@ func TestRBACDeleteMirrorPolicy_DBError(t *testing.T) {
 
 func TestRBACEvaluatePolicy_WithValidOrgID(t *testing.T) {
 	mock, r := newRBACRouter(t)
+	expectOrganizationByID(mock, knownUUID)
 	mock.ExpectQuery("SELECT.*FROM mirror_policies.*WHERE mp.organization_id IS NULL").
 		WillReturnRows(emptyMPListRows())
 

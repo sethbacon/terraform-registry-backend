@@ -46,6 +46,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	idtenantscope "github.com/sethbacon/terraform-suite-identity/identity/tenantscope"
+
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
@@ -232,4 +234,56 @@ func (s Scope) OrgScope() repositories.OrgScope {
 		return repositories.OrgScopeAllOrganizations()
 	}
 	return repositories.OrgScopeOrganizations(s.OrgIDs...)
+}
+
+// Identity renders the scope as the shared module's own Scope type, which is
+// field-for-field the same shape. The conversion is explicit rather than a type
+// alias because this package's Scope carries the documentation and methods
+// (Permits, OrgScope) specific to this repository's tables; a test pins the two
+// structs to the same exported fields so a field added to one cannot be
+// silently dropped by the other.
+func (s Scope) Identity() idtenantscope.Scope {
+	return idtenantscope.Scope{PlatformAdmin: s.PlatformAdmin, OrgIDs: s.OrgIDs}
+}
+
+// ActingOrganization resolves the single organization this request is acting
+// in — the answer every CREATE needs when the row does not yet exist and no
+// route guard can name the owner from the path.
+//
+// The decision is the shared module's (identity/tenantscope.Resolver
+// .ActingOrganization), not a third copy of it: the state manager already
+// consumes the same rule against the same X-Organization-Id header, and #1011 is
+// the requirement that the two applications answer this question identically.
+// What this adapter adds is only the transport — WHERE the selection comes from:
+//
+//	requested -> an organization named explicitly in the request body
+//	             (organization_id), which wins over the ambient header. A body
+//	             field is a per-request statement; the header is the picker's
+//	             standing selection sent on every request, so when they disagree
+//	             the field is the more specific intent.
+//	header    -> otherwise the X-Organization-Id header the shared UI picker
+//	             sends.
+//	neither   -> the module's implicit rules: exactly one in-scope organization
+//	             is used automatically; none, several, or a platform admin
+//	             (whose scope is unbounded) are refused.
+//
+// Whichever source named the organization, it is verified against the scope
+// the same way — a selection outside the scope is
+// ErrActingOrganizationNotPermitted. The header is NOT an authority: it only
+// picks among the organizations the caller already holds the required scope
+// in. For a platform admin the module cannot check existence (the scope is
+// "all organizations"); the handler must — see admin.resolveTargetOrganization.
+//
+// There is deliberately no server-side default organization on this path any
+// more. A platform admin who names nothing is refused as ambiguous, exactly as
+// a multi-organization member is: the default organization was the invisible
+// fallback that made rows land in a tenant nobody chose.
+//
+// GUARD acting-organization-shared-rule (issue #1011).
+func ActingOrganization(c *gin.Context, scope Scope, requested string) (string, error) {
+	selected := strings.TrimSpace(requested)
+	if selected == "" && c != nil && c.Request != nil {
+		selected = strings.TrimSpace(c.GetHeader(idtenantscope.ActingOrganizationHeader))
+	}
+	return idtenantscope.Resolver{}.ActingOrganization(scope.Identity(), selected)
 }

@@ -45,6 +45,7 @@ import (
 // @Failure      409  {object}  map[string]interface{}
 // @Failure      422  {object}  map[string]interface{}  "Policy violation (block mode)"
 // @Failure      500  {object}  map[string]interface{}
+// @Param        X-Organization-Id  header  string  false  "Organization to own a brand-new namespace, as sent by the suite organization picker. Verified against the caller's memberships; an explicit organization_id form field wins. Ignored for namespaces that already have an owner."
 // @Router       /api/v1/modules [post]
 // UploadHandler handles module upload requests
 // Implements: POST /api/v1/modules

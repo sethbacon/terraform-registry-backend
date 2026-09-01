@@ -36,6 +36,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	idtenantscope "github.com/sethbacon/terraform-suite-identity/identity/tenantscope"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
@@ -424,7 +425,7 @@ func (a *NamespaceAuthorizer) authorizeNamespaceMutation(c *gin.Context, namespa
 		"organization_id", claim.OrganizationID,
 		"claimed_by", claimedBy,
 		"admin", callerIsAdmin(c),
-		"explicit_org", strings.TrimSpace(c.GetString("requested_org_id")) != "",
+		"explicit_org", requestedOrgID(c) != "",
 	)
 
 	c.Set("owner_org_id", claim.OrganizationID)
@@ -649,36 +650,39 @@ func (a *NamespaceAuthorizer) resolveCallerOrg(c *gin.Context, scope auth.Scope)
 	}
 
 	// An explicit target organization may be supplied on the publish request
-	// (organization_id in the JSON body or multipart form; stashed by the
-	// publish middleware). It lets a member of multiple organizations, or an
-	// admin acting as a registry operator, state which organization owns a
-	// brand-new namespace instead of the backend guessing. The previous guess
-	// was a silent fall-through to the default organization, which silently
+	// (organization_id in the JSON body or multipart form, or the
+	// X-Organization-Id header the suite's organization picker sends; see
+	// requestedOrgID). It lets a member of multiple organizations, or an admin
+	// acting as a registry operator, state which organization owns a brand-new
+	// namespace instead of the backend guessing. The previous guess was a
+	// silent fall-through to the default organization, which silently
 	// mis-attributed ownership.
-	requestedOrg := strings.TrimSpace(c.GetString("requested_org_id"))
+	requestedOrg := requestedOrgID(c)
 
 	if requestedOrg != "" {
 		// Admins may bind a new namespace to any organization (registry
 		// operator). The binding is audit-logged by the caller.
 		//
-		// UNCHECKED, and knowingly so since #883. This used to read "the
-		// claim's foreign key enforces that the organization actually exists",
-		// and it was the only place in the codebase that named one of those
-		// foreign keys as its enforcement. Migration 000056 drops them --
-		// namespace_claims lives on the registry's connection while
-		// organizations may live in another schema or another database, so the
-		// constraint could not be expressed in every topology and was rejecting
-		// legitimate writes in one of them.
-		//
-		// Nothing replaces it here yet: an existence check has to be a lookup
-		// on the identity connection, and this middleware holds only the
-		// membership reader. The exposure is a platform admin -- the highest-
-		// trust principal, acting deliberately -- mistyping an organization id
-		// in a publish body and getting a permanent claim naming an
-		// organization that does not exist, which leaves the namespace
-		// admin-only rather than granting anyone access. Tracked separately;
-		// do not restore the constraint to close it.
+		// The organization must EXIST, and that is the only thing checked for
+		// an admin. Until #1011 this was unchecked: it used to read "the claim's
+		// foreign key enforces that the organization actually exists", and
+		// migration 000056 dropped that foreign key because namespace_claims
+		// lives on the registry's connection while organizations may live in
+		// another schema or another database. The exposure was a platform admin
+		// mistyping an organization id in a publish body and getting a
+		// permanent claim naming an organization that does not exist. Now that
+		// the picker sends the id on EVERY request the lookup is cheap
+		// insurance, and orgRepo is the identity-backed repository, so the
+		// check is the same one admin.resolveTargetOrganization makes — the two
+		// create paths must not disagree.
 		if callerIsAdmin(c) {
+			org, err := a.orgRepo.GetByID(c.Request.Context(), requestedOrg, repositories.OrgScopeAllOrganizations())
+			if identityerr.Missing(org, err) {
+				return "", http.StatusForbidden, "You are not a member of the requested organization"
+			}
+			if err != nil {
+				return "", http.StatusInternalServerError, "Failed to resolve the requested organization"
+			}
 			return requestedOrg, 0, ""
 		}
 		// Non-admins may only bind to an organization they belong to.
@@ -718,6 +722,27 @@ func (a *NamespaceAuthorizer) resolveCallerOrg(c *gin.Context, scope auth.Scope)
 	// No org-scoped key, no explicit org, and no single membership to fall back
 	// on: ownership cannot be established. Fail closed.
 	return "", http.StatusForbidden, "No organization context: use an organization-scoped API key or specify organization_id to publish a new namespace"
+}
+
+// requestedOrgID returns the organization the caller explicitly asked to act
+// in on a first publish: the organization_id body field the publish guards
+// stash as requested_org_id, or — when the body names none — the
+// X-Organization-Id header the suite's organization picker sends on every
+// request (identity/tenantscope.ActingOrganizationHeader, issue #1011).
+//
+// The header is a second TRANSPORT for the same statement, not a second
+// authority: whichever source named the organization goes through exactly the
+// membership checks in resolveCallerOrg that an explicit organization_id does,
+// and the explicit field wins when both are present, because a form field is a
+// per-request intent while the header is the picker's standing selection.
+func requestedOrgID(c *gin.Context) string {
+	if requested := strings.TrimSpace(c.GetString("requested_org_id")); requested != "" {
+		return requested
+	}
+	if c.Request == nil {
+		return ""
+	}
+	return strings.TrimSpace(c.GetHeader(idtenantscope.ActingOrganizationHeader))
 }
 
 // callerIsAdmin reports whether the authenticated principal holds the wildcard

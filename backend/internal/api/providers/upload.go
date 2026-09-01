@@ -55,6 +55,7 @@ const (
 // @Failure      401  {object}  map[string]interface{}
 // @Failure      409  {object}  map[string]interface{}
 // @Failure      500  {object}  map[string]interface{}
+// @Param        X-Organization-Id  header  string  false  "Organization to own a brand-new namespace, as sent by the suite organization picker. Verified against the caller's memberships; an explicit organization_id form field wins. Ignored for namespaces that already have an owner."
 // @Router       /api/v1/providers [post]
 // UploadHandler handles provider upload requests
 // Implements: POST /api/v1/providers
