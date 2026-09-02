@@ -128,6 +128,55 @@ func (a *NamespaceAuthorizer) RequirePublishAccessFromForm(scope auth.Scope, max
 	}
 }
 
+// decodeGuardBody reads the request body, restores it for the handler, and
+// decodes it into dst.
+//
+// TWO PARSERS OVER ONE BODY IS THE DEFECT THIS FUNCTION EXISTS TO REMOVE
+// (issue #1015). These guards buffer the body and read the fields they
+// authorize on; the handler then parses the SAME bytes again with gin's
+// binding. While the guard used encoding/json.Unmarshal and ABSTAINED on
+// error, the two disagreed in the caller's favour: gin's JSON binding decodes
+// with a streaming Decoder.Decode and never checks that the stream is
+// exhausted, whereas Unmarshal requires the whole input to be one value. So
+// ONE TRAILING BYTE — `{"namespace":"victim"}!` — made the guard abstain and
+// the handler succeed, which skipped the namespace authorization entirely.
+// The comment that used to sit on that branch, "the handler's binding rejects
+// the request", was the assumption; it was not true.
+//
+// Two changes make it true. The decoder is now the same one gin's binding
+// uses, so the guard sees what the handler will see. And the guard REFUSES a
+// body it cannot read as exactly one JSON value, rather than waving it
+// through: dec.More() reports anything after the first value, so a second
+// document or trailing garbage is a 400 instead of an unauthorized create.
+//
+// Ordinary bodies are unaffected, which is what makes failing closed safe
+// here: leading and trailing whitespace, a trailing newline and a trailing
+// CRLF all leave dec.More() false and are accepted exactly as before. What is
+// refused is precisely the set of bodies on which the two parsers disagreed.
+//
+// Returns false when it has already written the response.
+func decodeGuardBody(c *gin.Context, dst interface{}) bool {
+	raw, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		abortNamespaceAuthz(c, http.StatusBadRequest, "Failed to read request body")
+		return false
+	}
+	c.Request.Body = io.NopCloser(bytes.NewReader(raw))
+
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if err := dec.Decode(dst); err != nil {
+		abortNamespaceAuthz(c, http.StatusBadRequest, "Invalid JSON body")
+		return false
+	}
+	if dec.More() {
+		// The handler's decoder would stop at the first value and never notice
+		// the rest. Refusing here is what stops the two readings diverging.
+		abortNamespaceAuthz(c, http.StatusBadRequest, "Invalid JSON body: trailing data after the JSON value")
+		return false
+	}
+	return true
+}
+
 // RequirePublishAccessFromJSON authorizes create routes that carry the
 // namespace in a JSON body (module/provider record creation). The body is
 // buffered and restored so the handler can bind it again. A first publish into
@@ -136,21 +185,20 @@ func (a *NamespaceAuthorizer) RequirePublishAccessFromForm(scope auth.Scope, max
 // caller must match the namespace's owning organization.
 func (a *NamespaceAuthorizer) RequirePublishAccessFromJSON(scope auth.Scope) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		raw, err := io.ReadAll(c.Request.Body)
-		if err != nil {
-			abortNamespaceAuthz(c, http.StatusBadRequest, "Failed to read request body")
-			return
-		}
-		c.Request.Body = io.NopCloser(bytes.NewReader(raw))
-
 		var body struct {
 			Namespace      string `json:"namespace"`
 			OrganizationID string `json:"organization_id"`
 		}
-		if err := json.Unmarshal(raw, &body); err != nil || body.Namespace == "" {
-			// Malformed JSON or missing namespace: the handler's binding
-			// rejects the request; nothing is targeted.
-			c.Next()
+		if !decodeGuardBody(c, &body) {
+			return
+		}
+		if body.Namespace == "" {
+			// REFUSED, not waved through. Every route behind this guard requires
+			// a namespace, so the handler would reject it too — but "the handler
+			// will reject it" is exactly the reasoning that made the malformed
+			// case a bypass, and it is not a claim this guard can check. It
+			// refuses what it cannot authorize.
+			abortNamespaceAuthz(c, http.StatusBadRequest, "namespace is required")
 			return
 		}
 
@@ -205,20 +253,23 @@ func (a *NamespaceAuthorizer) RequireModuleUpdateAccess(scope auth.Scope) gin.Ha
 			return
 		}
 
-		raw, err := io.ReadAll(c.Request.Body)
-		if err != nil {
-			abortNamespaceAuthz(c, http.StatusBadRequest, "Failed to read request body")
-			return
-		}
-		c.Request.Body = io.NopCloser(bytes.NewReader(raw))
-
 		var body struct {
 			Namespace *string `json:"namespace"`
 		}
-		if err := json.Unmarshal(raw, &body); err != nil || body.Namespace == nil ||
-			*body.Namespace == "" || *body.Namespace == module.Namespace {
-			// No namespace change requested (or the handler will reject the
-			// body); the current-namespace authorization above suffices.
+		if !decodeGuardBody(c, &body) {
+			return
+		}
+		if body.Namespace == nil || *body.Namespace == "" || *body.Namespace == module.Namespace {
+			// GENUINELY no namespace change requested: an absent key is a
+			// partial update, and a namespace equal to the current one moves
+			// nothing. The authorization against the module's current namespace,
+			// already done above, suffices.
+			//
+			// What is NO LONGER in this branch is the malformed body. It used to
+			// be, and it meant a body gin would happily bind was read here as
+			// "no namespace change" — so the target-namespace ownership check
+			// below was skipped and a module could be moved into another
+			// organization's namespace unchecked (issue #1015).
 			c.Next()
 			return
 		}
