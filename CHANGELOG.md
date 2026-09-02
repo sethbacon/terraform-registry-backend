@@ -7,6 +7,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.18.1](https://github.com/sethbacon/terraform-registry-backend/compare/v4.18.0...v4.18.1) (2026-09-02)
+
+
+### Bug Fixes
+
+* **authz:** refuse a publish body the guard and the handler read differently ([#1016](https://github.com/sethbacon/terraform-registry-backend/issues/1016)) ([bd9b892](https://github.com/sethbacon/terraform-registry-backend/commit/bd9b892d1bbc376301152fadca11403501ce4936))
+* **deps:** move golang.org/x/crypto to 0.56.0 for GO-2026-6354 and GO-2026-6355 ([#1017](https://github.com/sethbacon/terraform-registry-backend/issues/1017)) ([7361525](https://github.com/sethbacon/terraform-registry-backend/commit/736152538f91eb466eae99964d254074393584dd))
+
 ## [4.18.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.17.0...v4.18.0) (2026-09-02)
 
 
