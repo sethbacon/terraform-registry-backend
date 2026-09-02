@@ -7,6 +7,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.18.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.17.0...v4.18.0) (2026-09-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* **tenancy:** a platform admin who names no organization on a create is refused as ambiguous (400) instead of the row silently landing in the default organization. Platform-admin automation that creates mirrors, SCM providers, mirror policies or API keys, or publishes into a brand-new namespace, must now send organization_id or the X-Organization-Id header. See docs/upgrade-guide.md.
+
+### Features
+
+* **tenancy:** resolve the acting organization through the shared X-Organization-Id rule ([#1012](https://github.com/sethbacon/terraform-registry-backend/issues/1012)) ([315b8d5](https://github.com/sethbacon/terraform-registry-backend/commit/315b8d5bbcdfcb29a957b53c52ef8ab00ba17851))
+
+
+### Bug Fixes
+
+* **deps:** move google.golang.org/grpc to 1.83.1 for GHSA-vp52-pcj8-j9qc ([#1014](https://github.com/sethbacon/terraform-registry-backend/issues/1014)) ([6ba7b89](https://github.com/sethbacon/terraform-registry-backend/commit/6ba7b89757e6bc00abe40bf415282b8b838b1fdb))
+
 ## [4.17.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.16.0...v4.17.0) (2026-08-31)
 
 
