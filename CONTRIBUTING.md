@@ -182,12 +182,21 @@ Every new or modified HTTP handler **must** have a complete Swagger annotation b
 func (h *Handler) MethodName(c *gin.Context) {
 ```
 
-After adding or updating annotations, regenerate the spec:
+After adding or updating annotations, regenerate the spec **and commit the
+result**:
 
 ```bash
-cd backend
-swag init -g cmd/server/main.go --outputTypes json
+npm install   # once — provides swagger2openapi
+make swag     # from the repository ROOT: runs `swag init`, then the
+              # swagger2openapi conversion into backend/docs/openapi3.json
 ```
+
+CI verifies these files rather than fixing them. A pull request whose
+`backend/docs/swagger.json` or `backend/docs/openapi3.json` has drifted from the
+annotations fails the "Generated Swagger/OpenAPI docs are current" check. It used
+to commit the regenerated docs onto your branch instead, which moved the head to
+a commit no workflow would run against and left the pull request blocked with
+nothing failing (#999).
 
 Then rebuild the binary (the spec is embedded at compile time). Add or update the entry in `docs/SWAGGER_ANNOTATION_CHECKLIST.md`, which also contains the canonical `@Tags` vocabulary and per-handler coverage tracking.
 

@@ -7,9 +7,16 @@ package db
 // post-processed the result, promoting operation-level path parameters to path
 // level. CI's "Swagger generation" step ran the conversion alone. They
 // disagreed for months, and CI always won: the swagger-docs-sync job
-// regenerates the spec and commits ITS output to the PR branch, so a
+// regenerated the spec and committed ITS output to the PR branch, so a
 // contributor following the documented workflow produced a ~44,000-line diff
 // that CI then reverted.
+//
+// CI NO LONGER COMMITS (#999): a pull request whose generated docs have drifted
+// now FAILS, and the contributor regenerates. That removes the "CI always wins"
+// half of the story but makes this test matter more, not less — the human's
+// output is now the only output, so a Makefile recipe that disagrees with the
+// CI step is a pull request that cannot be made green by running the documented
+// command.
 //
 // Neither output was wrong, exactly -- they were answers to different
 // questions, and nothing compared them. The hoisting has since been removed

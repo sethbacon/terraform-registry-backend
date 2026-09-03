@@ -40,6 +40,7 @@ require (
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/time v0.15.0
 	google.golang.org/api v0.293.0
+	sigs.k8s.io/yaml v1.6.0
 )
 
 require (
@@ -233,5 +234,4 @@ require (
 	google.golang.org/grpc v1.83.1 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
-	sigs.k8s.io/yaml v1.6.0 // indirect
 )
