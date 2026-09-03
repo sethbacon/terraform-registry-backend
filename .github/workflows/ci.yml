@@ -107,9 +107,11 @@ jobs:
       - name: Swagger generation
         # Regenerates docs/swagger.json and docs/openapi3.json so drift against
         # the API annotations can be detected. This step only ever needs read
-        # access to the checkout — landing the regenerated docs (if changed)
-        # is handled by the isolated swagger-docs-sync job below, which holds
-        # the only contents:write token and runs no package installs (#656).
+        # access to the checkout. On a pull request the comparison is made by
+        # swagger-docs-check below, which is read-only and FAILS on drift; on
+        # main the isolated swagger-docs-sync job opens a bot pull request and
+        # is the only job holding a contents:write token, and it runs no
+        # package installs (#656, #999).
         working-directory: backend
         run: |
           # On tag refs (release builds) skip swagger regeneration — it was
@@ -329,20 +331,37 @@ jobs:
             exit 1
           fi
 
-  swagger-docs-sync:
-    name: Sync generated Swagger/OpenAPI docs
+  swagger-docs-check:
+    name: Generated Swagger/OpenAPI docs are current
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: backend-test
-    if: github.ref_type != 'tag'
-    # Isolated from backend-test's build/lint/npm steps so the token needed
-    # to land regenerated docs is never live alongside untrusted third-party
-    # package installs (#656). This job runs no package manager at all — it
-    # only downloads the docs backend-test already generated under a
-    # contents:read token and commits/PRs them.
+    if: github.event_name == 'pull_request'
+    # READ ONLY, AND THAT IS THE POINT (#999).
+    #
+    # This job used to push the regenerated docs onto the pull request's own
+    # head branch. GitHub does not trigger workflow runs from a push made with
+    # GITHUB_TOKEN -- that is the documented recursion guard, and it is
+    # unconditional -- so the push moved the head to a commit no workflow would
+    # ever run against. Branch protection evaluates required contexts against
+    # the head, so the pull request reported BLOCKED with an empty check list:
+    # nothing failed, and there was no run to re-run. It survived at least five
+    # pull requests because they were admin-merged, which is what the block
+    # looks like when nobody waits on it.
+    #
+    # The comment that used to sit on the push step diagnosed the symptom
+    # exactly and named the wrong cause. It said the `[skip ci]` marker had been
+    # removed so the push "re-runs CI once". Removing the marker changed
+    # nothing, because the token was suppressing the run as well.
+    #
+    # So the docs are no longer pushed from CI at all. A pull request whose
+    # generated docs have drifted FAILS HERE and the author regenerates them,
+    # which also puts the generated spec in the diff a reviewer reads. The
+    # second reason is worth as much as the first: this was the only
+    # contents:write token in pull-request CI, and it ran on a checkout built
+    # from pull-request content.
     permissions:
-      contents: write
-      pull-requests: write # only used for the bot-PR path below (#657)
+      contents: read
     steps:
       # hardening-exception: egress-audit — this job transfers artifacts through the
       #   Actions API and clones this repository; harden-runner has never run in this
@@ -353,7 +372,73 @@ jobs:
         with:
           egress-policy: audit
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # zizmor: ignore[artipacked] -- pushes regenerated swagger docs to the PR head branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download generated docs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: swagger-docs
+          path: backend/docs
+
+      - name: Fail if the committed docs are stale
+        run: |
+          set -euo pipefail
+          if git diff --exit-code backend/docs/swagger.json backend/docs/openapi3.json; then
+            echo "Committed API docs match the annotations."
+            exit 0
+          fi
+          {
+            echo "### Generated API docs are out of date"
+            echo
+            echo 'The Swagger annotations in this pull request no longer match the committed'
+            echo '`backend/docs/swagger.json` / `backend/docs/openapi3.json`. Regenerate them and'
+            echo 'commit the result:'
+            echo
+            echo '```'
+            echo 'npm install            # once, for swagger2openapi'
+            echo 'make swag              # runs swag init and the openapi3 conversion'
+            echo '```'
+            echo
+            echo 'CI no longer commits these for you. It used to, and the push authenticated with'
+            echo 'GITHUB_TOKEN, which triggers no workflow run — so the pull request head moved to'
+            echo 'a commit that reported no checks at all and sat blocked with nothing failing.'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::Generated API docs are out of date — run 'make swag' and commit backend/docs/swagger.json and backend/docs/openapi3.json"
+          git --no-pager diff --stat backend/docs/swagger.json backend/docs/openapi3.json
+          exit 1
+
+  swagger-docs-sync:
+    name: Sync generated Swagger/OpenAPI docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: backend-test
+    # NOT on pull requests. Drift that reaches main -- through an admin merge, a
+    # direct push, or the scheduled run -- still has to be repaired, and doing
+    # it here as a bot-authored pull request means review and required checks
+    # apply before regenerated docs land (#657). What is gone is the pull
+    # request path, which is the one that produced an unrunnable head (#999).
+    if: github.event_name != 'pull_request' && github.ref_type != 'tag'
+    # Isolated from backend-test's build/lint/npm steps so the token needed
+    # to land regenerated docs is never live alongside untrusted third-party
+    # package installs (#656). This job runs no package manager at all — it
+    # only downloads the docs backend-test already generated under a
+    # contents:read token and opens a pull request with them.
+    permissions:
+      contents: write
+      pull-requests: write # the bot-PR path below (#657)
+    steps:
+      # hardening-exception: egress-audit — this job transfers artifacts through the
+      #   Actions API and clones this repository; harden-runner has never run in this
+      #   repository, so no endpoint baseline exists and a block policy written
+      #   without one fails closed on its first run; audit is what produces that list
+      - name: Harden the runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # zizmor: ignore[artipacked] -- opens a pull request carrying regenerated swagger docs
 
       - name: Download generated docs
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -370,63 +455,11 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Determine target branch
-        id: target
-        # Same derivation the auto-commit step always used: GITHUB_HEAD_REF is
-        # set for pull_request events (the PR's own head branch);
-        # GITHUB_REF_NAME is used otherwise (push/workflow_dispatch/schedule,
-        # all of which run against main — see the `on:` triggers).
-        run: echo "branch=${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-
-      - name: Commit docs directly to PR branch
-        # A non-main target branch is an open PR's own head branch, which
-        # still requires review + status checks before it can reach main, so
-        # a direct push here is safe — it just keeps that PR's docs in sync.
-        #
-        # This commit deliberately carries NO `[skip ci]` marker. It used to.
-        # `[skip ci]` suppresses the workflow run for the SHA it lands on, and
-        # branch protection evaluates required contexts against the PR's HEAD —
-        # so the push moved the head to a commit that would never report any
-        # check, and the PR sat BLOCKED with nothing failing and nothing to
-        # re-run. Silent, and indistinguishable from "still waiting for CI".
-        #
-        # Without the marker the push re-runs CI once. That run regenerates the
-        # same docs, the diff step finds no change, and no second commit is
-        # made — so it terminates after exactly one extra run, and only on PRs
-        # whose docs actually drifted. The convergence check below turns the
-        # one shape that would NOT terminate — a generator whose output is not
-        # byte-stable — into a loud failure instead of a commit loop.
-        if: steps.diff.outputs.changed == 'true' && steps.target.outputs.branch != 'main'
-        run: |
-          set -euo pipefail
-          TARGET_BRANCH="${STEPS_TARGET_OUTPUTS_BRANCH}"
-          # Fetch and rebase before pushing so concurrent commits to the same branch
-          # (e.g. two PR squash-merges landing seconds apart) don't cause a rejected push.
-          git fetch origin "${TARGET_BRANCH}"
-
-          if [ "$(git log -1 --format=%s "origin/${TARGET_BRANCH}")" = "${DOCS_COMMIT_SUBJECT}" ]; then
-            echo "::error::Swagger regeneration is not converging: the previous commit on ${TARGET_BRANCH} was already a regeneration and the docs still differ. That means \`swag init\` output is not byte-stable, so committing again would loop. Fix the generator (or pin its version) rather than re-running."
-            git --no-pager diff --stat backend/docs/swagger.json backend/docs/openapi3.json
-            exit 1
-          fi
-
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add backend/docs/swagger.json backend/docs/openapi3.json
-          git commit -m "${DOCS_COMMIT_SUBJECT}"
-          git rebase "origin/${TARGET_BRANCH}"
-          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
-        env:
-          DOCS_COMMIT_SUBJECT: "chore: regenerate swagger.json and openapi3.json"
-          STEPS_TARGET_OUTPUTS_BRANCH: ${{ steps.target.outputs.branch }}
-
       - name: Open pull request for doc regeneration onto main
-        # Anything that would otherwise write straight onto the protected
-        # main branch — a direct push, workflow_dispatch, or the scheduled
-        # weekly run — goes through a bot-authored PR instead of a direct
-        # push, so normal review and required status checks always apply
-        # before regenerated docs reach main (#657).
-        if: steps.diff.outputs.changed == 'true' && steps.target.outputs.branch == 'main'
+        # A bot-authored pull request rather than a direct push, so normal
+        # review and required status checks always apply before regenerated
+        # docs reach main (#657).
+        if: steps.diff.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           base: main
