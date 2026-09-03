@@ -128,6 +128,13 @@ def main() -> int:
     # and would read here as a clean result. Callers that only run this script
     # because the scanner reported failure pass --scanner-failed, which makes
     # "failed but found nothing" the contradiction it actually is.
+    #
+    # SHARPER SINCE #894, at the one caller that has adopted the shared osv-scan
+    # action: that caller runs this script when the scanner exited exactly 1,
+    # rather than on any non-zero, because the action reports the real code. So
+    # "reported findings and named none" is now a contradiction about a single
+    # exit code rather than about a collapsed outcome. The check is unchanged
+    # and still correct for callers that have not adopted it.
     scanner_failed = "--scanner-failed" in args
     if scanner_failed:
         args.remove("--scanner-failed")
