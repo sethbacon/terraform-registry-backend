@@ -17,3 +17,22 @@ rules:
       # installation actually grants, not with adding inputs to see what breaks.
       - release-please.yml
 
+  self-repository:
+    ignore:
+      # zizmor tips: replace in-repo `uses: ./...` references with GitHub's
+      # self-repository form, `uses: $/...`, shipped 2026-07-30. actionlint
+      # rejects `$/` outright -- "not following the format
+      # 'owner/repo/path/to/workflow.yml@ref' nor './path/to/workflow.yml'" --
+      # and actionlint is a required check here via 4cloudguru/shared-workflows'
+      # workflow-security gate, so the remediation cannot land. Proven, not
+      # assumed: the conversion was tried in 4cloudguru/shared-workflows#46,
+      # `$/` resolved correctly at runtime, and actionlint plus a pinning gate
+      # failed it. Support is requested in rhysd/actionlint#711, still open.
+      #
+      # Delete these entries once actionlint understands `$/`. Tracked in
+      # 4cloudguru/shared-workflows#45.
+      - chaos.yml
+      - ci.yml
+      - fuzz.yml
+      - release.yml
+      - weekly-security.yml
