@@ -71,7 +71,7 @@ jobs:
       # repo's go.sum. One transient read took a required check red in
       # terraform-state-manager-backend on a PR with no Go changes.
       - name: Install golangci-lint
-        uses: 4cloudguru/shared-workflows/.github/actions/go-install@3dac549c7e4fe4a0dc54aaf9ed187b6da2c6eab9 # v1.15.0
+        uses: 4cloudguru/shared-workflows/.github/actions/go-install@a53b685c1f50255e5bc7061b6080d2456351b9be # v1.18.0
         with:
           package: github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
 
@@ -87,7 +87,7 @@ jobs:
       # it also removes a write to an environment file, which is a code-execution
       # vector zizmor flags on principle.
       - name: Install swag
-        uses: 4cloudguru/shared-workflows/.github/actions/go-install@3dac549c7e4fe4a0dc54aaf9ed187b6da2c6eab9 # v1.15.0
+        uses: 4cloudguru/shared-workflows/.github/actions/go-install@a53b685c1f50255e5bc7061b6080d2456351b9be # v1.18.0
         with:
           package: github.com/swaggo/swag/cmd/swag@v1.16.6
 
