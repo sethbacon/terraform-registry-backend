@@ -532,6 +532,13 @@ func (h *ProviderAdminHandlers) CreateProviderRecord(c *gin.Context) {
 	}
 
 	if err := h.providerRepo.CreateProvider(c.Request.Context(), provider); err != nil {
+		// Lost the insert race against another create in the same
+		// organization; the existence check above is a time-of-check window.
+		// Same answer it would have given (#987).
+		if repositories.IsUniqueViolation(err) {
+			c.JSON(http.StatusConflict, gin.H{"error": "Provider already exists"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create provider: " + err.Error()})
 		return
 	}

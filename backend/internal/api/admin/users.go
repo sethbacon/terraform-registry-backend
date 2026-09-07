@@ -404,6 +404,15 @@ func (h *UserHandlers) CreateUserHandler() gin.HandlerFunc {
 		}
 
 		if err := h.userRepo.CreateUser(c.Request.Context(), user); err != nil {
+			// Lost the insert race against another create with the same email;
+			// the availability check above is a time-of-check window. Same
+			// answer it would have given (#987).
+			if repositories.IsUniqueViolation(err) {
+				c.JSON(http.StatusConflict, gin.H{
+					"error": "User with this email already exists",
+				})
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to create user",
 			})
@@ -511,6 +520,15 @@ func (h *UserHandlers) UpdateUserHandler() gin.HandlerFunc {
 		// a membership removed between the two turns this into the 404 above
 		// rather than a write the caller is no longer entitled to make.
 		if err := h.userRepo.UpdateUser(c.Request.Context(), user, scope); err != nil {
+			// An email change can collide with a concurrent one; the
+			// availability check above is a time-of-check window. Same answer
+			// it would have given (#987).
+			if repositories.IsUniqueViolation(err) {
+				c.JSON(http.StatusConflict, gin.H{
+					"error": "Email already in use by another user",
+				})
+				return
+			}
 			if identityerr.IsNotFound(err) {
 				c.JSON(http.StatusNotFound, gin.H{
 					"error": "User not found",

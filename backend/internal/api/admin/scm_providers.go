@@ -302,6 +302,12 @@ func (h *SCMProviderHandlers) CreateProvider(c *gin.Context) {
 	}
 
 	if err := h.scmRepo.CreateProvider(c.Request.Context(), provider); err != nil {
+		// Lost the insert race; the existence check above is a time-of-check
+		// window. Same answer it would have given (#987).
+		if repositories.IsUniqueViolation(err) {
+			c.JSON(http.StatusConflict, gin.H{"error": "An SCM provider with this name and type already exists in this organization"})
+			return
+		}
 		slog.Error("failed to create SCM provider", "error", err, "org_id", provider.OrganizationID, "provider_type", provider.ProviderType, "name", provider.Name)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create provider"})
 		return
