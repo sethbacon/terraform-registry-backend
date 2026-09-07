@@ -1218,6 +1218,16 @@ func (h *OrganizationHandlers) AddMemberHandler() gin.HandlerFunc {
 
 		if err := h.orgRepo.AddMemberWithRoleTemplate(c.Request.Context(), orgID, req.UserID, req.RoleTemplateID,
 			repositories.OrgScopeOrganizations(orgID)); err != nil {
+			// The pre-check above is a time-of-check window: two concurrent
+			// adds both see "not a member" and both insert. The loser gets a
+			// 23505, which used to surface as a 500 with the constraint name in
+			// the log. Answer it exactly as the pre-check would have (#987).
+			if repositories.IsUniqueViolation(err) {
+				c.JSON(http.StatusConflict, gin.H{
+					"error": "User is already a member of this organization",
+				})
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to add member to organization",
 			})
