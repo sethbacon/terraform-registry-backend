@@ -23,7 +23,7 @@ jobs:
       #   exists and a block policy written without one fails closed on its first run;
       #   audit is what produces that list
       - name: Harden the runner
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
       - name: Check PR title follows Conventional Commits
@@ -67,7 +67,7 @@ jobs:
       #   so no endpoint baseline exists and a block policy written without one fails
       #   closed on its first run; audit is what produces that list
       - name: Harden the runner
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
       - name: Checkout
@@ -157,7 +157,7 @@ jobs:
       #   exists and a block policy written without one fails closed on its first run;
       #   audit is what produces that list
       - name: Harden the runner
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
       # The guard is 128 lines of shell that was duplicated across NINE
@@ -190,7 +190,7 @@ jobs:
       #   written without one fails closed on its first run; audit is what produces
       #   that list
       - name: Harden the runner
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
       - name: Checkout
