@@ -7,6 +7,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.18.2](https://github.com/sethbacon/terraform-registry-backend/compare/v4.18.1...v4.18.2) (2026-09-07)
+
+
+### Bug Fixes
+
+* **api:** answer a lost insert race with the same 409 the pre-check gives ([#1032](https://github.com/sethbacon/terraform-registry-backend/issues/1032)) ([ecf6893](https://github.com/sethbacon/terraform-registry-backend/commit/ecf689344f48937720ee714fb98e8d335c5d0015))
+* **mirror:** decide the provider's owning organization instead of defaulting to it ([#1026](https://github.com/sethbacon/terraform-registry-backend/issues/1026)) ([d91db91](https://github.com/sethbacon/terraform-registry-backend/commit/d91db91d4eebe5d35f588b95ff25eb026b183ca2))
+* **providers:** refuse an empty organization_id instead of converting it to NULL ([#1034](https://github.com/sethbacon/terraform-registry-backend/issues/1034)) ([29fb1ea](https://github.com/sethbacon/terraform-registry-backend/commit/29fb1ea3ad92db6f3713148c88bea7fb44285697))
+
+
+### Refactor
+
+* **api:** lift the key material and rate limiters out of NewRouter ([#1031](https://github.com/sethbacon/terraform-registry-backend/issues/1031)) ([69887c6](https://github.com/sethbacon/terraform-registry-backend/commit/69887c643e6f00395fa58e3715fa26750569412f))
+
 ## [4.18.1](https://github.com/sethbacon/terraform-registry-backend/compare/v4.18.0...v4.18.1) (2026-09-02)
 
 
