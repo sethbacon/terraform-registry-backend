@@ -33,16 +33,35 @@ func (r *ProviderRepository) CreateProvider(ctx context.Context, provider *model
 		RETURNING id, created_at, updated_at
 	`
 
-	// Handle empty organization ID (single-tenant mode) by passing nil instead
-	var orgID interface{}
-	if provider.OrganizationID == "" {
-		orgID = nil
-	} else {
-		orgID = provider.OrganizationID
+	// A NULL organization_id here means visible to EVERY organization -- the read
+	// predicate is `(p.organization_id = $1 OR p.organization_id IS NULL)`, which
+	// is the OPPOSITE of what the same column name means in
+	// terraform-state-manager, where `= ANY($1::uuid[])` never matches NULL and an
+	// unstamped row belongs to nobody. Both meanings are defensible; what is not
+	// defensible is reaching the permissive one by forgetting to set a field,
+	// because once the row exists a NULL that means "shared with everyone" and a
+	// NULL that means "nobody set this" are indistinguishable.
+	//
+	// So this refuses rather than converting. Neither request-driven caller needs
+	// the conversion: the admin route resolves the organization through
+	// resolveNamespaceCreateOrganization, which returns a real id or fails closed,
+	// and the pull-through mirror takes it from GetDefaultOrganization, which 404s
+	// when it is missing. A genuinely shared provider row is a deliberate act and
+	// belongs in a migration that says so.
+	//
+	// Trimmed, because "   " is not a smaller version of the same mistake: it
+	// reaches the INSERT as a non-empty string and becomes a row owned by an
+	// organization id that cannot exist, which is invisible to everyone AND
+	// matches no foreign key.
+	if strings.TrimSpace(provider.OrganizationID) == "" {
+		return fmt.Errorf(
+			"failed to create provider: organization_id is required -- a NULL organization_id " +
+				"is visible to every organization in this registry, so it must come from a " +
+				"migration that intends it, never from an unset field")
 	}
 
 	err := r.db.QueryRowContext(ctx, query,
-		orgID,
+		provider.OrganizationID,
 		provider.Namespace,
 		provider.Type,
 		provider.Description,
@@ -106,9 +125,20 @@ func (r *ProviderRepository) GetProviderByID(ctx context.Context, id string) (*m
 //
 // The meaning intended here is "a mirrored or single-tenant provider that
 // everyone should see", and the ORDER BY prefers the organization-owned row
-// when both exist. A NULL is therefore a deliberate marker, not an unstamped
-// row -- which is why the one job that can write one does so only when no
-// default organization exists, and fails rather than guessing otherwise.
+// when both exist. A NULL is therefore a deliberate marker, not an unstamped row,
+// and as of #932 that is enforced rather than intended: CreateProvider REFUSES an
+// empty organization_id instead of converting it to NULL, so no Go path can
+// produce one. Both request-driven callers already resolved a real organization
+// (the admin route through resolveNamespaceCreateOrganization, the pull-through
+// mirror through GetDefaultOrganization, which 404s when it is missing), so
+// nothing lost the ability to do anything it was doing. A shared row now comes
+// only from a migration that says it means shared.
+//
+// The residual worth knowing: a NULL that means "shared with everyone" and a NULL
+// that means "nobody stamped this" are still indistinguishable ONCE A ROW EXISTS.
+// Refusing at the write is what keeps the second kind from being created; it
+// cannot retro-label rows that predate it. A real marker column would settle
+// that, and is the open half of #932.
 //
 // In single-tenant mode (or when provider has NULL org_id), also matches providers with NULL organization_id
 func (r *ProviderRepository) GetProvider(ctx context.Context, orgID, namespace, providerType string) (*models.Provider, error) {
