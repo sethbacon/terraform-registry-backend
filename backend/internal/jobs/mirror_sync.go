@@ -503,6 +503,41 @@ func (j *MirrorSyncJob) performSync(ctx context.Context, config models.MirrorCon
 
 // syncProvider syncs a single provider from upstream.
 // coverage:skip:integration-only — takes an UpstreamRegistryClient and drives real HTTP + DB flow; covered by integration tests.
+// providerOwnerOrganization decides which organization owns the provider rows a
+// mirror creates, and it is a tenancy decision rather than a lookup.
+//
+// An empty return becomes SQL NULL in CreateProvider, and a NULL owner is read
+// by GetProvider as "visible to EVERY organization" (the predicate says so at
+// length in provider_repository.go). The old inline version swallowed the
+// lookup error and fell through to "", so a transient failure of an unrelated
+// query silently widened the provider from "owned by the default organization"
+// to "visible to everyone" -- a different answer to the same sync, chosen by
+// something with nothing to do with tenancy (#932).
+//
+// Split out so that decision can be exercised on its own, the way
+// ownerOrganizationLives already is.
+func (j *MirrorSyncJob) providerOwnerOrganization(ctx context.Context, config models.MirrorConfiguration) (string, error) {
+	if config.OrganizationID != nil {
+		return config.OrganizationID.String(), nil
+	}
+
+	// Config has no org assigned — fall back to the default organization so the
+	// provider is visible in org-scoped searches (multi-tenant mode).
+	defaultOrg, err := j.orgRepo.GetDefaultOrganization(ctx)
+	switch {
+	case identityerr.Missing(defaultOrg, err):
+		// No default organization exists at all: a single-tenant deployment.
+		// The empty string writes a NULL owner and every reader sees the row,
+		// which is what NULL is FOR here. This is the only path that may
+		// produce one, and it is deliberate.
+		return "", nil
+	case err != nil:
+		return "", fmt.Errorf("failed to resolve the default organization for mirror %s: %w", config.Name, err)
+	default:
+		return defaultOrg.ID, nil
+	}
+}
+
 func (j *MirrorSyncJob) syncProvider(ctx context.Context, upstreamClient mirror.UpstreamRegistryClient, config models.MirrorConfiguration, namespace, providerName string) (*SyncedProvider, error) {
 	// List versions from upstream
 	allVersions, err := upstreamClient.ListProviderVersions(ctx, namespace, providerName)
@@ -529,17 +564,9 @@ func (j *MirrorSyncJob) syncProvider(ctx context.Context, upstreamClient mirror.
 		Versions:  []string{},
 	}
 
-	// Determine organization ID for the provider
-	var orgID string
-	if config.OrganizationID != nil {
-		orgID = config.OrganizationID.String()
-	} else {
-		// Config has no org assigned — fall back to the default organization so the
-		// provider is visible in org-scoped searches (multi-tenant mode).
-		defaultOrg, err := j.orgRepo.GetDefaultOrganization(ctx)
-		if err == nil && defaultOrg != nil {
-			orgID = defaultOrg.ID
-		}
+	orgID, err := j.providerOwnerOrganization(ctx, config)
+	if err != nil {
+		return nil, err
 	}
 
 	// Check if this provider already exists locally

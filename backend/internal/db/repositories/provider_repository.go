@@ -97,6 +97,19 @@ func (r *ProviderRepository) GetProviderByID(ctx context.Context, id string) (*m
 }
 
 // GetProvider retrieves a provider by organization, namespace, and type
+// NULL organization_id MEANS "VISIBLE TO EVERY ORGANIZATION" HERE, and the
+// predicate below is where that is decided. Say it out loud because the
+// sibling app chose the opposite: terraform-state-manager scopes with
+// `organization_id = ANY($1::uuid[])`, and `NULL = ANY(...)` is NULL rather
+// than true, so there a NULL row is visible to NO organization. Same column
+// name, same suite, same shared identity module, opposite meaning (#932).
+//
+// The meaning intended here is "a mirrored or single-tenant provider that
+// everyone should see", and the ORDER BY prefers the organization-owned row
+// when both exist. A NULL is therefore a deliberate marker, not an unstamped
+// row -- which is why the one job that can write one does so only when no
+// default organization exists, and fails rather than guessing otherwise.
+//
 // In single-tenant mode (or when provider has NULL org_id), also matches providers with NULL organization_id
 func (r *ProviderRepository) GetProvider(ctx context.Context, orgID, namespace, providerType string) (*models.Provider, error) {
 	// Query that matches either the specific org ID or NULL org ID (for mirrored/single-tenant providers)
