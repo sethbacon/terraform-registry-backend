@@ -2,6 +2,7 @@ package repositories
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -103,7 +104,9 @@ func TestCreateProvider_Success(t *testing.T) {
 	mock.ExpectQuery("INSERT INTO providers").
 		WillReturnRows(sqlmock.NewRows(provCreateCols).AddRow("prov-new", time.Now(), time.Now()))
 
-	p := &models.Provider{Namespace: "hashicorp", Type: "aws"}
+	// Names an organization, as both real callers do. It previously left the
+	// field unset and passed only because the repository converted that to NULL.
+	p := &models.Provider{OrganizationID: "org-1", Namespace: "hashicorp", Type: "aws"}
 	if err := repo.CreateProvider(context.Background(), p); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -840,17 +843,58 @@ func TestCreateProvider_DBError(t *testing.T) {
 	}
 }
 
-func TestCreateProvider_EmptyOrgID(t *testing.T) {
+// A NULL organization_id on `providers` means visible to EVERY organization in
+// this repository -- `WHERE (p.organization_id = $1 OR p.organization_id IS NULL)`
+// -- which is the opposite of what the same column name means in
+// terraform-state-manager, where `= ANY($1::uuid[])` never matches NULL. That is
+// a defensible meaning for a mirrored provider, but it must never be reachable
+// by FORGETTING to set the field, because the two mistakes are indistinguishable
+// once the row exists: a NULL that means "shared with everyone" and a NULL that
+// means "nobody set this" look identical.
+//
+// Both request-driven paths already resolve a real organization or fail closed
+// (the admin route through resolveNamespaceCreateOrganization, the pull-through
+// mirror through GetDefaultOrganization, which 404s when it is missing). This
+// test is what stops that from silently becoming untrue: an empty organization
+// is refused at the repository, so a NULL row can only come from a migration
+// that intends one.
+// THE INSERT IS EXPECTED TO SUCCEED HERE, DELIBERATELY. Without an expectation
+// sqlmock fails the call on its own and the test passes whether or not a guard
+// exists -- and its error even echoes the query text, so asserting the message
+// names "organization_id" passes too. Both of those are green about nothing.
+// Letting the INSERT succeed means the ONLY way this test can pass is a guard
+// that returns before the query runs.
+func TestCreateProvider_EmptyOrgIDIsRefused(t *testing.T) {
 	repo, mock := newProviderRepo(t)
 	mock.ExpectQuery("INSERT INTO providers").
 		WillReturnRows(sqlmock.NewRows(provCreateCols).AddRow("prov-new", time.Now(), time.Now()))
 
 	p := &models.Provider{OrganizationID: "", Namespace: "hashicorp", Type: "aws"}
-	if err := repo.CreateProvider(context.Background(), p); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	err := repo.CreateProvider(context.Background(), p)
+	if err == nil {
+		t.Fatal("expected an empty organization_id to be refused; a NULL organization_id " +
+			"is visible to every organization here, so it must be deliberate")
 	}
-	if p.ID != "prov-new" {
-		t.Errorf("ID = %s, want prov-new", p.ID)
+	if !strings.Contains(err.Error(), "organization_id") {
+		t.Errorf("error should name the field that is wrong, got: %v", err)
+	}
+	if p.ID != "" {
+		t.Errorf("no row should have been inserted, got ID = %q", p.ID)
+	}
+}
+
+func TestCreateProvider_WhitespaceOnlyOrgIDIsRefused(t *testing.T) {
+	// "   " is not a smaller version of the same mistake -- it reaches the INSERT
+	// as a non-empty string, so without a trim it becomes a real row owned by an
+	// organization id that cannot exist, which is worse than the NULL: it is
+	// invisible to every organization AND matches no foreign key.
+	repo, mock := newProviderRepo(t)
+	mock.ExpectQuery("INSERT INTO providers").
+		WillReturnRows(sqlmock.NewRows(provCreateCols).AddRow("prov-new", time.Now(), time.Now()))
+
+	p := &models.Provider{OrganizationID: "   ", Namespace: "hashicorp", Type: "aws"}
+	if err := repo.CreateProvider(context.Background(), p); err == nil {
+		t.Fatal("expected a whitespace-only organization_id to be refused")
 	}
 }
 
