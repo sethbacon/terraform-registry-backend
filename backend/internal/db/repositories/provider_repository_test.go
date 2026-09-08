@@ -161,14 +161,33 @@ func TestGetProvider_DBError(t *testing.T) {
 	}
 }
 
-func TestGetProvider_QueryIncludesDeterministicOrdering(t *testing.T) {
+// GUARD get-provider-is-strictly-org-scoped (issue #1035).
+//
+// GetProvider used to read `(p.organization_id = $1 OR p.organization_id IS
+// NULL)`, so a NULL-owner row came back to a caller acting in ANY organization
+// -- while ListProviders, the search paths and GetProviderByNamespaceType all
+// filtered on `organization_id = $1` alone and never matched it. Migration
+// 000061 backfilled those rows and made the column NOT NULL; this pins the
+// predicate so the permissive branch cannot return.
+//
+// The test that lived here asserted an `ORDER BY CASE WHEN organization_id =
+// $1` tiebreak. That existed only to prefer the org-owned row over the NULL one
+// when both matched, so it went with the branch it served: what remains is an
+// exact match on the (organization_id, namespace, type) unique key.
+//
+// NOT the Terraform protocol path. That is GetProviderByNamespace, which
+// carries no organization at all and is guarded as org-blind by #972.
+func TestGetProvider_IsStrictlyOrganizationScoped(t *testing.T) {
 	repo, mock := newProviderRepo(t)
-	mock.ExpectQuery("ORDER BY CASE WHEN p.organization_id = \\$1 THEN 0 ELSE 1 END").
+	mock.ExpectQuery("WHERE p.organization_id = \\$1 AND p.namespace = \\$2 AND p.type = \\$3").
+		WithArgs("org-1", "hashicorp", "aws").
 		WillReturnRows(sampleProviderRow())
 
-	_, err := repo.GetProvider(context.Background(), "org-1", "hashicorp", "aws")
-	if err != nil {
+	if _, err := repo.GetProvider(context.Background(), "org-1", "hashicorp", "aws"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("the lookup must filter on the organization alone: %v", err)
 	}
 }
 

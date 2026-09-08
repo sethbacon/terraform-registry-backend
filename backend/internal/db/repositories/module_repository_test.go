@@ -136,7 +136,7 @@ func TestCreateModule_Success(t *testing.T) {
 	mock.ExpectQuery("INSERT INTO modules").
 		WillReturnRows(sqlmock.NewRows(modCreateCols).AddRow("mod-new", time.Now(), time.Now()))
 
-	m := &models.Module{Namespace: "hashicorp", Name: "vpc", System: "aws"}
+	m := &models.Module{OrganizationID: "org-1", Namespace: "hashicorp", Name: "vpc", System: "aws"}
 	if err := repo.CreateModule(context.Background(), m); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -145,12 +145,38 @@ func TestCreateModule_Success(t *testing.T) {
 	}
 }
 
+// GUARD module-requires-an-organization (issue #1035).
+//
+// modules.organization_id is NOT NULL as of migration 000061, and CreateModule
+// refuses an empty one in front of the constraint so the error names the real
+// problem. Without an owner a module has no namespace ownership claim at all --
+// migration 000045 builds namespace_claims with `WHERE organization_id IS NOT
+// NULL`, so such a row is silently skipped -- and none of the org-scoped admin
+// paths can reach it.
+//
+// The refusal is also what keeps the backfill honest: no Go path can add new
+// NULL rows behind a migration that is repairing the old ones.
+func TestCreateModule_RequiresAnOrganization(t *testing.T) {
+	for _, orgID := range []string{"", "   "} {
+		repo, mock := newModuleRepo(t)
+		// No ExpectQuery: the refusal must happen before any statement runs, and
+		// sqlmock fails the test if an unexpected one does.
+		m := &models.Module{OrganizationID: orgID, Namespace: "hashicorp", Name: "vpc", System: "aws"}
+		if err := repo.CreateModule(context.Background(), m); err == nil {
+			t.Fatalf("organization_id %q was accepted; a module with no owner has no namespace claim", orgID)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("expectations: %v", err)
+		}
+	}
+}
+
 func TestCreateModule_DBError(t *testing.T) {
 	repo, mock := newModuleRepo(t)
 	mock.ExpectQuery("INSERT INTO modules").
 		WillReturnError(errDB)
 
-	m := &models.Module{Namespace: "hashicorp", Name: "vpc", System: "aws"}
+	m := &models.Module{OrganizationID: "org-1", Namespace: "hashicorp", Name: "vpc", System: "aws"}
 	if err := repo.CreateModule(context.Background(), m); err == nil {
 		t.Error("expected error, got nil")
 	}

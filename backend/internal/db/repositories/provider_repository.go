@@ -33,14 +33,17 @@ func (r *ProviderRepository) CreateProvider(ctx context.Context, provider *model
 		RETURNING id, created_at, updated_at
 	`
 
-	// A NULL organization_id here means visible to EVERY organization -- the read
-	// predicate is `(p.organization_id = $1 OR p.organization_id IS NULL)`, which
-	// is the OPPOSITE of what the same column name means in
-	// terraform-state-manager, where `= ANY($1::uuid[])` never matches NULL and an
-	// unstamped row belongs to nobody. Both meanings are defensible; what is not
-	// defensible is reaching the permissive one by forgetting to set a field,
-	// because once the row exists a NULL that means "shared with everyone" and a
-	// NULL that means "nobody set this" are indistinguishable.
+	// organization_id is NOT NULL as of migration 000061, so a NULL here is now a
+	// constraint violation rather than a silently permissive row (#1035). This
+	// refusal is kept in front of it anyway: it names the actual problem at the
+	// call site instead of surfacing a Postgres not-null violation from three
+	// layers down, and it is the check that made the migration safe to write --
+	// no Go path could add new NULLs while the backfill was being prepared.
+	//
+	// The history is worth keeping because the two apps still differ. Here a NULL
+	// used to mean visible to EVERY organization; in terraform-state-manager
+	// `= ANY($1::uuid[])` never matches NULL, so an unstamped row belongs to
+	// nobody. Registry no longer has either meaning -- it has no NULLs.
 	//
 	// So this refuses rather than converting. Neither request-driven caller needs
 	// the conversion: the admin route resolves the organization through
@@ -115,41 +118,34 @@ func (r *ProviderRepository) GetProviderByID(ctx context.Context, id string) (*m
 	return provider, nil
 }
 
-// GetProvider retrieves a provider by organization, namespace, and type
-// NULL organization_id MEANS "VISIBLE TO EVERY ORGANIZATION" HERE, and the
-// predicate below is where that is decided. Say it out loud because the
-// sibling app chose the opposite: terraform-state-manager scopes with
-// `organization_id = ANY($1::uuid[])`, and `NULL = ANY(...)` is NULL rather
-// than true, so there a NULL row is visible to NO organization. Same column
-// name, same suite, same shared identity module, opposite meaning (#932).
+// GetProvider resolves a provider WITHIN one organization, strictly.
 //
-// The meaning intended here is "a mirrored or single-tenant provider that
-// everyone should see", and the ORDER BY prefers the organization-owned row
-// when both exist. A NULL is therefore a deliberate marker, not an unstamped row,
-// and as of #932 that is enforced rather than intended: CreateProvider REFUSES an
-// empty organization_id instead of converting it to NULL, so no Go path can
-// produce one. Both request-driven callers already resolved a real organization
-// (the admin route through resolveNamespaceCreateOrganization, the pull-through
-// mirror through GetDefaultOrganization, which 404s when it is missing), so
-// nothing lost the ability to do anything it was doing. A shared row now comes
-// only from a migration that says it means shared.
+// It used to read `(p.organization_id = $1 OR p.organization_id IS NULL)`, so a
+// NULL-owner row came back to a caller acting in ANY organization. That was one
+// predicate disagreeing with the rest of the file -- GetProviderByNamespaceType
+// in org mode, ListProviders and the search paths all filter on
+// `organization_id = $1` alone and never matched such a row, so a NULL-org
+// provider was fetchable by name from any organization while being invisible in
+// every listing. Not a sharing feature: a drifted predicate (#1035).
 //
-// The residual worth knowing: a NULL that means "shared with everyone" and a NULL
-// that means "nobody stamped this" are still indistinguishable ONCE A ROW EXISTS.
-// Refusing at the write is what keeps the second kind from being created; it
-// cannot retro-label rows that predate it. A real marker column would settle
-// that, and is the open half of #932.
+// Migration 000061 backfilled those rows to an operator-named organization and
+// made the column NOT NULL, so there is no longer a category of row for the
+// second branch to match. The ORDER BY went with it: it existed only to prefer
+// the org-owned row over the NULL one when both matched.
 //
-// In single-tenant mode (or when provider has NULL org_id), also matches providers with NULL organization_id
+// THIS IS NOT THE TERRAFORM PROTOCOL PATH, and must never become it. A provider
+// source is host/namespace/type, with no slot for an organization, so protocol
+// reads go through GetProviderByNamespace, which carries no organization at all.
+// Issue #972 pins that as a class property: a guard test fails the build if a
+// protocol read is wired to THIS method. The callers here are the
+// org-constrained ones -- admin CRUD, version approvals, and mirror sync.
 func (r *ProviderRepository) GetProvider(ctx context.Context, orgID, namespace, providerType string) (*models.Provider, error) {
-	// Query that matches either the specific org ID or NULL org ID (for mirrored/single-tenant providers)
 	query := `
 		SELECT p.id, p.organization_id, p.namespace, p.type, p.description, p.source,
 		       p.created_by, p.created_at, p.updated_at, u.name as created_by_name
 		FROM providers p
 		LEFT JOIN users u ON p.created_by = u.id
-		WHERE (p.organization_id = $1 OR p.organization_id IS NULL) AND p.namespace = $2 AND p.type = $3
-		ORDER BY CASE WHEN p.organization_id = $1 THEN 0 ELSE 1 END, p.created_at DESC
+		WHERE p.organization_id = $1 AND p.namespace = $2 AND p.type = $3
 		LIMIT 1
 	`
 

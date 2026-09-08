@@ -26,6 +26,22 @@ func NewModuleRepository(db *sql.DB) *ModuleRepository {
 
 // CreateModule inserts a new module record
 func (r *ModuleRepository) CreateModule(ctx context.Context, module *models.Module) error {
+	// organization_id is NOT NULL as of migration 000061 (#1035). Refused here
+	// rather than left to the constraint so the error names the real problem at
+	// the call site, matching CreateProvider.
+	//
+	// An empty string would already have failed, as an invalid UUID rather than
+	// as a NULL -- modules never had provider's `"" -> nil` conversion, which is
+	// why they never grew provider's permissive read. That is an accident of how
+	// the two were written, not a property worth relying on: trimmed and checked
+	// explicitly, "   " is not a smaller version of the same mistake.
+	if strings.TrimSpace(module.OrganizationID) == "" {
+		return fmt.Errorf(
+			"failed to create module: organization_id is required -- a module with no " +
+				"owning organization has no namespace ownership claim (migration 000045 " +
+				"skips such rows) and cannot be reached by the org-scoped admin paths")
+	}
+
 	query := `
 		INSERT INTO modules (organization_id, namespace, name, system, description, source, created_by)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
