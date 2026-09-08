@@ -95,7 +95,12 @@ type UpdateSCMProviderRequest struct {
 	WebhookSecret *string `json:"webhook_secret,omitempty"`
 	IsActive      *bool   `json:"is_active,omitempty"`
 	// App-credential fields. Setting AppPrivateKey to "" clears the stored key.
-	AuthMode             *string `json:"auth_mode,omitempty"`
+	AuthMode *string `json:"auth_mode,omitempty"`
+	// EntraCredentialType switches an existing entra_app provider between
+	// "client_secret" and "federated". Omitted leaves it alone. Switching TO
+	// federated must clear the stored secret in the same request -- send
+	// "client_secret": "" alongside -- because a federated row that still
+	// carries a secret is refused (#1037).
 	EntraCredentialType  *string `json:"entra_credential_type,omitempty"`
 	GitHubAppID          *string `json:"github_app_id,omitempty"`
 	GitHubInstallationID *string `json:"github_installation_id,omitempty"`
