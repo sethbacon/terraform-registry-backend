@@ -47,12 +47,38 @@ func TestNewAzureDevOpsConnector_DefaultURL(t *testing.T) {
 	}
 }
 
-func TestNewAzureDevOpsConnector_CustomURL(t *testing.T) {
-	c, _ := NewAzureDevOpsConnector(&scm.ConnectorSettings{
+// GUARD organization-required-in-base-url (issue #1036).
+//
+// A bare host with no organization path segment used to be accepted
+// silently, with organization left "" -- every endpoint template below
+// interpolates baseURL and organization together, so that produced a
+// double-slash URL far from here, with nothing at the call site to say why.
+// This is the reproduction from the issue, now asserting the fix rather than
+// the defect: NewAzureDevOpsConnector refuses it.
+func TestNewAzureDevOpsConnector_HostWithNoOrganizationIsAnError(t *testing.T) {
+	c, err := NewAzureDevOpsConnector(&scm.ConnectorSettings{
 		InstanceBaseURL: "http://ado.corp.example.com",
 	})
+	if err == nil {
+		t.Fatalf("expected an error for a base_url with no organization segment, got connector %+v", c)
+	}
+	if c != nil {
+		t.Errorf("connector = %+v, want nil on error", c)
+	}
+}
+
+func TestNewAzureDevOpsConnector_CustomURL(t *testing.T) {
+	c, err := NewAzureDevOpsConnector(&scm.ConnectorSettings{
+		InstanceBaseURL: "http://ado.corp.example.com/myorg",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if c.baseURL != "http://ado.corp.example.com" {
-		t.Errorf("baseURL = %q", c.baseURL)
+		t.Errorf("baseURL = %q, want the host with the organization segment split off", c.baseURL)
+	}
+	if c.organization != "myorg" {
+		t.Errorf("organization = %q, want %q", c.organization, "myorg")
 	}
 }
 
