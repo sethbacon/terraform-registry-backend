@@ -26,8 +26,8 @@ import (
 // counts of SCMRepository's INSERT and UPDATE. sqlmock needs one matcher per
 // parameter; a mismatch fails with both counts and points back here.
 const (
-	scmProviderInsertArgs = 16
-	scmProviderUpdateArgs = 13
+	scmProviderInsertArgs = 17
+	scmProviderUpdateArgs = 14
 )
 
 // scmSecret is one encrypted column: the plaintext the request carried and the

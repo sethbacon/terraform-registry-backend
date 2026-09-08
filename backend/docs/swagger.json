@@ -14217,6 +14217,10 @@
                 "client_secret": {
                     "type": "string"
                 },
+                "entra_credential_type": {
+                    "description": "EntraCredentialType selects how an entra_app provider proves itself:\n\"client_secret\" (default) or \"federated\". Empty means client_secret, so\nan existing client is unaffected (#1037).",
+                    "type": "string"
+                },
                 "github_app_id": {
                     "type": "string"
                 },
@@ -15532,6 +15536,10 @@
                     "type": "string"
                 },
                 "client_secret": {
+                    "type": "string"
+                },
+                "entra_credential_type": {
+                    "description": "EntraCredentialType switches an existing entra_app provider between\n\"client_secret\" and \"federated\". Omitted leaves it alone. Switching TO\nfederated must clear the stored secret in the same request -- send\n\"client_secret\": \"\" alongside -- because a federated row that still\ncarries a secret is refused (#1037).",
                     "type": "string"
                 },
                 "github_app_id": {
@@ -18558,6 +18566,10 @@
                     "type": "string"
                 },
                 "created_at": {
+                    "type": "string"
+                },
+                "entra_credential_type": {
+                    "description": "EntraCredentialType selects HOW an entra_app provider proves itself:\n\"client_secret\" (the original and the default) or \"federated\" (workload\nidentity federation, where the platform projects a token and no secret is\nstored). Meaningless in other auth modes, which carry the default and\nignore it (#1037).",
                     "type": "string"
                 },
                 "github_app_id": {

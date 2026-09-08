@@ -19,6 +19,26 @@ const (
 	AuthModeGitHubApp = "github_app"
 )
 
+// Entra credential types for AuthModeEntraApp (#1037).
+//
+// EntraCredentialClientSecret is the original: a secret held in
+// client_secret_encrypted. Microsoft's guidance is that secrets should not be
+// used in production and Entra caps their lifetime at 24 months, so it is the
+// default only because it is what existing rows carry.
+//
+// EntraCredentialFederated is workload identity federation: the platform
+// (AKS, Container Apps, any OIDC-capable host) projects a token, which is
+// exchanged for an Entra one. No secret is stored anywhere, so there is
+// nothing to rotate and nothing to leak.
+//
+// Certificate and managed-identity credentials are tracked separately (#1041,
+// #1042) and are deliberately absent here rather than stubbed: a constant with
+// no mint path behind it is a value the database CHECK would reject anyway.
+const (
+	EntraCredentialClientSecret = "client_secret"
+	EntraCredentialFederated    = "federated"
+)
+
 // ProviderType represents the type of SCM provider
 type ProviderType string
 
@@ -176,7 +196,13 @@ type SCMProvider struct {
 	// AuthMode selects how the provider authenticates for shared, headless
 	// access: "oauth_user" (legacy per-user OAuth), "entra_app" (Microsoft Entra
 	// app registration, Azure DevOps) or "github_app" (GitHub App).
-	AuthMode               string    `json:"auth_mode" db:"auth_mode"`
+	AuthMode string `json:"auth_mode" db:"auth_mode"`
+	// EntraCredentialType selects HOW an entra_app provider proves itself:
+	// "client_secret" (the original and the default) or "federated" (workload
+	// identity federation, where the platform projects a token and no secret is
+	// stored). Meaningless in other auth modes, which carry the default and
+	// ignore it (#1037).
+	EntraCredentialType    string    `json:"entra_credential_type" db:"entra_credential_type"`
 	GitHubAppID            *string   `json:"github_app_id,omitempty" db:"github_app_id"`
 	GitHubInstallationID   *string   `json:"github_installation_id,omitempty" db:"github_installation_id"`
 	EncryptedAppPrivateKey *string   `json:"-" db:"encrypted_app_private_key"`
