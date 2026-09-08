@@ -53,33 +53,85 @@ type AzureDevOpsConnector struct {
 	organization string
 }
 
+// ParseOrganization extracts the Azure DevOps organization name from a
+// base URL, e.g. "myorg" from "https://dev.azure.com/myorg" or
+// "https://ado.company.com/myorg". Returns "" with no error when
+// instanceBaseURL is empty -- an absent URL is a configuration question for
+// the caller, not a parse failure -- and an error when a URL IS supplied but
+// carries no organization segment, which is never valid: every endpoint this
+// connector calls interpolates the organization into the path (#1036).
+//
+// This is the single source of truth for the parse. CreateProvider and
+// UpdateProvider (internal/api/admin/scm_providers.go) call it through
+// RequireOrganization to reject a bad base_url before it is ever saved; the
+// constructor below calls it to build the connector. One parser means the
+// validator and the connector can never disagree about which URLs are valid.
+func ParseOrganization(instanceBaseURL string) (org, hostBaseURL string, err error) {
+	if instanceBaseURL == "" {
+		return "", "", nil
+	}
+	parsed, parseErr := url.Parse(instanceBaseURL)
+	if parseErr != nil || parsed.Host == "" {
+		return "", "", fmt.Errorf(
+			"base_url %q is not a valid URL", instanceBaseURL)
+	}
+	parts := strings.SplitN(strings.Trim(parsed.Path, "/"), "/", 2)
+	if len(parts) == 0 || parts[0] == "" {
+		return "", "", fmt.Errorf(
+			"base_url %q has no organization: an Azure DevOps base_url must include "+
+				"the organization as the first path segment, e.g. https://dev.azure.com/<org>",
+			instanceBaseURL)
+	}
+	scheme := parsed.Scheme
+	if scheme == "" {
+		scheme = "https"
+	}
+	return parts[0], scheme + "://" + parsed.Host, nil
+}
+
+// RequireOrganization is ParseOrganization plus the "must be present at all"
+// half of the check: nil or empty is rejected too, which ParseOrganization
+// alone cannot do because the constructor legitimately wants "" to mean
+// "fall back to the default host" for an empty settings struct in tests.
+// Called from CreateProvider and UpdateProvider (#1036); "" there is a
+// caller who never set base_url at all, which is the exact hole this closes.
+func RequireOrganization(baseURL *string) error {
+	if baseURL == nil || *baseURL == "" {
+		return fmt.Errorf(
+			"base_url is required for Azure DevOps and must include the organization, " +
+				"e.g. https://dev.azure.com/<org>")
+	}
+	_, _, err := ParseOrganization(*baseURL)
+	return err
+}
+
 // NewAzureDevOpsConnector creates an Azure DevOps connector.
 // The InstanceBaseURL is expected to include the organization name as the first path segment,
 // e.g. https://dev.azure.com/myorg or https://ado.company.com/myorg.
 // The constructor splits that into a host base URL and an organization name so all API
 // endpoint templates (which reference both separately) produce valid paths.
+//
+// Returns an error rather than an empty organization when InstanceBaseURL IS
+// supplied but has no org segment (#1036): every endpoint template below
+// interpolates baseURL and organization together
+// ("%s/%s/_apis/..."), so a silently empty organization used to produce a
+// double-slash URL that failed far from here, with no indication why. A
+// caller with the empty-settings shape RequireOrganization would reject
+// (nil/empty InstanceBaseURL) still gets the pre-existing default-host
+// fallback: that shape is used deliberately by callers -- tests among them
+// -- that want a bare connector, and CreateProvider/UpdateProvider close that
+// door before a row can be saved with it.
 func NewAzureDevOpsConnector(settings *scm.ConnectorSettings) (*AzureDevOpsConnector, error) {
 	baseURL := defaultAzureDevOpsURL
 	organization := ""
 
 	if settings.InstanceBaseURL != "" {
-		if parsed, err := url.Parse(settings.InstanceBaseURL); err == nil && parsed.Host != "" {
-			// Extract the first path segment as the organization name and reconstruct
-			// the host-only base URL so endpoint templates produce correct paths.
-			parts := strings.SplitN(strings.Trim(parsed.Path, "/"), "/", 2)
-			if len(parts) >= 1 && parts[0] != "" {
-				scheme := parsed.Scheme
-				if scheme == "" {
-					scheme = "https"
-				}
-				baseURL = scheme + "://" + parsed.Host
-				organization = parts[0]
-			} else {
-				baseURL = settings.InstanceBaseURL
-			}
-		} else {
-			baseURL = settings.InstanceBaseURL
+		org, hostBaseURL, err := ParseOrganization(settings.InstanceBaseURL)
+		if err != nil {
+			return nil, fmt.Errorf("azuredevops: %w", err)
 		}
+		baseURL = hostBaseURL
+		organization = org
 	}
 
 	return &AzureDevOpsConnector{
@@ -731,6 +783,30 @@ func doJSON(req *http.Request, reason string, notFound error, out any) error {
 		apiErr.StatusCode = http.StatusUnauthorized
 	}
 	return err
+}
+
+// VerifyOrganizationReachable proves the credential and the organization
+// together, which minting an Entra token alone cannot: Azure DevOps has its
+// own permission model separate from Entra, so a service principal can hold a
+// perfectly valid Entra token and still get a 401/203 from dev.azure.com if
+// it was never added under Organization settings -> Users (#1036). This is
+// the cheapest call that proves both: list projects, and only look at
+// whether the request succeeded.
+func (c *AzureDevOpsConnector) VerifyOrganizationReachable(ctx context.Context, creds *scm.AccessToken) error {
+	if c.organization == "" {
+		// Reachable from a pre-#1036 row whose base_url predates the
+		// CreateProvider/UpdateProvider guard. Name the real problem rather
+		// than letting the request below produce a double-slash 404 that
+		// looks like an org-membership failure.
+		return fmt.Errorf("no organization configured: base_url must include the organization, e.g. https://dev.azure.com/<org>")
+	}
+	if _, err := c.fetchProjects(ctx, creds); err != nil {
+		return fmt.Errorf("organization %q is not reachable with this credential "+
+			"(a valid Entra token does not by itself grant Azure DevOps access -- "+
+			"the service principal must be added under Organization settings -> Users): %w",
+			c.organization, err)
+	}
+	return nil
 }
 
 func (c *AzureDevOpsConnector) fetchProjects(ctx context.Context, creds *scm.AccessToken) ([]adoProject, error) {
