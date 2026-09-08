@@ -4,6 +4,7 @@ package admin
 import (
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -73,7 +74,11 @@ type CreateSCMProviderRequest struct {
 	// per-user OAuth), "entra_app" (Microsoft Entra app registration for Azure
 	// DevOps) or "github_app" (GitHub App). The app modes use a single shared,
 	// admin-managed credential.
-	AuthMode             string `json:"auth_mode,omitempty"`
+	AuthMode string `json:"auth_mode,omitempty"`
+	// EntraCredentialType selects how an entra_app provider proves itself:
+	// "client_secret" (default) or "federated". Empty means client_secret, so
+	// an existing client is unaffected (#1037).
+	EntraCredentialType  string `json:"entra_credential_type,omitempty"`
 	GitHubAppID          string `json:"github_app_id,omitempty"`
 	GitHubInstallationID string `json:"github_installation_id,omitempty"`
 	AppPrivateKey        string `json:"app_private_key,omitempty"`
@@ -91,6 +96,7 @@ type UpdateSCMProviderRequest struct {
 	IsActive      *bool   `json:"is_active,omitempty"`
 	// App-credential fields. Setting AppPrivateKey to "" clears the stored key.
 	AuthMode             *string `json:"auth_mode,omitempty"`
+	EntraCredentialType  *string `json:"entra_credential_type,omitempty"`
 	GitHubAppID          *string `json:"github_app_id,omitempty"`
 	GitHubInstallationID *string `json:"github_installation_id,omitempty"`
 	AppPrivateKey        *string `json:"app_private_key,omitempty"`
@@ -142,6 +148,9 @@ func (h *SCMProviderHandlers) CreateProvider(c *gin.Context) {
 
 	// app_private_key, when supplied for github_app, is encrypted separately.
 	var encryptedAppPrivateKey *string
+	// Defaults to client_secret so a provider in any other auth mode carries the
+	// column's default and ignores it, matching the migration.
+	credentialType := scm.EntraCredentialClientSecret
 
 	switch authMode {
 	case scm.AuthModeOAuthUser:
@@ -177,12 +186,25 @@ func (h *SCMProviderHandlers) CreateProvider(c *gin.Context) {
 			}
 		}
 	case scm.AuthModeEntraApp:
-		// Microsoft Entra app registration (Azure DevOps): client-credentials grant.
+		// Microsoft Entra app registration (Azure DevOps).
+		credentialType = strings.TrimSpace(req.EntraCredentialType)
+		if credentialType == "" {
+			credentialType = scm.EntraCredentialClientSecret
+		}
+		if credentialType != scm.EntraCredentialClientSecret && credentialType != scm.EntraCredentialFederated {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "entra_credential_type must be client_secret or federated"})
+			return
+		}
 		if req.ProviderType != scm.ProviderAzureDevOps {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "entra_app auth is only supported for azuredevops providers"})
 			return
 		}
-		if req.TenantID == nil || *req.TenantID == "" {
+		// A federated provider carries no tenant_id of its own: the workload
+		// identity webhook sets AZURE_TENANT_ID beside the projected token, and
+		// the row records only WHICH identity to assume. Requiring one here
+		// would make the mode unreachable for the deployments it exists for.
+		if credentialType != scm.EntraCredentialFederated && (req.TenantID == nil || *req.TenantID == "") {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "tenant_id is required for entra_app auth"})
 			return
 		}
@@ -190,9 +212,23 @@ func (h *SCMProviderHandlers) CreateProvider(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "client_id is required for entra_app auth"})
 			return
 		}
-		if req.ClientSecret == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "client_secret is required for entra_app auth"})
-			return
+		switch credentialType {
+		case scm.EntraCredentialFederated:
+			// Workload identity federation stores no secret at all: the platform
+			// projects a token and it is exchanged for an Entra one. A secret
+			// sent alongside is refused rather than ignored -- storing an unused
+			// one is how a rotated-away secret survives in the database and is
+			// later mistaken for the live credential (#1037).
+			if req.ClientSecret != "" {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": "client_secret must not be set when entra_credential_type is federated"})
+				return
+			}
+		default:
+			if req.ClientSecret == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "client_secret is required for entra_app auth"})
+				return
+			}
 		}
 		if err := azuredevops.RequireOrganization(req.BaseURL); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -303,6 +339,7 @@ func (h *SCMProviderHandlers) CreateProvider(c *gin.Context) {
 		ClientSecretEncrypted:  clientSecretEncrypted,
 		WebhookSecret:          req.WebhookSecret,
 		AuthMode:               authMode,
+		EntraCredentialType:    credentialType,
 		EncryptedAppPrivateKey: encryptedAppPrivateKey,
 		IsActive:               true,
 		CreatedAt:              time.Now(),
@@ -508,13 +545,24 @@ func (h *SCMProviderHandlers) UpdateProvider(c *gin.Context) {
 		provider.ClientID = *req.ClientID
 	}
 	if req.ClientSecret != nil {
-		encryptedSecret, err := h.tokenCipher.SealWithContext(*req.ClientSecret,
-			scm.ProviderClientSecretContext(provider.ID.String()))
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt secret"})
-			return
+		if *req.ClientSecret == "" {
+			// An explicit empty string RETIRES the stored secret rather than
+			// sealing an empty one. This is the only way to satisfy
+			// scm_providers_entra_credential_shape when switching a provider to
+			// federated (#1037): the CHECK refuses a federated row that still
+			// carries a secret, and a sealed "" is a non-empty column value.
+			// Sealing it also made has_client_secret report true for a provider
+			// whose secret was, in substance, gone.
+			provider.ClientSecretEncrypted = ""
+		} else {
+			encryptedSecret, err := h.tokenCipher.SealWithContext(*req.ClientSecret,
+				scm.ProviderClientSecretContext(provider.ID.String()))
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt secret"})
+				return
+			}
+			provider.ClientSecretEncrypted = encryptedSecret
 		}
-		provider.ClientSecretEncrypted = encryptedSecret
 	}
 	if req.WebhookSecret != nil {
 		provider.WebhookSecret = *req.WebhookSecret
@@ -528,6 +576,16 @@ func (h *SCMProviderHandlers) UpdateProvider(c *gin.Context) {
 			provider.AuthMode = *req.AuthMode
 		default:
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid auth_mode"})
+			return
+		}
+	}
+	if req.EntraCredentialType != nil {
+		switch *req.EntraCredentialType {
+		case scm.EntraCredentialClientSecret, scm.EntraCredentialFederated:
+			provider.EntraCredentialType = *req.EntraCredentialType
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "entra_credential_type must be client_secret or federated"})
 			return
 		}
 	}
@@ -574,9 +632,34 @@ func (h *SCMProviderHandlers) UpdateProvider(c *gin.Context) {
 			return
 		}
 	case scm.AuthModeEntraApp:
-		if provider.TenantID == nil || *provider.TenantID == "" || provider.ClientID == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "entra_app auth requires tenant_id and client_id"})
+		if provider.ClientID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "entra_app auth requires client_id"})
 			return
+		}
+		// Checked against the RESULTING provider, so switching an existing row to
+		// federated without clearing its secret is refused here rather than by the
+		// database CHECK (#1037). A federated provider needs no tenant_id: the
+		// platform supplies it with the projected token.
+		if provider.EntraCredentialType == scm.EntraCredentialFederated {
+			if provider.ClientSecretEncrypted != "" {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": "a federated entra_app provider must not carry a client_secret; " +
+						"clear it in the same request that switches entra_credential_type"})
+				return
+			}
+		} else {
+			if provider.TenantID == nil || *provider.TenantID == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "entra_app auth requires tenant_id and client_id"})
+				return
+			}
+			// Caught here so the operator reads this instead of a raw
+			// scm_providers_entra_credential_shape violation.
+			if provider.ClientSecretEncrypted == "" {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": "an entra_app provider using client_secret credentials must carry a " +
+						"client_secret; set entra_credential_type to federated to use workload identity instead"})
+				return
+			}
 		}
 	}
 	// Checked against the RESULTING provider, not just req.BaseURL: a caller who

@@ -115,6 +115,13 @@ func (m *Minter) MintProviderToken(ctx context.Context, p *scm.SCMProvider) (*sc
 	)
 	switch p.AuthMode {
 	case scm.AuthModeEntraApp:
+		// The credential type decides how, not whether. Both arms return a token
+		// and an absolute expiry, so the caching below is identical either way
+		// (#1037).
+		if p.EntraCredentialType == scm.EntraCredentialFederated {
+			token, expiresAt, err = m.mintFederatedToken(ctx, FederatedCreds{ClientID: p.ClientID})
+			break
+		}
 		var creds EntraCreds
 		if creds, err = m.entraCreds(p); err == nil {
 			token, expiresAt, err = m.mintEntraToken(ctx, creds)
