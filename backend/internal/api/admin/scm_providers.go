@@ -15,6 +15,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/scm"
 	"github.com/terraform-registry/terraform-registry/internal/scm/appcreds"
+	"github.com/terraform-registry/terraform-registry/internal/scm/azuredevops"
 )
 
 // SCMProviderHandlers handles SCM provider CRUD operations
@@ -166,6 +167,15 @@ func (h *SCMProviderHandlers) CreateProvider(c *gin.Context) {
 				return
 			}
 		}
+		// oauth_user on azuredevops shares the same base_url-carries-the-organization
+		// contract as entra_app (#1036): NewAzureDevOpsConnector parses the org from
+		// the SAME field regardless of auth mode.
+		if req.ProviderType == scm.ProviderAzureDevOps {
+			if err := azuredevops.RequireOrganization(req.BaseURL); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+		}
 	case scm.AuthModeEntraApp:
 		// Microsoft Entra app registration (Azure DevOps): client-credentials grant.
 		if req.ProviderType != scm.ProviderAzureDevOps {
@@ -182,6 +192,10 @@ func (h *SCMProviderHandlers) CreateProvider(c *gin.Context) {
 		}
 		if req.ClientSecret == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "client_secret is required for entra_app auth"})
+			return
+		}
+		if err := azuredevops.RequireOrganization(req.BaseURL); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
 	case scm.AuthModeGitHubApp:
@@ -565,6 +579,16 @@ func (h *SCMProviderHandlers) UpdateProvider(c *gin.Context) {
 			return
 		}
 	}
+	// Checked against the RESULTING provider, not just req.BaseURL: a caller who
+	// already has a valid base_url and updates only client_secret must not be
+	// able to clear it via a field this endpoint does not even touch, and a
+	// caller who sends a bare host with no org must be caught here too (#1036).
+	if provider.ProviderType == scm.ProviderAzureDevOps {
+		if err := azuredevops.RequireOrganization(provider.BaseURL); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
 
 	provider.UpdatedAt = time.Now()
 
@@ -657,6 +681,37 @@ func (h *SCMProviderHandlers) VerifyProvider(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"ok": false, "error": err.Error()})
 		return
+	}
+
+	// Minting an Entra token proves the app registration's secret is valid; it
+	// proves nothing about Azure DevOps, which has its own permission model and
+	// does not honour Entra application permissions. A service principal can
+	// mint a perfectly good token and still be unable to reach the organization
+	// because nobody added it under Organization settings -> Users. That gap is
+	// #1036: this used to return {"ok": true} for a provider that could not
+	// list a single project.
+	if provider.ProviderType == scm.ProviderAzureDevOps {
+		baseURL := ""
+		if provider.BaseURL != nil {
+			baseURL = *provider.BaseURL
+		}
+		// Built directly rather than through scm.BuildConnector: that path runs
+		// ConnectorSettings.Validate, which requires the OAuth client secret and
+		// callback URL a user-authorization flow needs. This probe has a bearer
+		// token already and needs only the base URL, so routing it through the
+		// OAuth-shaped validation would fail every entra_app provider.
+		connector, connErr := azuredevops.NewAzureDevOpsConnector(&scm.ConnectorSettings{
+			Kind:            provider.ProviderType,
+			InstanceBaseURL: baseURL,
+		})
+		if connErr != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"ok": false, "error": connErr.Error()})
+			return
+		}
+		if err := connector.VerifyOrganizationReachable(c.Request.Context(), token); err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"ok": false, "error": err.Error()})
+			return
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"ok": true, "expires_at": token.ExpiresAt})

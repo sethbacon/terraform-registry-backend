@@ -166,6 +166,9 @@ func TestSCMCreate_EntraApp_Success(t *testing.T) {
 			"tenant_id":     "tenant-1",
 			"client_id":     "client-1",
 			"client_secret": "super-secret",
+			// Required since #1036: base_url is the only source of the ADO
+			// organization, and every endpoint template interpolates it.
+			"base_url": "https://dev.azure.com/acme-org",
 		})), knownUUID))
 
 	if w.Code != http.StatusCreated {
