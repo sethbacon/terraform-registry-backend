@@ -8,6 +8,8 @@ import (
 	"database/sql"
 	"embed"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/golang-migrate/migrate/v4"
@@ -63,10 +65,42 @@ func Connect(dsn string, maxConnections, minIdleConnections int) (*sql.DB, error
 // This mirrors terraform-suite-identity's newMigrator/closeMigrator
 // (sethbacon/terraform-suite-identity#139). The same defect was implemented
 // twice, so the module-side fix never reached this copy.
+// BackfillOrganizationEnvVar names the organization that migration 000061
+// assigns to provider and module rows whose organization_id is NULL (registry
+// issue #1035).
+//
+// Deliberately not the default organization: on a multi-tenant deployment that
+// is where untenanted rows have historically collected, and quietly adding more
+// to it is the failure the issue exists to stop. An operator who has NULL rows
+// must say where they belong; the migration aborts with instructions rather
+// than choosing.
+const BackfillOrganizationEnvVar = "TFR_BACKFILL_ORGANIZATION_ID"
+
 func newMigrator(ctx context.Context, db *sql.DB) (*migrate.Migrate, error) {
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to acquire a connection for migrations: %w", err)
+	}
+
+	// Carry the operator's backfill organization onto the migration connection
+	// as a session setting, so a pure-SQL migration can read it with
+	// current_setting(). Migration 000061 needs an organization id that cannot
+	// be guessed from the data -- the rows it repairs are precisely the ones
+	// whose owner was never recorded -- and golang-migrate has no parameter
+	// mechanism, so the value travels on the connection instead.
+	//
+	// SET LOCAL is deliberately NOT used: it is scoped to a transaction, and
+	// each migration runs in its own. A plain SET lasts for this borrowed
+	// connection, which is released back to the pool by closeMigrator.
+	//
+	// set_config's third argument is is_local=false, matching that. Passing the
+	// value as a bind parameter rather than interpolating it keeps an operator
+	// -supplied string out of the statement text.
+	if orgID := strings.TrimSpace(os.Getenv(BackfillOrganizationEnvVar)); orgID != "" {
+		if _, err := conn.ExecContext(ctx, "SELECT set_config('tfr.backfill_organization_id', $1, false)", orgID); err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("failed to set the backfill organization for migrations: %w", err)
+		}
 	}
 
 	driver, err := postgres.WithConnection(ctx, conn, &postgres.Config{})
