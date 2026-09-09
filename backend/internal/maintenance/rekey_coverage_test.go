@@ -42,6 +42,7 @@ var sweptAADContexts = map[string]string{
 	"OIDCConfigClientSecretContext":          "oidc_config.client_secret_encrypted",
 	"ProviderClientSecretContext":            "scm_providers.client_secret_encrypted",
 	"ProviderAppPrivateKeyContext":           "scm_providers.encrypted_app_private_key",
+	"ProviderEntraCertificateContext":        "scm_providers.encrypted_entra_certificate",
 	"SystemSettingsSMTPPasswordContext":      "system_settings.notifications_config:smtp.smtp_password_encrypted",
 	"SystemSettingsLDAPBindPasswordContext":  "system_settings.ldap_config:bind_password_enc",
 }

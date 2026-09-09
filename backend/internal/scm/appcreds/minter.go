@@ -165,6 +165,13 @@ func (m *Minter) MintProviderToken(ctx context.Context, p *scm.SCMProvider) (*sc
 				sharedcreds.FederatedCreds{ClientID: p.ClientID})
 			break
 		}
+		if p.EntraCredentialType == scm.EntraCredentialCertificate {
+			var certCreds sharedcreds.CertificateCreds
+			if certCreds, err = m.certificateCreds(p); err == nil {
+				minted, err = m.shared.MintCertificate(ctx, certCreds)
+			}
+			break
+		}
 		var creds sharedcreds.EntraCreds
 		if creds, err = m.entraCreds(p); err == nil {
 			minted, err = m.shared.MintEntra(ctx, creds)
@@ -221,6 +228,27 @@ func (m *Minter) entraCreds(p *scm.SCMProvider) (sharedcreds.EntraCreds, error) 
 	return sharedcreds.EntraCreds{TenantID: *p.TenantID, ClientID: p.ClientID, ClientSecret: secret}, nil
 }
 
+// certificateCreds extracts and decrypts the certificate credential for a
+// provider. The bundle is opened under its own row-bound context, so a bundle
+// copied from another provider's row does not decrypt here (#1041).
+func (m *Minter) certificateCreds(p *scm.SCMProvider) (sharedcreds.CertificateCreds, error) {
+	if p.TenantID == nil || *p.TenantID == "" {
+		return sharedcreds.CertificateCreds{}, errors.New("appcreds: certificate entra_app provider missing tenant_id")
+	}
+	if p.ClientID == "" {
+		return sharedcreds.CertificateCreds{}, errors.New("appcreds: certificate entra_app provider missing client_id")
+	}
+	if p.EncryptedEntraCertificate == nil || *p.EncryptedEntraCertificate == "" {
+		return sharedcreds.CertificateCreds{}, errors.New("appcreds: certificate entra_app provider missing entra_certificate")
+	}
+	bundle, _, err := m.cipher.OpenWithContextOrLegacy(
+		*p.EncryptedEntraCertificate, scm.ProviderEntraCertificateContext(p.ID.String()))
+	if err != nil {
+		return sharedcreds.CertificateCreds{}, fmt.Errorf("appcreds: decrypt certificate bundle: %w", err)
+	}
+	return sharedcreds.CertificateCreds{TenantID: *p.TenantID, ClientID: p.ClientID, CertificatePEM: bundle}, nil
+}
+
 // githubAppCreds extracts and decrypts the GitHub App credentials for a provider.
 func (m *Minter) githubAppCreds(p *scm.SCMProvider) (sharedcreds.GitHubAppCreds, error) {
 	if p.GitHubAppID == nil || *p.GitHubAppID == "" {
@@ -241,3 +269,9 @@ func (m *Minter) githubAppCreds(p *scm.SCMProvider) (sharedcreds.GitHubAppCreds,
 		AppID: *p.GitHubAppID, InstallationID: *p.GitHubInstallationID, PrivateKeyPEM: pemStr,
 	}, nil
 }
+
+// ValidCertificateBundle reports, as an error naming the problem, whether a
+// certificate credential's PEM bundle parses. Re-exported for the same reason
+// as ValidRSAPrivateKey: the admin handlers validate an upload through this
+// package's name, and the check at upload is by construction the mint's.
+var ValidCertificateBundle = sharedcreds.ValidCertificateBundle

@@ -46,9 +46,9 @@ func (r *SCMRepository) CreateProvider(ctx context.Context, provider *scm.SCMPro
 			id, organization_id, provider_type, name, base_url, tenant_id,
 			client_id, client_secret_encrypted, webhook_secret,
 			auth_mode, github_app_id, github_installation_id, encrypted_app_private_key,
-			is_active, created_at, updated_at, entra_credential_type
+			is_active, created_at, updated_at, entra_credential_type, encrypted_entra_certificate
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
 		)`
 
 	_, err := r.db.ExecContext(ctx, query,
@@ -56,7 +56,7 @@ func (r *SCMRepository) CreateProvider(ctx context.Context, provider *scm.SCMPro
 		provider.BaseURL, provider.TenantID, provider.ClientID, provider.ClientSecretEncrypted,
 		provider.WebhookSecret, authMode, provider.GitHubAppID, provider.GitHubInstallationID,
 		provider.EncryptedAppPrivateKey, provider.IsActive, provider.CreatedAt, provider.UpdatedAt,
-		entraCredentialType(provider),
+		entraCredentialType(provider), provider.EncryptedEntraCertificate,
 	)
 	return err
 }
@@ -133,7 +133,7 @@ func (r *SCMRepository) UpdateProvider(ctx context.Context, provider *scm.SCMPro
 			client_secret_encrypted = $6, webhook_secret = $7,
 			auth_mode = $8, github_app_id = $9, github_installation_id = $10,
 			encrypted_app_private_key = $11, is_active = $12, updated_at = $13,
-			entra_credential_type = $14
+			entra_credential_type = $14, encrypted_entra_certificate = $15
 		WHERE id = $1`
 
 	_, err := r.db.ExecContext(ctx, query,
@@ -141,7 +141,7 @@ func (r *SCMRepository) UpdateProvider(ctx context.Context, provider *scm.SCMPro
 		provider.ClientSecretEncrypted, provider.WebhookSecret,
 		authMode, provider.GitHubAppID, provider.GitHubInstallationID,
 		provider.EncryptedAppPrivateKey, provider.IsActive, time.Now(),
-		entraCredentialType(provider),
+		entraCredentialType(provider), provider.EncryptedEntraCertificate,
 	)
 	return err
 }

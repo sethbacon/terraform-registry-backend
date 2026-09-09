@@ -26,8 +26,8 @@ import (
 // counts of SCMRepository's INSERT and UPDATE. sqlmock needs one matcher per
 // parameter; a mismatch fails with both counts and points back here.
 const (
-	scmProviderInsertArgs = 17
-	scmProviderUpdateArgs = 14
+	scmProviderInsertArgs = 18
+	scmProviderUpdateArgs = 15
 )
 
 // scmSecret is one encrypted column: the plaintext the request carried and the
@@ -42,6 +42,7 @@ type scmSecret struct {
 var allSCMProviderContexts = []scmSecret{
 	{column: "client_secret_encrypted", context: scm.ProviderClientSecretContext},
 	{column: "encrypted_app_private_key", context: scm.ProviderAppPrivateKeyContext},
+	{column: "encrypted_entra_certificate", context: scm.ProviderEntraCertificateContext},
 }
 
 // assertBoundToProvider checks each secret against the values that reached the

@@ -37,6 +37,11 @@ const (
 const (
 	EntraCredentialClientSecret = "client_secret"
 	EntraCredentialFederated    = "federated"
+	// EntraCredentialCertificate proves the app registration by signing a
+	// client assertion with a held private key. No secret crosses the wire,
+	// and the credential's lifetime is the operator's rather than Entra's
+	// 24-month cap (#1041). The PEM bundle lives in EncryptedEntraCertificate.
+	EntraCredentialCertificate = "certificate"
 )
 
 // ProviderType represents the type of SCM provider
@@ -202,13 +207,17 @@ type SCMProvider struct {
 	// identity federation, where the platform projects a token and no secret is
 	// stored). Meaningless in other auth modes, which carry the default and
 	// ignore it (#1037).
-	EntraCredentialType    string    `json:"entra_credential_type" db:"entra_credential_type"`
-	GitHubAppID            *string   `json:"github_app_id,omitempty" db:"github_app_id"`
-	GitHubInstallationID   *string   `json:"github_installation_id,omitempty" db:"github_installation_id"`
-	EncryptedAppPrivateKey *string   `json:"-" db:"encrypted_app_private_key"`
-	IsActive               bool      `json:"is_active" db:"is_active"`
-	CreatedAt              time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt              time.Time `json:"updated_at" db:"updated_at"`
+	EntraCredentialType    string  `json:"entra_credential_type" db:"entra_credential_type"`
+	GitHubAppID            *string `json:"github_app_id,omitempty" db:"github_app_id"`
+	GitHubInstallationID   *string `json:"github_installation_id,omitempty" db:"github_installation_id"`
+	EncryptedAppPrivateKey *string `json:"-" db:"encrypted_app_private_key"`
+	// EncryptedEntraCertificate is the certificate credential's PEM bundle --
+	// certificate plus unencrypted private key -- sealed with the token cipher
+	// and bound to this row, exactly as EncryptedAppPrivateKey is (#1041).
+	EncryptedEntraCertificate *string   `json:"-" db:"encrypted_entra_certificate"`
+	IsActive                  bool      `json:"is_active" db:"is_active"`
+	CreatedAt                 time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt                 time.Time `json:"updated_at" db:"updated_at"`
 }
 
 // MarshalJSON renders an SCMProvider for API responses. Encrypted secrets (the
@@ -219,12 +228,14 @@ func (p SCMProvider) MarshalJSON() ([]byte, error) {
 	type providerAlias SCMProvider
 	return json.Marshal(struct {
 		providerAlias
-		HasClientSecret  bool `json:"has_client_secret"`
-		HasAppPrivateKey bool `json:"has_app_private_key"`
+		HasClientSecret     bool `json:"has_client_secret"`
+		HasAppPrivateKey    bool `json:"has_app_private_key"`
+		HasEntraCertificate bool `json:"has_entra_certificate"`
 	}{
-		providerAlias:    providerAlias(p),
-		HasClientSecret:  p.ClientSecretEncrypted != "",
-		HasAppPrivateKey: p.EncryptedAppPrivateKey != nil && *p.EncryptedAppPrivateKey != "",
+		providerAlias:       providerAlias(p),
+		HasClientSecret:     p.ClientSecretEncrypted != "",
+		HasAppPrivateKey:    p.EncryptedAppPrivateKey != nil && *p.EncryptedAppPrivateKey != "",
+		HasEntraCertificate: p.EncryptedEntraCertificate != nil && *p.EncryptedEntraCertificate != "",
 	})
 }
 
