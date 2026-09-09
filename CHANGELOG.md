@@ -7,6 +7,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.19.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.18.2...v4.19.0) (2026-09-08)
+
+
+### Features
+
+* **scm:** mint Azure DevOps tokens via workload identity federation ([#1043](https://github.com/sethbacon/terraform-registry-backend/issues/1043)) ([11bacec](https://github.com/sethbacon/terraform-registry-backend/commit/11bacec36906af1280c2dfc7be967a939091bb3e)), closes [#1037](https://github.com/sethbacon/terraform-registry-backend/issues/1037)
+
+
+### Bug Fixes
+
+* **scm:** require the Azure DevOps organization, and prove it in /verify ([#1038](https://github.com/sethbacon/terraform-registry-backend/issues/1038)) ([81ad0d8](https://github.com/sethbacon/terraform-registry-backend/commit/81ad0d80b513f75ef84ec2a76092b42fce788f7d))
+* **tenancy:** give every provider and module a real owner instead of a NULL ([#1040](https://github.com/sethbacon/terraform-registry-backend/issues/1040)) ([0fc6e2d](https://github.com/sethbacon/terraform-registry-backend/commit/0fc6e2df9694c664b767daf6f5ea16c5b72b14c6))
+
 ## [4.18.2](https://github.com/sethbacon/terraform-registry-backend/compare/v4.18.1...v4.18.2) (2026-09-07)
 
 
