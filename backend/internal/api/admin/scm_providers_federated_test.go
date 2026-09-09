@@ -25,17 +25,46 @@ import (
 // the wrong variable.
 func storedCredentialType(t *testing.T, stored []driver.Value) string {
 	t.Helper()
+	// Second-to-last since 000063 appended encrypted_entra_certificate after
+	// it in both statements. Indexed from the end on purpose: the two columns
+	// travel together, and a test reading the wrong one would pass whenever
+	// both happened to be empty.
+	if len(stored) < 2 {
+		t.Fatal("too few arguments were captured")
+	}
+	v := stored[len(stored)-2]
+	switch x := v.(type) {
+	case string:
+		return x
+	case []byte:
+		return string(x)
+	default:
+		t.Fatalf("entra_credential_type parameter is %T (%v), not text", v, v)
+		return ""
+	}
+}
+
+// storedEntraCertificate returns the sealed bundle bound to the statement's
+// last parameter, or "" when the column was written NULL/empty.
+func storedEntraCertificate(t *testing.T, stored []driver.Value) string {
+	t.Helper()
 	if len(stored) == 0 {
 		t.Fatal("no arguments were captured")
 	}
-	last := stored[len(stored)-1]
-	switch v := last.(type) {
+	switch x := stored[len(stored)-1].(type) {
+	case nil:
+		return ""
 	case string:
-		return v
+		return x
 	case []byte:
-		return string(v)
+		return string(x)
+	case *string:
+		if x == nil {
+			return ""
+		}
+		return *x
 	default:
-		t.Fatalf("last statement parameter is %T (%v), not the entra_credential_type text", last, last)
+		t.Fatalf("encrypted_entra_certificate parameter is %T, not text", x)
 		return ""
 	}
 }

@@ -82,6 +82,10 @@ type CreateSCMProviderRequest struct {
 	GitHubAppID          string `json:"github_app_id,omitempty"`
 	GitHubInstallationID string `json:"github_installation_id,omitempty"`
 	AppPrivateKey        string `json:"app_private_key,omitempty"`
+	// EntraCertificate is the certificate credential's PEM bundle -- the
+	// certificate registered on the app plus its unencrypted private key --
+	// for entra_credential_type "certificate" (#1041). Write-only.
+	EntraCertificate string `json:"entra_certificate,omitempty"`
 }
 
 // UpdateSCMProviderRequest represents the request to update an existing SCM provider configuration.
@@ -105,6 +109,10 @@ type UpdateSCMProviderRequest struct {
 	GitHubAppID          *string `json:"github_app_id,omitempty"`
 	GitHubInstallationID *string `json:"github_installation_id,omitempty"`
 	AppPrivateKey        *string `json:"app_private_key,omitempty"`
+	// EntraCertificate replaces the stored bundle; an explicit "" retires it.
+	// Switching TO certificate must supply one in the same request, and must
+	// clear any client_secret alongside -- see the resulting-shape check.
+	EntraCertificate *string `json:"entra_certificate,omitempty"`
 }
 
 // @Summary      Create SCM provider
@@ -153,6 +161,7 @@ func (h *SCMProviderHandlers) CreateProvider(c *gin.Context) {
 
 	// app_private_key, when supplied for github_app, is encrypted separately.
 	var encryptedAppPrivateKey *string
+	var encryptedEntraCertificate *string
 	// Defaults to client_secret so a provider in any other auth mode carries the
 	// column's default and ignores it, matching the migration.
 	credentialType := scm.EntraCredentialClientSecret
@@ -196,7 +205,8 @@ func (h *SCMProviderHandlers) CreateProvider(c *gin.Context) {
 		if credentialType == "" {
 			credentialType = scm.EntraCredentialClientSecret
 		}
-		if credentialType != scm.EntraCredentialClientSecret && credentialType != scm.EntraCredentialFederated {
+		if credentialType != scm.EntraCredentialClientSecret && credentialType != scm.EntraCredentialFederated &&
+			credentialType != scm.EntraCredentialCertificate {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error": "entra_credential_type must be client_secret or federated"})
 			return
@@ -229,9 +239,46 @@ func (h *SCMProviderHandlers) CreateProvider(c *gin.Context) {
 					"error": "client_secret must not be set when entra_credential_type is federated"})
 				return
 			}
+			if req.EntraCertificate != "" {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": "entra_certificate must not be set when entra_credential_type is federated"})
+				return
+			}
+		case scm.EntraCredentialCertificate:
+			// A certificate credential signs a client assertion with a held key;
+			// no secret exists, so one sent alongside is refused for the same
+			// reason as above. The bundle is validated HERE, at upload, so a
+			// bad paste is a 400 on the request that supplied it rather than a
+			// mint failure days later (#1041).
+			if req.ClientSecret != "" {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": "client_secret must not be set when entra_credential_type is certificate"})
+				return
+			}
+			if req.EntraCertificate == "" {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": "entra_certificate is required when entra_credential_type is certificate"})
+				return
+			}
+			if err := appcreds.ValidCertificateBundle(req.EntraCertificate); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "entra_certificate: " + err.Error()})
+				return
+			}
+			enc, encErr := h.tokenCipher.SealWithContext(req.EntraCertificate,
+				scm.ProviderEntraCertificateContext(providerID.String()))
+			if encErr != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt certificate"})
+				return
+			}
+			encryptedEntraCertificate = &enc
 		default:
 			if req.ClientSecret == "" {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "client_secret is required for entra_app auth"})
+				return
+			}
+			if req.EntraCertificate != "" {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": "entra_certificate must not be set when entra_credential_type is client_secret"})
 				return
 			}
 		}
@@ -282,12 +329,25 @@ func (h *SCMProviderHandlers) CreateProvider(c *gin.Context) {
 		}
 	}
 
-	// Encrypt client secret
-	clientSecretEncrypted, err := h.tokenCipher.SealWithContext(req.ClientSecret,
-		scm.ProviderClientSecretContext(providerID.String()))
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt secret"})
-		return
+	// Encrypt the client secret -- only when there is one. A federated or
+	// certificate provider legitimately has none, and sealing the empty string
+	// produces a NON-empty ciphertext: has_client_secret then reports true for
+	// a provider that carries nothing, and scm_providers_entra_credential_shape
+	// refuses the row outright, because it requires the column to be empty for
+	// those types. That refusal is invisible to the sqlmock-backed tests and
+	// shipped in 4.19.0 for federated providers; it surfaced as a 500 the first
+	// time a certificate create was checked against the real constraint
+	// (#1041). The update path already writes "" to retire a secret; create now
+	// writes the same shape for the same reason.
+	clientSecretEncrypted := ""
+	if req.ClientSecret != "" {
+		sealed, err := h.tokenCipher.SealWithContext(req.ClientSecret,
+			scm.ProviderClientSecretContext(providerID.String()))
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt secret"})
+			return
+		}
+		clientSecretEncrypted = sealed
 	}
 
 	// GUARD scm-create-target-org (issue #719). The sibling of
@@ -334,21 +394,22 @@ func (h *SCMProviderHandlers) CreateProvider(c *gin.Context) {
 	}
 
 	provider := &scm.SCMProviderRecord{
-		ID:                     providerID,
-		OrganizationID:         orgID,
-		ProviderType:           req.ProviderType,
-		Name:                   req.Name,
-		BaseURL:                req.BaseURL,
-		TenantID:               req.TenantID,
-		ClientID:               req.ClientID,
-		ClientSecretEncrypted:  clientSecretEncrypted,
-		WebhookSecret:          req.WebhookSecret,
-		AuthMode:               authMode,
-		EntraCredentialType:    credentialType,
-		EncryptedAppPrivateKey: encryptedAppPrivateKey,
-		IsActive:               true,
-		CreatedAt:              time.Now(),
-		UpdatedAt:              time.Now(),
+		ID:                        providerID,
+		OrganizationID:            orgID,
+		ProviderType:              req.ProviderType,
+		Name:                      req.Name,
+		BaseURL:                   req.BaseURL,
+		TenantID:                  req.TenantID,
+		ClientID:                  req.ClientID,
+		ClientSecretEncrypted:     clientSecretEncrypted,
+		WebhookSecret:             req.WebhookSecret,
+		AuthMode:                  authMode,
+		EntraCredentialType:       credentialType,
+		EncryptedAppPrivateKey:    encryptedAppPrivateKey,
+		EncryptedEntraCertificate: encryptedEntraCertificate,
+		IsActive:                  true,
+		CreatedAt:                 time.Now(),
+		UpdatedAt:                 time.Now(),
 	}
 	if req.GitHubAppID != "" {
 		provider.GitHubAppID = &req.GitHubAppID
@@ -586,7 +647,7 @@ func (h *SCMProviderHandlers) UpdateProvider(c *gin.Context) {
 	}
 	if req.EntraCredentialType != nil {
 		switch *req.EntraCredentialType {
-		case scm.EntraCredentialClientSecret, scm.EntraCredentialFederated:
+		case scm.EntraCredentialClientSecret, scm.EntraCredentialFederated, scm.EntraCredentialCertificate:
 			provider.EntraCredentialType = *req.EntraCredentialType
 		default:
 			c.JSON(http.StatusBadRequest, gin.H{
@@ -625,6 +686,25 @@ func (h *SCMProviderHandlers) UpdateProvider(c *gin.Context) {
 			provider.EncryptedAppPrivateKey = &enc
 		}
 	}
+	if req.EntraCertificate != nil {
+		if *req.EntraCertificate == "" {
+			// Retires the stored bundle -- the only way to satisfy the shape
+			// CHECK when switching a certificate provider to another type.
+			provider.EncryptedEntraCertificate = nil
+		} else {
+			if err := appcreds.ValidCertificateBundle(*req.EntraCertificate); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "entra_certificate: " + err.Error()})
+				return
+			}
+			enc, encErr := h.tokenCipher.SealWithContext(*req.EntraCertificate,
+				scm.ProviderEntraCertificateContext(provider.ID.String()))
+			if encErr != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt certificate"})
+				return
+			}
+			provider.EncryptedEntraCertificate = &enc
+		}
+	}
 
 	// Validate the resulting app-mode shape so we return 400 rather than letting a
 	// DB CHECK constraint surface as a 500.
@@ -645,14 +725,42 @@ func (h *SCMProviderHandlers) UpdateProvider(c *gin.Context) {
 		// federated without clearing its secret is refused here rather than by the
 		// database CHECK (#1037). A federated provider needs no tenant_id: the
 		// platform supplies it with the projected token.
-		if provider.EntraCredentialType == scm.EntraCredentialFederated {
+		hasCert := provider.EncryptedEntraCertificate != nil && *provider.EncryptedEntraCertificate != ""
+		switch provider.EntraCredentialType {
+		case scm.EntraCredentialFederated:
 			if provider.ClientSecretEncrypted != "" {
 				c.JSON(http.StatusBadRequest, gin.H{
 					"error": "a federated entra_app provider must not carry a client_secret; " +
 						"clear it in the same request that switches entra_credential_type"})
 				return
 			}
-		} else {
+			if hasCert {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": "a federated entra_app provider must not carry an entra_certificate; " +
+						"clear it in the same request that switches entra_credential_type"})
+				return
+			}
+		case scm.EntraCredentialCertificate:
+			// Each type carries exactly its own material (#1041): a certificate
+			// provider with a leftover secret is how a retired credential
+			// survives in the database and is later mistaken for the live one.
+			if provider.TenantID == nil || *provider.TenantID == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "entra_app auth requires tenant_id and client_id"})
+				return
+			}
+			if !hasCert {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": "an entra_app provider using certificate credentials must carry an " +
+						"entra_certificate; supply it in the same request that switches entra_credential_type"})
+				return
+			}
+			if provider.ClientSecretEncrypted != "" {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": "a certificate entra_app provider must not carry a client_secret; " +
+						"clear it in the same request that switches entra_credential_type"})
+				return
+			}
+		default:
 			if provider.TenantID == nil || *provider.TenantID == "" {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "entra_app auth requires tenant_id and client_id"})
 				return
@@ -663,6 +771,12 @@ func (h *SCMProviderHandlers) UpdateProvider(c *gin.Context) {
 				c.JSON(http.StatusBadRequest, gin.H{
 					"error": "an entra_app provider using client_secret credentials must carry a " +
 						"client_secret; set entra_credential_type to federated to use workload identity instead"})
+				return
+			}
+			if hasCert {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": "a client_secret entra_app provider must not carry an entra_certificate; " +
+						"clear it in the same request that switches entra_credential_type"})
 				return
 			}
 		}

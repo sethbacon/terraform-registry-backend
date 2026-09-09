@@ -93,6 +93,14 @@ func ProviderAppPrivateKeyContext(scmProviderID string) []byte {
 	return []byte("scm_providers:" + scmProviderID + ":encrypted_app_private_key")
 }
 
+// ProviderEntraCertificateContext binds a certificate credential's PEM bundle to
+// its scm_providers row, so the bundle cannot be copied into another provider
+// row -- including one an attacker with database write access just created in
+// their own organization -- and used to sign assertions as the victim's app.
+func ProviderEntraCertificateContext(scmProviderID string) []byte {
+	return []byte("scm_providers:" + scmProviderID + ":encrypted_entra_certificate")
+}
+
 // UserRefreshTokenContext binds a user's OAuth refresh token to its row.
 //
 // Deliberately distinct from UserTokenContext for the SAME row. Without that, an

@@ -188,6 +188,26 @@ var columns = []column{
 			return err
 		},
 	},
+	{
+		// The certificate credential's PEM bundle (#1041). Nullable like the App
+		// private key -- only a certificate provider has one -- and swept for
+		// the same reason: a sealed column the rekey does not know about becomes
+		// undecryptable the first time the token cipher key rotates, and the
+		// symptom is every mint on that provider failing at once.
+		name:    "scm_providers.encrypted_entra_certificate",
+		context: scm.ProviderEntraCertificateContext,
+		list: func(ctx context.Context, db *sql.DB) ([]sealedRow, error) {
+			return listRows(ctx, db,
+				`SELECT id, encrypted_entra_certificate FROM scm_providers
+				 WHERE encrypted_entra_certificate IS NOT NULL AND encrypted_entra_certificate <> ''`)
+		},
+		update: func(ctx context.Context, db *sql.DB, id, bound string) error {
+			_, err := db.ExecContext(ctx,
+				`UPDATE scm_providers SET encrypted_entra_certificate = $2, updated_at = now() WHERE id = $1`,
+				id, bound)
+			return err
+		},
+	},
 	blobField("notifications_config", "smtp_password_encrypted",
 		models.SystemSettingsSMTPPasswordContext, "smtp"),
 	blobField("ldap_config", "bind_password_enc",

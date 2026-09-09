@@ -17585,6 +17585,10 @@
                     "client_secret": {
                         "type": "string"
                     },
+                    "entra_certificate": {
+                        "description": "EntraCertificate is the certificate credential's PEM bundle -- the\ncertificate registered on the app plus its unencrypted private key --\nfor entra_credential_type \"certificate\" (#1041). Write-only.",
+                        "type": "string"
+                    },
                     "entra_credential_type": {
                         "description": "EntraCredentialType selects how an entra_app provider proves itself:\n\"client_secret\" (default) or \"federated\". Empty means client_secret, so\nan existing client is unaffected (#1037).",
                         "type": "string"
@@ -18904,6 +18908,10 @@
                         "type": "string"
                     },
                     "client_secret": {
+                        "type": "string"
+                    },
+                    "entra_certificate": {
+                        "description": "EntraCertificate replaces the stored bundle; an explicit \"\" retires it.\nSwitching TO certificate must supply one in the same request, and must\nclear any client_secret alongside -- see the resulting-shape check.",
                         "type": "string"
                     },
                     "entra_credential_type": {

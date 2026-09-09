@@ -31,7 +31,7 @@ require (
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.3
 	github.com/redis/go-redis/v9 v9.22.0
-	github.com/sethbacon/terraform-suite-identity v0.43.0
+	github.com/sethbacon/terraform-suite-identity v0.43.1-0.20260909143836-629070474f1e
 	github.com/sigstore/sigstore-go v1.3.0
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.12.1
