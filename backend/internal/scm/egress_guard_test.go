@@ -201,8 +201,7 @@ func TestEgressGuard_SharedMinterIsBuiltWithAGuardedClient(t *testing.T) {
 	// containsGuardedClientOption reports whether a WithHTTPClient(httpsafe.NewClient(...))
 	// appears anywhere inside e. The search is nested because the option list is
 	// built with append(...), so the option is not a direct argument.
-	var containsGuardedClientOption func(e ast.Expr) bool
-	containsGuardedClientOption = func(e ast.Expr) bool {
+	containsGuardedClientOption := func(e ast.Expr) bool {
 		found := false
 		ast.Inspect(e, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
