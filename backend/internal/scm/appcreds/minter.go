@@ -3,16 +3,33 @@
 // syncs, replacing the legacy per-user OAuth model for providers opted into an
 // app auth mode.
 //
-// Two modes are supported, mirroring the terraform-state-manager drift plans:
-//   - entra_app:  Microsoft Entra app registration (OAuth 2.0 client-credentials)
-//     for Azure DevOps.
+// Three credential types are supported:
+//   - entra_app + client_secret: Microsoft Entra app registration (OAuth 2.0
+//     client-credentials) for Azure DevOps.
+//   - entra_app + federated: the same app registration proved by workload
+//     identity federation, with no stored secret at all (#1037).
 //   - github_app: a GitHub App (RS256 app JWT exchanged for an installation
 //     access token) for GitHub.
 //
-// Minted tokens are cached in the scm_provider_tokens table (encrypted at rest)
-// so process restarts and additional replicas don't re-mint on every request.
-// The cache is re-mintable from the provider's stored app secrets, so losing it
-// is never fatal.
+// # What lives here and what does not
+//
+// THE EXCHANGES THEMSELVES ARE NOT HERE. They live in
+// terraform-suite-identity/identity/appcreds, because terraform-state-manager
+// implemented the same three mechanisms independently and the two copies drifted
+// -- state-manager had workload identity federation before this repository did,
+// this repository had the egress guard state-manager lacked, and neither gained
+// the other's until someone went looking (suite-identity#301).
+//
+// What remains here is this application's POLICY, which is genuinely its own:
+//   - the scm_providers row shape, and how credentials are read out of it;
+//   - decrypting those credentials, each bound to the provider row it belongs to
+//     (suite-identity#153), so a secret cannot be moved between rows;
+//   - the persistent token cache in scm_provider_tokens, sealed and bound the
+//     same way, which survives restarts and additional replicas.
+//
+// That last point is why this does not use the shared package's in-memory Cache:
+// a process-local map cannot be revoked, cannot be shared between replicas, and
+// would serve a token this application's own store had already replaced.
 package appcreds
 
 import (
@@ -23,6 +40,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	sharedcreds "github.com/sethbacon/terraform-suite-identity/identity/appcreds"
+
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/scm"
@@ -31,6 +50,15 @@ import (
 // tokenRefreshMargin re-mints this long before a cached token's hard expiry so an
 // in-flight request never races the expiry boundary.
 const tokenRefreshMargin = 60 * time.Second
+
+// egressTimeout bounds a token exchange, matching the other SCM outbound paths.
+const egressTimeout = 30 * time.Second
+
+// ValidRSAPrivateKey reports whether pemStr parses as a supported RSA private
+// key. Re-exported rather than re-implemented so the admin handlers that
+// validate an uploaded App key keep importing one package, and so the check they
+// perform is by construction the same one the mint performs.
+var ValidRSAPrivateKey = sharedcreds.ValidRSAPrivateKey
 
 // ProviderTokenStore persists the shared app token cache. *repositories.SCMRepository
 // satisfies it; tests supply a fake.
@@ -45,19 +73,14 @@ type SharedMinter interface {
 	MintProviderToken(ctx context.Context, p *scm.SCMProvider) (*scm.OAuthToken, error)
 }
 
-// Minter implements SharedMinter. It decrypts the provider's stored app secrets,
-// mints a token from the appropriate identity provider, and caches it.
+// Minter implements SharedMinter. It reads the provider's stored app credentials,
+// hands them to the shared minter for the exchange, and caches the result.
 type Minter struct {
 	cipher        *crypto.TokenCipher
 	store         ProviderTokenStore
-	httpClient    *http.Client
+	shared        *sharedcreds.Minter
 	now           func() time.Time
 	refreshMargin time.Duration
-
-	// Endpoint bases are fields (not consts) so tests can point them at an
-	// httptest server. Defaults are the public production hosts.
-	entraLoginBaseURL string
-	githubAPIBaseURL  string
 }
 
 // NewMinter builds a Minter using the production identity-provider endpoints
@@ -67,21 +90,41 @@ func NewMinter(cipher *crypto.TokenCipher, store ProviderTokenStore) *Minter {
 	return NewMinterWithGuard(cipher, store, nil)
 }
 
-// NewMinterWithGuard is NewMinter with an egress guard, for parity with the
-// other SCM outbound paths (scm.HTTPClient): the token-exchange requests carry
-// a credential (the RS256 app JWT or a client assertion), so they are routed
-// through the shared httpsafe resolve-and-pin client rather than a bare
-// http.Client, even though entraLoginBaseURL/githubAPIBaseURL are currently
-// fixed to public hosts (issue #676).
+// NewMinterWithGuard is NewMinter with an egress guard.
+//
+// The token-exchange requests carry a credential -- the RS256 app JWT, or the
+// client secret itself -- so they go through this repository's own httpsafe
+// resolve-and-pin client rather than a bare http.Client (issue #676). The client
+// is BUILT HERE and handed over, rather than letting the shared package build
+// its own: this repository has its own httpsafe with its own allow-list plumbing,
+// and passing the finished client keeps one egress policy in force instead of
+// two that can disagree.
 func NewMinterWithGuard(cipher *crypto.TokenCipher, store ProviderTokenStore, egress *httpsafe.Guard) *Minter {
+	return newMinter(cipher, store, httpsafe.NewClient(egressTimeout, egress))
+}
+
+// newMinter is the shared constructor.
+//
+// Tests use the option list to point the exchanges at an httptest server and to
+// substitute the workload-identity credential factory, which no test host can
+// satisfy for real. Production goes through NewMinterWithGuard, which supplies
+// exactly one option: the guarded client.
+// The client is a TYPED PARAMETER rather than one option among many, so that
+// every construction of the shared minter carries a literal WithHTTPClient --
+// which is what makes the invariant checkable by
+// TestEgressGuard_SharedMinterIsBuiltWithAGuardedClient. Passed through a
+// variadic option list it would be invisible to any static check, and an edit
+// that dropped it would fall back to the shared package's own egress policy
+// silently.
+func newMinter(cipher *crypto.TokenCipher, store ProviderTokenStore, client *http.Client,
+	opts ...sharedcreds.Option) *Minter {
 	return &Minter{
-		cipher:            cipher,
-		store:             store,
-		httpClient:        httpsafe.NewClient(30*time.Second, egress),
-		now:               time.Now,
-		refreshMargin:     tokenRefreshMargin,
-		entraLoginBaseURL: "https://login.microsoftonline.com",
-		githubAPIBaseURL:  "https://api.github.com",
+		cipher: cipher,
+		store:  store,
+		shared: sharedcreds.New(append(
+			[]sharedcreds.Option{sharedcreds.WithHTTPClient(client)}, opts...)...),
+		now:           time.Now,
+		refreshMargin: tokenRefreshMargin,
 	}
 }
 
@@ -109,9 +152,8 @@ func (m *Minter) MintProviderToken(ctx context.Context, p *scm.SCMProvider) (*sc
 	}
 
 	var (
-		token     string
-		expiresAt time.Time
-		err       error
+		minted sharedcreds.Token
+		err    error
 	)
 	switch p.AuthMode {
 	case scm.AuthModeEntraApp:
@@ -119,17 +161,18 @@ func (m *Minter) MintProviderToken(ctx context.Context, p *scm.SCMProvider) (*sc
 		// and an absolute expiry, so the caching below is identical either way
 		// (#1037).
 		if p.EntraCredentialType == scm.EntraCredentialFederated {
-			token, expiresAt, err = m.mintFederatedToken(ctx, FederatedCreds{ClientID: p.ClientID})
+			minted, err = m.shared.MintFederated(ctx,
+				sharedcreds.FederatedCreds{ClientID: p.ClientID})
 			break
 		}
-		var creds EntraCreds
+		var creds sharedcreds.EntraCreds
 		if creds, err = m.entraCreds(p); err == nil {
-			token, expiresAt, err = m.mintEntraToken(ctx, creds)
+			minted, err = m.shared.MintEntra(ctx, creds)
 		}
 	case scm.AuthModeGitHubApp:
-		var creds GitHubAppCreds
+		var creds sharedcreds.GitHubAppCreds
 		if creds, err = m.githubAppCreds(p); err == nil {
-			token, expiresAt, err = m.mintGitHubInstallationToken(ctx, creds)
+			minted, err = m.shared.MintGitHubApp(ctx, creds)
 		}
 	default:
 		return nil, fmt.Errorf("appcreds: provider %s is not in an app auth mode (auth_mode=%q)", p.ID, p.AuthMode)
@@ -137,6 +180,8 @@ func (m *Minter) MintProviderToken(ctx context.Context, p *scm.SCMProvider) (*sc
 	if err != nil {
 		return nil, err
 	}
+
+	token, expiresAt := minted.AccessToken, minted.ExpiresAt
 
 	// Best-effort cache write — a persistence failure must not fail the request.
 	if m.store != nil {
@@ -158,39 +203,41 @@ func (m *Minter) MintProviderToken(ctx context.Context, p *scm.SCMProvider) (*sc
 }
 
 // entraCreds extracts and decrypts the Entra client-credentials for a provider.
-func (m *Minter) entraCreds(p *scm.SCMProvider) (EntraCreds, error) {
+func (m *Minter) entraCreds(p *scm.SCMProvider) (sharedcreds.EntraCreds, error) {
 	if p.TenantID == nil || *p.TenantID == "" {
-		return EntraCreds{}, errors.New("appcreds: entra_app provider missing tenant_id")
+		return sharedcreds.EntraCreds{}, errors.New("appcreds: entra_app provider missing tenant_id")
 	}
 	if p.ClientID == "" {
-		return EntraCreds{}, errors.New("appcreds: entra_app provider missing client_id")
+		return sharedcreds.EntraCreds{}, errors.New("appcreds: entra_app provider missing client_id")
 	}
 	secret, _, err := m.cipher.OpenWithContextOrLegacy(
 		p.ClientSecretEncrypted, scm.ProviderClientSecretContext(p.ID.String()))
 	if err != nil {
-		return EntraCreds{}, fmt.Errorf("appcreds: decrypt client secret: %w", err)
+		return sharedcreds.EntraCreds{}, fmt.Errorf("appcreds: decrypt client secret: %w", err)
 	}
 	if secret == "" {
-		return EntraCreds{}, errors.New("appcreds: entra_app provider missing client secret")
+		return sharedcreds.EntraCreds{}, errors.New("appcreds: entra_app provider missing client secret")
 	}
-	return EntraCreds{TenantID: *p.TenantID, ClientID: p.ClientID, ClientSecret: secret}, nil
+	return sharedcreds.EntraCreds{TenantID: *p.TenantID, ClientID: p.ClientID, ClientSecret: secret}, nil
 }
 
 // githubAppCreds extracts and decrypts the GitHub App credentials for a provider.
-func (m *Minter) githubAppCreds(p *scm.SCMProvider) (GitHubAppCreds, error) {
+func (m *Minter) githubAppCreds(p *scm.SCMProvider) (sharedcreds.GitHubAppCreds, error) {
 	if p.GitHubAppID == nil || *p.GitHubAppID == "" {
-		return GitHubAppCreds{}, errors.New("appcreds: github_app provider missing github_app_id")
+		return sharedcreds.GitHubAppCreds{}, errors.New("appcreds: github_app provider missing github_app_id")
 	}
 	if p.GitHubInstallationID == nil || *p.GitHubInstallationID == "" {
-		return GitHubAppCreds{}, errors.New("appcreds: github_app provider missing github_installation_id")
+		return sharedcreds.GitHubAppCreds{}, errors.New("appcreds: github_app provider missing github_installation_id")
 	}
 	if p.EncryptedAppPrivateKey == nil || *p.EncryptedAppPrivateKey == "" {
-		return GitHubAppCreds{}, errors.New("appcreds: github_app provider missing private key")
+		return sharedcreds.GitHubAppCreds{}, errors.New("appcreds: github_app provider missing private key")
 	}
 	pemStr, _, err := m.cipher.OpenWithContextOrLegacy(
 		*p.EncryptedAppPrivateKey, scm.ProviderAppPrivateKeyContext(p.ID.String()))
 	if err != nil {
-		return GitHubAppCreds{}, fmt.Errorf("appcreds: decrypt app private key: %w", err)
+		return sharedcreds.GitHubAppCreds{}, fmt.Errorf("appcreds: decrypt app private key: %w", err)
 	}
-	return GitHubAppCreds{AppID: *p.GitHubAppID, InstallationID: *p.GitHubInstallationID, PrivateKeyPEM: pemStr}, nil
+	return sharedcreds.GitHubAppCreds{
+		AppID: *p.GitHubAppID, InstallationID: *p.GitHubInstallationID, PrivateKeyPEM: pemStr,
+	}, nil
 }
