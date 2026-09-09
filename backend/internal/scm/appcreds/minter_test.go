@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	sharedcreds "github.com/sethbacon/terraform-suite-identity/identity/appcreds"
+
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/scm"
@@ -81,7 +83,7 @@ func TestMintProviderToken_EntraApp(t *testing.T) {
 		if got := r.Form.Get("grant_type"); got != "client_credentials" {
 			t.Errorf("grant_type = %q", got)
 		}
-		if got := r.Form.Get("scope"); got != azureDevOpsResourceID+"/.default" {
+		if got := r.Form.Get("scope"); got != sharedcreds.AzureDevOpsResourceID+"/.default" {
 			t.Errorf("scope = %q", got)
 		}
 		if got := r.Form.Get("client_secret"); got != "the-secret" {
@@ -94,8 +96,7 @@ func TestMintProviderToken_EntraApp(t *testing.T) {
 
 	cipher := testCipher(t)
 	store := &fakeStore{}
-	m := NewMinterWithGuard(cipher, store, loopbackGuard)
-	m.entraLoginBaseURL = srv.URL
+	m := testMinter(t, cipher, store, sharedcreds.WithEntraLoginBaseURL(srv.URL))
 
 	secret, _ := cipher.Seal("the-secret")
 	p := &scm.SCMProvider{
@@ -149,8 +150,7 @@ func TestMintProviderToken_EntraApp_ErrorStatus(t *testing.T) {
 	defer srv.Close()
 
 	cipher := testCipher(t)
-	m := NewMinterWithGuard(cipher, &fakeStore{}, loopbackGuard)
-	m.entraLoginBaseURL = srv.URL
+	m := testMinter(t, cipher, &fakeStore{}, sharedcreds.WithEntraLoginBaseURL(srv.URL))
 
 	secret, _ := cipher.Seal("bad")
 	p := &scm.SCMProvider{
@@ -174,8 +174,7 @@ func TestMintProviderToken_EntraApp_ErrorStatus(t *testing.T) {
 // closed, so no listener is needed for this to fail before any TCP connect.
 func TestMintProviderToken_EntraApp_RejectsLoopbackTarget(t *testing.T) {
 	cipher := testCipher(t)
-	m := NewMinter(cipher, &fakeStore{}) // nil guard == strict default
-	m.entraLoginBaseURL = "https://127.0.0.1:1"
+	m := guardedMinter(t, cipher, &fakeStore{}, sharedcreds.WithEntraLoginBaseURL("https://127.0.0.1:1"))
 
 	secret, _ := cipher.Seal("s")
 	p := &scm.SCMProvider{
@@ -219,8 +218,7 @@ func TestMintProviderToken_GitHubApp(t *testing.T) {
 
 	cipher := testCipher(t)
 	store := &fakeStore{}
-	m := NewMinterWithGuard(cipher, store, loopbackGuard)
-	m.githubAPIBaseURL = srv.URL
+	m := testMinter(t, cipher, store, sharedcreds.WithGitHubAPIBaseURL(srv.URL))
 
 	encKey, _ := cipher.Seal(keyPEM)
 	p := &scm.SCMProvider{
@@ -253,8 +251,7 @@ func TestMintProviderToken_GitHubApp(t *testing.T) {
 // githubAPIBaseURL rather than dialing it (issue #676).
 func TestMintProviderToken_GitHubApp_RejectsLoopbackTarget(t *testing.T) {
 	cipher := testCipher(t)
-	m := NewMinter(cipher, &fakeStore{}) // nil guard == strict default
-	m.githubAPIBaseURL = "https://127.0.0.1:1"
+	m := guardedMinter(t, cipher, &fakeStore{}, sharedcreds.WithGitHubAPIBaseURL("https://127.0.0.1:1"))
 
 	encKey, _ := cipher.Seal(generateTestKeyPEM(t))
 	p := &scm.SCMProvider{
@@ -295,8 +292,7 @@ func TestMintProviderToken_CacheHit(t *testing.T) {
 		TokenType:            "Bearer",
 		ExpiresAt:            &exp,
 	}}
-	m := NewMinter(cipher, store)
-	m.entraLoginBaseURL = srv.URL
+	m := testMinter(t, cipher, store, sharedcreds.WithEntraLoginBaseURL(srv.URL))
 
 	secret, _ := cipher.Seal("s")
 	p := &scm.SCMProvider{
@@ -337,8 +333,7 @@ func TestMintProviderToken_CacheExpiredRemints(t *testing.T) {
 		TokenType:            "Bearer",
 		ExpiresAt:            &past,
 	}}
-	m := NewMinterWithGuard(cipher, store, loopbackGuard)
-	m.entraLoginBaseURL = srv.URL
+	m := testMinter(t, cipher, store, sharedcreds.WithEntraLoginBaseURL(srv.URL))
 
 	secret, _ := cipher.Seal("s")
 	p := &scm.SCMProvider{
@@ -395,6 +390,10 @@ func TestMintProviderToken_NilProvider(t *testing.T) {
 	}
 }
 
+// ValidRSAPrivateKey is now a re-export of the shared package's. This guards the
+// WIRING: the admin handlers validate an uploaded App key through this name, and
+// a re-export left pointing at nothing (or at a different function) would accept
+// a key the mint then rejects, days later and somewhere else.
 func TestValidRSAPrivateKey(t *testing.T) {
 	if !ValidRSAPrivateKey(generateTestKeyPEM(t)) {
 		t.Error("generated RSA key should be valid")
@@ -407,19 +406,12 @@ func TestValidRSAPrivateKey(t *testing.T) {
 	}
 }
 
-func TestSignAppJWT_Structure(t *testing.T) {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("GenerateKey: %v", err)
-	}
-	jwt, err := signAppJWT("appid", key, time.Now())
-	if err != nil {
-		t.Fatalf("signAppJWT: %v", err)
-	}
-	if parts := strings.Split(jwt, "."); len(parts) != 3 {
-		t.Errorf("jwt has %d segments, want 3", len(parts))
-	}
-}
+// TestSignAppJWT_Structure used to live here. It asserted that the app JWT had
+// three segments; the signing itself now belongs to
+// terraform-suite-identity/identity/appcreds, whose TestMintGitHubApp_Success
+// VERIFIES the RS256 signature against the app's own public key and checks the
+// header, the issuer, the clock-skew backdating and GitHub's 10-minute lifetime
+// cap. Deleted rather than kept as a weaker duplicate (suite-identity#301).
 
 // suite-identity #153 transition. A cache entry written before the binding
 // shipped must still serve, or the deploy that ships this forces every provider
@@ -440,7 +432,7 @@ func TestMintProviderToken_ServesALegacyUnboundCacheEntry(t *testing.T) {
 		ExpiresAt:            &future,
 	}}
 
-	m := NewMinterWithGuard(cipher, store, loopbackGuard)
+	m := testMinter(t, cipher, store)
 	tok, err := m.MintProviderToken(context.Background(), &scm.SCMProvider{
 		ID: providerID, AuthMode: scm.AuthModeEntraApp,
 	})
@@ -475,7 +467,7 @@ func TestMintProviderToken_IgnoresACacheEntryBoundToAnotherProvider(t *testing.T
 		ExpiresAt:            &future,
 	}}
 
-	m := NewMinterWithGuard(cipher, store, loopbackGuard)
+	m := testMinter(t, cipher, store)
 	tok, err := m.MintProviderToken(context.Background(), &scm.SCMProvider{
 		ID: providerID, AuthMode: scm.AuthModeEntraApp,
 	})
@@ -484,4 +476,22 @@ func TestMintProviderToken_IgnoresACacheEntryBoundToAnotherProvider(t *testing.T
 	if err == nil && tok != nil && tok.AccessToken == "someone-elses-token" {
 		t.Fatal("served a cached token bound to a different provider row")
 	}
+}
+
+// testMinter builds a Minter whose exchanges reach a test server.
+//
+// The endpoint hosts used to be fields on this package's Minter, poked directly
+// by each test. They now belong to the shared minter, so they are supplied as
+// options at construction -- which is also what production does, through exactly
+// one option (the guarded client).
+func testMinter(t *testing.T, cipher *crypto.TokenCipher, store ProviderTokenStore, opts ...sharedcreds.Option) *Minter {
+	t.Helper()
+	return newMinter(cipher, store, httpsafe.NewClient(egressTimeout, loopbackGuard), opts...)
+}
+
+// guardedMinter builds a Minter with the STRICT egress policy -- the production
+// default -- for the tests that assert an internal target is refused.
+func guardedMinter(t *testing.T, cipher *crypto.TokenCipher, store ProviderTokenStore, opts ...sharedcreds.Option) *Minter {
+	t.Helper()
+	return newMinter(cipher, store, httpsafe.NewClient(egressTimeout, nil), opts...)
 }

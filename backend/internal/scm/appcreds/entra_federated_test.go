@@ -2,85 +2,79 @@ package appcreds
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/google/uuid"
+	sharedcreds "github.com/sethbacon/terraform-suite-identity/identity/appcreds"
+
 	"github.com/terraform-registry/terraform-registry/internal/scm"
 )
 
-// fakeWorkloadCredential stands in for the projected-token exchange. Tests may
-// substitute it because a real WorkloadIdentityCredential needs a platform that
-// projects a service-account token, which no test host does.
-type fakeWorkloadCredential struct {
+// Issue #1037 -- an entra_app provider may prove itself with workload identity
+// federation instead of a stored client secret.
+//
+// The federated EXCHANGE is no longer tested here: it belongs to
+// terraform-suite-identity/identity/appcreds, which tests it against a fake
+// credential and asserts the audience, the trimming and every failure mode
+// (suite-identity#301). What is tested here is the part this repository still
+// owns -- that a provider ROW selects the right mechanism -- because the row
+// shape and the entra_credential_type column are this application's policy and
+// the shared package has never heard of either.
+
+// fakeFederatedCredential stands in for the projected-token exchange, which no
+// test host can perform.
+type fakeFederatedCredential struct {
 	token    azcore.AccessToken
-	err      error
-	scopes   []string
 	calls    int
 	clientID string
 }
 
-func (f *fakeWorkloadCredential) GetToken(_ context.Context, opts policy.TokenRequestOptions) (azcore.AccessToken, error) {
+func (f *fakeFederatedCredential) GetToken(_ context.Context, _ policy.TokenRequestOptions) (azcore.AccessToken, error) {
 	f.calls++
-	f.scopes = opts.Scopes
-	return f.token, f.err
+	return f.token, nil
 }
 
-// withFakeWorkloadIdentity swaps the credential factory for the duration of one
-// test and records the client id it was asked for -- the assertion that the
-// provider row selects the identity, since a federated mint has no other input.
-func withFakeWorkloadIdentity(t *testing.T, cred *fakeWorkloadCredential, buildErr error) {
-	t.Helper()
-	prev := workloadIdentityCredentialFactory
-	t.Cleanup(func() { workloadIdentityCredentialFactory = prev })
-	workloadIdentityCredentialFactory = func(clientID string) (adoTokenCredential, error) {
+// federatedFactory records the client id the provider row supplied.
+func federatedFactory(cred *fakeFederatedCredential) sharedcreds.FederatedCredentialFactory {
+	return func(clientID string) (sharedcreds.FederatedCredential, error) {
 		cred.clientID = clientID
-		if buildErr != nil {
-			return nil, buildErr
-		}
 		return cred, nil
 	}
 }
 
-// federatedProvider is an entra_app provider that mints via workload identity:
-// a client id, no tenant id and no stored secret.
-func federatedProvider() *scm.SCMProvider {
-	return &scm.SCMProvider{
+func TestMintProviderToken_FederatedRowUsesWorkloadIdentity(t *testing.T) {
+	// An IdP that fails the test if it is reached. A federated provider has no
+	// client secret, so any call here means the client-secret arm ran -- the
+	// dispatch failure this test exists to catch, and one that would otherwise
+	// surface as a confusing "missing client secret" in production.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("the client-secret token endpoint was called for a federated provider")
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	expiry := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	cred := &fakeFederatedCredential{token: azcore.AccessToken{Token: "federated-ado-token", ExpiresOn: expiry}}
+
+	cipher := testCipher(t)
+	store := &fakeStore{}
+	m := testMinter(t, cipher, store,
+		sharedcreds.WithEntraLoginBaseURL(srv.URL),
+		sharedcreds.WithFederatedCredentialFactory(federatedFactory(cred)))
+
+	p := &scm.SCMProvider{
 		ID:                  uuid.New(),
 		ProviderType:        scm.ProviderAzureDevOps,
 		AuthMode:            scm.AuthModeEntraApp,
 		EntraCredentialType: scm.EntraCredentialFederated,
 		ClientID:            "federated-client-1",
 	}
-}
 
-func TestMintProviderToken_FederatedUsesWorkloadIdentity(t *testing.T) {
-	// An IdP that fails the test if it is reached. A federated provider has no
-	// client secret, so any call here means the client-secret arm ran -- the
-	// failure this test exists to catch, and one that would otherwise surface
-	// only as a confusing "missing client secret" in production.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Errorf("client-secret token endpoint was called for a federated provider")
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer srv.Close()
-
-	expiry := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
-	cred := &fakeWorkloadCredential{token: azcore.AccessToken{Token: "federated-ado-token", ExpiresOn: expiry}}
-	withFakeWorkloadIdentity(t, cred, nil)
-
-	cipher := testCipher(t)
-	store := &fakeStore{}
-	m := NewMinterWithGuard(cipher, store, loopbackGuard)
-	m.entraLoginBaseURL = srv.URL
-
-	p := federatedProvider()
 	tok, err := m.MintProviderToken(context.Background(), p)
 	if err != nil {
 		t.Fatalf("MintProviderToken: %v", err)
@@ -91,17 +85,17 @@ func TestMintProviderToken_FederatedUsesWorkloadIdentity(t *testing.T) {
 	if cred.calls != 1 {
 		t.Fatalf("workload identity exchanged %d times, want 1", cred.calls)
 	}
+	// The row's client_id is what selects the identity, and it is the only
+	// field a federated row carries -- so passing the wrong one would mint a
+	// valid token for the wrong tenant's identity.
 	if cred.clientID != "federated-client-1" {
-		t.Errorf("credential built for client_id %q, want the provider row's federated-client-1", cred.clientID)
-	}
-	// The audience is what makes the token usable against Azure DevOps at all;
-	// a token minted for the wrong resource authenticates to nothing.
-	if len(cred.scopes) != 1 || !strings.HasPrefix(cred.scopes[0], azureDevOpsResourceID) {
-		t.Errorf("scopes = %v, want the Azure DevOps resource id %s/.default", cred.scopes, azureDevOpsResourceID)
+		t.Errorf("credential built for client_id %q, want the row's federated-client-1", cred.clientID)
 	}
 
-	// Cached like any other provider token, bound to its row (suite-identity
-	// #153) -- federation changes how the token is obtained, not how it is kept.
+	// Cached like any other provider token, sealed and bound to its row
+	// (suite-identity #153). Federation changes how a token is obtained, not how
+	// this application keeps it -- and the persistent cache is precisely the
+	// policy that did NOT move to the shared package.
 	if len(store.upserts) != 1 {
 		t.Fatalf("upserts = %d, want 1", len(store.upserts))
 	}
@@ -115,10 +109,10 @@ func TestMintProviderToken_FederatedUsesWorkloadIdentity(t *testing.T) {
 }
 
 // A provider that has NOT opted into federation must keep using its client
-// secret. Without this the previous test could be satisfied by routing every
+// secret. Without this the test above could be satisfied by routing every
 // entra_app provider through workload identity, which would break every
-// existing deployment on the release that ships this.
-func TestMintProviderToken_ClientSecretProviderDoesNotUseWorkloadIdentity(t *testing.T) {
+// existing deployment on the release that ships it.
+func TestMintProviderToken_ClientSecretRowDoesNotUseWorkloadIdentity(t *testing.T) {
 	var called int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called++
@@ -127,12 +121,11 @@ func TestMintProviderToken_ClientSecretProviderDoesNotUseWorkloadIdentity(t *tes
 	}))
 	defer srv.Close()
 
-	cred := &fakeWorkloadCredential{token: azcore.AccessToken{Token: "should-not-be-used"}}
-	withFakeWorkloadIdentity(t, cred, nil)
-
+	cred := &fakeFederatedCredential{token: azcore.AccessToken{Token: "should-not-be-used"}}
 	cipher := testCipher(t)
-	m := NewMinterWithGuard(cipher, &fakeStore{}, loopbackGuard)
-	m.entraLoginBaseURL = srv.URL
+	m := testMinter(t, cipher, &fakeStore{},
+		sharedcreds.WithEntraLoginBaseURL(srv.URL),
+		sharedcreds.WithFederatedCredentialFactory(federatedFactory(cred)))
 
 	secret, _ := cipher.Seal("the-secret")
 	// Empty EntraCredentialType on purpose: every row written before migration
@@ -157,52 +150,22 @@ func TestMintProviderToken_ClientSecretProviderDoesNotUseWorkloadIdentity(t *tes
 		t.Errorf("idp called %d times, want 1", called)
 	}
 	if cred.calls != 0 {
-		t.Errorf("workload identity was used %d times for a client_secret provider, want 0", cred.calls)
+		t.Errorf("workload identity was used %d times for a client_secret row, want 0", cred.calls)
 	}
 }
 
-func TestMintFederatedToken_Failures(t *testing.T) {
-	m := NewMinterWithGuard(testCipher(t), &fakeStore{}, loopbackGuard)
-
-	t.Run("no client id", func(t *testing.T) {
-		cred := &fakeWorkloadCredential{}
-		withFakeWorkloadIdentity(t, cred, nil)
-		if _, _, err := m.mintFederatedToken(context.Background(), FederatedCreds{}); err == nil {
-			t.Fatal("a federated mint with no client_id succeeded; there is no identity to assert")
-		}
-		if cred.calls != 0 {
-			t.Errorf("token exchange attempted %d times without a client id, want 0", cred.calls)
-		}
+// A federated row with no client_id has no identity to assume. The shared
+// package refuses it; this asserts the refusal survives the wiring rather than
+// being swallowed into a nil token.
+func TestMintProviderToken_FederatedRowWithoutAClientID(t *testing.T) {
+	m := testMinter(t, testCipher(t), &fakeStore{})
+	_, err := m.MintProviderToken(context.Background(), &scm.SCMProvider{
+		ID:                  uuid.New(),
+		ProviderType:        scm.ProviderAzureDevOps,
+		AuthMode:            scm.AuthModeEntraApp,
+		EntraCredentialType: scm.EntraCredentialFederated,
 	})
-
-	t.Run("platform projects no token", func(t *testing.T) {
-		// The realistic failure: running somewhere the workload-identity webhook
-		// never ran, so AZURE_FEDERATED_TOKEN_FILE is absent.
-		withFakeWorkloadIdentity(t, &fakeWorkloadCredential{}, errors.New("AZURE_FEDERATED_TOKEN_FILE is not set"))
-		_, _, err := m.mintFederatedToken(context.Background(), FederatedCreds{ClientID: "c1"})
-		if err == nil {
-			t.Fatal("building a credential failed but the mint succeeded")
-		}
-		// The operator has to be able to tell "this host cannot federate" from
-		// "these credentials are wrong"; the bare SDK error does not say which.
-		if !strings.Contains(err.Error(), "AZURE_FEDERATED_TOKEN_FILE") {
-			t.Errorf("error does not name what the platform must provide: %v", err)
-		}
-	})
-
-	t.Run("exchange rejected", func(t *testing.T) {
-		withFakeWorkloadIdentity(t, &fakeWorkloadCredential{err: errors.New("AADSTS700213: no matching federated identity record")}, nil)
-		if _, _, err := m.mintFederatedToken(context.Background(), FederatedCreds{ClientID: "c1"}); err == nil {
-			t.Fatal("the exchange was rejected but the mint succeeded")
-		}
-	})
-
-	t.Run("empty token", func(t *testing.T) {
-		// A credential that reports success with nothing in it would otherwise
-		// be cached and sent to Azure DevOps as an empty bearer token.
-		withFakeWorkloadIdentity(t, &fakeWorkloadCredential{token: azcore.AccessToken{}}, nil)
-		if _, _, err := m.mintFederatedToken(context.Background(), FederatedCreds{ClientID: "c1"}); err == nil {
-			t.Fatal("an empty token was accepted")
-		}
-	})
+	if err == nil {
+		t.Fatal("a federated provider with no client_id minted a token")
+	}
 }
