@@ -42,19 +42,15 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/api/webhooks"
 	"github.com/terraform-registry/terraform-registry/internal/audit"
 	"github.com/terraform-registry/terraform-registry/internal/auth"
-	"github.com/terraform-registry/terraform-registry/internal/auth/mtls"
-	"github.com/terraform-registry/terraform-registry/internal/auth/oidc"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/credlifecycle"
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
-	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/jobs"
 	"github.com/terraform-registry/terraform-registry/internal/middleware"
 	"github.com/terraform-registry/terraform-registry/internal/notify"
 	"github.com/terraform-registry/terraform-registry/internal/policy"
-	"github.com/terraform-registry/terraform-registry/internal/scm"
 	"github.com/terraform-registry/terraform-registry/internal/scm/appcreds"
 	"github.com/terraform-registry/terraform-registry/internal/services"
 	"github.com/terraform-registry/terraform-registry/internal/storage"
@@ -154,44 +150,10 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 		log.Fatalf("invalid trusted_proxies config: %v", err)
 	}
 
-	// egressGuard widens the SSRF deny-list enforced by every outbound client
-	// this router wires up (mirror sync, SCM connectors, OSV poller, policy
-	// bundle, SAML metadata, ...) per security.egress.allowlist. Config.Validate
-	// already parsed this list once at Load(); a second parse error here would
-	// mean cfg was constructed without going through config.Load.
-	egressGuard, err := httpsafe.NewGuard(cfg.Security.Egress.Allowlist)
-	if err != nil {
-		log.Fatalf("invalid security.egress.allowlist: %v", err)
-	}
-	if err := scm.ConfigureEgress(cfg.Security.Egress.Allowlist); err != nil {
-		log.Fatalf("failed to configure SCM connector egress policy: %v", err)
-	}
-	// Same allow-list, applied to the OIDC discovery/JWKS/token-exchange traffic
-	// the shared identity module now routes through its own guard (v0.25.0).
-	// Without this an internal IdP — every self-hosted Keycloak/ADFS, and every
-	// local compose stack — is denied at provider construction. It runs here,
-	// beside the SCM call, so both are configured before any route is built.
-	if err := oidc.ConfigureEgress(cfg.Security.Egress.Allowlist); err != nil {
-		log.Fatalf("failed to configure OIDC egress policy: %v", err)
-	}
-
-	// Construct the real audit external-shipping subsystem from cfg.Audit so
-	// AuditMiddlewareWithShipper below is no longer wired up with hardcoded
-	// nils (issue #659): previously audit.NewMultiShipperWithGuard's
-	// WebhookShipper/SyslogShipper/FileShipper were fully implemented but
-	// unreachable dead code, and cfg.Audit.LogReadOperations/LogFailedRequests
-	// were silently ignored regardless of what an operator configured.
-	auditShipperMS, err := audit.NewMultiShipperFromConfig(cfg.Audit.Shippers, egressGuard)
-	if err != nil {
-		log.Fatalf("invalid audit.shippers config: %v", err)
-	}
-	var auditShipper audit.Shipper
-	if auditShipperMS.Len() > 0 {
-		auditShipper = auditShipperMS
-		slog.Info("audit external shipping active", "shippers", auditShipperMS.Len())
-	} else if len(cfg.Audit.Shippers) > 0 {
-		slog.Warn("audit.shippers is configured but no shipper is active (all disabled, or unsupported on this platform); external audit shipping is a no-op")
-	}
+	// Outbound egress policy (this router, package scm, and the shared identity
+	// module's OIDC client all take the same allow-list) plus the audit shipper
+	// built on the resulting guard. See egressAndAuditShipping.
+	egressGuard, auditShipper := egressAndAuditShipping(cfg)
 
 	// Initialize storage backend
 	storageBackend, err := storage.NewStorage(cfg)
@@ -209,126 +171,10 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	auditRepo := repositories.NewAuditRepository(identityDB)
 	orgRepo := repositories.NewOrganizationRepository(identityDB)
 	tokenRepo := repositories.NewTokenRepository(identityDB)
-	// Registry's own per-app authorization tables
-	// (sethbacon/terraform-suite-identity#206, migration 000055). SINCE PHASE 3b
-	// EVERY ROLE AND EVERY SCOPE SET READ BY THIS PROCESS COMES FROM THEM. The
-	// repositories above still dual-write the identity tables, which is what
-	// keeps the rollback (deploy the previous image) real.
-	//
-	// Three startup steps, in this order, and the order is load-bearing.
-	//
-	// 1. VERIFY, and now FATALLY. The probe asks whether the connection the
-	//    repositories resolve `organization_members` through also resolves
-	//    registry's two tables. In the default topology it is one connection; under
-	//    TFR_IDENTITY_SCHEMA_ENABLED the identity pool's `search_path` resolves
-	//    them through its trailing `,public`. The one topology where it cannot is
-	//    identity in a SEPARATE DATABASE.
-	//
-	//    Before the cutover that was logged and survivable: nothing read these
-	//    tables, so an unreachable mirror cost only diagnosis. It is not
-	//    survivable now. Every authorization decision would be served from a table
-	//    this connection cannot see -- which is not "degraded", it is every
-	//    principal resolving to no role, i.e. a total outage that presents as a
-	//    permissions problem. Refusing to boot is the smaller failure and the one
-	//    an operator can act on.
-	//
-	// 2. RECONCILE, which re-derives registry's tables from the identity source.
-	//    It runs on every boot: 000055 ships no SQL backfill (a migration cannot
-	//    see which schema or database is live), a re-derivation is a no-op when
-	//    nothing changed, and it repairs whatever a transient mirror failure left
-	//    behind.
-	//
-	//    IT IS STILL CORRECT TO RUN IT AFTER THE READ CUTOVER, which is worth
-	//    stating because phase 3a's comment predicted the opposite. It would be
-	//    wrong if registry's tables were the only record of registry's decisions,
-	//    because re-deriving would then overwrite them. They are not: every write
-	//    path still writes the identity tables FIRST and mirrors only on success,
-	//    so identity is by construction at least as current as the mirror, and
-	//    "make the mirror equal identity" can only repair. When phase 4 drops the
-	//    dual-write, this call goes with it.
-	//
-	// 3. SEED registry's own role templates -- AFTER the reconcile, never before.
-	//    Step 2 rewrites each template from the identity copy, so a seed that ran
-	//    first would be undone on the same boot.
-	if vErr := repositories.NewMemberRoleMirror(identityDB).Verify(context.Background()); vErr != nil {
-		log.Fatalf("registry's own role tables (migration 000055) are not reachable from the connection "+
-			"this process resolves identity reads through, and since terraform-suite-identity#206 phase 3b "+
-			"they are where every role and scope set comes from. Booting would serve every principal no role "+
-			"at all. This is the separate-identity-database topology (TFR_IDENTITY_DATABASE_*): create "+
-			"registry_role_templates and organization_member_roles where that connection can resolve them, "+
-			"or run identity in the registry database. Cause: %v", vErr)
-	}
-	if report, rErr := repositories.ReconcileMemberRoles(context.Background(), identityDB, db); rErr != nil {
-		slog.Error("could not reconcile registry's own role tables from the identity source; "+
-			"authorization is served from whatever they already hold, and role changes made while the "+
-			"live mirror was failing are NOT repaired. Run `role-drift`", "error", rErr)
-	} else {
-		slog.Info("registry role tables reconciled", "report", report)
-	}
-	// Registry's role→scope policy, into registry's own table.
-	//
-	// Gated on EXACTLY the same two conditions as the shared-table seed in
-	// cmd/server, and both matter.
-	//
-	// suite.role_seed_owner, even though registry's own table has no
-	// cross-application contention for the flag to arbitrate: while the
-	// reconcile above still derives this table from the shared one, seeding one
-	// without the other would make the two disagree by construction and leave
-	// `role-drift` -- the gate on this whole phase -- permanently non-zero on a
-	// deployment that is in fact healthy.
-	//
-	// The identity-schema CUTOVER, because that is the only topology this seed
-	// was ever for. It exists because the shared identity module seeds role
-	// templates with identity-core scopes only, so registry layers its own
-	// domain scopes on top. In the DEFAULT topology the templates are seeded by
-	// registry's own migrations and have been amended by them since, and the
-	// reconcile above has already copied that result into this table.
-	//
-	// THE GO LIST AND THE MIGRATIONS MUST AGREE, and until issue #891 they did
-	// not: migration 000018 granted `scanning:read` to `devops` and `auditor`,
-	// models.PredefinedRoleTemplates() never carried it, and because the upsert
-	// below sets `scopes = EXCLUDED.scopes` this seed REMOVED the scope from
-	// both roles on every boot of a cutover deployment. The list now carries it,
-	// and internal/db/rolepolicy derives the policy back out of the migration
-	// files so a test can require the two to keep agreeing -- in both
-	// directions, since the drift that adds a scope no migration granted widens
-	// authority instead of narrowing it and does not fail safe.
-	//
-	// identityDB != db is the cutover test. NewRouter is handed the same handle
-	// twice when identity data lives in the app's own schema, and a distinct one
-	// exactly when cmd/server opened a dedicated identity pool.
-	if identityDB != db && cfg.Suite.ShouldSeedRoles("registry") {
-		if sErr := repositories.SeedSystemRoleTemplates(
-			context.Background(), db, models.PredefinedRoleTemplates(),
-		); sErr != nil {
-			slog.Error("could not seed registry's own role templates; roles resolve to whatever "+
-				"the reconcile derived from the identity tables", "error", sErr)
-		}
-	}
-	// 4. RECONCILE registry's own group_mappings table from the effective
-	//    oidc_config.extra_config lists (terraform-suite-identity#206 phase 2,
-	//    migration 000059) -- AFTER steps 2 and 3, because each mirrored row's
-	//    role_template_id is resolved against registry_role_templates, which
-	//    those steps have just brought current. Same standing-reconcile
-	//    reasoning as step 2: 000059 ships no SQL backfill (a migration cannot
-	//    see which schema or database holds the live oidc_config rows), a
-	//    re-derivation is a no-op when nothing changed, and it repairs whatever
-	//    a transient dual-write failure left behind. NOTHING READS THE TABLE
-	//    YET, so a failure here is logged, not fatal: requests are unaffected,
-	//    only the backfill for the eventual read cutover is stale.
-	if report, gErr := repositories.ReconcileGroupMappings(context.Background(), identityDB, db); gErr != nil {
-		slog.Error("could not reconcile registry's own group_mappings from oidc_config.extra_config; "+
-			"nothing reads the table yet, so requests are unaffected, but the phase-2 backfill is stale "+
-			"and mapping changes made while the live dual-write was failing are NOT repaired. Run `role-drift`",
-			"error", gErr)
-	} else {
-		slog.Info("registry group mappings reconciled", "report", report)
-	}
-	// userTokenRevocationRepo lives on the registry's own domain connection
-	// (not identityDB) since it has no FK dependency on the identity schema and
-	// must work unchanged whether identity data is in the app's public schema,
-	// the shared identity schema, or a separate identity database (issue #559
-	// finding [9]).
+	// Registry's own per-app authorization tables are brought into agreement
+	// with the identity source here, in four ordered steps whose ordering is
+	// load-bearing. See reconcileAuthorizationMirror in router_startup.go.
+	reconcileAuthorizationMirror(cfg, db, identityDB)
 	userTokenRevocationRepo := repositories.NewUserTokenRevocationRepository(db)
 	// platformAdminCarrier is the carrier for platform-admin authority outside
 	// organization_members (issue #766, migration 000051), and since
@@ -579,38 +425,9 @@ func NewRouter(cfg *config.Config, db, identityDB *sql.DB) (*gin.Engine, *Backgr
 	// reloadNotificationsConfigFromDB.
 	reloadNotificationsConfigFromDB(cfg, oidcConfigRepo, tokenCipher)
 
-	// Add middleware
-	// middleware.RecoveryMiddleware replaces gin.Recovery(): gin's stock
-	// Recovery() only redacts the Authorization header in its panic-recovery
-	// request dump, leaving the Cookie/Set-Cookie session token unredacted
-	// (issue #663).
-	router.Use(middleware.RecoveryMiddleware())
-	router.Use(middleware.RequestIDMiddleware())
-	router.Use(middleware.MetricsMiddleware())
-	router.Use(LoggerMiddleware(cfg))
-	router.Use(CORSMiddleware(cfg))
-	router.Use(middleware.SecurityHeadersMiddleware(middleware.APISecurityHeadersConfig()))
-
-	// mTLS client-certificate authentication (issue #559 finding [3]). Registered
-	// globally and before the per-route Auth/OptionalAuth middleware groups
-	// below, so a verified client cert's mapped scopes are already in the Gin
-	// context by the time those run — AuthMiddleware treats auth_method=="mtls"
-	// as satisfying its "credentials present" check even with no bearer token.
-	// Actually verifying and surfacing the client cert requires the TLS server
-	// itself to request+verify one (see mtls.BuildServerTLSConfig, wired in
-	// cmd/server/main.go); nothing here works over plain HTTP or behind a
-	// TLS-terminating ingress.
-	if cfg.Security.MTLS.Enabled {
-		mtlsProvider, mtlsErr := mtls.NewProvider(cfg.Security.MTLS)
-		if mtlsErr != nil {
-			log.Fatalf("failed to initialize mTLS provider: %v", mtlsErr)
-		}
-		// The carrier goes in so an mTLS mapping's `admin` is resolved per
-		// request against platform_admins rather than trusted from config
-		// (#876). Constructed above at the platformAdminCarrier assignment,
-		// which is why this registration sits after it.
-		router.Use(mtls.AuthMiddleware(mtlsProvider, platformAdminCarrier))
-	}
+	// Router-wide middleware, in an order that matters -- see
+	// installGlobalMiddleware in router_wiring.go.
+	installGlobalMiddleware(router, cfg, platformAdminCarrier)
 
 	// Rate limiters are constructed HERE, ahead of route registration, because
 	// registerPublicRoutes now consumes protocolRateLimiter (issue #743). Gin
