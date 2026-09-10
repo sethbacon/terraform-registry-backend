@@ -5,23 +5,37 @@ import (
 	"database/sql"
 	"net/http"
 
+	"context"
 	"github.com/gin-gonic/gin"
+	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/jobs"
 )
 
+// cveAdvisoryLister is the slice of CVERepository this handler uses: one read
+// of every advisory, filtered by target kind (issue #687). The repository also
+// carries the ingest side -- upsert, withdraw, candidate enumeration -- which
+// this endpoint has no business reaching.
+type cveAdvisoryLister interface {
+	ListAll(ctx context.Context, kindFilter string) ([]models.CVEAdvisory, error)
+}
+
 // AdvisoryHandlers handles admin CVE advisory endpoints.
 type AdvisoryHandlers struct {
-	cveRepo *repositories.CVERepository
+	cveRepo cveAdvisoryLister
 	pollJob *jobs.CVEPollJob
 }
 
 // NewAdvisoryHandlers creates a new AdvisoryHandlers.
 func NewAdvisoryHandlers(db *sql.DB, pollJob *jobs.CVEPollJob) *AdvisoryHandlers {
-	return &AdvisoryHandlers{
-		cveRepo: repositories.NewCVERepository(db),
-		pollJob: pollJob,
-	}
+	return newAdvisoryHandlers(repositories.NewCVERepository(db), pollJob)
+}
+
+// newAdvisoryHandlers takes the narrowed dependency, so a test can supply a
+// fake without a database. NewAdvisoryHandlers stays the production entry point
+// and its signature is unchanged.
+func newAdvisoryHandlers(cveRepo cveAdvisoryLister, pollJob *jobs.CVEPollJob) *AdvisoryHandlers {
+	return &AdvisoryHandlers{cveRepo: cveRepo, pollJob: pollJob}
 }
 
 // @Summary      List all CVE advisories (admin)
