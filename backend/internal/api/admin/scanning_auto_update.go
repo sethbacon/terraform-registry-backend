@@ -16,7 +16,6 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/terraform-registry/terraform-registry/internal/config"
-	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/jobs"
 	"github.com/terraform-registry/terraform-registry/internal/mirror"
 	"github.com/terraform-registry/terraform-registry/internal/safego"
@@ -30,10 +29,22 @@ type scanningAutoUpdateInput struct {
 	AutoApproveRules string `json:"auto_approve_rules"`
 }
 
+// scanningConfigStore is the slice of OIDCConfigRepository this handler uses.
+//
+// The repository is a 27-method object that happens to persist several
+// unrelated settings blobs alongside the OIDC config, and this handler touches
+// exactly two of them (issue #687). Naming the two here says what the handler
+// needs, and lets it be tested against a fake that implements two methods
+// instead of a sqlmock script for a repository it barely uses.
+type scanningConfigStore interface {
+	GetScanningConfig(ctx context.Context) ([]byte, error)
+	SetScanningConfig(ctx context.Context, configJSON []byte) error
+}
+
 // ScanningAutoUpdateHandler handles the admin scanner auto-update settings endpoint.
 type ScanningAutoUpdateHandler struct {
 	cfg       *config.ScanningConfig
-	repo      *repositories.OIDCConfigRepository
+	repo      scanningConfigStore
 	updateJob *jobs.ScannerUpdateJob
 }
 
@@ -42,7 +53,7 @@ type ScanningAutoUpdateHandler struct {
 // the running ScannerUpdateJob.
 func NewScanningAutoUpdateHandler(
 	cfg *config.ScanningConfig,
-	repo *repositories.OIDCConfigRepository,
+	repo scanningConfigStore,
 	updateJob *jobs.ScannerUpdateJob,
 ) *ScanningAutoUpdateHandler {
 	return &ScanningAutoUpdateHandler{

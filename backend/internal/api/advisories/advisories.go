@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"net/http"
 
+	"context"
 	"github.com/gin-gonic/gin"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
@@ -14,14 +15,23 @@ import (
 
 // Handlers holds the public advisory endpoints.
 type Handlers struct {
-	cveRepo *repositories.CVERepository
+	cveRepo activeAdvisoryLister
+}
+
+// activeAdvisoryLister is the slice of CVERepository this handler uses: the
+// public read of non-withdrawn advisories (issue #687).
+type activeAdvisoryLister interface {
+	ListActive(ctx context.Context) ([]models.CVEAdvisory, error)
 }
 
 // NewHandlers creates a new Handlers instance.
 func NewHandlers(db *sql.DB) *Handlers {
-	return &Handlers{
-		cveRepo: repositories.NewCVERepository(db),
-	}
+	return newHandlers(repositories.NewCVERepository(db))
+}
+
+// newHandlers takes the narrowed dependency so a test can supply a fake.
+func newHandlers(cveRepo activeAdvisoryLister) *Handlers {
+	return &Handlers{cveRepo: cveRepo}
 }
 
 // @Summary      List active CVE advisories

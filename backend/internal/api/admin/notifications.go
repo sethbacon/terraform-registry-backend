@@ -12,10 +12,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"context"
 	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
-	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/notify"
 )
 
@@ -118,7 +118,7 @@ type notificationsTestEmailInput struct {
 // NotificationsHandler handles the admin notifications-config endpoints.
 type NotificationsHandler struct {
 	cfg         *config.NotificationsConfig
-	repo        *repositories.OIDCConfigRepository
+	repo        notificationsConfigStore
 	tokenCipher *crypto.TokenCipher
 	cveCfg      *config.CVEConfig
 }
@@ -128,7 +128,7 @@ type NotificationsHandler struct {
 // in-place for background jobs holding the same pointer.
 func NewNotificationsHandler(
 	cfg *config.NotificationsConfig,
-	repo *repositories.OIDCConfigRepository,
+	repo notificationsConfigStore,
 	tokenCipher *crypto.TokenCipher,
 	cveCfg *config.CVEConfig,
 ) *NotificationsHandler {
@@ -410,4 +410,17 @@ func (h *NotificationsHandler) TestEmail(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "test email sent"})
+}
+
+// notificationsConfigStore is the slice of OIDCConfigRepository this handler
+// uses -- the notifications settings blob and nothing else (issue #687).
+//
+// The sibling scanningConfigStore in scanning_auto_update.go names a different
+// two methods of the same 27-method repository. That the two slices do not
+// overlap at all is the argument for having them: neither handler is coupled
+// to a change in the other's domain, and neither test has to know the
+// repository exists.
+type notificationsConfigStore interface {
+	GetNotificationsConfig(ctx context.Context) ([]byte, error)
+	SetNotificationsConfig(ctx context.Context, configJSON []byte) error
 }
