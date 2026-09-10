@@ -295,6 +295,12 @@ func serve(cfg *config.Config) error {
 	// can determine which version is deployed where.
 	telemetry.AppInfo.WithLabelValues(Version, runtime.Version(), BuildDate).Set(1)
 
+	// Log which Entra credential types this deployment offers, and warn where
+	// the declaration and the observable environment disagree (#1042). Never
+	// changes behaviour and never dials anything -- the declaration is the
+	// source of truth; this only makes a stale one visible at boot.
+	cfg.SCM.Entra.WarnOnCredentialTypeMismatch(slog.Default())
+
 	// Set Gin mode
 	// Note: gin.SetMode sets the GIN_MODE env var as a side effect. Ensure
 	// jwt.isDevMode() does NOT check GIN_MODE to avoid accidentally enabling

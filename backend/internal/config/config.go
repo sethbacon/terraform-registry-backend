@@ -45,6 +45,7 @@ type Config struct {
 	Audit           AuditConfig           `mapstructure:"audit"`
 	Notifications   NotificationsConfig   `mapstructure:"notifications"`
 	Scanning        ScanningConfig        `mapstructure:"scanning"`
+	SCM             SCMConfig             `mapstructure:"scm"`
 	AuditRetention  AuditRetentionConfig  `mapstructure:"audit_retention"`
 	Webhooks        WebhooksConfig        `mapstructure:"webhooks"`
 	BinaryMirror    BinaryMirrorConfig    `mapstructure:"binary_mirror"`
@@ -875,6 +876,9 @@ type SMTPConfig struct {
 // hardcoded string, any error indicates a programming bug and is surfaced to the caller.
 func bindEnvVars(v *viper.Viper) error {
 	keys := []string{
+		// SCM -- nested, so AutomaticEnv cannot reach it; see this function's doc.
+		"scm.entra.credential_types",
+
 		// Redis
 		"redis.host",
 		"redis.port",
@@ -1280,6 +1284,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("notifications.events.scanner_update_available", true)
 
 	// Scanning defaults
+	v.SetDefault("scm.entra.credential_types", DefaultEntraCredentialTypes())
 	v.SetDefault("scanning.enabled", false)
 	v.SetDefault("scanning.tool", "trivy")
 	v.SetDefault("scanning.severity_threshold", "CRITICAL,HIGH,MEDIUM,LOW")
@@ -1509,6 +1514,13 @@ func (c *Config) Validate() error {
 		if c.Policy.BundleSHA256 == "" {
 			return fmt.Errorf("policy.bundle_sha256 is required when policy.enabled=true and policy.bundle_url is set — pin the expected SHA-256 digest of the bundle archive so a compromised or MITM'd bundle host cannot silently substitute upload policy logic")
 		}
+	}
+
+	// Fail closed on an unknown credential type: a typo would otherwise
+	// silently narrow what the deployment offers, and the operator would find
+	// it as a missing option in the admin UI with nothing to point at (#1042).
+	if err := c.SCM.Entra.ValidateEntraCredentialTypes(); err != nil {
+		return err
 	}
 
 	return nil

@@ -9502,6 +9502,27 @@
                 }
             }
         },
+        "/api/v1/scm-providers/capabilities": {
+            "get": {
+                "description": "Which Entra credential types this deployment offers for entra_app providers",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin",
+                    "scm"
+                ],
+                "summary": "List SCM credential-type capabilities",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/admin.SCMCapabilitiesResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/scm-providers/{id}": {
             "get": {
                 "security": [
@@ -15349,6 +15370,28 @@
                 },
                 "old_key_status": {
                     "description": "\"revoked\" or \"expires_at\"",
+                    "type": "string"
+                }
+            }
+        },
+        "admin.SCMCapabilitiesResponse": {
+            "type": "object",
+            "properties": {
+                "entra_credential_types": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/definitions/admin.SCMCredentialTypeAvailability"
+                    }
+                }
+            }
+        },
+        "admin.SCMCredentialTypeAvailability": {
+            "type": "object",
+            "properties": {
+                "available": {
+                    "type": "boolean"
+                },
+                "reason": {
                     "type": "string"
                 }
             }

@@ -205,10 +205,18 @@ func (h *SCMProviderHandlers) CreateProvider(c *gin.Context) {
 		if credentialType == "" {
 			credentialType = scm.EntraCredentialClientSecret
 		}
-		if credentialType != scm.EntraCredentialClientSecret && credentialType != scm.EntraCredentialFederated &&
-			credentialType != scm.EntraCredentialCertificate {
+		if !scm.IsKnownEntraCredentialType(credentialType) {
 			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "entra_credential_type must be client_secret or federated"})
+				"error": "entra_credential_type must be one of " + scm.KnownEntraCredentialTypesList()})
+			return
+		}
+		// Whether the DEPLOYMENT offers this type, as distinct from whether the
+		// value is known. federated needs the platform to project a token and
+		// managed_identity needs Azure compute; offering either where it cannot
+		// work lets an admin save a provider that fails later, on a sync, far
+		// from the form that caused it (#1042).
+		if !h.offersCredentialType(credentialType) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": credentialTypeNotOfferedMessage(credentialType)})
 			return
 		}
 		if req.ProviderType != scm.ProviderAzureDevOps {
@@ -219,7 +227,7 @@ func (h *SCMProviderHandlers) CreateProvider(c *gin.Context) {
 		// identity webhook sets AZURE_TENANT_ID beside the projected token, and
 		// the row records only WHICH identity to assume. Requiring one here
 		// would make the mode unreachable for the deployments it exists for.
-		if credentialType != scm.EntraCredentialFederated && (req.TenantID == nil || *req.TenantID == "") {
+		if !scm.EntraCredentialTypeIsPlatformHeld(credentialType) && (req.TenantID == nil || *req.TenantID == "") {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "tenant_id is required for entra_app auth"})
 			return
 		}
@@ -242,6 +250,19 @@ func (h *SCMProviderHandlers) CreateProvider(c *gin.Context) {
 			if req.EntraCertificate != "" {
 				c.JSON(http.StatusBadRequest, gin.H{
 					"error": "entra_certificate must not be set when entra_credential_type is federated"})
+				return
+			}
+		case scm.EntraCredentialManagedIdentity:
+			// The platform holds the credential entirely; the row carries only
+			// the client id that names which identity to assume.
+			if req.ClientSecret != "" {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": "client_secret must not be set when entra_credential_type is managed_identity"})
+				return
+			}
+			if req.EntraCertificate != "" {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": "entra_certificate must not be set when entra_credential_type is managed_identity"})
 				return
 			}
 		case scm.EntraCredentialCertificate:
@@ -647,11 +668,21 @@ func (h *SCMProviderHandlers) UpdateProvider(c *gin.Context) {
 	}
 	if req.EntraCredentialType != nil {
 		switch *req.EntraCredentialType {
-		case scm.EntraCredentialClientSecret, scm.EntraCredentialFederated, scm.EntraCredentialCertificate:
+		case scm.EntraCredentialClientSecret, scm.EntraCredentialFederated,
+			scm.EntraCredentialCertificate, scm.EntraCredentialManagedIdentity:
+			// Switching TO a type this deployment does not offer is refused; a
+			// provider already ON such a type stays editable, so a deployment
+			// that moved between hosts can be corrected rather than stranded.
+			if *req.EntraCredentialType != provider.EntraCredentialType &&
+				!h.offersCredentialType(*req.EntraCredentialType) {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": credentialTypeNotOfferedMessage(*req.EntraCredentialType)})
+				return
+			}
 			provider.EntraCredentialType = *req.EntraCredentialType
 		default:
 			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "entra_credential_type must be client_secret or federated"})
+				"error": "entra_credential_type must be one of " + scm.KnownEntraCredentialTypesList()})
 			return
 		}
 	}
@@ -737,6 +768,21 @@ func (h *SCMProviderHandlers) UpdateProvider(c *gin.Context) {
 			if hasCert {
 				c.JSON(http.StatusBadRequest, gin.H{
 					"error": "a federated entra_app provider must not carry an entra_certificate; " +
+						"clear it in the same request that switches entra_credential_type"})
+				return
+			}
+		case scm.EntraCredentialManagedIdentity:
+			// Carries neither secret nor certificate, like federated, and needs
+			// no tenant: the platform holds the identity and supplies the tenant.
+			if provider.ClientSecretEncrypted != "" {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": "a managed_identity entra_app provider must not carry a client_secret; " +
+						"clear it in the same request that switches entra_credential_type"})
+				return
+			}
+			if hasCert {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": "a managed_identity entra_app provider must not carry an entra_certificate; " +
 						"clear it in the same request that switches entra_credential_type"})
 				return
 			}
@@ -917,4 +963,87 @@ func (h *SCMProviderHandlers) VerifyProvider(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"ok": true, "expires_at": token.ExpiresAt})
+}
+
+// offersCredentialType reports whether this DEPLOYMENT offers an Entra
+// credential type, per the operator's declaration.
+//
+// A nil config means no declaration is reachable, which is the shape unit tests
+// construct; it falls back to the same default the config layer uses rather
+// than refusing everything, so a handler built without config still behaves.
+func (h *SCMProviderHandlers) offersCredentialType(credentialType string) bool {
+	if h.cfg == nil {
+		for _, t := range config.DefaultEntraCredentialTypes() {
+			if t == credentialType {
+				return true
+			}
+		}
+		return false
+	}
+	return h.cfg.SCM.Entra.Offers(credentialType)
+}
+
+// offeredCredentialTypes is offersCredentialType's list form.
+func (h *SCMProviderHandlers) offeredCredentialTypes() []string {
+	if h.cfg == nil {
+		return config.DefaultEntraCredentialTypes()
+	}
+	return h.cfg.SCM.Entra.OfferedEntraCredentialTypes()
+}
+
+// credentialTypeNotOfferedMessage names the config key, because the admin
+// reading this cannot fix it themselves and needs to know whom to ask.
+func credentialTypeNotOfferedMessage(credentialType string) string {
+	return "entra_credential_type " + credentialType + " is not offered by this deployment; " +
+		"an operator enables it with TFR_SCM_ENTRA_CREDENTIAL_TYPES (scm.entra.credential_types)"
+}
+
+// SCMCredentialTypeAvailability is one credential type's availability.
+type SCMCredentialTypeAvailability struct {
+	Available bool   `json:"available"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+// SCMCapabilitiesResponse tells the admin UI which Entra credential types this
+// deployment offers, so an option that cannot work here is shown disabled with
+// a reason rather than offered and then refused.
+type SCMCapabilitiesResponse struct {
+	EntraCredentialTypes map[string]SCMCredentialTypeAvailability `json:"entra_credential_types"`
+}
+
+// Capabilities returns the deployment's SCM credential-type availability.
+//
+// Admin-scoped, not public: which credential types a deployment offers implies
+// where it runs (a host offering managed_identity is Azure compute), and the
+// existing per-domain config endpoints are all admin-scoped. The one public
+// capability flag in this codebase, /version's capabilities.oci, is also the
+// one that has been mis-wired since it shipped, so it is not a precedent to
+// follow (sethbacon/terraform-registry-frontend#921).
+//
+// @Summary List SCM credential-type capabilities
+// @Description Which Entra credential types this deployment offers for entra_app providers
+// @Tags admin,scm
+// @Produce json
+// @Success 200 {object} admin.SCMCapabilitiesResponse
+// @Router /api/v1/scm-providers/capabilities [get]
+func (h *SCMProviderHandlers) Capabilities(c *gin.Context) {
+	offered := map[string]bool{}
+	for _, t := range h.offeredCredentialTypes() {
+		offered[t] = true
+	}
+	out := SCMCapabilitiesResponse{
+		EntraCredentialTypes: make(map[string]SCMCredentialTypeAvailability, 4),
+	}
+	// Every KNOWN type is reported, not just the offered ones: the UI renders
+	// the unavailable ones disabled-with-reason, and a type missing from the
+	// map would be indistinguishable from an older backend that never heard of
+	// it -- the exact ambiguity that left capabilities.oci dead and unnoticed.
+	for _, t := range scm.KnownEntraCredentialTypes() {
+		entry := SCMCredentialTypeAvailability{Available: offered[t]}
+		if !entry.Available {
+			entry.Reason = "not_offered_by_deployment"
+		}
+		out.EntraCredentialTypes[t] = entry
+	}
+	c.JSON(http.StatusOK, out)
 }

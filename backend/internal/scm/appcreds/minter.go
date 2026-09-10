@@ -165,6 +165,11 @@ func (m *Minter) MintProviderToken(ctx context.Context, p *scm.SCMProvider) (*sc
 				sharedcreds.FederatedCreds{ClientID: p.ClientID})
 			break
 		}
+		if p.EntraCredentialType == scm.EntraCredentialManagedIdentity {
+			minted, err = m.shared.MintManagedIdentity(ctx,
+				sharedcreds.ManagedIdentityCreds{ClientID: p.ClientID})
+			break
+		}
 		if p.EntraCredentialType == scm.EntraCredentialCertificate {
 			var certCreds sharedcreds.CertificateCreds
 			if certCreds, err = m.certificateCreds(p); err == nil {

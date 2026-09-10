@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"strings"
 )
 
 // SCM provider authentication modes. AuthModeOAuthUser is the legacy per-user
@@ -42,6 +43,12 @@ const (
 	// and the credential's lifetime is the operator's rather than Entra's
 	// 24-month cap (#1041). The PEM bundle lives in EncryptedEntraCertificate.
 	EntraCredentialCertificate = "certificate"
+	// EntraCredentialManagedIdentity is a user-assigned managed identity: the
+	// hosting platform holds the credential entirely and the process asks its
+	// local identity endpoint for a token. The row carries only client_id --
+	// no tenant, no secret, no certificate. Works only on Azure compute,
+	// which is why a deployment must declare it (#1042).
+	EntraCredentialManagedIdentity = "managed_identity"
 )
 
 // ProviderType represents the type of SCM provider
@@ -368,3 +375,39 @@ type SCMWebhookLogRecord = SCMWebhookEvent
 type TagImmutabilityAlertRecord = VersionImmutabilityViolation
 
 // Note: ArchiveKind type and constants (ArchiveTarball, ArchiveZipball) are defined in connector.go
+
+// KnownEntraCredentialTypes lists every implemented entra_credential_type, in
+// the order the admin UI should offer them. The database CHECK accepts exactly
+// these; anything else is refused there, so this list and migration 000064 must
+// agree.
+func KnownEntraCredentialTypes() []string {
+	return []string{
+		EntraCredentialClientSecret,
+		EntraCredentialFederated,
+		EntraCredentialCertificate,
+		EntraCredentialManagedIdentity,
+	}
+}
+
+// IsKnownEntraCredentialType reports whether v is an implemented type.
+func IsKnownEntraCredentialType(v string) bool {
+	for _, t := range KnownEntraCredentialTypes() {
+		if t == v {
+			return true
+		}
+	}
+	return false
+}
+
+// KnownEntraCredentialTypesList renders the list for an error message.
+func KnownEntraCredentialTypesList() string {
+	return strings.Join(KnownEntraCredentialTypes(), ", ")
+}
+
+// EntraCredentialTypeIsPlatformHeld reports whether the hosting platform holds
+// the credential AND supplies the tenant, meaning the row carries no tenant_id
+// of its own. True for federated and managed_identity; a certificate provider
+// signs its own assertion and must name the tenant it is signing for.
+func EntraCredentialTypeIsPlatformHeld(v string) bool {
+	return v == EntraCredentialFederated || v == EntraCredentialManagedIdentity
+}

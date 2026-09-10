@@ -96,6 +96,7 @@ var tenantGuardExemptRoutes = map[string]string{
 	"GET /api/v1/admin/terraform-mirrors/:id/versions/:version/platforms": "platform-global binary-mirror catalogue; no organization_id on any table it reads",
 	"GET /api/v1/admin/terraform-mirrors/releases-gpg-keys":               "platform-global HashiCorp releases signing keys; releases_gpg_keys has no organization_id",
 	"GET /api/v1/admin/scanning/latest":                                   "reads no table at all — asks the upstream release API which scanner version is current",
+	"GET /api/v1/scm-providers/capabilities":                              "reads no table at all — reports which Entra credential types this DEPLOYMENT offers, from config; the answer is identical for every organization on the host (#1042)",
 
 	// --- The principal's own data -----------------------------------------
 	// The discriminator on these is the CALLER, resolved from c.Get("user_id")

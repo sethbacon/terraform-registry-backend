@@ -972,6 +972,12 @@ func registerAPIV1Routes(router *gin.Engine, d *apiV1RouteDeps) {
 
 				// Read operations require scm:read
 				scmProvidersGroup.GET("", middleware.RequireScope(auth.ScopeSCMRead), scmProviderHandlers.ListProviders)
+				// Deployment-level capability, not a provider row, so no
+				// scmProviderOrg: which credential types this host offers is the
+				// same answer for every organization. Registered before /:id so
+				// the static segment is unambiguous, and scm:read because the
+				// page that renders the form already needs it (#1042).
+				scmProvidersGroup.GET("/capabilities", middleware.RequireScope(auth.ScopeSCMRead), scmProviderHandlers.Capabilities)
 				scmProvidersGroup.GET("/:id", middleware.RequireScope(auth.ScopeSCMRead), scmProviderOrg(auth.ScopeSCMRead), scmProviderHandlers.GetProvider)
 
 				// Management operations require scm:manage
