@@ -7,6 +7,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.21.1](https://github.com/sethbacon/terraform-registry-backend/compare/v4.21.0...v4.21.1) (2026-09-10)
+
+
+### Refactor
+
+* **api:** lift three more startup phases out of NewRouter ([#1051](https://github.com/sethbacon/terraform-registry-backend/issues/1051)) ([e5e4616](https://github.com/sethbacon/terraform-registry-backend/commit/e5e4616ad8b5c6cd5f7daa1962bfd3fbb9484de6))
+* **api:** narrow four consumers onto the repository slices they use ([#1053](https://github.com/sethbacon/terraform-registry-backend/issues/1053)) ([64bbccb](https://github.com/sethbacon/terraform-registry-backend/commit/64bbccb680744989875c49e24887e7b44cf14a56))
+
 ## [4.21.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.20.0...v4.21.0) (2026-09-10)
 
 
