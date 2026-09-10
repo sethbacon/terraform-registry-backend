@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.20.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.19.1...v4.20.0) (2026-09-09)
+
+
+### Features
+
+* **scm:** certificate credential for Azure DevOps entra_app providers ([#1046](https://github.com/sethbacon/terraform-registry-backend/issues/1046)) ([7cb4458](https://github.com/sethbacon/terraform-registry-backend/commit/7cb445810a2850f6095cb10378d87713dea75ac0)), closes [#1041](https://github.com/sethbacon/terraform-registry-backend/issues/1041)
+
 ## [4.19.1](https://github.com/sethbacon/terraform-registry-backend/compare/v4.19.0...v4.19.1) (2026-09-09)
 
 
