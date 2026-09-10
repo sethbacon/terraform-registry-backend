@@ -16,6 +16,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
+	"github.com/terraform-registry/terraform-registry/internal/scm/appcreds"
 )
 
 // ---------------------------------------------------------------------------
@@ -741,4 +742,80 @@ func TestSCMDelete_Success(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200: body=%s", w.Code, w.Body.String())
 	}
+}
+
+// newSCMProviderRouterWithConfig is newSCMProviderRouter with a caller-supplied
+// config, so the deployment's Entra credential-type declaration is reachable
+// by the handler under test (#1042).
+func newSCMProviderRouterWithConfig(t *testing.T, cfg *config.Config) (sqlmock.Sqlmock, *gin.Engine) {
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	sqlxDB := sqlx.NewDb(db, "sqlmock")
+	scmRepo := repositories.NewSCMRepository(sqlxDB)
+	orgRepo := repositories.NewOrganizationRepository(db)
+	cipher := testTokenCipher(t)
+	h := NewSCMProviderHandlers(cfg, scmRepo, orgRepo, cipher)
+
+	r := gin.New()
+	// These routes sit behind AuthMiddleware + RequireScope in production, so an
+	// unauthenticated principal can never reach the handler. Default the test
+	// router to a platform admin: it keeps each existing test exercising the
+	// behaviour it was written for, while tenant scoping for non-admins is
+	// covered separately (issue #719).
+	r.Use(func(c *gin.Context) {
+		c.Set("scopes", []string{string(auth.ScopeAdmin)})
+		c.Set("user_id", "test-admin")
+	})
+	r.POST("/scm-providers", h.CreateProvider)
+	r.GET("/scm-providers", h.ListProviders)
+	r.GET("/scm-providers/:id", h.GetProvider)
+	r.PUT("/scm-providers/:id", h.UpdateProvider)
+	r.DELETE("/scm-providers/:id", h.DeleteProvider)
+	return mock, r
+}
+
+// newSCMProviderAppRouterWithConfig is newSCMProviderAppRouter with a
+// caller-supplied config, for the same reason (#1042).
+func newSCMProviderAppRouterWithConfig(t *testing.T, cfg *config.Config) (sqlmock.Sqlmock, *gin.Engine) {
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	sqlxDB := sqlx.NewDb(db, "sqlmock")
+	scmRepo := repositories.NewSCMRepository(sqlxDB)
+	orgRepo := repositories.NewOrganizationRepository(db)
+	cipher := testTokenCipher(t)
+	h := NewSCMProviderHandlers(cfg, scmRepo, orgRepo, cipher).
+		WithMinter(appcreds.NewMinter(cipher, scmRepo))
+
+	r := gin.New()
+	// Platform administrator: these routes sit behind AuthMiddleware +
+	// RequireScope in production, and since #719 the create axis resolves a
+	// tenant scope before choosing a target organization (GUARD
+	// scm-create-target-org). A platform admin's scope spans every
+	// organization, so these tests name the target through the organization
+	// picker's X-Organization-Id header (#1011) and prime the existence check
+	// the handler makes on an admin's choice.
+	r.Use(func(c *gin.Context) {
+		c.Set("scopes", []string{string(auth.ScopeAdmin)})
+		c.Set("user_id", "test-admin")
+	})
+	r.POST("/scm-providers", h.CreateProvider)
+	r.POST("/scm-providers/:id/verify", h.VerifyProvider)
+	r.GET("/scm-providers/capabilities", h.Capabilities)
+	return mock, r
 }
