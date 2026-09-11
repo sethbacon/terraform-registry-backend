@@ -120,14 +120,24 @@ func (r *RBACRepository) GetRoleTemplateByName(ctx context.Context, name string)
 
 // CreateRoleTemplate creates a new role template, and mirrors it into
 // registry's own registry_role_templates.
+// THE ORDER INVERTED IN #1057, and the failure stopped being swallowed.
+//
+// `registry_role_templates` is no longer derived from the shared schema: this
+// write and the boot seed are the only things that define what a role means
+// here. So registry goes FIRST, and a failure there is RETURNED -- the previous
+// arrangement wrote identity, logged a registry failure, and answered 200 while
+// the table every authorization decision reads had not changed at all.
+//
+// Identity's copy is still written, and still second, because the shared
+// library resolves a role NAME against it on every member grant
+// (`lookupRoleTemplateID`): a template that exists here and not there is
+// fail-closed -- grants naming it are refused -- while the reverse would be a
+// name registry cannot authorize.
 func (r *RBACRepository) CreateRoleTemplate(ctx context.Context, template *models.RoleTemplate) error {
-	if err := r.roleTemplates.CreateRoleTemplate(ctx, template); err != nil {
-		return err
-	}
 	if err := r.mirror.UpsertRoleTemplate(ctx, template); err != nil {
-		mirrorFailed(ctx, "create role template", err, "role_template_id", template.ID, "name", template.Name)
+		return fmt.Errorf("record the role template in registry's own tables: %w", err)
 	}
-	return nil
+	return r.roleTemplates.CreateRoleTemplate(ctx, template)
 }
 
 // UpdateRoleTemplate updates an existing role template, and mirrors the new
@@ -136,14 +146,16 @@ func (r *RBACRepository) CreateRoleTemplate(ctx context.Context, template *model
 // The mirror matters more here than on create: changing a template's scopes
 // changes the effective authority of every member holding it, and that is the
 // role change with no statement naming a membership anywhere.
+// Registry first, for the reason on CreateRoleTemplate. An update changes what
+// every holder of the template may do, so there is no "less privileged" order to
+// choose between the two legs -- the registry write IS the authority change, and
+// the identity copy decides nothing here. What the order buys is that a failure
+// to change authority is reported as one.
 func (r *RBACRepository) UpdateRoleTemplate(ctx context.Context, template *models.RoleTemplate) error {
-	if err := r.roleTemplates.UpdateRoleTemplate(ctx, template); err != nil {
-		return err
-	}
 	if err := r.mirror.UpsertRoleTemplate(ctx, template); err != nil {
-		mirrorFailed(ctx, "update role template", err, "role_template_id", template.ID, "name", template.Name)
+		return fmt.Errorf("record the role template in registry's own tables: %w", err)
 	}
-	return nil
+	return r.roleTemplates.UpdateRoleTemplate(ctx, template)
 }
 
 // DeleteRoleTemplate deletes a role template (only non-system templates), and
@@ -153,14 +165,15 @@ func (r *RBACRepository) UpdateRoleTemplate(ctx context.Context, template *model
 // membership that held it, through migration 000055's ON DELETE SET NULL --
 // matching what 000001_initial_schema's FK does on the source side. That is the
 // second role change carried entirely by a foreign key.
+// A REVOCATION, so registry first for the #1056 reason as well: deleting the
+// template here nulls every assignment that named it (000055's ON DELETE SET
+// NULL), which withdraws authority. A crash between the legs therefore leaves
+// the LESS privileged state, and a failure returns before identity is touched.
 func (r *RBACRepository) DeleteRoleTemplate(ctx context.Context, id uuid.UUID) error {
-	if err := r.roleTemplates.DeleteRoleTemplate(ctx, id); err != nil {
-		return err
-	}
 	if err := r.mirror.DeleteRoleTemplate(ctx, id); err != nil {
-		mirrorFailed(ctx, "delete role template", err, "role_template_id", id)
+		return fmt.Errorf("withdraw the role template in registry's own tables: %w", err)
 	}
-	return nil
+	return r.roleTemplates.DeleteRoleTemplate(ctx, id)
 }
 
 // ============================================================================

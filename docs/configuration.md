@@ -1396,11 +1396,14 @@ longer decides what registry enforces. Two things still depend on it:
 
 - **The state manager still reads the shared table.** It has not done its own read cutover,
   so whether registry writes those rows still changes another application's roles.
-- **Registry's own role TEMPLATES are still *derived* from the shared ones** by the startup
-  reconcile. So the same flag gates both seeds: seeding one without the other would make the
-  two copies disagree by construction and leave `role-drift` permanently non-zero on a
-  healthy deployment. (Role **assignments** stopped being derived in #1056 — registry
-  decides those — so the flag no longer has anything to do with who holds which role.)
+- **It no longer gates registry's own seed.** Since #1057 nothing derives
+  `registry_role_templates`, so registry seeds it unconditionally in every topology and
+  there is nothing for the flag to keep in step. This flag now governs **only** the shared
+  `identity.role_templates`, which genuinely has two writers.
+- **That shared table is still required**, which is why the flag cannot retire yet.
+  Registry's dual write is name-based and the shared library resolves the name there,
+  erroring when it is absent — so a deployment where nobody seeds it cannot grant a role at
+  all. It goes when `organization_members.role_template_id` does.
 
 Both dependencies end in phase 4 of `sethbacon/terraform-suite-identity#206`, which drops
 the shared table and the reconcile together. The flag goes with them.

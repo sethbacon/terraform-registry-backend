@@ -1171,6 +1171,46 @@ every role this release declined to adopt from the sibling is adopted again. Rea
 
 ---
 
+### Any version → the release carrying #1057 — registry's role templates are its own
+
+**This one is mostly invisible, and the exception is worth two minutes.**
+
+**What changed.** Registry's boot reconcile used to copy the shared `role_templates` into
+its own `registry_role_templates` on every boot — scopes included — and prune anything the
+shared copy did not have. It no longer reads them. That table is now written by registry's
+own seed (`models.PredefinedRoleTemplates()`) and registry's admin API, and by nothing else.
+The seed, which previously ran only under `TFR_IDENTITY_SCHEMA_ENABLED` and only with
+`TFR_SUITE_ROLE_SEED_OWNER`'s permission, now runs **unconditionally in every topology**.
+
+**For almost every deployment this is a no-op.** `internal/db/rolepolicy` already requires
+this build's Go policy list to equal what the migrations seed, in both directions, so the
+rows the seed writes are the rows you already had.
+
+**The exception: a coupled deployment where the sibling defined a role registry does not.**
+Registry previously inherited it through the derivation. It no longer does, and any
+principal holding only that role resolves to no scopes in registry. Before upgrading:
+
+```console
+$ role-drift
+```
+
+Its **advisory** `template_not_mirrored` rows name exactly those. Define any you need in
+`auth.AppRoleTemplates()`/`models.PredefinedRoleTemplates()`, or accept that registry does
+not grant them.
+
+**Custom role templates are unaffected** — they are written through registry's admin API,
+which now writes registry's table first and identity's second.
+
+**`TFR_SUITE_ROLE_SEED_OWNER` still matters, for a narrower thing.** It no longer gates
+registry's own seed. It still decides who seeds the **shared** `identity.role_templates`,
+and that table is still required: registry's dual write resolves role names against it, so a
+deployment where nobody seeds it cannot grant a role at all.
+
+**Rollback is a redeploy.** The previous image resumes deriving registry's table from the
+shared copy. Nothing is dropped and no migration runs.
+
+---
+
 ## Upgrade Preflight CLI Reference
 
 ```text

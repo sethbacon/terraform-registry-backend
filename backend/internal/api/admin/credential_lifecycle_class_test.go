@@ -389,6 +389,9 @@ func TestCredentialLifecycleClass_AuthorityReductionInvalidatesAllCredentialFami
 
 				mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 					WillReturnRows(sampleRTRow())
+				// REGISTRY FIRST since #1057: its table is no longer derived, so this write
+				// is the authority change and the identity copy follows it.
+				mock.ExpectExec("INSERT INTO registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 1))
 				mock.ExpectExec("UPDATE role_templates.*SET display_name").
 					WillReturnResult(sqlmock.NewResult(1, 1))
 				mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_member_roles").
@@ -430,6 +433,9 @@ func TestCredentialLifecycleClass_AuthorityReductionInvalidatesAllCredentialFami
 				mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_member_roles").
 					WillReturnRows(sqlmock.NewRows([]string{"user_id", "organization_id"}).
 						AddRow("member-1", "org-1"))
+				// REVOCATION, REGISTRY FIRST (#1057): the delete here nulls every assignment
+				// that named the template, so a crash between the legs is less privileged.
+				mock.ExpectExec("DELETE FROM registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 1))
 				mock.ExpectExec("DELETE FROM role_templates WHERE id").
 					WillReturnResult(sqlmock.NewResult(1, 1))
 				mock.ExpectExec("INSERT INTO user_token_revocations").

@@ -48,11 +48,15 @@ const gmMigrationVersion = 59
 func gmSeedTemplate(t *testing.T, db *sql.DB, name string) string {
 	t.Helper()
 	id := uuid.NewString()
+	// BOTH TABLES, because since #1057 nothing copies one into the other. A real
+	// boot writes registry's from its own seed and identity's from the shared
+	// seed; a fixture that wrote only identity's would leave
+	// registry_role_templates empty, and every role name would resolve to
+	// nothing here — which is a fixture defect, not the behaviour under test.
 	mustExec(t, db, `INSERT INTO role_templates (id, name, display_name, scopes, is_system)
 	                 VALUES ($1, $2, $2, '["modules:read"]'::jsonb, false)`, id, name)
-	if _, err := ReconcileMemberRoles(context.Background(), db, db); err != nil {
-		t.Fatalf("reconcile member roles (template mirror): %v", err)
-	}
+	mustExec(t, db, `INSERT INTO registry_role_templates (id, name, display_name, scopes, is_system)
+	                 VALUES ($1, $2, $2, '["modules:read"]'::jsonb, false)`, id, name)
 	return id
 }
 

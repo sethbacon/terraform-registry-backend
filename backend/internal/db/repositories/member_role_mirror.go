@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 
 	"github.com/google/uuid"
@@ -260,29 +259,4 @@ func (m *MemberRoleMirror) DeleteRoleTemplate(ctx context.Context, id uuid.UUID)
 		return fmt.Errorf("mirror role template deletion %s: %w", id, err)
 	}
 	return nil
-}
-
-// mirrorFailed is the single place a mirror error is absorbed.
-//
-// It is absorbed rather than returned ON PURPOSE, and the reasoning is the
-// ROLE-TEMPLATE WRITES ONLY, since #1056.
-//
-// Assignment writes no longer come here: they are authorization changes on the
-// table every read resolves against, so a swallowed failure is an admin action
-// that returned 200 and did not happen. Those failures are returned now.
-//
-// Role templates are still DERIVED from the shared `role_templates` by the boot
-// reconcile (#1057), so the old argument still holds for them: the caller's
-// change landed at the source, the next boot re-derives the mirror from it, and
-// failing the request would report a failure that did not occur. When #1057
-// makes `registry_role_templates` registry's own, this function goes with the
-// derivation.
-func mirrorFailed(ctx context.Context, op string, err error, attrs ...any) {
-	args := []any{"operation", op, "error", err}
-	args = append(args, attrs...)
-	args = append(args,
-		"impact", "registry's own authorization tables have diverged from the identity tables; "+
-			"the request itself succeeded. Run the divergence query in docs/identity-schema.md, "+
-			"and do not enable the read cutover while it returns rows.")
-	slog.ErrorContext(ctx, "role-assignment mirror write failed", args...)
 }
