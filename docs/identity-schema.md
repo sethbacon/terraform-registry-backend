@@ -198,8 +198,25 @@ existing row is never touched, and a membership identity no longer has is pruned
 exception is a deployment whose `organization_member_roles` is empty, which adopts the
 source's assignments **once** and says so in the boot log.
 
-Role **templates** are still derived from the shared `role_templates` on every boot. That
-is the remaining half, tracked as #1057.
+**Role templates became registry's too, in #1057.** The boot reconcile used to list the
+shared `role_templates`, upsert every row into `registry_role_templates` — scopes included —
+and prune anything not in that set. It no longer reads them at all. That table now has
+exactly two writers: registry's own seed, from `models.PredefinedRoleTemplates()`, and
+registry's admin API.
+
+Two consequences worth knowing:
+
+- **The seed runs in every topology, and runs first.** It used to run only under the
+  identity-schema cutover and only *after* the reconcile, because the reconcile would have
+  overwritten it. Now it is the only thing that defines registry's roles, so it is
+  unconditional — and it runs **before** the reconcile, whose one-time adoption validates
+  each membership's role against the template set it writes.
+- **The identity-side seed stays.** Registry's dual write is name-based, and the shared
+  library resolves that name against `identity.role_templates`
+  (`lookupRoleTemplateID`), erroring when it is absent. An unseeded identity table would
+  fail every grant at the identity leg, so `SeedSharedIdentityRoleTemplates` and
+  `TFR_SUITE_ROLE_SEED_OWNER` both remain until `organization_members.role_template_id` is
+  dropped.
 
 What has **not** moved is the membership *fact*. "Is this principal a member of this
 organization at all" is still answered by `organization_members`, and every accessor asks
@@ -253,9 +270,9 @@ What it reports:
 | `mirror_without_membership` | registry holds a role for a non-member. Inert today; **grants** authority the product never issued once phase 4 lands. |
 | `role_differs` | both copies have the membership and name different templates. **Advisory since #1056** — registry decides its own roles, so this is the intended state on a coupled deployment. Printed, never gating. |
 | `membership_not_mirrored` | identity has the membership, registry has no row — the principal is served **no role**. |
-| `template_scopes_differ` | same template id, different scope sets: every holder's authority differs. |
-| `template_name_differs` | same id, different name. Registry resolves templates by name in the group-mapping reconciliation and the admin API. |
-| `template_not_mirrored` / `mirrored_template_orphaned` | a template exists on one side only. |
+| `template_scopes_differ` | same template id, different scope sets. **Advisory since #1057** — registry defines its own templates, so this is two applications each saying what a role grants in their own product. |
+| `template_name_differs` | same id, different name. **Advisory since #1057.** Registry resolves templates by name in the group-mapping reconciliation and the admin API, so a divergence here is worth seeing — it just is not a broken derivation any more. |
+| `template_not_mirrored` / `mirrored_template_orphaned` | a template exists on one side only. **Advisory since #1057** — expected whenever either application defines a role the other does not. |
 | `membership_role_missing_template` | an identity membership names a template that does not exist **in identity**. **Advisory since #1056** — registry no longer copies that column, so it says nothing about registry's tables. The source data is wrong; the reconcile mirrors it with no role rather than inventing one. |
 | `unparseable_row` | a source row whose `organization_id` or `user_id` is not a UUID. It can never be mirrored, so it is permanently unreconciled. |
 
@@ -281,17 +298,19 @@ mappings" out of it on both sides.
 
 Rows here now **do** affect authorization — that is what changed. In order of cost:
 
-1. **Restart the backend — for the TEMPLATE kinds.** The startup reconcile still derives
-   `registry_role_templates` from the shared schema, so `template_scopes_differ`,
-   `template_name_differs`, `template_not_mirrored` and `mirrored_template_orphaned` clear
-   on a restart. Re-run `role-drift`.
+1. **Restart the backend — but know what it now repairs.** Since #1057 the startup
+   sequence seeds `registry_role_templates` from this build's own policy and then confirms
+   membership facts. It re-derives nothing.
 
-   It does **not** repair an assignment any more, and that is deliberate: since #1056 a row
-   in `organization_member_roles` is registry's own decision, and re-deriving it from
-   identity's column is exactly the copy that let the sibling's grants in. A
-   `membership_not_mirrored` row is confirmed by the restart with **no role** — the drift
-   clears, the principal holds nothing here, and granting the role again through the member
-   API is the repair. A role you believe is wrong is changed the same way.
+   - **`membership_not_mirrored`** clears: the restart records the membership with **no
+     role**. The drift goes; the principal holds nothing here until somebody grants it,
+     through the member API.
+   - **System role templates** are restored to this build's definition by the seed, because
+     the seed owns them. A *custom* template is not — nothing but your admin API writes it.
+   - **Assignments and template differences from identity are not touched at all.** They are
+     registry's own decisions (#1056, #1057), and re-deriving them from identity's copy is
+     exactly what those changes removed. Change a role you believe is wrong through the
+     member API; change a template through the role-template API.
 2. **If rows persist, read the boot log.** `registry role tables reconciled` reports what
    the last pass did, including `orphaned_role_refs` and `unparseable_rows`. A membership
    whose role template is missing is an inconsistency in the *identity* data; decide what

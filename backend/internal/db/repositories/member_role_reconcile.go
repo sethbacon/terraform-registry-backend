@@ -32,13 +32,26 @@
 // deployment it imports the sibling's role opinions ONCE, and the upgrade note
 // says so; every boot after it, registry decides.
 //
-// # Role templates are still derived
+// # Role templates are registry's too, since #1057
 //
-// `registry_role_templates` is still upserted from the shared `role_templates`
-// and pruned to it. That is #1057, sequenced after this one deliberately: while
-// assignments keyed on identity's template ids, a registry-owned template table
-// minting its own ids would have orphaned every assignment on a fresh install.
-// Once this change lands, the two id spaces may diverge freely.
+// This function used to list the shared `role_templates`, upsert every row into
+// `registry_role_templates` (scopes included) and prune anything not in that
+// set. It no longer reads them at all. `registry_role_templates` is written by
+// registry's own seed -- unconditionally, in every topology, from
+// models.PredefinedRoleTemplates() -- and by registry's admin API, and by
+// nothing else.
+//
+// THE SEED RUNS BEFORE THIS FUNCTION, and that ordering is load-bearing rather
+// than tidy. The one-time adoption below validates each membership's role
+// against the template set; that set is now REGISTRY's, so it has to exist
+// before the adoption reads it. Seeding afterwards would leave a fresh install's
+// adoption checking an empty table and mirroring every assignment as "no role".
+//
+// What this does NOT allow yet: retiring the identity-side seed. Registry's dual
+// write is name-based, and the shared library resolves that name in IDENTITY's
+// `role_templates` (`lookupRoleTemplateID`), erroring when it is absent -- so an
+// unseeded identity table would fail every grant at the identity leg. That goes
+// when `organization_members.role_template_id` does, in #206's final phase.
 //
 // # Why Go and not SQL in the migration
 //
@@ -57,16 +70,18 @@ import (
 	"log/slog"
 
 	"github.com/google/uuid"
-
-	identitystore "github.com/sethbacon/terraform-suite-identity/identity/store"
 )
 
 // ReconcileReport is what one reconcile did, for the boot log.
 type ReconcileReport struct {
-	// SourceMemberships / SourceRoleTemplates are the row counts read from the
-	// effective identity source.
-	SourceMemberships   int
-	SourceRoleTemplates int
+	// SourceMemberships is the membership row count read from the effective
+	// identity source. Membership is the only thing this function reads there.
+	SourceMemberships int
+	// RegistryRoleTemplates is how many templates REGISTRY defines, read from
+	// its own table after its own seed has run. Reported because an adoption
+	// validating against an empty set would mirror every assignment as "no
+	// role", and the count is where that shows.
+	RegistryRoleTemplates int
 	// MembershipsAdopted counts assignments copied from the source by the
 	// ONE-TIME adoption -- non-zero only on the first boot after the mirror
 	// tables are created, and zero forever after. See the header.
@@ -74,14 +89,10 @@ type ReconcileReport struct {
 	// MembershipsConfirmed counts memberships recorded here with NO role
 	// because identity has them and registry had no row. Steady state 0.
 	MembershipsConfirmed int
-	// RoleTemplatesWritten counts templates upserted from the source. Steady
-	// state 0: the upsert only fires when something differs. Templates are
-	// still derived (#1057).
-	RoleTemplatesWritten int
-	// MembershipsRemoved / RoleTemplatesRemoved count mirrored rows deleted
-	// because the source no longer has them.
-	MembershipsRemoved   int
-	RoleTemplatesRemoved int
+
+	// MembershipsRemoved counts mirrored rows deleted because identity no
+	// longer has the membership.
+	MembershipsRemoved int
 	// OrphanedRoleRefs counts memberships whose role_template_id names a
 	// template that does not exist in the source at all. These are mirrored
 	// with a NULL role rather than skipped, and they are the inconsistency the
@@ -97,12 +108,10 @@ type ReconcileReport struct {
 func (r ReconcileReport) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.Int("source_memberships", r.SourceMemberships),
-		slog.Int("source_role_templates", r.SourceRoleTemplates),
+		slog.Int("registry_role_templates", r.RegistryRoleTemplates),
 		slog.Int("memberships_adopted", r.MembershipsAdopted),
 		slog.Int("memberships_confirmed", r.MembershipsConfirmed),
-		slog.Int("role_templates_written", r.RoleTemplatesWritten),
 		slog.Int("memberships_removed", r.MembershipsRemoved),
-		slog.Int("role_templates_removed", r.RoleTemplatesRemoved),
 		slog.Int("orphaned_role_refs", r.OrphanedRoleRefs),
 		slog.Int("unparseable_rows", r.UnparseableRows),
 	)
@@ -144,22 +153,16 @@ func ReconcileMemberRoles(ctx context.Context, identityDB, registryDB *sql.DB) (
 	// 1. Role templates first: organization_member_roles.role_template_id has a
 	//    real FK to registry_role_templates, so an assignment cannot be written
 	//    before the template it names.
-	templates, err := identitystore.NewRoleTemplateRepository(identityDB).ListRoleTemplates(ctx)
+	// The template ids registry itself defines. This is what an adopted
+	// assignment is validated against, and it replaces the source's list: a
+	// membership naming a template REGISTRY does not have cannot be written,
+	// because 000055's foreign key refuses it.
+	live, err := readRegistryRoleTemplateIDs(ctx, registryDB)
 	if err != nil {
-		return report, fmt.Errorf("read effective role templates: %w", err)
+		return report, err
 	}
-	report.SourceRoleTemplates = len(templates)
-	live := make(map[uuid.UUID]bool, len(templates))
-	for _, t := range templates {
-		live[t.ID] = true
-		if err := mirror.UpsertRoleTemplate(ctx, t); err != nil {
-			return report, fmt.Errorf("mirror role template %q: %w", t.Name, err)
-		}
-		report.RoleTemplatesWritten++
-	}
+	report.RegistryRoleTemplates = len(live)
 
-	// 2. Memberships. Bare table name, so the identity pool's search_path picks
-	//    the effective one -- exactly as every read in the shared store does.
 	sourceMembers, unparseable, err := readEffectiveMemberships(ctx, identityDB)
 	if err != nil {
 		return report, err
@@ -226,12 +229,6 @@ func ReconcileMemberRoles(ctx context.Context, identityDB, registryDB *sql.DB) (
 
 	// 4. Role templates last, so a template deleted at the source cannot null a
 	//    mirrored assignment that step 2 has just written.
-	removedTemplates, err := pruneMirroredRoleTemplates(ctx, registryDB, mirror, live)
-	if err != nil {
-		return report, err
-	}
-	report.RoleTemplatesRemoved = removedTemplates
-
 	return report, nil
 }
 
@@ -253,7 +250,7 @@ func adoptSourceAssignments(ctx context.Context, mirror *MemberRoleMirror, sourc
 		if effective != nil {
 			id, parseErr := uuid.Parse(*effective)
 			if parseErr != nil || !live[id] {
-				slog.WarnContext(ctx, "membership names a role template that does not exist; adopting it with no role",
+				slog.WarnContext(ctx, "membership names a role template registry does not define; adopting it with no role",
 					"organization_id", key.orgID, "user_id", key.userID, "role_template_id", *effective)
 				orphaned++
 				effective = nil
@@ -267,9 +264,40 @@ func adoptSourceAssignments(ctx context.Context, mirror *MemberRoleMirror, sourc
 	return adopted, orphaned, nil
 }
 
+// readRegistryRoleTemplateIDs reads the template ids REGISTRY defines.
+//
+// Replaces the list the reconcile used to take from the shared schema (#1057).
+// Read AFTER registry's own seed has run, which is why the seed moved ahead of
+// the reconcile: on a fresh install this table is empty until the seed writes
+// it, and an adoption validating against an empty set mirrors every assignment
+// as "no role".
+func readRegistryRoleTemplateIDs(ctx context.Context, registryDB *sql.DB) (map[uuid.UUID]bool, error) {
+	rows, err := registryDB.QueryContext(ctx, `SELECT id FROM registry_role_templates`)
+	if err != nil {
+		return nil, fmt.Errorf("read registry's own role templates: %w", err)
+	}
+	defer rows.Close()
+	live := map[uuid.UUID]bool{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan a registry role template id: %w", err)
+		}
+		live[id] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read registry's own role templates: %w", err)
+	}
+	return live, nil
+}
+
 // identitySourceTables are the tables the reconcile reads through the identity
 // connection. Named once so the probe and its failure message agree.
-var identitySourceTables = []string{"organization_members", "role_templates"}
+// `role_templates` came off this list in #1057: the reconcile no longer reads
+// the shared templates at all, so probing for them would refuse to boot over a
+// table nothing here touches. The identity-side SEED still writes them, and its
+// own failure is reported where it happens.
+var identitySourceTables = []string{"organization_members"}
 
 // verifyIdentitySource refuses to reconcile from a connection that does not
 // resolve the tables the application reads roles from.
@@ -381,51 +409,4 @@ func sameRole(a, b *string) bool {
 		return a == nil && b == nil
 	}
 	return *a == *b
-}
-
-// readMirroredRoleTemplateIDs loads the ids registry's own template table holds.
-//
-// Reading is a separate step from deleting, exactly as it is for memberships:
-// the deletes must not be issued while this result set is still open, since on a
-// small pool the writing statement would wait for a connection the scan is
-// holding. Returning the ids first makes that ordering structural instead of a
-// hand-placed Close nobody can see the reason for.
-func readMirroredRoleTemplateIDs(ctx context.Context, registryDB *sql.DB) ([]uuid.UUID, error) {
-	rows, err := registryDB.QueryContext(ctx, `SELECT id FROM registry_role_templates`)
-	if err != nil {
-		return nil, fmt.Errorf("read mirrored role templates: %w", err)
-	}
-	defer rows.Close()
-
-	var ids []uuid.UUID
-	for rows.Next() {
-		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan mirrored role template: %w", err)
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read mirrored role templates: %w", err)
-	}
-	return ids, nil
-}
-
-// pruneMirroredRoleTemplates deletes mirrored templates with no source row.
-func pruneMirroredRoleTemplates(ctx context.Context, registryDB *sql.DB, mirror *MemberRoleMirror, live map[uuid.UUID]bool) (int, error) {
-	ids, err := readMirroredRoleTemplateIDs(ctx, registryDB)
-	if err != nil {
-		return 0, err
-	}
-	var removed int
-	for _, id := range ids {
-		if live[id] {
-			continue
-		}
-		if err := mirror.DeleteRoleTemplate(ctx, id); err != nil {
-			return 0, fmt.Errorf("prune mirrored role template %s: %w", id, err)
-		}
-		removed++
-	}
-	return removed, nil
 }

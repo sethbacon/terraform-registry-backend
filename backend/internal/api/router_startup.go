@@ -250,9 +250,11 @@ func reconcileAuthorizationMirror(cfg *config.Config, db, identityDB *sql.DB) {
 	//    "make the mirror equal identity" can only repair. When phase 4 drops the
 	//    dual-write, this call goes with it.
 	//
-	// 3. SEED registry's own role templates -- AFTER the reconcile, never before.
-	//    Step 2 rewrites each template from the identity copy, so a seed that ran
-	//    first would be undone on the same boot.
+	// 3. SEED registry's own role templates -- BEFORE the reconcile, and
+	//    UNCONDITIONALLY (#1057). The order inverted: the reconcile no longer
+	//    derives templates from the identity copy, and its one-time adoption
+	//    validates each membership's role against REGISTRY's template set, so
+	//    that set has to exist before it runs.
 	if vErr := repositories.NewMemberRoleMirror(identityDB).Verify(context.Background()); vErr != nil {
 		log.Fatalf("registry's own role tables (migration 000055) are not reachable from the connection "+
 			"this process resolves identity reads through, and since terraform-suite-identity#206 phase 3b "+
@@ -261,53 +263,55 @@ func reconcileAuthorizationMirror(cfg *config.Config, db, identityDB *sql.DB) {
 			"registry_role_templates and organization_member_roles where that connection can resolve them, "+
 			"or run identity in the registry database. Cause: %v", vErr)
 	}
-	if report, rErr := repositories.ReconcileMemberRoles(context.Background(), identityDB, db); rErr != nil {
-		slog.Error("could not reconcile registry's own role tables from the identity source; "+
-			"authorization is served from whatever they already hold, and role changes made while the "+
-			"live mirror was failing are NOT repaired. Run `role-drift`", "error", rErr)
-	} else {
-		slog.Info("registry role tables reconciled", "report", report)
-	}
-	// Registry's role→scope policy, into registry's own table.
+	// REGISTRY'S ROLE->SCOPE POLICY, INTO REGISTRY'S OWN TABLE.
 	//
-	// Gated on EXACTLY the same two conditions as the shared-table seed in
-	// cmd/server, and both matter.
+	// Unconditional since #1057, and both conditions it lost are worth saying
+	// why they went.
 	//
-	// suite.role_seed_owner, even though registry's own table has no
-	// cross-application contention for the flag to arbitrate: while the
-	// reconcile above still derives this table from the shared one, seeding one
-	// without the other would make the two disagree by construction and leave
-	// `role-drift` -- the gate on this whole phase -- permanently non-zero on a
-	// deployment that is in fact healthy.
+	// suite.role_seed_owner gated it because the reconcile used to DERIVE this
+	// table from the shared one, so seeding one without the other made the two
+	// disagree by construction and left `role-drift` permanently non-zero on a
+	// healthy deployment. The reconcile no longer derives it, so there is
+	// nothing left for the flag to keep in step -- and this table has no
+	// cross-application contention of its own, because no other application
+	// writes it. The flag still gates the SHARED seed in cmd/server, which is a
+	// different table with two writers.
 	//
-	// The identity-schema CUTOVER, because that is the only topology this seed
-	// was ever for. It exists because the shared identity module seeds role
-	// templates with identity-core scopes only, so registry layers its own
-	// domain scopes on top. In the DEFAULT topology the templates are seeded by
-	// registry's own migrations and have been amended by them since, and the
-	// reconcile above has already copied that result into this table.
+	// `identityDB != db` gated it to the identity-schema cutover, on the
+	// reasoning that the DEFAULT topology got these rows from registry's own
+	// migrations by way of the reconcile's copy. With the copy gone that is no
+	// longer true: in every topology this seed is the only thing that puts
+	// registry's policy into registry's table, and without it a default-topology
+	// deployment would authorize from whatever the last derivation left behind
+	// and a fresh one from nothing at all.
 	//
 	// THE GO LIST AND THE MIGRATIONS MUST AGREE, and until issue #891 they did
 	// not: migration 000018 granted `scanning:read` to `devops` and `auditor`,
 	// models.PredefinedRoleTemplates() never carried it, and because the upsert
-	// below sets `scopes = EXCLUDED.scopes` this seed REMOVED the scope from
-	// both roles on every boot of a cutover deployment. The list now carries it,
+	// sets `scopes = EXCLUDED.scopes` this seed REMOVED the scope from both
+	// templates on every boot of a cutover deployment. The list now carries it,
 	// and internal/db/rolepolicy derives the policy back out of the migration
 	// files so a test can require the two to keep agreeing -- in both
 	// directions, since the drift that adds a scope no migration granted widens
-	// authority instead of narrowing it and does not fail safe.
-	//
-	// identityDB != db is the cutover test. NewRouter is handed the same handle
-	// twice when identity data lives in the app's own schema, and a distinct one
-	// exactly when cmd/server opened a dedicated identity pool.
-	if identityDB != db && cfg.Suite.ShouldSeedRoles("registry") {
-		if sErr := repositories.SeedSystemRoleTemplates(
-			context.Background(), db, models.PredefinedRoleTemplates(),
-		); sErr != nil {
-			slog.Error("could not seed registry's own role templates; roles resolve to whatever "+
-				"the reconcile derived from the identity tables", "error", sErr)
-		}
+	// authority instead of narrowing it and does not fail safe. That guard
+	// matters MORE now: this seed runs in the default topology too, where the
+	// migrations are the other author of the same rows.
+	if sErr := repositories.SeedSystemRoleTemplates(
+		context.Background(), db, models.PredefinedRoleTemplates(),
+	); sErr != nil {
+		slog.Error("could not seed registry's own role templates; every role read resolves against "+
+			"whatever registry_role_templates already holds, which on a fresh deployment is nothing",
+			"error", sErr)
 	}
+
+	if report, rErr := repositories.ReconcileMemberRoles(context.Background(), identityDB, db); rErr != nil {
+		slog.Error("could not reconcile registry's own membership rows from the identity source; "+
+			"authorization is served from whatever they already hold, and memberships added while the "+
+			"reconcile was failing are not recorded here. Run `role-drift`", "error", rErr)
+	} else {
+		slog.Info("registry role tables reconciled", "report", report)
+	}
+
 	// 4. RECONCILE registry's own group_mappings table from the effective
 	//    oidc_config.extra_config lists (terraform-suite-identity#206 phase 2,
 	//    migration 000059) -- AFTER steps 2 and 3, because each mirrored row's

@@ -47,8 +47,15 @@ func seedPreviewFixture(t *testing.T, db *sql.DB) (templateID, orgID, subsetUser
 		orgID, "preview-org-"+orgID[:8], "Preview Org")
 
 	templateID = uuid.NewString()
+	// BOTH TABLES, as a boot writes them. Since #1057 the reconcile validates each
+	// adopted assignment against REGISTRY's templates rather than copying
+	// identity's, so a fixture seeding only identity's would adopt both
+	// memberships with NO role and the mirror read below would find nothing.
+	tmplName := "preview-tmpl-" + templateID[:8]
 	mustExec(t, db, `INSERT INTO role_templates (id, name, display_name, scopes, is_system) VALUES ($1,$2,$3,$4,false)`,
-		templateID, "preview-tmpl-"+templateID[:8], "Preview Template", `["modules:read","providers:write"]`)
+		templateID, tmplName, "Preview Template", `["modules:read","providers:write"]`)
+	mustExec(t, db, `INSERT INTO registry_role_templates (id, name, display_name, scopes, is_system) VALUES ($1,$2,$3,$4,false)`,
+		templateID, tmplName, "Preview Template", `["modules:read","providers:write"]`)
 
 	subsetUser, overUser = uuid.NewString(), uuid.NewString()
 	for _, u := range []string{subsetUser, overUser} {
