@@ -100,7 +100,7 @@ jobs:
         # steps below decide on `outputs.findings` instead of on `outcome`. A
         # scanner ERROR does fail it, immediately and loudly, which is the state
         # that previously looked identical to clean.
-        uses: 4cloudguru/shared-workflows/.github/actions/osv-scan@adb01429f88e459fcc045598317b5d6c09f95647 # v1.26.1
+        uses: 4cloudguru/shared-workflows/.github/actions/osv-scan@c52ee27a03d06eee94e13c7bb56385d4edfb94d4 # v1.28.0
         with:
           # JSON (not table) so the triage step below can tell an advisory
           # with a published fix from one without; the triage step prints a
@@ -259,7 +259,7 @@ jobs:
         uses: ./.github/actions/setup-backend
 
       - name: Install govulncheck
-        uses: 4cloudguru/shared-workflows/.github/actions/go-install@adb01429f88e459fcc045598317b5d6c09f95647 # v1.26.1
+        uses: 4cloudguru/shared-workflows/.github/actions/go-install@c52ee27a03d06eee94e13c7bb56385d4edfb94d4 # v1.28.0
         with:
           package: golang.org/x/vuln/cmd/govulncheck@v1.1.4
 
