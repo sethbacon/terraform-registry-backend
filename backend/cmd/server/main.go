@@ -517,12 +517,15 @@ func serve(cfg *config.Config) error {
 		}()
 	}
 
-	// An operator who says this app shares an identity store with the sibling,
-	// while identity still resolves from this app's own public schema, has
-	// asserted something the process can see is untrue. Checked before any pool
-	// is opened so the deployment fails on its configuration rather than partway
-	// through startup.
+	// Both guards read suite.identity_shared_store: the first checks that the
+	// assertion is backed by the topology, the second that a deployment making it
+	// has named the app that owns the shared role-template seed. Checked before
+	// any pool is opened so the deployment fails on its configuration rather than
+	// partway through startup.
 	if err := sharedIdentityStoreGuard(cfg.Suite.IdentitySharedStore, identitySchemaEnabled()); err != nil {
+		return err
+	}
+	if err := roleSeedOwnerGuard(cfg.Suite.IdentitySharedStore, cfg.Suite.RoleSeedOwner); err != nil {
 		return err
 	}
 
@@ -563,9 +566,11 @@ func serve(cfg *config.Config) error {
 		//     longer authorizes from this table directly -- but its boot adopts
 		//     from it every role name its own list does not define, and `devops`
 		//     and `auditor` are two such names. Whatever this seed leaves here is
-		//     what those templates mean over there. Its rollback lever
-		//     (TSM_AUTHZ_ROLE_SOURCE=identity) puts every one of its
-		//     authorization decisions back on this table outright.
+		//     what those templates mean over there. (Its rollback lever,
+		//     TSM_AUTHZ_ROLE_SOURCE=identity, was RETIRED in
+		//     terraform-state-manager-backend#599 -- the key is a tombstone and
+		//     any value at all now fails that app's boot, so the adoption above
+		//     is the whole of the reason, not one of two.)
 		//   * A ROLLBACK OF THIS APPLICATION. The previous image reads it.
 		//
 		// It is the one call suite.role_seed_owner still gates.
@@ -1018,6 +1023,66 @@ func sharedIdentityStoreGuard(sharedStoreAsserted, identitySchemaOn bool) error 
 			"TFR_IDENTITY_SCHEMA_ENABLED=true (see docs/identity-schema.md for the rollout, which " +
 			"requires the identity data to have been copied first), or unset " +
 			"TFR_SUITE_IDENTITY_SHARED_STORE")
+}
+
+// roleSeedOwnerGuard refuses to start when this deployment says it shares an
+// identity store with the sibling app but has not said which app owns the
+// shared role-template seed (issue #1063).
+//
+// THE COLLISION. Both applications upsert `identity.role_templates` BY NAME,
+// and both statements are `ON CONFLICT (name) DO UPDATE SET ... scopes =
+// EXCLUDED.scopes` -- a replacement, not a merge. Four names are written by
+// both: admin, viewer, org_owner and org_provisioner. What `viewer` means in
+// the shared table is therefore whichever app booted last:
+//
+//	registry  viewer -> modules:read, providers:read, mirrors:read, organizations:read, scm:read
+//	tsm       viewer -> state:read
+//
+// The state manager's statement additionally rewrites the row's id to its own,
+// so the two applications also fight over the key `organization_members`
+// references.
+//
+// WHY THE DEFAULT WALKS INTO IT. `suite.role_seed_owner` exists to arbitrate
+// exactly this, and its default is "self", whose documented meaning is "every
+// app seeds its own store". terraform-state-manager-backend ships the SAME flag
+// with the SAME "self" default. So a coupled deployment whose operator set up
+// the shared store and never thought about this flag has BOTH apps seeding,
+// which is the collision the flag was invented to prevent, reached by doing
+// nothing.
+//
+// WHY IT KEYS ON THE ASSERTION AND NOT ON THE CUTOVER. The identity-schema
+// cutover does NOT imply a sibling: docs/identity-schema.md's rollout enables
+// it for a STANDALONE registry, both on a new deployment and as step 3 of
+// moving existing identity data out of public. Refusing "self" whenever the
+// cutover is on would break every one of those deployments, where "self" is
+// correct and there is no second writer. suite.identity_shared_store is the
+// operator's statement that a second application is present, and it is the only
+// thing here that carries that meaning -- see sharedIdentityStoreGuard, which
+// requires that assertion to be backed by the cutover.
+//
+// WHAT IT CANNOT CATCH. Only "self" is detectable. Registry configured
+// `role_seed_owner=registry` while the sibling is configured
+// `role_seed_owner=tsm` also has both apps seeding, and this process cannot see
+// the sibling's configuration to know. The value has to MATCH across the two
+// deployments, which is why the message says so rather than only naming a
+// legal value.
+//
+// Arguments are passed in rather than read from cfg, matching the guards beside
+// it, so this stays a pure function testable against arbitrary inputs.
+func roleSeedOwnerGuard(sharedStoreAsserted bool, roleSeedOwner string) error {
+	if !sharedStoreAsserted || roleSeedOwner != config.RoleSeedOwnerSelf {
+		return nil
+	}
+	return errors.New(
+		"refusing to start: suite.identity_shared_store is true (TFR_SUITE_IDENTITY_SHARED_STORE), so a " +
+			"second application writes this identity store, but suite.role_seed_owner is still " +
+			"\"" + config.RoleSeedOwnerSelf + "\" (TFR_SUITE_ROLE_SEED_OWNER), which means every app seeds its own " +
+			"role templates. Both apps then upsert identity.role_templates by name and replace each " +
+			"other's scopes on every restart -- admin, viewer, org_owner and org_provisioner are written " +
+			"by both, so what they grant becomes whichever app booted last. Set " +
+			"TFR_SUITE_ROLE_SEED_OWNER to the app that owns the seed, \"registry\" or \"tsm\", and set it to " +
+			"the SAME value in BOTH deployments -- naming a different owner in each one leaves both of " +
+			"them seeding")
 }
 
 // identitySchemaEnabled reports whether identity data (users, organizations, API

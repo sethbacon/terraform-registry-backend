@@ -15,6 +15,7 @@ import (
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/jmoiron/sqlx"
+	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
 )
 
@@ -529,5 +530,138 @@ func TestSharedIdentityStoreGuard_IsWiredIntoServe(t *testing.T) {
 	if guardAt > identityDBAt {
 		t.Error("serve() chooses the identity connection before sharedIdentityStoreGuard runs. The " +
 			"refusal must land on the configuration, before any pool is opened.")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// roleSeedOwnerGuard (issue #1063)
+// ---------------------------------------------------------------------------
+
+// TestRoleSeedOwnerGuard_RefusesSelfUnderASharedStore is the core assertion,
+// and the configuration it refuses is the one an operator reaches by doing
+// nothing: "self" is the default here AND in terraform-state-manager-backend,
+// so a coupled deployment whose operator set up the shared store and never saw
+// this flag has both apps seeding identity.role_templates.
+//
+// Both upserts are ON CONFLICT (name) DO UPDATE SET scopes = EXCLUDED.scopes --
+// a replacement. admin, viewer, org_owner and org_provisioner are written by
+// both apps with different scope lists, so what they grant becomes whichever
+// app booted last.
+func TestRoleSeedOwnerGuard_RefusesSelfUnderASharedStore(t *testing.T) {
+	if err := roleSeedOwnerGuard(true, config.RoleSeedOwnerSelf); err == nil {
+		t.Fatal("roleSeedOwnerGuard(true, \"self\") = nil, want an error: both apps would seed the " +
+			"shared role templates and replace each other's scopes on every restart")
+	}
+}
+
+// TestRoleSeedOwnerGuard_AllowsSelfWhenNoStoreIsShared pins the half that must
+// NOT be an error, and it is the one a later tightening is most likely to get
+// wrong by keying the refusal on the identity-schema cutover instead.
+//
+// docs/identity-schema.md's rollout enables the cutover for a STANDALONE
+// registry -- on a new deployment, and as step 3 of moving identity data out of
+// public. "self" is correct there: nothing else writes that store. Refusing on
+// the cutover would break every one of those deployments, which is exactly the
+// asymmetry sharedIdentityStoreGuard above is also built around.
+func TestRoleSeedOwnerGuard_AllowsSelfWhenNoStoreIsShared(t *testing.T) {
+	if err := roleSeedOwnerGuard(false, config.RoleSeedOwnerSelf); err != nil {
+		t.Errorf("roleSeedOwnerGuard(false, \"self\") = %v, want nil: a standalone registry, including "+
+			"one mid-cutover, has no second writer and must keep starting", err)
+	}
+}
+
+// TestRoleSeedOwnerGuard_AllowsANamedOwner covers the configurations that
+// resolve the collision. Both "registry" and "tsm" are accepted: this app is
+// not entitled to insist it owns the seed, only that SOMEONE is named.
+func TestRoleSeedOwnerGuard_AllowsANamedOwner(t *testing.T) {
+	for _, owner := range []string{"registry", "tsm"} {
+		if err := roleSeedOwnerGuard(true, owner); err != nil {
+			t.Errorf("roleSeedOwnerGuard(true, %q) = %v, want nil", owner, err)
+		}
+	}
+}
+
+// TestRoleSeedOwnerGuard_ErrorNamesTheOwnersAndTheMatchingRequirement keeps the
+// message actionable on the half this guard CANNOT check.
+//
+// Naming a legal value is not enough. Registry set to "registry" while the
+// sibling is set to "tsm" also has both apps seeding, and no process can see
+// the other's configuration to catch it. An operator who reads only "set it to
+// registry or tsm" will fix this app and leave the collision in place, so the
+// message has to say the value must match in both deployments.
+func TestRoleSeedOwnerGuard_ErrorNamesTheOwnersAndTheMatchingRequirement(t *testing.T) {
+	err := roleSeedOwnerGuard(true, config.RoleSeedOwnerSelf)
+	if err == nil {
+		t.Fatal("roleSeedOwnerGuard(true, \"self\") = nil, want an error")
+	}
+	for _, want := range []string{
+		"TFR_SUITE_ROLE_SEED_OWNER",
+		"TFR_SUITE_IDENTITY_SHARED_STORE",
+		"registry",
+		"tsm",
+		"SAME value in BOTH",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("guard error omits %q, so an operator cannot act on it correctly.\ngot: %v", want, err)
+		}
+	}
+}
+
+// TestRoleSeedOwnerGuard_IsWiredIntoServe pins the CALL. Every assertion above
+// keeps passing if it is deleted, and a guard that is never reached is
+// indistinguishable from one that was never written. It must also precede the
+// identity-connection decision, so the refusal lands on the configuration
+// rather than partway through startup.
+func TestRoleSeedOwnerGuard_IsWiredIntoServe(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "main.go", nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parsing main.go: %v", err)
+	}
+
+	var serve *ast.FuncDecl
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Name == "serve" && fn.Body != nil {
+			serve = fn
+			break
+		}
+	}
+	if serve == nil {
+		t.Fatal("main.go declares no serve() with a body: this guard cannot see the startup path it is " +
+			"supposed to be checking, so it is no longer checking anything")
+	}
+
+	var guardAt, identityDBAt token.Pos
+	ast.Inspect(serve.Body, func(n ast.Node) bool {
+		switch node := n.(type) {
+		case *ast.CallExpr:
+			if fun, ok := node.Fun.(*ast.Ident); ok &&
+				fun.Name == "roleSeedOwnerGuard" && !guardAt.IsValid() {
+				guardAt = node.Pos()
+			}
+		case *ast.AssignStmt:
+			if identityDBAt.IsValid() || len(node.Lhs) == 0 {
+				return true
+			}
+			if id, ok := node.Lhs[0].(*ast.Ident); ok && id.Name == "identityDB" {
+				identityDBAt = node.Pos()
+			}
+		}
+		return true
+	})
+
+	if !guardAt.IsValid() {
+		t.Fatal("serve() never calls roleSeedOwnerGuard. A coupled deployment left on the default " +
+			"role_seed_owner would start with both apps seeding identity.role_templates (#1063).")
+	}
+	// NON-VACUITY for the ordering half: without this anchor the comparison
+	// below can only ever pass.
+	if !identityDBAt.IsValid() {
+		t.Fatal("serve() never assigns identityDB: this guard cannot locate where the identity " +
+			"connection is chosen, so its ordering check is not checking anything")
+	}
+	if guardAt > identityDBAt {
+		t.Error("serve() chooses the identity connection before roleSeedOwnerGuard runs. The refusal " +
+			"must land on the configuration, before any pool is opened.")
 	}
 }

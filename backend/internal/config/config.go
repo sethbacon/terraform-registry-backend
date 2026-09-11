@@ -363,12 +363,19 @@ type SuiteConfig struct {
 	TrustedIssuers []string `mapstructure:"trusted_issuers"` // TFR_SUITE_TRUSTED_ISSUERS
 }
 
+// RoleSeedOwnerSelf is the default RoleSeedOwner: every app seeds its own
+// store, which is correct for a standalone deployment and is the collision
+// under a shared one. Spelled once so the predicate below and the startup guard
+// that refuses it (cmd/server's roleSeedOwnerGuard) cannot drift apart.
+const RoleSeedOwnerSelf = "self"
+
 // ShouldSeedRoles reports whether this app (identified by app, e.g. "registry")
-// should seed system role templates given the configured RoleSeedOwner. "self"
-// (the default) means every app seeds its own store; otherwise only the named
-// owner seeds, so a shared identity database is written by exactly one app.
+// should seed system role templates given the configured RoleSeedOwner.
+// RoleSeedOwnerSelf (the default) means every app seeds its own store;
+// otherwise only the named owner seeds, so a shared identity database is
+// written by exactly one app.
 func (s SuiteConfig) ShouldSeedRoles(app string) bool {
-	return s.RoleSeedOwner == "self" || s.RoleSeedOwner == app
+	return s.RoleSeedOwner == RoleSeedOwnerSelf || s.RoleSeedOwner == app
 }
 
 // GetPublicURL returns the public-facing URL used for OAuth callbacks and external redirects.
