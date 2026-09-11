@@ -44,12 +44,15 @@ import (
 // membership and calls MemberRoleMirror.AssignRole with what the source
 // actually says.
 var mirrorCallNames = map[string]bool{
-	"mirrorMemberFromSource": true,
-	"AssignRole":             true,
-	"ClearMember":            true,
-	"ClearUserEverywhere":    true,
-	"UpsertRoleTemplate":     true,
-	"DeleteRoleTemplate":     true,
+	// Renamed in #1056: it mirrors the role the CALLER ASKED FOR, having read
+	// the membership back only for the fact that it exists and is in scope.
+	"mirrorRequestedRole": true,
+	"AssignRole":          true,
+	"ClearMember":         true,
+	"ClearUserEverywhere": true,
+	"ClearUserInScope":    true,
+	"UpsertRoleTemplate":  true,
+	"DeleteRoleTemplate":  true,
 }
 
 // storeMembershipWriteSQL matches a statement that creates, re-roles or removes

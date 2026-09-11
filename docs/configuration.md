@@ -1396,10 +1396,11 @@ longer decides what registry enforces. Two things still depend on it:
 
 - **The state manager still reads the shared table.** It has not done its own read cutover,
   so whether registry writes those rows still changes another application's roles.
-- **Registry's own table is still *derived* from the shared one** by the startup reconcile,
-  which is what makes rollback a plain redeploy. So the same flag gates both seeds: seeding
-  one without the other would make the two copies disagree by construction and leave
-  `role-drift` permanently non-zero on a healthy deployment.
+- **Registry's own role TEMPLATES are still *derived* from the shared ones** by the startup
+  reconcile. So the same flag gates both seeds: seeding one without the other would make the
+  two copies disagree by construction and leave `role-drift` permanently non-zero on a
+  healthy deployment. (Role **assignments** stopped being derived in #1056 — registry
+  decides those — so the flag no longer has anything to do with who holds which role.)
 
 Both dependencies end in phase 4 of `sethbacon/terraform-suite-identity#206`, which drops
 the shared table and the reconcile together. The flag goes with them.

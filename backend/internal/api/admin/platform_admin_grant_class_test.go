@@ -210,6 +210,14 @@ func TestPlatformAdminGrantClass_OrgScopedCallerCanStillGrantWithinItsAuthority(
 		WillReturnRows(sqlmock.NewRows([]string{"organization_id", "user_id", "role_template_id", "created_at"}))
 	mock.ExpectExec("INSERT INTO organization_members").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	// The membership FACT is read back through the shared store (a scoped write
+	// that matched nothing must mirror nothing), then the role the CALLER ASKED
+	// FOR is recorded in registry's own table (#1056).
+	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id", "user_id", "role_template_id", "created_at"}).
+			AddRow("org-1", "user-1", "rt-1", time.Now()))
+	mock.ExpectExec("INSERT INTO organization_member_roles").
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
 		WillReturnRows(sqlmock.NewRows(orgMembersWithUserCols).AddRow(
 			"org-1", "target-1", "role-pub", time.Now(),

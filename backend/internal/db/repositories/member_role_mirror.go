@@ -5,10 +5,12 @@
 // authorization is per-app. `organization_members` becomes the membership FACT
 // and the role a member holds IN REGISTRY moves here.
 //
-// NOTHING READS THESE TABLES YET. This file exists so that the read cutover has
-// a populated, continuously reconciled copy to switch onto. Every write below
-// happens AFTER the authoritative write to the existing location has succeeded,
-// and a failure here is logged rather than returned -- see mirrorFailed.
+// THESE TABLES ARE WHAT REGISTRY AUTHORIZES FROM (phase 3b), and since #1056
+// they are also what DECIDES a member's role rather than recording a decision
+// identity made. A write here is an authorization change, not a copy, so a
+// failure is RETURNED to the caller -- see the ordering rule in
+// organization_repository.go. mirrorFailed survives for the role-template
+// writes alone, which are still derived (#1057).
 package repositories
 
 import (
@@ -18,9 +20,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/google/uuid"
 
+	identitystore "github.com/sethbacon/terraform-suite-identity/identity/store"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 )
 
@@ -101,6 +105,33 @@ func (m *MemberRoleMirror) AssignRole(ctx context.Context, orgID, userID string,
 	return nil
 }
 
+// ConfirmMembership records that a principal is a member here, WITHOUT deciding
+// what role they hold.
+//
+// This is the facts-only half of the reconcile (#1056). Identity owns the
+// membership fact; registry owns the role. So a membership identity has and
+// registry has never seen becomes a row with a NULL role -- the principal is a
+// member of the organization and holds nothing in registry until somebody grants
+// it here.
+//
+// `ON CONFLICT DO NOTHING`, and that is the whole point. An existing row's role
+// is registry's own decision and must survive every reconcile; an upsert here --
+// even one writing NULL -- would revoke on every boot what an administrator
+// granted, which is the mirror image of the defect this replaces. AssignRole is
+// the only path that changes a role, and it is reached only from a caller who
+// asked for a change.
+func (m *MemberRoleMirror) ConfirmMembership(ctx context.Context, orgID, userID string) error {
+	_, err := m.db.ExecContext(ctx, `
+		INSERT INTO organization_member_roles (organization_id, user_id, role_template_id, created_at, updated_at)
+		VALUES ($1, $2, NULL, NOW(), NOW())
+		ON CONFLICT (organization_id, user_id) DO NOTHING
+	`, orgID, userID)
+	if err != nil {
+		return fmt.Errorf("confirm membership for (%s, %s): %w", orgID, userID, err)
+	}
+	return nil
+}
+
 // ClearMember drops one member's registry role assignment.
 func (m *MemberRoleMirror) ClearMember(ctx context.Context, orgID, userID string) error {
 	_, err := m.db.ExecContext(ctx,
@@ -125,6 +156,53 @@ func (m *MemberRoleMirror) ClearUserEverywhere(ctx context.Context, userID strin
 		`DELETE FROM organization_member_roles WHERE user_id = $1`, userID)
 	if err != nil {
 		return fmt.Errorf("mirror membership sweep for user %s: %w", userID, err)
+	}
+	return nil
+}
+
+// ClearUserInScope drops a user's registry role assignments within one scope, in
+// a single statement.
+//
+// The scoped twin of ClearUserEverywhere, added for #1056's revocation ordering.
+// RemoveAllMembershipsForUser mirrors TWICE — before the identity strip, over
+// the scope it is about to apply, and after it, over exactly what identity
+// reported removed — and both legs are one statement each whatever the scope's
+// width. Looping the scope's organization ids instead would make a
+// platform-wide deprovision issue one DELETE per organization.
+//
+// Deleting a row that is not there is the desired end state, so the pre-pass
+// over-clearing within the scope is the safe direction for a revocation.
+func (m *MemberRoleMirror) ClearUserInScope(ctx context.Context, userID string, scope identitystore.OrgScope) error {
+	// THE ORGANIZATION IDS ARE SPELLED AS PLACEHOLDERS, not bound as one array
+	// argument. OrgScope.SQL renders `organization_id = ANY($n)` and binds a
+	// []string, which pgx accepts and database/sql's default converter refuses
+	// ("unsupported type []string, a slice of string"). Every other statement in
+	// this file binds plain strings, so expanding keeps the mirror uniform and
+	// keeps it working under any driver the application is exercised with.
+	query := `DELETE FROM organization_member_roles WHERE user_id = $1`
+	args := []interface{}{userID}
+	switch {
+	case scope.IsAllOrganizations():
+		// No predicate: every assignment this user holds, anywhere.
+	default:
+		ids := scope.OrganizationIDs()
+		if len(ids) == 0 {
+			// A scope naming no organization matches nothing. Returning here
+			// rather than running `AND FALSE` keeps the no-op observable as no
+			// statement at all.
+			return nil
+		}
+		placeholders := make([]string, 0, len(ids))
+		for i, id := range ids {
+			placeholders = append(placeholders, fmt.Sprintf("$%d", i+2))
+			args = append(args, id)
+		}
+		// #nosec G202 -- the interpolated text is a list of generated $N
+		// placeholders and nothing else; the ids travel as arguments.
+		query += ` AND organization_id IN (` + strings.Join(placeholders, ", ") + `)`
+	}
+	if _, err := m.db.ExecContext(ctx, query, args...); err != nil {
+		return fmt.Errorf("mirror membership sweep for user %s in %s: %w", userID, scope, err)
 	}
 	return nil
 }
@@ -187,20 +265,18 @@ func (m *MemberRoleMirror) DeleteRoleTemplate(ctx context.Context, id uuid.UUID)
 // mirrorFailed is the single place a mirror error is absorbed.
 //
 // It is absorbed rather than returned ON PURPOSE, and the reasoning is the
-// whole safety argument for this phase:
+// ROLE-TEMPLATE WRITES ONLY, since #1056.
 //
-//   - The authoritative write has already committed. Reads still come from the
-//     existing location, so the caller's request succeeded in every sense the
-//     caller can observe. Turning a mirror failure into a 500 would make this
-//     phase change behaviour, which is precisely what it must not do -- and it
-//     would do so on the privilege paths, the worst place to introduce a new
-//     failure mode.
-//   - Divergence is not left to be discovered at the cutover. It is logged at
-//     ERROR with the identifiers needed to find the row, the startup reconcile
-//     re-derives the whole mirror from the authoritative source on the next
-//     boot, and the divergence query in docs/identity-schema.md must return
-//     zero rows before the read cutover ships. That query, not this function,
-//     is the gate.
+// Assignment writes no longer come here: they are authorization changes on the
+// table every read resolves against, so a swallowed failure is an admin action
+// that returned 200 and did not happen. Those failures are returned now.
+//
+// Role templates are still DERIVED from the shared `role_templates` by the boot
+// reconcile (#1057), so the old argument still holds for them: the caller's
+// change landed at the source, the next boot re-derives the mirror from it, and
+// failing the request would report a failure that did not occur. When #1057
+// makes `registry_role_templates` registry's own, this function goes with the
+// derivation.
 func mirrorFailed(ctx context.Context, op string, err error, attrs ...any) {
 	args := []any{"operation", op, "error", err}
 	args = append(args, attrs...)

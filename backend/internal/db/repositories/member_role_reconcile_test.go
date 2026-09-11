@@ -129,12 +129,15 @@ const (
 	recRoleB = "cccccccc-0000-0000-0000-000000000002"
 )
 
-// TestReconcileMemberRoles_WritesTemplatesBeforeAssignments pins the ORDER, not
-// just the effect. organization_member_roles.role_template_id has a real FK to
-// registry_role_templates, so an assignment written before the template it names
-// fails outright — and sqlmock's ordered matching is what makes that assertable
-// without a database.
-func TestReconcileMemberRoles_WritesTemplatesBeforeAssignments(t *testing.T) {
+// THE ONE-TIME ADOPTION, and the template ordering it depends on.
+//
+// An empty mirror with a non-empty source is a deployment that has just gained
+// migration 000055's tables. It adopts the source's assignments once, because
+// confirming facts alone would leave every principal with no role. Templates go
+// first either way: organization_member_roles.role_template_id has a real FK to
+// registry_role_templates, so an assignment cannot be written before the
+// template it names.
+func TestReconcileMemberRoles_AdoptsIntoAnEmptyMirror(t *testing.T) {
 	identity, registry := newReconcileMocks(t)
 
 	expectMirrorVerified(registry.mock)
@@ -143,7 +146,7 @@ func TestReconcileMemberRoles_WritesTemplatesBeforeAssignments(t *testing.T) {
 	registry.mock.ExpectExec("INSERT INTO registry_role_templates").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	expectSourceMemberships(identity.mock, [3]interface{}{recOrgA, recUserA, recRoleA})
-	expectMirroredMemberships(registry.mock)
+	expectMirroredMemberships(registry.mock) // EMPTY -> adoption
 	registry.mock.ExpectExec("INSERT INTO organization_member_roles").
 		WithArgs(recOrgA, recUserA, recRoleA).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -156,8 +159,15 @@ func TestReconcileMemberRoles_WritesTemplatesBeforeAssignments(t *testing.T) {
 	if report.SourceRoleTemplates != 1 || report.SourceMemberships != 1 {
 		t.Errorf("report = %+v, want 1 template and 1 membership read", report)
 	}
-	if report.MembershipsWritten != 1 || report.RoleTemplatesWritten != 1 {
-		t.Errorf("report = %+v, want 1 of each written", report)
+	if report.MembershipsAdopted != 1 {
+		t.Errorf("MembershipsAdopted = %d, want 1", report.MembershipsAdopted)
+	}
+	if report.MembershipsConfirmed != 0 {
+		t.Errorf("MembershipsConfirmed = %d, want 0 — the adoption path ran, not the steady-state one",
+			report.MembershipsConfirmed)
+	}
+	if report.RoleTemplatesWritten != 1 {
+		t.Errorf("RoleTemplatesWritten = %d, want 1", report.RoleTemplatesWritten)
 	}
 	if err := identity.mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("identity connection: %v", err)
@@ -167,9 +177,121 @@ func TestReconcileMemberRoles_WritesTemplatesBeforeAssignments(t *testing.T) {
 	}
 }
 
-// TestReconcileMemberRoles_SkipsRowsThatAlreadyAgree is the property that keeps
-// a boot cheap. The mirror is read once and diffed; a membership whose mirrored
-// role already matches must produce NO statement at all.
+// TestReconcileMemberRoles_DoesNotAdoptOnceTheMirrorHasRows IS THE DEFECT
+// #1056 IS ABOUT, as a test.
+//
+// A coupled deployment: the state manager granted its own role, the shared
+// library wrote ITS template id into organization_members.role_template_id, and
+// registry's mirror holds registry's own decision for the same pair. The old
+// reconcile copied identity's id over registry's on every boot, so the principal
+// silently held whatever the sibling granted, with registry's scopes for that
+// name, granted by nobody here.
+//
+// The mirror is non-empty, so the adoption may not run: no write of any kind
+// reaches organization_member_roles, and the registry decision stands. Asserted
+// on the MOCK rather than only on the counters — an unexpected Exec is what a
+// restored copy would look like.
+func TestReconcileMemberRoles_DoesNotAdoptOnceTheMirrorHasRows(t *testing.T) {
+	identity, registry := newReconcileMocks(t)
+
+	expectMirrorVerified(registry.mock)
+	expectSourceVerified(identity.mock)
+	expectSourceRoleTemplates(identity.mock, recRoleA, recRoleB)
+	registry.mock.ExpectExec("INSERT INTO registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 1))
+	registry.mock.ExpectExec("INSERT INTO registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 1))
+	// Identity says B (the sibling's grant); registry says A (its own decision).
+	expectSourceMemberships(identity.mock, [3]interface{}{recOrgA, recUserA, recRoleB})
+	expectMirroredMemberships(registry.mock, [3]interface{}{recOrgA, recUserA, recRoleA})
+	// NO assignment write is staged. Any statement against
+	// organization_member_roles now fails this test.
+	expectMirroredTemplateIDs(registry.mock, recRoleA, recRoleB)
+
+	report, err := ReconcileMemberRoles(context.Background(), identity.db, registry.db)
+	if err != nil {
+		t.Fatalf("ReconcileMemberRoles: %v", err)
+	}
+	if report.MembershipsAdopted != 0 {
+		t.Errorf("MembershipsAdopted = %d, want 0: registry already holds a decision for this pair, "+
+			"and identity's column does not get to change it", report.MembershipsAdopted)
+	}
+	if report.MembershipsConfirmed != 0 {
+		t.Errorf("MembershipsConfirmed = %d, want 0 — the pair is already recorded here",
+			report.MembershipsConfirmed)
+	}
+	if err := registry.mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("registry connection: %v — a write reached organization_member_roles. "+
+			"The boot reconcile copied identity's role opinion again (#1056).", err)
+	}
+}
+
+// A ROLE CLEARED AT THE SOURCE IS NOT A CHANGE HERE, which is the same property
+// pointing the other way. Identity's column going NULL says nothing about what
+// registry granted; only a withdrawal of the MEMBERSHIP does, and that arrives
+// as a pruned row (below), not as a role edit.
+func TestReconcileMemberRoles_ClearingTheSourceRoleLeavesRegistrysAlone(t *testing.T) {
+	identity, registry := newReconcileMocks(t)
+
+	expectMirrorVerified(registry.mock)
+	expectSourceVerified(identity.mock)
+	expectSourceRoleTemplates(identity.mock, recRoleA)
+	registry.mock.ExpectExec("INSERT INTO registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 1))
+	expectSourceMemberships(identity.mock, [3]interface{}{recOrgA, recUserA, nil})
+	expectMirroredMemberships(registry.mock, [3]interface{}{recOrgA, recUserA, recRoleA})
+	expectMirroredTemplateIDs(registry.mock, recRoleA)
+
+	report, err := ReconcileMemberRoles(context.Background(), identity.db, registry.db)
+	if err != nil {
+		t.Fatalf("ReconcileMemberRoles: %v", err)
+	}
+	if report.MembershipsAdopted != 0 || report.MembershipsConfirmed != 0 {
+		t.Errorf("report = %+v, want no membership writes: a NULL at the source is not a revocation here",
+			report)
+	}
+	if err := registry.mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("registry connection: %v — registry's role was cleared because identity's column was", err)
+	}
+}
+
+// THE STEADY-STATE PATH: identity has a membership registry has no row for, so
+// it is recorded with NO role.
+//
+// Fail-closed, and the direction matters: the principal is a member and holds
+// nothing here until somebody grants it here. The alternative — adopting the
+// source's role for just this pair — is the defect at one-row scale.
+func TestReconcileMemberRoles_ConfirmsAMembershipItHasNoRowFor(t *testing.T) {
+	identity, registry := newReconcileMocks(t)
+
+	expectMirrorVerified(registry.mock)
+	expectSourceVerified(identity.mock)
+	expectSourceRoleTemplates(identity.mock, recRoleA)
+	registry.mock.ExpectExec("INSERT INTO registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 1))
+	// Two memberships at the source; the mirror knows only the first, so it is
+	// NOT empty and the adoption may not run.
+	expectSourceMemberships(identity.mock,
+		[3]interface{}{recOrgA, recUserA, recRoleA},
+		[3]interface{}{recOrgA, recUserB, recRoleA})
+	expectMirroredMemberships(registry.mock, [3]interface{}{recOrgA, recUserA, recRoleA})
+	registry.mock.ExpectExec("INSERT INTO organization_member_roles").
+		WithArgs(recOrgA, recUserB).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	expectMirroredTemplateIDs(registry.mock, recRoleA)
+
+	report, err := ReconcileMemberRoles(context.Background(), identity.db, registry.db)
+	if err != nil {
+		t.Fatalf("ReconcileMemberRoles: %v", err)
+	}
+	if report.MembershipsConfirmed != 1 {
+		t.Errorf("MembershipsConfirmed = %d, want 1", report.MembershipsConfirmed)
+	}
+	if report.MembershipsAdopted != 0 {
+		t.Errorf("MembershipsAdopted = %d, want 0 — the mirror was not empty", report.MembershipsAdopted)
+	}
+	if err := registry.mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("registry connection: %v", err)
+	}
+}
+
+// An agreeing steady state costs no write at all: two SELECTs and nothing else.
 func TestReconcileMemberRoles_SkipsRowsThatAlreadyAgree(t *testing.T) {
 	identity, registry := newReconcileMocks(t)
 
@@ -180,75 +302,17 @@ func TestReconcileMemberRoles_SkipsRowsThatAlreadyAgree(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	expectSourceMemberships(identity.mock, [3]interface{}{recOrgA, recUserA, recRoleA})
 	expectMirroredMemberships(registry.mock, [3]interface{}{recOrgA, recUserA, recRoleA})
-	// No INSERT INTO organization_member_roles queued: an unexpected one fails.
 	expectMirroredTemplateIDs(registry.mock, recRoleA)
 
 	report, err := ReconcileMemberRoles(context.Background(), identity.db, registry.db)
 	if err != nil {
 		t.Fatalf("ReconcileMemberRoles: %v", err)
 	}
-	if report.MembershipsWritten != 0 {
-		t.Errorf("MembershipsWritten = %d, want 0 — an unchanged row must cost no write",
-			report.MembershipsWritten)
+	if report.MembershipsConfirmed != 0 || report.MembershipsAdopted != 0 {
+		t.Errorf("report = %+v, want no membership write — an unchanged row must cost nothing", report)
 	}
 	if err := registry.mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("registry connection: %v", err)
-	}
-}
-
-// TestReconcileMemberRoles_RewritesARoleThatChanged is the other half of the
-// diff: same membership, different role, must be rewritten.
-func TestReconcileMemberRoles_RewritesARoleThatChanged(t *testing.T) {
-	identity, registry := newReconcileMocks(t)
-
-	expectMirrorVerified(registry.mock)
-	expectSourceVerified(identity.mock)
-	expectSourceRoleTemplates(identity.mock, recRoleA, recRoleB)
-	registry.mock.ExpectExec("INSERT INTO registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 1))
-	registry.mock.ExpectExec("INSERT INTO registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 1))
-	expectSourceMemberships(identity.mock, [3]interface{}{recOrgA, recUserA, recRoleB})
-	expectMirroredMemberships(registry.mock, [3]interface{}{recOrgA, recUserA, recRoleA})
-	registry.mock.ExpectExec("INSERT INTO organization_member_roles").
-		WithArgs(recOrgA, recUserA, recRoleB).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	expectMirroredTemplateIDs(registry.mock, recRoleA, recRoleB)
-
-	report, err := ReconcileMemberRoles(context.Background(), identity.db, registry.db)
-	if err != nil {
-		t.Fatalf("ReconcileMemberRoles: %v", err)
-	}
-	if report.MembershipsWritten != 1 {
-		t.Errorf("MembershipsWritten = %d, want 1", report.MembershipsWritten)
-	}
-	if err := registry.mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("registry connection: %v", err)
-	}
-}
-
-// TestReconcileMemberRoles_ClearingARoleIsAChange guards the nil comparison.
-// Comparing pointers instead of values, or treating nil and "" alike, would
-// make a revoked role look unchanged and leave the old one mirrored.
-func TestReconcileMemberRoles_ClearingARoleIsAChange(t *testing.T) {
-	identity, registry := newReconcileMocks(t)
-
-	expectMirrorVerified(registry.mock)
-	expectSourceVerified(identity.mock)
-	expectSourceRoleTemplates(identity.mock, recRoleA)
-	registry.mock.ExpectExec("INSERT INTO registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 1))
-	expectSourceMemberships(identity.mock, [3]interface{}{recOrgA, recUserA, nil})
-	expectMirroredMemberships(registry.mock, [3]interface{}{recOrgA, recUserA, recRoleA})
-	registry.mock.ExpectExec("INSERT INTO organization_member_roles").
-		WithArgs(recOrgA, recUserA, nil).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	expectMirroredTemplateIDs(registry.mock, recRoleA)
-
-	report, err := ReconcileMemberRoles(context.Background(), identity.db, registry.db)
-	if err != nil {
-		t.Fatalf("ReconcileMemberRoles: %v", err)
-	}
-	if report.MembershipsWritten != 1 {
-		t.Errorf("MembershipsWritten = %d, want 1: a role cleared at the source is a change",
-			report.MembershipsWritten)
 	}
 }
 
@@ -315,7 +379,7 @@ func TestReconcileMemberRoles_PrunesTemplatesTheSourceNoLongerHas(t *testing.T) 
 // naming a template the source does not have is recorded with NO role and
 // counted. Mirroring the id would violate the FK and abort the whole boot over
 // one inconsistent row; dropping the row would hide it.
-func TestReconcileMemberRoles_OrphanedRoleReferenceIsMirroredAsNoRole(t *testing.T) {
+func TestReconcileMemberRoles_OrphanedRoleReferenceIsAdoptedAsNoRole(t *testing.T) {
 	identity, registry := newReconcileMocks(t)
 
 	expectMirrorVerified(registry.mock)
@@ -415,13 +479,13 @@ func TestReconcileMemberRoles_RefusesWhenTheSourceDoesNotResolve(t *testing.T) {
 func TestReconcileReport_LogValueCarriesEveryCounter(t *testing.T) {
 	r := ReconcileReport{
 		SourceMemberships: 1, SourceRoleTemplates: 2,
-		MembershipsWritten: 3, RoleTemplatesWritten: 4,
+		MembershipsAdopted: 3, MembershipsConfirmed: 9, RoleTemplatesWritten: 4,
 		MembershipsRemoved: 5, RoleTemplatesRemoved: 6,
 		OrphanedRoleRefs: 7, UnparseableRows: 8,
 	}
 	attrs := r.LogValue().Group()
-	if len(attrs) != 8 {
-		t.Fatalf("LogValue has %d attributes, want 8 — one per counter on ReconcileReport", len(attrs))
+	if len(attrs) != 9 {
+		t.Fatalf("LogValue has %d attributes, want 9 — one per counter on ReconcileReport", len(attrs))
 	}
 	seen := map[string]int64{}
 	for _, a := range attrs {
@@ -429,7 +493,7 @@ func TestReconcileReport_LogValueCarriesEveryCounter(t *testing.T) {
 	}
 	for key, want := range map[string]int64{
 		"source_memberships": 1, "source_role_templates": 2,
-		"memberships_written": 3, "role_templates_written": 4,
+		"memberships_adopted": 3, "memberships_confirmed": 9, "role_templates_written": 4,
 		"memberships_removed": 5, "role_templates_removed": 6,
 		"orphaned_role_refs": 7, "unparseable_rows": 8,
 	} {

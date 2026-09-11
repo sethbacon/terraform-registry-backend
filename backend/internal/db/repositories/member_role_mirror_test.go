@@ -47,6 +47,17 @@ func expectReadBack(mock sqlmock.Sqlmock, roleTemplateID interface{}) {
 
 // expectMirrorAssign queues the mirror upsert with the exact arguments it must
 // carry.
+// expectRegistryTemplateByName stages the lookup every NAME-based write now does
+// FIRST, against registry's own templates (#1056). Registry decides what a role
+// name means here, so an unknown name must fail with nothing written anywhere.
+func expectRegistryTemplateByName(mock sqlmock.Sqlmock, name, id string) {
+	rows := sqlmock.NewRows([]string{"id"})
+	if id != "" {
+		rows.AddRow(id)
+	}
+	mock.ExpectQuery("SELECT id FROM registry_role_templates WHERE name").WithArgs(name).WillReturnRows(rows)
+}
+
 func expectMirrorAssign(mock sqlmock.Sqlmock, roleTemplateID interface{}) {
 	mock.ExpectExec("INSERT INTO organization_member_roles").
 		WithArgs(testOrgID, testUserID, roleTemplateID).
@@ -78,6 +89,8 @@ func TestOrganizationRepository_AddMemberWithRoleTemplate_MirrorsTheAssignment(t
 func TestOrganizationRepository_AddMemberWithParams_MirrorsTheAssignment(t *testing.T) {
 	repo, mock := newOrgRepo(t)
 
+	// Registry's own resolution comes FIRST — before identity is touched at all.
+	expectRegistryTemplateByName(mock, "org_owner", testRoleID)
 	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
 		WithArgs("org_owner").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(testRoleID))
@@ -134,20 +147,21 @@ func TestOrganizationRepository_ClearingARole_MirrorsNULLNotAbsence(t *testing.T
 	}
 }
 
-// TestOrganizationRepository_MirrorsWhatTheSourceSays_NotTheArgument is why the
-// wrapper reads the membership back instead of reusing the caller's value.
+// THE MIRROR CARRIES THE ROLE THE CALLER ASKED FOR, not the one identity's
+// column ended up holding. This inverted in #1056 and the inversion is the fix.
 //
-// The store's writes are scoped and its name-based methods resolve the template
-// internally, so the argument is a request and the row is the answer. Here the
-// source ends up holding a DIFFERENT template than the one passed in, and the
-// mirror must carry the row's value.
-func TestOrganizationRepository_MirrorsWhatTheSourceSays_NotTheArgument(t *testing.T) {
+// Before, the mirror copied the read-back's role_template_id. In a coupled
+// deployment that column is identity's, and identity resolves a role name
+// against ITS templates — so a registry grant could land registry's table with
+// an id registry did not choose. Registry decides its own roles; the read-back
+// is consulted for the membership FACT alone.
+func TestOrganizationRepository_MirrorsTheRequestedRole_NotTheSourceColumn(t *testing.T) {
 	repo, mock := newOrgRepo(t)
 
 	const landed = "55555555-5555-5555-5555-555555555555"
 	expectSourceMemberInsert(mock)
-	expectReadBack(mock, landed)
-	expectMirrorAssign(mock, landed)
+	expectReadBack(mock, landed)         // identity's column says something else...
+	expectMirrorAssign(mock, testRoleID) // ...and registry records what was ASKED for.
 
 	asked := testRoleID
 	if err := repo.AddMemberWithRoleTemplate(context.Background(), testOrgID, testUserID, &asked,
@@ -155,17 +169,22 @@ func TestOrganizationRepository_MirrorsWhatTheSourceSays_NotTheArgument(t *testi
 		t.Fatalf("AddMemberWithRoleTemplate: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("the mirror carried the requested role rather than the one the source holds: %v", err)
+		t.Errorf("the mirror carried identity's role (%s) rather than the requested one (%s). "+
+			"Taking the role from the read-back is how the sibling's opinion reached registry's "+
+			"table on the write path, the same way the boot reconcile's copy did (#1056): %v",
+			landed, testRoleID, err)
 	}
 }
 
 func TestOrganizationRepository_RemoveMember_ClearsTheMirroredRole(t *testing.T) {
 	repo, mock := newOrgRepo(t)
 
-	mock.ExpectExec("DELETE FROM organization_members").
-		WillReturnResult(sqlmock.NewResult(0, 1))
+	// REVOCATION: the mirror goes FIRST (#1056), so a failure there returns
+	// before identity is touched and nothing has changed anywhere.
 	mock.ExpectExec("DELETE FROM organization_member_roles").
 		WithArgs(testOrgID, testUserID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("DELETE FROM organization_members").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	if err := repo.RemoveMember(context.Background(), testOrgID, testUserID,
@@ -184,15 +203,20 @@ func TestOrganizationRepository_RemoveMember_ClearsTheMirroredRole(t *testing.T)
 func TestOrganizationRepository_RemoveAllMemberships_ClearsExactlyWhatWasRemoved(t *testing.T) {
 	repo, mock := newOrgRepo(t)
 
+	// PRE-PASS, before identity is touched: a platform-wide scope clears the
+	// user's assignments everywhere in one statement.
+	mock.ExpectExec("DELETE FROM organization_member_roles").
+		WithArgs(testUserID).
+		WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectQuery("DELETE FROM organization_members").
 		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}).
 			AddRow(testOrgID).AddRow(testOtherOrg))
+	// POST-PASS over exactly what identity reported removed. Idempotent, and not
+	// redundant: a grant racing between the two legs would otherwise leave an
+	// assignment behind for a membership that no longer exists.
 	mock.ExpectExec("DELETE FROM organization_member_roles").
-		WithArgs(testOrgID, testUserID).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("DELETE FROM organization_member_roles").
-		WithArgs(testOtherOrg, testUserID).
-		WillReturnResult(sqlmock.NewResult(0, 1))
+		WithArgs(testUserID, testOrgID, testOtherOrg).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 
 	removed, err := repo.RemoveAllMembershipsForUser(context.Background(), testUserID,
 		store.OrgScopeAllOrganizations())
@@ -282,33 +306,36 @@ func TestOrganizationRepository_FailedSourceWrite_MirrorsNothing(t *testing.T) {
 	}
 }
 
-// TestOrganizationRepository_MirrorFailureDoesNotFailTheRequest is the other
-// half of that contract, and it is deliberate rather than lax. The
-// authoritative write has committed and reads do not come from the mirror, so
-// answering an error would make this phase change behaviour on the privilege
-// paths — the one thing it must not do. Divergence is caught by the startup
-// reconcile and by the query in docs/identity-schema.md.
-func TestOrganizationRepository_MirrorFailureDoesNotFailTheRequest(t *testing.T) {
+// A FAILED MIRROR LEG FAILS THE REQUEST. This inverted in #1056.
+//
+// It was right to swallow while nothing read these tables, and wrong from the
+// moment they became the authority. Concretely: an administrator demotes a
+// principal from `admin` to `viewer`, the identity leg commits, the mirror write
+// fails, and the old behaviour returned 200 with an audit entry recording the
+// demotion — while organization_member_roles still said `admin`, which is the
+// table every read resolves against. The principal kept administrator scopes,
+// the API said the demotion worked, and nothing surfaced it until a restart.
+//
+// The error is safe to return because the write is idempotent: the retry it
+// invites cannot double-apply.
+func TestOrganizationRepository_MirrorFailureFailsTheRequest(t *testing.T) {
 	repo, mock := newOrgRepo(t)
-	failures := captureMirrorFailures(t)
+	mirrorErr := errors.New("relation \"organization_member_roles\" does not exist")
 
 	expectSourceMemberInsert(mock)
 	expectReadBack(mock, testRoleID)
-	mock.ExpectExec("INSERT INTO organization_member_roles").
-		WillReturnError(errors.New("relation \"organization_member_roles\" does not exist"))
+	mock.ExpectExec("INSERT INTO organization_member_roles").WillReturnError(mirrorErr)
 
 	role := testRoleID
-	if err := repo.AddMemberWithRoleTemplate(context.Background(), testOrgID, testUserID, &role,
-		store.OrgScopeAllOrganizations()); err != nil {
-		t.Fatalf("AddMemberWithRoleTemplate = %v, want nil: the membership committed and nothing "+
-			"reads the mirror, so a mirror failure must not surface as a failed privilege change", err)
+	err := repo.AddMemberWithRoleTemplate(context.Background(), testOrgID, testUserID, &role,
+		store.OrgScopeAllOrganizations())
+	if err == nil {
+		t.Fatal("AddMemberWithRoleTemplate = nil, want the mirror failure returned: these tables " +
+			"decide authorization, so a swallowed failure is a privilege change that reported " +
+			"success and did not happen")
 	}
-	// Absorbed, but never silent — and this is also the positive control for
-	// captureMirrorFailures, so the zero-count assertion in the ordering test
-	// above cannot pass because the capture is broken.
-	if n := mirrorFailureCount(failures()); n != 1 {
-		t.Errorf("mirror failures logged = %d, want exactly 1. A divergence that is swallowed without "+
-			"a record is one nobody can act on before the read cutover", n)
+	if !errors.Is(err, mirrorErr) {
+		t.Errorf("error = %v, want it to wrap the mirror error so the caller can see the cause", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unexpected statements: %v", err)

@@ -1,15 +1,53 @@
-// member_role_reconcile.go derives registry's own authorization tables from
-// whatever registry resolves role reads through TODAY
-// (sethbacon/terraform-suite-identity#206, migration 000055).
+// member_role_reconcile.go keeps registry's own authorization tables in step
+// with the identity source (sethbacon/terraform-suite-identity#206, migration
+// 000055) -- and, since #1056, in step with the MEMBERSHIP FACTS only.
 //
-// This is the backfill. It is Go rather than SQL inside the migration for one
-// reason, spelled out at length in 000055_registry_role_tables.up.sql: the
-// EFFECTIVE source is chosen at process start by the identity pool's
-// search_path and by which database that pool dials, and neither is visible to
-// a migration running on the registry connection. Reading through the very
-// *sql.DB the application resolves `organization_members` and `role_templates`
-// through makes the effective source identical BY CONSTRUCTION -- there is
-// nothing to infer and nothing to get wrong.
+// # What changed in #1056, and why
+//
+// This function used to copy `organization_members.role_template_id` into
+// `organization_member_roles` on every boot. In a coupled deployment that
+// column is written by BOTH applications: the state manager grants `editor`,
+// the shared library writes identity's `editor` id there, and registry's next
+// boot found the id live, assigned it, and handed the principal registry's
+// `editor` scopes -- granted by nobody in registry. The state manager's
+// reconcile refuses role opinions for exactly this reason, so the propagation
+// ran one way, into registry.
+//
+// So the copy is gone. Identity owns the membership FACT; registry owns the
+// ROLE. A membership identity has and registry has no row for is confirmed with
+// NO role, which is the fail-closed direction: the principal is a member and
+// holds nothing here until somebody grants it here. An existing row's role is
+// never touched.
+//
+// # The one-time adoption, which is not an exception to that
+//
+// A deployment upgrading from before migration 000055 -- supported, see
+// docs/upgrade-guide.md on skip-version upgrades -- arrives with an EMPTY
+// `organization_member_roles`. Confirming facts alone would strip every
+// principal of every role on the first boot. So when the mirror is empty and
+// the source is not, this adopts the source's assignments once, exactly as the
+// old behaviour did, and says so in the log.
+//
+// That is today's first-boot behaviour, not new behaviour. In a coupled
+// deployment it imports the sibling's role opinions ONCE, and the upgrade note
+// says so; every boot after it, registry decides.
+//
+// # Role templates are still derived
+//
+// `registry_role_templates` is still upserted from the shared `role_templates`
+// and pruned to it. That is #1057, sequenced after this one deliberately: while
+// assignments keyed on identity's template ids, a registry-owned template table
+// minting its own ids would have orphaned every assignment on a fresh install.
+// Once this change lands, the two id spaces may diverge freely.
+//
+// # Why Go and not SQL in the migration
+//
+// Spelled out at length in 000055_registry_role_tables.up.sql: the EFFECTIVE
+// source is chosen at process start by the identity pool's search_path and by
+// which database that pool dials, and neither is visible to a migration running
+// on the registry connection. Reading through the very *sql.DB the application
+// resolves `organization_members` and `role_templates` through makes the
+// effective source identical BY CONSTRUCTION.
 package repositories
 
 import (
@@ -29,10 +67,16 @@ type ReconcileReport struct {
 	// effective identity source.
 	SourceMemberships   int
 	SourceRoleTemplates int
-	// MembershipsWritten / RoleTemplatesWritten count rows upserted into
-	// registry's tables. Steady state is 0 for both: the upserts only fire when
-	// something actually differs, so a quiet boot writes nothing.
-	MembershipsWritten   int
+	// MembershipsAdopted counts assignments copied from the source by the
+	// ONE-TIME adoption -- non-zero only on the first boot after the mirror
+	// tables are created, and zero forever after. See the header.
+	MembershipsAdopted int
+	// MembershipsConfirmed counts memberships recorded here with NO role
+	// because identity has them and registry had no row. Steady state 0.
+	MembershipsConfirmed int
+	// RoleTemplatesWritten counts templates upserted from the source. Steady
+	// state 0: the upsert only fires when something differs. Templates are
+	// still derived (#1057).
 	RoleTemplatesWritten int
 	// MembershipsRemoved / RoleTemplatesRemoved count mirrored rows deleted
 	// because the source no longer has them.
@@ -54,7 +98,8 @@ func (r ReconcileReport) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.Int("source_memberships", r.SourceMemberships),
 		slog.Int("source_role_templates", r.SourceRoleTemplates),
-		slog.Int("memberships_written", r.MembershipsWritten),
+		slog.Int("memberships_adopted", r.MembershipsAdopted),
+		slog.Int("memberships_confirmed", r.MembershipsConfirmed),
 		slog.Int("role_templates_written", r.RoleTemplatesWritten),
 		slog.Int("memberships_removed", r.MembershipsRemoved),
 		slog.Int("role_templates_removed", r.RoleTemplatesRemoved),
@@ -79,13 +124,9 @@ type memberKey struct {
 //
 // registryDB is the connection migration 000055 created the tables on.
 //
-// It runs on every boot, not once. Re-deriving is cheap when nothing changed
-// (the upserts are no-ops), it repairs a mirror that a transient write failure
-// left behind, and it converges a deployment that upgraded before the tables
-// existed. That standing behaviour is correct only while the identity tables
-// are still authoritative; the read cutover must remove this call, because
-// after it the mirror is the source and re-deriving it from identity would
-// overwrite the app's own decisions.
+// It runs on every boot, not once. Steady state is three SELECTs and no writes:
+// it confirms membership facts identity has that registry does not, prunes rows
+// for memberships identity no longer has, and leaves every role alone.
 //
 // It returns an error for STRUCTURAL failures -- tables that do not resolve, a
 // query that fails -- and counts per-row problems into the report instead.
@@ -127,46 +168,52 @@ func ReconcileMemberRoles(ctx context.Context, identityDB, registryDB *sql.DB) (
 	report.UnparseableRows = unparseable
 
 	// The mirror as it stands, read ONCE. Everything below is a diff against
-	// this map rather than an unconditional upsert per row: the reconcile runs
-	// on every boot, and a deployment with a hundred thousand memberships would
-	// otherwise pay a hundred thousand round trips to discover that nothing
-	// changed. Steady state is now two SELECTs and no writes at all.
+	// this map rather than a statement per row: the reconcile runs on every
+	// boot, and a deployment with a hundred thousand memberships would
+	// otherwise pay a hundred thousand round trips to discover nothing changed.
 	mirrored, err := readMirroredMemberships(ctx, registryDB)
 	if err != nil {
 		return report, err
 	}
 
-	for key, roleTemplateID := range sourceMembers {
-		effective := roleTemplateID
-		if effective != nil {
-			id, parseErr := uuid.Parse(*effective)
-			if parseErr != nil || !live[id] {
-				// The membership names a template that is not in the source's
-				// role_templates. Writing it would violate 000055's FK and
-				// abort the whole reconcile over one bad row, so the assignment
-				// is mirrored as "no role" and counted. It is reported, not
-				// repaired: deciding what a dangling role assignment should
-				// become is an operator's call, and the divergence query in
-				// docs/identity-schema.md is how they find them.
-				slog.WarnContext(ctx, "membership names a role template that does not exist; mirroring it with no role",
-					"organization_id", key.orgID, "user_id", key.userID, "role_template_id", *effective)
-				report.OrphanedRoleRefs++
-				effective = nil
+	// THE ONE-TIME ADOPTION. Empty mirror, non-empty source: this deployment has
+	// just gained the tables, and confirming facts alone would leave every
+	// principal with no role. See the header for why this is not an exception to
+	// "registry decides".
+	if len(mirrored) == 0 && len(sourceMembers) > 0 {
+		adopted, orphaned, err := adoptSourceAssignments(ctx, mirror, sourceMembers, live)
+		if err != nil {
+			return report, err
+		}
+		report.MembershipsAdopted = adopted
+		report.OrphanedRoleRefs = orphaned
+		slog.WarnContext(ctx, "registry's role assignments were adopted from the identity source, once",
+			"adopted", adopted, "orphaned_role_refs", orphaned,
+			"why", "organization_member_roles was empty, so this deployment has no role decisions of its own yet",
+			"note", "in a coupled deployment these include roles the sibling application granted; "+
+				"every boot after this one, registry decides its own roles and the source is read for "+
+				"membership facts alone")
+	} else {
+		// STEADY STATE: facts in, opinions out. A membership identity has that
+		// registry has no row for is confirmed with NO role.
+		for key := range sourceMembers {
+			if _, ok := mirrored[key]; ok {
+				// Registry already has a decision for this pair. It is
+				// registry's, and identity does not get to change it -- this is
+				// the line the sibling's grants used to cross.
+				continue
 			}
+			if err := mirror.ConfirmMembership(ctx, key.orgID, key.userID); err != nil {
+				return report, fmt.Errorf("confirm membership (%s, %s): %w", key.orgID, key.userID, err)
+			}
+			report.MembershipsConfirmed++
 		}
-		if current, ok := mirrored[key]; ok && sameRole(current, effective) {
-			continue
-		}
-		if err := mirror.AssignRole(ctx, key.orgID, key.userID, effective); err != nil {
-			return report, fmt.Errorf("mirror membership (%s, %s): %w", key.orgID, key.userID, err)
-		}
-		report.MembershipsWritten++
 	}
 
-	// 3. Remove mirrored rows the source no longer has. Without this the mirror
-	//    only ever grows, and a deprovision whose mirror write failed would
-	//    leave authority behind in the table the read cutover switches onto --
-	//    the one divergence direction that GRANTS rather than withholds.
+	// 3. Remove mirrored rows the source no longer has. Membership is still
+	//    identity's fact, so a membership it no longer has confers nothing here.
+	//    Without this the mirror only ever grows, and a deprovision leaves
+	//    authority behind -- the one divergence direction that GRANTS.
 	for key := range mirrored {
 		if _, ok := sourceMembers[key]; ok {
 			continue
@@ -186,6 +233,38 @@ func ReconcileMemberRoles(ctx context.Context, identityDB, registryDB *sql.DB) (
 	report.RoleTemplatesRemoved = removedTemplates
 
 	return report, nil
+}
+
+// adoptSourceAssignments copies the source's role assignments into the mirror,
+// for the ONE boot on which registry has no role decisions of its own.
+//
+// SEPARATE FUNCTION, and deliberately the only place AssignRole is reached from
+// this file -- a class guard requires that (member_role_adoption_class_test.go).
+// Inlining it would put an unconditional-looking `AssignRole` in the reconcile
+// body, which is exactly the shape #1056 removed and exactly what a future
+// reader would restore by moving one `if`.
+//
+// The orphan handling is the old behaviour, kept: a membership naming a template
+// the source does not have is adopted with NO role rather than aborting the
+// whole reconcile on 000055's foreign key.
+func adoptSourceAssignments(ctx context.Context, mirror *MemberRoleMirror, source map[memberKey]*string, live map[uuid.UUID]bool) (adopted, orphaned int, err error) {
+	for key, roleTemplateID := range source {
+		effective := roleTemplateID
+		if effective != nil {
+			id, parseErr := uuid.Parse(*effective)
+			if parseErr != nil || !live[id] {
+				slog.WarnContext(ctx, "membership names a role template that does not exist; adopting it with no role",
+					"organization_id", key.orgID, "user_id", key.userID, "role_template_id", *effective)
+				orphaned++
+				effective = nil
+			}
+		}
+		if err := mirror.AssignRole(ctx, key.orgID, key.userID, effective); err != nil {
+			return adopted, orphaned, fmt.Errorf("adopt membership (%s, %s): %w", key.orgID, key.userID, err)
+		}
+		adopted++
+	}
+	return adopted, orphaned, nil
 }
 
 // identitySourceTables are the tables the reconcile reads through the identity

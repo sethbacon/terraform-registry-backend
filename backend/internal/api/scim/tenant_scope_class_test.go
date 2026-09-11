@@ -233,9 +233,12 @@ func TestSCIMDeprovisionClass_OnlyRemovesInScopeMemberships(t *testing.T) {
 			// GUARD scim-deprovision-tenant-scope. One statement, scoped to
 			// Alpha, RETURNING the organizations it actually removed — the value
 			// that then scopes the credential sweep.
+			// REVOCATION: the mirror goes FIRST (#1056).
+			mock.ExpectExec("DELETE FROM organization_member_roles").WillReturnResult(sqlmock.NewResult(0, 1))
 			mock.ExpectQuery(`(?s)DELETE FROM organization_members WHERE user_id = \$1 AND organization_id = ANY\(\$2\)`).
 				WithArgs(scimTargetID, boundScope{want: []string{scimOrgAlpha}, notWant: []string{scimOrgBeta}}).
 				WillReturnRows(sqlmock.NewRows([]string{"organization_id"}).AddRow(scimOrgAlpha))
+			mock.ExpectExec("DELETE FROM organization_member_roles").WillReturnResult(sqlmock.NewResult(0, 0))
 
 			// PUT/PATCH persist the user row afterwards; DELETE does not.
 			if path.updatesUserRow {

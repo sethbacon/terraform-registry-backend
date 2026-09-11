@@ -57,9 +57,12 @@ func TestSCIMDeprovision_PartiallyRemovedMembershipsStillSucceed(t *testing.T) {
 
 	// Alpha's membership was already gone; only Beta's row is removed, so only
 	// Beta comes back.
+	// REVOCATION: the mirror goes FIRST (#1056).
+	mock.ExpectExec("DELETE FROM organization_member_roles").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("(?s)DELETE FROM organization_members").
 		WithArgs(scimTargetID, boundScope{want: []string{scimOrgAlpha, scimOrgBeta}}).
 		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}).AddRow(scimOrgBeta))
+	mock.ExpectExec("DELETE FROM organization_member_roles").WillReturnResult(sqlmock.NewResult(0, 0))
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/scim/v2/Users/"+scimTargetID, nil))
@@ -90,9 +93,12 @@ func TestSCIMDeprovision_AllMembershipsAlreadyRemovedSucceeds(t *testing.T) {
 			"provisioner", "Provisioner", []byte(`["scim:provision"]`)))
 	expectCallerRegistryRoles(mock, scimOrgAlpha)
 
+	// REVOCATION: the mirror goes FIRST (#1056).
+	mock.ExpectExec("DELETE FROM organization_member_roles").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("(?s)DELETE FROM organization_members").
 		WithArgs(scimTargetID, boundScope{want: []string{scimOrgAlpha}}).
 		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}))
+	mock.ExpectExec("DELETE FROM organization_member_roles").WillReturnResult(sqlmock.NewResult(0, 0))
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("DELETE", "/scim/v2/Users/"+scimTargetID, nil))

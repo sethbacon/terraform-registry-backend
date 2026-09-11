@@ -95,6 +95,25 @@ func run() int {
 		return exitIndetermina
 	}
 
+	// ADVISORY FIRST, and printed whether or not anything gates (#1056).
+	//
+	// These are not failures: registry decides its own roles, so a membership
+	// whose registry role differs from identity's column is the intended state
+	// on a coupled deployment. They are printed because they are the only view
+	// of which principals hold one role here and another in the sibling -- and
+	// on the release that lands #1056, of whose registry role stopped tracking
+	// the sibling. Printed to STDOUT, so a pipeline gating on stderr does not
+	// mistake them for drift.
+	if len(report.Advisory) > 0 {
+		fmt.Printf("role-drift: %d advisory difference(s) — registry's own role decisions, "+
+			"which no longer track the identity column (#1056). These do NOT affect the exit code.\n\n",
+			len(report.Advisory))
+		for _, row := range report.Advisory {
+			fmt.Println("  " + row.String())
+		}
+		fmt.Println()
+	}
+
 	if report.Clean() && groupReport.Clean() {
 		if *verbose {
 			printScope(report)

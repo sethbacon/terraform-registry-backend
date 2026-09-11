@@ -165,12 +165,25 @@ They exist because identity is shared across the suite while authorization is
 per-application (design: `sethbacon/terraform-suite-identity#206`). Eventually
 `organization_members` carries membership only, and the role moves here.
 
-**These tables are now what registry reads.** Every role and every scope set behind
-every authorization decision comes from `organization_member_roles` joined to
-`registry_role_templates`. The identity tables are still **written** — every role
-assignment lands in `organization_members.role_template_id` first and is mirrored here
-only on success — and that is deliberate: it is what makes the rollback below real, and
-what the state manager still reads.
+**These tables are now what registry reads, and since #1056 what registry DECIDES.**
+Every role and every scope set behind every authorization decision comes from
+`organization_member_roles` joined to `registry_role_templates`. The identity tables are
+still **written** — every role assignment lands in `organization_members.role_template_id`
+first and is mirrored here only on success — and that is deliberate: it is what makes the
+rollback below real, and what the state manager still reads.
+
+What changed in #1056 is the direction of authority for **assignments**. The boot reconcile
+used to copy `organization_members.role_template_id` into this table on every boot. In a
+coupled deployment that column is written by both applications, so a role the state manager
+granted became a registry role at registry's next boot — with registry's scopes for that
+name, granted by nobody here. The reconcile now **confirms membership facts only**: a
+membership identity has and registry has no row for is recorded with **no role**, an
+existing row is never touched, and a membership identity no longer has is pruned. The one
+exception is a deployment whose `organization_member_roles` is empty, which adopts the
+source's assignments **once** and says so in the boot log.
+
+Role **templates** are still derived from the shared `role_templates` on every boot. That
+is the remaining half, tracked as #1057.
 
 What has **not** moved is the membership *fact*. "Is this principal a member of this
 organization at all" is still answered by `organization_members`, and every accessor asks
@@ -222,12 +235,12 @@ What it reports:
 | Kind | Meaning |
 | --- | --- |
 | `mirror_without_membership` | registry holds a role for a non-member. Inert today; **grants** authority the product never issued once phase 4 lands. |
-| `role_differs` | both copies have the membership and name different templates. |
+| `role_differs` | both copies have the membership and name different templates. **Advisory since #1056** — registry decides its own roles, so this is the intended state on a coupled deployment. Printed, never gating. |
 | `membership_not_mirrored` | identity has the membership, registry has no row — the principal is served **no role**. |
 | `template_scopes_differ` | same template id, different scope sets: every holder's authority differs. |
 | `template_name_differs` | same id, different name. Registry resolves templates by name in the group-mapping reconciliation and the admin API. |
 | `template_not_mirrored` / `mirrored_template_orphaned` | a template exists on one side only. |
-| `membership_role_missing_template` | an identity membership names a template that does not exist **in identity**. The source data is wrong; the reconcile mirrors it with no role rather than inventing one. |
+| `membership_role_missing_template` | an identity membership names a template that does not exist **in identity**. **Advisory since #1056** — registry no longer copies that column, so it says nothing about registry's tables. The source data is wrong; the reconcile mirrors it with no role rather than inventing one. |
 | `unparseable_row` | a source row whose `organization_id` or `user_id` is not a UUID. It can never be mirrored, so it is permanently unreconciled. |
 
 The last four are cases the pre-3b SQL query could not see at all.
@@ -252,9 +265,17 @@ mappings" out of it on both sides.
 
 Rows here now **do** affect authorization — that is what changed. In order of cost:
 
-1. **Restart the backend.** The startup reconcile re-derives both tables from the identity
-   tables and is the intended repair for anything a transient mirror-write failure left
-   behind. Re-run `role-drift`; most results clear here.
+1. **Restart the backend — for the TEMPLATE kinds.** The startup reconcile still derives
+   `registry_role_templates` from the shared schema, so `template_scopes_differ`,
+   `template_name_differs`, `template_not_mirrored` and `mirrored_template_orphaned` clear
+   on a restart. Re-run `role-drift`.
+
+   It does **not** repair an assignment any more, and that is deliberate: since #1056 a row
+   in `organization_member_roles` is registry's own decision, and re-deriving it from
+   identity's column is exactly the copy that let the sibling's grants in. A
+   `membership_not_mirrored` row is confirmed by the restart with **no role** — the drift
+   clears, the principal holds nothing here, and granting the role again through the member
+   API is the repair. A role you believe is wrong is changed the same way.
 2. **If rows persist, read the boot log.** `registry role tables reconciled` reports what
    the last pass did, including `orphaned_role_refs` and `unparseable_rows`. A membership
    whose role template is missing is an inconsistency in the *identity* data; decide what
@@ -271,9 +292,14 @@ on the request that is actually being served the wrong role, because every acces
 has both answers in hand — the identity columns it queried and registry's:
 
 - metric `registry_role_read_divergence_total{accessor,kind}`, where `kind` is
-  `missing_mirror` or `role_differs`. **Steady state is zero.** Alert on
-  `increase(...) > 0`, not on a threshold.
-- an `ERROR` log naming the organization, the user, and both role template ids.
+  `missing_mirror` or `role_differs`.
+  - `missing_mirror` is a **defect**: the boot reconcile confirms every identity membership
+    with at least a no-role row, so a missing one means the confirmation did not reach that
+    pair and the principal is served no role. **Steady state zero**; alert on
+    `increase(...) > 0`, and it logs at `ERROR`.
+  - `role_differs` is **informational since #1056**: registry decides its own roles, so on a
+    coupled deployment a non-zero rate is expected. It logs at `DEBUG`. Alert on a step
+    change if you want to know when the two applications start disagreeing more.
 
 What it does **not** catch, stated as limits rather than claims:
 
@@ -297,8 +323,15 @@ still lands there first, the shared role templates are still seeded, and nothing
 dropped. A deployment that rolls back therefore returns to a copy that has been kept
 current the whole time, with no data step.
 
-Rolling **forward** again needs no step either: the startup reconcile re-derives
-registry's tables from the identity tables on every boot.
+**Since #1056 a rollback changes authorization on a coupled deployment, and the direction
+is worth knowing.** The previous image's boot reconcile copies identity's
+`role_template_id` over registry's own for every membership, so any role this release
+declined to adopt from the sibling is adopted again. For roles granted in registry the two
+agree and nothing moves; the rows that change are exactly the ones `role-drift` lists as
+advisory `role_differs`. Read that list before rolling back.
+
+Rolling **forward** again re-derives role templates but not assignments — registry's
+decisions stand.
 
 ### A separate identity database now refuses to boot
 

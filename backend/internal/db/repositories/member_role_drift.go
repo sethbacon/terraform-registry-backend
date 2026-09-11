@@ -135,6 +135,22 @@ func (d DriftRow) String() string {
 type DriftReport struct {
 	// Rows is every disagreement found, worst first.
 	Rows []DriftRow
+
+	// Advisory holds disagreements that are EXPECTED since #1056 and must not
+	// gate anything.
+	//
+	// `role_differs` is the headline one. Registry decides its own roles now, so
+	// a membership whose registry role differs from identity's column is the
+	// INTENDED state on a coupled deployment -- the sibling granted its own role
+	// in its own application, and registry did not adopt it. Counting that as
+	// drift would leave `role-drift` permanently non-zero on a healthy
+	// deployment, which is how a gate gets routed around and then deleted.
+	//
+	// It is still PRINTED: it is the only place an operator can see which
+	// principals hold one role in registry and another in the sibling, and on the
+	// release that lands #1056 it is exactly the list of people whose registry
+	// role stops tracking the sibling.
+	Advisory []DriftRow
 	// SourceMemberships / SourceRoleTemplates / MirroredMemberships /
 	// MirroredRoleTemplates are what was actually compared.
 	//
@@ -149,6 +165,8 @@ type DriftReport struct {
 }
 
 // Clean reports whether the two copies agree.
+// Clean reports whether anything GATING was found. Advisory rows are excluded
+// deliberately: see the field.
 func (r DriftReport) Clean() bool { return len(r.Rows) == 0 }
 
 // CheckMemberRoleDrift compares registry's own authorization tables against the
@@ -200,7 +218,9 @@ func CheckMemberRoleDrift(ctx context.Context, identityDB, registryDB *sql.DB) (
 	report.MirroredMemberships = len(mirroredMembers)
 
 	rows := driftInTemplates(sourceTemplates, mirroredTemplates)
-	rows = append(rows, driftInMemberships(sourceMembers, mirroredMembers, sourceTemplates)...)
+	membershipRows, membershipAdvisory := driftInMemberships(sourceMembers, mirroredMembers, sourceTemplates)
+	rows = append(rows, membershipRows...)
+	report.Advisory = membershipAdvisory
 	if unparseable > 0 {
 		// No identifiers: they are precisely the rows whose identifiers could
 		// not be represented. readEffectiveMemberships logs each one with its
@@ -285,14 +305,14 @@ func driftInTemplates(source, mirrored []*models.RoleTemplate) []DriftRow {
 	return rows
 }
 
-// driftInMemberships compares the two assignment sets both ways.
-func driftInMemberships(source, mirrored map[memberKey]*string, sourceTemplates []*models.RoleTemplate) []DriftRow {
+// driftInMemberships compares the two assignment sets both ways, splitting the
+// result into what GATES and what is merely worth printing (#1056).
+func driftInMemberships(source, mirrored map[memberKey]*string, sourceTemplates []*models.RoleTemplate) (rows, advisory []DriftRow) {
 	live := make(map[string]bool, len(sourceTemplates))
 	for _, t := range sourceTemplates {
 		live[t.ID.String()] = true
 	}
 
-	var rows []DriftRow
 	for key, sourceRole := range source {
 		// A membership naming a template the source itself does not have is
 		// reported on its own terms. The reconcile mirrors it with NO role, so
@@ -300,13 +320,13 @@ func driftInMemberships(source, mirrored map[memberKey]*string, sourceTemplates 
 		// operator would go looking for a broken dual-write instead of the
 		// broken identity row that actually caused it.
 		if sourceRole != nil && !live[*sourceRole] {
-			rows = append(rows, DriftRow{
+			advisory = append(advisory, DriftRow{
 				Kind:           DriftMembershipRoleMissingTemplate,
 				OrganizationID: key.orgID,
 				UserID:         key.userID,
 				RoleTemplateID: *sourceRole,
 				Identity:       *sourceRole,
-				Registry:       "none (mirrored with no role, deliberately)",
+				Registry:       "not copied; registry decides its own roles (#1056)",
 			})
 			continue
 		}
@@ -322,7 +342,8 @@ func driftInMemberships(source, mirrored map[memberKey]*string, sourceTemplates 
 			continue
 		}
 		if !sameRole(sourceRole, mirroredRole) {
-			rows = append(rows, DriftRow{
+			// ADVISORY since #1056: the intended state on a coupled deployment.
+			advisory = append(advisory, DriftRow{
 				Kind:           DriftRoleDiffers,
 				OrganizationID: key.orgID,
 				UserID:         key.userID,
@@ -343,7 +364,7 @@ func driftInMemberships(source, mirrored map[memberKey]*string, sourceTemplates 
 			Registry:       derefRole(mirroredRole),
 		})
 	}
-	return rows
+	return rows, advisory
 }
 
 // sameScopes compares two scope sets as SETS: order and duplicates do not

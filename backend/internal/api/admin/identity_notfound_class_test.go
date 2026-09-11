@@ -207,6 +207,8 @@ func TestNotFoundClass_DeleteChannel_RepeatStays204(t *testing.T) {
 // pre-check on the removal itself.
 func TestNotFoundClass_RemoveMember_RepeatStays200(t *testing.T) {
 	mock, r := newOrgRouter(t)
+	// REVOCATION: the mirror goes FIRST (#1056).
+	mock.ExpectExec("DELETE FROM organization_member_roles").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM organization_members").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
@@ -299,6 +301,8 @@ func TestNotFoundClass_Reconcile_AlreadyRevokedDoesNotAbortLoop(t *testing.T) {
 	// matches ZERO rows: the membership is already gone.
 	expectOrgByName(mock, "platform", "org-platform")
 	expectIsMember(mock, "org-platform", "user-1", "rt-operator")
+	// REVOCATION: the mirror goes FIRST (#1056).
+	mock.ExpectExec("DELETE FROM organization_member_roles").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM organization_members").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 

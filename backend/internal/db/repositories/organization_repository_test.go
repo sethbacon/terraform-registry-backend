@@ -104,6 +104,32 @@ func nullableRole(roleID string) interface{} {
 	return roleID
 }
 
+// expectRepoRegistryTemplate stages the registry-side name resolution every
+// NAME-based write does FIRST since #1056: registry decides what a role name
+// means here, so an unknown name fails with nothing written anywhere. An empty
+// id stages "no such template".
+func expectRepoRegistryTemplate(mock sqlmock.Sqlmock, name, id string) {
+	rows := sqlmock.NewRows([]string{"id"})
+	if id != "" {
+		rows.AddRow(id)
+	}
+	mock.ExpectQuery("SELECT id FROM registry_role_templates WHERE name").WithArgs(name).WillReturnRows(rows)
+}
+
+// expectRepoReadBackAndMirror stages the two statements that follow a successful
+// identity write: the membership FACT is read back through the embedded store (a
+// scoped write that matched nothing must mirror nothing), then the role the
+// CALLER ASKED FOR is recorded in registry's own table.
+func expectRepoReadBackAndMirror(mock sqlmock.Sqlmock, orgID, userID string, roleTemplateID interface{}) {
+	mock.ExpectQuery("SELECT organization_id, user_id, role_template_id, created_at").
+		WithArgs(orgID, userID).
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id", "user_id", "role_template_id", "created_at"}).
+			AddRow(orgID, userID, roleTemplateID, time.Now()))
+	mock.ExpectExec("INSERT INTO organization_member_roles").
+		WithArgs(orgID, userID, roleTemplateID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+}
+
 func newOrgRepo(t *testing.T) (*OrganizationRepository, sqlmock.Sqlmock) {
 	t.Helper()
 	db, mock, err := sqlmock.New()
@@ -521,6 +547,10 @@ func TestGetMember_NotFound(t *testing.T) {
 
 func TestRemoveMember_Success(t *testing.T) {
 	repo, mock := newOrgRepo(t)
+	// REVOCATION: the mirror goes FIRST (#1056), so a failure there returns
+	// before identity is touched and nothing has changed anywhere.
+	mock.ExpectExec("DELETE FROM organization_member_roles").
+		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("DELETE FROM organization_members").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -595,6 +625,7 @@ func TestUpdateMemberRoleTemplate_Success(t *testing.T) {
 	repo, mock := newOrgRepo(t)
 	mock.ExpectExec("UPDATE organization_members").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	expectRepoReadBackAndMirror(mock, "org-1", "user-1", nil)
 
 	if err := repo.UpdateMemberRoleTemplate(context.Background(), "org-1", "user-1", nil,
 		OrgScopeAllOrganizations()); err != nil {
@@ -610,6 +641,7 @@ func TestAddMemberWithRoleTemplate_Success(t *testing.T) {
 	repo, mock := newOrgRepo(t)
 	mock.ExpectExec("INSERT INTO organization_members").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	expectRepoReadBackAndMirror(mock, "org-1", "user-1", nil)
 
 	err := repo.AddMemberWithRoleTemplate(context.Background(), "org-1", "user-1", nil, OrgScopeAllOrganizations())
 	if err != nil {
@@ -720,13 +752,16 @@ func TestListMembers_DBError(t *testing.T) {
 
 func TestAddMemberWithParams_Success(t *testing.T) {
 	repo, mock := newOrgRepo(t)
-	// Lookup role template by name
+	// Registry resolves the name FIRST, in its own templates (#1056).
+	expectRepoRegistryTemplate(mock, "viewer", "aaaaaaaa-0000-4000-8000-000000000001")
+	// Lookup role template by name, identity side
 	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
 		WithArgs("viewer").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-1"))
 	// Insert org member
 	mock.ExpectExec("INSERT INTO organization_members").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	expectRepoReadBackAndMirror(mock, "org-1", "user-1", "aaaaaaaa-0000-4000-8000-000000000001")
 
 	if err := repo.AddMemberWithParams(context.Background(), "org-1", "user-1", "viewer", OrgScopeAllOrganizations()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -739,9 +774,8 @@ func TestAddMemberWithParams_Success(t *testing.T) {
 // explicitly named a role, so an unknown name must not be silently dropped.
 func TestAddMemberWithParams_TemplateNotFound(t *testing.T) {
 	repo, mock := newOrgRepo(t)
-	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
-		WithArgs("nonexistent").
-		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	// REGISTRY refuses the name, before identity is touched at all.
+	expectRepoRegistryTemplate(mock, "nonexistent", "")
 
 	if err := repo.AddMemberWithParams(context.Background(), "org-1", "user-1", "nonexistent", OrgScopeAllOrganizations()); err == nil {
 		t.Fatal("expected an error for an unknown role template, got nil")
@@ -753,7 +787,7 @@ func TestAddMemberWithParams_TemplateNotFound(t *testing.T) {
 
 func TestAddMemberWithParams_DBError(t *testing.T) {
 	repo, mock := newOrgRepo(t)
-	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
+	mock.ExpectQuery("FROM registry_role_templates WHERE name").
 		WillReturnError(errDB)
 
 	if err := repo.AddMemberWithParams(context.Background(), "org-1", "user-1", "viewer", OrgScopeAllOrganizations()); err == nil {
@@ -767,11 +801,14 @@ func TestAddMemberWithParams_DBError(t *testing.T) {
 
 func TestUpdateMemberRole_Success(t *testing.T) {
 	repo, mock := newOrgRepo(t)
+	// Registry resolves the name FIRST, in its own templates (#1056).
+	expectRepoRegistryTemplate(mock, "admin", "aaaaaaaa-0000-4000-8000-000000000002")
 	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
 		WithArgs("admin").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-2"))
 	mock.ExpectExec("UPDATE organization_members SET role_template_id").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	expectRepoReadBackAndMirror(mock, "org-1", "user-1", "aaaaaaaa-0000-4000-8000-000000000002")
 
 	if err := repo.UpdateMemberRole(context.Background(), "org-1", "user-1", "admin", OrgScopeAllOrganizations()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -780,7 +817,7 @@ func TestUpdateMemberRole_Success(t *testing.T) {
 
 func TestUpdateMemberRole_DBError(t *testing.T) {
 	repo, mock := newOrgRepo(t)
-	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
+	mock.ExpectQuery("FROM registry_role_templates WHERE name").
 		WillReturnError(errDB)
 
 	if err := repo.UpdateMemberRole(context.Background(), "org-1", "user-1", "admin", OrgScopeAllOrganizations()); err == nil {
@@ -792,9 +829,7 @@ func TestUpdateMemberRole_TemplateNotFound(t *testing.T) {
 	repo, mock := newOrgRepo(t)
 	// An unresolved role name must error rather than silently updating to a
 	// nil roleTemplateID.
-	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
-		WithArgs("nonexistent").
-		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	expectRepoRegistryTemplate(mock, "nonexistent", "")
 
 	if err := repo.UpdateMemberRole(context.Background(), "org-1", "user-1", "nonexistent", OrgScopeAllOrganizations()); err == nil {
 		t.Fatal("expected an error for an unknown role template, got nil")

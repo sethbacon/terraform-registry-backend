@@ -191,8 +191,11 @@ func TestSCIMDeprovision_AllowsAnOrdinaryLeaver(t *testing.T) {
 				WillReturnRows(sqlmock.NewRows([]string{"user_id", "scopes"}).
 					AddRow(floorTargetID, []byte(`["modules:read"]`)).
 					AddRow("owner-1", []byte(`["organizations:write"]`)))
+			// REVOCATION: the mirror goes FIRST (#1056).
+			identity.ExpectExec("DELETE FROM organization_member_roles").WillReturnResult(sqlmock.NewResult(0, 1))
 			identity.ExpectQuery("DELETE FROM organization_members").
 				WillReturnRows(sqlmock.NewRows([]string{"organization_id"}).AddRow("org-1"))
+			identity.ExpectExec("DELETE FROM organization_member_roles").WillReturnResult(sqlmock.NewResult(0, 0))
 			registry.ExpectRollback()
 			// PUT and PATCH also write the user row back.
 			identity.ExpectExec("UPDATE users").WillReturnResult(sqlmock.NewResult(0, 1))
