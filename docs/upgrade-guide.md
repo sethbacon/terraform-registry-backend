@@ -169,6 +169,52 @@ validates the whole table and would fail on exactly the deployments the up migra
 repaired, leaving the migration version dirty; `NOT VALID` would silently restore the
 outage for new writes. The `.down.sql` carries the reasoning and by-hand restore SQL.
 
+### 4.22.x → 4.23.0 — a shared identity store must name the app that owns the role seed
+
+**Who is affected.** Only a deployment that sets `TFR_SUITE_IDENTITY_SHARED_STORE=true`.
+Standalone deployments are untouched, including one running the identity-schema cutover:
+`self` is correct there and still starts.
+
+**What changed.** The server refuses to start when `TFR_SUITE_IDENTITY_SHARED_STORE=true`
+and `TFR_SUITE_ROLE_SEED_OWNER` is still `self`.
+
+**Why.** `self` means "every app seeds its own store", and it is the default *here and in
+`terraform-state-manager-backend`*. When both apps share one identity store and neither
+operator changed it, both seed `identity.role_templates` — and both statements are
+`ON CONFLICT (name) DO UPDATE SET ... scopes = EXCLUDED.scopes`, a replacement rather than
+a merge. Four names are written by both apps:
+
+| role | registry writes | state-manager writes |
+|---|---|---|
+| `viewer` | `modules:read`, `providers:read`, `mirrors:read`, `organizations:read`, `scm:read` | `state:read` |
+| `org_owner` | `organizations:write`, `users:read`, `api_keys:manage`, `modules:*`, `providers:*`, `mirrors:*`, `scm:*` | `organizations:write`, `users:read`, `api_keys:manage`, `state:*`, `sources:manage` |
+| `admin` | registry's list | state-manager's list |
+| `org_provisioner` | registry's list | state-manager's list |
+
+So what those roles grant became whichever app restarted last, and the state manager's
+statement additionally rewrites the row's id — the key `organization_members` references.
+
+**What to do.** Set `TFR_SUITE_ROLE_SEED_OWNER` to the app that owns the seed:
+
+```bash
+TFR_SUITE_ROLE_SEED_OWNER=registry   # or tsm
+```
+
+**Set the SAME value in BOTH deployments.** This is the part the server cannot check for
+you: registry configured `registry` while the state manager is configured `tsm` leaves
+both of them seeding, and neither process can see the other's configuration. Naming one
+owner in both is what stops the collision.
+
+**Before you choose,** note that whoever owns the seed decides what the four shared names
+mean. Registry's seed is also what puts `devops`, `auditor`, `publisher` and
+`user_manager` in the shared table, which the state manager adopts for names its own list
+does not define. If you hand the seed to `tsm`, those names stop being refreshed by this
+application.
+
+**Rollback.** Unset `TFR_SUITE_IDENTITY_SHARED_STORE` or downgrade; the previous image
+does not perform this check. Note that rolling back restores the collision rather than
+resolving it.
+
 ### 4.x → 5.0.0 — the `devops` and `auditor` role templates gain `scanning:read`
 
 **Breaking, and it bites one topology only.** Issue #891. Independent of the
