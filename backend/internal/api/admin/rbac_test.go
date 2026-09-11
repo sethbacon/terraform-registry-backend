@@ -297,6 +297,9 @@ func TestRBACCreateRoleTemplate_Success(t *testing.T) {
 	mock, r := newRBACRouter(t)
 	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE name").
 		WillReturnRows(emptyRTRows())
+	// REGISTRY FIRST since #1057: its table is no longer derived, so this write
+	// is the authority change and the identity copy follows it.
+	mock.ExpectExec("INSERT INTO registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO role_templates").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -374,6 +377,9 @@ func TestRBACRoleTemplates_StillAcceptOrdinaryScopes(t *testing.T) {
 	mock, r := newRBACRouter(t)
 	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE name").
 		WillReturnRows(emptyRTRows())
+	// REGISTRY FIRST since #1057: its table is no longer derived, so this write
+	// is the authority change and the identity copy follows it.
+	mock.ExpectExec("INSERT INTO registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO role_templates").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -434,6 +440,9 @@ func TestRBACUpdateRoleTemplate_Success(t *testing.T) {
 	mock, r := newRBACRouter(t)
 	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnRows(sampleRTRow())
+	// REGISTRY FIRST since #1057: its table is no longer derived, so this write
+	// is the authority change and the identity copy follows it.
+	mock.ExpectExec("INSERT INTO registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("UPDATE role_templates.*SET display_name").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -461,6 +470,9 @@ func TestRBACUpdateRoleTemplate_ScopesChanged_RevokesMemberTokens(t *testing.T) 
 	logs := captureSlogOutput(t)
 	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnRows(sampleRTRow()) // scopes = testRTScopes = ["modules:read","providers:write"]
+	// REGISTRY FIRST since #1057: its table is no longer derived, so this write
+	// is the authority change and the identity copy follows it.
+	mock.ExpectExec("INSERT INTO registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("UPDATE role_templates.*SET display_name").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_member_roles WHERE role_template_id").
@@ -519,6 +531,9 @@ func TestRBACUpdateRoleTemplate_ScopesWidened_SkipsRevocation(t *testing.T) {
 	logs := captureSlogOutput(t)
 	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnRows(sampleRTRow()) // scopes = testRTScopes = ["modules:read","providers:write"]
+	// REGISTRY FIRST since #1057: its table is no longer derived, so this write
+	// is the authority change and the identity copy follows it.
+	mock.ExpectExec("INSERT INTO registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("UPDATE role_templates.*SET display_name").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -565,6 +580,9 @@ func TestRBACUpdateRoleTemplate_ScopesReordered_SkipsRevocation(t *testing.T) {
 	logs := captureSlogOutput(t)
 	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnRows(sampleRTRow()) // scopes = testRTScopes = ["modules:read","providers:write"]
+	// REGISTRY FIRST since #1057: its table is no longer derived, so this write
+	// is the authority change and the identity copy follows it.
+	mock.ExpectExec("INSERT INTO registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("UPDATE role_templates.*SET display_name").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -590,6 +608,9 @@ func TestRBACUpdateRoleTemplate_ScopesUnchanged_SkipsRevocation(t *testing.T) {
 	mock, r := newRBACRouterWithRevocation(t, true)
 	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnRows(sampleRTRow()) // scopes = testRTScopes = ["modules:read","providers:write"]
+	// REGISTRY FIRST since #1057: its table is no longer derived, so this write
+	// is the authority change and the identity copy follows it.
+	mock.ExpectExec("INSERT INTO registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("UPDATE role_templates.*SET display_name").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -643,6 +664,9 @@ func TestRBACDeleteRoleTemplate_Success(t *testing.T) {
 	mock, r := newRBACRouter(t)
 	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnRows(sampleRTRow())
+	// REVOCATION, REGISTRY FIRST (#1057): the delete here nulls every assignment
+	// that named the template, so a crash between the legs is less privileged.
+	mock.ExpectExec("DELETE FROM registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM role_templates WHERE id").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -666,6 +690,9 @@ func TestRBACDeleteRoleTemplate_RevokesMemberTokens(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"user_id", "organization_id"}).
 			AddRow("member-1", "org-1").
 			AddRow("member-2", "org-2"))
+	// REVOCATION, REGISTRY FIRST (#1057): the delete here nulls every assignment
+	// that named the template, so a crash between the legs is less privileged.
+	mock.ExpectExec("DELETE FROM registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM role_templates WHERE id").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("INSERT INTO user_token_revocations").
@@ -698,6 +725,9 @@ func TestRBACDeleteRoleTemplate_MemberLookupDBError_StillDeletes(t *testing.T) {
 		WillReturnRows(sampleRTRow())
 	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_member_roles WHERE role_template_id").
 		WillReturnError(errDB)
+	// REVOCATION, REGISTRY FIRST (#1057): the delete here nulls every assignment
+	// that named the template, so a crash between the legs is less privileged.
+	mock.ExpectExec("DELETE FROM registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM role_templates WHERE id").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -894,6 +924,9 @@ func TestRBACPreviewRoleTemplateReconciliation_AgreesWithRealSweep(t *testing.T)
 	// which is what UpdateRoleTemplate's existing sweep actually runs through.
 	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnRows(sampleRTRow())
+	// REGISTRY FIRST since #1057: its table is no longer derived, so this write
+	// is the authority change and the identity copy follows it.
+	mock.ExpectExec("INSERT INTO registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("UPDATE role_templates.*SET display_name").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_member_roles WHERE role_template_id").
@@ -1427,6 +1460,9 @@ func TestRBACDeleteRoleTemplate_DeleteDBError(t *testing.T) {
 	mock, r := newRBACRouter(t)
 	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnRows(sampleRTRow())
+	// REVOCATION, REGISTRY FIRST (#1057): the delete here nulls every assignment
+	// that named the template, so a crash between the legs is less privileged.
+	mock.ExpectExec("DELETE FROM registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM role_templates WHERE id").
 		WillReturnError(errDB)
 
@@ -1603,6 +1639,9 @@ func TestRBACCreateRoleTemplate_CreateDBError(t *testing.T) {
 	mock, r := newRBACRouter(t)
 	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE name").
 		WillReturnRows(emptyRTRows())
+	// REGISTRY FIRST since #1057: its table is no longer derived, so this write
+	// is the authority change and the identity copy follows it.
+	mock.ExpectExec("INSERT INTO registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO role_templates").
 		WillReturnError(errDB)
 
@@ -1666,6 +1705,9 @@ func TestRBACUpdateRoleTemplate_UpdateDBError(t *testing.T) {
 	mock, r := newRBACRouter(t)
 	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnRows(sampleRTRow())
+	// REGISTRY FIRST since #1057: its table is no longer derived, so this write
+	// is the authority change and the identity copy follows it.
+	mock.ExpectExec("INSERT INTO registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("UPDATE role_templates.*SET display_name").
 		WillReturnError(errDB)
 
@@ -2277,6 +2319,9 @@ func TestRBACUpdateRoleTemplate_SweepFails_ReportsRevocationIncomplete(t *testin
 	mock, r := newRBACRouterWithRevocation(t, true)
 	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnRows(sampleRTRow()) // scopes = ["modules:read","providers:write"]
+	// REGISTRY FIRST since #1057: its table is no longer derived, so this write
+	// is the authority change and the identity copy follows it.
+	mock.ExpectExec("INSERT INTO registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("UPDATE role_templates.*SET display_name").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	// The member lookup that drives the sweep fails after the edit committed.
@@ -2315,6 +2360,9 @@ func TestRBACUpdateRoleTemplate_SweepSucceeds_NoRevocationIncomplete(t *testing.
 	mock, r := newRBACRouterWithRevocation(t, true)
 	mock.ExpectQuery("SELECT.*FROM registry_role_templates WHERE id").
 		WillReturnRows(sampleRTRow())
+	// REGISTRY FIRST since #1057: its table is no longer derived, so this write
+	// is the authority change and the identity copy follows it.
+	mock.ExpectExec("INSERT INTO registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("UPDATE role_templates.*SET display_name").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_member_roles").
@@ -2356,6 +2404,9 @@ func TestRBACDeleteRoleTemplate_SweepFails_ReportsRevocationIncomplete(t *testin
 	mock.ExpectQuery("SELECT DISTINCT user_id, organization_id FROM organization_member_roles").
 		WillReturnRows(sqlmock.NewRows([]string{"user_id", "organization_id"}).
 			AddRow("member-1", "org-1"))
+	// REVOCATION, REGISTRY FIRST (#1057): the delete here nulls every assignment
+	// that named the template, so a crash between the legs is less privileged.
+	mock.ExpectExec("DELETE FROM registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM role_templates WHERE id").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("INSERT INTO user_token_revocations").

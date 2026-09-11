@@ -238,6 +238,10 @@ func TestGetRoleTemplateByName_NotFound(t *testing.T) {
 
 func TestCreateRoleTemplate_Success(t *testing.T) {
 	repo, mock := newRBACRepo(t)
+	// REGISTRY FIRST since #1057: its table is no longer derived, so this write
+	// is the authority change and the identity copy follows it.
+	mock.ExpectExec("INSERT INTO registry_role_templates").
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO role_templates").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -271,6 +275,10 @@ func TestCreateRoleTemplate_Error(t *testing.T) {
 
 func TestUpdateRoleTemplate_Success(t *testing.T) {
 	repo, mock := newRBACRepo(t)
+	// REGISTRY FIRST since #1057: its table is no longer derived, so this write
+	// is the authority change and the identity copy follows it.
+	mock.ExpectExec("INSERT INTO registry_role_templates").
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("UPDATE role_templates").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -290,6 +298,10 @@ func TestUpdateRoleTemplate_Success(t *testing.T) {
 
 func TestDeleteRoleTemplate_Success(t *testing.T) {
 	repo, mock := newRBACRepo(t)
+	// REGISTRY FIRST since #1057: its table is no longer derived, so this write
+	// is the authority change and the identity copy follows it.
+	mock.ExpectExec("DELETE FROM registry_role_templates").
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM role_templates").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 

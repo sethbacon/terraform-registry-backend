@@ -63,17 +63,21 @@ const (
 // by name, into REGISTRY'S OWN `registry_role_templates`
 // (sethbacon/terraform-suite-identity#206, phase 3b).
 //
-// That table is what every authorization decision now reads, so registry's
-// role→scope mapping has to be written there by registry. Before the read
-// cutover this function targeted the shared `role_templates`, which is the table
-// two applications collide on and which `TFR_SUITE_ROLE_SEED_OWNER` exists to
+// That table is what every authorization decision reads AND, since #1057, the
+// only thing that defines registry's roles: nothing derives it any more. So
+// this runs unconditionally, in every topology. Before the read cutover this
+// function targeted the shared `role_templates`, which is the table two
+// applications collide on and which `TFR_SUITE_ROLE_SEED_OWNER` exists to
 // arbitrate; registry's own table has no such contention, because no other
-// application writes it.
+// application writes it -- which is why the flag no longer gates this call.
 //
-// IT MUST RUN AFTER ReconcileMemberRoles, not before. The reconcile derives
-// registry's table from the identity source, including the template scopes; a
-// seed that ran first would be overwritten by it on the same boot. router.go
-// orders the two and says so.
+// IT MUST RUN BEFORE ReconcileMemberRoles, and the order INVERTED in #1057.
+// It used to run after, because the reconcile derived this table from the
+// identity source and would have overwritten a seed that ran first. The
+// reconcile no longer touches templates; what it does do is validate an adopted
+// membership's role against REGISTRY's template set, so that set has to be
+// written first or a fresh install adopts every assignment as "no role".
+// router_startup.go orders the two and says so.
 //
 // The connection's search_path determines which schema is written, exactly as
 // before.

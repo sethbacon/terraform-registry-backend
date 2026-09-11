@@ -6,7 +6,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/google/uuid"
@@ -73,23 +72,28 @@ func expectMirrorVerified(mock sqlmock.Sqlmock) {
 
 // expectSourceVerified queues the two probes verifyIdentitySource makes.
 func expectSourceVerified(mock sqlmock.Sqlmock) {
-	for _, table := range []string{"organization_members", "role_templates"} {
+	// ONE table since #1057: the reconcile no longer reads the shared
+	// role_templates, so probing for them would refuse to boot over a table
+	// nothing here touches.
+	for _, table := range []string{"organization_members"} {
 		mock.ExpectQuery("SELECT to_regclass").
 			WithArgs(table).
 			WillReturnRows(sqlmock.NewRows([]string{"to_regclass"}).AddRow("identity." + table))
 	}
 }
 
-var reconcileRoleTemplateCols = []string{"id", "name", "display_name", "description", "scopes", "is_system", "created_at", "updated_at"}
-
-// expectSourceRoleTemplates queues the store's ListRoleTemplates.
-func expectSourceRoleTemplates(mock sqlmock.Sqlmock, ids ...string) {
-	rows := sqlmock.NewRows(reconcileRoleTemplateCols)
-	for i, id := range ids {
-		rows.AddRow(id, "role-"+id[:4], "Role", nil, []byte(`["modules:read"]`), false, time.Now(), time.Now())
-		_ = i
+// expectRegistryRoleTemplates queues readRegistryRoleTemplateIDs — the template
+// set the reconcile validates an adopted assignment against since #1057.
+//
+// It replaces the two stagings this file used to need (the SOURCE's
+// ListRoleTemplates on the identity connection and the upserts that followed):
+// the reconcile no longer reads the shared templates or writes registry's.
+func expectRegistryRoleTemplates(mock sqlmock.Sqlmock, ids ...string) {
+	rows := sqlmock.NewRows([]string{"id"})
+	for _, id := range ids {
+		rows.AddRow(id)
 	}
-	mock.ExpectQuery("FROM role_templates").WillReturnRows(rows)
+	mock.ExpectQuery("SELECT id FROM registry_role_templates").WillReturnRows(rows)
 }
 
 // expectSourceMemberships queues readEffectiveMemberships.
@@ -110,15 +114,6 @@ func expectMirroredMemberships(mock sqlmock.Sqlmock, rows ...[3]interface{}) {
 	}
 	mock.ExpectQuery("SELECT organization_id, user_id, role_template_id FROM organization_member_roles").
 		WillReturnRows(r)
-}
-
-// expectMirroredTemplateIDs queues readMirroredRoleTemplateIDs.
-func expectMirroredTemplateIDs(mock sqlmock.Sqlmock, ids ...string) {
-	r := sqlmock.NewRows([]string{"id"})
-	for _, id := range ids {
-		r.AddRow(id)
-	}
-	mock.ExpectQuery("SELECT id FROM registry_role_templates").WillReturnRows(r)
 }
 
 const (
@@ -142,22 +137,19 @@ func TestReconcileMemberRoles_AdoptsIntoAnEmptyMirror(t *testing.T) {
 
 	expectMirrorVerified(registry.mock)
 	expectSourceVerified(identity.mock)
-	expectSourceRoleTemplates(identity.mock, recRoleA)
-	registry.mock.ExpectExec("INSERT INTO registry_role_templates").
-		WillReturnResult(sqlmock.NewResult(0, 1))
+	expectRegistryRoleTemplates(registry.mock, recRoleA)
 	expectSourceMemberships(identity.mock, [3]interface{}{recOrgA, recUserA, recRoleA})
 	expectMirroredMemberships(registry.mock) // EMPTY -> adoption
 	registry.mock.ExpectExec("INSERT INTO organization_member_roles").
 		WithArgs(recOrgA, recUserA, recRoleA).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	expectMirroredTemplateIDs(registry.mock, recRoleA)
 
 	report, err := ReconcileMemberRoles(context.Background(), identity.db, registry.db)
 	if err != nil {
 		t.Fatalf("ReconcileMemberRoles: %v", err)
 	}
-	if report.SourceRoleTemplates != 1 || report.SourceMemberships != 1 {
-		t.Errorf("report = %+v, want 1 template and 1 membership read", report)
+	if report.RegistryRoleTemplates != 1 || report.SourceMemberships != 1 {
+		t.Errorf("report = %+v, want 1 registry template and 1 membership read", report)
 	}
 	if report.MembershipsAdopted != 1 {
 		t.Errorf("MembershipsAdopted = %d, want 1", report.MembershipsAdopted)
@@ -165,9 +157,6 @@ func TestReconcileMemberRoles_AdoptsIntoAnEmptyMirror(t *testing.T) {
 	if report.MembershipsConfirmed != 0 {
 		t.Errorf("MembershipsConfirmed = %d, want 0 — the adoption path ran, not the steady-state one",
 			report.MembershipsConfirmed)
-	}
-	if report.RoleTemplatesWritten != 1 {
-		t.Errorf("RoleTemplatesWritten = %d, want 1", report.RoleTemplatesWritten)
 	}
 	if err := identity.mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("identity connection: %v", err)
@@ -196,15 +185,12 @@ func TestReconcileMemberRoles_DoesNotAdoptOnceTheMirrorHasRows(t *testing.T) {
 
 	expectMirrorVerified(registry.mock)
 	expectSourceVerified(identity.mock)
-	expectSourceRoleTemplates(identity.mock, recRoleA, recRoleB)
-	registry.mock.ExpectExec("INSERT INTO registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 1))
-	registry.mock.ExpectExec("INSERT INTO registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 1))
+	expectRegistryRoleTemplates(registry.mock, recRoleA, recRoleB)
 	// Identity says B (the sibling's grant); registry says A (its own decision).
 	expectSourceMemberships(identity.mock, [3]interface{}{recOrgA, recUserA, recRoleB})
 	expectMirroredMemberships(registry.mock, [3]interface{}{recOrgA, recUserA, recRoleA})
 	// NO assignment write is staged. Any statement against
 	// organization_member_roles now fails this test.
-	expectMirroredTemplateIDs(registry.mock, recRoleA, recRoleB)
 
 	report, err := ReconcileMemberRoles(context.Background(), identity.db, registry.db)
 	if err != nil {
@@ -233,11 +219,9 @@ func TestReconcileMemberRoles_ClearingTheSourceRoleLeavesRegistrysAlone(t *testi
 
 	expectMirrorVerified(registry.mock)
 	expectSourceVerified(identity.mock)
-	expectSourceRoleTemplates(identity.mock, recRoleA)
-	registry.mock.ExpectExec("INSERT INTO registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 1))
+	expectRegistryRoleTemplates(registry.mock, recRoleA)
 	expectSourceMemberships(identity.mock, [3]interface{}{recOrgA, recUserA, nil})
 	expectMirroredMemberships(registry.mock, [3]interface{}{recOrgA, recUserA, recRoleA})
-	expectMirroredTemplateIDs(registry.mock, recRoleA)
 
 	report, err := ReconcileMemberRoles(context.Background(), identity.db, registry.db)
 	if err != nil {
@@ -263,8 +247,7 @@ func TestReconcileMemberRoles_ConfirmsAMembershipItHasNoRowFor(t *testing.T) {
 
 	expectMirrorVerified(registry.mock)
 	expectSourceVerified(identity.mock)
-	expectSourceRoleTemplates(identity.mock, recRoleA)
-	registry.mock.ExpectExec("INSERT INTO registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 1))
+	expectRegistryRoleTemplates(registry.mock, recRoleA)
 	// Two memberships at the source; the mirror knows only the first, so it is
 	// NOT empty and the adoption may not run.
 	expectSourceMemberships(identity.mock,
@@ -274,7 +257,6 @@ func TestReconcileMemberRoles_ConfirmsAMembershipItHasNoRowFor(t *testing.T) {
 	registry.mock.ExpectExec("INSERT INTO organization_member_roles").
 		WithArgs(recOrgA, recUserB).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	expectMirroredTemplateIDs(registry.mock, recRoleA)
 
 	report, err := ReconcileMemberRoles(context.Background(), identity.db, registry.db)
 	if err != nil {
@@ -297,12 +279,9 @@ func TestReconcileMemberRoles_SkipsRowsThatAlreadyAgree(t *testing.T) {
 
 	expectMirrorVerified(registry.mock)
 	expectSourceVerified(identity.mock)
-	expectSourceRoleTemplates(identity.mock, recRoleA)
-	registry.mock.ExpectExec("INSERT INTO registry_role_templates").
-		WillReturnResult(sqlmock.NewResult(0, 0))
+	expectRegistryRoleTemplates(registry.mock, recRoleA)
 	expectSourceMemberships(identity.mock, [3]interface{}{recOrgA, recUserA, recRoleA})
 	expectMirroredMemberships(registry.mock, [3]interface{}{recOrgA, recUserA, recRoleA})
-	expectMirroredTemplateIDs(registry.mock, recRoleA)
 
 	report, err := ReconcileMemberRoles(context.Background(), identity.db, registry.db)
 	if err != nil {
@@ -323,8 +302,7 @@ func TestReconcileMemberRoles_PrunesRowsTheSourceNoLongerHas(t *testing.T) {
 
 	expectMirrorVerified(registry.mock)
 	expectSourceVerified(identity.mock)
-	expectSourceRoleTemplates(identity.mock, recRoleA)
-	registry.mock.ExpectExec("INSERT INTO registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 0))
+	expectRegistryRoleTemplates(registry.mock, recRoleA)
 	expectSourceMemberships(identity.mock, [3]interface{}{recOrgA, recUserA, recRoleA})
 	expectMirroredMemberships(registry.mock,
 		[3]interface{}{recOrgA, recUserA, recRoleA},
@@ -332,7 +310,6 @@ func TestReconcileMemberRoles_PrunesRowsTheSourceNoLongerHas(t *testing.T) {
 	registry.mock.ExpectExec("DELETE FROM organization_member_roles").
 		WithArgs(recOrgA, recUserB).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	expectMirroredTemplateIDs(registry.mock, recRoleA)
 
 	report, err := ReconcileMemberRoles(context.Background(), identity.db, registry.db)
 	if err != nil {
@@ -340,35 +317,6 @@ func TestReconcileMemberRoles_PrunesRowsTheSourceNoLongerHas(t *testing.T) {
 	}
 	if report.MembershipsRemoved != 1 {
 		t.Errorf("MembershipsRemoved = %d, want 1", report.MembershipsRemoved)
-	}
-	if err := registry.mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("registry connection: %v", err)
-	}
-}
-
-// TestReconcileMemberRoles_PrunesTemplatesTheSourceNoLongerHas, and does it
-// LAST: a template deleted before the assignments are written would null a row
-// the same pass had just set, through the FK.
-func TestReconcileMemberRoles_PrunesTemplatesTheSourceNoLongerHas(t *testing.T) {
-	identity, registry := newReconcileMocks(t)
-
-	expectMirrorVerified(registry.mock)
-	expectSourceVerified(identity.mock)
-	expectSourceRoleTemplates(identity.mock, recRoleA)
-	registry.mock.ExpectExec("INSERT INTO registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 0))
-	expectSourceMemberships(identity.mock, [3]interface{}{recOrgA, recUserA, recRoleA})
-	expectMirroredMemberships(registry.mock, [3]interface{}{recOrgA, recUserA, recRoleA})
-	expectMirroredTemplateIDs(registry.mock, recRoleA, recRoleB)
-	registry.mock.ExpectExec("DELETE FROM registry_role_templates").
-		WithArgs(mustUUID(t, recRoleB)).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-
-	report, err := ReconcileMemberRoles(context.Background(), identity.db, registry.db)
-	if err != nil {
-		t.Fatalf("ReconcileMemberRoles: %v", err)
-	}
-	if report.RoleTemplatesRemoved != 1 {
-		t.Errorf("RoleTemplatesRemoved = %d, want 1", report.RoleTemplatesRemoved)
 	}
 	if err := registry.mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("registry connection: %v", err)
@@ -384,14 +332,12 @@ func TestReconcileMemberRoles_OrphanedRoleReferenceIsAdoptedAsNoRole(t *testing.
 
 	expectMirrorVerified(registry.mock)
 	expectSourceVerified(identity.mock)
-	expectSourceRoleTemplates(identity.mock, recRoleA)
-	registry.mock.ExpectExec("INSERT INTO registry_role_templates").WillReturnResult(sqlmock.NewResult(0, 1))
+	expectRegistryRoleTemplates(registry.mock, recRoleA)
 	expectSourceMemberships(identity.mock, [3]interface{}{recOrgA, recUserA, recRoleB})
 	expectMirroredMemberships(registry.mock)
 	registry.mock.ExpectExec("INSERT INTO organization_member_roles").
 		WithArgs(recOrgA, recUserA, nil).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	expectMirroredTemplateIDs(registry.mock, recRoleA)
 
 	report, err := ReconcileMemberRoles(context.Background(), identity.db, registry.db)
 	if err != nil {
@@ -414,12 +360,11 @@ func TestReconcileMemberRoles_SkipsAndCountsUnparseableRows(t *testing.T) {
 
 	expectMirrorVerified(registry.mock)
 	expectSourceVerified(identity.mock)
-	expectSourceRoleTemplates(identity.mock)
+	expectRegistryRoleTemplates(registry.mock)
 	expectSourceMemberships(identity.mock,
 		[3]interface{}{"not-a-uuid", recUserA, nil},
 		[3]interface{}{recOrgA, "also-not-a-uuid", nil})
 	expectMirroredMemberships(registry.mock)
-	expectMirroredTemplateIDs(registry.mock)
 
 	report, err := ReconcileMemberRoles(context.Background(), identity.db, registry.db)
 	if err != nil {
@@ -478,24 +423,24 @@ func TestReconcileMemberRoles_RefusesWhenTheSourceDoesNotResolve(t *testing.T) {
 // running the divergence query never sees.
 func TestReconcileReport_LogValueCarriesEveryCounter(t *testing.T) {
 	r := ReconcileReport{
-		SourceMemberships: 1, SourceRoleTemplates: 2,
-		MembershipsAdopted: 3, MembershipsConfirmed: 9, RoleTemplatesWritten: 4,
-		MembershipsRemoved: 5, RoleTemplatesRemoved: 6,
-		OrphanedRoleRefs: 7, UnparseableRows: 8,
+		SourceMemberships: 1, RegistryRoleTemplates: 2,
+		MembershipsAdopted: 3, MembershipsConfirmed: 9,
+		MembershipsRemoved: 5,
+		OrphanedRoleRefs:   7, UnparseableRows: 8,
 	}
 	attrs := r.LogValue().Group()
-	if len(attrs) != 9 {
-		t.Fatalf("LogValue has %d attributes, want 9 — one per counter on ReconcileReport", len(attrs))
+	if len(attrs) != 7 {
+		t.Fatalf("LogValue has %d attributes, want 7 — one per counter on ReconcileReport", len(attrs))
 	}
 	seen := map[string]int64{}
 	for _, a := range attrs {
 		seen[a.Key] = a.Value.Int64()
 	}
 	for key, want := range map[string]int64{
-		"source_memberships": 1, "source_role_templates": 2,
-		"memberships_adopted": 3, "memberships_confirmed": 9, "role_templates_written": 4,
-		"memberships_removed": 5, "role_templates_removed": 6,
-		"orphaned_role_refs": 7, "unparseable_rows": 8,
+		"source_memberships": 1, "registry_role_templates": 2,
+		"memberships_adopted": 3, "memberships_confirmed": 9,
+		"memberships_removed": 5,
+		"orphaned_role_refs":  7, "unparseable_rows": 8,
 	} {
 		if seen[key] != want {
 			t.Errorf("LogValue[%s] = %d, want %d", key, seen[key], want)

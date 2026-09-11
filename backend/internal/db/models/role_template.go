@@ -23,7 +23,10 @@ type RoleTemplate = identitymodels.RoleTemplate
 //
 //   - repositories.SeedSystemRoleTemplates writes registry's own
 //     `registry_role_templates`, which is what every authorization decision in
-//     this application reads since terraform-suite-identity#206 phase 3b.
+//     this application reads since terraform-suite-identity#206 phase 3b, and
+//     since #1057 the ONLY thing that defines those templates -- it runs
+//     unconditionally, in every topology, and nothing derives the table any
+//     more.
 //   - repositories.SeedSharedIdentityRoleTemplates writes the shared
 //     `role_templates`. Registry no longer reads it; the STATE MANAGER adopts
 //     from it every role name it does not define itself (`devops` and `auditor`
