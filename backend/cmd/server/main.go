@@ -40,6 +40,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -516,6 +517,15 @@ func serve(cfg *config.Config) error {
 		}()
 	}
 
+	// An operator who says this app shares an identity store with the sibling,
+	// while identity still resolves from this app's own public schema, has
+	// asserted something the process can see is untrue. Checked before any pool
+	// is opened so the deployment fails on its configuration rather than partway
+	// through startup.
+	if err := sharedIdentityStoreGuard(cfg.Suite.IdentitySharedStore, identitySchemaEnabled()); err != nil {
+		return err
+	}
+
 	// Determine the connection for identity data access. When the identity-schema
 	// cutover is enabled, open a dedicated pool whose search_path resolves identity
 	// tables against the shared identity schema (feature tables fall back to
@@ -964,6 +974,50 @@ func devModeProductionGuard(devModeEnabled bool, loggingLevel string, nonProduct
 			"explicitly",
 		loggingLevel,
 	)
+}
+
+// sharedIdentityStoreGuard refuses to start when suite.identity_shared_store is
+// asserted without the identity-schema cutover (issue #1063).
+//
+// WHAT THE ASSERTION IS FOR. suite.identity_shared_store is an operator
+// statement that THIS app and the sibling read one identity store behind one
+// IdP. It is advertised in the suite manifest, and internal/api/suite.go drops
+// the SPA's "you may need to sign in" hint only when both apps assert it. The
+// process cannot derive it: whether the sibling points at the same store is a
+// fact about the OTHER deployment, so the assertion is irreducible and stays.
+//
+// WHY ONE DIRECTION IS CHECKABLE ANYWAY. With identitySchemaEnabled() false,
+// identityDB is the plain app pool and every identity read resolves against
+// THIS app's public schema -- cfg.IdentityDatabase is not even consulted for the
+// runtime connection. There is then no store to share, whatever the sibling is
+// configured to do, so the assertion cannot be true. The deployment gets an SPA
+// promising seamless single sign-on across two apps that do not share an
+// identity store, and users are bounced to a login they were told not to expect.
+// docs/identity-schema.md already noted that nothing caught this.
+//
+// AND WHY THE REVERSE IS NOT AN ERROR. Cutover ON with the assertion unset is
+// legitimate and common: docs/identity-schema.md's rollout enables the cutover
+// for a STANDALONE registry, both on a new deployment and as step 3 of moving
+// existing data out of public. Such a deployment shares nothing and must keep
+// starting. That asymmetry is the whole reason this is a guard over one
+// direction rather than a derived value replacing the flag.
+//
+// Arguments are passed in rather than read from cfg/os.Getenv here, matching
+// devModeProductionGuard above, so this stays a pure function that is unit
+// testable against arbitrary inputs.
+func sharedIdentityStoreGuard(sharedStoreAsserted, identitySchemaOn bool) error {
+	if !sharedStoreAsserted || identitySchemaOn {
+		return nil
+	}
+	return errors.New(
+		"refusing to start: suite.identity_shared_store is true (TFR_SUITE_IDENTITY_SHARED_STORE), " +
+			"which tells the sibling app and the SPA that this registry reads one shared identity store, " +
+			"but the identity-schema cutover is off (TFR_IDENTITY_SCHEMA_ENABLED), so identity data is " +
+			"read and written in this app's own public schema and no store is shared. The SPA would " +
+			"advertise seamless single sign-on that does not exist. Either set " +
+			"TFR_IDENTITY_SCHEMA_ENABLED=true (see docs/identity-schema.md for the rollout, which " +
+			"requires the identity data to have been copied first), or unset " +
+			"TFR_SUITE_IDENTITY_SHARED_STORE")
 }
 
 // identitySchemaEnabled reports whether identity data (users, organizations, API

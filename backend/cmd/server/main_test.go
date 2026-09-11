@@ -4,6 +4,9 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"regexp"
 	"strings"
@@ -377,5 +380,154 @@ func TestServe_NeverDerivesTheMaskFromThePassword(t *testing.T) {
 				"A mask must be a constant. Deriving it leaks part of the credential "+
 				"under a label that says it does not (#753).", i+1, trimmed)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// sharedIdentityStoreGuard (issue #1063)
+// ---------------------------------------------------------------------------
+
+// TestSharedIdentityStoreGuard_RefusesAssertionWithoutCutover is the core
+// assertion. suite.identity_shared_store tells the sibling app and the SPA that
+// this registry reads a shared identity store; with the identity-schema cutover
+// off, identity resolves from this app's OWN public schema and there is nothing
+// shared, so the claim is one the process can see is false.
+//
+// It is worth a hard refusal rather than a warning because the symptom lands on
+// end users, not on the operator: internal/api/suite.go drops the SPA's "you may
+// need to sign in" hint when both apps assert this, so the deployment advertises
+// seamless single sign-on across two apps with unrelated identity stores.
+func TestSharedIdentityStoreGuard_RefusesAssertionWithoutCutover(t *testing.T) {
+	if err := sharedIdentityStoreGuard(true, false); err == nil {
+		t.Fatal("sharedIdentityStoreGuard(true, false) = nil, want an error: the deployment asserts a " +
+			"shared identity store while identity is read from this app's own public schema")
+	}
+}
+
+// TestSharedIdentityStoreGuard_AllowsCutoverWithoutAssertion pins the direction
+// that must NOT be an error, and it is the half a later "tidy-up" is most likely
+// to get wrong by deriving the flag from the cutover instead of checking it.
+//
+// docs/identity-schema.md's rollout enables TFR_IDENTITY_SCHEMA_ENABLED for a
+// STANDALONE registry -- on a new deployment, and as step 3 of moving existing
+// identity data out of public. Neither shares anything with a sibling. Refusing
+// here, or inferring the assertion from the cutover, would mis-advertise every
+// one of those deployments as a shared-identity suite.
+func TestSharedIdentityStoreGuard_AllowsCutoverWithoutAssertion(t *testing.T) {
+	if err := sharedIdentityStoreGuard(false, true); err != nil {
+		t.Errorf("sharedIdentityStoreGuard(false, true) = %v, want nil: a standalone registry mid-cutover "+
+			"shares nothing and must keep starting", err)
+	}
+}
+
+// TestSharedIdentityStoreGuard_AllowsCoherentConfigurations covers the two
+// remaining corners: the coupled suite that asserts the store AND runs the
+// cutover, and the default standalone deployment that does neither.
+func TestSharedIdentityStoreGuard_AllowsCoherentConfigurations(t *testing.T) {
+	for _, c := range []struct {
+		name                     string
+		asserted, identitySchema bool
+	}{
+		{"coupled suite: asserted and cut over", true, true},
+		{"standalone default: neither", false, false},
+	} {
+		if err := sharedIdentityStoreGuard(c.asserted, c.identitySchema); err != nil {
+			t.Errorf("%s: sharedIdentityStoreGuard(%v, %v) = %v, want nil",
+				c.name, c.asserted, c.identitySchema, err)
+		}
+	}
+}
+
+// TestSharedIdentityStoreGuard_ErrorNamesBothEnvVars keeps the message
+// actionable. An operator reading it has to know which two settings disagree and
+// that either one may be the one to change; a message naming only the flag it
+// refused sends them to turn off the assertion when enabling the cutover was
+// what they meant.
+func TestSharedIdentityStoreGuard_ErrorNamesBothEnvVars(t *testing.T) {
+	err := sharedIdentityStoreGuard(true, false)
+	if err == nil {
+		t.Fatal("sharedIdentityStoreGuard(true, false) = nil, want an error")
+	}
+	for _, want := range []string{"TFR_SUITE_IDENTITY_SHARED_STORE", "TFR_IDENTITY_SCHEMA_ENABLED"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("guard error does not mention %s; an operator cannot tell which settings disagree.\ngot: %v",
+				want, err)
+		}
+	}
+}
+
+// TestSharedIdentityStoreGuard_IsWiredIntoServe pins the CALL, not the function.
+//
+// Every assertion above exercises sharedIdentityStoreGuard directly, so all of
+// them keep passing if the call in serve() is deleted -- the guard would be
+// correct, tested, and never reached, which is indistinguishable from not having
+// written it. The same applies to a call moved after the identity pool is
+// opened: the refusal has to land on the configuration, before the deployment is
+// partway up.
+//
+// Structural rather than behavioural because serve() opens sockets and database
+// connections; there is no way to run it in a unit test to observe the refusal.
+func TestSharedIdentityStoreGuard_IsWiredIntoServe(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "main.go", nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parsing main.go: %v", err)
+	}
+
+	var serve *ast.FuncDecl
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Name == "serve" && fn.Body != nil {
+			serve = fn
+			break
+		}
+	}
+	// NON-VACUITY. A guard that cannot find serve() would pass on a file whose
+	// startup had been renamed or restructured, certifying wiring it never read.
+	if serve == nil {
+		t.Fatal("main.go declares no serve() with a body: this guard cannot see the startup path it is " +
+			"supposed to be checking, so it is no longer checking anything")
+	}
+
+	var guardAt, identityDBAt token.Pos
+	ast.Inspect(serve.Body, func(n ast.Node) bool {
+		switch node := n.(type) {
+		case *ast.CallExpr:
+			// Only the guard's own call is matched here. The identity pool is
+			// anchored on the assignment below instead of on a call, because the
+			// guard PASSES identitySchemaEnabled() as an argument -- anchoring on
+			// that call matches a position inside the guard call itself, and the
+			// ordering check silently becomes unfalsifiable.
+			if fun, ok := node.Fun.(*ast.Ident); ok &&
+				fun.Name == "sharedIdentityStoreGuard" && !guardAt.IsValid() {
+				guardAt = node.Pos()
+			}
+		case *ast.AssignStmt:
+			// `identityDB := database` opens the identity-connection decision:
+			// everything from here on either keeps the app pool or replaces it
+			// with the dedicated one.
+			if identityDBAt.IsValid() || len(node.Lhs) == 0 {
+				return true
+			}
+			if id, ok := node.Lhs[0].(*ast.Ident); ok && id.Name == "identityDB" {
+				identityDBAt = node.Pos()
+			}
+		}
+		return true
+	})
+
+	if !guardAt.IsValid() {
+		t.Fatal("serve() never calls sharedIdentityStoreGuard. A deployment asserting " +
+			"suite.identity_shared_store without the identity-schema cutover would start and advertise " +
+			"single sign-on across two apps that share no identity store (#1063).")
+	}
+	// NON-VACUITY for the ordering half: without this anchor the comparison below
+	// can only ever pass.
+	if !identityDBAt.IsValid() {
+		t.Fatal("serve() never assigns identityDB: this guard cannot locate where the identity " +
+			"connection is chosen, so its ordering check is not checking anything")
+	}
+	if guardAt > identityDBAt {
+		t.Error("serve() chooses the identity connection before sharedIdentityStoreGuard runs. The " +
+			"refusal must land on the configuration, before any pool is opened.")
 	}
 }
