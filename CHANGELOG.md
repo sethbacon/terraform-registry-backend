@@ -7,6 +7,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.24.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.22.0...v4.24.0) (2026-09-11)
+
+
+### ⚠ BREAKING CHANGES
+
+* **config:** a deployment with TFR_SUITE_IDENTITY_SHARED_STORE=true and TFR_SUITE_ROLE_SEED_OWNER left at "self" no longer starts. That combination was already corrupting the shared role templates on every restart, so the refusal names a configuration that was wrong rather than changing one that worked. Set TFR_SUITE_ROLE_SEED_OWNER to "registry" or "tsm", and set it to the SAME value in both deployments. Whoever owns the seed decides what admin, viewer, org_owner and org_provisioner mean in the shared table; registry's seed is also what supplies devops, auditor, publisher and user_manager, which the state manager adopts. Standalone deployments, including one running the identity-schema cutover, are unaffected. See docs/upgrade-guide.md.
+* **config:** a deployment that sets TFR_SUITE_IDENTITY_SHARED_STORE=true without TFR_IDENTITY_SCHEMA_ENABLED=true no longer starts. That combination never did what it claimed -- identity was being read from the app's own public schema while the SPA advertised a shared store -- so the refusal names the configuration that was already wrong rather than changing any behaviour that worked. Either enable the cutover (docs/identity-schema.md, which requires the identity data to have been copied first) or unset the assertion.
+
+### Features
+
+* **config:** a shared identity store must name the app that owns the role seed ([#1066](https://github.com/sethbacon/terraform-registry-backend/issues/1066)) ([197d134](https://github.com/sethbacon/terraform-registry-backend/commit/197d1348a3575e955a83175d8cd25d7780c3be48))
+* **config:** refuse a shared-identity-store assertion without the schema cutover ([#1064](https://github.com/sethbacon/terraform-registry-backend/issues/1064)) ([565d35f](https://github.com/sethbacon/terraform-registry-backend/commit/565d35ff2467d165ecb5e355ae2d702c1ca7cc52))
+* **identity:** registry defines its own role templates; the boot reconcile stops deriving them ([#1060](https://github.com/sethbacon/terraform-registry-backend/issues/1060)) ([14cd71b](https://github.com/sethbacon/terraform-registry-backend/commit/14cd71bcd41db309efd099549cf6085db95e27fc))
+
+
+### Documentation
+
+* record why registry's notification channels are platform-level ([#1062](https://github.com/sethbacon/terraform-registry-backend/issues/1062)) ([cbe302f](https://github.com/sethbacon/terraform-registry-backend/commit/cbe302f844d670b585ae4423b6655e2411157dfb))
+
 ## [4.22.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.21.1...v4.22.0) (2026-09-11)
 
 
