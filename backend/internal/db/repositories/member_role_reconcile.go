@@ -410,31 +410,3 @@ func sameRole(a, b *string) bool {
 	}
 	return *a == *b
 }
-
-// readMirroredRoleTemplateIDs loads the ids registry's own template table holds.
-//
-// Reading is a separate step from deleting, exactly as it is for memberships:
-// the deletes must not be issued while this result set is still open, since on a
-// small pool the writing statement would wait for a connection the scan is
-// holding. Returning the ids first makes that ordering structural instead of a
-// hand-placed Close nobody can see the reason for.
-func readMirroredRoleTemplateIDs(ctx context.Context, registryDB *sql.DB) ([]uuid.UUID, error) {
-	rows, err := registryDB.QueryContext(ctx, `SELECT id FROM registry_role_templates`)
-	if err != nil {
-		return nil, fmt.Errorf("read mirrored role templates: %w", err)
-	}
-	defer rows.Close()
-
-	var ids []uuid.UUID
-	for rows.Next() {
-		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan mirrored role template: %w", err)
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read mirrored role templates: %w", err)
-	}
-	return ids, nil
-}

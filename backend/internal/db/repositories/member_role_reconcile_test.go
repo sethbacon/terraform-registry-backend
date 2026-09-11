@@ -82,8 +82,6 @@ func expectSourceVerified(mock sqlmock.Sqlmock) {
 	}
 }
 
-var reconcileRoleTemplateCols = []string{"id", "name", "display_name", "description", "scopes", "is_system", "created_at", "updated_at"}
-
 // expectRegistryRoleTemplates queues readRegistryRoleTemplateIDs — the template
 // set the reconcile validates an adopted assignment against since #1057.
 //

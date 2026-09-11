@@ -3,7 +3,6 @@ package repositories
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"testing"
 	"time"
 
@@ -229,16 +228,6 @@ func TestOrganizationRepository_RemoveAllMemberships_ClearsExactlyWhatWasRemoved
 		t.Errorf("the sweep did not clear both mirrored assignments: %v", err)
 	}
 }
-
-type capturingHandler struct{ msgs *[]string }
-
-func (h *capturingHandler) Enabled(context.Context, slog.Level) bool { return true }
-func (h *capturingHandler) Handle(_ context.Context, r slog.Record) error {
-	*h.msgs = append(*h.msgs, r.Message)
-	return nil
-}
-func (h *capturingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
-func (h *capturingHandler) WithGroup(string) slog.Handler      { return h }
 
 // A FAILED SOURCE WRITE MIRRORS NOTHING.
 //
