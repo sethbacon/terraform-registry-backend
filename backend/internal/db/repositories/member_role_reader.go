@@ -327,6 +327,43 @@ func (r *MemberRoleReader) GetRoleTemplate(ctx context.Context, id uuid.UUID) (*
 }
 
 // GetRoleTemplateByName returns one of registry's own role templates by name.
+// ErrNoRegistryRoleTemplate reports a role name registry's own templates do not
+// define.
+//
+// DELIBERATELY NOT identitystore.ErrNotFound, and this is load-bearing. The IdP
+// reconciliation absorbs a not-found from a member write as "the membership was
+// removed between the read and the write, carry on"
+// (`!identityerr.IsNotFound(err)` in admin/auth.go). An unknown ROLE NAME is a
+// different thing entirely — the mapping names a role this deployment does not
+// define — and reporting it as not-found would make it a silent no-op on the
+// path where an IdP group edit reaches it, with the user's roles quietly
+// unchanged. A distinct sentinel keeps the absorption aimed at the case it was
+// written for.
+var ErrNoRegistryRoleTemplate = errors.New("role template not defined in registry's own templates")
+
+// RoleTemplateIDByName resolves a role NAME to the id registry's own table holds
+// for it, or ErrNotFound.
+//
+// Narrow on purpose (#1056). The write path needs one thing — the id to record —
+// and the id is what `organization_member_roles.role_template_id` carries. It is
+// read as a STRING rather than through the full model, matching
+// `SELECT id, scopes FROM registry_role_templates WHERE name = $1` in
+// admin.guardProvisionableRole: the column is a uuid in the database, the code
+// passes it as an opaque *string end to end, and parsing it here would add a
+// failure mode on a value nothing in this path interprets.
+func (r *MemberRoleReader) RoleTemplateIDByName(ctx context.Context, name string) (string, error) {
+	var id string
+	err := r.db.QueryRowContext(ctx,
+		`SELECT id FROM registry_role_templates WHERE name = $1`, name).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("%w: %q", ErrNoRegistryRoleTemplate, name)
+	}
+	if err != nil {
+		return "", fmt.Errorf("resolve role template %q: %w", name, err)
+	}
+	return id, nil
+}
+
 func (r *MemberRoleReader) GetRoleTemplateByName(ctx context.Context, name string) (*models.RoleTemplate, error) {
 	return r.roleTemplateWhere(ctx, `name = $1`, name, "role template by name")
 }

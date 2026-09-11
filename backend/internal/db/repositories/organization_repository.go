@@ -333,111 +333,170 @@ func applyMirroredRole(role *MirroredRole, id, name, displayName **string, scope
 	*scopes = role.scopes()
 }
 
-// mirrorMemberFromSource re-reads the membership that was just written and
-// mirrors what the source now says, rather than what the caller asked for.
+// THE ORDERING RULE for the two legs of a role write (#1056).
 //
-// Read-back rather than reusing the caller's argument because two of the store's
-// write methods take a role template NAME and resolve it internally, and because
-// the store's writes are scoped -- a scoped statement that matched no row must
-// mirror nothing. Reading the row back through the same scope collapses all of
-// that into one answer that is true by observation. Role writes are rare
-// administrative actions, so the extra SELECT costs nothing that matters.
+// identity and registry may be different databases, so the two writes cannot
+// share a transaction and there IS a window between them. The rule that decides
+// which goes first is: ORDER THEM SO THAT A CRASH BETWEEN THEM LEAVES THE LESS
+// PRIVILEGED STATE.
 //
-// THE EMBEDDED SELECTOR IS LOAD-BEARING, and it became so in phase 3b. This
-// method must read what the SOURCE now says; `r.GetMember` is this type's
-// override, which reads the membership from the store and then REPLACES its role
-// with whatever registry's tables already hold. Mirroring that would write the
-// mirror's own current value back into itself -- a dual-write that is a no-op on
-// every role CHANGE, silently, while every test that only checks "a mirror write
-// happened" keeps passing. Since reads now come from those tables, the change
-// would never take effect anywhere.
+//   - A grant (add, or change of role) writes IDENTITY first. A crash leaves
+//     registry without an assignment identity has: under-privileged, and the
+//     next boot's reconcile confirms the membership with no role, which is the
+//     same direction.
+//   - A revocation writes the MIRROR first. A crash leaves registry without an
+//     assignment identity still has: the same harmless direction.
+//     Identity-first would have left a revoked role still deciding reads here.
 //
-// Phase 3a removed this selector to satisfy staticcheck's QF1008, correctly at
-// the time: GetMember was not then overridden. It is now.
-// TestOrganizationRepository_MirrorsTheSourceNotTheMirror fails if it is dropped
-// again.
-func (r *OrganizationRepository) mirrorMemberFromSource(ctx context.Context, orgID, userID string, scope identitystore.OrgScope) {
-	member, err := r.OrganizationRepository.GetMember(ctx, orgID, userID, scope) //nolint:staticcheck // QF1008: the embedded selector is REQUIRED — see above; r.GetMember would mirror the mirror
+// AND A FAILED MIRROR LEG FAILS THE REQUEST. Before #1056 it was logged and
+// swallowed, which was right while nothing read these tables and wrong from the
+// moment they became the authority: an administrator demoting a principal got
+// 200 and an audit entry while `organization_member_roles` still said `admin`,
+// and nothing surfaced it until a restart. Three things make returning the
+// error safe:
+//
+//   - REVOCATIONS MIRROR FIRST, so a failure returns BEFORE identity is
+//     touched: nothing changed anywhere, and the caller's retry is a retry of
+//     an operation that did not happen.
+//   - GRANTS WRITE IDENTITY FIRST, so a failure leaves identity ahead. The
+//     caller sees an error, registry grants nothing new, and the reconcile
+//     confirms the membership with no role.
+//   - EVERY ONE OF THESE WRITES IS IDEMPOTENT -- AssignRole is an upsert, the
+//     deletes remove nothing when the row is gone -- so the retry the error
+//     invites cannot double-apply.
+//
+// The identity leg is NOT rolled back: it cannot be, across a connection
+// boundary. The divergence is reported by `role-drift` and repaired by granting
+// the role again.
+
+// registryRoleTemplateID resolves a role template NAME against registry's own
+// table, which is the only place a role means anything here.
+//
+// Called BEFORE the identity leg on every name-based write, so an unknown name
+// fails with nothing written anywhere. The shared store resolves the same name
+// against identity's `role_templates` for its own column; the two agree today
+// because the templates are still derived, and may diverge freely once #1057
+// lands -- which is why the id written HERE is resolved here.
+func (r *OrganizationRepository) registryRoleTemplateID(ctx context.Context, name string) (*string, error) {
+	id, err := r.roles.RoleTemplateIDByName(ctx, name)
 	if err != nil {
-		mirrorFailed(ctx, "read back membership", err, "organization_id", orgID, "user_id", userID)
-		return
+		return nil, err
 	}
-	if err := r.mirror.AssignRole(ctx, member.OrganizationID, member.UserID, member.RoleTemplateID); err != nil {
-		mirrorFailed(ctx, "assign role", err, "organization_id", orgID, "user_id", userID)
-	}
+	return &id, nil
 }
 
-// AddMemberWithRoleTemplate adds a member and mirrors the resulting assignment.
+// mirrorRequestedRole records the role THE CALLER ASKED FOR, once the identity
+// leg has confirmed the membership exists and is in scope.
+//
+// # What it reads back, and what it no longer takes from the read-back
+//
+// The store's writes are SCOPED: a statement that matched no row must mirror
+// nothing, and the caller's arguments cannot tell you whether it matched. So
+// the membership is still read back through the same scope -- but only for that
+// FACT. The role written is the caller's, resolved against registry's own
+// templates, never the `role_template_id` the read-back carries. Taking it from
+// the read-back is what let the sibling's opinion in on the write path, the same
+// way the reconcile's copy did on the boot path.
+//
+// THE EMBEDDED SELECTOR IS LOAD-BEARING. `r.GetMember` is this type's override,
+// which replaces the role with whatever registry already holds; reading through
+// it would make a no-op of every change. It is used here for the membership fact
+// alone, and the role it carries is discarded.
+func (r *OrganizationRepository) mirrorRequestedRole(ctx context.Context, orgID, userID string, roleTemplateID *string, scope identitystore.OrgScope) error {
+	member, err := r.OrganizationRepository.GetMember(ctx, orgID, userID, scope) //nolint:staticcheck // QF1008: the embedded selector is REQUIRED -- see above; r.GetMember would read the mirror back into itself
+	if err != nil {
+		if errors.Is(err, identitystore.ErrNotFound) {
+			// The scoped write matched no row. Nothing happened at the source,
+			// so nothing may happen here either.
+			return nil
+		}
+		return fmt.Errorf("read back membership (%s, %s) to mirror its role: %w", orgID, userID, err)
+	}
+	if err := r.mirror.AssignRole(ctx, member.OrganizationID, member.UserID, roleTemplateID); err != nil {
+		return fmt.Errorf("record the role in registry's own tables: %w", err)
+	}
+	return nil
+}
+
 func (r *OrganizationRepository) AddMemberWithRoleTemplate(ctx context.Context, orgID, userID string, roleTemplateID *string, scope identitystore.OrgScope) error {
 	if err := r.OrganizationRepository.AddMemberWithRoleTemplate(ctx, orgID, userID, roleTemplateID, scope); err != nil {
 		return err
 	}
-	r.mirrorMemberFromSource(ctx, orgID, userID, scope)
-	return nil
+	return r.mirrorRequestedRole(ctx, orgID, userID, roleTemplateID, scope)
 }
 
-// AddMemberWithParams adds a member by role-template name and mirrors the
-// resulting assignment.
-//
-// Overridden separately even though the store implements it in terms of
-// AddMemberWithRoleTemplate: Go has no virtual dispatch, so the store's call
-// reaches the store's own method and never this type's. An override that
-// "obviously" comes for free is the exact shape of a silent gap here.
 func (r *OrganizationRepository) AddMemberWithParams(ctx context.Context, orgID, userID, roleTemplateName string, scope identitystore.OrgScope) error {
+	registryRole, err := r.registryRoleTemplateID(ctx, roleTemplateName)
+	if err != nil {
+		return err
+	}
 	if err := r.OrganizationRepository.AddMemberWithParams(ctx, orgID, userID, roleTemplateName, scope); err != nil {
 		return err
 	}
-	r.mirrorMemberFromSource(ctx, orgID, userID, scope)
-	return nil
+	return r.mirrorRequestedRole(ctx, orgID, userID, registryRole, scope)
 }
 
-// UpdateMemberRoleTemplate changes a member's role and mirrors the result.
 func (r *OrganizationRepository) UpdateMemberRoleTemplate(ctx context.Context, orgID, userID string, roleTemplateID *string, scope identitystore.OrgScope) error {
 	if err := r.OrganizationRepository.UpdateMemberRoleTemplate(ctx, orgID, userID, roleTemplateID, scope); err != nil {
 		return err
 	}
-	r.mirrorMemberFromSource(ctx, orgID, userID, scope)
-	return nil
+	return r.mirrorRequestedRole(ctx, orgID, userID, roleTemplateID, scope)
 }
 
-// UpdateMemberRole changes a member's role by template name and mirrors the
-// result. Overridden for the same no-virtual-dispatch reason as
-// AddMemberWithParams.
 func (r *OrganizationRepository) UpdateMemberRole(ctx context.Context, orgID, userID, roleTemplateName string, scope identitystore.OrgScope) error {
+	registryRole, err := r.registryRoleTemplateID(ctx, roleTemplateName)
+	if err != nil {
+		return err
+	}
 	if err := r.OrganizationRepository.UpdateMemberRole(ctx, orgID, userID, roleTemplateName, scope); err != nil {
 		return err
 	}
-	r.mirrorMemberFromSource(ctx, orgID, userID, scope)
-	return nil
+	return r.mirrorRequestedRole(ctx, orgID, userID, registryRole, scope)
 }
 
-// RemoveMember removes a membership and drops its mirrored role assignment.
-func (r *OrganizationRepository) RemoveMember(ctx context.Context, orgID, userID string, scope identitystore.OrgScope) error {
-	if err := r.OrganizationRepository.RemoveMember(ctx, orgID, userID, scope); err != nil {
-		return err
-	}
-	if err := r.mirror.ClearMember(ctx, orgID, userID); err != nil {
-		mirrorFailed(ctx, "clear member", err, "organization_id", orgID, "user_id", userID)
-	}
-	return nil
-}
-
-// RemoveAllMembershipsForUser deprovisions a user and drops the mirrored role
-// assignment in each organization the sweep actually emptied.
+// RemoveMember withdraws a membership. REVOCATION: the mirror goes first.
 //
-// The store returns the scope of organizations it removed, so the mirror clears
-// exactly those rather than every organization the user appears in -- a scoped
-// SCIM deprovision must not clear assignments outside its tenant, which is the
-// same property issue #160 established for the source statement.
+// A failure here returns before identity is touched, so nothing changed
+// anywhere. The mirror delete also runs when the membership is already gone --
+// it is a DELETE, and removing a row that is not there is the desired end state.
+func (r *OrganizationRepository) RemoveMember(ctx context.Context, orgID, userID string, scope identitystore.OrgScope) error {
+	if err := r.mirror.ClearMember(ctx, orgID, userID); err != nil {
+		return fmt.Errorf("withdraw the role in registry's own tables: %w", err)
+	}
+	return r.OrganizationRepository.RemoveMember(ctx, orgID, userID, scope)
+}
+
+// RemoveAllMembershipsForUser strips a user's memberships. REVOCATION, mirrored
+// TWICE on purpose.
+//
+// The PRE-PASS clears registry's assignments across the scope the strip is about
+// to apply, so a failure returns before identity is touched. It cannot know
+// which rows the strip will match, so it clears the whole scope: a DELETE for a
+// pair that was never a member is a no-op, and over-clearing is the safe
+// direction for a revocation.
+//
+// The POST-PASS clears exactly what identity reports it removed. It is not
+// redundant: a grant racing between the two legs would otherwise leave an
+// assignment behind for a membership that no longer exists.
 func (r *OrganizationRepository) RemoveAllMembershipsForUser(ctx context.Context, userID string, scope identitystore.OrgScope) (identitystore.OrgScope, error) {
+	// PRE-PASS, before identity is touched, over the scope the strip is about to
+	// apply. It cannot know which rows the strip will match, so it clears the
+	// whole scope: a DELETE for a pair that was never a member is a no-op, and
+	// over-clearing is the safe direction for a revocation.
+	if err := r.mirror.ClearUserInScope(ctx, userID, scope); err != nil {
+		return identitystore.OrgScope{}, fmt.Errorf("withdraw the user's roles in registry's own tables: %w", err)
+	}
+
 	removed, err := r.OrganizationRepository.RemoveAllMembershipsForUser(ctx, userID, scope)
 	if err != nil {
 		return removed, err
 	}
-	for _, orgID := range removed.OrganizationIDs() {
-		if clearErr := r.mirror.ClearMember(ctx, orgID, userID); clearErr != nil {
-			mirrorFailed(ctx, "clear member", clearErr, "organization_id", orgID, "user_id", userID)
-		}
+
+	// POST-PASS over exactly what identity reports it removed. Not redundant: a
+	// grant racing between the two legs would otherwise leave an assignment
+	// behind for a membership that no longer exists.
+	if err := r.mirror.ClearUserInScope(ctx, userID, removed); err != nil {
+		return removed, fmt.Errorf("withdraw the user's roles in registry's own tables: %w", err)
 	}
 	return removed, nil
 }

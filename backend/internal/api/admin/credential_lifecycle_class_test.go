@@ -157,9 +157,19 @@ func expectSCIMDeprovisionSweep(mock sqlmock.Sqlmock, userID string) {
 	// membership it actually removed, and that value — an OrgScope — is what
 	// scopes the key sweep below. The two halves cannot disagree about tenancy
 	// because the second's argument IS the first's result (identity #160/#736).
+	// REVOCATION, MIRRORED TWICE (#1056). The pre-pass clears registry's
+	// assignments across the scope the strip is about to apply, BEFORE identity
+	// is touched, so a failure there returns with nothing changed anywhere. The
+	// post-pass then clears exactly what the strip reported removing — not
+	// redundant, because a grant racing between the two legs would otherwise
+	// leave an assignment behind for a membership that no longer exists.
+	mock.ExpectExec("DELETE FROM organization_member_roles").
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("DELETE FROM organization_members").
 		WithArgs(userID).
 		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}).AddRow(scimRemovedOrg))
+	mock.ExpectExec("DELETE FROM organization_member_roles").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("INSERT INTO user_token_revocations").
 		WithArgs(userID).
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -303,6 +313,8 @@ func TestCredentialLifecycleClass_AuthorityReductionInvalidatesAllCredentialFami
 				mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
 					WillReturnRows(sampleMemberWithRoleRow())
 				expectSampleMemberRegistryRole(mock)
+				// REVOCATION: the mirror goes FIRST (#1056).
+				mock.ExpectExec("DELETE FROM organization_member_roles").WillReturnResult(sqlmock.NewResult(0, 1))
 				mock.ExpectExec("DELETE FROM organization_members").
 					WillReturnResult(sqlmock.NewResult(1, 1))
 				mock.ExpectExec("INSERT INTO user_token_revocations").
@@ -333,6 +345,14 @@ func TestCredentialLifecycleClass_AuthorityReductionInvalidatesAllCredentialFami
 				expectRegistryRoleFor(mock, registryRole{id: oldRoleTemplateUUID})
 				mock.ExpectExec("UPDATE organization_members").
 					WillReturnResult(sqlmock.NewResult(1, 1))
+				// The membership FACT is read back through the shared store (a scoped write
+				// that matched nothing must mirror nothing), then the role the CALLER ASKED
+				// FOR is recorded in registry's own table (#1056).
+				mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
+					WillReturnRows(sqlmock.NewRows([]string{"organization_id", "user_id", "role_template_id", "created_at"}).
+						AddRow("org-1", "user-1", "rt-1", time.Now()))
+				mock.ExpectExec("INSERT INTO organization_member_roles").
+					WillReturnResult(sqlmock.NewResult(0, 1))
 				// The scopes the member RETAINS under the new role template
 				// decide which keys over-ask. sampleMemberWithRoleRow carries
 				// modules:read, so a key with providers:write is deleted.
@@ -451,6 +471,8 @@ func TestCredentialLifecycleClass_AuthorityReductionInvalidatesAllCredentialFami
 					WillReturnRows(sqlmock.NewRows(authMemberCols).
 						AddRow("org-1", "user-1", &roleID, time.Now()))
 				expectRegistryRoleFor(mock, registryRole{id: roleID})
+				// REVOCATION: the mirror goes FIRST (#1056).
+				mock.ExpectExec("DELETE FROM organization_member_roles").WillReturnResult(sqlmock.NewResult(0, 1))
 				mock.ExpectExec("DELETE FROM organization_members").
 					WillReturnResult(sqlmock.NewResult(0, 1))
 				expectOrgKeySweep(mock, "user-1", "org-1", "key-idp-deprovision")
@@ -497,10 +519,22 @@ func TestCredentialLifecycleClass_AuthorityReductionInvalidatesAllCredentialFami
 				// The guard's lookup doubles as the retention filter: "viewer"
 				// grants read only, so it is what the member retains.
 				expectRoleScopesLookup(mock, "viewer", []string{"modules:read"})
+				// Registry resolves the name in ITS OWN templates first (#1056).
+				mock.ExpectQuery("SELECT id FROM registry_role_templates WHERE name").
+					WithArgs("viewer").
+					WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-viewer"))
 				mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
 					WithArgs("viewer").
 					WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-viewer"))
 				mock.ExpectExec("UPDATE organization_members").
+					WillReturnResult(sqlmock.NewResult(0, 1))
+				// The membership FACT is read back through the shared store (a scoped write
+				// that matched nothing must mirror nothing), then the role the CALLER ASKED
+				// FOR is recorded in registry's own table (#1056).
+				mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
+					WillReturnRows(sqlmock.NewRows([]string{"organization_id", "user_id", "role_template_id", "created_at"}).
+						AddRow("org-1", "user-1", "rt-1", time.Now()))
+				mock.ExpectExec("INSERT INTO organization_member_roles").
 					WillReturnResult(sqlmock.NewResult(0, 1))
 				// The key was minted under the owner template and still asks
 				// for modules:write, which viewer does not grant.
@@ -553,10 +587,22 @@ func TestCredentialLifecycleClass_AuthorityReductionInvalidatesAllCredentialFami
 						AddRow("org-1", "user-1", &oldRole, time.Now()))
 				expectRegistryRoleFor(mock, registryRole{id: oldRole})
 				expectRoleScopesLookup(mock, "publisher", []string{"modules:read", "modules:write"})
+				// Registry resolves the name in ITS OWN templates first (#1056).
+				mock.ExpectQuery("SELECT id FROM registry_role_templates WHERE name").
+					WithArgs("publisher").
+					WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-publisher"))
 				mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
 					WithArgs("publisher").
 					WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-publisher"))
 				mock.ExpectExec("UPDATE organization_members").
+					WillReturnResult(sqlmock.NewResult(0, 1))
+				// The membership FACT is read back through the shared store (a scoped write
+				// that matched nothing must mirror nothing), then the role the CALLER ASKED
+				// FOR is recorded in registry's own table (#1056).
+				mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
+					WillReturnRows(sqlmock.NewRows([]string{"organization_id", "user_id", "role_template_id", "created_at"}).
+						AddRow("org-1", "user-1", "rt-1", time.Now()))
+				mock.ExpectExec("INSERT INTO organization_member_roles").
 					WillReturnResult(sqlmock.NewResult(0, 1))
 				// modules:read is still granted by the new template, so the key
 				// asks for nothing it lost: listed, and left alone.
@@ -751,6 +797,11 @@ func TestCredentialLifecycleClass_AuthorityReductionInvalidatesAllCredentialFami
 					WillReturnResult(sqlmock.NewResult(0, 1))
 				mock.ExpectExec("DELETE FROM api_keys WHERE user_id").
 					WillReturnResult(sqlmock.NewResult(0, 1))
+				// UNTOUCHED BY #1056. This is services.UserService's erasure path,
+				// not the repository wrapper's: its two legs run inside ONE
+				// transaction on ONE connection, so the crash-between-them
+				// ordering rule has nothing to order here. This rig wires no
+				// role mirror at all, so no mirror statement is expected.
 				mock.ExpectExec("DELETE FROM organization_members").
 					WillReturnResult(sqlmock.NewResult(0, 1))
 				mock.ExpectCommit()

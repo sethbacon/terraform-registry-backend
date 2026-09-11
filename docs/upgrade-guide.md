@@ -1131,6 +1131,46 @@ Rolling back also requires reverting the shared-module bump.
 
 ---
 
+### Any version → the release carrying #1056 — registry stops adopting the sibling's role grants
+
+**Read this if `TFR_SUITE_SIBLING_URL` is set or the two suite applications share an
+identity database.** A standalone registry is unaffected.
+
+**What changed.** Registry's boot reconcile used to copy
+`organization_members.role_template_id` into its own `organization_member_roles` on every
+boot. In a coupled deployment both applications write that column, so a role granted in the
+**state manager** became a registry role at registry's next boot — carrying registry's
+scopes for that role name, granted by nobody in registry. The state manager's own reconcile
+has always refused to copy role opinions, so this ran one way, into registry.
+
+From this release the reconcile confirms **membership facts** only: a membership identity
+has that registry has no row for is recorded with **no role**, an existing row is never
+touched, and a membership identity no longer has is pruned. Registry decides its own roles.
+
+**What to do before upgrading.**
+
+1. Run `role-drift` on the current build. Its **advisory** `role_differs` rows are exactly
+   the principals whose registry role came from the sibling and will stop tracking it.
+2. For each one you want to keep, grant the role in **registry** through the member API.
+   That records registry's own decision, which this release then preserves.
+
+**A deployment whose `organization_member_roles` is empty** — upgrading from before
+migration `000055` — adopts the source's assignments **once**, on its first boot, and logs
+`registry's role assignments were adopted from the identity source, once`. That is the
+existing first-boot behaviour, not new; on a coupled deployment it imports the sibling's
+opinions that one time, and every boot after it registry decides.
+
+**A failed mirror write now fails the request.** An administrator's role change whose write
+to `organization_member_roles` fails returns an error instead of `200` with a log line.
+These tables decide authorization, so the previous behaviour reported a privilege change
+that had not happened. The write is idempotent; retry it.
+
+**Rollback changes authorization here.** The previous image's reconcile resumes copying, so
+every role this release declined to adopt from the sibling is adopted again. Read
+`role-drift`'s advisory list first.
+
+---
+
 ## Upgrade Preflight CLI Reference
 
 ```text

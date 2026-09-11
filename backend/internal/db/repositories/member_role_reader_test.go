@@ -219,7 +219,7 @@ func TestOrganizationRepository_MirrorsTheSourceNotTheMirror(t *testing.T) {
 	// NOTHING between the read-back and the mirror write. If the read-back went
 	// through this type's override it would query organization_member_roles
 	// here, which no expectation matches.
-	expectMirrorAssign(mock, landed)
+	expectMirrorAssign(mock, testRoleID)
 
 	asked := testRoleID
 	if err := repo.AddMemberWithRoleTemplate(context.Background(), testOrgID, testUserID, &asked,
@@ -227,10 +227,11 @@ func TestOrganizationRepository_MirrorsTheSourceNotTheMirror(t *testing.T) {
 		t.Fatalf("AddMemberWithRoleTemplate: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("the write path did not mirror the role the SOURCE now holds (%s). "+
-			"mirrorMemberFromSource must call r.OrganizationRepository.GetMember, not r.GetMember: "+
-			"the override replaces the role with registry's current value, so mirroring it writes "+
-			"the mirror back into itself and every role change is silently lost: %v", landed, err)
+		t.Fatalf("the write path did not read the membership back through the EMBEDDED store "+
+			"(identity said %s). mirrorRequestedRole must call r.OrganizationRepository.GetMember, "+
+			"not r.GetMember: the override replaces the role with registry's current value, and a "+
+			"read-back through it would query organization_member_roles here — which no expectation "+
+			"matches — and make a no-op of the scope check the read-back exists for: %v", landed, err)
 	}
 }
 
@@ -322,32 +323,75 @@ func TestDriftInMemberships_ClassifiesEveryDirection(t *testing.T) {
 		{orgID: "org-nomembers", userID: "u"}: id(tpl),
 	}
 
-	rows := driftInMemberships(source, mirrored, templates)
-	got := map[string]string{}
-	for _, r := range rows {
-		if prev, dup := got[r.OrganizationID]; dup {
-			t.Fatalf("organization %s reported twice (%s and %s)", r.OrganizationID, prev, r.Kind)
-		}
-		got[r.OrganizationID] = r.Kind
-	}
+	rows, advisory := driftInMemberships(source, mirrored, templates)
 
-	want := map[string]string{
-		"org-differs":   DriftRoleDiffers,
+	// THE SPLIT IS THE POINT (#1056). Two of these four are no longer failures:
+	// registry decides its own roles, so a registry role differing from
+	// identity's column is what a coupled deployment looks like when it is
+	// working, and a membership naming a template identity does not have says
+	// nothing about registry's tables at all. Both stay VISIBLE and neither may
+	// gate, or `role-drift` is permanently non-zero on a healthy deployment.
+	classify := func(t *testing.T, in []DriftRow, what string) map[string]string {
+		t.Helper()
+		got := map[string]string{}
+		for _, r := range in {
+			if prev, dup := got[r.OrganizationID]; dup {
+				t.Fatalf("%s: organization %s reported twice (%s and %s)", what, r.OrganizationID, prev, r.Kind)
+			}
+			got[r.OrganizationID] = r.Kind
+		}
+		return got
+	}
+	gating := classify(t, rows, "gating")
+	advised := classify(t, advisory, "advisory")
+
+	wantGating := map[string]string{
 		"org-absent":    DriftMembershipNotMirrored,
-		"org-orphan":    DriftMembershipRoleMissingTemplate,
 		"org-nomembers": DriftMirrorWithoutMembership,
 	}
-	for org, kind := range want {
-		if got[org] != kind {
-			t.Errorf("organization %s classified %q, want %q", org, got[org], kind)
+	wantAdvisory := map[string]string{
+		"org-differs": DriftRoleDiffers,
+		"org-orphan":  DriftMembershipRoleMissingTemplate,
+	}
+	for org, kind := range wantGating {
+		if gating[org] != kind {
+			t.Errorf("organization %s classified %q in the GATING set, want %q", org, gating[org], kind)
 		}
 	}
-	if kind, reported := got["org-agree"]; reported {
+	for org, kind := range wantAdvisory {
+		if advised[org] != kind {
+			t.Errorf("organization %s classified %q in the ADVISORY set, want %q", org, advised[org], kind)
+		}
+	}
+	// The direction that matters: an advisory kind must never reach the gate.
+	for org := range wantAdvisory {
+		if kind, gated := gating[org]; gated {
+			t.Errorf("organization %s was reported as GATING drift (%q). Registry decides its own "+
+				"roles since #1056, so this is the intended state on a coupled deployment and "+
+				"`role-drift` would exit non-zero on a healthy one.", org, kind)
+		}
+	}
+	// ...and a gating kind must never be demoted into the advisory set, which
+	// would be the same mistake pointing the other way: a principal served no
+	// role at all, printed and not gated on.
+	for org := range wantGating {
+		if kind, demoted := advised[org]; demoted {
+			t.Errorf("organization %s was demoted to ADVISORY (%q). This one still withholds or "+
+				"grants authority and must keep failing the gate.", org, kind)
+		}
+	}
+	if kind, reported := gating["org-agree"]; reported {
 		t.Errorf("an agreeing membership was reported as %q — a gate that reports drift on "+
 			"correct rows can never be satisfied, so it stops being a gate", kind)
 	}
-	if len(rows) != len(want) {
-		t.Errorf("reported %d row(s), want %d: %v", len(rows), len(want), rows)
+	if kind, reported := advised["org-agree"]; reported {
+		t.Errorf("an agreeing membership was reported as advisory %q", kind)
+	}
+	if len(rows) != len(wantGating) {
+		t.Errorf("reported %d gating row(s), want %d: %v", len(rows), len(wantGating), rows)
+	}
+	if len(advisory) != len(wantAdvisory) {
+		t.Errorf("reported %d advisory row(s), want %d: %v", len(advisory), len(wantAdvisory), advisory)
 	}
 }
 

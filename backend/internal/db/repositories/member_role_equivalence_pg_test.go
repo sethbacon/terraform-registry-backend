@@ -405,6 +405,15 @@ func TestEquivalence_ACorruptedMirrorRowBreaksTheProof(t *testing.T) {
 		// corrupt mutates registry's copy and returns the principal it damaged.
 		corrupt  func(t *testing.T, db *sql.DB, p principal)
 		wantKind string
+		// advisory marks the kinds #1056 demoted: registry decides its own
+		// roles, so a registry assignment differing from identity's column is
+		// the INTENDED state on a coupled deployment and must not gate.
+		advisory bool
+		// reconcileRepairs marks the kinds a restart still fixes. Only the
+		// TEMPLATE kinds do: registry_role_templates is still derived from the
+		// shared schema (#1057). An assignment is registry's own decision, and
+		// re-deriving it from identity is precisely the copy #1056 removed.
+		reconcileRepairs bool
 	}{
 		{
 			name: "the mirrored row is deleted (a membership that never mirrored)",
@@ -413,6 +422,11 @@ func TestEquivalence_ACorruptedMirrorRowBreaksTheProof(t *testing.T) {
 					p.orgID, p.userID)
 			},
 			wantKind: DriftMembershipNotMirrored,
+			// Still GATING: a membership with no row here serves the principal
+			// no role at all. The reconcile confirms it — with NO role, so the
+			// drift clears and the scopes do NOT come back. Granting the role
+			// again through the API is the repair.
+			reconcileRepairs: false,
 		},
 		{
 			name: "the mirrored row names a different template (a stale dual-write)",
@@ -426,6 +440,7 @@ func TestEquivalence_ACorruptedMirrorRowBreaksTheProof(t *testing.T) {
 				                 WHERE organization_id=$1 AND user_id=$2`, p.orgID, p.userID, other)
 			},
 			wantKind: DriftRoleDiffers,
+			advisory: true,
 		},
 		{
 			name: "the mirrored row's role is cleared (a lost re-role)",
@@ -434,6 +449,7 @@ func TestEquivalence_ACorruptedMirrorRowBreaksTheProof(t *testing.T) {
 				                 WHERE organization_id=$1 AND user_id=$2`, p.orgID, p.userID)
 			},
 			wantKind: DriftRoleDiffers,
+			advisory: true,
 		},
 		{
 			name: "the mirrored template's scopes were not updated",
@@ -441,14 +457,16 @@ func TestEquivalence_ACorruptedMirrorRowBreaksTheProof(t *testing.T) {
 				mustExec(t, db, `UPDATE registry_role_templates SET scopes='["modules:read"]'::jsonb WHERE id=$1`,
 					p.roleID)
 			},
-			wantKind: DriftTemplateScopesDiffer,
+			wantKind:         DriftTemplateScopesDiffer,
+			reconcileRepairs: true,
 		},
 		{
 			name: "the mirrored template was renamed",
 			corrupt: func(t *testing.T, db *sql.DB, p principal) {
 				mustExec(t, db, `UPDATE registry_role_templates SET name='eq-renamed' WHERE id=$1`, p.roleID)
 			},
-			wantKind: DriftTemplateNameDiffers,
+			wantKind:         DriftTemplateNameDiffers,
+			reconcileRepairs: true,
 		},
 	}
 
@@ -505,23 +523,39 @@ func TestEquivalence_ACorruptedMirrorRowBreaksTheProof(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CheckMemberRoleDrift: %v", err)
 			}
-			if report.Clean() {
-				t.Fatalf("the drift check reports no drift after %s — the gate cannot see the "+
-					"defect it gates on", tc.name)
+			// WHICH SET it lands in is the assertion, not merely that it was
+			// seen. An advisory kind reaching the gate would leave `role-drift`
+			// non-zero on a healthy coupled deployment; a gating kind demoted to
+			// advisory would stop failing on a principal served no role at all.
+			set, other, setName := report.Rows, report.Advisory, "gating"
+			if tc.advisory {
+				set, other, setName = report.Advisory, report.Rows, "advisory"
+			}
+			if tc.advisory && !report.Clean() {
+				t.Errorf("the gate reported drift for %s, which #1056 made the intended state: "+
+					"`role-drift` would exit non-zero on a healthy coupled deployment", tc.name)
+			}
+			if !tc.advisory && report.Clean() {
+				t.Fatalf("the drift check reports no gating drift after %s — the gate cannot see "+
+					"the defect it gates on", tc.name)
 			}
 			var found *DriftRow
-			for i := range report.Rows {
-				if report.Rows[i].Kind == tc.wantKind {
-					found = &report.Rows[i]
+			for i := range set {
+				if set[i].Kind == tc.wantKind {
+					found = &set[i]
 					break
 				}
 			}
 			if found == nil {
-				var kinds []string
-				for _, r := range report.Rows {
+				var kinds, others []string
+				for _, r := range set {
 					kinds = append(kinds, r.Kind)
 				}
-				t.Fatalf("drift reported %v, want a %q row", kinds, tc.wantKind)
+				for _, r := range other {
+					others = append(others, r.Kind)
+				}
+				t.Fatalf("the %s set reported %v, want a %q row (the other set held %v)",
+					setName, kinds, tc.wantKind, others)
 			}
 			switch tc.wantKind {
 			case DriftMembershipNotMirrored, DriftRoleDiffers:
@@ -548,16 +582,32 @@ func TestEquivalence_ACorruptedMirrorRowBreaksTheProof(t *testing.T) {
 			}
 			if !repaired.Clean() {
 				for _, row := range repaired.Rows {
-					t.Errorf("drift survived the reconcile: %s", row)
+					t.Errorf("gating drift survived the reconcile: %s", row)
 				}
 			}
 			restored, err := repo.GetUserScopesForOrg(ctx, victim.userID, victim.orgID)
 			if err != nil {
 				t.Fatalf("GetUserScopesForOrg after repair: %v", err)
 			}
-			if !sameStringSet(restored, victim.scopes) {
-				t.Errorf("after the repair the principal resolves %v, want %v",
-					sortedCopy(restored), sortedCopy(victim.scopes))
+			if tc.reconcileRepairs {
+				// TEMPLATE kinds. registry_role_templates is still derived from
+				// the shared schema, so a restart really does restore it, and
+				// "restart the backend" stays the operator's first remedy for
+				// them (#1057 ends that).
+				if !sameStringSet(restored, victim.scopes) {
+					t.Errorf("after the repair the principal resolves %v, want %v — the reconcile "+
+						"still derives role TEMPLATES and must restore this",
+						sortedCopy(restored), sortedCopy(victim.scopes))
+				}
+			} else if sameStringSet(restored, victim.scopes) {
+				// ASSIGNMENT kinds. The restart must NOT bring the role back:
+				// registry's row is registry's decision, and re-deriving it from
+				// identity's column is exactly the copy #1056 removed. A test
+				// that let this pass would let the defect back in silently.
+				t.Errorf("the reconcile restored the principal's scopes (%v) after their registry "+
+					"ASSIGNMENT was changed. It re-derived a role from identity's column, which is "+
+					"the copy #1056 removed: in a coupled deployment that is the sibling's grant "+
+					"becoming a registry role at the next boot.", sortedCopy(restored))
 			}
 		})
 	}

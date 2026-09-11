@@ -125,6 +125,8 @@ func TestRemoveMemberHandler_AllowsEmptyingAnOrganization(t *testing.T) {
 	registry, identity, r := newFlooredOrgRouter(t)
 	floorExpectLock(registry)
 	expectOrganizationState(identity, [2]string{"owner-1", floorOwnerScopes})
+	// REVOCATION: the mirror goes FIRST (#1056).
+	identity.ExpectExec("DELETE FROM organization_member_roles").WillReturnResult(sqlmock.NewResult(0, 1))
 	identity.ExpectExec("DELETE FROM organization_members").WillReturnResult(sqlmock.NewResult(0, 1))
 	registry.ExpectRollback()
 
@@ -150,6 +152,8 @@ func TestRemoveMemberHandler_StaysIdempotentForANonMember(t *testing.T) {
 	)
 	// Zero rows: the identity store reports ErrNotFound, which the handler
 	// swallows.
+	// REVOCATION: the mirror goes FIRST (#1056).
+	identity.ExpectExec("DELETE FROM organization_member_roles").WillReturnResult(sqlmock.NewResult(0, 1))
 	identity.ExpectExec("DELETE FROM organization_members").WillReturnResult(sqlmock.NewResult(0, 0))
 	registry.ExpectRollback()
 
@@ -256,6 +260,14 @@ func TestUpdateMemberHandler_AllowsReRolingOntoAnotherAdministrativeTemplate(t *
 		[2]string{"viewer-1", floorViewerScopes},
 	)
 	identity.ExpectExec("UPDATE organization_members").WillReturnResult(sqlmock.NewResult(0, 1))
+	// The membership FACT is read back through the shared store (a scoped write
+	// that matched nothing must mirror nothing), then the role the CALLER ASKED
+	// FOR is recorded in registry's own table (#1056).
+	identity.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id", "user_id", "role_template_id", "created_at"}).
+			AddRow("org-1", "user-1", "rt-1", time.Now()))
+	identity.ExpectExec("INSERT INTO organization_member_roles").
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	registry.ExpectRollback()
 	// The response read-back.
 	identity.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").

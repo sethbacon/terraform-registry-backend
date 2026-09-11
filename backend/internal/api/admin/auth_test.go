@@ -952,6 +952,10 @@ func TestApplyGroupMappings_MatchingGroup_AddMember(t *testing.T) {
 	expectRoleScopesLookup(mock, "editor", []string{"modules:read", "modules:write"})
 
 	// AddMemberWithParams → lookup role template
+	// Registry resolves the name in ITS OWN templates first (#1056).
+	mock.ExpectQuery("SELECT id FROM registry_role_templates WHERE name").
+		WithArgs("editor").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-1"))
 	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
 		WithArgs("editor").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-1"))
@@ -959,6 +963,14 @@ func TestApplyGroupMappings_MatchingGroup_AddMember(t *testing.T) {
 	// AddMemberWithRoleTemplate → INSERT
 	mock.ExpectExec("INSERT INTO organization_members").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	// The membership FACT is read back through the shared store (a scoped write
+	// that matched nothing must mirror nothing), then the role the CALLER ASKED
+	// FOR is recorded in registry's own table (#1056).
+	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id", "user_id", "role_template_id", "created_at"}).
+			AddRow("org-1", "user-1", "rt-1", time.Now()))
+	mock.ExpectExec("INSERT INTO organization_member_roles").
+		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	err := h.applyGroupMappings(context.Background(), "user-1", []string{"developers"})
 	if err != nil {
@@ -1003,12 +1015,23 @@ func TestApplyGroupMappings_MatchingGroup_UpdateMember(t *testing.T) {
 	expectRoleScopesLookup(mock, "editor", []string{"modules:read", "modules:write"})
 
 	// UpdateMemberRole → lookup role template
+	// Registry resolves the name in ITS OWN templates first (#1056).
+	mock.ExpectQuery("SELECT id FROM registry_role_templates WHERE name").
+		WithArgs("editor").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-editor"))
 	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
 		WithArgs("editor").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-editor"))
 
 	// UpdateMemberRoleTemplate → UPDATE
 	mock.ExpectExec("UPDATE organization_members.*SET role_template_id").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	// The membership FACT is read back, then the role the CALLER ASKED FOR is
+	// recorded in registry's own table (#1056).
+	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
+		WillReturnRows(sqlmock.NewRows(authMemberCols).
+			AddRow("org-1", "user-1", "rt-editor", time.Now()))
+	mock.ExpectExec("INSERT INTO organization_member_roles").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	err := h.applyGroupMappings(context.Background(), "user-1", []string{"admins"})
@@ -1064,6 +1087,10 @@ func TestApplyGroupMappings_DefaultRoleFallback(t *testing.T) {
 	expectRoleScopesLookup(mock, "viewer", []string{"modules:read"})
 
 	// AddMemberWithParams → lookup role template
+	// Registry resolves the name in ITS OWN templates first (#1056).
+	mock.ExpectQuery("SELECT id FROM registry_role_templates WHERE name").
+		WithArgs("viewer").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-viewer"))
 	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
 		WithArgs("viewer").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-viewer"))
@@ -1071,6 +1098,14 @@ func TestApplyGroupMappings_DefaultRoleFallback(t *testing.T) {
 	// INSERT
 	mock.ExpectExec("INSERT INTO organization_members").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	// The membership FACT is read back through the shared store (a scoped write
+	// that matched nothing must mirror nothing), then the role the CALLER ASKED
+	// FOR is recorded in registry's own table (#1056).
+	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id", "user_id", "role_template_id", "created_at"}).
+			AddRow("org-1", "user-1", "rt-1", time.Now()))
+	mock.ExpectExec("INSERT INTO organization_member_roles").
+		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	err := h.applyGroupMappings(context.Background(), "user-1", []string{"unmatched-group"})
 	if err != nil {
@@ -1733,11 +1768,41 @@ func expectNotMember(mock sqlmock.Sqlmock) {
 // AddMemberWithParams.
 func expectAddMember(mock sqlmock.Sqlmock, roleName, roleID string) {
 	expectRoleScopesLookup(mock, roleName, []string{"placeholder:scope"})
+	// Registry resolves the name in ITS OWN templates first (#1056): registry
+	// decides what a role name means here, so an unknown name fails before
+	// identity is touched.
+	expectRegistryTemplateIDByName(mock, roleName, roleID)
 	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
 		WithArgs(roleName).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(roleID))
 	mock.ExpectExec("INSERT INTO organization_members").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	expectMemberFactReadBackAndMirror(mock, roleID)
+}
+
+// expectRegistryTemplateIDByName stages the registry-side name resolution every
+// name-based member write does first. An empty id stages "no such template".
+func expectRegistryTemplateIDByName(mock sqlmock.Sqlmock, roleName, roleID string) {
+	rows := sqlmock.NewRows([]string{"id"})
+	if roleID != "" {
+		rows.AddRow(roleID)
+	}
+	mock.ExpectQuery("SELECT id FROM registry_role_templates WHERE name").
+		WithArgs(roleName).
+		WillReturnRows(rows)
+}
+
+// expectMemberFactReadBackAndMirror stages what follows a successful identity
+// write: the membership FACT is read back through the shared store (a scoped
+// write that matched nothing must mirror nothing), then the role the CALLER
+// ASKED FOR is recorded in registry's own table — not the one identity's column
+// ended up holding (#1056).
+func expectMemberFactReadBackAndMirror(mock sqlmock.Sqlmock, roleID string) {
+	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
+		WillReturnRows(sqlmock.NewRows(authMemberCols).
+			AddRow("org-acme", "user-1", roleID, time.Now()))
+	mock.ExpectExec("INSERT INTO organization_member_roles").
+		WillReturnResult(sqlmock.NewResult(0, 1))
 }
 
 // expectUpdateMember queues the guardProvisionableRole scopes lookup (non-admin,
@@ -1745,15 +1810,21 @@ func expectAddMember(mock sqlmock.Sqlmock, roleName, roleID string) {
 // UpdateMemberRole.
 func expectUpdateMember(mock sqlmock.Sqlmock, roleName, roleID string) {
 	expectRoleScopesLookup(mock, roleName, []string{"placeholder:scope"})
+	expectRegistryTemplateIDByName(mock, roleName, roleID)
 	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
 		WithArgs(roleName).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(roleID))
 	mock.ExpectExec("UPDATE organization_members").
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	expectMemberFactReadBackAndMirror(mock, roleID)
 }
 
 // expectRemoveMember queues the DELETE done by RemoveMember (deprovisioning).
 func expectRemoveMember(mock sqlmock.Sqlmock) {
+	// REVOCATION: the mirror goes FIRST (#1056), so a failure there returns
+	// before identity is touched and nothing has changed anywhere.
+	mock.ExpectExec("DELETE FROM organization_member_roles").
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM organization_members").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 }
@@ -1900,9 +1971,12 @@ func TestReconcile_UnknownRoleTemplate_ForExistingMember_IsNotANoOp(t *testing.T
 		WillReturnRows(sqlmock.NewRows([]string{"id", "scopes"}))
 	// The write must still be attempted, and reach the real role_templates
 	// lookup that reports the unknown name properly.
-	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
+	// Registry resolves the name in ITS OWN templates first (#1056).
+	mock.ExpectQuery("SELECT id FROM registry_role_templates WHERE name").
 		WithArgs("ghost-role").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	// Identity's own lookup is NOT staged: registry refuses the name first, so
+	// identity is never touched (#1056).
 
 	err := h.applyGroupMappings(context.Background(), "user-1", []string{"admins"})
 	if err == nil {
@@ -2014,11 +2088,23 @@ func TestReconcile_DefaultRole_FirstLoginAdds(t *testing.T) {
 	// not admin-bearing, so the write proceeds.
 	expectRoleScopesLookup(mock, "viewer", []string{"modules:read"})
 
+	// Registry resolves the name in ITS OWN templates first (#1056).
+	mock.ExpectQuery("SELECT id FROM registry_role_templates WHERE name").
+		WithArgs("viewer").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-viewer"))
 	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
 		WithArgs("viewer").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-viewer"))
 	mock.ExpectExec("INSERT INTO organization_members").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	// The membership FACT is read back through the shared store (a scoped write
+	// that matched nothing must mirror nothing), then the role the CALLER ASKED
+	// FOR is recorded in registry's own table (#1056).
+	mock.ExpectQuery("SELECT.*FROM organization_members.*WHERE organization_id.*AND user_id").
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id", "user_id", "role_template_id", "created_at"}).
+			AddRow("org-1", "user-1", "rt-1", time.Now()))
+	mock.ExpectExec("INSERT INTO organization_member_roles").
+		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	err := h.applyGroupMappings(context.Background(), "user-1", []string{"whatever"})
 	if err != nil {
@@ -2272,9 +2358,12 @@ func TestReconcile_GuardProvisionableRole_UnknownRoleTemplate_DefersToRealLookup
 		WithArgs("ghost-role").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "scopes"}))
 	// AddMemberWithParams's lookup is reached and fails with its own clear error.
-	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
+	// Registry resolves the name in ITS OWN templates first (#1056).
+	mock.ExpectQuery("SELECT id FROM registry_role_templates WHERE name").
 		WithArgs("ghost-role").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	// Identity's own lookup is NOT staged: registry refuses the name first, so
+	// identity is never touched (#1056).
 
 	err := h.applyGroupMappings(context.Background(), "user-1", []string{"admins"})
 	if err == nil {

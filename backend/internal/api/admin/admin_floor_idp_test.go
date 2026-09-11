@@ -135,6 +135,8 @@ func TestIdPReconcile_StillDeprovisionsAnOrdinaryLeaver(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"user_id", "scopes"}).
 			AddRow("user-1", []byte(`["modules:read"]`)).
 			AddRow("owner-1", []byte(`["organizations:write"]`)))
+	// REVOCATION: the mirror goes FIRST (#1056).
+	identity.ExpectExec("DELETE FROM organization_member_roles").WillReturnResult(sqlmock.NewResult(0, 1))
 	identity.ExpectExec("DELETE FROM organization_members").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	registry.ExpectRollback()

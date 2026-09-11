@@ -68,8 +68,8 @@ func seedPreviewFixture(t *testing.T, db *sql.DB) (templateID, orgID, subsetUser
 	if err != nil {
 		t.Fatalf("ReconcileMemberRoles: %v", err)
 	}
-	if report.MembershipsWritten < 2 {
-		t.Fatalf("reconcile wrote %d membership(s), want at least 2 -- the fixture and the mirror disagree about what was seeded", report.MembershipsWritten)
+	if report.MembershipsAdopted < 2 {
+		t.Fatalf("reconcile wrote %d membership(s), want at least 2 -- the fixture and the mirror disagree about what was seeded", report.MembershipsAdopted)
 	}
 	return templateID, orgID, subsetUser, overUser
 }

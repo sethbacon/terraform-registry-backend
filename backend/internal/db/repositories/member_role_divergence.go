@@ -76,7 +76,7 @@ const (
 var RoleReadDivergenceTotal = promauto.NewCounterVec(
 	prometheus.CounterOpts{
 		Name: "registry_role_read_divergence_total",
-		Help: "Reads where registry's own role tables disagreed with the identity tables they mirror (terraform-suite-identity#206). Steady state is zero; alert on any increase.",
+		Help: "Reads where registry's own role tables disagreed with the identity columns they were once copied from (terraform-suite-identity#206). kind=missing_mirror is a DEFECT and its steady state is zero; kind=role_differs is INFORMATIONAL since #1056 -- registry decides its own roles, so on a coupled deployment a non-zero rate is expected. Alert on missing_mirror, and on a step change in role_differs.",
 	},
 	[]string{"accessor", "kind"},
 )
@@ -95,23 +95,39 @@ var RoleReadDivergenceTotal = promauto.NewCounterVec(
 func compareRole(ctx context.Context, accessor, orgID, userID string, identityRoleID *string, registryRole *MirroredRole) {
 	if registryRole == nil {
 		RoleReadDivergenceTotal.WithLabelValues(accessor, DivergenceMissingMirror).Inc()
-		slog.ErrorContext(ctx, "registry has no mirrored role for a membership that exists in identity; "+
+		// STILL AN ERROR. This one did not become expected: the boot reconcile
+		// confirms every identity membership with at least a NULL-role row, so a
+		// missing row means the confirmation did not run or did not reach this
+		// pair -- and the principal is being served no role at all.
+		slog.ErrorContext(ctx, "registry has no role row for a membership that exists in identity; "+
 			"the principal is being served NO role here",
 			"accessor", accessor, "organization_id", orgID, "user_id", userID,
 			"identity_role_template_id", derefRole(identityRoleID),
-			"remedy", "run `role-drift` (cmd/role-drift); restarting the backend re-derives the mirror")
+			"remedy", "run `role-drift` (cmd/role-drift); restarting the backend confirms every membership")
 		return
 	}
 	if sameRole(identityRoleID, registryRole.RoleTemplateID) {
 		return
 	}
+	// INFORMATIONAL SINCE #1056, and the level is the point.
+	//
+	// Registry decides its own roles. A registry role that differs from
+	// identity's column is what a coupled deployment looks like when it is
+	// WORKING: the sibling granted its own role in its own application and
+	// registry did not adopt it. Logging that at ERROR on every such read would
+	// make a healthy deployment loud, which is how a signal gets filtered out
+	// and then stops being read at all.
+	//
+	// The metric is KEPT, and still incremented, because the rate is the useful
+	// thing: it says how much of this deployment's authorization the two
+	// applications disagree about. Alert on a step change, not on non-zero.
 	RoleReadDivergenceTotal.WithLabelValues(accessor, DivergenceRoleDiffers).Inc()
-	slog.ErrorContext(ctx, "registry's own role assignment disagrees with the identity tables it mirrors; "+
-		"registry's answer is the one being served",
+	slog.DebugContext(ctx, "registry's own role assignment differs from the identity column it used to be copied from; "+
+		"registry's answer is the one being served, which is the intended behaviour since #1056",
 		"accessor", accessor, "organization_id", orgID, "user_id", userID,
 		"identity_role_template_id", derefRole(identityRoleID),
 		"registry_role_template_id", derefRole(registryRole.RoleTemplateID),
-		"remedy", "run `role-drift` (cmd/role-drift); restarting the backend re-derives the mirror")
+		"note", "`role-drift` lists these under advisory differences")
 }
 
 // derefRole renders an optional role template id for a log field. "none" rather

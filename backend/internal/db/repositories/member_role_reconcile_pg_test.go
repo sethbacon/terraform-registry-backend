@@ -330,10 +330,10 @@ func TestReconcile_IsIdempotent(t *testing.T) {
 	// all — not one statement per membership that discovers it had nothing to
 	// do. A deployment with a hundred thousand memberships pays this on every
 	// restart otherwise.
-	if report.MembershipsWritten != 0 {
-		t.Errorf("MembershipsWritten = %d on an unchanged second run, want 0: the reconcile is "+
-			"upserting every row instead of diffing against the mirror it already read",
-			report.MembershipsWritten)
+	if report.MembershipsAdopted != 0 || report.MembershipsConfirmed != 0 {
+		t.Errorf("report = %+v on an unchanged second run, want no membership write: the reconcile "+
+			"is supposed to be a no-op when nothing changed, and since #1056 the second boot must "+
+			"not adopt anything at all — the mirror is no longer empty.", report)
 	}
 
 	var secondUpdatedAt time.Time
