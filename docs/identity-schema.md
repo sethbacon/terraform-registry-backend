@@ -92,6 +92,22 @@ at cutover and their constraints travel with them.
   Every consumer `LEFT JOIN`s, so the effect is a blank author, and the
   separate-identity-database topology has always behaved this way.
 
+### The cutover and `suite.identity_shared_store`
+
+These are different statements and only one of them is derivable. The cutover says
+*where this app reads identity*; `TFR_SUITE_IDENTITY_SHARED_STORE` asserts that this app
+and the sibling read the **same** store behind one IdP, which this process cannot observe
+because it is a fact about the other deployment. The SPA drops its "you may need to sign
+in" hint only when both apps assert it.
+
+One direction is checkable, and is enforced at startup: asserting the shared store with
+the cutover **off** is refused, because identity then resolves from this app's own
+`public` schema and there is nothing shared — the deployment would advertise single
+sign-on that does not exist.
+
+The reverse is legitimate and is not an error. Every rollout below enables the cutover for
+a standalone registry that shares nothing.
+
 ### Caveat: non-default schema name
 
 `TFR_IDENTITY_SCHEMA_NAME` still only affects the runtime `search_path`. The identity
