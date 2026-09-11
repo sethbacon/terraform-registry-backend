@@ -116,8 +116,23 @@ func seedPublicIdentity(t *testing.T, db *sql.DB, orgID, userID, roleID string, 
 	unique := roleName + "-" + roleID[:8]
 	mustExec(t, db, `INSERT INTO organizations (id, name, display_name) VALUES ($1, $2, $2)`, orgID, "org-"+unique)
 	mustExec(t, db, `INSERT INTO users (id, email, name) VALUES ($1, $2, 'Test User')`, userID, userID+"@example.com")
+	// BOTH TABLES, as a boot writes them. Since #1057 the reconcile no longer
+	// copies identity's templates into registry's; it VALIDATES each adopted
+	// assignment against registry's, which its own seed fills. A fixture seeding
+	// only identity's would leave that set empty and orphan every assignment.
 	mustExec(t, db, `INSERT INTO role_templates (id, name, display_name, scopes, is_system)
 	                 VALUES ($1, $2, $2, '["modules:read"]'::jsonb, false)`, roleID, unique)
+	// Registry's table only when it exists. TestMigration000055_… deliberately
+	// seeds at migration 54, BEFORE 000055 creates it, to prove that migration
+	// backfills nothing; every other caller is past it and needs the row.
+	var registryTables sql.NullString
+	if err := db.QueryRow(`SELECT to_regclass('registry_role_templates')::text`).Scan(&registryTables); err != nil {
+		t.Fatalf("probe registry_role_templates: %v", err)
+	}
+	if registryTables.Valid {
+		mustExec(t, db, `INSERT INTO registry_role_templates (id, name, display_name, scopes, is_system)
+		                 VALUES ($1, $2, $2, '["modules:read"]'::jsonb, false)`, roleID, unique)
+	}
 	mustExec(t, db, `INSERT INTO organization_members (organization_id, user_id, role_template_id)
 	                 VALUES ($1, $2, $3)`, orgID, userID, roleID)
 	return unique
@@ -223,6 +238,11 @@ func TestReconcile_UsesTheEffectiveSourceUnderTheSchemaCutover(t *testing.T) {
 	                 VALUES ($1, 'live', 'Live', '["modules:write"]'::jsonb)`, liveRoleID)
 	mustExec(t, db, `INSERT INTO identity.organization_members (organization_id, user_id, role_template_id)
 	                 VALUES ($1, $2, $3)`, orgID, userID, liveRoleID)
+	// Registry's own templates, as its boot seed writes them: the LIVE id, not
+	// the stale public one. The reconcile validates the adopted assignment
+	// against this set (#1057), so what it holds decides what can be adopted.
+	mustExec(t, db, `INSERT INTO registry_role_templates (id, name, display_name, scopes, is_system)
+	                 VALUES ($1, 'live', 'Live', '["modules:write"]'::jsonb, false)`, liveRoleID)
 
 	// The identity pool, exactly as cmd/server/main.go opens it under
 	// TFR_IDENTITY_SCHEMA_ENABLED: search_path = "<schema>,public".
@@ -258,13 +278,19 @@ func TestReconcile_UsesTheEffectiveSourceUnderTheSchemaCutover(t *testing.T) {
 
 	// The stale template must not have been mirrored either: registry's copy is
 	// derived from the effective source, not from the union of both.
-	var staleMirrored int
-	if err := db.QueryRow(`SELECT count(*) FROM registry_role_templates WHERE id = $1`, staleRoleID).Scan(&staleMirrored); err != nil {
-		t.Fatalf("count stale mirrored template: %v", err)
+	// The stale PUBLIC template must not have been adopted as a role either.
+	// Until #1057 this asserted the reconcile had not MIRRORED it; nothing
+	// mirrors templates now, so what it checks is that the membership did not
+	// pick up the pre-cutover template's id — which is the same defect (reading
+	// the wrong side) observed where it still can be.
+	var staleAssigned int
+	if err := db.QueryRow(
+		`SELECT count(*) FROM organization_member_roles WHERE role_template_id = $1`, staleRoleID).Scan(&staleAssigned); err != nil {
+		t.Fatalf("count assignments naming the stale template: %v", err)
 	}
-	if staleMirrored != 0 {
-		t.Errorf("the pre-cutover role template was mirrored (%d rows); the backfill unioned the two "+
-			"copies instead of choosing the effective one", staleMirrored)
+	if staleAssigned != 0 {
+		t.Errorf("%d assignment(s) name the pre-cutover role template; the reconcile read the "+
+			"public copy instead of the effective identity source", staleAssigned)
 	}
 }
 
@@ -322,9 +348,8 @@ func TestReconcile_IsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second reconcile: %v", err)
 	}
-	if report.MembershipsRemoved != 0 || report.RoleTemplatesRemoved != 0 {
-		t.Errorf("second run removed rows (%d memberships, %d templates); it should have been a no-op",
-			report.MembershipsRemoved, report.RoleTemplatesRemoved)
+	if report.MembershipsRemoved != 0 {
+		t.Errorf("MembershipsRemoved = %d on an unchanged run, want 0", report.MembershipsRemoved)
 	}
 	// The reconcile runs on every boot, so "no change" must cost no writes at
 	// all — not one statement per membership that discovers it had nothing to

@@ -217,10 +217,13 @@ func CheckMemberRoleDrift(ctx context.Context, identityDB, registryDB *sql.DB) (
 	report.SourceMemberships = len(sourceMembers)
 	report.MirroredMemberships = len(mirroredMembers)
 
-	rows := driftInTemplates(sourceTemplates, mirroredTemplates)
+	// TEMPLATE differences are ADVISORY since #1057 — registry defines its own
+	// templates now, so a difference from identity's copy is the intended state,
+	// not a broken derivation. Only the membership axes gate.
+	var rows []DriftRow
 	membershipRows, membershipAdvisory := driftInMemberships(sourceMembers, mirroredMembers, sourceTemplates)
 	rows = append(rows, membershipRows...)
-	report.Advisory = membershipAdvisory
+	report.Advisory = append(membershipAdvisory, driftInTemplates(sourceTemplates, mirroredTemplates)...)
 	if unparseable > 0 {
 		// No identifiers: they are precisely the rows whose identifiers could
 		// not be represented. readEffectiveMemberships logs each one with its

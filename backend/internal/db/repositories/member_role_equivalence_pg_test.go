@@ -185,6 +185,13 @@ func equivalenceFixture(t *testing.T) (*sql.DB, *OrganizationRepository, []princ
 	db, _ := reconcileScratchDB(t, 55)
 	principals := seedEquivalenceEstate(t, db)
 
+	// Registry's own templates, as its boot seed writes them. Since #1057 the
+	// reconcile no longer derives this table, so the fixture has to stand in for
+	// the seed — and the adoption below validates every assignment against it.
+	mustExec(t, db, `INSERT INTO registry_role_templates (id, name, display_name, description, scopes, is_system)
+	                 SELECT id, name, display_name, description, scopes, is_system FROM role_templates
+	                 ON CONFLICT (id) DO NOTHING`)
+
 	report, err := ReconcileMemberRoles(context.Background(), db, db)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -385,9 +392,8 @@ func TestEquivalence_DriftCheckIsZeroOnAReconciledEstate(t *testing.T) {
 			report.SourceMemberships, len(principals))
 	}
 	if report.SourceRoleTemplates == 0 || report.MirroredRoleTemplates == 0 {
-		t.Errorf("drift check compared %d source and %d mirrored role template(s); zero on either "+
-			"side means it certified an empty universe",
-			report.SourceRoleTemplates, report.MirroredRoleTemplates)
+		t.Fatalf("the drift check compared %d source and %d registry template(s): a comparison over an "+
+			"empty set proves nothing", report.SourceRoleTemplates, report.MirroredRoleTemplates)
 	}
 }
 
@@ -457,8 +463,14 @@ func TestEquivalence_ACorruptedMirrorRowBreaksTheProof(t *testing.T) {
 				mustExec(t, db, `UPDATE registry_role_templates SET scopes='["modules:read"]'::jsonb WHERE id=$1`,
 					p.roleID)
 			},
-			wantKind:         DriftTemplateScopesDiffer,
-			reconcileRepairs: true,
+			wantKind: DriftTemplateScopesDiffer,
+			// ADVISORY AND NO LONGER REPAIRED, both since #1057. registry's
+			// templates are its own: the reconcile does not touch them, and a
+			// difference from identity's copy is the intended state. The boot
+			// SEED restores a system template's scopes, which is a different
+			// call and not what this exercises.
+			advisory:         true,
+			reconcileRepairs: false,
 		},
 		{
 			name: "the mirrored template was renamed",
@@ -466,7 +478,8 @@ func TestEquivalence_ACorruptedMirrorRowBreaksTheProof(t *testing.T) {
 				mustExec(t, db, `UPDATE registry_role_templates SET name='eq-renamed' WHERE id=$1`, p.roleID)
 			},
 			wantKind:         DriftTemplateNameDiffers,
-			reconcileRepairs: true,
+			advisory:         true,
+			reconcileRepairs: false,
 		},
 	}
 
@@ -590,24 +603,25 @@ func TestEquivalence_ACorruptedMirrorRowBreaksTheProof(t *testing.T) {
 				t.Fatalf("GetUserScopesForOrg after repair: %v", err)
 			}
 			if tc.reconcileRepairs {
-				// TEMPLATE kinds. registry_role_templates is still derived from
-				// the shared schema, so a restart really does restore it, and
-				// "restart the backend" stays the operator's first remedy for
-				// them (#1057 ends that).
 				if !sameStringSet(restored, victim.scopes) {
-					t.Errorf("after the repair the principal resolves %v, want %v — the reconcile "+
-						"still derives role TEMPLATES and must restore this",
+					t.Errorf("after the repair the principal resolves %v, want %v",
 						sortedCopy(restored), sortedCopy(victim.scopes))
 				}
-			} else if sameStringSet(restored, victim.scopes) {
-				// ASSIGNMENT kinds. The restart must NOT bring the role back:
-				// registry's row is registry's decision, and re-deriving it from
-				// identity's column is exactly the copy #1056 removed. A test
-				// that let this pass would let the defect back in silently.
-				t.Errorf("the reconcile restored the principal's scopes (%v) after their registry "+
-					"ASSIGNMENT was changed. It re-derived a role from identity's column, which is "+
-					"the copy #1056 removed: in a coupled deployment that is the sibling's grant "+
-					"becoming a registry role at the next boot.", sortedCopy(restored))
+			} else if tc.wantKind != DriftTemplateNameDiffers && sameStringSet(restored, victim.scopes) {
+				// The rename is exempt for the reason stated above: it does not
+				// change what the template CONFERS, so the principal's scopes are
+				// equal before and after and "were they restored" cannot be asked
+				// of it. The drift assertions above are what cover that case.
+				// The restart must NOT bring it back. For an ASSIGNMENT that
+				// would be the copy #1056 removed — in a coupled deployment, the
+				// sibling's grant becoming a registry role at the next boot. For
+				// a TEMPLATE it would be the derivation #1057 removed, which is
+				// the sibling's definition of what a role GRANTS arriving the
+				// same way. A test that let either pass would let the defect
+				// back in silently.
+				t.Errorf("the reconcile restored the principal's scopes (%v) after registry's own "+
+					"copy was changed. It re-derived from identity, which is exactly what #1056 and "+
+					"#1057 removed.", sortedCopy(restored))
 			}
 		})
 	}
@@ -694,24 +708,33 @@ func derefOrEmpty(id *string) string {
 // reconcile's copy of identity's templates as the final state, which is the same
 // failure with the two halves swapped.
 func TestEquivalence_TheBootSequenceLeavesTheGateAtZero(t *testing.T) {
-	// boot runs the startup sequence router.go performs, once.
+	// boot runs the startup sequence router_startup.go performs, once.
+	//
+	// THE ORDER AND THE GATING BOTH CHANGED IN #1057. Registry's own seed used
+	// to run only under the cutover and only AFTER the reconcile, because the
+	// reconcile derived registry_role_templates from the shared copy and would
+	// have overwritten a seed that ran first. Nothing derives that table now, so
+	// the seed runs in EVERY topology — it is the only thing that defines
+	// registry's roles — and it runs BEFORE the reconcile, whose one-time
+	// adoption validates each assignment against the set it writes.
 	boot := func(t *testing.T, db *sql.DB, cutover bool) {
 		t.Helper()
 		ctx := context.Background()
 		if cutover {
 			// cmd/server, before NewRouter: the shared table gets registry's
-			// scopes layered onto the identity module's core-only seed.
+			// scopes layered onto the identity module's core-only seed. Still
+			// gated on the cutover and on suite.role_seed_owner, and still
+			// needed — the shared library resolves a role NAME against that
+			// table on every member grant.
 			if err := SeedSharedIdentityRoleTemplates(ctx, db, models.PredefinedRoleTemplates()); err != nil {
 				t.Fatalf("seed the shared identity role templates: %v", err)
 			}
 		}
+		if err := SeedSystemRoleTemplates(ctx, db, models.PredefinedRoleTemplates()); err != nil {
+			t.Fatalf("seed registry's own role templates: %v", err)
+		}
 		if _, err := ReconcileMemberRoles(ctx, db, db); err != nil {
 			t.Fatalf("reconcile: %v", err)
-		}
-		if cutover {
-			if err := SeedSystemRoleTemplates(ctx, db, models.PredefinedRoleTemplates()); err != nil {
-				t.Fatalf("seed registry's own role templates: %v", err)
-			}
 		}
 	}
 
@@ -724,7 +747,7 @@ func TestEquivalence_TheBootSequenceLeavesTheGateAtZero(t *testing.T) {
 		// TestReconcile_UsesTheEffectiveSourceUnderTheSchemaCutover's subject.
 		cutover bool
 	}{
-		{"default topology (migrations are the policy; neither seed runs)", false},
+		{"default topology (registry's own seed runs; the shared one does not)", false},
 		{"identity-schema cutover (both seeds run)", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

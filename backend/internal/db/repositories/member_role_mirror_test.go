@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"strings"
 	"testing"
 	"time"
 
@@ -231,26 +230,6 @@ func TestOrganizationRepository_RemoveAllMemberships_ClearsExactlyWhatWasRemoved
 	}
 }
 
-// captureMirrorFailures redirects the default slog logger for the duration of a
-// test and returns the mirror-failure messages it recorded.
-//
-// It exists because sqlmock cannot express "and nothing else ran".
-// ExpectationsWereMet only reports expectations that were NOT consumed; an
-// EXTRA statement is refused by returning an error to the caller, and the whole
-// design here is that the caller swallows mirror errors. A first version of the
-// ordering test below asserted ExpectationsWereMet and PASSED with the mirror
-// moved in front of the source-error check — the mutation ran the mirror after
-// a failed write and nothing noticed. Every mirror attempt that fails goes
-// through mirrorFailed, so the log is the observable this property actually has.
-func captureMirrorFailures(t *testing.T) func() []string {
-	t.Helper()
-	var records []string
-	prev := slog.Default()
-	slog.SetDefault(slog.New(&capturingHandler{msgs: &records}))
-	t.Cleanup(func() { slog.SetDefault(prev) })
-	return func() []string { return records }
-}
-
 type capturingHandler struct{ msgs *[]string }
 
 func (h *capturingHandler) Enabled(context.Context, slog.Level) bool { return true }
@@ -261,28 +240,20 @@ func (h *capturingHandler) Handle(_ context.Context, r slog.Record) error {
 func (h *capturingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
 func (h *capturingHandler) WithGroup(string) slog.Handler      { return h }
 
-func mirrorFailureCount(msgs []string) int {
-	var n int
-	for _, m := range msgs {
-		if strings.Contains(m, "mirror write failed") {
-			n++
-		}
-	}
-	return n
-}
-
-// TestOrganizationRepository_FailedSourceWrite_MirrorsNothing is the ordering
-// property. The mirror runs only after the authoritative write succeeded; a
-// mirror that ran first, or ran regardless, would record an assignment the
-// product never made — and would do so in the table the read cutover switches
-// onto.
+// A FAILED SOURCE WRITE MIRRORS NOTHING.
 //
-// The mock is queued with the failing INSERT and nothing else, so any statement
-// the wrapper issues afterwards is refused — and every refused mirror statement
-// is reported through mirrorFailed. Zero such reports is the assertion.
+// The mirror must run only once the authoritative write has committed; running
+// it regardless records an assignment the product never made, in the table every
+// authorization decision reads.
+//
+// ASSERTED ON THE MOCK, not on a log line. Until #1057 a swallowed mirror
+// failure was reported through mirrorFailed and the count of those was the
+// observable; nothing swallows any more, so that count is always zero and would
+// pass whatever the code did. The mock is the stronger statement: no expectation
+// is staged for organization_member_roles, so any statement against it fails
+// this test outright.
 func TestOrganizationRepository_FailedSourceWrite_MirrorsNothing(t *testing.T) {
 	repo, mock := newOrgRepo(t)
-	failures := captureMirrorFailures(t)
 
 	sourceErr := errors.New("source insert refused")
 	mock.ExpectExec("INSERT INTO organization_members").WillReturnError(sourceErr)
@@ -296,13 +267,8 @@ func TestOrganizationRepository_FailedSourceWrite_MirrorsNothing(t *testing.T) {
 	if !errors.Is(err, sourceErr) {
 		t.Errorf("error = %v, want it to wrap the source error", err)
 	}
-	if n := mirrorFailureCount(failures()); n != 0 {
-		t.Errorf("the mirror was attempted %d time(s) after the source write failed. The mirror must "+
-			"run only once the authoritative write has committed; running it regardless records an "+
-			"assignment the product never made, in the table the read cutover switches onto", n)
-	}
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("the source write was not attempted: %v", err)
+		t.Errorf("unexpected statements after the source write failed — the mirror ran anyway: %v", err)
 	}
 }
 
@@ -378,10 +344,12 @@ func TestRBACRepository_CreateRoleTemplate_MirrorsIt(t *testing.T) {
 	repo, mock := newRBACRepo(t)
 	id := uuid.MustParse(testRoleID)
 
-	mock.ExpectExec("INSERT INTO role_templates").
-		WillReturnResult(sqlmock.NewResult(0, 1))
+	// REGISTRY FIRST since #1057: registry_role_templates is no longer derived,
+	// so this write IS the authority change and its failure is returned.
 	mock.ExpectExec("INSERT INTO registry_role_templates").
 		WithArgs(id, "publisher", "Publisher", nil, []byte(`["modules:write"]`), false).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO role_templates").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	tmpl := &models.RoleTemplate{
@@ -403,10 +371,12 @@ func TestRBACRepository_UpdateRoleTemplate_MirrorsTheNewScopes(t *testing.T) {
 	repo, mock := newRBACRepo(t)
 	id := uuid.MustParse(testRoleID)
 
-	mock.ExpectExec("UPDATE role_templates").
-		WillReturnResult(sqlmock.NewResult(0, 1))
+	// REGISTRY FIRST since #1057: registry_role_templates is no longer derived,
+	// so this write IS the authority change and its failure is returned.
 	mock.ExpectExec("INSERT INTO registry_role_templates").
 		WithArgs(id, "publisher", "Publisher", nil, []byte(`["modules:write","providers:write"]`), false).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE role_templates").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	tmpl := &models.RoleTemplate{
@@ -425,10 +395,12 @@ func TestRBACRepository_DeleteRoleTemplate_MirrorsTheDeletion(t *testing.T) {
 	repo, mock := newRBACRepo(t)
 	id := uuid.MustParse(testRoleID)
 
-	mock.ExpectExec("DELETE FROM role_templates").
-		WillReturnResult(sqlmock.NewResult(0, 1))
+	// REVOCATION, REGISTRY FIRST (#1057): deleting here nulls every assignment
+	// that named the template, so a crash between the legs is less privileged.
 	mock.ExpectExec("DELETE FROM registry_role_templates").
 		WithArgs(id).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("DELETE FROM role_templates").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	if err := repo.DeleteRoleTemplate(context.Background(), id); err != nil {
@@ -439,19 +411,32 @@ func TestRBACRepository_DeleteRoleTemplate_MirrorsTheDeletion(t *testing.T) {
 	}
 }
 
-// TestRBACRepository_FailedRoleTemplateWrite_MirrorsNothing is the ordering
-// property on the template half.
-func TestRBACRepository_FailedRoleTemplateWrite_MirrorsNothing(t *testing.T) {
+// A FAILED REGISTRY WRITE TOUCHES IDENTITY NOT AT ALL.
+//
+// THIS PROPERTY INVERTED IN #1057, with the order it describes. It used to read
+// "a failed SOURCE write mirrors nothing", which was the right property while
+// identity was written first and registry's table was derived from it. Now
+// registry's table is the authority: it is written first, and a failure there
+// must return before identity is touched, so the two never diverge with
+// registry behind.
+//
+// The mock carries the assertion — only the registry statement is staged, so any
+// statement against identity's role_templates fails this test.
+func TestRBACRepository_FailedRegistryWrite_TouchesIdentityNothing(t *testing.T) {
 	repo, mock := newRBACRepo(t)
 
-	mock.ExpectExec("DELETE FROM role_templates").
-		WillReturnError(errors.New("refused"))
+	registryErr := errors.New("refused")
+	mock.ExpectExec("DELETE FROM registry_role_templates").WillReturnError(registryErr)
 
-	if err := repo.DeleteRoleTemplate(context.Background(), uuid.MustParse(testRoleID)); err == nil {
-		t.Fatal("DeleteRoleTemplate = nil, want the source error")
+	err := repo.DeleteRoleTemplate(context.Background(), uuid.MustParse(testRoleID))
+	if err == nil {
+		t.Fatal("DeleteRoleTemplate = nil, want the registry error returned")
+	}
+	if !errors.Is(err, registryErr) {
+		t.Errorf("error = %v, want it to wrap the registry error", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("the mirror was written after the source delete failed: %v", err)
+		t.Errorf("identity was written after the registry delete failed: %v", err)
 	}
 }
 
