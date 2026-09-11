@@ -7,6 +7,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.22.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.21.1...v4.22.0) (2026-09-11)
+
+
+### ⚠ BREAKING CHANGES
+
+* **identity:** in a coupled deployment, roles granted in the state manager are no longer adopted by registry. Run `role-drift` before upgrading: its advisory `role_differs` rows are exactly the principals affected, and a role you want kept must be granted in registry through the member API. A role write whose mirror leg fails now returns an error instead of 200. Rolling back resumes the copy, so those roles are adopted again. Standalone deployments are unaffected. See docs/upgrade-guide.md.
+
+### Features
+
+* **identity:** registry decides its own role assignments; the boot reconcile stops copying identity's ([#1058](https://github.com/sethbacon/terraform-registry-backend/issues/1058)) ([ecbf7c1](https://github.com/sethbacon/terraform-registry-backend/commit/ecbf7c1057f5a2689fc95bc866d41eb42ffd21dd)), closes [#1056](https://github.com/sethbacon/terraform-registry-backend/issues/1056)
+
 ## [4.21.1](https://github.com/sethbacon/terraform-registry-backend/compare/v4.21.0...v4.21.1) (2026-09-10)
 
 
