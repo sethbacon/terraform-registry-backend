@@ -418,8 +418,57 @@ func (r *OrganizationRepository) mirrorRequestedRole(ctx context.Context, orgID,
 	return nil
 }
 
+// THE IDENTITY LEG CARRIES NO ROLE (sethbacon/terraform-suite-identity#206).
+//
+// All four writes below hand the shared store a nil role template and record the
+// real one only in registry's own tables. Identity gets the membership FACT --
+// "this user is a member of this organization" -- which is what #206 specifies
+// that table to be:
+//
+//	identity.organization_members | membership FACT only: (organization_id,
+//	                              | user_id) -- no role
+//
+// # Why this is a prerequisite and not a tidy-up
+//
+// The role-bearing spellings resolve the name in IDENTITY's own role-template
+// table: the shared library's unexported lookupRoleTemplateID selects that
+// table by name and returns `role template %q not found` when the name is
+// absent (identity/store/organization_repository.go). The SQL is deliberately
+// described rather than quoted here -- member_role_read_class_test.go text-
+// matches hand-written reads of the shared table, and it is right to, so a
+// pasted statement in a comment reads to it as one.
+//
+// So while any of them stands, `identity.role_templates` has to stay populated,
+// and `SeedSharedIdentityRoleTemplates` cannot be retired -- an unseeded shared
+// table would fail every grant at the identity leg. That seed is the last writer
+// of a table neither application has read for authorization since #1057. This
+// removes its final reader on registry's side.
+//
+// # Why nil rather than registry's own id
+//
+// `organization_members.role_template_id` carries a real FK to
+// `identity.role_templates(id)` in the shared library's migration 000001.
+// Registry's template ids are its own since #1057 and are not in that table, so
+// writing one there is a constraint violation, not an option. nil is the
+// spelling the library documents for this:
+//
+//	callers that intend no role should use AddMemberWithRoleTemplate(nil) /
+//	UpdateMemberRoleTemplate(nil)
+//
+// # Why nothing observable changes
+//
+// Every read of a membership's role already goes through this type's overrides,
+// which discard identity's column and substitute registry's own
+// (`GetMember`: `member.RoleTemplateID = role.id()`). The column has not been an
+// input to an authorization decision here since #1056 moved the assignments and
+// #1057 moved the templates. What changes is that it stops being written, so it
+// stops being a second, stale answer to a question registry already answers.
+//
+// The name-taking wrappers keep their signatures: the name is still resolved,
+// against `registry_role_templates`, and an unknown name still fails before
+// anything is written anywhere.
 func (r *OrganizationRepository) AddMemberWithRoleTemplate(ctx context.Context, orgID, userID string, roleTemplateID *string, scope identitystore.OrgScope) error {
-	if err := r.OrganizationRepository.AddMemberWithRoleTemplate(ctx, orgID, userID, roleTemplateID, scope); err != nil {
+	if err := r.OrganizationRepository.AddMemberWithRoleTemplate(ctx, orgID, userID, nil, scope); err != nil {
 		return err
 	}
 	return r.mirrorRequestedRole(ctx, orgID, userID, roleTemplateID, scope)
@@ -430,14 +479,16 @@ func (r *OrganizationRepository) AddMemberWithParams(ctx context.Context, orgID,
 	if err != nil {
 		return err
 	}
-	if err := r.OrganizationRepository.AddMemberWithParams(ctx, orgID, userID, roleTemplateName, scope); err != nil {
+	// The id-taking twin, not AddMemberWithParams: the name-taking one is the
+	// call that reads identity's `role_templates`.
+	if err := r.OrganizationRepository.AddMemberWithRoleTemplate(ctx, orgID, userID, nil, scope); err != nil {
 		return err
 	}
 	return r.mirrorRequestedRole(ctx, orgID, userID, registryRole, scope)
 }
 
 func (r *OrganizationRepository) UpdateMemberRoleTemplate(ctx context.Context, orgID, userID string, roleTemplateID *string, scope identitystore.OrgScope) error {
-	if err := r.OrganizationRepository.UpdateMemberRoleTemplate(ctx, orgID, userID, roleTemplateID, scope); err != nil {
+	if err := r.OrganizationRepository.UpdateMemberRoleTemplate(ctx, orgID, userID, nil, scope); err != nil {
 		return err
 	}
 	return r.mirrorRequestedRole(ctx, orgID, userID, roleTemplateID, scope)
@@ -448,7 +499,10 @@ func (r *OrganizationRepository) UpdateMemberRole(ctx context.Context, orgID, us
 	if err != nil {
 		return err
 	}
-	if err := r.OrganizationRepository.UpdateMemberRole(ctx, orgID, userID, roleTemplateName, scope); err != nil {
+	// UpdateMemberRoleTemplate, not UpdateMemberRole: identical scoping and
+	// requireRow semantics -- it is what the name-taking one delegates to --
+	// without the lookup in identity's table.
+	if err := r.OrganizationRepository.UpdateMemberRoleTemplate(ctx, orgID, userID, nil, scope); err != nil {
 		return err
 	}
 	return r.mirrorRequestedRole(ctx, orgID, userID, registryRole, scope)

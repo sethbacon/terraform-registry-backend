@@ -956,9 +956,6 @@ func TestApplyGroupMappings_MatchingGroup_AddMember(t *testing.T) {
 	mock.ExpectQuery("SELECT id FROM registry_role_templates WHERE name").
 		WithArgs("editor").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-1"))
-	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
-		WithArgs("editor").
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-1"))
 
 	// AddMemberWithRoleTemplate → INSERT
 	mock.ExpectExec("INSERT INTO organization_members").
@@ -1017,9 +1014,6 @@ func TestApplyGroupMappings_MatchingGroup_UpdateMember(t *testing.T) {
 	// UpdateMemberRole → lookup role template
 	// Registry resolves the name in ITS OWN templates first (#1056).
 	mock.ExpectQuery("SELECT id FROM registry_role_templates WHERE name").
-		WithArgs("editor").
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-editor"))
-	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
 		WithArgs("editor").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-editor"))
 
@@ -1089,9 +1083,6 @@ func TestApplyGroupMappings_DefaultRoleFallback(t *testing.T) {
 	// AddMemberWithParams → lookup role template
 	// Registry resolves the name in ITS OWN templates first (#1056).
 	mock.ExpectQuery("SELECT id FROM registry_role_templates WHERE name").
-		WithArgs("viewer").
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-viewer"))
-	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
 		WithArgs("viewer").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-viewer"))
 
@@ -1772,9 +1763,6 @@ func expectAddMember(mock sqlmock.Sqlmock, roleName, roleID string) {
 	// decides what a role name means here, so an unknown name fails before
 	// identity is touched.
 	expectRegistryTemplateIDByName(mock, roleName, roleID)
-	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
-		WithArgs(roleName).
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(roleID))
 	mock.ExpectExec("INSERT INTO organization_members").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	expectMemberFactReadBackAndMirror(mock, roleID)
@@ -1811,9 +1799,6 @@ func expectMemberFactReadBackAndMirror(mock sqlmock.Sqlmock, roleID string) {
 func expectUpdateMember(mock sqlmock.Sqlmock, roleName, roleID string) {
 	expectRoleScopesLookup(mock, roleName, []string{"placeholder:scope"})
 	expectRegistryTemplateIDByName(mock, roleName, roleID)
-	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
-		WithArgs(roleName).
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(roleID))
 	mock.ExpectExec("UPDATE organization_members").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	expectMemberFactReadBackAndMirror(mock, roleID)
@@ -2090,9 +2075,6 @@ func TestReconcile_DefaultRole_FirstLoginAdds(t *testing.T) {
 
 	// Registry resolves the name in ITS OWN templates first (#1056).
 	mock.ExpectQuery("SELECT id FROM registry_role_templates WHERE name").
-		WithArgs("viewer").
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-viewer"))
-	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
 		WithArgs("viewer").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-viewer"))
 	mock.ExpectExec("INSERT INTO organization_members").
