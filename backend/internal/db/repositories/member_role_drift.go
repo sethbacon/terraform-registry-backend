@@ -344,6 +344,15 @@ func driftInMemberships(source, mirrored map[memberKey]*string, sourceTemplates 
 			})
 			continue
 		}
+		// A NULL on the identity side is not a difference to report
+		// (sethbacon/terraform-suite-identity#206): registry stopped writing
+		// `organization_members.role_template_id`, so every membership granted
+		// since carries no role there by design. Reporting those would bury the
+		// pre-#206 rows that still hold a real, differing role -- the ones an
+		// operator running this tool is actually looking for.
+		if sourceRole == nil {
+			continue
+		}
 		if !sameRole(sourceRole, mirroredRole) {
 			// ADVISORY since #1056: the intended state on a coupled deployment.
 			advisory = append(advisory, DriftRow{

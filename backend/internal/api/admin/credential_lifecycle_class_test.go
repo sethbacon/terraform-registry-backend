@@ -529,9 +529,6 @@ func TestCredentialLifecycleClass_AuthorityReductionInvalidatesAllCredentialFami
 				mock.ExpectQuery("SELECT id FROM registry_role_templates WHERE name").
 					WithArgs("viewer").
 					WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-viewer"))
-				mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
-					WithArgs("viewer").
-					WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-viewer"))
 				mock.ExpectExec("UPDATE organization_members").
 					WillReturnResult(sqlmock.NewResult(0, 1))
 				// The membership FACT is read back through the shared store (a scoped write
@@ -595,9 +592,6 @@ func TestCredentialLifecycleClass_AuthorityReductionInvalidatesAllCredentialFami
 				expectRoleScopesLookup(mock, "publisher", []string{"modules:read", "modules:write"})
 				// Registry resolves the name in ITS OWN templates first (#1056).
 				mock.ExpectQuery("SELECT id FROM registry_role_templates WHERE name").
-					WithArgs("publisher").
-					WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-publisher"))
-				mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
 					WithArgs("publisher").
 					WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-publisher"))
 				mock.ExpectExec("UPDATE organization_members").

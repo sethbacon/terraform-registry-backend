@@ -403,9 +403,6 @@ func TestCreateOrganizationHandler_GrantsOrgOwnerNotAdmin(t *testing.T) {
 	mock.ExpectQuery("SELECT id FROM registry_role_templates WHERE name").
 		WithArgs("org_owner").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-org-owner"))
-	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
-		WithArgs("org_owner").
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("rt-org-owner"))
 	mock.ExpectExec("INSERT INTO organization_members").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	// The membership FACT is read back through the shared store (a scoped write
@@ -440,9 +437,6 @@ func TestCreateOrganizationHandler_AddMemberError_Returns500(t *testing.T) {
 		WillReturnRows(emptyOrgRow())
 	mock.ExpectQuery("INSERT INTO organizations").
 		WillReturnRows(sqlmock.NewRows(orgCreateCols).AddRow("org-new", time.Now(), time.Now()))
-	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
-		WithArgs("org_owner").
-		WillReturnError(errDB)
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/organizations",

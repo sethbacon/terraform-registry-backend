@@ -326,6 +326,31 @@ var bootstrapExemptions = map[string]string{
 // method reaching a different writer — fails all three and is still reported.
 // An exemption by filename would not have that property, which is why this is
 // not one.
+//
+// # The fourth shape, added with the role-free identity leg
+//
+// Since sethbacon/terraform-suite-identity#206 the overrides no longer delegate
+// to their own name. The identity leg of every membership write hands the shared
+// store a LITERAL NIL role and records the real one in registry's own tables, so
+// the name-taking overrides now reach the id-taking writer:
+//
+//	func (r *OrganizationRepository) AddMemberWithParams(...) {
+//	        r.OrganizationRepository.AddMemberWithRoleTemplate(..., nil, ...)
+//	}
+//
+// That is "the same method reaching a different writer", which the paragraph
+// above says is reported — correctly, as a rule about names. But the thing this
+// guard protects cannot happen there: the call writes NO ROLE. A statement that
+// passes a literal nil where the role template goes cannot put an admin-bearing
+// template on a membership, whatever the caller supplied, so demanding a ceiling
+// check ahead of it would be asking the plumbing to constrain a value it does
+// not carry.
+//
+// So the name match is now one of two ways to be plumbing, and the second is
+// strictly stronger: PROVABLY writing no role beats being named the same. A
+// delegation that passes anything else in that position — a variable, a
+// dereference, the caller's own argument — fails both and is still reported,
+// which is the case that matters.
 func isEmbeddedStoreDelegation(fn *ast.FuncDecl, call *ast.CallExpr) bool {
 	if fn.Recv == nil || len(fn.Recv.List) != 1 {
 		return false
@@ -338,7 +363,7 @@ func isEmbeddedStoreDelegation(fn *ast.FuncDecl, call *ast.CallExpr) bool {
 	if !ok || recvType.Name != "OrganizationRepository" {
 		return false
 	}
-	if fn.Name.Name != callName(call) {
+	if fn.Name.Name != callName(call) && !writesNoRole(call) {
 		return false
 	}
 	sel, ok := call.Fun.(*ast.SelectorExpr)
@@ -347,6 +372,26 @@ func isEmbeddedStoreDelegation(fn *ast.FuncDecl, call *ast.CallExpr) bool {
 	}
 	embedded, ok := sel.X.(*ast.SelectorExpr)
 	return ok && embedded.Sel.Name == "OrganizationRepository"
+}
+
+// roleArgIndex is where the role template sits in the id-taking membership
+// writers: (ctx, orgID, userID, roleTemplateID, scope).
+const roleArgIndex = 3
+
+// writesNoRole reports whether a call passes a LITERAL nil where the role
+// template goes.
+//
+// Literal only, and deliberately: a variable that happens to be nil at runtime
+// is not something this can see, and treating an unresolvable argument as "no
+// role" is how a guard starts certifying what it cannot read. Anything that is
+// not the identifier `nil` in that position returns false and the call is
+// reported.
+func writesNoRole(call *ast.CallExpr) bool {
+	if !membershipWriteMethods[callName(call)] || len(call.Args) <= roleArgIndex {
+		return false
+	}
+	id, ok := call.Args[roleArgIndex].(*ast.Ident)
+	return ok && id.Name == "nil"
 }
 
 // membershipWriteSite is one call to a membership-write repository method.

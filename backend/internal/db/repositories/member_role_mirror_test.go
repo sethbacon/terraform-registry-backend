@@ -89,9 +89,6 @@ func TestOrganizationRepository_AddMemberWithParams_MirrorsTheAssignment(t *test
 
 	// Registry's own resolution comes FIRST — before identity is touched at all.
 	expectRegistryTemplateByName(mock, "org_owner", testRoleID)
-	mock.ExpectQuery("SELECT id FROM role_templates WHERE name").
-		WithArgs("org_owner").
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(testRoleID))
 	expectSourceMemberInsert(mock)
 	expectReadBack(mock, testRoleID)
 	expectMirrorAssign(mock, testRoleID)
@@ -498,5 +495,166 @@ func TestMemberRoleMirror_UpsertRoleTemplate_NeverWritesJSONNull(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("scopes were not written as an empty JSON array: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The identity leg carries NO role (terraform-suite-identity#206)
+// ---------------------------------------------------------------------------
+
+// expectRoleFreeMemberInsert is expectSourceMemberInsert with the arguments
+// asserted. The plain helper stages the statement without WithArgs, so it passes
+// whatever the role column is given — which is exactly the regression these
+// tests exist to catch.
+func expectRoleFreeMemberInsert(mock sqlmock.Sqlmock) {
+	mock.ExpectExec("INSERT INTO organization_members").
+		WithArgs(testOrgID, testUserID, nil).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+}
+
+// expectRoleFreeMemberUpdate is the same for the update axis. The shared store's
+// statement is `SET role_template_id = $3 WHERE organization_id = $1 AND user_id = $2`.
+func expectRoleFreeMemberUpdate(mock sqlmock.Sqlmock) {
+	mock.ExpectExec("UPDATE organization_members").
+		WithArgs(testOrgID, testUserID, nil).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+}
+
+// TestOrganizationRepository_IdentityLegCarriesNoRole is the core assertion for
+// the role-free identity leg, across all four membership writers.
+//
+// # What it pins, and why the existing tests cannot
+//
+// Every other test in this file stages the identity statement through
+// expectSourceMemberInsert, which queues the statement WITHOUT WithArgs. sqlmock
+// then accepts any arguments, so passing the caller's role to the shared store
+// again — the whole defect — keeps all of them green. These assert the third
+// argument, the role template, is nil.
+//
+// # Why it matters
+//
+// `organization_members.role_template_id` is identity's, and #206 specifies that
+// table as the membership FACT alone. Two concrete consequences of writing a role
+// there:
+//
+//   - The name-taking writers resolve the name in IDENTITY's role-template table
+//     and error when it is missing, which is the last thing forcing
+//     SeedSharedIdentityRoleTemplates to keep running.
+//   - Registry's template ids have been its own since #1057 and are not in that
+//     table, so writing one violates the FK the shared library's migration 000001
+//     declares.
+//
+// Registry's own role is still recorded — every case below also asserts the
+// mirror upsert carries the real id.
+func TestOrganizationRepository_IdentityLegCarriesNoRole(t *testing.T) {
+	t.Run("AddMemberWithRoleTemplate", func(t *testing.T) {
+		repo, mock := newOrgRepo(t)
+		expectRoleFreeMemberInsert(mock)
+		expectReadBack(mock, nil)
+		expectMirrorAssign(mock, testRoleID)
+
+		id := testRoleID
+		if err := repo.AddMemberWithRoleTemplate(context.Background(), testOrgID, testUserID, &id,
+			store.OrgScopeAllOrganizations()); err != nil {
+			t.Fatalf("AddMemberWithRoleTemplate: %v", err)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("identity leg did not carry a nil role: %v", err)
+		}
+	})
+
+	t.Run("AddMemberWithParams", func(t *testing.T) {
+		repo, mock := newOrgRepo(t)
+		// Registry's own resolution still happens, and still first.
+		expectRegistryTemplateByName(mock, "org_owner", testRoleID)
+		expectRoleFreeMemberInsert(mock)
+		expectReadBack(mock, nil)
+		expectMirrorAssign(mock, testRoleID)
+
+		if err := repo.AddMemberWithParams(context.Background(), testOrgID, testUserID, "org_owner",
+			store.OrgScopeAllOrganizations()); err != nil {
+			t.Fatalf("AddMemberWithParams: %v", err)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("identity leg did not carry a nil role: %v", err)
+		}
+	})
+
+	t.Run("UpdateMemberRoleTemplate", func(t *testing.T) {
+		repo, mock := newOrgRepo(t)
+		expectRoleFreeMemberUpdate(mock)
+		expectReadBack(mock, nil)
+		expectMirrorAssign(mock, testRoleID)
+
+		id := testRoleID
+		if err := repo.UpdateMemberRoleTemplate(context.Background(), testOrgID, testUserID, &id,
+			store.OrgScopeAllOrganizations()); err != nil {
+			t.Fatalf("UpdateMemberRoleTemplate: %v", err)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("identity leg did not carry a nil role: %v", err)
+		}
+	})
+
+	t.Run("UpdateMemberRole", func(t *testing.T) {
+		repo, mock := newOrgRepo(t)
+		expectRegistryTemplateByName(mock, "org_owner", testRoleID)
+		expectRoleFreeMemberUpdate(mock)
+		expectReadBack(mock, nil)
+		expectMirrorAssign(mock, testRoleID)
+
+		if err := repo.UpdateMemberRole(context.Background(), testOrgID, testUserID, "org_owner",
+			store.OrgScopeAllOrganizations()); err != nil {
+			t.Fatalf("UpdateMemberRole: %v", err)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("identity leg did not carry a nil role: %v", err)
+		}
+	})
+}
+
+// TestOrganizationRepository_NoIdentityRoleTemplateLookup pins the ABSENCE of the
+// shared-table read on the name-taking writers.
+//
+// The test above cannot see it: sqlmock is ordered, so an unexpected query fails
+// the call it is part of — but only because the NEXT expectation does not match,
+// which is a confusing failure to read and would pass if the lookup were reordered
+// rather than removed. This states the property directly: the only name resolution
+// on this path is against `registry_role_templates`, and the shared table is never
+// queried at all.
+func TestOrganizationRepository_NoIdentityRoleTemplateLookup(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		call func(repo *OrganizationRepository) error
+	}{
+		{"AddMemberWithParams", func(repo *OrganizationRepository) error {
+			return repo.AddMemberWithParams(context.Background(), testOrgID, testUserID, "org_owner",
+				store.OrgScopeAllOrganizations())
+		}},
+		{"UpdateMemberRole", func(repo *OrganizationRepository) error {
+			return repo.UpdateMemberRole(context.Background(), testOrgID, testUserID, "org_owner",
+				store.OrgScopeAllOrganizations())
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, mock := newOrgRepo(t)
+			expectRegistryTemplateByName(mock, "org_owner", testRoleID)
+			if tc.name == "AddMemberWithParams" {
+				expectRoleFreeMemberInsert(mock)
+			} else {
+				expectRoleFreeMemberUpdate(mock)
+			}
+			expectReadBack(mock, nil)
+			expectMirrorAssign(mock, testRoleID)
+
+			// NOT staged: any read of the shared `role_templates`. sqlmock fails
+			// an unmatched query, so if the lookup came back this call errors.
+			if err := tc.call(repo); err != nil {
+				t.Fatalf("%s resolved a role name somewhere unexpected: %v", tc.name, err)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Errorf("%s: %v", tc.name, err)
+			}
+		})
 	}
 }
