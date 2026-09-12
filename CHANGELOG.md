@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.25.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.24.0...v4.25.0) (2026-09-12)
+
+
+### Features
+
+* **identity:** the identity leg of a membership write carries no role ([#1069](https://github.com/sethbacon/terraform-registry-backend/issues/1069)) ([b6ff72b](https://github.com/sethbacon/terraform-registry-backend/commit/b6ff72bd0b888bb03c1dbb162b8d95b96b924235))
+
 ## [4.24.0](https://github.com/sethbacon/terraform-registry-backend/compare/v4.22.0...v4.24.0) (2026-09-11)
 
 
