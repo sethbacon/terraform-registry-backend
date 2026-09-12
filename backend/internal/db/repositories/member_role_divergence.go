@@ -106,6 +106,28 @@ func compareRole(ctx context.Context, accessor, orgID, userID string, identityRo
 			"remedy", "run `role-drift` (cmd/role-drift); restarting the backend confirms every membership")
 		return
 	}
+	// IDENTITY EXPRESSES NO ROLE, WHICH IS NOT A DISAGREEMENT
+	// (sethbacon/terraform-suite-identity#206).
+	//
+	// Registry stopped writing `organization_members.role_template_id`: the
+	// identity leg of every membership write now carries nil, and identity holds
+	// the membership FACT alone. So a NULL here is the intended end state, not
+	// two applications answering differently -- there is only one answer, and it
+	// is the one being served.
+	//
+	// Counting it would be worse than noise. The metric's whole use is stated
+	// below: "alert on a step change, not on non-zero". Once new memberships all
+	// read NULL on this side, role_differs would climb toward every read and the
+	// rate would stop meaning what the alert was built on -- while a deployment
+	// still carrying pre-#206 rows kept a genuine, and now invisible, signal
+	// mixed into it.
+	//
+	// Rows written before this change still carry a role and are still compared,
+	// so the mixed state during a rollout reports exactly the disagreements that
+	// were already there and nothing else.
+	if identityRoleID == nil {
+		return
+	}
 	if sameRole(identityRoleID, registryRole.RoleTemplateID) {
 		return
 	}

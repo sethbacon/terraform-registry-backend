@@ -261,7 +261,18 @@ func TestCompareRole_ReportsEachDivergenceKind(t *testing.T) {
 		{"no mirrored row at all", ptr(testRoleID), nil, DivergenceMissingMirror},
 		{"different templates", ptr(testRoleID), role("99999999-9999-9999-9999-999999999999"), DivergenceRoleDiffers},
 		{"registry cleared the role", ptr(testRoleID), role(""), DivergenceRoleDiffers},
-		{"registry invented a role", nil, role(testRoleID), DivergenceRoleDiffers},
+		// WAS "registry invented a role" -> role_differs, and the rename is the
+		// point. Since the identity leg of every membership write went role-free
+		// (sethbacon/terraform-suite-identity#206) a NULL on identity's side is
+		// what a CORRECT deployment looks like, not registry inventing anything:
+		// identity holds the membership fact, registry holds the role. Counting
+		// it would push role_differs toward every read and destroy the only
+		// property the metric is alerted on -- a step change.
+		{"identity carries no role, which is the #206 end state", nil, role(testRoleID), ""},
+		// The reverse is still a real disagreement and still reported: a row
+		// written BEFORE the change carries identity's role, and registry having
+		// dropped it means the mirror lost something.
+		{"legacy row: identity has a role, registry does not", ptr(testRoleID), role(""), DivergenceRoleDiffers},
 	}
 
 	for _, tc := range cases {

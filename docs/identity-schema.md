@@ -181,12 +181,13 @@ They exist because identity is shared across the suite while authorization is
 per-application (design: `sethbacon/terraform-suite-identity#206`). Eventually
 `organization_members` carries membership only, and the role moves here.
 
-**These tables are now what registry reads, and since #1056 what registry DECIDES.**
+**These tables are now what registry reads, what registry DECIDES (#1056), and — since the
+role-free identity leg — the only place registry records a role at all.**
 Every role and every scope set behind every authorization decision comes from
-`organization_member_roles` joined to `registry_role_templates`. The identity tables are
-still **written** — every role assignment lands in `organization_members.role_template_id`
-first and is mirrored here only on success — and that is deliberate: it is what makes the
-rollback below real, and what the state manager still reads.
+`organization_member_roles` joined to `registry_role_templates`. The identity leg of a
+membership write now carries the membership **fact** and nothing else: it is handed a nil
+role template, and the role is recorded only here. `organization_members.role_template_id`
+is no longer written by this application.
 
 What changed in #1056 is the direction of authority for **assignments**. The boot reconcile
 used to copy `organization_members.role_template_id` into this table on every boot. In a
@@ -211,12 +212,29 @@ Two consequences worth knowing:
   overwritten it. Now it is the only thing that defines registry's roles, so it is
   unconditional — and it runs **before** the reconcile, whose one-time adoption validates
   each membership's role against the template set it writes.
-- **The identity-side seed stays.** Registry's dual write is name-based, and the shared
-  library resolves that name against `identity.role_templates`
-  (`lookupRoleTemplateID`), erroring when it is absent. An unseeded identity table would
-  fail every grant at the identity leg, so `SeedSharedIdentityRoleTemplates` and
-  `TFR_SUITE_ROLE_SEED_OWNER` both remain until `organization_members.role_template_id` is
-  dropped.
+- **The identity-side seed no longer has a reader in registry.** It used to be forced: the
+  dual write was name-based and the shared library resolved that name against
+  `identity.role_templates` (`lookupRoleTemplateID`), erroring when it was absent, so an
+  unseeded identity table failed every grant at the identity leg. The identity leg now
+  passes a nil role and resolves nothing, so that read is gone.
+  `SeedSharedIdentityRoleTemplates` and `TFR_SUITE_ROLE_SEED_OWNER` remain for now — the
+  state manager has its own twin of this change to make
+  (`sethbacon/terraform-state-manager-backend#604`), and both must land before either seed
+  is retired.
+
+### What a NULL `role_template_id` means on the identity side
+
+Memberships written from this version carry NULL there, and that is the intended state, not
+a fault. Two places had to learn the difference, because both compared identity's column
+against registry's and a NULL is not a disagreement:
+
+- the `role_differs` read metric no longer counts them — it is alerted on as a *rate*, and
+  counting every new membership would have pushed it toward 100% while burying the genuine
+  disagreements it exists to surface;
+- `role-drift` skips them for the same reason.
+
+Rows written **before** this version still carry a role there and are still compared, so a
+deployment mid-rollout reports exactly the disagreements it already had.
 
 What has **not** moved is the membership *fact*. "Is this principal a member of this
 organization at all" is still answered by `organization_members`, and every accessor asks
