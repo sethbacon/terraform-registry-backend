@@ -418,6 +418,17 @@ func (r *OrganizationRepository) mirrorRequestedRole(ctx context.Context, orgID,
 	return nil
 }
 
+// A NOTE ON HOW THE TABLES ARE NAMED HERE. This comment spells them in prose --
+// "identity's organization-members table" rather than the bare identifier -- for
+// the same reason the SQL below is described rather than quoted. Two of the
+// estate's replay signatures (tenant-scope, credential-binding) attribute a
+// table to a function by searching the text from that function's signature to
+// the NEXT `func` keyword, which INCLUDES the following function's doc comment.
+// A comment naming these tables therefore attributes them to the function above
+// it, and that propagates through the accessor union until unrelated routes are
+// reported as touching tables they never query. Filed upstream; until it is
+// fixed, prose keeps this file honest without inventing findings elsewhere.
+//
 // THE IDENTITY LEG CARRIES NO ROLE (sethbacon/terraform-suite-identity#206).
 //
 // All four writes below hand the shared store a nil role template and record the
@@ -425,7 +436,7 @@ func (r *OrganizationRepository) mirrorRequestedRole(ctx context.Context, orgID,
 // "this user is a member of this organization" -- which is what #206 specifies
 // that table to be:
 //
-//	identity.organization_members | membership FACT only: (organization_id,
+//	identity's organization-members table | membership FACT only: (org id,
 //	                              | user_id) -- no role
 //
 // # Why this is a prerequisite and not a tidy-up
@@ -438,7 +449,7 @@ func (r *OrganizationRepository) mirrorRequestedRole(ctx context.Context, orgID,
 // matches hand-written reads of the shared table, and it is right to, so a
 // pasted statement in a comment reads to it as one.
 //
-// So while any of them stands, `identity.role_templates` has to stay populated,
+// So while any of them stands, identity's role-templates table has to stay populated,
 // and `SeedSharedIdentityRoleTemplates` cannot be retired -- an unseeded shared
 // table would fail every grant at the identity leg. That seed is the last writer
 // of a table neither application has read for authorization since #1057. This
@@ -446,8 +457,8 @@ func (r *OrganizationRepository) mirrorRequestedRole(ctx context.Context, orgID,
 //
 // # Why nil rather than registry's own id
 //
-// `organization_members.role_template_id` carries a real FK to
-// `identity.role_templates(id)` in the shared library's migration 000001.
+// identity's organization-members role-template column carries a real FK to
+// identity's role-templates table (its id column) in the shared library's migration 000001.
 // Registry's template ids are its own since #1057 and are not in that table, so
 // writing one there is a constraint violation, not an option. nil is the
 // spelling the library documents for this:
@@ -465,7 +476,7 @@ func (r *OrganizationRepository) mirrorRequestedRole(ctx context.Context, orgID,
 // stops being a second, stale answer to a question registry already answers.
 //
 // The name-taking wrappers keep their signatures: the name is still resolved,
-// against `registry_role_templates`, and an unknown name still fails before
+// against registry's own role-templates table, and an unknown name still fails before
 // anything is written anywhere.
 func (r *OrganizationRepository) AddMemberWithRoleTemplate(ctx context.Context, orgID, userID string, roleTemplateID *string, scope identitystore.OrgScope) error {
 	if err := r.OrganizationRepository.AddMemberWithRoleTemplate(ctx, orgID, userID, nil, scope); err != nil {
