@@ -66,6 +66,10 @@ data:
   # a scanner binary present in the container image. Supported tools:
   # trivy | terrascan | snyk | checkov | custom.
   TFR_SCANNING_ENABLED: "false"
+  # Set to "false" to make TFR_SCANNING_ENABLED=false authoritative. Required if
+  # this deployment's database was restored from another environment, whose
+  # persisted scanning config would otherwise re-enable scanning here.
+  TFR_SCANNING_ALLOW_DB_OVERRIDE: "true"
   TFR_SCANNING_TOOL: "trivy"
   TFR_SCANNING_BINARY_PATH: "/usr/local/bin/trivy"
   TFR_SCANNING_TIMEOUT: "5m"

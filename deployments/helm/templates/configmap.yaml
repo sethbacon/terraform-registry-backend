@@ -93,6 +93,7 @@ data:
 
   # Module security scanning
   TFR_SCANNING_ENABLED: {{ .Values.scanning.enabled | quote }}
+  TFR_SCANNING_ALLOW_DB_OVERRIDE: {{ .Values.scanning.allowDBOverride | quote }}
   {{- if .Values.scanning.enabled }}
   # When dedicated scan-workers are enabled, disable the backend's in-process
   # scanner so the workers own the queue (workers force this on themselves).

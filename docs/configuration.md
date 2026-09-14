@@ -68,6 +68,7 @@ For example, `database.host` in YAML becomes `TFR_DATABASE_HOST` as an env var.
 | `TFR_SECURITY_RATE_LIMITING_ORG_REQUESTS_PER_MINUTE` | int      | `0`                     | No         | Per-org aggregate rate limit (0 = disabled)                                  |
 | `TFR_SECURITY_RATE_LIMITING_ORG_BURST`               | int      | `0`                     | No         | Per-org burst allowance                                                      |
 | `TFR_SCANNING_ENABLED`                               | bool     | `false`                 | No         | Enable module security scanning                                              |
+| `TFR_SCANNING_ALLOW_DB_OVERRIDE`                     | bool     | `true`                  | No         | Allow a setup-wizard scanning config to enable scanning when `TFR_SCANNING_ENABLED=false` |
 | `TFR_SCANNING_TOOL`                                  | string   | `trivy`                 | No         | Scanner backend (`trivy`, `checkov`, `terrascan`, `snyk`, `custom`)          |
 | `TFR_AUDIT_RETENTION_RETENTION_DAYS`                 | int      | `90`                    | No         | Delete audit logs older than N days (0 = keep forever)                       |
 | `TFR_AUDIT_RETENTION_CLEANUP_BATCH_SIZE`             | int      | `1000`                  | No         | Rows per cleanup batch                                                       |
