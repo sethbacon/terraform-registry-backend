@@ -317,8 +317,36 @@ func TestScannerBinaryVersionRepository_GetActive_DBError(t *testing.T) {
 	}
 }
 
-func TestScannerBinaryVersionRepository_Delete_Success(t *testing.T) {
+// MarkMissing (issue #1073) is how the update job stops a row from asserting
+// that a binary is installed when it is not on this host's filesystem.
+func TestScannerBinaryVersionRepository_MarkMissing_Success(t *testing.T) {
 	repo, mock := newScannerBinaryVersionRepo(t)
+
+	id := uuid.New()
+	mock.ExpectExec(`UPDATE scanner_binary_versions SET is_active = false, sync_status = 'missing' WHERE id = \$1`).
+		WithArgs(id).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	if err := repo.MarkMissing(context.Background(), id); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+func TestScannerBinaryVersionRepository_MarkMissing_DBError(t *testing.T) {
+	repo, mock := newScannerBinaryVersionRepo(t)
+
+	mock.ExpectExec(`UPDATE scanner_binary_versions SET is_active = false`).
+		WillReturnError(errors.New("db down"))
+
+	if err := repo.MarkMissing(context.Background(), uuid.New()); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestScannerBinaryVersionRepository_Delete_Success(t *testing.T) {	repo, mock := newScannerBinaryVersionRepo(t)
 
 	id := uuid.New()
 	mock.ExpectExec(`DELETE FROM scanner_binary_versions WHERE id = \$1`).
