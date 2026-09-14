@@ -397,8 +397,15 @@ func (j *ScannerUpdateJob) Activate(ctx context.Context, v *models.ScannerBinary
 
 	// Marking a row active is an assertion that the binary is there. Checking it
 	// here is what keeps the update job's version record honest (issue #1073).
-	if _, err := os.Stat(*v.BinaryPath); err != nil { // #nosec G304 -- binary_path is server-managed and validated against InstallDir above
-		return fmt.Errorf("scanner binary for %s %s is not present at %q: %w", v.Tool, v.Version, *v.BinaryPath, err)
+	// Resolved through the same helper the scanner itself uses, and required to
+	// resolve to this version's own path — ResolveBinaryPath falling back to the
+	// {InstallDir}/{Tool} symlink would let a stale symlink mask a missing
+	// versioned binary.
+	candidate := *j.scanCfg
+	candidate.Tool = v.Tool
+	candidate.BinaryPath = *v.BinaryPath
+	if resolved, ok := scanner.ResolveBinaryPath(&candidate); !ok || resolved != *v.BinaryPath {
+		return fmt.Errorf("scanner binary for %s %s is not present at %q", v.Tool, v.Version, *v.BinaryPath)
 	}
 
 	j.scanCfg.BinaryPath = *v.BinaryPath
