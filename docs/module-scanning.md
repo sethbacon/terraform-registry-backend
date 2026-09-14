@@ -158,6 +158,7 @@ All options live under the `scanning:` key in `config.yaml` or use the `TFR_SCAN
 | YAML key             | Environment variable              | Type     | Default | Description                                                                                                               |
 | -------------------- | --------------------------------- | -------- | ------- | ------------------------------------------------------------------------------------------------------------------------- |
 | `enabled`            | `TFR_SCANNING_ENABLED`            | bool     | `false` | Master toggle. Set to `true` to activate.                                                                                 |
+| `allow_db_override`  | `TFR_SCANNING_ALLOW_DB_OVERRIDE`  | bool     | `true`  | Whether a scanning config saved by the setup wizard may turn scanning on while `enabled` is `false`. Set `false` to make `enabled: false` authoritative — see [Config vs. database precedence](#config-vs-database-precedence). |
 | `tool`               | `TFR_SCANNING_TOOL`               | string   | —       | Scanner backend: `trivy`, `checkov`, `terrascan`, `snyk`, or `custom`.                                                    |
 | `binary_path`        | `TFR_SCANNING_BINARY_PATH`        | string   | —       | Absolute path to the scanner executable on the server.                                                                    |
 | `expected_version`   | `TFR_SCANNING_EXPECTED_VERSION`   | string   | —       | If set, the job refuses to run if the installed binary reports a different version. Supply-chain protection.              |
@@ -169,6 +170,34 @@ All options live under the `scanning:` key in `config.yaml` or use the `TFR_SCAN
 | `version_args`       | `TFR_SCANNING_VERSION_ARGS`       | string[] | —       | **Custom tool only.** CLI arguments to retrieve the binary version, e.g. `["--version"]`.                                 |
 | `scan_args`          | `TFR_SCANNING_SCAN_ARGS`          | string[] | —       | **Custom tool only.** CLI arguments passed before the target directory, e.g. `["iac", "test", "--json"]`.                 |
 | `output_format`      | `TFR_SCANNING_OUTPUT_FORMAT`      | string   | —       | **Custom tool only.** How to parse the tool's output: `sarif` or `json`.                                                  |
+
+### Config vs. database precedence
+
+Scanning can be configured two ways: from `config.yaml`/environment, or from the
+setup wizard, which persists its settings in the database. At boot the two are
+reconciled as follows.
+
+| `enabled` | `allow_db_override` | Effective behaviour                                                                 |
+| --------- | ------------------- | ----------------------------------------------------------------------------------- |
+| `true`    | either              | Config/env wins. The database is consulted only for `auto_update`.                   |
+| `false`   | `true` (default)    | A persisted, enabled config may turn scanning on — the setup-wizard flow.            |
+| `false`   | `false`             | Scanning is off. The database is not consulted at all, including for `auto_update`.  |
+
+Set `allow_db_override: false` on any deployment whose database was restored
+from a different environment. The persisted config carries that environment's
+`install_dir` and `binary_path`, and restoring it elsewhere would otherwise
+re-enable scanning against paths that do not exist on the new platform.
+
+Even with the override allowed, a persisted config is applied only if the binary
+it names is present on this host and sits inside the install directory. If it is
+not, scanning stays off and the reason is logged at `ERROR`. The boot log always
+records which source won and the paths that ended up in effect:
+
+```text
+INFO scanner startup: scanning enabled by persisted DB config, overriding scanning.enabled=false
+     source=database tool=trivy install_dir=/app/scanners
+     binary_path=/app/scanners/trivy-0.74.0/trivy resolved_binary=/app/scanners/trivy-0.74.0/trivy
+```
 
 ---
 

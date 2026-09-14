@@ -224,6 +224,12 @@ type RedisConfig struct {
 type ScanningConfig struct {
 	// Enabled gates the entire feature. When false no scans are queued or run.
 	Enabled bool `mapstructure:"enabled"`
+	// AllowDBOverride permits the setup wizard's persisted scanning config to turn
+	// scanning on when enabled=false. Default true, which is the setup-wizard flow.
+	// Set false to make enabled=false authoritative — necessary on any deployment
+	// whose database was restored from another environment, since the persisted
+	// config carries that environment's install_dir/binary_path (issue #1072).
+	AllowDBOverride bool `mapstructure:"allow_db_override"`
 	// Tool selects the scanning backend: "trivy", "terrascan", "snyk", "checkov", or "custom".
 	Tool string `mapstructure:"tool"`
 	// BinaryPath is the absolute path to the scanner executable.
@@ -1022,6 +1028,7 @@ func bindEnvVars(v *viper.Viper) error {
 		"notifications.events.cve_detected",
 		"notifications.events.scanner_update_available",
 		"scanning.enabled",
+		"scanning.allow_db_override",
 		"scanning.tool",
 		"scanning.binary_path",
 		"scanning.expected_version",
@@ -1293,6 +1300,7 @@ func setDefaults(v *viper.Viper) {
 	// Scanning defaults
 	v.SetDefault("scm.entra.credential_types", DefaultEntraCredentialTypes())
 	v.SetDefault("scanning.enabled", false)
+	v.SetDefault("scanning.allow_db_override", true)
 	v.SetDefault("scanning.tool", "trivy")
 	v.SetDefault("scanning.severity_threshold", "CRITICAL,HIGH,MEDIUM,LOW")
 	v.SetDefault("scanning.timeout", 5*time.Minute)

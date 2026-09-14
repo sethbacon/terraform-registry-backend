@@ -10,11 +10,14 @@ import (
 	"encoding/json"
 	"log"
 	"log/slog"
+	"path/filepath"
+	"strings"
 	"time"
 
 	identitycrypto "github.com/sethbacon/terraform-suite-identity/identity/crypto"
 
 	"database/sql"
+
 	"github.com/terraform-registry/terraform-registry/internal/api/admin"
 	"github.com/terraform-registry/terraform-registry/internal/api/setup"
 	"github.com/terraform-registry/terraform-registry/internal/auth/oidc"
@@ -22,6 +25,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/crypto"
 	"github.com/terraform-registry/terraform-registry/internal/db/models"
 	"github.com/terraform-registry/terraform-registry/internal/db/repositories"
+	"github.com/terraform-registry/terraform-registry/internal/scanner"
 )
 
 // buildIdentityTokenCipher constructs the shared identity/crypto.TokenCipher
@@ -38,70 +42,124 @@ func buildIdentityTokenCipher(encryptionKey, encryptionKeyPrevious string) (*ide
 }
 
 // reloadScanningConfigFromDB applies any scanning configuration persisted by
-// the setup wizard over the file/env config. It has two independent parts,
-// preserved exactly from the original inline logic:
+// the setup wizard over the file/env config. It has two independent parts:
 //
 //   - When scanning is NOT already enabled via config, a persisted+enabled DB
 //     config is applied wholesale (after re-validating the tool name, since
 //     older rows may carry a non-allowlisted tool that would otherwise flow
-//     into filepath.Join(InstallDir, Tool)).
-//   - Regardless of the enabled gate, persisted auto-update settings are always
-//     reloaded — otherwise admin-configured auto-update would never take effect
-//     at boot when scanning is enabled via env/YAML.
+//     into filepath.Join(InstallDir, Tool), and after re-validating that the
+//     binary it names is actually present on THIS filesystem).
+//   - Persisted auto-update settings are reloaded even when scanning is enabled
+//     via env/YAML — otherwise admin-configured auto-update would never take
+//     effect at boot.
+//
+// Both parts are skipped entirely when scanning.allow_db_override=false, which
+// is the only way an operator can make scanning.enabled=false authoritative
+// (issue #1072). Without it the flag inverted into "defer to the database": a
+// database restored from another environment would silently re-enable scanning
+// and point it at the old environment's filesystem paths.
 func reloadScanningConfigFromDB(cfg *config.Config, repo *repositories.OIDCConfigRepository) {
+	if !cfg.Scanning.AllowDBOverride {
+		slog.Info("scanner startup: using config/env scanning settings",
+			"source", "config",
+			"reason", "scanning.allow_db_override=false",
+			"enabled", cfg.Scanning.Enabled,
+			"install_dir", cfg.Scanning.InstallDir,
+			"binary_path", cfg.Scanning.BinaryPath)
+		return
+	}
+
+	scanConfigJSON, err := repo.GetScanningConfig(context.Background())
+	if err != nil || scanConfigJSON == nil {
+		return
+	}
+
 	// The DB JSON was saved from SaveScanningConfigInput (snake_case json
-	// tags), so decode into an anonymous struct with matching json tags
-	// rather than config.ScanningConfig which only carries mapstructure tags.
-	if !cfg.Scanning.Enabled {
-		if scanConfigJSON, err := repo.GetScanningConfig(context.Background()); err == nil && scanConfigJSON != nil {
-			var dbInput struct {
-				Enabled           bool   `json:"enabled"`
-				Tool              string `json:"tool"`
-				BinaryPath        string `json:"binary_path"`
-				ExpectedVersion   string `json:"expected_version"`
-				SeverityThreshold string `json:"severity_threshold"`
-				TimeoutSecs       int    `json:"timeout_secs"`
-				WorkerCount       int    `json:"worker_count"`
-				ScanIntervalMins  int    `json:"scan_interval_mins"`
-				InstallDir        string `json:"install_dir"`
-			}
-			if err := json.Unmarshal(scanConfigJSON, &dbInput); err == nil && dbInput.Enabled {
-				if !setup.IsValidScanningTool(dbInput.Tool) {
-					log.Printf("scanner startup: refusing to apply DB config with unsupported tool %q; scanning will remain disabled until reconfigured", dbInput.Tool)
-				} else {
-					cfg.Scanning.Enabled = dbInput.Enabled
-					cfg.Scanning.Tool = dbInput.Tool
-					cfg.Scanning.BinaryPath = dbInput.BinaryPath
-					cfg.Scanning.ExpectedVersion = dbInput.ExpectedVersion
-					cfg.Scanning.SeverityThreshold = dbInput.SeverityThreshold
-					cfg.Scanning.WorkerCount = dbInput.WorkerCount
-					if dbInput.TimeoutSecs > 0 {
-						cfg.Scanning.Timeout = time.Duration(dbInput.TimeoutSecs) * time.Second
-					}
-					if dbInput.ScanIntervalMins > 0 {
-						cfg.Scanning.ScanIntervalMins = dbInput.ScanIntervalMins
-					}
-					if dbInput.InstallDir != "" {
-						cfg.Scanning.InstallDir = dbInput.InstallDir
-					}
-				}
-			}
+	// tags), so decode into config.ScanningConfigDB, which carries matching
+	// json tags, rather than config.ScanningConfig which only has mapstructure.
+	var dbCfg config.ScanningConfigDB
+	if err := json.Unmarshal(scanConfigJSON, &dbCfg); err != nil {
+		log.Printf("scanner startup: failed to parse persisted scanning config: %v", err)
+		return
+	}
+
+	if !cfg.Scanning.Enabled && dbCfg.Enabled {
+		applyDBScanningConfig(cfg, &dbCfg)
+	} else if cfg.Scanning.Enabled {
+		slog.Info("scanner startup: using config/env scanning settings",
+			"source", "config",
+			"enabled", true,
+			"install_dir", cfg.Scanning.InstallDir,
+			"binary_path", cfg.Scanning.BinaryPath)
+	}
+
+	cfg.Scanning.AutoUpdate.Enabled = dbCfg.AutoUpdate.Enabled
+	cfg.Scanning.AutoUpdate.IntervalHours = dbCfg.AutoUpdate.IntervalHours
+	cfg.Scanning.AutoUpdate.RequiresApproval = dbCfg.AutoUpdate.RequiresApproval
+	cfg.Scanning.AutoUpdate.AutoApproveRules = dbCfg.AutoUpdate.AutoApproveRules
+}
+
+// applyDBScanningConfig copies a persisted+enabled DB scanning config onto cfg,
+// refusing when it names an unsupported tool, a binary_path outside the install
+// directory, or a binary that does not exist here. The save path validates all
+// three (internal/api/setup.SaveScanningConfig) but it validates them on the
+// machine that WROTE the row; a restored database is read on a different one.
+func applyDBScanningConfig(cfg *config.Config, dbCfg *config.ScanningConfigDB) {
+	if !setup.IsValidScanningTool(dbCfg.Tool) {
+		log.Printf("scanner startup: refusing to apply DB config with unsupported tool %q; scanning will remain disabled until reconfigured", dbCfg.Tool)
+		return
+	}
+
+	installDir := cfg.Scanning.InstallDir
+	if dbCfg.InstallDir != "" {
+		installDir = dbCfg.InstallDir
+	}
+	if installDir != "" && dbCfg.BinaryPath != "" {
+		cleanBinary := filepath.Clean(dbCfg.BinaryPath)
+		cleanInstall := filepath.Clean(installDir)
+		if !strings.HasPrefix(cleanBinary, cleanInstall+string(filepath.Separator)) {
+			slog.Error("scanner startup: refusing to apply DB scanning config; binary_path is outside the install directory",
+				"binary_path", dbCfg.BinaryPath, "install_dir", installDir)
+			return
 		}
 	}
 
-	// Always reload persisted auto-update settings, even when scanning itself
-	// is enabled via env/YAML (the gate above only covers scanning.enabled).
-	if scanConfigJSON, err := repo.GetScanningConfig(context.Background()); err == nil && scanConfigJSON != nil {
-		var dbCfg config.ScanningConfigDB
-		if err := json.Unmarshal(scanConfigJSON, &dbCfg); err != nil {
-			log.Printf("scanner startup: failed to parse persisted scanning config for auto-update reload: %v", err)
-		} else {
-			cfg.Scanning.AutoUpdate.Enabled = dbCfg.AutoUpdate.Enabled
-			cfg.Scanning.AutoUpdate.IntervalHours = dbCfg.AutoUpdate.IntervalHours
-			cfg.Scanning.AutoUpdate.RequiresApproval = dbCfg.AutoUpdate.RequiresApproval
-			cfg.Scanning.AutoUpdate.AutoApproveRules = dbCfg.AutoUpdate.AutoApproveRules
-		}
+	// Resolve against a copy so a rejected config leaves cfg untouched.
+	candidate := cfg.Scanning
+	candidate.Tool = dbCfg.Tool
+	candidate.BinaryPath = dbCfg.BinaryPath
+	candidate.InstallDir = installDir
+	resolved, ok := scanner.ResolveBinaryPath(&candidate)
+	if !ok {
+		slog.Error("scanner startup: refusing to enable scanning from DB config; no scanner binary exists on this host",
+			"tool", dbCfg.Tool,
+			"binary_path", dbCfg.BinaryPath,
+			"install_dir", installDir,
+			"hint", "the persisted config was written by a different deployment; reinstall the scanner or set scanning.allow_db_override=false")
+		return
 	}
+
+	cfg.Scanning.Enabled = true
+	cfg.Scanning.Tool = dbCfg.Tool
+	cfg.Scanning.BinaryPath = dbCfg.BinaryPath
+	cfg.Scanning.ExpectedVersion = dbCfg.ExpectedVersion
+	cfg.Scanning.SeverityThreshold = dbCfg.SeverityThreshold
+	cfg.Scanning.WorkerCount = dbCfg.WorkerCount
+	if dbCfg.TimeoutSecs > 0 {
+		cfg.Scanning.Timeout = time.Duration(dbCfg.TimeoutSecs) * time.Second
+	}
+	if dbCfg.ScanIntervalMins > 0 {
+		cfg.Scanning.ScanIntervalMins = dbCfg.ScanIntervalMins
+	}
+	cfg.Scanning.InstallDir = installDir
+
+	slog.Info("scanner startup: scanning enabled by persisted DB config, overriding scanning.enabled=false",
+		"source", "database",
+		"tool", cfg.Scanning.Tool,
+		"install_dir", cfg.Scanning.InstallDir,
+		"binary_path", cfg.Scanning.BinaryPath,
+		"resolved_binary", resolved,
+		"hint", "set scanning.allow_db_override=false to make scanning.enabled=false authoritative")
 }
 
 // reloadNotificationsConfigFromDB applies any notifications configuration

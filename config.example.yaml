@@ -184,6 +184,12 @@ telemetry:
 # See docs/module-scanning.md for full setup instructions.
 scanning:
   enabled: false
+  # allow_db_override lets a scanning config saved by the setup wizard turn
+  # scanning on when enabled is false. Set it to false to make enabled: false
+  # authoritative — required on any deployment whose database was restored from
+  # another environment, since the persisted config also carries that
+  # environment's install_dir and binary_path.
+  allow_db_override: true
   # tool selects the scanner backend: trivy | checkov | terrascan | snyk | custom
   tool: trivy
   # binary_path is the absolute path to the scanner executable
