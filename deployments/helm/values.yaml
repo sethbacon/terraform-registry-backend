@@ -332,6 +332,12 @@ prometheusRule:
 scanning:
   # -- Enable module security scanning
   enabled: false
+  # -- Allow a scanning config saved by the setup wizard to enable scanning while
+  #    `enabled` is false. Set to false to make `enabled: false` authoritative.
+  #    Required when this release's database was restored from another
+  #    environment, whose persisted config carries that environment's
+  #    installDir/binaryPath and would otherwise be applied here.
+  allowDBOverride: true
   # -- Scanner tool: trivy, terrascan, snyk, checkov, custom
   tool: "trivy"
   # -- Absolute path to scanner binary inside the container.
