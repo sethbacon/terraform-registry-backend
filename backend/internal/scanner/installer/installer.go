@@ -23,8 +23,10 @@ import (
 	"time"
 
 	goversion "github.com/hashicorp/go-version"
+	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/mirror"
+	"github.com/terraform-registry/terraform-registry/internal/scanner"
 	"github.com/terraform-registry/terraform-registry/internal/validation"
 )
 
@@ -152,20 +154,47 @@ func Install(ctx context.Context, cfg InstallConfig, tool, pinnedVersion string)
 		return nil, err
 	}
 
-	// 10. Atomically swap symlink.
-	symlinkPath := filepath.Join(cfg.InstallDir, tool)
-	if err := atomicSymlink(targetBinary, symlinkPath); err != nil {
-		return nil, fmt.Errorf("symlink: %w", err)
-	}
-
+	// 10. Point the stable alias at the new binary, where the filesystem allows it.
 	return &Result{
-		BinaryPath:        symlinkPath,
+		BinaryPath:        stableAliasPath(cfg.InstallDir, tool, targetBinary),
 		Version:           version,
 		Sha256:            sha256hex,
 		SourceURL:         sourceURL,
 		SignatureVerified: sigVerified,
 		SignatureType:     sigType,
 	}, nil
+}
+
+// stableAliasPath swings {InstallDir}/{tool} onto the freshly installed binary
+// and returns the path the caller should record. The alias is what lets
+// scanning.binary_path stay correct across upgrades, so it remains the answer
+// wherever symlinks work. Azure Files (SMB) only supports them when mounted with
+// mfsymlinks, which Azure Container Apps offers no way to set, so there the
+// versioned path is recorded instead: still a real path, just one that moves on
+// each upgrade. Probing by attempting the link rather than sniffing the
+// filesystem keeps it self-correcting if mfsymlinks later appears. Issue #1079.
+func stableAliasPath(installDir, tool, targetBinary string) string {
+	linkPath := filepath.Join(installDir, tool)
+	if err := atomicSymlink(targetBinary, linkPath); err != nil {
+		log.Printf("installer: %s cannot hold the %s symlink; recording the versioned path %s instead: %v",
+			installDir, linkPath, targetBinary, err)
+		return targetBinary
+	}
+	// A link that exists but does not resolve would record a path no scan can run,
+	// so the alias is only taken once it has been located the same way a scan will
+	// locate it. Resolving through ResolveBinaryPath rather than statting linkPath
+	// here is deliberate: it is the codebase's single vetted point for finding a
+	// scanner binary, and a bare os.Stat on a path built from operator config is
+	// the go/path-injection shape CodeQL flagged on #1075. BinaryPath is left empty
+	// so resolution exercises the {InstallDir}/{Tool} branch — the alias itself —
+	// instead of preferring a configured path that may point somewhere else.
+	resolved, ok := scanner.ResolveBinaryPath(&config.ScanningConfig{InstallDir: installDir, Tool: tool})
+	if !ok || resolved != linkPath {
+		log.Printf("installer: the %s symlink was created but does not resolve; recording the versioned path %s instead",
+			linkPath, targetBinary)
+		return targetBinary
+	}
+	return linkPath
 }
 
 // matchAssets locates the archive, checksums, and (optional) signature assets for a
@@ -791,10 +820,16 @@ func writeExtractedFile(r io.Reader, destPath string) error {
 	return nil
 }
 
-// atomicSymlink creates or replaces a symlink atomically using rename.
+// symlinkFile is swapped in tests to reproduce the blanket EPERM an Azure Files
+// mount returns for every symlink, which no ordinary filesystem will do.
+var symlinkFile = os.Symlink
+
+// atomicSymlink creates or replaces a symlink atomically using rename. A failure
+// leaves any existing link untouched, so a filesystem that refuses symlinks
+// cannot strand the alias pointing at a half-installed version.
 func atomicSymlink(target, linkPath string) error {
 	tmpLink := linkPath + ".tmp-" + randHex(8)
-	if err := os.Symlink(target, tmpLink); err != nil {
+	if err := symlinkFile(target, tmpLink); err != nil {
 		return err
 	}
 	if err := os.Rename(tmpLink, linkPath); err != nil {

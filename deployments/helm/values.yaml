@@ -344,6 +344,9 @@ scanning:
   #    Default matches the symlink the in-app auto-installer creates at
   #    {installDir}/{tool}.  Override only if you bake the scanner into
   #    your image at a different path.
+  #    Leave empty when installDir is an Azure Files/SMB share: those reject
+  #    symlinks without `mfsymlinks`, so the installer records the versioned
+  #    path instead and activation keeps this value up to date on its own.
   binaryPath: "/app/scanners/trivy"
   # -- Pin expected binary version
   # (supply-chain protection; leave empty to skip check)
