@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.25.2](https://github.com/sethbacon/terraform-registry-backend/compare/v4.25.1...v4.25.2) (2026-09-15)
+
+
+### Bug Fixes
+
+* **scanner:** fall back to the versioned path when the filesystem has no symlinks ([#1080](https://github.com/sethbacon/terraform-registry-backend/issues/1080)) ([42d201e](https://github.com/sethbacon/terraform-registry-backend/commit/42d201e706ff89a1e4dd7b94d8ecf8c71e00c5f3))
+
 ## [4.25.1](https://github.com/sethbacon/terraform-registry-backend/compare/v4.25.0...v4.25.1) (2026-09-15)
 
 
