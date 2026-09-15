@@ -23,8 +23,10 @@ import (
 	"time"
 
 	goversion "github.com/hashicorp/go-version"
+	"github.com/terraform-registry/terraform-registry/internal/config"
 	"github.com/terraform-registry/terraform-registry/internal/httpsafe"
 	"github.com/terraform-registry/terraform-registry/internal/mirror"
+	"github.com/terraform-registry/terraform-registry/internal/scanner"
 	"github.com/terraform-registry/terraform-registry/internal/validation"
 )
 
@@ -173,16 +175,23 @@ func Install(ctx context.Context, cfg InstallConfig, tool, pinnedVersion string)
 // filesystem keeps it self-correcting if mfsymlinks later appears. Issue #1079.
 func stableAliasPath(installDir, tool, targetBinary string) string {
 	linkPath := filepath.Join(installDir, tool)
-	err := atomicSymlink(targetBinary, linkPath)
-	if err == nil {
-		// A link that exists but does not resolve would record a path no scan can run.
-		if _, statErr := os.Stat(linkPath); statErr != nil { // #nosec G304 -- linkPath is InstallDir joined with an allowlisted tool name
-			err = statErr
-		}
-	}
-	if err != nil {
+	if err := atomicSymlink(targetBinary, linkPath); err != nil {
 		log.Printf("installer: %s cannot hold the %s symlink; recording the versioned path %s instead: %v",
 			installDir, linkPath, targetBinary, err)
+		return targetBinary
+	}
+	// A link that exists but does not resolve would record a path no scan can run,
+	// so the alias is only taken once it has been located the same way a scan will
+	// locate it. Resolving through ResolveBinaryPath rather than statting linkPath
+	// here is deliberate: it is the codebase's single vetted point for finding a
+	// scanner binary, and a bare os.Stat on a path built from operator config is
+	// the go/path-injection shape CodeQL flagged on #1075. BinaryPath is left empty
+	// so resolution exercises the {InstallDir}/{Tool} branch — the alias itself —
+	// instead of preferring a configured path that may point somewhere else.
+	resolved, ok := scanner.ResolveBinaryPath(&config.ScanningConfig{InstallDir: installDir, Tool: tool})
+	if !ok || resolved != linkPath {
+		log.Printf("installer: the %s symlink was created but does not resolve; recording the versioned path %s instead",
+			linkPath, targetBinary)
 		return targetBinary
 	}
 	return linkPath
