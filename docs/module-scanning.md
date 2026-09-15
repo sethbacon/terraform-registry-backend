@@ -56,6 +56,19 @@ Cosign signature verification is **not** performed in this version — it is tra
 
 Binaries are placed in the directory configured by `scanning.install_dir` (default `/app/scanners`). Each version is extracted to a subdirectory (e.g. `trivy-0.52.2/trivy`) and a symlink (`/app/scanners/trivy`) points to the active version. Upgrading to a new version atomically swaps the symlink; the old version directory remains on disk so running scans are not disrupted.
 
+### Recovering from a lost install directory
+
+If `install_dir` is an ephemeral path (a container filesystem with no volume, or a `PersistentVolumeClaim` that was replaced), the binary disappears on restart while the database still records a version as active. The update job treats that disagreement as a repair trigger rather than a no-op: on its next tick it clears the stale `is_active` flag, marks the row `sync_status = 'missing'`, and re-downloads the latest version. Recovery is automatic only when the version is approved — with `requires_approval` enabled the re-downloaded version waits for an admin, which is the intended gate.
+
+The mismatch is logged at WARN so it can be alerted on rather than discovered by noticing that scans have silently stopped:
+
+```
+WARN [scanner-update] scanner recorded as active but no binary is present; reinstalling
+     tool=trivy recorded_version=0.52.2 install_dir=/app/scanners reinstalling_version=0.52.2
+```
+
+A recurring warning means the install directory is not persisting between restarts — mount a volume at `install_dir`, or bake the binary into the image and set `scanning.binary_path` as described under [Air-gapped environments](#air-gapped-environments).
+
 ### Air-gapped environments
 
 Operators who cannot provide outbound internet access from the server should pre-install the scanner binary manually and enter its path in the **Advanced → Binary Path** field (setup wizard) or via the `scanning.binary_path` configuration option.
@@ -69,6 +82,7 @@ Operators who cannot provide outbound internet access from the server should pre
 | `downloaded archive does not match published checksum` | Network corruption or tampered download                           | Retry; if persistent, check proxy/firewall for content rewriting    |
 | `install directory is not writable`                    | Server process lacks write permission to `scanning.install_dir`   | Fix directory permissions or change `install_dir`                   |
 | `refusing to download from non-HTTPS URL`              | Release asset URL is HTTP                                         | Shouldn't happen with official releases; check proxy configuration  |
+| `scanner binary for <tool> <version> is not present`   | A version was activated but its file is gone from `install_dir`   | See [Recovering from a lost install directory](#recovering-from-a-lost-install-directory) |
 
 ---
 

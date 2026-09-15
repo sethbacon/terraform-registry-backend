@@ -165,6 +165,21 @@ func (r *ScannerBinaryVersionRepository) MarkActive(ctx context.Context, id uuid
 	return tx.Commit()
 }
 
+// MarkMissing records that a version row describes a binary that is not on disk:
+// it clears is_active and sets sync_status='missing'. The update job calls this
+// when the filesystem and the version record disagree, so the row stops
+// asserting something false and the activation reconciler can pick the version
+// up again once it has been re-downloaded.
+func (r *ScannerBinaryVersionRepository) MarkMissing(ctx context.Context, id uuid.UUID) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE scanner_binary_versions SET is_active = false, sync_status = 'missing' WHERE id = $1`,
+		id)
+	if err != nil {
+		return fmt.Errorf("failed to mark scanner binary version missing: %w", err)
+	}
+	return nil
+}
+
 // GetActive returns the currently active binary version for a tool, or nil if none.
 func (r *ScannerBinaryVersionRepository) GetActive(ctx context.Context, tool string) (*models.ScannerBinaryVersion, error) {
 	query := `

@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,6 +28,7 @@ import (
 	"github.com/terraform-registry/terraform-registry/internal/mirror"
 	"github.com/terraform-registry/terraform-registry/internal/notify"
 	"github.com/terraform-registry/terraform-registry/internal/safego"
+	"github.com/terraform-registry/terraform-registry/internal/scanner"
 	"github.com/terraform-registry/terraform-registry/internal/scanner/installer"
 )
 
@@ -196,7 +198,14 @@ func (j *ScannerUpdateJob) Stop() error {
 // if newer than the active/expected version and not already discovered,
 // downloads+verifies it into a versioned present-but-inactive path, records it,
 // and notifies admins.
-// coverage:skip:integration-only — calls the live GitHub release check + download and the real ScannerBinaryVersionRepository; resolveScannerApproval (the pure decision logic it delegates to) is unit-tested independently.
+//
+// "Newer than the active version" is a claim about the database, so it is only
+// trusted once the binary that row describes has been found on disk. When the
+// two disagree the job treats it as a repair trigger rather than a no-op: it
+// reconciles the row and falls through to the download path. Returning early
+// there — which is what it used to do — made the condition permanent, since the
+// early return is the only path to a re-install (issue #1073).
+// coverage:skip:integration-only — calls the live GitHub release check + download and the real ScannerBinaryVersionRepository; resolveScannerApproval and versionsEqual (the pure decision logic it delegates to) are unit-tested independently.
 func (j *ScannerUpdateJob) runCheck(ctx context.Context) {
 	tool := j.scanCfg.Tool
 	if j.scanCfg.InstallDir == "" {
@@ -211,17 +220,35 @@ func (j *ScannerUpdateJob) runCheck(ctx context.Context) {
 	}
 
 	current := j.scanCfg.ExpectedVersion
-	if active, err := j.sbvRepo.GetActive(ctx, tool); err == nil && active != nil {
-		current = active.Version
+	var active *models.ScannerBinaryVersion
+	if row, err := j.sbvRepo.GetActive(ctx, tool); err == nil && row != nil {
+		current = row.Version
+		active = row
 	}
-	if strings.TrimPrefix(latest.LatestVersion, "v") == strings.TrimPrefix(current, "v") {
-		log.Printf("[scanner-update] %s is up to date (version %s)", tool, latest.LatestVersion)
+
+	resolved, installed := scanner.ResolveBinaryPath(j.scanCfg)
+	switch {
+	case !installed:
+		slog.Warn("[scanner-update] scanner recorded as active but no binary is present; reinstalling",
+			"tool", tool,
+			"recorded_version", current,
+			"install_dir", j.scanCfg.InstallDir,
+			"binary_path", j.scanCfg.BinaryPath,
+			"reinstalling_version", latest.LatestVersion)
+		j.reconcileMissingBinary(ctx, active)
+	case versionsEqual(latest.LatestVersion, current):
+		log.Printf("[scanner-update] %s is up to date (version %s, verified at %s)",
+			tool, latest.LatestVersion, resolved)
 		return
 	}
 
-	if existing, err := j.sbvRepo.GetByToolVersion(ctx, tool, latest.LatestVersion); err == nil && existing != nil {
-		// Already discovered on a previous check/tick.
-		return
+	// Only skip a re-discovery when the binary is actually there. Otherwise this
+	// guard is the second way a deployment with a missing binary never heals.
+	if installed {
+		if existing, err := j.sbvRepo.GetByToolVersion(ctx, tool, latest.LatestVersion); err == nil && existing != nil {
+			// Already discovered on a previous check/tick.
+			return
+		}
 	}
 
 	res, err := j.download(ctx, installer.InstallConfig{InstallDir: j.scanCfg.InstallDir, SignatureMode: j.scanCfg.SignatureVerification, EgressGuard: j.egressGuard}, tool, latest.LatestVersion)
@@ -277,6 +304,25 @@ func (j *ScannerUpdateJob) runCheck(ctx context.Context) {
 	}
 
 	j.notify(ctx, v, status)
+}
+
+// versionsEqual compares two scanner version strings ignoring a leading "v",
+// which upstream release tags carry and the stored versions do not.
+func versionsEqual(a, b string) bool {
+	return strings.TrimPrefix(a, "v") == strings.TrimPrefix(b, "v")
+}
+
+// reconcileMissingBinary clears the active row for a tool whose binary is not on
+// disk, so the database stops asserting a version that is not installed and the
+// activation reconciler can promote the version again once it is re-downloaded.
+func (j *ScannerUpdateJob) reconcileMissingBinary(ctx context.Context, active *models.ScannerBinaryVersion) {
+	if active == nil {
+		return
+	}
+	if err := j.sbvRepo.MarkMissing(ctx, active.ID); err != nil {
+		log.Printf("[scanner-update] failed to clear active flag for missing %s %s: %v",
+			active.Tool, active.Version, err)
+	}
 }
 
 // resolveScannerApproval decides the approval_status for a freshly discovered
@@ -347,6 +393,19 @@ func (j *ScannerUpdateJob) Activate(ctx context.Context, v *models.ScannerBinary
 		if !strings.HasPrefix(cleanBinary, cleanInstall+string(filepath.Separator)) {
 			return fmt.Errorf("binary_path %q is outside the scanner install directory", *v.BinaryPath)
 		}
+	}
+
+	// Marking a row active is an assertion that the binary is there. Checking it
+	// here is what keeps the update job's version record honest (issue #1073).
+	// Resolved through the same helper the scanner itself uses, and required to
+	// resolve to this version's own path — ResolveBinaryPath falling back to the
+	// {InstallDir}/{Tool} symlink would let a stale symlink mask a missing
+	// versioned binary.
+	candidate := *j.scanCfg
+	candidate.Tool = v.Tool
+	candidate.BinaryPath = *v.BinaryPath
+	if resolved, ok := scanner.ResolveBinaryPath(&candidate); !ok || resolved != *v.BinaryPath {
+		return fmt.Errorf("scanner binary for %s %s is not present at %q", v.Tool, v.Version, *v.BinaryPath)
 	}
 
 	j.scanCfg.BinaryPath = *v.BinaryPath

@@ -1,7 +1,9 @@
 // scanner_update_job_test.go contains pure-logic unit tests for ScannerUpdateJob
 // that require no live database: resolveScannerApproval decision logic and the
-// non-blocking TriggerCheck channel semantics. Full runCheck/Activate flows need
-// a live Postgres and are intentionally not covered here.
+// non-blocking TriggerCheck channel semantics. The runCheck/Activate
+// binary-presence behaviour is covered against sqlmock in
+// scanner_update_presence_test.go; the remaining flows need a live Postgres and
+// are intentionally not covered here.
 package jobs
 
 import (
