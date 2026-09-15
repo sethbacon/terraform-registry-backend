@@ -56,6 +56,8 @@ Cosign signature verification is **not** performed in this version — it is tra
 
 Binaries are placed in the directory configured by `scanning.install_dir` (default `/app/scanners`). Each version is extracted to a subdirectory (e.g. `trivy-0.52.2/trivy`) and a symlink (`/app/scanners/trivy`) points to the active version. Upgrading to a new version atomically swaps the symlink; the old version directory remains on disk so running scans are not disrupted.
 
+The symlink is an optimisation, not a requirement. On filesystems that refuse to create it (see [SMB / Azure Files install directories](#smb--azure-files-install-directories)) the install still completes and the versioned path is recorded as the binary path instead. Either way the recorded path is one that exists on disk, and `scanning.binary_path` is updated to it on activation — so on those filesystems the path changes with each upgrade rather than staying at `{install_dir}/{tool}`.
+
 Superseded version directories are garbage-collected when a new version is activated. That decision is made from the recorded version rows, which on a restored database can describe a different environment's filesystem, so the cleanup is skipped entirely whenever the newly activated binary cannot be found on disk — it will never delete directories while there is no working scanner to fall back to.
 
 ### Recovering from a lost install directory
@@ -87,16 +89,25 @@ installer: /app/scanners/trivy-0.74.0/trivy rejected chmod but the binary is alr
 
 If the `chmod` is rejected *and* the mount does not present execute bits, the install fails and the partially-extracted version directory is removed, so no unrecorded binary is left on the volume.
 
+Azure Files also rejects **symlinks** unless the share is mounted with `mfsymlinks`. The AKS Azure Files CSI driver does not enable it by default and Azure Container Apps exposes no mount-option field at all, so `/app/scanners/{tool}` usually cannot be created there. The installer attempts the link and falls back to the versioned path when it is refused, logging:
+
+```
+installer: /app/scanners cannot hold the /app/scanners/trivy symlink; recording the versioned path /app/scanners/trivy-0.74.0/trivy instead: ...
+```
+
+The consequence is that **`scanning.binary_path` should be left unset on these deployments**. Activation writes the resolved versioned path into the stored scanning config, so it stays correct across upgrades on its own. A pinned `binary_path: /app/scanners/trivy` (as in the shipped `values-aks-ent.yaml`) refers to a symlink that will never exist on such a share. Because support is detected by attempting the link rather than by inspecting the mount, a share later remounted with `mfsymlinks` starts using the stable symlink again at the next install, with no config change.
+
 ### Troubleshooting
 
-| Error                                                  | Cause                                                             | Fix                                                                 |
-| ------------------------------------------------------ | ----------------------------------------------------------------- | ------------------------------------------------------------------- |
-| `scanner tool not supported for auto-install`          | Tool is `snyk` or `custom`                                        | Install manually and enter the binary path                          |
-| `no matching asset for this OS/arch in the release`    | Release doesn't include an asset for the server's OS/architecture | Install manually or check that the server architecture is supported |
-| `downloaded archive does not match published checksum` | Network corruption or tampered download                           | Retry; if persistent, check proxy/firewall for content rewriting    |
-| `install directory is not writable`                    | Server process lacks write permission to `scanning.install_dir`   | Fix directory permissions or change `install_dir`                   |
-| `chmod: ... operation not permitted`                   | SMB/CIFS mount rejects `chmod` and does not grant execute bits    | Remount the share with `file_mode=0777` (or `0755`); see above      |
-| `refusing to download from non-HTTPS URL`              | Release asset URL is HTTP                                         | Shouldn't happen with official releases; check proxy configuration  |
+| Error                                                  | Cause                                                             | Fix                                                                                       |
+| ------------------------------------------------------ | ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `scanner tool not supported for auto-install`          | Tool is `snyk` or `custom`                                        | Install manually and enter the binary path                                                |
+| `no matching asset for this OS/arch in the release`    | Release doesn't include an asset for the server's OS/architecture | Install manually or check that the server architecture is supported                       |
+| `downloaded archive does not match published checksum` | Network corruption or tampered download                           | Retry; if persistent, check proxy/firewall for content rewriting                          |
+| `install directory is not writable`                    | Server process lacks write permission to `scanning.install_dir`   | Fix directory permissions or change `install_dir`                                         |
+| `chmod: ... operation not permitted`                   | SMB/CIFS mount rejects `chmod` and does not grant execute bits    | Remount the share with `file_mode=0777` (or `0755`); see above                            |
+| `symlink: ... operation not permitted`                 | Pre-4.25.2 install on a share without `mfsymlinks`                | Upgrade; the installer now falls back to the versioned path                               |
+| `refusing to download from non-HTTPS URL`              | Release asset URL is HTTP                                         | Shouldn't happen with official releases; check proxy configuration                        |
 | `scanner binary for <tool> <version> is not present`   | A version was activated but its file is gone from `install_dir`   | See [Recovering from a lost install directory](#recovering-from-a-lost-install-directory) |
 
 ---
@@ -184,21 +195,21 @@ ERROR module scanner: failed to construct scanner error="scanner binary not acce
 
 All options live under the `scanning:` key in `config.yaml` or use the `TFR_SCANNING_` environment variable prefix.
 
-| YAML key             | Environment variable              | Type     | Default | Description                                                                                                               |
-| -------------------- | --------------------------------- | -------- | ------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `enabled`            | `TFR_SCANNING_ENABLED`            | bool     | `false` | Master toggle. Set to `true` to activate.                                                                                 |
-| `allow_db_override`  | `TFR_SCANNING_ALLOW_DB_OVERRIDE`  | bool     | `true`  | Whether a scanning config saved by the setup wizard may turn scanning on while `enabled` is `false`. Set `false` to make `enabled: false` authoritative — see [Config vs. database precedence](#config-vs-database-precedence). |
-| `tool`               | `TFR_SCANNING_TOOL`               | string   | —       | Scanner backend: `trivy`, `checkov`, `terrascan`, `snyk`, or `custom`.                                                    |
-| `binary_path`        | `TFR_SCANNING_BINARY_PATH`        | string   | —       | Absolute path to the scanner executable on the server.                                                                    |
-| `expected_version`   | `TFR_SCANNING_EXPECTED_VERSION`   | string   | —       | If set, the job refuses to run if the installed binary reports a different version. Supply-chain protection.              |
-| `severity_threshold` | `TFR_SCANNING_SEVERITY_THRESHOLD` | string   | `CRITICAL,HIGH,MEDIUM,LOW` | Comma-separated list of severities to record, e.g. `CRITICAL,HIGH`. The default lists all severities (record all). Findings below the threshold are omitted from counts. |
-| `timeout`            | `TFR_SCANNING_TIMEOUT`            | duration | `5m`    | Maximum time a single scan may run before it is killed.                                                                   |
-| `worker_count`       | `TFR_SCANNING_WORKER_COUNT`       | int      | `2`     | Number of scans to run concurrently.                                                                                      |
-| `scan_interval_mins` | `TFR_SCANNING_SCAN_INTERVAL_MINS` | int      | `5`     | How often (in minutes) the job polls for pending scans.                                                                   |
-| `embedded_worker`    | `TFR_SCANNING_EMBEDDED_WORKER`    | bool     | `true`  | Run the scanner in-process in the backend. Set `false` when running dedicated [scan-worker pods](scanner-worker.md) so only the workers drain the queue. |
-| `version_args`       | `TFR_SCANNING_VERSION_ARGS`       | string[] | —       | **Custom tool only.** CLI arguments to retrieve the binary version, e.g. `["--version"]`.                                 |
-| `scan_args`          | `TFR_SCANNING_SCAN_ARGS`          | string[] | —       | **Custom tool only.** CLI arguments passed before the target directory, e.g. `["iac", "test", "--json"]`.                 |
-| `output_format`      | `TFR_SCANNING_OUTPUT_FORMAT`      | string   | —       | **Custom tool only.** How to parse the tool's output: `sarif` or `json`.                                                  |
+| YAML key             | Environment variable              | Type     | Default                    | Description                                                                                                                                                                                                                     |
+| -------------------- | --------------------------------- | -------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`            | `TFR_SCANNING_ENABLED`            | bool     | `false`                    | Master toggle. Set to `true` to activate.                                                                                                                                                                                       |
+| `allow_db_override`  | `TFR_SCANNING_ALLOW_DB_OVERRIDE`  | bool     | `true`                     | Whether a scanning config saved by the setup wizard may turn scanning on while `enabled` is `false`. Set `false` to make `enabled: false` authoritative — see [Config vs. database precedence](#config-vs-database-precedence). |
+| `tool`               | `TFR_SCANNING_TOOL`               | string   | —                          | Scanner backend: `trivy`, `checkov`, `terrascan`, `snyk`, or `custom`.                                                                                                                                                          |
+| `binary_path`        | `TFR_SCANNING_BINARY_PATH`        | string   | —                          | Absolute path to the scanner executable on the server.                                                                                                                                                                          |
+| `expected_version`   | `TFR_SCANNING_EXPECTED_VERSION`   | string   | —                          | If set, the job refuses to run if the installed binary reports a different version. Supply-chain protection.                                                                                                                    |
+| `severity_threshold` | `TFR_SCANNING_SEVERITY_THRESHOLD` | string   | `CRITICAL,HIGH,MEDIUM,LOW` | Comma-separated list of severities to record, e.g. `CRITICAL,HIGH`. The default lists all severities (record all). Findings below the threshold are omitted from counts.                                                        |
+| `timeout`            | `TFR_SCANNING_TIMEOUT`            | duration | `5m`                       | Maximum time a single scan may run before it is killed.                                                                                                                                                                         |
+| `worker_count`       | `TFR_SCANNING_WORKER_COUNT`       | int      | `2`                        | Number of scans to run concurrently.                                                                                                                                                                                            |
+| `scan_interval_mins` | `TFR_SCANNING_SCAN_INTERVAL_MINS` | int      | `5`                        | How often (in minutes) the job polls for pending scans.                                                                                                                                                                         |
+| `embedded_worker`    | `TFR_SCANNING_EMBEDDED_WORKER`    | bool     | `true`                     | Run the scanner in-process in the backend. Set `false` when running dedicated [scan-worker pods](scanner-worker.md) so only the workers drain the queue.                                                                        |
+| `version_args`       | `TFR_SCANNING_VERSION_ARGS`       | string[] | —                          | **Custom tool only.** CLI arguments to retrieve the binary version, e.g. `["--version"]`.                                                                                                                                       |
+| `scan_args`          | `TFR_SCANNING_SCAN_ARGS`          | string[] | —                          | **Custom tool only.** CLI arguments passed before the target directory, e.g. `["iac", "test", "--json"]`.                                                                                                                       |
+| `output_format`      | `TFR_SCANNING_OUTPUT_FORMAT`      | string   | —                          | **Custom tool only.** How to parse the tool's output: `sarif` or `json`.                                                                                                                                                        |
 
 ### Config vs. database precedence
 
@@ -208,9 +219,9 @@ reconciled as follows.
 
 | `enabled` | `allow_db_override` | Effective behaviour                                                                 |
 | --------- | ------------------- | ----------------------------------------------------------------------------------- |
-| `true`    | either              | Config/env wins. The database is consulted only for `auto_update`.                   |
-| `false`   | `true` (default)    | A persisted, enabled config may turn scanning on — the setup-wizard flow.            |
-| `false`   | `false`             | Scanning is off. The database is not consulted at all, including for `auto_update`.  |
+| `true`    | either              | Config/env wins. The database is consulted only for `auto_update`.                  |
+| `false`   | `true` (default)    | A persisted, enabled config may turn scanning on — the setup-wizard flow.           |
+| `false`   | `false`             | Scanning is off. The database is not consulted at all, including for `auto_update`. |
 
 Set `allow_db_override: false` on any deployment whose database was restored
 from a different environment. The persisted config carries that environment's

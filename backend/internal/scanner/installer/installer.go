@@ -152,20 +152,40 @@ func Install(ctx context.Context, cfg InstallConfig, tool, pinnedVersion string)
 		return nil, err
 	}
 
-	// 10. Atomically swap symlink.
-	symlinkPath := filepath.Join(cfg.InstallDir, tool)
-	if err := atomicSymlink(targetBinary, symlinkPath); err != nil {
-		return nil, fmt.Errorf("symlink: %w", err)
-	}
-
+	// 10. Point the stable alias at the new binary, where the filesystem allows it.
 	return &Result{
-		BinaryPath:        symlinkPath,
+		BinaryPath:        stableAliasPath(cfg.InstallDir, tool, targetBinary),
 		Version:           version,
 		Sha256:            sha256hex,
 		SourceURL:         sourceURL,
 		SignatureVerified: sigVerified,
 		SignatureType:     sigType,
 	}, nil
+}
+
+// stableAliasPath swings {InstallDir}/{tool} onto the freshly installed binary
+// and returns the path the caller should record. The alias is what lets
+// scanning.binary_path stay correct across upgrades, so it remains the answer
+// wherever symlinks work. Azure Files (SMB) only supports them when mounted with
+// mfsymlinks, which Azure Container Apps offers no way to set, so there the
+// versioned path is recorded instead: still a real path, just one that moves on
+// each upgrade. Probing by attempting the link rather than sniffing the
+// filesystem keeps it self-correcting if mfsymlinks later appears. Issue #1079.
+func stableAliasPath(installDir, tool, targetBinary string) string {
+	linkPath := filepath.Join(installDir, tool)
+	err := atomicSymlink(targetBinary, linkPath)
+	if err == nil {
+		// A link that exists but does not resolve would record a path no scan can run.
+		if _, statErr := os.Stat(linkPath); statErr != nil { // #nosec G304 -- linkPath is InstallDir joined with an allowlisted tool name
+			err = statErr
+		}
+	}
+	if err != nil {
+		log.Printf("installer: %s cannot hold the %s symlink; recording the versioned path %s instead: %v",
+			installDir, linkPath, targetBinary, err)
+		return targetBinary
+	}
+	return linkPath
 }
 
 // matchAssets locates the archive, checksums, and (optional) signature assets for a
@@ -791,10 +811,16 @@ func writeExtractedFile(r io.Reader, destPath string) error {
 	return nil
 }
 
-// atomicSymlink creates or replaces a symlink atomically using rename.
+// symlinkFile is swapped in tests to reproduce the blanket EPERM an Azure Files
+// mount returns for every symlink, which no ordinary filesystem will do.
+var symlinkFile = os.Symlink
+
+// atomicSymlink creates or replaces a symlink atomically using rename. A failure
+// leaves any existing link untouched, so a filesystem that refuses symlinks
+// cannot strand the alias pointing at a half-installed version.
 func atomicSymlink(target, linkPath string) error {
 	tmpLink := linkPath + ".tmp-" + randHex(8)
-	if err := os.Symlink(target, tmpLink); err != nil {
+	if err := symlinkFile(target, tmpLink); err != nil {
 		return err
 	}
 	if err := os.Rename(tmpLink, linkPath); err != nil {
