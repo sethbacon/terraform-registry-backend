@@ -285,12 +285,47 @@ func downloadExtract(ctx context.Context, client *http.Client, cfg InstallConfig
 		return "", "", "", false, "", extractErr
 	}
 
-	// Make executable.
-	if chmodErr := os.Chmod(targetBinary, 0o755); chmodErr != nil { // #nosec G302 -- scanner binary must be executable
-		return "", "", "", false, "", fmt.Errorf("chmod: %w", chmodErr)
+	if execErr := ensureExecutable(targetBinary); execErr != nil {
+		os.RemoveAll(versionDir) // #nosec G104 -- best-effort cleanup so a failed install leaves no unrecorded binary behind
+		return "", "", "", false, "", execErr
 	}
 
 	return targetBinary, hex.EncodeToString(archiveHash), archiveAsset.BrowserDownloadURL, verified, verSigType, nil
+}
+
+// chmodFile is swapped in tests to reproduce SMB's blanket EPERM, which no
+// ordinary filesystem will do.
+var chmodFile = os.Chmod
+
+// ensureExecutable gives the extracted binary its execute bits, tolerating
+// filesystems that refuse chmod outright. SMB/CIFS mounts derive permissions
+// from the mount's file_mode rather than inode bits and return EPERM for every
+// chmod — and an SMB share is the only way to get a persistent install dir on
+// Azure Container Apps, as well as the natural RWX PVC on AKS. Issue #1076.
+func ensureExecutable(path string) error {
+	chmodErr := chmodFile(path, 0o755) // #nosec G302 -- scanner binary must be executable
+	if chmodErr == nil {
+		return nil
+	}
+	var mode os.FileMode
+	fi, statErr := os.Stat(path) // #nosec G304 -- path was built from InstallDir via safeChildPath
+	if statErr == nil {
+		mode = fi.Mode()
+	}
+	if chmodFailureIsFatal(mode, statErr) {
+		return fmt.Errorf("chmod: %w", chmodErr)
+	}
+	log.Printf("installer: %s rejected chmod but the binary is already executable (mode %s); continuing: %v",
+		path, mode.Perm(), chmodErr)
+	return nil
+}
+
+// chmodFailureIsFatal reports whether a failed chmod should abort the install.
+// The invariant worth enforcing is that the binary ends up executable, not that
+// chmod succeeded, so a rejected chmod is fatal only when the file is not
+// already executable (or cannot be stat'd at all).
+func chmodFailureIsFatal(mode os.FileMode, statErr error) bool {
+	return statErr != nil || mode.Perm()&0o111 == 0
 }
 
 // verifyAssetDigest verifies archiveHash against the GitHub asset's reported `digest`

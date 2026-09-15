@@ -465,6 +465,16 @@ func (j *ScannerUpdateJob) Activate(ctx context.Context, v *models.ScannerBinary
 // by supersededDirsToRemove (unit-tested); this method performs only the IO.
 // coverage:skip:integration-only — requires a live ScannerBinaryVersionRepository (PostgreSQL) plus real filesystem directories under InstallDir; only ever called from Activate. The removal decision is covered by TestSupersededDirsToRemove.
 func (j *ScannerUpdateJob) cleanupSuperseded(ctx context.Context, active *models.ScannerBinaryVersion) {
+	// The removal set is derived entirely from database rows, which on a restored
+	// database describe another environment's filesystem. Without a working
+	// scanner to fall back to, acting on that is how cleanup deleted the only
+	// binary actually present on the volume (issue #1076).
+	if _, ok := scanner.ResolveBinaryPath(j.scanCfg); !ok {
+		log.Printf("[scanner-update] cleanup: skipped for %s %s — no working scanner binary under %s",
+			active.Tool, active.Version, j.scanCfg.InstallDir)
+		return
+	}
+
 	rows, err := j.sbvRepo.ListForTool(ctx, active.Tool)
 	if err != nil {
 		log.Printf("[scanner-update] cleanup: failed to list versions for %s: %v", active.Tool, err)
