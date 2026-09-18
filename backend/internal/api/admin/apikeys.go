@@ -233,6 +233,33 @@ func (h *APIKeyHandlers) ListAPIKeysHandler() gin.HandlerFunc {
 	}
 }
 
+// adminScopeAcceptedOnAnAPIKey reports whether the submitted scope list may be
+// written to an API key, answering the request itself when it may not
+// (issue #766, migration 000054).
+//
+// An admin-bearing key would be INERT, not powerful: middleware's
+// currentKeyScopes runs platformadmin.KeyScopes over every key on every
+// request, so the wildcard is stripped before any check sees it. Minting one
+// anyway hands an operator a credential that reports an authority it will never
+// exercise, and sends them debugging the 403s instead of the grant. Platform
+// administration is session-only now; a key is the one place it can never live.
+//
+// Refused with the wording adminScopeAcceptedOnATemplate uses, so the two grant
+// boundaries name the same rule and the same replacement route.
+//
+// 400 rather than 403: no role the caller could hold would make this body
+// acceptable, which is what 400 says.
+func adminScopeAcceptedOnAnAPIKey(c *gin.Context, scopes []string) bool {
+	if err := auth.ValidateProvisionableScopes(scopes); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "the `admin` scope cannot be placed on an API key; platform administration is " +
+				"granted through POST /api/v1/admin/platform-admins",
+		})
+		return false
+	}
+	return true
+}
+
 // @Summary      Create API key
 // @Description  Create a new API key with specified scopes. The full API key is only returned once during creation. Requested scopes must be within the caller's role template for the organization AND within the scopes of the credential making the request, so an API key can never mint a key broader than itself.
 // @Tags         API Keys
@@ -281,6 +308,13 @@ func (h *APIKeyHandlers) CreateAPIKeyHandler() gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error": "Invalid scopes: " + err.Error(),
 			})
+			return
+		}
+
+		// Ahead of the ceiling, not folded into it: the ceiling's answer would be
+		// "your role template does not carry admin", which reads as a role problem
+		// an administrator could fix. No role can carry it.
+		if !adminScopeAcceptedOnAnAPIKey(c, req.Scopes) {
 			return
 		}
 
@@ -340,7 +374,7 @@ func (h *APIKeyHandlers) CreateAPIKeyHandler() gin.HandlerFunc {
 		}
 
 		// Validate requested scopes are within the ceiling this REQUEST may
-		// grant. Admin scope grants all permissions.
+		// grant.
 		//
 		// GUARD credential-scope-binding (issue #733). The ceiling is the
 		// caller's role template in this organization, intersected with the
@@ -356,30 +390,19 @@ func (h *APIKeyHandlers) CreateAPIKeyHandler() gin.HandlerFunc {
 		// sessions the UI uses.
 		allowedScopes := credscope.Bound(c, memberWithRole.RoleTemplateScopes)
 
-		callerHasAdmin := false
-		for _, scope := range allowedScopes {
-			if scope == "admin" {
-				callerHasAdmin = true
-				break
-			}
-		}
-
-		if !callerHasAdmin {
-			// Check each requested scope is within the ceiling
-			allowedScopeSet := make(map[string]bool)
-			for _, s := range allowedScopes {
-				allowedScopeSet[s] = true
-			}
-
-			for _, requestedScope := range req.Scopes {
-				if !allowedScopeSet[requestedScope] {
-					c.JSON(http.StatusForbidden, gin.H{
-						"error":          "Scope '" + requestedScope + "' exceeds the permissions available to this request",
-						"allowed_scopes": allowedScopes,
-						"role_template":  *memberWithRole.RoleTemplateName,
-					})
-					return
-				}
+		// auth.HasScope, not set membership: this ceiling must admit exactly what
+		// middleware.currentKeyScopes will admit, and that intersection resolves
+		// the read/write implications. A set lookup made minting STRICTER than
+		// authentication -- an org owner holding organizations:write was refused
+		// organizations:read, a scope the minted key would have carried fine.
+		for _, requestedScope := range req.Scopes {
+			if !auth.HasScope(allowedScopes, auth.Scope(requestedScope)) {
+				c.JSON(http.StatusForbidden, gin.H{
+					"error":          "Scope '" + requestedScope + "' exceeds the permissions available to this request",
+					"allowed_scopes": allowedScopes,
+					"role_template":  *memberWithRole.RoleTemplateName,
+				})
+				return
 			}
 		}
 
@@ -645,6 +668,10 @@ func (h *APIKeyHandlers) UpdateAPIKeyHandler() gin.HandlerFunc {
 				return
 			}
 
+			if !adminScopeAcceptedOnAnAPIKey(c, req.Scopes) {
+				return
+			}
+
 			// Get user's role template for this org to validate scope permissions
 			memberWithRole, err := h.orgRepo.GetMemberWithRole(c.Request.Context(), apiKey.OrganizationID, userID, repositories.OrgScopeAllOrganizations())
 
@@ -695,29 +722,17 @@ func (h *APIKeyHandlers) UpdateAPIKeyHandler() gin.HandlerFunc {
 			// key it is itself presenting.
 			allowedScopes := credscope.Bound(c, memberWithRole.RoleTemplateScopes)
 
-			callerHasAdmin := false
-			for _, scope := range allowedScopes {
-				if scope == "admin" {
-					callerHasAdmin = true
-					break
-				}
-			}
-
-			if !callerHasAdmin {
-				allowedScopeSet := make(map[string]bool)
-				for _, s := range allowedScopes {
-					allowedScopeSet[s] = true
-				}
-
-				for _, requestedScope := range req.Scopes {
-					if !allowedScopeSet[requestedScope] {
-						c.JSON(http.StatusForbidden, gin.H{
-							"error":          "Scope '" + requestedScope + "' exceeds the permissions available to this request",
-							"allowed_scopes": allowedScopes,
-							"role_template":  *memberWithRole.RoleTemplateName,
-						})
-						return
-					}
+			// auth.HasScope for the reason CreateAPIKeyHandler documents: the
+			// widening ceiling and middleware.currentKeyScopes must admit the same
+			// set, implications included.
+			for _, requestedScope := range req.Scopes {
+				if !auth.HasScope(allowedScopes, auth.Scope(requestedScope)) {
+					c.JSON(http.StatusForbidden, gin.H{
+						"error":          "Scope '" + requestedScope + "' exceeds the permissions available to this request",
+						"allowed_scopes": allowedScopes,
+						"role_template":  *memberWithRole.RoleTemplateName,
+					})
+					return
 				}
 			}
 
@@ -874,27 +889,26 @@ func (h *APIKeyHandlers) RotateAPIKeyHandler() gin.HandlerFunc {
 			return
 		}
 
-		rotateScopes := credscope.Bound(c, owner.RoleTemplateScopes)
-		ownerHasAdmin := false
-		for _, scope := range rotateScopes {
-			if scope == "admin" {
-				ownerHasAdmin = true
-				break
-			}
+		// A key minted before migration 000054 can still carry `admin` in its
+		// stored scopes, and rotation would copy it onto a new one. 403, not the
+		// helper's 400: the unacceptable scopes are existing state, not a body the
+		// caller submitted, and the remedy is the same PUT the message names.
+		if err := auth.ValidateProvisionableScopes(oldKey.Scopes); err != nil {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "the `admin` scope cannot be placed on an API key; remove it from this key's " +
+					"scopes before rotating it",
+			})
+			return
 		}
-		if !ownerHasAdmin {
-			allowedScopeSet := make(map[string]bool)
-			for _, s := range rotateScopes {
-				allowedScopeSet[s] = true
-			}
-			for _, existingScope := range oldKey.Scopes {
-				if !allowedScopeSet[existingScope] {
-					c.JSON(http.StatusForbidden, gin.H{
-						"error":          "Scope '" + existingScope + "' exceeds the permissions available to this request; update the key's scopes before rotating it",
-						"allowed_scopes": rotateScopes,
-					})
-					return
-				}
+
+		rotateScopes := credscope.Bound(c, owner.RoleTemplateScopes)
+		for _, existingScope := range oldKey.Scopes {
+			if !auth.HasScope(rotateScopes, auth.Scope(existingScope)) {
+				c.JSON(http.StatusForbidden, gin.H{
+					"error":          "Scope '" + existingScope + "' exceeds the permissions available to this request; update the key's scopes before rotating it",
+					"allowed_scopes": rotateScopes,
+				})
+				return
 			}
 		}
 

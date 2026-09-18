@@ -33,6 +33,15 @@ RUN CLEAN_VERSION="${VERSION#v}" && \
     -o terraform-registry \
     ./cmd/server
 
+# role-drift ships in the image because it can only answer for a deployment from
+# inside it: it reads the same config file and TFR_IDENTITY_* environment as the
+# server, and on a managed runtime with no shell host (ACA, Container Instances)
+# there is nowhere else to run it.
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
+    -ldflags="-w -s" \
+    -o role-drift \
+    ./cmd/role-drift
+
 # Stage 2: Create minimal production image
 FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 
@@ -51,6 +60,7 @@ WORKDIR /app
 
 # Copy binary from builder
 COPY --from=builder /build/terraform-registry /app/terraform-registry
+COPY --from=builder /build/role-drift /app/role-drift
 
 # Copy example config
 COPY config.example.yaml /app/config.example.yaml

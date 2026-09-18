@@ -29,9 +29,9 @@ import (
 //	carries. Where the two differ, the narrower one is the credential, and
 //	ignoring it makes scoping a machine credential decorative: a key issued
 //	with modules:read could mint, widen or rotate its way up to everything its
-//	owner holds, including the platform-wide admin wildcard. No interactive
-//	session is needed and CSRFMiddleware exempts API-key callers, so possession
-//	of one leaked narrow key was possession of its owner's maximum authority.
+//	owner holds. No interactive session is needed and CSRFMiddleware exempts
+//	API-key callers, so possession of one leaked narrow key was possession of
+//	its owner's maximum authority.
 //
 // The table below is the class on the minting axis: three operations that write
 // a scope set (create, update, rotate) x three principals (an interactive JWT
@@ -52,8 +52,17 @@ import (
 // owner's whole cross-organization scope union.
 
 // ownerRoleScopes is what the key owner's role template grants in org-1: the
-// admin wildcard, i.e. the maximum authority a narrowed key must not reach.
-var ownerRoleScopes = []byte(`["admin"]`)
+// org-owner set, i.e. the maximum authority a narrowed key must not reach.
+// Not the admin wildcard -- migration 000054 removed it from every template,
+// and an API key may no longer carry it at all.
+var ownerRoleScopes = []byte(`["organizations:write","users:read","api_keys:manage","modules:read","modules:write","providers:read","providers:write"]`)
+
+// ownerRoleScopeList is ownerRoleScopes as the slice the middleware would have
+// put in c.Get("scopes").
+var ownerRoleScopeList = []string{
+	"organizations:write", "users:read", "api_keys:manage",
+	"modules:read", "modules:write", "providers:read", "providers:write",
+}
 
 // credBindingPrincipal is one authenticated caller shape.
 type credBindingPrincipal struct {
@@ -71,11 +80,11 @@ var credBindingPrincipals = []credBindingPrincipal{
 		// The interactive path keeps today's user-derived ceiling: a browser
 		// session IS the user's full authority, so nothing narrows it.
 		name:          "jwt session",
-		sessionScopes: []string{"admin"},
+		sessionScopes: ownerRoleScopeList,
 	},
 	{
 		// The escalation vector: a key deliberately scoped down, owned by a
-		// principal holding the admin role template in the same organization.
+		// principal holding the org-owner role template in the same organization.
 		name:          "api key narrower than owner",
 		keyScopes:     []string{"modules:read"},
 		sessionScopes: []string{"modules:read"},
@@ -84,8 +93,8 @@ var credBindingPrincipals = []credBindingPrincipal{
 		// The control: a key that carries everything its owner does must not
 		// lose anything to the new ceiling.
 		name:          "api key equal to owner",
-		keyScopes:     []string{"admin"},
-		sessionScopes: []string{"admin"},
+		keyScopes:     ownerRoleScopeList,
+		sessionScopes: ownerRoleScopeList,
 	},
 }
 
@@ -126,7 +135,7 @@ func newCredBindingRouter(t *testing.T, p credBindingPrincipal) (sqlmock.Sqlmock
 	return mock, r
 }
 
-// ownerMemberRow is the org-1 membership of user-1 under the admin role
+// ownerMemberRow is the org-1 membership of user-1 under the org-owner role
 // template -- the user-derived half of every ceiling in this file.
 func ownerMemberRow() *sqlmock.Rows {
 	roleTemplateID := "role-owner"
@@ -160,18 +169,19 @@ func storedKeyRow(scopes string) *sqlmock.Rows {
 }
 
 func TestCredentialBindingClass_KeyMinting(t *testing.T) {
-	// requested is the scope set the operation would write. "admin" is the
-	// escalation; "modules:read" is the scope the narrow key legitimately
-	// holds, and is what proves the ceiling has not collapsed to empty.
+	// requested is the scope set the operation would write. "modules:write" is
+	// the escalation -- the owner holds it, the narrow key does not;
+	// "modules:read" is the scope the narrow key legitimately holds, and is what
+	// proves the ceiling has not collapsed to empty.
 	cases := []struct {
 		op        string
 		requested string
 	}{
-		{"create", "admin"},
+		{"create", "modules:write"},
 		{"create", "modules:read"},
-		{"update", "admin"},
+		{"update", "modules:write"},
 		{"update", "modules:read"},
-		{"rotate", "admin"},
+		{"rotate", "modules:write"},
 		{"rotate", "modules:read"},
 	}
 
@@ -179,7 +189,7 @@ func TestCredentialBindingClass_KeyMinting(t *testing.T) {
 		for _, tc := range cases {
 			// A key may write a scope set only if it holds those scopes
 			// itself; a session is bounded solely by the owner's role
-			// template, which here is the admin wildcard.
+			// template, which here is the org-owner set.
 			allowed := p.keyScopes == nil || auth.HasScope(p.keyScopes, auth.Scope(tc.requested))
 
 			t.Run(tc.op+"/"+p.name+"/"+tc.requested, func(t *testing.T) {

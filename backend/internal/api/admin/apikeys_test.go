@@ -842,8 +842,9 @@ func TestUpdateAPIKey_ScopeExceedsUserRole(t *testing.T) {
 		id: roleID, name: roleName, displayName: roleDisplay, scopes: `["modules:read"]`,
 	})
 
-	// User tries to give "admin" scope (exceeds their role)
-	body := `{"scopes":["modules:read","admin"]}`
+	// The over-ask is a real scope the viewer template does not carry. `admin`
+	// would exercise the guard's 400 instead, not this ceiling.
+	body := `{"scopes":["modules:read","providers:write"]}`
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("PUT", "/apikeys/key-1",
 		bytes.NewBufferString(body)))
@@ -921,8 +922,9 @@ func TestUpdateAPIKey_WithInvalidExpiresAt(t *testing.T) {
 // organization must not be able to widen the key's scopes. The key survives
 // removal (RemoveMember does not delete keys) and authenticates with its stored
 // scopes, so if the scope ceiling were skipped when membership is absent the
-// owner could self-escalate an org-bound key to "admin". UpdateAPIKeyHandler
-// must fail closed exactly like CreateAPIKeyHandler.
+// owner could self-escalate an org-bound key to their former role's full
+// authority. UpdateAPIKeyHandler must fail closed exactly like
+// CreateAPIKeyHandler.
 func TestUpdateAPIKey_ScopeChange_NotMember_FailsClosed(t *testing.T) {
 	// The caller authenticates with the key's own (low) scopes, not admin.
 	mock, r := newAPIKeyRouter(t, "user-1", []string{"modules:read"})
@@ -931,7 +933,7 @@ func TestUpdateAPIKey_ScopeChange_NotMember_FailsClosed(t *testing.T) {
 	mock.ExpectQuery("SELECT.*FROM organization_members.*LEFT JOIN").
 		WillReturnRows(sqlmock.NewRows(memberRoleCols))
 
-	body := `{"scopes":["admin"]}`
+	body := `{"scopes":["modules:write"]}`
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("PUT", "/apikeys/key-1",
 		bytes.NewBufferString(body)))
