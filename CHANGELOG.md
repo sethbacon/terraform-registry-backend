@@ -7,6 +7,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.25.3](https://github.com/sethbacon/terraform-registry-backend/compare/v4.25.2...v4.25.3) (2026-09-18)
+
+
+### Bug Fixes
+
+* **apikeys:** refuse the admin scope outright and stop minting stricter than auth ([#1082](https://github.com/sethbacon/terraform-registry-backend/issues/1082)) ([dcc7ea0](https://github.com/sethbacon/terraform-registry-backend/commit/dcc7ea0385b9a97019b40da76c97c37c01665751))
+
 ## [4.25.2](https://github.com/sethbacon/terraform-registry-backend/compare/v4.25.1...v4.25.2) (2026-09-15)
 
 
